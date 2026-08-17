@@ -390,10 +390,16 @@ func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, erro
 // grants) can see. Includes collections with direct collection_grants and
 // collections that contain items the user has item_grants on.
 func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string, error) {
+	return s.GuestVisibleCollectionIDsQ(s.db, workspaceID, userID)
+}
+
+// GuestVisibleCollectionIDsQ is GuestVisibleCollectionIDs parameterized over
+// its executor (see Queryer).
+func (s *Store) GuestVisibleCollectionIDsQ(q Queryer, workspaceID, userID string) ([]string, error) {
 	ids := make(map[string]bool)
 
 	// Collections with direct grants (excluding soft-deleted collections)
-	rows, err := s.db.Query(s.q(`
+	rows, err := q.Query(s.q(`
 		SELECT DISTINCT cg.collection_id FROM collection_grants cg
 		JOIN collections c ON c.id = cg.collection_id
 		WHERE cg.workspace_id = ? AND cg.user_id = ? AND c.deleted_at IS NULL
@@ -411,7 +417,7 @@ func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string,
 	}
 
 	// Collections containing items with direct grants (excluding soft-deleted)
-	itemRows, err := s.db.Query(s.q(`
+	itemRows, err := q.Query(s.q(`
 		SELECT DISTINCT i.collection_id
 		FROM item_grants ig
 		JOIN items i ON i.id = ig.item_id
@@ -451,10 +457,16 @@ func (s *Store) GuestVisibleCollectionIDs(workspaceID, userID string) ([]string,
 // in/out depending on whether the endpoint needs live-state or
 // tombstone-bearing visibility.
 func (s *Store) GuestVisibleResourcesIncludeDeleted(workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
+	return s.GuestVisibleResourcesIncludeDeletedQ(s.db, workspaceID, userID)
+}
+
+// GuestVisibleResourcesIncludeDeletedQ is GuestVisibleResourcesIncludeDeleted
+// parameterized over its executor (see Queryer).
+func (s *Store) GuestVisibleResourcesIncludeDeletedQ(q Queryer, workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
 	// Collections with direct grants — include soft-deleted
 	// collections so the client can flush their items from its
 	// local index via the items query below.
-	rows, err := s.db.Query(s.q(`
+	rows, err := q.Query(s.q(`
 		SELECT DISTINCT cg.collection_id FROM collection_grants cg
 		WHERE cg.workspace_id = ? AND cg.user_id = ?
 	`), workspaceID, userID)
@@ -478,7 +490,7 @@ func (s *Store) GuestVisibleResourcesIncludeDeleted(workspaceID, userID string) 
 	// is the source of truth for visibility; the item's
 	// deleted_at is what the delta endpoint USES to mark
 	// `deleted:true` on the wire.
-	itemRows, err := s.db.Query(s.q(`
+	itemRows, err := q.Query(s.q(`
 		SELECT DISTINCT ig.item_id
 		FROM item_grants ig
 		WHERE ig.workspace_id = ? AND ig.user_id = ?
@@ -506,8 +518,14 @@ func (s *Store) GuestVisibleResourcesIncludeDeleted(workspaceID, userID string) 
 // - grantedItemIDs: specific item IDs the user has item-level grants on
 // This allows callers to distinguish between full-collection access and item-only access.
 func (s *Store) GuestVisibleResources(workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
+	return s.GuestVisibleResourcesQ(s.db, workspaceID, userID)
+}
+
+// GuestVisibleResourcesQ is GuestVisibleResources parameterized over its
+// executor (see Queryer).
+func (s *Store) GuestVisibleResourcesQ(q Queryer, workspaceID, userID string) (fullCollectionIDs []string, grantedItemIDs []string, err error) {
 	// Collections with direct grants (full collection access, excluding soft-deleted)
-	rows, err := s.db.Query(s.q(`
+	rows, err := q.Query(s.q(`
 		SELECT DISTINCT cg.collection_id FROM collection_grants cg
 		JOIN collections c ON c.id = cg.collection_id
 		WHERE cg.workspace_id = ? AND cg.user_id = ? AND c.deleted_at IS NULL
@@ -528,7 +546,7 @@ func (s *Store) GuestVisibleResources(workspaceID, userID string) (fullCollectio
 	}
 
 	// Individual item IDs with direct grants (excluding soft-deleted items/collections)
-	itemRows, err := s.db.Query(s.q(`
+	itemRows, err := q.Query(s.q(`
 		SELECT DISTINCT ig.item_id
 		FROM item_grants ig
 		JOIN items i ON i.id = ig.item_id

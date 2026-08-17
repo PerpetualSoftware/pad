@@ -31,12 +31,17 @@ import (
 // RecordItemWorkspaceMoveTx is the shape to follow. That belongs to the
 // caller; it is not something this planner can or should provide.
 //
-// The planner takes no *sql.Tx and holds no lock. It reads in three
-// bounded passes — referenced ids, any missing parents, then variants —
-// each chunked, so the query count is proportional to the number of
-// chunks, not to the number of references. It mutates nothing. If a future
-// change appears to need a transaction here, the boundary has been drawn
-// wrong: the writes belong to the caller.
+// The planner takes no lock of its own and mutates nothing. It reads in
+// three bounded passes — referenced ids, any missing parents, then
+// variants — each chunked, so the query count is proportional to the
+// number of chunks, not to the number of references. It is parameterized
+// over a Queryer (planAttachmentCopyQ) rather than owning a transaction:
+// the dry-run reads through the pool, and the mutating copy passes its own
+// in-flight transaction so the reads run on the connection that already
+// holds the workspace advisory locks instead of waiting on the pool
+// (BUG-2409). If a future change appears to need the planner to BEGIN a
+// transaction here, the boundary has been drawn wrong: the writes belong
+// to the caller.
 //
 // STALENESS CONTRACT — a plan is a snapshot, and it is only valid inside
 // the critical section that produced it. Because the planner holds no
@@ -219,7 +224,19 @@ type AttachmentCopyRequest struct {
 // preflight and the copy, set it from the one place their shared
 // authorization ladder runs (server.resolveAuthorizedCopy), so a new
 // endpoint cannot reach the planner without going past it.
-type AttachmentAuthorizer func(models.Attachment) (bool, error)
+//
+// THE QUERYER PARAMETER IS THE PLANNER'S OWN EXECUTOR (BUG-2409). The
+// verdict requires reads — the parent item, the caller's grants — and on
+// the mutating path the planner runs inside a transaction holding BOTH
+// workspace advisory locks. An authorizer that read through the connection
+// pool there could wait on a free connection while every pooled connection
+// waits on the locks this transaction holds: starvation presenting as a
+// hang. Running the reads on q — the pool on the preflight path, the
+// copy's own transaction on the mutating path — makes them free of pool
+// waits exactly when it matters. Implementations must route every read
+// through q (the store's *Q variants exist for this) and must not reach
+// for the pool directly.
+type AttachmentAuthorizer func(q Queryer, att models.Attachment) (bool, error)
 
 // AttachmentCopyRow is one attachment row to create in workspace B, plus
 // the source-side facts the caller needs in order to move bytes if it has
@@ -354,6 +371,16 @@ type AttachmentCopyPlan struct {
 // Dropping the scope from the variant query runs the same escalation one
 // level down.
 func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPlan, error) {
+	return s.planAttachmentCopyQ(s.db, req)
+}
+
+// planAttachmentCopyQ is PlanAttachmentCopy parameterized over its executor.
+// The preflight plans through the pool (no locks held); the mutating copy
+// plans on its own transaction, which holds both workspace advisory locks —
+// routing these reads (and the authorizer callback's, which receives the
+// same q) through that transaction is what keeps the lock-held critical
+// section free of pool waits (BUG-2409).
+func (s *Store) planAttachmentCopyQ(q Queryer, req AttachmentCopyRequest) (*AttachmentCopyPlan, error) {
 	for _, required := range []struct{ name, value string }{
 		{"source_workspace_id", req.SourceWorkspaceID},
 		{"target_workspace_id", req.TargetWorkspaceID},
@@ -385,11 +412,11 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 	// not exist" are the same fact, expressed the same way, and every
 	// downstream classification treats them identically without knowing
 	// the difference exists (TASK-2408).
-	resolved, err := s.attachmentsByIDInWorkspace(req.SourceWorkspaceID, refs)
+	resolved, err := s.attachmentsByIDInWorkspace(q, req.SourceWorkspaceID, refs)
 	if err != nil {
 		return nil, err
 	}
-	if err := filterAuthorizedAttachments(resolved, req.Authorize); err != nil {
+	if err := filterAuthorizedAttachments(q, resolved, req.Authorize); err != nil {
 		return nil, err
 	}
 
@@ -418,14 +445,14 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 		missingParents = append(missingParents, *a.ParentID)
 	}
 	if len(missingParents) > 0 {
-		parents, err := s.attachmentsByIDInWorkspace(req.SourceWorkspaceID, missingParents)
+		parents, err := s.attachmentsByIDInWorkspace(q, req.SourceWorkspaceID, missingParents)
 		if err != nil {
 			return nil, err
 		}
 		// A parent the caller cannot see is not a clone root, exactly as a
 		// parent in another workspace is not: the reference below finds no
 		// entry and becomes unresolvable.
-		if err := filterAuthorizedAttachments(parents, req.Authorize); err != nil {
+		if err := filterAuthorizedAttachments(q, parents, req.Authorize); err != nil {
 			return nil, err
 		}
 		for id, a := range parents {
@@ -476,7 +503,7 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 	for i, r := range roots {
 		rootIDs[i] = r.ID
 	}
-	variantsByParent, err := s.attachmentVariantsInWorkspace(req.SourceWorkspaceID, rootIDs)
+	variantsByParent, err := s.attachmentVariantsInWorkspace(q, req.SourceWorkspaceID, rootIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +519,7 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 		for parentID, variants := range variantsByParent {
 			kept := variants[:0]
 			for _, v := range variants {
-				ok, err := req.Authorize(v)
+				ok, err := req.Authorize(q, v)
 				if err != nil {
 					return nil, fmt.Errorf("plan attachment copy: authorize variant: %w", err)
 				}
@@ -521,12 +548,12 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 // unobservable: the planner's classification asks only whether an id is
 // present in the map, so the denied reference takes the identical branch a
 // dangling one takes and produces identical counts.
-func filterAuthorizedAttachments(rows map[string]models.Attachment, authorize AttachmentAuthorizer) error {
+func filterAuthorizedAttachments(q Queryer, rows map[string]models.Attachment, authorize AttachmentAuthorizer) error {
 	if authorize == nil {
 		return nil
 	}
 	for id, a := range rows {
-		ok, err := authorize(a)
+		ok, err := authorize(q, a)
 		if err != nil {
 			return fmt.Errorf("plan attachment copy: authorize %s: %w", id, err)
 		}
@@ -636,7 +663,7 @@ func attachmentRefsIn(content string, fields map[string]any) ([]string, error) {
 // are simply absent from the result — the caller treats absence as
 // "unresolvable", so a foreign id and a dangling id are indistinguishable
 // by design.
-func (s *Store) attachmentsByIDInWorkspace(workspaceID string, ids []string) (map[string]models.Attachment, error) {
+func (s *Store) attachmentsByIDInWorkspace(q Queryer, workspaceID string, ids []string) (map[string]models.Attachment, error) {
 	out := make(map[string]models.Attachment, len(ids))
 	for _, chunk := range chunkStrings(ids, attachmentPlanChunk) {
 		args := make([]any, 0, len(chunk)+1)
@@ -647,7 +674,7 @@ func (s *Store) attachmentsByIDInWorkspace(workspaceID string, ids []string) (ma
 		query := `SELECT ` + attachmentColumns + ` FROM attachments
 			WHERE workspace_id = ? AND deleted_at IS NULL
 			  AND id IN (` + sqlPlaceholderList(len(chunk)) + `)`
-		if err := s.scanAttachmentsInto(query, args, func(a models.Attachment) {
+		if err := s.scanAttachmentsInto(q, query, args, func(a models.Attachment) {
 			out[a.ID] = a
 		}); err != nil {
 			return nil, fmt.Errorf("plan attachment copy: resolve refs: %w", err)
@@ -667,7 +694,7 @@ func (s *Store) attachmentsByIDInWorkspace(workspaceID string, ids []string) (ma
 // same reason itemWorkspaceMoveOrder coalesces source_seq. Real thumbnails
 // always set variant, but a NULL one must not reorder the plan depending
 // on which database is underneath.
-func (s *Store) attachmentVariantsInWorkspace(workspaceID string, parentIDs []string) (map[string][]models.Attachment, error) {
+func (s *Store) attachmentVariantsInWorkspace(q Queryer, workspaceID string, parentIDs []string) (map[string][]models.Attachment, error) {
 	out := map[string][]models.Attachment{}
 	for _, chunk := range chunkStrings(parentIDs, attachmentPlanChunk) {
 		args := make([]any, 0, len(chunk)+1)
@@ -679,7 +706,7 @@ func (s *Store) attachmentVariantsInWorkspace(workspaceID string, parentIDs []st
 			WHERE workspace_id = ? AND deleted_at IS NULL
 			  AND parent_id IN (` + sqlPlaceholderList(len(chunk)) + `)
 			ORDER BY COALESCE(variant, ''), id`
-		if err := s.scanAttachmentsInto(query, args, func(a models.Attachment) {
+		if err := s.scanAttachmentsInto(q, query, args, func(a models.Attachment) {
 			if a.ParentID == nil {
 				return
 			}
@@ -693,8 +720,8 @@ func (s *Store) attachmentVariantsInWorkspace(workspaceID string, parentIDs []st
 
 // scanAttachmentsInto runs a query returning attachmentColumns and hands
 // each row to visit.
-func (s *Store) scanAttachmentsInto(query string, args []any, visit func(models.Attachment)) error {
-	rows, err := s.db.Query(s.q(query), args...)
+func (s *Store) scanAttachmentsInto(q Queryer, query string, args []any, visit func(models.Attachment)) error {
+	rows, err := q.Query(s.q(query), args...)
 	if err != nil {
 		return err
 	}

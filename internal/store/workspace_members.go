@@ -80,10 +80,16 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 
 // GetWorkspaceMember retrieves a single membership record.
 func (s *Store) GetWorkspaceMember(workspaceID, userID string) (*models.WorkspaceMember, error) {
+	return s.GetWorkspaceMemberQ(s.db, workspaceID, userID)
+}
+
+// GetWorkspaceMemberQ is GetWorkspaceMember parameterized over its executor
+// (see Queryer).
+func (s *Store) GetWorkspaceMemberQ(q Queryer, workspaceID, userID string) (*models.WorkspaceMember, error) {
 	var m models.WorkspaceMember
 	var createdAt string
 
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT workspace_id, user_id, role, collection_access, created_at
 		FROM workspace_members
 		WHERE workspace_id = ? AND user_id = ?
@@ -137,13 +143,19 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 // Returns nil if the member has "all" access (meaning no filtering needed).
 // System collections (conventions, playbooks) are always included for members.
 func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, error) {
-	member, err := s.GetWorkspaceMember(workspaceID, userID)
+	return s.VisibleCollectionIDsQ(s.db, workspaceID, userID)
+}
+
+// VisibleCollectionIDsQ is VisibleCollectionIDs parameterized over its
+// executor (see Queryer).
+func (s *Store) VisibleCollectionIDsQ(q Queryer, workspaceID, userID string) ([]string, error) {
+	member, err := s.GetWorkspaceMemberQ(q, workspaceID, userID)
 	if err != nil {
 		return nil, err
 	}
 	if member == nil {
 		// Not a member — check for guest access via grants
-		return s.GuestVisibleCollectionIDs(workspaceID, userID)
+		return s.GuestVisibleCollectionIDsQ(q, workspaceID, userID)
 	}
 
 	// "all" access — return nil to indicate no filtering needed
@@ -152,7 +164,7 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 	}
 
 	// "specific" access — get the granted collection IDs + system collections
-	rows, err := s.db.Query(s.q(`
+	rows, err := q.Query(s.q(`
 		SELECT collection_id FROM member_collection_access
 		WHERE workspace_id = ? AND user_id = ?
 	`), workspaceID, userID)
@@ -174,7 +186,7 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 	}
 
 	// Always include system collections for members
-	sysRows, err := s.db.Query(s.q(`
+	sysRows, err := q.Query(s.q(`
 		SELECT id FROM collections
 		WHERE workspace_id = ? AND is_system = ? AND deleted_at IS NULL
 	`), workspaceID, s.dialect.BoolToInt(true))
@@ -197,7 +209,7 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 	// Note: we only merge full collection grants here, NOT collections derived
 	// from item grants. Item grants should not promote to collection-wide
 	// visibility for members — the item-level filtering in handlers handles that.
-	collGrantRows, err := s.db.Query(s.q(`
+	collGrantRows, err := q.Query(s.q(`
 		SELECT DISTINCT collection_id FROM collection_grants
 		WHERE workspace_id = ? AND user_id = ?
 	`), workspaceID, userID)
@@ -219,7 +231,7 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 	// Also include collections that contain items with item grants, so the
 	// collection appears in navigation. The actual item-level filtering is
 	// handled by the request handlers for members who also have item grants.
-	itemCollRows, err := s.db.Query(s.q(`
+	itemCollRows, err := q.Query(s.q(`
 		SELECT DISTINCT i.collection_id
 		FROM item_grants ig
 		JOIN items i ON i.id = ig.item_id
@@ -308,7 +320,13 @@ func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, coll
 // GetMemberCollectionAccess returns the collection IDs a member has been
 // explicitly granted access to (only meaningful when collection_access = "specific").
 func (s *Store) GetMemberCollectionAccess(workspaceID, userID string) ([]string, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.GetMemberCollectionAccessQ(s.db, workspaceID, userID)
+}
+
+// GetMemberCollectionAccessQ is GetMemberCollectionAccess parameterized over
+// its executor (see Queryer).
+func (s *Store) GetMemberCollectionAccessQ(q Queryer, workspaceID, userID string) ([]string, error) {
+	rows, err := q.Query(s.q(`
 		SELECT collection_id FROM member_collection_access
 		WHERE workspace_id = ? AND user_id = ?
 	`), workspaceID, userID)
@@ -331,7 +349,13 @@ func (s *Store) GetMemberCollectionAccess(workspaceID, userID string) ([]string,
 // ListSystemCollectionIDs returns the IDs of system collections in a workspace.
 // System collections are always visible to members regardless of collection_access mode.
 func (s *Store) ListSystemCollectionIDs(workspaceID string) ([]string, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.ListSystemCollectionIDsQ(s.db, workspaceID)
+}
+
+// ListSystemCollectionIDsQ is ListSystemCollectionIDs parameterized over its
+// executor (see Queryer).
+func (s *Store) ListSystemCollectionIDsQ(q Queryer, workspaceID string) ([]string, error) {
+	rows, err := q.Query(s.q(`
 		SELECT id FROM collections
 		WHERE workspace_id = ? AND is_system = ? AND deleted_at IS NULL
 	`), workspaceID, s.dialect.BoolToInt(true))

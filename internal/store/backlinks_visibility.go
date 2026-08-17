@@ -57,7 +57,14 @@ package store
 // surfaces, "user not found" returns an empty result rather than
 // erroring so the cross-ws traversal can keep going).
 func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDeletedItems, authIsBearer bool) (fullCollIDs, grantedItemIDs []string, err error) {
-	user, err := s.GetUser(userID)
+	return s.ResolveBacklinksVisibilityQ(s.db, userID, workspaceID, includeDeletedItems, authIsBearer)
+}
+
+// ResolveBacklinksVisibilityQ is ResolveBacklinksVisibility parameterized
+// over its executor (see Queryer). The cross-workspace copy's attachment
+// authorizer runs it on the copy transaction's connection.
+func (s *Store) ResolveBacklinksVisibilityQ(q Queryer, userID, workspaceID string, includeDeletedItems, authIsBearer bool) (fullCollIDs, grantedItemIDs []string, err error) {
+	user, err := s.GetUserQ(q, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -79,7 +86,7 @@ func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDe
 	// Member lookup determines whether we treat this as a guest (no
 	// member row but has grants) or a member (with full or specific
 	// access).
-	member, err := s.GetWorkspaceMember(workspaceID, userID)
+	member, err := s.GetWorkspaceMemberQ(q, workspaceID, userID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -95,9 +102,9 @@ func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDe
 	// member-specific collections below if applicable.
 	var grantCollIDs []string
 	if includeDeletedItems {
-		grantCollIDs, grantedItemIDs, err = s.GuestVisibleResourcesIncludeDeleted(workspaceID, userID)
+		grantCollIDs, grantedItemIDs, err = s.GuestVisibleResourcesIncludeDeletedQ(q, workspaceID, userID)
 	} else {
-		grantCollIDs, grantedItemIDs, err = s.GuestVisibleResources(workspaceID, userID)
+		grantCollIDs, grantedItemIDs, err = s.GuestVisibleResourcesQ(q, workspaceID, userID)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -136,14 +143,14 @@ func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDe
 	for _, id := range grantCollIDs {
 		fullCollSet[id] = true
 	}
-	memberColls, err := s.GetMemberCollectionAccess(workspaceID, userID)
+	memberColls, err := s.GetMemberCollectionAccessQ(q, workspaceID, userID)
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, id := range memberColls {
 		fullCollSet[id] = true
 	}
-	sysColls, err := s.ListSystemCollectionIDs(workspaceID)
+	sysColls, err := s.ListSystemCollectionIDsQ(q, workspaceID)
 	if err != nil {
 		return nil, nil, err
 	}

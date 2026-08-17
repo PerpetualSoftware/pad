@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // attachmentParentOutcome classifies the result of resolving an attachment
@@ -71,6 +72,15 @@ const (
 // store.CreateAttachmentForLiveItem; derivation deliberately does not (see the
 // comment on deriveThumbnails). Do not read a passing check here as a lock.
 func (s *Server) resolveAttachmentParentItem(att *models.Attachment, includeArchived bool) (*models.Item, attachmentParentOutcome, error) {
+	return s.resolveAttachmentParentItemQ(s.store.Q(), att, includeArchived)
+}
+
+// resolveAttachmentParentItemQ is resolveAttachmentParentItem parameterized
+// over its executor — the cross-workspace copy's attachment authorizer runs
+// it on the copy transaction's connection (BUG-2409); every other caller
+// uses the pool wrapper above. One body, two executors, so the invariant
+// stays in one place.
+func (s *Server) resolveAttachmentParentItemQ(q store.Queryer, att *models.Attachment, includeArchived bool) (*models.Item, attachmentParentOutcome, error) {
 	if att.ItemID == nil || *att.ItemID == "" {
 		return nil, attachmentParentOrphan, nil
 	}
@@ -80,9 +90,9 @@ func (s *Server) resolveAttachmentParentItem(att *models.Attachment, includeArch
 		err  error
 	)
 	if includeArchived {
-		item, err = s.store.GetItemIncludeDeleted(*att.ItemID)
+		item, err = s.store.GetItemIncludeDeletedQ(q, *att.ItemID)
 	} else {
-		item, err = s.store.GetItem(*att.ItemID)
+		item, err = s.store.GetItemQ(q, *att.ItemID)
 	}
 	if err != nil {
 		return nil, attachmentParentGone, err
@@ -116,7 +126,13 @@ func (s *Server) resolveAttachmentParentItem(att *models.Attachment, includeArch
 // Callers MUST apply it AHEAD of any role gate that would answer 403: a 403
 // reached only for rows that exist is itself the oracle.
 func (s *Server) attachmentCallerIsRestricted(r *http.Request, workspaceID string) (bool, error) {
-	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, workspaceID)
+	return s.attachmentCallerIsRestrictedQ(s.store.Q(), r, workspaceID)
+}
+
+// attachmentCallerIsRestrictedQ is attachmentCallerIsRestricted
+// parameterized over its executor (see resolveAttachmentParentItemQ).
+func (s *Server) attachmentCallerIsRestrictedQ(q store.Queryer, r *http.Request, workspaceID string) (bool, error) {
+	fullCollIDs, grantedItemIDs, err := s.guestResourceFilterCoreQ(q, r, workspaceID, false)
 	if err != nil {
 		return false, err
 	}
@@ -170,20 +186,20 @@ func (s *Server) attachmentCallerIsRestricted(r *http.Request, workspaceID strin
 // practice by the attachments that actually exist in the source workspace,
 // since an unresolvable reference never reaches this function at all.
 //
-// RESIDUAL, and the more consequential one: these queries go through the
-// connection POOL, and on the mutating path the planner runs inside a
-// transaction holding advisory locks on BOTH workspaces. Enough concurrent
-// copies could therefore occupy every pooled connection with lock-waiters
-// while the lock HOLDER waits for a spare — starvation presenting as a
-// hang. The memo above is what keeps this bounded rather than per-row. The
-// hazard is not new (PlanAttachmentCopy already reads through the pool
-// under the same locks, attachments_copy_plan.go) and the real fix is to
-// make the lock-held reads transaction-bound, which means threading the
-// *sql.Tx through the planner and giving this callback a tx-aware form.
-// Tracked as BUG-2409; deliberately NOT done here, because it is a change
-// to the store's transaction plumbing rather than to this authorization
-// rule.
-func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) func(models.Attachment) (bool, error) {
+// TRANSACTION-BOUND READS (BUG-2409). Every read below runs on the Queryer
+// the PLANNER passes in — the pool on the preflight path, the copy's own
+// in-flight transaction on the mutating path. That matters because the
+// mutating planner runs inside a transaction holding advisory locks on
+// BOTH workspaces: a read routed through the connection pool there could
+// wait for a free connection while every pooled connection is itself
+// occupied by a copy waiting on those locks — starvation presenting as a
+// hang. On the transaction's own connection the reads cannot wait on the
+// pool at all. The memo is what keeps the read count bounded rather than
+// per-row; the q-threading is what keeps the bounded reads off the pool.
+// NOTE the memo is keyed per parent item, not per (q, item) — sound
+// because one closure only ever sees one executor: it is built per
+// resolveAuthorizedCopy call and consumed by exactly one planner pass.
+func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) store.AttachmentAuthorizer {
 	type verdict struct {
 		allowed bool
 		err     error
@@ -194,14 +210,14 @@ func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) f
 		byParentItem    = map[string]verdict{}
 	)
 
-	decide := func(att models.Attachment) (bool, error) {
-		item, outcome, err := s.resolveAttachmentParentItem(&att, false)
+	decide := func(q store.Queryer, att models.Attachment) (bool, error) {
+		item, outcome, err := s.resolveAttachmentParentItemQ(q, &att, false)
 		if err != nil {
 			return false, err
 		}
 		switch outcome {
 		case attachmentParentOK:
-			return s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+			return s.checkItemVisibleQ(q, workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
 		case attachmentParentOrphan:
 			// The orphan rule (PLAN-2382 DR-4), and the restriction check
 			// BEFORE the role check for the reason every sibling path
@@ -210,7 +226,7 @@ func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) f
 			// "unresolvable" count anyway, but keeping the order identical
 			// to the read path is what makes the two comparable.
 			if !restrictedKnown {
-				isRestricted, err := s.attachmentCallerIsRestricted(r, workspaceID)
+				isRestricted, err := s.attachmentCallerIsRestrictedQ(q, r, workspaceID)
 				if err != nil {
 					return false, err
 				}
@@ -226,7 +242,7 @@ func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) f
 		}
 	}
 
-	return func(att models.Attachment) (bool, error) {
+	return func(q store.Queryer, att models.Attachment) (bool, error) {
 		// Defense in depth: the planner scopes every query to the source
 		// workspace already, so this cannot fire today. It costs nothing
 		// and means the authorizer is safe to hand to any future caller
@@ -241,12 +257,12 @@ func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) f
 		// Orphans are not memoized: they have no item_id to key on, and
 		// their branch runs no per-row query anyway.
 		if att.ItemID == nil || *att.ItemID == "" {
-			return decide(att)
+			return decide(q, att)
 		}
 		if v, ok := byParentItem[*att.ItemID]; ok {
 			return v.allowed, v.err
 		}
-		allowed, err := decide(att)
+		allowed, err := decide(q, att)
 		byParentItem[*att.ItemID] = verdict{allowed: allowed, err: err}
 		return allowed, err
 	}

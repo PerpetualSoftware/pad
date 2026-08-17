@@ -556,47 +556,19 @@ func isUniqueViolation(err error) bool {
 }
 
 func (s *Store) GetItem(id string) (*models.Item, error) {
-	var item models.Item
-	var createdAt, updatedAt string
-	var deletedAt *string
-	var pinned bool
+	return s.GetItemQ(s.db, id)
+}
 
-	err := s.db.QueryRow(s.q(`
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
-		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
-		       c.slug, c.name, c.icon, c.prefix,
-		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
-		FROM items i
-		JOIN collections c ON c.id = i.collection_id
-		LEFT JOIN users au ON au.id = i.assigned_user_id
-		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.id = ? AND i.deleted_at IS NULL
-	`), id).Scan(
-		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
-		&item.Content, &item.Fields, &item.Tags,
-		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
-		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-		&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
-		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
-		&item.AssignedUserName, &item.AssignedUserEmail,
-		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+// GetItemQ is GetItem parameterized over its executor, so the same read can
+// run against the pool or on an in-flight transaction's connection (see
+// Queryer). getItemTx and the cross-workspace copy's authorization callback
+// are the transaction-side callers.
+func (s *Store) GetItemQ(q Queryer, id string) (*models.Item, error) {
+	item, err := s.getItemScanQ(q, id, false)
 	if err != nil {
 		return nil, fmt.Errorf("get item: %w", err)
 	}
-
-	item.Pinned = pinned
-	item.CreatedAt = parseTime(createdAt)
-	item.UpdatedAt = parseTime(updatedAt)
-	item.DeletedAt = parseTimePtr(deletedAt)
-	hydrateItemComputedMetadata(&item)
-	return &item, nil
+	return item, nil
 }
 
 // getItemTx is the in-transaction variant of GetItem. Used by
@@ -606,12 +578,23 @@ func (s *Store) GetItem(id string) (*models.Item, error) {
 // (Codex round-3 P2). Soft-deleted items are excluded, matching
 // GetItem's contract.
 func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
+	item, err := s.getItemScanQ(tx, id, false)
+	if err != nil {
+		return nil, fmt.Errorf("get item (tx): %w", err)
+	}
+	return item, nil
+}
+
+// getItemScanQ is the one item-row scan behind GetItem, getItemTx and
+// GetItemIncludeDeleted — identical SELECT and hydration, differing only in
+// executor and in whether soft-deleted rows are visible. (nil, nil) on no row.
+func (s *Store) getItemScanQ(q Queryer, id string, includeDeleted bool) (*models.Item, error) {
 	var item models.Item
 	var createdAt, updatedAt string
 	var deletedAt *string
 	var pinned bool
 
-	err := tx.QueryRow(s.q(`
+	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -623,8 +606,11 @@ func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.id = ? AND i.deleted_at IS NULL
-	`), id).Scan(
+		WHERE i.id = ?`
+	if !includeDeleted {
+		query += ` AND i.deleted_at IS NULL`
+	}
+	err := q.QueryRow(s.q(query), id).Scan(
 		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 		&item.Content, &item.Fields, &item.Tags,
 		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
@@ -638,7 +624,7 @@ func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get item (tx): %w", err)
+		return nil, err
 	}
 
 	item.Pinned = pinned
@@ -870,47 +856,17 @@ func parseItemNumber(s string) (int, bool) {
 // blob). The visibility check still keys off the (still-set)
 // collection_id, so soft-deleting an item doesn't escalate access.
 func (s *Store) GetItemIncludeDeleted(id string) (*models.Item, error) {
-	var item models.Item
-	var createdAt, updatedAt string
-	var deletedAt *string
-	var pinned bool
+	return s.GetItemIncludeDeletedQ(s.db, id)
+}
 
-	err := s.db.QueryRow(s.q(`
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
-		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
-		       i.created_by, i.last_modified_by, i.source,
-		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
-		       c.slug, c.name, c.icon, c.prefix,
-		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
-		FROM items i
-		JOIN collections c ON c.id = i.collection_id
-		LEFT JOIN users au ON au.id = i.assigned_user_id
-		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.id = ?
-	`), id).Scan(
-		&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
-		&item.Content, &item.Fields, &item.Tags,
-		&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
-		&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-		&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
-		&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
-		&item.AssignedUserName, &item.AssignedUserEmail,
-		&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+// GetItemIncludeDeletedQ is GetItemIncludeDeleted parameterized over its
+// executor (see Queryer).
+func (s *Store) GetItemIncludeDeletedQ(q Queryer, id string) (*models.Item, error) {
+	item, err := s.getItemScanQ(q, id, true)
 	if err != nil {
 		return nil, fmt.Errorf("get item (include deleted): %w", err)
 	}
-
-	item.Pinned = pinned
-	item.CreatedAt = parseTime(createdAt)
-	item.UpdatedAt = parseTime(updatedAt)
-	item.DeletedAt = parseTimePtr(deletedAt)
-	hydrateItemComputedMetadata(&item)
-	return &item, nil
+	return item, nil
 }
 
 // GetItemsByIDsIncludeDeleted fetches items (soft-deleted included) for the

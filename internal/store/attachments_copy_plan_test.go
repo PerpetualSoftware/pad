@@ -1001,7 +1001,7 @@ func TestPlanAttachmentCopy_DeniedParentSinksTheVariantRef(t *testing.T) {
 	thumb := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
 
 	// Everything is visible EXCEPT the original.
-	req := withAuthorizer(f.req(imageRef(thumb.ID), nil), func(a models.Attachment) (bool, error) {
+	req := withAuthorizer(f.req(imageRef(thumb.ID), nil), func(_ Queryer, a models.Attachment) (bool, error) {
 		return a.ID != orig.ID, nil
 	})
 	plan := f.plan(t, req)
@@ -1026,7 +1026,7 @@ func TestPlanAttachmentCopy_DeniedVariantDropsOnlyItself(t *testing.T) {
 	sm := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
 	md := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbMd, 20)
 
-	req := withAuthorizer(f.req(imageRef(orig.ID), nil), func(a models.Attachment) (bool, error) {
+	req := withAuthorizer(f.req(imageRef(orig.ID), nil), func(_ Queryer, a models.Attachment) (bool, error) {
 		return a.ID != md.ID, nil
 	})
 	plan := f.plan(t, req)
@@ -1048,7 +1048,7 @@ func TestPlanAttachmentCopy_AuthorizerErrorIsFatal(t *testing.T) {
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "shot.png", 10)
 
-	req := withAuthorizer(f.req(imageRef(a.ID), nil), func(models.Attachment) (bool, error) {
+	req := withAuthorizer(f.req(imageRef(a.ID), nil), func(Queryer, models.Attachment) (bool, error) {
 		return false, fmt.Errorf("membership lookup exploded")
 	})
 	if _, err := f.s.PlanAttachmentCopy(req); err == nil {
@@ -1066,7 +1066,7 @@ func TestPlanAttachmentCopy_AuthorizerSeesEveryClonedRow(t *testing.T) {
 	other := f.attach(t, f.wsA, "spec.pdf", 50)
 
 	seen := map[string]bool{}
-	req := withAuthorizer(f.req(imageRef(sm.ID)+fileRef(other.ID), nil), func(a models.Attachment) (bool, error) {
+	req := withAuthorizer(f.req(imageRef(sm.ID)+fileRef(other.ID), nil), func(_ Queryer, a models.Attachment) (bool, error) {
 		seen[a.ID] = true
 		return true, nil
 	})
@@ -1089,4 +1089,4 @@ func withAuthorizer(req AttachmentCopyRequest, auth AttachmentAuthorizer) Attach
 	return req
 }
 
-func denyAll(models.Attachment) (bool, error) { return false, nil }
+func denyAll(Queryer, models.Attachment) (bool, error) { return false, nil }
