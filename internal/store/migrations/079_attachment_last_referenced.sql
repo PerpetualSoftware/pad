@@ -1,0 +1,17 @@
+-- Migration 079: attachments.last_referenced_at (BUG-2415).
+--
+-- Writer-side reference stamp for the orphan-GC claim protocol. Every
+-- content writer that persists text containing a `pad-attachment:<id>`
+-- reference (item create/update — including the collab-snapshot flush,
+-- version restore, and artifact import, which all funnel through the
+-- same store methods — and comment create/update) bumps this column
+-- inside its own write transaction. The GC sweep's row deletion is a
+-- conditional DELETE that refuses when the stamp is fresh, closing the
+-- race where a reference commits between the sweep's content scan and
+-- its reclaim.
+--
+-- TEXT ISO-8601 UTC like every other timestamp on this table —
+-- lexicographic compare equals chronological compare. Nullable: NULL
+-- means "never stamped", which the claim treats as claimable (the
+-- content LIKE scan already ran and found nothing).
+ALTER TABLE attachments ADD COLUMN last_referenced_at TEXT;

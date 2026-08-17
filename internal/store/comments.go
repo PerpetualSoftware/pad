@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,7 +31,16 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 		author = createdBy
 	}
 
-	_, err := s.db.Exec(s.q(`
+	// Transactional so the pad-attachment: reference stamp (BUG-2415)
+	// commits atomically with the body that carries the reference —
+	// the orphan-GC claim must never observe one without the other.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin comment tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(s.q(`
 		INSERT INTO comments (id, item_id, workspace_id, author, user_id, body, created_by, source, activity_id, parent_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, itemID, workspaceID, author, nilIfEmpty(userID), input.Body, createdBy, source,
@@ -38,6 +48,12 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert comment: %w", err)
+	}
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Body); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit comment: %w", err)
 	}
 
 	return s.GetComment(id)
@@ -49,13 +65,34 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 // admin) is enforced by the handler, not here.
 func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	ts := now()
-	res, err := s.db.Exec(s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, ts, id)
+	// Transactional for the same BUG-2415 reason as CreateComment: the
+	// new body and its pad-attachment: reference stamp commit together.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin comment tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var workspaceID string
+	if err := tx.QueryRow(s.q(`SELECT workspace_id FROM comments WHERE id = ?`), id).Scan(&workspaceID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("resolve comment workspace: %w", err)
+	}
+	res, err := tx.Exec(s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, ts, id)
 	if err != nil {
 		return nil, fmt.Errorf("update comment: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return nil, sql.ErrNoRows
+	}
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, body); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit comment update: %w", err)
 	}
 	return s.GetComment(id)
 }

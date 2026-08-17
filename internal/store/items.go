@@ -316,6 +316,13 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		}
 	}
 
+	// Stamp any pad-attachment: references in the new content/fields so
+	// the orphan-GC claim sees them (BUG-2415). Same tx as the INSERT —
+	// the stamp and the reference commit atomically.
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Content, fields); err != nil {
+		return err
+	}
+
 	// Index [[...]] wiki-links from the new content. Lives inside the
 	// same tx as the items INSERT so partial state never lands and a
 	// content rollback also rolls back the index rows. Empty content
@@ -2500,6 +2507,27 @@ func (s *Store) updateItemWithParentLinkOnce(
 	_, err = tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update item: %w", err)
+	}
+
+	// Stamp pad-attachment: references carried by the new content /
+	// fields so the orphan-GC claim sees them (BUG-2415). Same tx as
+	// the UPDATE — reference and stamp commit atomically. Covers every
+	// funnel into this core: item PATCH, the collab-snapshot flush,
+	// version restore, and bulk updates. input.Fields is already the
+	// RESOLVED blob here (a fields_patch was merged into it above).
+	{
+		var refTexts []string
+		if input.Content != nil {
+			refTexts = append(refTexts, *input.Content)
+		}
+		if input.Fields != nil {
+			refTexts = append(refTexts, *input.Fields)
+		}
+		if len(refTexts) > 0 {
+			if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, refTexts...); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Durable restore boundary (BUG-2264): stamp last_restore_seq with the seq

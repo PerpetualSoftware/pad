@@ -590,3 +590,86 @@ func TestOrphanGC_StartStop(t *testing.T) {
 	// If we got here without deadlocking on Stop, the loop drains
 	// correctly. testServer's t.Cleanup will exercise Stop.
 }
+
+// TestOrphanGC_ClaimRefusesFreshlyReferencedRow pins BUG-2415 at the
+// sweep level: a never-attached row whose last_referenced_at stamp is
+// FRESH (a writer referenced it after the sweep's content scan would
+// have run) survives the sweep — row AND blob — because the row
+// deletion is a conditional claim and the blob is only reclaimed after
+// a successful claim. The stamped row deliberately has NO content
+// reference, so the LIKE scan passes it and the claim predicate is the
+// only thing standing between it and deletion — exactly the filed
+// mid-sweep window.
+func TestOrphanGC_ClaimRefusesFreshlyReferencedRow(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	body := realPNG()
+	rr := doMultipartUpload(srv, slug, "raced.png", body)
+	if rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+	id := getOnlyAttachmentID(t, srv, wsID)
+
+	// Fresh stamp, no content reference — the post-scan writer's trace.
+	nowTS := time.Now().UTC().Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`UPDATE attachments SET last_referenced_at = ? WHERE id = ?`), nowTS, id); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+
+	att, err := srv.store.GetAttachment(id)
+	if err != nil || att == nil {
+		t.Fatalf("GetAttachment: %v %v", att, err)
+	}
+	store, err := srv.attachments.Resolve(att.StorageKey)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted=%d, want 0 — fresh-stamped row was reclaimed", res.Deleted)
+	}
+
+	// Row survives.
+	att2, err := srv.store.GetAttachment(id)
+	if err != nil {
+		t.Fatalf("post-sweep GetAttachment: %v", err)
+	}
+	if att2 == nil {
+		t.Fatalf("fresh-stamped row deleted by sweep — the filed data-loss race")
+	}
+	// Blob survives (row-before-bytes: an unclaimed row's bytes are
+	// never touched).
+	if _, err := store.Stat(context.Background(), att.StorageKey); err != nil {
+		t.Errorf("blob missing after refused claim: %v", err)
+	}
+
+	// COUNTERFACTUAL ARM: age the stamp past the stale window and sweep
+	// again — the same row must now be reclaimed, proving the stamp
+	// condition (not the scan, not the grace cutoff) is what protected
+	// it above.
+	staleTS := time.Now().Add(-2 * orphanGCRefStaleWindow).UTC().Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`UPDATE attachments SET last_referenced_at = ? WHERE id = ?`), staleTS, id); err != nil {
+		t.Fatalf("age stamp: %v", err)
+	}
+	res, err = srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if res.Deleted < 1 {
+		t.Errorf("second sweep Deleted=%d, want >= 1 — stale stamp should not protect", res.Deleted)
+	}
+	att3, err := srv.store.GetAttachment(id)
+	if err != nil {
+		t.Fatalf("final GetAttachment: %v", err)
+	}
+	if att3 != nil {
+		t.Errorf("stale-stamped row survived the second sweep")
+	}
+}

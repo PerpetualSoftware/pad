@@ -15,6 +15,27 @@ import (
 const (
 	defaultOrphanGCInterval = 24 * time.Hour
 	defaultOrphanGCGrace    = 30 * 24 * time.Hour
+
+	// orphanGCRefStaleWindow is a CORRECTNESS parameter, not a tuning
+	// knob (BUG-2415). A never-attached row is only claimable when its
+	// last_referenced_at stamp is older than this window.
+	//
+	// What it must cover: the stamp is NOT a lease on long-lived
+	// references — those are caught by the content LIKE scan
+	// (AttachmentReferenced) that runs immediately before the claim.
+	// The stamp only has to cover references that commit AFTER that
+	// scan, i.e. within the scan→claim gap of a single sweep iteration
+	// (milliseconds) PLUS the full duration of the writer transaction
+	// that carries the stamp — including a pathologically stalled one
+	// (lock waits, an operator-paused Postgres, a laptop suspending
+	// mid-commit). 15 minutes exceeds any plausible single write
+	// transaction by orders of magnitude while delaying reclamation of
+	// a genuinely-orphaned row by at most one extra sweep against a
+	// 30-day grace period — the asymmetry is entirely in favor of
+	// generosity. If you are tempted to lower this for faster tests,
+	// inject the cutoff in the test instead; the constant guards
+	// production correctness.
+	orphanGCRefStaleWindow = 15 * time.Minute
 )
 
 // orphanGCResult records what one sweep accomplished. Returned from
@@ -77,7 +98,8 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// + comment bodies before reclaiming so the GC doesn't destroy
 		// a legitimate reference. Codex P1 on PR #307 round 1;
 		// comment-body coverage added for IDEA-1650.
-		if a.ItemID == nil && a.DeletedAt == nil {
+		neverAttached := a.ItemID == nil && a.DeletedAt == nil
+		if neverAttached {
 			referenced, err := s.store.AttachmentReferenced(a.WorkspaceID, a.ID)
 			if err != nil {
 				slog.Warn("orphan GC: ref-scan failed",
@@ -93,8 +115,55 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			}
 		}
 
-		// Decide whether the on-disk blob can also be reclaimed.
-		// Two protections to consider:
+		// CLAIM — row BEFORE bytes (BUG-2415). The row deletion is a
+		// conditional DELETE that re-asserts the row's reclaimable
+		// state inside the statement itself, so it serializes at the
+		// database against every writer:
+		//
+		//   - never-attached: still unattached, still live, and no
+		//     reference stamp fresher than the stale window. A writer
+		//     committing a `pad-attachment:` reference stamps the row
+		//     in the SAME transaction as the content
+		//     (stampAttachmentRefsTx), so either the stamp lands first
+		//     and this claim matches zero rows, or the claim lands
+		//     first and the writer's stamp matches zero rows — no
+		//     interleaving destroys a referenced row.
+		//   - soft-deleted: deleted_at still set and still past grace
+		//     at delete time, so a mid-sweep restore survives.
+		//
+		// Row-first ordering is what makes a surviving row imply
+		// surviving bytes: the blob is only reclaimed after the row is
+		// provably gone. (The old order deleted the blob first, so a
+		// reference landing mid-sweep could keep a row whose content
+		// was already destroyed — the worst failure mode of the race.)
+		var claimed bool
+		var claimErr error
+		if neverAttached {
+			claimed, claimErr = s.store.ClaimNeverAttachedAttachment(
+				a.ID, time.Now().Add(-orphanGCRefStaleWindow))
+		} else {
+			claimed, claimErr = s.store.ClaimSoftDeletedAttachment(a.ID, graceCutoff)
+		}
+		if claimErr != nil {
+			slog.Warn("orphan GC: claim failed",
+				"attachment_id", a.ID, "error", claimErr)
+			res.Skipped++
+			continue
+		}
+		if !claimed {
+			// The row's state changed since the candidate SELECT — a
+			// writer referenced it, an upload attached it, or a restore
+			// revived it. That is the claim protocol WORKING, not a
+			// failure; the next sweep takes a fresh look.
+			slog.Debug("orphan GC: claim refused — row state changed mid-sweep",
+				"attachment_id", a.ID)
+			res.Skipped++
+			continue
+		}
+		res.Deleted++
+
+		// Row is gone — decide whether the on-disk blob can also be
+		// reclaimed. Two protections to consider:
 		//
 		//   1. content-addressed dedupe: another row at the same
 		//      hash may still need the blob. CountProtecting includes
@@ -141,10 +210,13 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			if delErr := store.Delete(ctx, a.StorageKey); delErr != nil {
 				// AttachmentStore.Delete documents that deleting a
 				// missing key is NOT an error, so anything reaching
-				// here is a real failure (permission, IO, etc.).
-				// Still drop the DB row — keeping it strands the
-				// row indefinitely; the operator will have to clean
-				// the disk by hand either way.
+				// here is a real failure (permission, IO, etc.). The
+				// row is already claimed (deleted), so this strands
+				// the blob on disk for the operator to clean by hand
+				// — the inverse of the old order's failure mode, and
+				// the safe direction: a stranded blob wastes disk, a
+				// stranded row without bytes lied about data that no
+				// longer existed (BUG-2415).
 				slog.Warn("orphan GC: blob delete failed",
 					"attachment_id", a.ID, "storage_key", a.StorageKey, "error", delErr)
 			} else {
@@ -158,14 +230,6 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			res.BytesReclaimed += a.SizeBytes
 			reclaimedThisSweep[a.ContentHash] = true
 		}
-
-		if err := s.store.HardDeleteAttachment(a.ID); err != nil {
-			slog.Warn("orphan GC: hard delete failed",
-				"attachment_id", a.ID, "error", err)
-			res.Skipped++
-			continue
-		}
-		res.Deleted++
 	}
 
 	return res, nil
