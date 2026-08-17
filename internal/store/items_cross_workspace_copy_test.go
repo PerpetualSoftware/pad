@@ -1448,13 +1448,41 @@ func TestCopyRollbackErrorClassification(t *testing.T) {
 // (GetItemQ-backed parent resolution), so the callback's executor is
 // pinned too — not just the planner's own passes.
 func TestCopyItemAcrossWorkspaces_NoPoolIOUnderLocks(t *testing.T) {
-	f := newCopyFixture(t)
+	// Quota-shaped fixture rather than the plain one, deliberately: with a
+	// FREE-plan owner and EnforceItemLimit set, the in-transaction quota
+	// check runs its full read chain (workspace owner → user → platform
+	// plan-limit setting → count), which was the second lock-held pool-read
+	// leg Codex found after the planner/authorizer leg — the plain fixture
+	// never armed it (round 2). No plan override, so resolveLimit reaches
+	// the platform-settings read instead of returning early.
+	s := testStore(t)
+	owner := createTestUser(t, s, "no-pool-io-owner@example.com", "Owner", "s3cret")
+	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+		t.Fatalf("SetUserPlan: %v", err)
+	}
+	wsA, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Locked Source", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(A): %v", err)
+	}
+	wsB, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Locked Dest", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(B): %v", err)
+	}
+	f := copyFixture{
+		s:     s,
+		wsA:   wsA,
+		wsB:   wsB,
+		colA:  createTestCollection(t, s, wsA.ID, "Tasks A"),
+		colB:  createTestCollection(t, s, wsB.ID, "Tasks B"),
+		actor: owner.ID,
+	}
 	orig := f.attachIn(t, f.wsA.ID, "shot.png", 100)
 	f.variantOf(t, f.wsA.ID, orig, "thumb-md", 10)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Locked reads", "body\n\n"+imageRef(orig.ID))
 
 	req := f.req()
 	req.SourceItemID = src.ID
+	req.EnforceItemLimit = true
 	authorizerReads := 0
 	req.AttachmentAuthorizer = func(q Queryer, att models.Attachment) (bool, error) {
 		// A real read through the planner's executor. On the fixed build q

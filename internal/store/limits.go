@@ -65,36 +65,41 @@ func (s *Store) CheckLimit(workspaceID, feature string) (*LimitResult, error) {
 	return s.checkLimitOn(s.db, workspaceID, feature)
 }
 
-// CheckLimitTx is CheckLimit with the usage count read through the caller's
+// CheckLimitTx is CheckLimit with every read routed through the caller's
 // transaction instead of an independent connection (PLAN-2357 / DR-16).
 //
-// The distinction is the whole point: a limit check that counts on the pool
-// cannot see the caller's own uncommitted inserts, and — more importantly —
-// it is not serialized with a concurrent transaction holding the workspace's
-// advisory lock. Two copies into a workspace one item below its cap would then
-// both read "under the limit" and both commit. Counting inside the transaction,
-// after the destination workspace lock is held, makes the second copy's COUNT
-// wait for the first to commit and observe it.
+// The COUNT is where the routing is a correctness matter: a limit check that
+// counts on the pool cannot see the caller's own uncommitted inserts, and —
+// more importantly — it is not serialized with a concurrent transaction
+// holding the workspace's advisory lock. Two copies into a workspace one item
+// below its cap would then both read "under the limit" and both commit.
+// Counting inside the transaction, after the destination workspace lock is
+// held, makes the second copy's COUNT wait for the first to commit and
+// observe it.
 //
-// Only the COUNT moves onto the tx. The workspace-owner and user lookups stay
-// on the pool: neither is written by the copy path, and routing them through
-// the tx would only widen what a failed probe poisons.
+// The workspace-owner, user and plan-limit lookups originally stayed on the
+// pool (they are not written by the copy path), but that put pool waits
+// inside a critical section that holds both workspace advisory locks — the
+// BUG-2409 starvation shape, same as the attachment planner's reads. They now
+// run on the transaction too. Visibility is unchanged (READ COMMITTED takes a
+// fresh snapshot per statement either way), and every error here aborts the
+// copy regardless of which connection the failed read used.
 func (s *Store) CheckLimitTx(tx *sql.Tx, workspaceID, feature string) (*LimitResult, error) {
 	return s.checkLimitOn(tx, workspaceID, feature)
 }
 
 // checkLimitOn is the shared body of CheckLimit / CheckLimitTx, parameterized
-// over the surface the feature COUNT runs on.
-func (s *Store) checkLimitOn(counter rowQueryer, workspaceID, feature string) (*LimitResult, error) {
+// over the executor EVERY read runs on (BUG-2409 — see CheckLimitTx).
+func (s *Store) checkLimitOn(q Queryer, workspaceID, feature string) (*LimitResult, error) {
 	// 1. Look up workspace → owner_id
 	var ownerID string
-	err := s.db.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID)
+	err := q.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("check limit: get workspace owner: %w", err)
 	}
 
 	// 2. Look up user → plan, plan_overrides
-	user, err := s.GetUser(ownerID)
+	user, err := s.GetUserQ(q, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("check limit: get user: %w", err)
 	}
@@ -112,7 +117,7 @@ func (s *Store) checkLimitOn(counter rowQueryer, workspaceID, feature string) (*
 	}
 
 	// 3. Resolve the limit for this feature
-	limit := s.resolveLimit(plan, feature, user.PlanOverrides)
+	limit := s.resolveLimitQ(q, plan, feature, user.PlanOverrides)
 
 	// -1 = unlimited
 	if limit < 0 {
@@ -120,7 +125,7 @@ func (s *Store) checkLimitOn(counter rowQueryer, workspaceID, feature string) (*
 	}
 
 	// 4. Get current count for the feature
-	current, err := s.featureCountOn(counter, workspaceID, ownerID, feature)
+	current, err := s.featureCountOn(q, workspaceID, ownerID, feature)
 	if err != nil {
 		return nil, fmt.Errorf("check limit: count %s: %w", feature, err)
 	}
@@ -175,6 +180,13 @@ func (s *Store) CheckUserLimit(userID, feature string) (*LimitResult, error) {
 // resolveLimit resolves the limit for a feature using the three-tier resolution:
 // user overrides → DB-stored plan defaults → hardcoded fallback.
 func (s *Store) resolveLimit(plan, feature, overridesJSON string) int {
+	return s.resolveLimitQ(s.db, plan, feature, overridesJSON)
+}
+
+// resolveLimitQ is resolveLimit parameterized over its executor (see
+// Queryer) — the plan-limit platform setting is a read, and CheckLimitTx
+// must not touch the pool (BUG-2409).
+func (s *Store) resolveLimitQ(q Queryer, plan, feature, overridesJSON string) int {
 	// 1. Check per-user overrides
 	if overridesJSON != "" {
 		var overrides map[string]int
@@ -187,7 +199,7 @@ func (s *Store) resolveLimit(plan, feature, overridesJSON string) int {
 
 	// 2. Check DB-stored plan defaults
 	settingKey := "plan_limits_" + plan + "_" + feature
-	if val, err := s.GetPlatformSetting(settingKey); err == nil && val != "" {
+	if val, err := s.GetPlatformSettingQ(q, settingKey); err == nil && val != "" {
 		if v, err := strconv.Atoi(val); err == nil {
 			return v
 		}
