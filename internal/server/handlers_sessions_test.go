@@ -278,8 +278,44 @@ func TestListSessions_UnannouncedSessionStillRegisters(t *testing.T) {
 	if body.Sessions[0].Label != "" || body.Sessions[0].PID != 0 {
 		t.Fatalf("expected an unlabelled session, got label=%q pid=%d", body.Sessions[0].Label, body.Sessions[0].PID)
 	}
+	if body.Sessions[0].Armed {
+		t.Fatal("expected a client that announces nothing to register as unarmed (PLAN-2613 S1 legacy shape), got armed=true")
+	}
 	if body.Sessions[0].ID == "" {
 		t.Fatal("an unlabelled session still needs its server-generated id — that is what consumers fall back to")
+	}
+}
+
+// TestListSessions_ArmedDeclarationReachesTheRegistry is PLAN-2613 S1's
+// wiring check for GET /api/v1/sessions: a client connecting with
+// ?armed=true must see armed=true come back on its own registry entry —
+// no handler code change was needed for this (LiveSession already
+// serializes whatever it carries), so this pins that the wiring actually
+// holds end to end rather than assuming it from the unit tests alone.
+func TestListSessions_ArmedDeclarationReachesTheRegistry(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	_, _, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := connectArmedWatchStream(ctx, t, ts.URL, tok.Token)
+	if ev := waitForWatchEvent(t, ch, 3*time.Second); ev.Type != "connected" {
+		t.Fatalf("expected 'connected', got %q", ev.Type)
+	}
+
+	status, body := getSessions(t, ts.URL, tok.Token)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(body.Sessions) != 1 {
+		t.Fatalf("expected exactly 1 live session, got %+v", body.Sessions)
+	}
+	if !body.Sessions[0].Armed {
+		t.Fatalf("expected armed=true to reach the registry for a client that connected with ?armed=true, got %+v", body.Sessions[0])
 	}
 }
 

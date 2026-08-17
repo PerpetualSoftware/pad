@@ -139,18 +139,28 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// confident label on it.
 	//
 	// The identity is whatever the client claimed in its request
-	// headers (S2, TASK-2560) — sanitized, never verified, and empty
-	// for any client that doesn't say. See SessionIdentity.
-	// Hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a targeted
-	// push's predicate (Notification.TargetSessionID) is evaluated in the
-	// select loop below, which needs this connection's own registry id in
-	// scope. Left as the zero value when there is no registry — a
-	// targeted push can then never match THIS connection, but an
-	// untargeted (broadcast) one is unaffected, since watchNotificationVisible
-	// only compares TargetSessionID when the notification actually set one.
+	// (S2, TASK-2560 for label/pid; PLAN-2613 S1 for armed) — sanitized,
+	// never verified, and the legacy/empty shape for any client that
+	// doesn't say. See SessionIdentity. Parsed unconditionally, BEFORE
+	// the presence-registry branch below, because `armed` gates push
+	// delivery (PLAN-2613 D3) and that gate must hold even on a server
+	// with no presence registry wired — presence is an optional
+	// convenience layered on top (session_presence.go's SessionPresence
+	// doc comment), but consent is not, and it must not silently stop
+	// applying just because the optional layer isn't there.
+	ident := parseSessionIdentity(r)
+	armed := ident.Armed
+	// sessionID hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a
+	// targeted push's predicate (Notification.TargetSessionID) is
+	// evaluated in the select loop below, which needs this connection's
+	// own registry id in scope. Left as the zero value when there is no
+	// registry — a targeted push can then never match THIS connection,
+	// but an untargeted (broadcast) one is unaffected, since
+	// watchNotificationVisible only compares TargetSessionID when the
+	// notification actually set one.
 	var sessionID string
 	if s.sessionPresence != nil {
-		sessionID = s.sessionPresence.Add(user.ID, parseSessionIdentity(r))
+		sessionID = s.sessionPresence.Add(user.ID, ident)
 		defer s.sessionPresence.Remove(user.ID, sessionID)
 	}
 
@@ -190,7 +200,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		} else {
 			for _, n := range missed {
-				if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, n) {
+				if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, n) {
 					continue
 				}
 				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -224,7 +234,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			if !ok {
 				return
 			}
-			if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, n) {
+			if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, n) {
 				continue
 			}
 			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -427,7 +437,14 @@ func (s *Server) loadWatchPredicates(r *http.Request, userID string) (map[string
 // Notification.TargetSessionID's doc comment describes evaluating
 // against (PLAN-2558 S5, TASK-2588). Unused by every kind except
 // KindPush.
-func watchNotificationVisible(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, n watchevents.Notification) bool {
+//
+// armed is THIS connection's own PLAN-2613 S1 consent declaration.
+// Like sessionID, it is unused by every kind except KindPush — watch-
+// matched delivery (below) is unaffected by it, which is the deliberate
+// version-skew posture: a legacy (unarmed) stream keeps receiving
+// ordinary watch events, and only loses the instruction-bearing push
+// channel.
+func watchNotificationVisible(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, armed bool, n watchevents.Notification) bool {
 	// TASK-2533 codex round 2 finding 2: the caller's CURRENT access to
 	// the notification's collection/item is checked FIRST and applies
 	// UNIFORMLY to every kind below — watch-matched and addressed-to-you
@@ -486,6 +503,17 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// delivery" semantics, so it's pinned explicitly here rather than
 	// left to fall out of the shared TargetUserID field's shape.
 	if n.Kind == watchevents.KindPush {
+		// PLAN-2613 S1: the consent gate. Checked FIRST, before
+		// TargetUserID — an unarmed stream is denied every push
+		// regardless of who it's addressed to, including this
+		// connection's own user. This is what makes the gate a genuine
+		// consent boundary rather than routing metadata: a legacy client
+		// that never declared armed=true cannot be handed instruction-
+		// bearing traffic just because IT happens to be the caller who
+		// pushed. See PLAN-2613 D1/D3/D6 and TASK-2616's recon comment.
+		if !armed {
+			return false
+		}
 		if n.TargetUserID == "" || n.TargetUserID != userID {
 			return false
 		}

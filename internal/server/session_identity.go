@@ -45,6 +45,21 @@ const (
 	sessionPIDHeader   = "X-Pad-Session-Pid"
 )
 
+// sessionArmedQueryParam is PLAN-2613 S1's consent declaration —
+// deliberately a QUERY PARAM, not a third header alongside label/pid.
+// The header choice above is privacy-driven: a label or pid is local-
+// machine detail that shouldn't travel into an access log. Armed is the
+// opposite of private — it's a plain boolean, and a durable log trail of
+// "this session declared consent" is a reasonable audit artifact for a
+// security-relevant gate, not a leak. A query param also sidesteps the
+// header doc's own noted gap (a browser EventSource can't set request
+// headers), so a future non-CLI client can declare arming without
+// needing a transport change. Only "true" (exact match, mirroring this
+// codebase's existing boolean-query convention — e.g. handlers_items.go's
+// include_archived) counts as armed; anything else, including absence,
+// is the legacy/unarmed shape.
+const sessionArmedQueryParam = "armed"
+
 // maxSessionLabelLen bounds a label in RUNES, not bytes: the value is a
 // directory basename, which is user-controlled text that ends up
 // rendered in a picker. 64 is far more than any real project directory
@@ -64,6 +79,7 @@ func parseSessionIdentity(r *http.Request) SessionIdentity {
 	return SessionIdentity{
 		Label: sanitizeSessionLabel(r.Header.Get(sessionLabelHeader)),
 		PID:   parseSessionPID(r.Header.Get(sessionPIDHeader)),
+		Armed: r.URL.Query().Get(sessionArmedQueryParam) == "true",
 	}
 }
 

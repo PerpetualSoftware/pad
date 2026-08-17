@@ -52,7 +52,12 @@ type pushResponse struct {
 	// connection) and there is still no ack from the receiving side. A
 	// vanished or cross-user target_session_id is 0, the same as "nothing
 	// connected" — deliberately not a distinct error, so the CLI's pre-S5
-	// behavior is unchanged by construction.
+	// behavior is unchanged by construction. Since PLAN-2613 S1, an
+	// UNARMED session is counted the same as a vanished/cross-user one —
+	// present in the registry but not counted here — because it cannot
+	// actually receive a push either (see deliveredSessionCount). The
+	// field name and wire shape are unchanged; only which registry
+	// entries qualify.
 	//
 	// SNAPSHOTTED BEFORE THE PUBLISH, not after (dispatcher review round
 	// 1, codex): counting post-publish raced the very thing it reports on
@@ -248,24 +253,36 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // in userID's own list, so it falls out to 0 without any cross-user
 // lookup or special-casing here.
 //
-// A nil presence (no registry wired) answers 0 rather than guessing —
-// consistent with handleListSessions' own refusal to report an empty
-// list as "nobody connected" when it genuinely cannot tell; here there
-// is no error channel to say "can't tell" through (pushResponse.Pushed
-// is still true — the notification really was published), so 0 is the
-// closest honest answer available.
+// ARMED-ONLY (PLAN-2613 S1). A session that hasn't declared armed=true
+// can never actually receive a KindPush notification —
+// watchNotificationVisible denies it server-side regardless of
+// TargetUserID/TargetSessionID (handlers_watch_events.go). Counting an
+// unarmed session here would make this a PREDICTION of what the
+// registry looks like rather than of what will actually be delivered,
+// which is the exact honesty gap this function exists to close (see its
+// name). Filtering here is deliberately the SAME shape as the existing
+// vanished/cross-user misses: a targetSessionID naming a real, connected,
+// but unarmed session is not distinguished from one naming no session at
+// all — both fall out to a plain 0 with no separate error, since from
+// the caller's point of view "there but not listening for this" and
+// "not there" are the same actionable answer (nothing was delivered).
+// The publish-skip logic below reads this same filtered count, so a
+// targeted push at an unarmed session is skipped for the identical
+// reason a targeted push at a vanished one is: a guaranteed no-op.
 func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string) int {
 	if presence == nil {
 		return 0
 	}
 	sessions := presence.ListForUser(userID)
-	if targetSessionID == "" {
-		return len(sessions)
-	}
+	count := 0
 	for _, sess := range sessions {
-		if sess.ID == targetSessionID {
-			return 1
+		if !sess.Armed {
+			continue
 		}
+		if targetSessionID != "" && sess.ID != targetSessionID {
+			continue
+		}
+		count++
 	}
-	return 0
+	return count
 }

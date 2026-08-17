@@ -477,8 +477,8 @@ func TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures(t *testi
 	defer ts.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
-	waitForWatchEvent(t, ch, 3*time.Second) // connected
+	ch := connectArmedWatchStream(ctx, t, ts.URL, tok.Token) // armed: the addressed leg below asserts actual push delivery (PLAN-2613 S1)
+	waitForWatchEvent(t, ch, 3*time.Second)                  // connected
 
 	// Baseline: watch-matched delivery works before any of this.
 	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
