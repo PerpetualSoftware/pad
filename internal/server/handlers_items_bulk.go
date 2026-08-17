@@ -529,7 +529,7 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 // per row. A status override (req.Status) lands as a field override on
 // the migrated set.
 func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string) (*models.Item, *bulkOpError) {
-	targetColl, err := s.store.GetCollectionBySlug(workspaceID, req.Collection)
+	targetColl, err := s.resolveItemCollectionSlug(workspaceID, req.Collection)
 	if err != nil || targetColl == nil {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
 	}

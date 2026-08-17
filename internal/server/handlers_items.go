@@ -435,7 +435,11 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	}
 
 	collSlug := chi.URLParam(r, "collSlug")
-	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+	// Singular forms resolve against the workspace's real collections, so a
+	// template-defined or user-created collection has a shorthand too, not
+	// just the seven the client-side alias map knows (BUG-2578). Exact match
+	// still wins, so this cannot redirect a request that already worked.
+	coll, err := s.resolveItemCollectionSlug(workspaceID, collSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -457,7 +461,11 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	}
 
 	params := parseItemListParams(r)
-	params.CollectionSlug = collSlug
+	// The RESOLVED slug, not the raw URL parameter. The store filters by slug
+	// and does its own exact lookup, so passing the caller's input here would
+	// resolve the collection for the visibility gate above and then filter on
+	// a slug that matches nothing — a 200 with an empty list (BUG-2578).
+	params.CollectionSlug = coll.Slug
 	if err := validateUnparentedListRequest(r, params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -528,7 +536,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	collSlug := chi.URLParam(r, "collSlug")
-	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+	// Singular forms resolve against the workspace's real collections, so a
+	// template-defined or user-created collection has a shorthand too, not
+	// just the seven the client-side alias map knows (BUG-2578). Exact match
+	// still wins, so this cannot redirect a request that already worked.
+	coll, err := s.resolveItemCollectionSlug(workspaceID, collSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -1815,7 +1827,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get target collection, verify it's visible, and check edit permission
-	targetColl, err := s.store.GetCollectionBySlug(workspaceID, input.TargetCollection)
+	targetColl, err := s.resolveItemCollectionSlug(workspaceID, input.TargetCollection)
 	if err != nil || targetColl == nil {
 		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
 		return

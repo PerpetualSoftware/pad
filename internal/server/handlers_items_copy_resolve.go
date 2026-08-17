@@ -187,7 +187,7 @@ func (s *Server) resolveAuthorizedCopy(w http.ResponseWriter, r *http.Request) (
 		return out, false
 	}
 
-	targetColl, err := s.store.GetCollectionBySlug(dstWS.WorkspaceID(), input.TargetCollection)
+	targetColl, err := s.resolveItemCollectionSlug(dstWS.WorkspaceID(), input.TargetCollection)
 	if err != nil {
 		writeInternalError(w, err)
 		return out, false
