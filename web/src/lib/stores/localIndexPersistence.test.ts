@@ -66,6 +66,27 @@ describe('shouldWriteRow', () => {
 });
 
 /**
+ * persistRetag exists because a rename cannot be expressed as a whole-row
+ * snapshot without also asserting every other field, which the seq guard then
+ * refuses whenever a newer delta has landed. Losing a rename that way is
+ * PERMANENT — a rename touches no items so no delta re-stamps it, and
+ * localIndex's pendingRetags repair is in-memory and single-session.
+ *
+ * The IDB call itself is not reachable in this harness (see the note below),
+ * so what is asserted here is the property that made a separate function
+ * necessary: the guard would have dropped the retag.
+ */
+describe('why retags cannot go through shouldWriteRow', () => {
+	it('would refuse an un-bumped retag snapshot once a newer delta has landed', () => {
+		const storedByDelta = row(200);
+		// applyRetag copies the row and changes collection_slug WITHOUT
+		// bumping seq — this is the value it would have persisted.
+		const retagSnapshot = row(199);
+		expect(shouldWriteRow(storedByDelta, retagSnapshot)).toBe(false);
+	});
+});
+
+/**
  * NOT COVERED HERE, stated so nobody reads these as more than they are.
  *
  * That the guard runs INSIDE the IDB transaction — i.e. compares against what

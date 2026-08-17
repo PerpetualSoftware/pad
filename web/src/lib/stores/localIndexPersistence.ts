@@ -196,13 +196,22 @@ export async function hydrate(
  * item happens to change. RAM is unaffected (single-threaded and seq-guarded);
  * only the warm-boot cache can regress.
  *
- * The retag case is worth stating because the outcome looks lossy and is not.
- * `applyRetag` rewrites collection_slug WITHOUT bumping seq, so a delta at a
- * higher seq will now SKIP the retag write. That leaves IDB agreeing with the
- * persisted cursor while its slug lags RAM — which self-heals through the
- * sync-pass reconcile (BUG-2601). The alternative it replaces does not
- * self-heal: a row behind the cursor is invisible to delta sync by
- * construction.
+ * WHAT THIS GUARD DOES NOT COVER, so nobody reads it as covering more:
+ *
+ *   - RETAGS do not come through here at all. `applyRetag` changes
+ *     collection_slug WITHOUT bumping seq, so a whole-row retag snapshot would
+ *     be refused whenever a newer delta had landed — and losing a rename is
+ *     permanent, not self-healing (no item delta re-stamps it, and
+ *     pendingRetags is in-memory and single-session). Renames go through
+ *     persistRetag, which rewrites the one field in place.
+ *
+ *   - HARD DELETES can still be resurrected. If persistDelta removes a row and
+ *     advances the cursor, a delayed snapshot for that id finds nothing stored,
+ *     passes this guard, and reinserts it behind the cursor — the same
+ *     invisible-to-delta-sync shape this bug is about, in the delete direction.
+ *     Refusing it needs a tombstone with its own seq, i.e. an IDB schema
+ *     change; filed as BUG-2633 rather than half-built here. Pre-existing: a
+ *     blind put resurrected it too.
  */
 export function shouldWriteRow(
 	existing: ItemIndexRow | undefined,
@@ -240,6 +249,54 @@ export async function persistUpserts(
 			const existing = (await store.get(row.id)) as ItemIndexRow | undefined;
 			if (!shouldWriteRow(existing, row)) continue;
 			store.put(row).catch(() => undefined);
+		}
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
+ * Persist a collection RENAME by rewriting `collection_slug` on the given rows
+ * IN PLACE, rather than putting whole snapshots (BUG-2609).
+ *
+ * A retag is a field-level intent — "these rows are in a collection that got
+ * renamed" — and expressing it as a whole-row put makes it two claims at once,
+ * the second of which is false: it also asserts every other field still looks
+ * like the snapshot taken from RAM. That second claim is what the seq guard in
+ * shouldWriteRow has to refuse when a newer delta has landed, and refusing it
+ * drops the rename with it.
+ *
+ * Dropping the rename is NOT self-healing, which is the reason this function
+ * exists instead of an exemption from the guard. `applyRetag` does not bump
+ * seq, a collection rename touches no items so no item delta ever re-stamps
+ * them, and localIndex's `pendingRetags` repair is explicitly in-memory and
+ * scoped to a single session's pre-hydration window. A persisted slug that
+ * loses its rename therefore stays wrong across reloads with nothing left to
+ * correct it.
+ *
+ * Reading each row inside the transaction and changing only the one field
+ * keeps both properties: the newer row's fields survive, and the rename lands.
+ * Rows absent from the cache are skipped — there is nothing to rename, and
+ * inserting a snapshot here would resurrect rows a delta may have removed.
+ */
+export async function persistRetag(
+	userId: string | null,
+	ws: string,
+	ids: string[],
+	newSlug: string,
+): Promise<void> {
+	if (!isSupported() || ids.length === 0) return;
+	const db = await open(userId, ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction('items', 'readwrite');
+		const store = tx.objectStore('items');
+		for (const id of ids) {
+			const existing = (await store.get(id)) as ItemIndexRow | undefined;
+			if (!existing) continue;
+			if (existing.collection_slug === newSlug) continue;
+			store.put({ ...existing, collection_slug: newSlug }).catch(() => undefined);
 		}
 		await tx.done;
 	} catch {
