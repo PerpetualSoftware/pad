@@ -479,6 +479,14 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	// resolve the collection for the visibility gate above and then filter on
 	// a slug that matches nothing — a 200 with an empty list (BUG-2578).
 	params.CollectionSlug = coll.Slug
+	// Pinned by stable ID as well. Visibility was just checked against
+	// coll.ID, but the query filtered on a SLUG — a name that can be freed by
+	// a rename or delete and taken by another collection between the two, at
+	// which point the response would carry a different collection's items,
+	// possibly one this caller cannot see (codex round 3). The ID cannot be
+	// reassigned. Both filters are ANDed, so a concurrent rename yields an
+	// empty list rather than someone else's rows: the fail-safe direction.
+	params.CollectionIDs = []string{coll.ID}
 	if err := validateUnparentedListRequest(r, params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return

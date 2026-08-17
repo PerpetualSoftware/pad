@@ -220,9 +220,11 @@ func TestCollectionSlugCandidates(t *testing.T) {
 		// A bare "s" must not produce an empty-string candidate, which would
 		// query for a collection whose slug is "".
 		{in: "s", want: []string{"ss"}},
-		// Case folding is offered as its own candidate, after the
-		// pluralization attempts on the folded form.
-		{in: "Spec", want: []string{"specs", "spec"}},
+		// Case folding comes FIRST: `Spec` names `spec` more closely than it
+		// names `specs`, and in a workspace holding both, trying the plural
+		// first would misfile the write.
+		{in: "Spec", want: []string{"spec", "specs"}},
+		{in: "Specs", want: []string{"specs", "specss", "spec"}},
 	} {
 		got := collectionSlugCandidates(tc.in)
 		if len(got) != len(tc.want) {
@@ -365,5 +367,30 @@ func TestResolveItemCollectionSlug_CrossWorkspaceCopyAcceptsTheSingular(t *testi
 	}
 	if len(items) != 1 {
 		t.Errorf("destination `specs` holds %d items, want the 1 copied", len(items))
+	}
+}
+
+// Codex round 3 P1. A case-only difference must resolve to the collection it
+// case-insensitively names, not to that name's plural. In a workspace holding
+// both `spec` and `specs`, `Spec` is `spec` — trying pluralization first would
+// misfile the write into `specs`, which is the same failure the
+// exact-match-wins rule prevents, reached by a different route.
+func TestResolveItemCollectionSlug_CaseFoldBeatsPluralization(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	makeCollection(t, srv, ws, "Spec", "spec", "SPC")
+	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
+
+	if rr := createItemIn(t, srv, ws, "Spec", "cased"); rr.Code != http.StatusCreated {
+		t.Fatalf("create via `Spec` = %d: %s", rr.Code, rr.Body)
+	}
+
+	if got := itemsIn(t, srv, ws, "spec"); len(got) != 1 || got[0] != "cased" {
+		t.Errorf("items in `spec` = %v, want [cased] — `Spec` names `spec`, "+
+			"not its plural", got)
+	}
+	if got := itemsIn(t, srv, ws, "specs"); len(got) != 0 {
+		t.Errorf("items in `specs` = %v, want none — the write was misfiled into "+
+			"the plural", got)
 	}
 }

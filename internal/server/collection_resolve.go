@@ -69,16 +69,20 @@ func collectionSlugCandidates(input string) []string {
 	}
 
 	var out []string
+	// A case-only difference comes FIRST. `Spec` names the collection `spec`
+	// more closely than it names `specs`, so trying pluralization ahead of the
+	// folded form would resolve `Spec` to `specs` in a workspace holding both
+	// — the same misfiling the exact-match rule exists to prevent, reached by
+	// a different route (codex round 3 P1).
+	if trimmed != input {
+		out = append(out, trimmed)
+	}
 	// Singular -> plural: the reported case (`spec` -> `specs`).
 	out = append(out, trimmed+"s")
 	// Plural -> singular, for a collection whose slug is genuinely singular
 	// (`pad item create tasks` in a workspace whose collection is `task`).
 	if s := strings.TrimSuffix(trimmed, "s"); s != trimmed && s != "" {
 		out = append(out, s)
-	}
-	// A case-only difference, when the input was neither of the above.
-	if trimmed != input {
-		out = append(out, trimmed)
 	}
 	return out
 }
