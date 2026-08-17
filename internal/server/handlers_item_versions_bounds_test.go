@@ -164,6 +164,13 @@ func TestItemVersions_ClampArithmetic(t *testing.T) {
 		{raw: strconv.Itoa(maxItemVersionsQueryLimit), want: maxItemVersionsQueryLimit},
 		{raw: strconv.Itoa(maxItemVersionsQueryLimit + 1), want: maxItemVersionsQueryLimit},
 		{raw: strconv.Itoa(maxItemVersionsQueryLimit * 100), want: maxItemVersionsQueryLimit},
+		// Past MaxInt64. Atoi reports ErrRange AND returns the saturated
+		// bound; treating that as unparseable would return 0 — unbounded —
+		// letting an absurd number defeat the ceiling entirely.
+		{raw: "9223372036854775808", want: maxItemVersionsQueryLimit},
+		{raw: "99999999999999999999999999", want: maxItemVersionsQueryLimit},
+		// Range-NEGATIVE stays unbounded, same as a plain negative.
+		{raw: "-9223372036854775809", want: 0},
 	} {
 		if got := parseItemVersionsLimit(tc.raw); got != tc.want {
 			t.Errorf("parseItemVersionsLimit(%q) = %d, want %d", tc.raw, got, tc.want)

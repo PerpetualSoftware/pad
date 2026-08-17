@@ -104,7 +104,19 @@ func parseItemVersionsLimit(raw string) int {
 		return 0
 	}
 	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
+	if err != nil {
+		// A value too large for an int is an OVERSIZED ask, not a malformed
+		// one, and Atoi still hands back the saturated bound alongside
+		// ErrRange. Treating it as unparseable would return 0 — unbounded —
+		// so `?limit=9223372036854775808` would defeat the very ceiling this
+		// function exists to impose (codex round 4). Range-negative falls
+		// through to the unbounded branch below, matching a plain negative.
+		if errors.Is(err, strconv.ErrRange) && n > 0 {
+			return maxItemVersionsQueryLimit
+		}
+		return 0
+	}
+	if n <= 0 {
 		return 0
 	}
 	if n > maxItemVersionsQueryLimit {
