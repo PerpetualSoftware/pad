@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -110,7 +111,15 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	entries := buildTimeline(comments, activities, versions)
+	// Implementation notes and decision-log entries live inside the item's
+	// own fields blob (hydrated by the store on resolve), not in a table, so
+	// there is no cursor query to run — every entry is already in hand. They
+	// still have to be filtered through the SAME (created_at, id) predicate
+	// the SQL above uses, or paging would show them on every page instead of
+	// exactly one (BUG-2301).
+	notes, decisions := structuredTimelineEntries(item, before, beforeID)
+
+	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
 	// Determine if there are more entries beyond this page.
 	hasMore := false
@@ -129,9 +138,99 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// buildTimeline merges comments, activities, and versions into a single chronological
-// stream, applying deduplication and collapsing logic.
-func buildTimeline(comments []models.Comment, activities []models.Activity, versions []models.Version) []models.TimelineEntry {
+// structuredTimelineEntries turns the item's implementation notes and
+// decision-log entries into timeline entries, applying the same cursor
+// predicate the SQL sources use: keep an entry strictly older than the
+// cursor, or at the cursor instant with a lower id.
+//
+// The two structured kinds are stored as JSON inside items.fields rather than
+// as rows, which makes three things representable that a table would not:
+//
+//   - a missing created_at (both structs mark it omitempty). Such an entry has
+//     no place of its own in a chronological feed, so it is anchored at the
+//     item's creation instant — the earliest moment it could have existed.
+//     Anchoring at the zero time instead would render as 1970 in the UI.
+//   - a missing id. The id is the sort tie-breaker and the cursor's second
+//     term, so a blank one gets a positional fallback, keeping the ordering
+//     total and paging stable.
+//   - a field that is not an array at all. models.ExtractItem* returns nil for
+//     those, so they arrive here as an empty slice and simply contribute
+//     nothing. See BUG-2627 for a live instance.
+func structuredTimelineEntries(item *models.Item, before time.Time, beforeID string) ([]models.TimelineEntry, []models.TimelineEntry) {
+	if item == nil {
+		return nil, nil
+	}
+
+	keep := func(at time.Time, id string) bool {
+		if at.Before(before) {
+			return true
+		}
+		return at.Equal(before) && beforeID != "" && id < beforeID
+	}
+
+	// Parse an entry timestamp, falling back to the item's own creation
+	// instant when it is absent or malformed.
+	stamp := func(raw string) time.Time {
+		if raw != "" {
+			if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+				return t.UTC()
+			}
+			if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				return t.UTC()
+			}
+		}
+		return item.CreatedAt.UTC()
+	}
+
+	var notes []models.TimelineEntry
+	for i := range item.ImplementationNotes {
+		n := item.ImplementationNotes[i]
+		id := n.ID
+		if id == "" {
+			id = fmt.Sprintf("note-idx-%d", i)
+		}
+		at := stamp(n.CreatedAt)
+		if !keep(at, id) {
+			continue
+		}
+		notes = append(notes, models.TimelineEntry{
+			ID:        id,
+			Kind:      "note",
+			CreatedAt: at,
+			Actor:     n.CreatedBy,
+			Source:    "structured",
+			Note:      &item.ImplementationNotes[i],
+		})
+	}
+
+	var decisions []models.TimelineEntry
+	for i := range item.DecisionLog {
+		d := item.DecisionLog[i]
+		id := d.ID
+		if id == "" {
+			id = fmt.Sprintf("decision-idx-%d", i)
+		}
+		at := stamp(d.CreatedAt)
+		if !keep(at, id) {
+			continue
+		}
+		decisions = append(decisions, models.TimelineEntry{
+			ID:        id,
+			Kind:      "decision",
+			CreatedAt: at,
+			Actor:     d.CreatedBy,
+			Source:    "structured",
+			Decision:  &item.DecisionLog[i],
+		})
+	}
+
+	return notes, decisions
+}
+
+// buildTimeline merges comments, activities, versions, implementation notes,
+// and decision-log entries into a single chronological stream, applying
+// deduplication and collapsing logic.
+func buildTimeline(comments []models.Comment, activities []models.Activity, versions []models.Version, notes, decisions []models.TimelineEntry) []models.TimelineEntry {
 	// Build a set of version timestamps (rounded to the second) for dedup.
 	versionTimes := make(map[int64]bool, len(versions))
 	for _, v := range versions {
@@ -227,6 +326,11 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		}
 		entries = append(entries, entry)
 	}
+
+	// Add the structured kinds. They are already TimelineEntry-shaped and
+	// cursor-filtered; the sort below is what places them in the stream.
+	entries = append(entries, notes...)
+	entries = append(entries, decisions...)
 
 	// Sort chronologically (newest first), with ID as tie-breaker for same-second entries.
 	// This must match the SQL ORDER BY (created_at DESC, id DESC) used by the cursor queries.
