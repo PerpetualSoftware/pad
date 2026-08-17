@@ -696,6 +696,16 @@
 	// Content saves create version-diff entries that appear on next natural
 	// refresh (new comment, page load). Refreshing on every content save caused
 	// visible shakiness and rate-limit errors from rapid SSE replay.
+	//
+	// The `note` / `decision` kinds (BUG-2301) inherit this deliberately. They
+	// are written by `pad item note` / `pad item decide`, which PATCH the item
+	// and so emit `item_updated` — an open Activity tab will not show a new one
+	// until the next natural refresh. That is the same staleness version
+	// entries have always had, and these kinds have no web writer at all, so no
+	// user performs the action and then waits on this view. Flagged twice in
+	// review and declined twice: admitting `item_updated` here would trade a
+	// bounded, documented staleness for the shakiness and rate-limit errors
+	// this exclusion exists to prevent.
 	const relevantEvents = new Set([
 		'comment_created',
 		'comment_updated',
