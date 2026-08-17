@@ -32,9 +32,13 @@ const (
 	// transaction by orders of magnitude while delaying reclamation of
 	// a genuinely-orphaned row by at most one extra sweep against a
 	// 30-day grace period — the asymmetry is entirely in favor of
-	// generosity. If you are tempted to lower this for faster tests,
-	// inject the cutoff in the test instead; the constant guards
-	// production correctness.
+	// generosity. The window is also the bound on residual (2) in
+	// stampAttachmentRefsTx's ORDERING note: a writer transaction whose
+	// stamp-to-commit span exceeds it loses protection, which is why
+	// "longest plausible stalled writer transaction" is the sizing
+	// criterion and not a soft target. If you are tempted to lower this
+	// for faster tests, inject the cutoff in the test instead; the
+	// constant guards production correctness.
 	orphanGCRefStaleWindow = 15 * time.Minute
 )
 

@@ -303,3 +303,43 @@ func TestClaimProtocol_FiledRaceSequence(t *testing.T) {
 		t.Errorf("row destroyed despite live reference")
 	}
 }
+
+// TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal pins the
+// codex-round-4 half of the variant story: stamping a referenced
+// ORIGINAL also stamps rows whose parent_id points at it, so a
+// concurrently-claimed thumbnail is protected by its OWN row's stamp
+// (and, on Postgres, its own row lock) — not just the claim's parent
+// NOT EXISTS belt.
+func TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal(t *testing.T) {
+	f := newGCClaimFixture(t)
+	orig := f.seedNeverAttached(t)
+
+	// A variant hanging off the original.
+	thumbID := orig.ID + "-thumb"
+	if _, err := f.s.db.Exec(f.s.q(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, NULL, '', ?, ?, 'image/png', 10, 't.png', ?, 'thumb-md', ?)`),
+		thumbID, f.wsID, "fs:t-"+thumbID, "h-t-"+thumbID, orig.ID,
+		time.Now().Add(-40*24*time.Hour).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert variant: %v", err)
+	}
+
+	if _, err := f.s.CreateItem(f.wsID, f.collID, models.ItemCreate{
+		Title:   "ref holder",
+		Content: "ref ![x](pad-attachment:" + orig.ID + ")",
+	}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	if f.lastReferencedAt(t, orig.ID) == nil {
+		t.Errorf("original not stamped")
+	}
+	if f.lastReferencedAt(t, thumbID) == nil {
+		t.Errorf("variant of referenced original not stamped")
+	}
+	// And the variant's own fresh stamp refuses its claim directly.
+	claimed, err := f.s.ClaimNeverAttachedAttachment(thumbID, time.Now().Add(-15*time.Minute))
+	if err != nil || claimed {
+		t.Fatalf("fresh-own-stamp variant claim = (%v, %v), want (false, nil)", claimed, err)
+	}
+}
