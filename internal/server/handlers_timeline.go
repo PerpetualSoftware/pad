@@ -155,7 +155,8 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 //   - a missing created_at (both structs mark it omitempty). Such an entry has
 //     no place of its own in a chronological feed, so it is anchored at the
 //     item's creation instant — the earliest moment it could have existed.
-//     Anchoring at the zero time instead would render as 1970 in the UI.
+//     Anchoring at Go's zero time instead would date the entry to year 1 and
+//     sort it below everything real.
 //   - a missing id. The id is the sort tie-breaker and the cursor's second
 //     term, so a blank one gets a positional fallback, keeping the ordering
 //     total and paging stable.

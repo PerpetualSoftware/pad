@@ -218,6 +218,27 @@ describe('structured timeline entries', () => {
 		expect(cards()).toHaveLength(2);
 	});
 
+	// A partial entry — kind set, payload missing — must still produce a card.
+	// Guarding the branch on the payload leaves the rail dot and connector
+	// drawn with nothing beside them, which reads as a broken render rather
+	// than as a thin entry.
+	it('renders a card for an entry whose payload is missing entirely', async () => {
+		timelineListMock.mockResolvedValue({
+			entries: [
+				noteEntry({ note: undefined }),
+				decisionEntry({ decision: undefined }),
+			],
+			has_more: false,
+		});
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		expect(cards()).toHaveLength(2);
+		// The kind label still identifies what the entry is.
+		expect(renderedText()).toContain('Note');
+		expect(renderedText()).toContain('Decision');
+	});
+
 	// The whitelist half of the hole. A kind the filter omits renders nowhere,
 	// no matter how correct the server merge is.
 	it('honours visibleKinds — the Activity set shows them, the Versions set does not', async () => {

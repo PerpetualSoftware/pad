@@ -980,14 +980,18 @@
 								{flushBeforeRestore}
 								frozen={frozen || restoreFrozen}
 							/>
-						{:else if entry.kind === 'note' && entry.note}
+						<!-- No `&& entry.note` guard, unlike the kinds above: the card is
+						     null-safe, and a payload-less entry still occupies a rail. Requiring
+						     the payload turns a partial entry into a blank rail with no card at
+						     all, which reads as a rendering fault rather than as a thin entry. -->
+						{:else if entry.kind === 'note'}
 							<TimelineStructuredCard
 								kind="note"
 								note={entry.note}
 								actor={entry.actor}
 								createdAt={entry.created_at}
 							/>
-						{:else if entry.kind === 'decision' && entry.decision}
+						{:else if entry.kind === 'decision'}
 							<TimelineStructuredCard
 								kind="decision"
 								decision={entry.decision}

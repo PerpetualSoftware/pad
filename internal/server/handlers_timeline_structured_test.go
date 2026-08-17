@@ -222,7 +222,7 @@ func TestItemTimeline_StructuredCursorTieBreaksOnID(t *testing.T) {
 // rather than an array (BUG-2627) — which must contribute nothing rather than
 // erroring the whole timeline.
 func TestItemTimeline_StructuredEntriesTolerateHostileShapes(t *testing.T) {
-	t.Run("missing created_at anchors at the item, not 1970", func(t *testing.T) {
+	t.Run("missing created_at anchors at the item, not the zero time", func(t *testing.T) {
 		srv := testServer(t)
 		ws := createTestWorkspaceViaAPI(t, srv)
 		item := timelineItemWithStructured(t, srv, ws,
@@ -239,8 +239,8 @@ func TestItemTimeline_StructuredEntriesTolerateHostileShapes(t *testing.T) {
 			t.Fatal("undated note dropped from the timeline entirely")
 		}
 		if found.CreatedAt.Year() < 2000 {
-			t.Errorf("undated note anchored at %s — a zero-time fallback renders as 1970 "+
-				"and sorts below every real entry", found.CreatedAt)
+			t.Errorf("undated note anchored at %s — a zero-time fallback dates the entry "+
+				"to year 1 and sorts it below every real entry", found.CreatedAt)
 		}
 		if !found.CreatedAt.Equal(item.CreatedAt.UTC()) {
 			t.Errorf("undated note anchored at %s, want the item's own created_at %s",
@@ -516,16 +516,63 @@ func TestItemTimeline_StructuredCursorMatchesSQLTruncation(t *testing.T) {
 // that value carries sub-second precision the store truncates it, and a
 // same-second COMMENT that was still owed is skipped — data loss in a source
 // this change never touches.
+//
+// Two fixture choices are load-bearing, and the test is vacuous without both.
+//
+// The comment must be REAL and share the note's second: a walk over structured
+// entries alone stays green with the truncation removed, because nothing in it
+// crosses the Go/SQL boundary. So a comment is created first and its
+// server-stamped second is read back.
+//
+// The note's ID must sort BELOW every UUID — hence `0-frac` rather than a
+// realistic `note-<nanos>`. The cursor's second term is the id, and the SQL
+// sources keep same-second rows with `id < before_id`. A `note-…` id sorts
+// above every lowercase-hex UUID, so the sibling row survives the truncated
+// cursor no matter what, and the test passes on broken code. That is exactly
+// how the first version of this test read: correct-looking, and unable to fail.
+// With an id below the UUID space, a cursor that keeps sub-second precision
+// drops the same-second comment for real.
 func TestItemTimeline_FractionalStructuredEntryDoesNotSkipSameSecondRows(t *testing.T) {
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
-	item := timelineItemWithStructured(t, srv, ws,
-		`[{"id":"note-frac","summary":"boundary","created_at":"2026-04-02T10:00:00.500Z","created_by":"user"},
-		  {"id":"note-older","summary":"older","created_at":"2026-04-02T09:00:00Z","created_by":"user"}]`, "")
+	item := timelineItemWithStructured(t, srv, ws, "", "")
+
+	rr := doRequest(srv, "POST",
+		"/api/v1/workspaces/"+ws+"/items/"+item.Slug+"/comments",
+		map[string]any{"body": "same-second sibling", "author": "alice", "source": "web"})
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("create comment = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Read the comment's server-stamped second back out of the feed.
+	var commentID string
+	var commentSecond time.Time
+	for _, e := range fetchTimeline(t, srv, ws, item.Slug, "").Entries {
+		if e.Kind == "comment" {
+			commentID = e.ID
+			commentSecond = e.CreatedAt.UTC().Truncate(time.Second)
+		}
+	}
+	if commentID == "" {
+		t.Fatal("no comment entry in the feed — the fixture never armed")
+	}
+
+	// Plant the note half a second INTO the comment's second, so the note
+	// sorts above the comment and becomes the page boundary the client pages
+	// from. A cursor carrying that .5 truncates to the comment's own second
+	// and excludes it.
+	notesJSON := `[{"id":"0-frac","summary":"boundary","created_at":"` +
+		commentSecond.Add(500*time.Millisecond).Format(time.RFC3339Nano) +
+		`","created_by":"user"}]`
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug,
+		map[string]any{"fields": `{"status":"open","implementation_notes":` + notesJSON + `}`, "source": "cli"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch notes = %d: %s", rr.Code, rr.Body.String())
+	}
 
 	seen := walkTimelinePages(t, srv, ws, item.Slug)
-	assertEachEntryOnce(t, seen, "note-frac", "note-older")
+	assertEachEntryOnce(t, seen, "0-frac", commentID)
 }
 
 // Codex round 2, finding 3. Nothing validates ids on write, so a hand-written
