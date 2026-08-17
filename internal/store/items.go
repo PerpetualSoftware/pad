@@ -4618,8 +4618,27 @@ func (s *Store) shouldCreateItemVersion(itemID, actor, source string) (bool, err
 
 // ListItemVersionsResolved returns versions with full content (diffs resolved).
 // Requires the current item content to reconstruct diff-based versions.
+//
+// Unbounded: every version is read and every reverse patch applied. Callers
+// that only need the newest N should use ListItemVersionsResolvedPage, which
+// bounds BOTH the read and the patch walk (BUG-2608). This form remains
+// correct — and required — where an arbitrary version must be located, since
+// the chain can only be walked from current content backwards.
 func (s *Store) ListItemVersionsResolved(itemID, currentContent string) ([]models.Version, error) {
-	versions, err := s.ListItemVersions(itemID)
+	return s.ListItemVersionsResolvedPage(itemID, currentContent, 0)
+}
+
+// ListItemVersionsResolvedPage is ListItemVersionsResolved bounded to the
+// newest `limit` versions (limit <= 0 means unbounded).
+//
+// The bound is cheap ONLY because it takes the newest N. Versions are stored
+// as REVERSE patches, so reconstructing any version means starting from the
+// item's current content and walking backwards through everything newer — a
+// window at the newest end is exactly the prefix of that walk, while an older
+// window would still require walking everything above it. That asymmetry is
+// why this offers a limit and not an offset (BUG-2608).
+func (s *Store) ListItemVersionsResolvedPage(itemID, currentContent string, limit int) ([]models.Version, error) {
+	versions, err := s.ListItemVersionsPage(itemID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -4720,12 +4739,25 @@ func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, befo
 
 // ListItemVersions returns all versions for an item.
 func (s *Store) ListItemVersions(itemID string) ([]models.Version, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.ListItemVersionsPage(itemID, 0)
+}
+
+// ListItemVersionsPage returns an item's versions newest-first, bounded to
+// `limit` rows (limit <= 0 means unbounded). Raw rows — reverse-patch versions
+// still carry patch text, not content; see ListItemVersionsResolvedPage.
+func (s *Store) ListItemVersionsPage(itemID string, limit int) ([]models.Version, error) {
+	query := `
 		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM item_versions
 		WHERE item_id = ?
 		ORDER BY created_at DESC, version_seq DESC
-	`), itemID)
+	`
+	args := []interface{}{itemID}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, err
 	}

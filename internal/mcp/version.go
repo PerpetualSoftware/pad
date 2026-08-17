@@ -103,7 +103,36 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.20" — current. BUG-2302: every advertised tool now carries an
+//   - "0.21" — current. BUG-2608: bounds `pad_item.action=history`, which
+//     was unbounded on every surface. Extends the `limit` param's
+//     vocabulary to cover history (default 50, max 300 — the same pair
+//     list and backlinks already use, so an agent has no third set of
+//     numbers to remember) and applies it in the CATALOG action rather
+//     than either dispatcher, so it lands on BOTH transports: the HTTP
+//     path reads it off the input, the exec path receives it as the
+//     CLI's new --limit through BuildCLIArgs.
+//
+//     ADDITIVE param bump on the v0.6/v0.18/v0.19 pattern: `limit`
+//     already existed, no tool, action enum, or param SHAPE changed,
+//     and a v0.20 consumer that sends no limit keeps working — it now
+//     receives the newest 50 versions instead of all of them, which is
+//     the point of the fix rather than a break in it.
+//
+//     The window is the NEWEST N and there is deliberately no `offset`.
+//     Versions are stored as REVERSE patches, so reconstructing any
+//     version means walking back from the item's current content
+//     through everything newer: a newest-end window is the cheap prefix
+//     of that walk, while an older window would still pay for
+//     everything above it. Offering an offset would advertise a
+//     pagination whose later pages cost the same as no bound at all.
+//
+//     Behaviour change worth stating even though the shape is stable:
+//     summary mode now asks the SERVER to skip patch resolution
+//     (`?summary=true`) instead of resolving every body and discarding
+//     it in the dispatcher. Same result payload, minus a full chain
+//     walk per call.
+//
+//   - "0.20" — BUG-2302: every advertised tool now carries an
 //     EXPLICIT annotation block derived from readOnlyActions (the same
 //     single source the tool-surface serializer uses) instead of
 //     inheriting mcp-go's NewTool defaults, which stamped
@@ -491,7 +520,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.20"
+const ToolSurfaceVersion = "0.21"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

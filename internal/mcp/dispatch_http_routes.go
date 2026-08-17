@@ -1387,7 +1387,23 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 		return validationFailedResult(cmdKey, "ref is required",
 			"Pass ref=<issue id or slug> for the item whose history you want."), nil
 	}
+	full, _ := input["full"].(bool)
+
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/items/" + url.PathEscape(ref) + "/versions"
+	q := url.Values{}
+	if n, ok := numericInput(input["limit"]); ok && n > 0 {
+		q.Set("limit", strconv.FormatInt(n, 10))
+	}
+	// Ask the server to skip reverse-patch resolution whenever the bodies are
+	// about to be thrown away below. Without this the projection to
+	// itemVersionSummary was discarding content the server had just walked the
+	// item's entire patch chain to build (BUG-2608).
+	if !full {
+		q.Set("summary", "true")
+	}
+	if len(q) > 0 {
+		urlPath += "?" + q.Encode()
+	}
 	req, err := d.buildAuthedRequest(ctx, http.MethodGet, urlPath, nil, user)
 	if err != nil {
 		return buildRequestErrorResult(cmdKey, err), nil
@@ -1410,7 +1426,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 		return classifyHTTPStatusKind(req.Context(), cmdKey, urlPath,
 			resp.StatusCode, bodyBytes, d.Lister, ResourceItem, ref), nil
 	}
-	if full, _ := input["full"].(bool); full {
+	if full {
 		// Complete rows requested — forward the endpoint's JSON
 		// verbatim, the same shape stdio's --full emits.
 		return packageJSONResult(string(bodyBytes)), nil
