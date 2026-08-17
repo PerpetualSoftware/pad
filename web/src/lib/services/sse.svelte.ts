@@ -249,6 +249,13 @@ function createSSEService() {
 
 		// Handle sync_required: server's replay buffer couldn't cover the gap.
 		source.addEventListener('sync_required', () => {
+			// Source-identity guard (BUG-2611, mirroring BUG-2540's
+			// onopen/onerror/'connected' guards): close() does not retract
+			// already-queued event tasks, so on a fast workspace switch a
+			// torn-down source's event can fire after the next workspace's
+			// source exists — and would dispatch into (and broadcast onto)
+			// the NEW workspace's channel.
+			if (source !== eventSource) return;
 			dispatchSyncRequired();
 			broadcast({ type: 'sync_required' });
 		});
@@ -261,6 +268,7 @@ function createSSEService() {
 		// /items-changes delta reconciles every affected row by seq.
 		// Broadcast so peer tabs reconcile too.
 		source.addEventListener('items_bulk_updated', () => {
+			if (source !== eventSource) return; // BUG-2611, see sync_required
 			dispatchSyncRequired();
 			broadcast({ type: 'sync_required' });
 		});
@@ -271,17 +279,24 @@ function createSSEService() {
 		// auto-reconnect would tight-loop on a 401 or a stream that
 		// immediately closes again, hammering /api/v1/events.
 		source.addEventListener('unauthorized', () => {
+			// BUG-2611 — the sharpest member of this family: a stale queued
+			// unauthorized from workspace A's torn-down source would close
+			// the CURRENT (workspace B's) EventSource, null it, flip the
+			// status indicator, and clear currentWorkspace — B loses live
+			// updates over A's auth state, and nothing reconnects until a
+			// navigation. Guard first; then close OUR OWN source, which the
+			// guard has just proven is the live one.
+			if (source !== eventSource) return;
 			status = 'unauthorized';
 			broadcast({ type: 'status', status: 'unauthorized' });
-			if (eventSource) {
-				eventSource.close();
-				eventSource = null;
-			}
+			source.close();
+			eventSource = null;
 			currentWorkspace = '';
 		});
 
 		for (const eventType of ITEM_EVENTS) {
 			source.addEventListener(eventType, (e: MessageEvent) => {
+				if (source !== eventSource) return; // BUG-2611, see sync_required
 				const data: ItemEvent = JSON.parse(e.data);
 				dispatchItemEvent(data);
 				broadcast({ type: 'item_event', event: data });
