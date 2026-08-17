@@ -487,6 +487,45 @@ func TestItemTimeline_StructuredCursorMatchesSQLTruncation(t *testing.T) {
 		t.Fatalf("note newer than the cursor was returned (%d) — the control leg for "+
 			"the truncation assertion above", n)
 	}
+
+	// The entry's OWN timestamp must land in the shared whole-second space
+	// too, not just the comparison. The client echoes this value back as the
+	// next page's `before`, where the store formats it down to the second: a
+	// cursor of 10:00:00.5 becomes 10:00:00Z and excludes same-second rows
+	// that were still owed. It is also what the merge sorts on.
+	resp = fetchTimeline(t, srv, ws, item.Slug, "")
+	var found bool
+	for _, e := range resp.Entries {
+		if e.ID != "note-frac" {
+			continue
+		}
+		found = true
+		if e.CreatedAt.Nanosecond() != 0 {
+			t.Errorf("structured entry created_at = %s, want whole seconds — the client "+
+				"echoes this back as the next cursor and the store truncates it there",
+				e.CreatedAt.Format(time.RFC3339Nano))
+		}
+	}
+	if !found {
+		t.Fatal("note-frac missing from the unfiltered page")
+	}
+}
+
+// The consequence of a fractional structured timestamp, driven end to end: the
+// entry sits at a page boundary and the client pages on its created_at. If
+// that value carries sub-second precision the store truncates it, and a
+// same-second COMMENT that was still owed is skipped — data loss in a source
+// this change never touches.
+func TestItemTimeline_FractionalStructuredEntryDoesNotSkipSameSecondRows(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+
+	item := timelineItemWithStructured(t, srv, ws,
+		`[{"id":"note-frac","summary":"boundary","created_at":"2026-04-02T10:00:00.500Z","created_by":"user"},
+		  {"id":"note-older","summary":"older","created_at":"2026-04-02T09:00:00Z","created_by":"user"}]`, "")
+
+	seen := walkTimelinePages(t, srv, ws, item.Slug)
+	assertEachEntryOnce(t, seen, "note-frac", "note-older")
 }
 
 // Codex round 2, finding 3. Nothing validates ids on write, so a hand-written

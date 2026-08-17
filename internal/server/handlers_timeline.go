@@ -227,17 +227,30 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	}
 
 	// Parse an entry timestamp, falling back to the item's own creation
-	// instant when it is absent or malformed.
+	// instant when it is absent or malformed, and TRUNCATE to whole seconds.
+	//
+	// Truncation is not cosmetic. The SQL sources store and compare
+	// second-precision RFC3339 text, so a structured entry that kept
+	// sub-second precision would be in a different space than every other
+	// entry in the merged stream, in three places at once: the sort would
+	// interleave it against same-second rows by a component they do not have;
+	// the client echoes the last entry's created_at back as the next cursor,
+	// where the store formats it down to the second and would then EXCLUDE
+	// same-second rows that were still owed; and the filter's own comparison
+	// would disagree with the SQL one. Landing the entry in the shared space
+	// at the point it is built fixes all three at once — filtering in the
+	// formatted space alone (which is what the first pass at this did) leaves
+	// the sort and the emitted cursor wrong.
 	stamp := func(raw string) time.Time {
+		parsed := item.CreatedAt
 		if raw != "" {
 			if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-				return t.UTC()
-			}
-			if t, err := time.Parse(time.RFC3339, raw); err == nil {
-				return t.UTC()
+				parsed = t
+			} else if t, err := time.Parse(time.RFC3339, raw); err == nil {
+				parsed = t
 			}
 		}
-		return item.CreatedAt.UTC()
+		return parsed.UTC().Truncate(time.Second)
 	}
 
 	var notes []models.TimelineEntry
