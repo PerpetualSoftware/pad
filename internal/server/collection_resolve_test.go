@@ -504,10 +504,14 @@ func TestBulkMove_HiddenAndUnknownTargetsAreIndistinguishable(t *testing.T) {
 // since those legitimately differ between two requests.
 func normalizeBulkFailures(t *testing.T, body string) string {
 	t.Helper()
+	// Field names mirror bulkItemFailure exactly. An invented name here would
+	// silently decode to the empty string and make every failure normalize
+	// identically — the message half of this comparison was dead for exactly
+	// that reason until codex round 6 caught it.
 	var resp struct {
 		Failed []struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code  string `json:"code"`
+			Error string `json:"error"`
 		} `json:"failed"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
@@ -518,7 +522,7 @@ func normalizeBulkFailures(t *testing.T, body string) string {
 	}
 	parts := make([]string, 0, len(resp.Failed))
 	for _, f := range resp.Failed {
-		parts = append(parts, f.Code+"|"+f.Message)
+		parts = append(parts, f.Code+"|"+f.Error)
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ";")
