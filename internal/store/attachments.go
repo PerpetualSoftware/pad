@@ -709,7 +709,10 @@ func (s *Store) OrphanedAttachments(graceCutoff time.Time) ([]models.Attachment,
 		  (deleted_at IS NOT NULL AND deleted_at < ?)
 		  OR
 		  (deleted_at IS NULL AND parent_id IS NOT NULL AND NOT EXISTS (
-		    SELECT 1 FROM attachments p WHERE p.id = attachments.parent_id AND p.deleted_at IS NULL
+		    SELECT 1 FROM attachments p
+		    WHERE p.id = attachments.parent_id
+		      AND p.workspace_id = attachments.workspace_id
+		      AND p.deleted_at IS NULL
 		  ))
 		ORDER BY created_at, id
 	`), cutoffStr, cutoffStr)
@@ -916,7 +919,8 @@ func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 	defer tx.Rollback()
 
 	var parentID *string
-	if err := tx.QueryRow(s.q(`SELECT parent_id FROM attachments WHERE id = ? AND deleted_at IS NULL`), id).Scan(&parentID); err != nil {
+	var workspaceID string
+	if err := tx.QueryRow(s.q(`SELECT parent_id, workspace_id FROM attachments WHERE id = ? AND deleted_at IS NULL`), id).Scan(&parentID, &workspaceID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil // already gone / tombstoned
 		}
@@ -925,14 +929,22 @@ func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 	if parentID == nil || *parentID == "" {
 		return false, nil // not a variant
 	}
-	lockQ := `SELECT deleted_at FROM attachments WHERE id = ?`
+	// SAME-WORKSPACE parents only (BUG-2622), matching the candidate
+	// SELECT's scope: a parent_id resolving into another workspace is
+	// malformed data (no FK, no same-workspace constraint — the class
+	// PLAN-2397 repairs), and per DR-11a's rule one level down a foreign
+	// row is not a legitimate parent, so it must not shield the variant
+	// from this class. ErrNoRows therefore covers hard-gone AND foreign
+	// alike, and a foreign parent's restore needs no serialization here —
+	// its liveness is irrelevant to this row either way.
+	lockQ := `SELECT deleted_at FROM attachments WHERE id = ? AND workspace_id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR NO KEY UPDATE`
 	}
 	var parentDeletedAt *string
-	switch err := tx.QueryRow(s.q(lockQ), *parentID).Scan(&parentDeletedAt); {
+	switch err := tx.QueryRow(s.q(lockQ), *parentID, workspaceID).Scan(&parentDeletedAt); {
 	case errors.Is(err, sql.ErrNoRows):
-		// Parent hard-gone — the variant is orphaned; claim below.
+		// Parent hard-gone or foreign — the variant is orphaned; claim below.
 	case err != nil:
 		return false, fmt.Errorf("lock variant parent: %w", err)
 	default:
