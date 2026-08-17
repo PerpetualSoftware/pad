@@ -12,6 +12,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -243,5 +244,75 @@ func TestCollectionSlugCandidates(t *testing.T) {
 					"exact-match step already tried", tc.in)
 			}
 		}
+	}
+}
+
+// Codex round 1. Bulk move resolved the target for the actual move but kept
+// the caller's raw slug for the comparison that decides whether this IS a
+// move, for the activity metadata, and for the SSE scope the arrival event is
+// addressed to. Reachable only because the resolver made `spec` succeed at
+// all, so the inconsistency arrived with this change.
+func TestResolveItemCollectionSlug_BulkMoveCanonicalizesTheTarget(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/collections/tasks/items",
+		map[string]any{"title": "bulk movable"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed item: %d %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk",
+		map[string]any{"op": "move", "ids": []string{item.ID}, "collection": "spec"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move to singular `spec` = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if got := itemsIn(t, srv, ws, "specs"); len(got) != 1 || got[0] != "bulk movable" {
+		t.Fatalf("items in `specs` after bulk move = %v, want [bulk movable]", got)
+	}
+
+	// The activity trail must name the collection the item actually landed in.
+	// A `to_collection` of "spec" points at nothing a reader can look up.
+	acts, err := srv.store.ListDocumentActivity(item.ID, models.ActivityListParams{Limit: 20})
+	if err != nil {
+		t.Fatalf("list activity: %v", err)
+	}
+	var sawMove bool
+	for _, a := range acts {
+		if a.Action != "moved" {
+			continue
+		}
+		sawMove = true
+		if !strings.Contains(a.Metadata, `"to_collection":"specs"`) {
+			t.Errorf("move activity metadata = %s, want to_collection specs (the "+
+				"resolved slug, not the caller's input)", a.Metadata)
+		}
+	}
+	if !sawMove {
+		t.Error("no 'moved' activity recorded — the assertion above is vacuous " +
+			"without one, and a raw-slug comparison can miscategorise the op")
+	}
+}
+
+// The local-first index filters by exact slug too, so a direct API consumer
+// passing a singular got an empty index rather than an error.
+func TestResolveItemCollectionSlug_ItemsIndexAcceptsTheSingular(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
+	if rr := createItemIn(t, srv, ws, "specs", "indexed"); rr.Code != http.StatusCreated {
+		t.Fatalf("seed item: %d %s", rr.Code, rr.Body)
+	}
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items-index?collection=spec", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("items-index via singular = %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "indexed") {
+		t.Errorf("items-index?collection=spec returned no rows: %s", rr.Body.String())
 	}
 }

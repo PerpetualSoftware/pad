@@ -132,6 +132,20 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", "move requires status or collection")
 			return
 		}
+		// Canonicalize the target ONCE, here, rather than resolving it
+		// per-item further down. req.Collection is compared against
+		// item.CollectionSlug, written into activity metadata, and used as an
+		// SSE scope; leaving the caller's `spec` in place while the move
+		// lands in `specs` would make a same-collection move look like a
+		// cross-collection one, log a to_collection nobody can look up, and
+		// address the arrival event to a lane no client watches (BUG-2578,
+		// codex round 1). Resolution failures stay with the per-item path
+		// below, which already reports them per item.
+		if req.Collection != "" {
+			if targetColl, rerr := s.resolveItemCollectionSlug(workspaceID, req.Collection); rerr == nil && targetColl != nil {
+				req.Collection = targetColl.Slug
+			}
+		}
 	case "set-priority":
 		if req.Priority == "" {
 			writeError(w, http.StatusBadRequest, "bad_request", "set-priority requires priority")

@@ -157,8 +157,21 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolved for the same reason the collection item routes are (BUG-2578):
+	// the store filters by exact slug, so `?collection=spec` against a `specs`
+	// collection would otherwise return an empty index rather than an error.
+	// The web client sends canonical slugs and is unaffected; this is for
+	// direct API consumers. Exact match still wins, so no existing query
+	// changes meaning. A slug that resolves to nothing is left as the caller
+	// wrote it, preserving today's empty-result behaviour.
+	indexCollection := r.URL.Query().Get("collection")
+	if indexCollection != "" {
+		if coll, rerr := s.resolveItemCollectionSlug(workspaceID, indexCollection); rerr == nil && coll != nil {
+			indexCollection = coll.Slug
+		}
+	}
 	params := store.ItemIndexParams{
-		CollectionSlug: r.URL.Query().Get("collection"),
+		CollectionSlug: indexCollection,
 	}
 	if r.URL.Query().Get("include_archived") == "true" {
 		params.IncludeArchived = true
