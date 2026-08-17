@@ -18,17 +18,28 @@ import (
 )
 
 // seedVersionedItem creates an item and edits it n times, producing n+1
-// versions' worth of history (the create plus each content change). Edits go
-// through the real PATCH path so versions are recorded exactly as production
-// records them, including the reverse-patch encoding this bug is about.
+// versions' worth of history (the create plus each content change).
+//
+// Edits go through the STORE, not the HTTP API. That is not laziness: one of
+// these fixtures needs more than 50 versions to arm (a smaller one cannot tell
+// an unbounded server from one quietly defaulting to 50), and 60-odd PATCHes
+// in a burst trip the server's rate limiter — which is exactly how this test
+// failed in CI after the count was raised. The store is where versions are
+// recorded on either path, and the endpoint under test is the READ side, so
+// seeding underneath the transport costs the test nothing.
+//
+// Two details are load-bearing and easy to undo by accident:
+//   - the body is LARGE, so the store really stores reverse patches. A small
+//     body is cheaper whole, no version is ever is_diff, and every assertion
+//     about diff handling goes quietly vacuous.
+//   - each edit declares a DIFFERENT source, because the version throttle
+//     suppresses rapid snapshots from the same (actor, source) pair and would
+//     otherwise collapse the whole burst into one version. ForceVersion is not
+//     reachable from a request — it is `json:"-"` on ItemUpdate.
 func seedVersionedItem(t *testing.T, srv *Server, wsSlug string, edits int) *models.Item {
 	t.Helper()
-	// A LARGE body, on purpose. The store only stores a reverse PATCH when the
-	// patch is smaller than the full content, so a tiny body records
-	// is_diff=false every time — and any assertion about diff handling is then
-	// vacuous. This is what made the is_diff leg of the summary test pass on
-	// broken code until a targeted mutation exposed it.
 	base := strings.Repeat("a line of body text that makes the patch worth storing\n", 200)
+
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/collections/tasks/items",
 		map[string]any{"title": "versioned", "content": base + "v0\n"})
 	if rr.Code != http.StatusCreated {
@@ -37,22 +48,14 @@ func seedVersionedItem(t *testing.T, srv *Server, wsSlug string, edits int) *mod
 	var item models.Item
 	parseJSON(t, rr, &item)
 
-	// Each edit declares a DIFFERENT source. The version throttle only
-	// suppresses rapid snapshots from the same (actor, source) pair, so
-	// varying the source is what makes a burst of edits inside one test
-	// record separate versions. ForceVersion is not reachable from here —
-	// it is `json:"-"` on ItemUpdate, deliberately not part of the wire
-	// contract, so passing it in the body does nothing at all.
 	sources := []string{"web", "cli", "mcp", "skill"}
 	for i := 1; i <= edits; i++ {
-		rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+item.Slug,
-			map[string]any{
-				"content":        base + "v" + strconv.Itoa(i) + "\n",
-				"source":         sources[i%len(sources)],
-				"change_summary": "edit " + strconv.Itoa(i),
-			})
-		if rr.Code != http.StatusOK {
-			t.Fatalf("edit %d: %d %s", i, rr.Code, rr.Body.String())
+		content := base + "v" + strconv.Itoa(i) + "\n"
+		if _, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{
+			Content: &content,
+			Source:  sources[i%len(sources)],
+		}); err != nil {
+			t.Fatalf("edit %d: %v", i, err)
 		}
 	}
 	return &item
