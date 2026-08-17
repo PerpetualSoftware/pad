@@ -272,12 +272,18 @@
 		if (!embedded) return;
 		const liveSlug = item?.collection_slug;
 		if (!liveSlug || liveSlug === fetched.slug) return;
+		// Ordering: capture the generation BEFORE the fetch (codex round 1
+		// #3) — a fresher collection write landing during it must win, and
+		// bumping on completion would have overwritten it with this older
+		// snapshot.
+		const convergeGen = ++collectionGen;
 		try {
 			const liveColl = await api.collections.get(wsSlug, liveSlug);
 			if (myGen !== loadGeneration) return;
-			adoptCollection(liveColl, ++collectionGen);
+			adoptCollection(liveColl, convergeGen);
 		} catch {
-			// Best-effort — the next event / reload catches up.
+			// Best-effort here; the caller surfaces the schema-less outcome
+			// (codex round 1 #2).
 		}
 	}
 
@@ -1801,6 +1807,18 @@
 					// stale revert is vetoed, and a vetoed embedded pane
 					// converges on the live item's collection instead.
 					await adoptOrConvergeToLiveCollection(realColl, collGen, myGen);
+					// The converge fallback awaited — a route switch during it
+					// must stop this load before the global writes below
+					// (codex round 1 #1).
+					if (myGen !== loadGeneration) return;
+					// Veto + failed convergence = a schema-less pane. Surface
+					// it like the old fetch-failure path did instead of
+					// reporting a successful load with no fields (codex
+					// round 1 #2).
+					if (!collection) {
+						error = 'Failed to load this item’s collection';
+						return;
+					}
 				} catch {
 					if (myGen !== loadGeneration) return;
 					// Can't resolve the item's REAL collection. Surface the
@@ -1814,6 +1832,7 @@
 			} else {
 				// Same hatch shape, same fix (BUG-2602) — see above.
 				await adoptOrConvergeToLiveCollection(collData, collGen, myGen);
+				if (myGen !== loadGeneration) return;
 			}
 			// A FROZEN (peeking) instance must NOT write the SINGLETON global stores
 			// the ACTIVE side owns (PLAN-2179 DR-2 / TASK-2181). Both are module

@@ -150,7 +150,12 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 		{ headers: authHeaders(fixture), data: { target_collection: tgt.slug, source: 'cli' } },
 	);
 	expect(moveResp.ok(), await moveResp.text()).toBeTruthy();
-	await paneRefetch;
+	const refetched = await paneRefetch;
+	// Hard oracle (codex round 1 #4): the refetch the pane consumed must
+	// actually carry the MOVED item — collection_id === tgt.id — or the
+	// race below would be constructed against pre-move data.
+	const refetchedBody = (await refetched.json()) as { collection_id: string };
+	expect(refetchedBody.collection_id).toBe(tgt.id);
 	// Small settle: the item adopt happens just after the response body
 	// is consumed.
 	await page.waitForTimeout(300);
