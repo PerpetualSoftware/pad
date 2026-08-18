@@ -381,13 +381,20 @@ func armStateOwnerAlive(st *ArmState) bool {
 type LocalArmState int
 
 const (
-	// LocalArmAbsent: no live local override — resolve auto_arm.
+	// LocalArmAbsent: no local override file — resolve auto_arm.
 	LocalArmAbsent LocalArmState = iota
 	// LocalArmOn: a live explicit `pad session arm` — announce armed.
 	LocalArmOn
 	// LocalArmOff: a live explicit `pad session disarm` — announce NOT
 	// armed, beating a repo's auto_arm for this session.
 	LocalArmOff
+	// LocalArmError: a local-state file EXISTS but can't be read or parsed.
+	// It resolves to NOT armed and does NOT fall back to auto_arm (Codex R1
+	// S3 HIGH-2): a corrupt file could be a disarm we can't read, and
+	// re-arming despite a possible disarm is the consent fail-open this
+	// gate exists to prevent. Distinct from LocalArmAbsent (no file at
+	// all), which safely resolves auto_arm.
+	LocalArmError
 )
 
 // SessionArmState reads THIS session's local arm-state file and returns
@@ -403,14 +410,13 @@ const (
 func SessionArmState() LocalArmState {
 	st, path, err := readArmState()
 	if err != nil {
-		// A file that exists but can't be parsed is corrupt. With atomic
-		// writes it can't be a torn in-progress write, so reap it (best
-		// effort) rather than leaving it to linger against the reaping
-		// rule (Codex R1 LOW). Fall back to auto_arm regardless.
-		if path != "" {
-			reapArmFile(path)
-		}
-		return LocalArmAbsent
+		// A file exists but can't be read/parsed. Fail CLOSED and do NOT
+		// reap: reaping would make the NEXT read see "absent" and fall back
+		// to auto_arm, re-arming despite a possible-but-unreadable disarm
+		// (Codex R1 S3 HIGH-2). Leaving it keeps the session consistently
+		// not-armed until a re-arm/disarm overwrites it; it is session-keyed
+		// and dies with the session anyway.
+		return LocalArmError
 	}
 	if st == nil {
 		return LocalArmAbsent
@@ -446,9 +452,12 @@ func ResolveAnnouncedArmed() bool {
 	switch SessionArmState() {
 	case LocalArmOn:
 		return true
-	case LocalArmOff:
+	case LocalArmOff, LocalArmError:
+		// OFF and ERROR both suppress arming: an explicit disarm wins, and
+		// an unreadable local state fails closed rather than falling to
+		// auto_arm (HIGH-2).
 		return false
-	default:
+	default: // LocalArmAbsent
 		return ResolveAutoArmFromDisk().Armed
 	}
 }

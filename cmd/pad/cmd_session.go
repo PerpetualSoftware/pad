@@ -365,6 +365,8 @@ func localArmStateString(s cli.LocalArmState) string {
 		return "armed"
 	case cli.LocalArmOff:
 		return "disarmed"
+	case cli.LocalArmError:
+		return "error"
 	default:
 		return "none"
 	}
@@ -384,6 +386,8 @@ func printSessionStatus(st sessionStatusJSON) {
 		local = "armed (pad session arm)"
 	case "disarmed":
 		local = "disarmed (pad session disarm) — wins for this session"
+	case "error":
+		local = "unreadable local state — failing closed (run pad session arm to reset)"
 	}
 	fmt.Fprintf(tw, "Local state:\t%s\n", local)
 

@@ -162,24 +162,33 @@ func TestArmState_HeadlessDeadPidReaped(t *testing.T) {
 	}
 }
 
-// TestArmState_MalformedFailsClosedAndReaped: an unparseable arm-state
-// file reads as not-armed (fail closed) AND is reaped — atomic writes
-// mean a malformed file is genuinely corrupt, not a torn in-progress arm
-// (Codex R1 LOW).
-func TestArmState_MalformedFailsClosedAndReaped(t *testing.T) {
-	armStateTestEnv(t, filepath.Join(t.TempDir(), "msg.sock"))
-	path, err := armStatePath(os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET"), "")
+// TestArmState_MalformedFailsClosedNotAutoArm: an unparseable arm-state
+// file reads as LocalArmError → NOT armed, and does NOT fall back to
+// auto_arm even in an auto_arm=true repo (Codex R1 S3 HIGH-2). It is NOT
+// reaped — reaping would make the next read "absent" and re-arm via
+// auto_arm, re-arming despite a possible-but-unreadable disarm.
+func TestArmState_MalformedFailsClosedNotAutoArm(t *testing.T) {
+	// auto_arm=true repo, so the fail-closed-vs-auto_arm distinction bites.
+	socketFile := triStateEnv(t)
+	path, err := armStatePath(socketFile, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if SessionArmedLocally() {
-		t.Fatal("a malformed arm-state file must fail closed (not armed)")
+	if got := SessionArmState(); got != LocalArmError {
+		t.Fatalf("SessionArmState on corrupt file = %v, want LocalArmError", got)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("malformed arm-state file must be reaped; stat err = %v", err)
+	if ResolveAnnouncedArmed() {
+		t.Fatal("a corrupt arm-state file must fail closed — NOT armed, and NOT via auto_arm")
+	}
+	if SessionArmedLocally() {
+		t.Fatal("corrupt file must not read as locally armed")
+	}
+	// Not reaped: the file remains so the state stays consistently closed.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("corrupt file must NOT be reaped (would re-arm via auto_arm next read): %v", err)
 	}
 }
 

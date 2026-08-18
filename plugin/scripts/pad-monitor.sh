@@ -58,10 +58,24 @@ acquire_lock() {
 			return 0
 		fi
 		holder=$(cat "$lock/pid" 2>/dev/null || true)
-		if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+		if [ -z "$holder" ]; then
+			# The lock dir exists but the pid is not published yet — a peer
+			# is mid-startup (the window between its mkdir and its pid
+			# write). Treat it as live and exit: conservative dedupe means
+			# when in doubt the second monitor stays out, which is the safe
+			# direction (at worst one session doesn't stream; it never
+			# double-streams). Avoids the steal race where two monitors both
+			# see an empty pid and both proceed.
+			return 1
+		fi
+		if kill -0 "$holder" 2>/dev/null; then
 			return 1 # a live peer monitor owns the stream
 		fi
-		rm -rf "$lock" 2>/dev/null || true # stale; steal and retry
+		# A published-but-dead holder: a crashed monitor. Steal and retry.
+		# (kill -0 can't tell a reused pid from the original, but a lock is
+		# dedupe not consent — a false "live" only costs one non-streaming
+		# session, never an unconsented stream.)
+		rm -rf "$lock" 2>/dev/null || true
 	done
 }
 
@@ -69,7 +83,11 @@ if ! acquire_lock; then
 	exit 0
 fi
 # Release the lock on any exit so a clean session end frees it promptly.
-trap 'rm -rf "$lock" 2>/dev/null' EXIT INT TERM
+# INT/TERM must EXIT (a trap handler otherwise resumes the loop, which
+# would keep reconnecting without a lock while a new monitor starts); the
+# EXIT trap then does the cleanup on the way out.
+trap 'rm -rf "$lock" 2>/dev/null' EXIT
+trap 'exit 130' INT TERM
 
 # --- 2/3. Gate + reconnect loop. Re-check consent before every stream
 # attempt so an in-session disarm ends the loop on the next reconnect.

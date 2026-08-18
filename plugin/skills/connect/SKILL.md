@@ -29,9 +29,13 @@ Do these in order:
    - If `first_connect` is **false**: this is a reconnect. Do NOT re-run the boot ritual;
      just re-affirm the connection.
 
-3. **Report the state.** Run `pad session status --format json` and tell the user, in a
-   line or two: connected and accepting pushes (armed), plus how many other sessions the
-   server sees. If `auto_arm` is on, mention this repo auto-arms new sessions.
+3. **Report the state.** Run `pad session status --format json`. Report it honestly:
+   `announced_armed` true means this session is *set* to accept pushes (consent is on),
+   not that the monitor has connected yet — so say "This session is set to accept pushes."
+   Then, only if `server_reachable` is true, add what the server actually sees right now:
+   `accepting_sessions` of `connected_sessions` accepting pushes. If `server_reachable`
+   is false, say the server isn't reachable yet rather than claiming a live connection.
+   If `auto_arm` is on, mention this repo auto-arms new sessions.
 
 **What connecting means (say this once, briefly, on first connect):** while connected,
 a `pad push` from the user arrives as direction to act on — treated as if they typed it

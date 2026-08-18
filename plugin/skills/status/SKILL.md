@@ -23,12 +23,16 @@ attention items (stalled/overdue), and suggested next actions.
 `pad session status --format json` and lead with a one-line connection state, so a user
 who types `/pad:status` after reading the push docs sees whether this session is wired
 to Pad's live stream:
-- `announced_armed` true → "Connected — this session accepts pushes." If the server was
-  reachable, add the counts (`connected_sessions` connected, `accepting_sessions`
-  accepting pushes).
+- `announced_armed` true → "Set to accept pushes (armed)." `announced_armed` means
+  consent is on, NOT that a monitor is connected — so only add a live claim from the
+  server: if `server_reachable` is true, "server sees `accepting_sessions` of
+  `connected_sessions` sessions accepting pushes"; if false, "(server not reachable)".
 - `local_state` is `disarmed` **and** `auto_arm` is true → "Disconnected this session
   (auto_arm will re-arm the next session)."
-- otherwise not accepting → "Not connected — run `/pad:connect` to receive pushes here."
+- `local_state` is `error` → "Local push state unreadable — failing closed; run
+  `/pad:connect` to reset."
+- otherwise not accepting → "Not accepting pushes — run `/pad:connect` to receive them
+  here."
 
 Keep it to one line; it's a header, not the main event. If `pad session status` fails
 (e.g. padd unreachable), skip the header rather than blocking the dashboard.

@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 // fakeSSEResponse wraps a raw SSE body string in an *http.Response
@@ -185,6 +183,45 @@ func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
 	}
 }
 
+// TestRunWatchMonitor_ExitsWhenNotArmed is the Codex R1 S3 HIGH-1 gate:
+// the whole stream lives behind consent (D1), so an unarmed session's
+// monitor must exit ON ITS OWN — not merely on context cancellation — so
+// the plugin wrapper's should-arm gate then keeps it dead. Proven by using
+// a context that outlives the assertion: if the monitor returns before the
+// short deadline, it did so because of the consent gate, not the ctx.
+func TestRunWatchMonitor_ExitsWhenNotArmed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "") // no socket, no arm file
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+
+	workDir := t.TempDir()
+	// .pad.toml present but NO auto_arm → the session is not armed.
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"demo\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runWatchMonitor(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWatchMonitor did not exit on its own for an unarmed session (HIGH-1 consent gate missing?)")
+	}
+}
+
 // TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation
 // covers the ordering fix directly: a .pad.toml IS present (so the
 // no-workspace gate passes) but the client is unconfigured (no global
@@ -192,6 +229,11 @@ func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
 // return a plain error that the loop folds into the backoff-retry path,
 // not an os.Exit or a blocked prompt. Proven the same way: the goroutine
 // returns promptly once the context is cancelled.
+//
+// The .pad.toml sets push.auto_arm=true so the session is ARMED — otherwise
+// the S3 consent gate (HIGH-1) would exit the monitor before it ever
+// reaches monitorClient, making this test vacuous. Arming keeps it
+// exercising the unconfigured-client backoff path it exists to cover.
 func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -200,8 +242,10 @@ func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *t
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
-	if err := cli.WriteWorkspaceLink(workDir, "test-ws", ""); err != nil {
-		t.Fatalf("WriteWorkspaceLink: %v", err)
+	// Armed via auto_arm, and no URL → configured-workspace gate passes but
+	// the client is unconfigured (the path under test).
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"test-ws\"\n[push]\nauto_arm = true\n"), 0600); err != nil {
+		t.Fatalf("write .pad.toml: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
