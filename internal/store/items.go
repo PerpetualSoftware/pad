@@ -2736,6 +2736,19 @@ func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
 		return nil, err
 	}
 
+	// BUG-2629: re-assert the item's attachment references at the moment it
+	// becomes live again. While archived, the live AttachmentReferenced scan
+	// can't see this item's refs, so the orphan GC may have let their
+	// last_referenced_at go stale; a claim racing this restore keys on that
+	// stamp (not the live scan). Stamp BEFORE the deleted_at clear, in this
+	// tx, per stampAttachmentRefsTx's ORDERING note: the stamp's row-lock
+	// makes a concurrent claim block until commit and then re-evaluate
+	// against the fresh stamp — refusing. (Prevention only: a blob already
+	// reclaimed is gone, and the stamp matches zero rows — see BUG-2629.)
+	if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, existing.Content, existing.Fields); err != nil {
+		return nil, err
+	}
+
 	ts := now()
 	result, err := tx.Exec(s.q(`
 		UPDATE items SET deleted_at = NULL, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
