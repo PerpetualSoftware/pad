@@ -4,6 +4,7 @@ import type { Item } from '$lib/types';
 import { itemUrlId } from '$lib/types';
 import {
 	type AttachmentResolver,
+	type AttachmentUrlBuilder,
 	isAttachmentHref,
 	resolveAttachmentImage,
 	resolveAttachmentLink
@@ -43,6 +44,11 @@ type AttachmentRenderContext = {
 	// would be false there; the attachment exists, the surface just has
 	// no byte access yet (BUG-2389).
 	missing?: (uuid: string, alt: string) => string;
+	// Optional byte-URL override. Share pages pass one that targets the
+	// token-scoped /api/v1/s/{token}/attachments/{id} endpoint (with the
+	// signed suffix for protected links); without it, URLs are built from
+	// workspaceSlug via attachmentDownloadUrl (BUG-2389 2b / TASK-2637).
+	urlBuilder?: AttachmentUrlBuilder;
 };
 let currentAttachmentCtx: AttachmentRenderContext | null = null;
 
@@ -78,7 +84,8 @@ renderer.link = function (this: Renderer, { href, title, text: rawText, tokens }
 			rawText,
 			currentAttachmentCtx.workspaceSlug,
 			currentAttachmentCtx.resolver,
-			currentAttachmentCtx.missing
+			currentAttachmentCtx.missing,
+			currentAttachmentCtx.urlBuilder
 		);
 	}
 	const text = this.parser.parseInline(tokens);
@@ -109,7 +116,8 @@ renderer.image = function (this: Renderer, { href, title, text }: Tokens.Image) 
 			currentAttachmentCtx.workspaceSlug,
 			currentAttachmentCtx.resolver,
 			currentAttachmentCtx.imageVariant,
-			currentAttachmentCtx.missing
+			currentAttachmentCtx.missing,
+			currentAttachmentCtx.urlBuilder
 		);
 	}
 	// Default image rendering. Mirrors marked's stdout behavior so
@@ -422,6 +430,7 @@ export function renderMarkedWithAttachments(
 		workspaceSlug: string;
 		imageVariant?: 'thumb-sm' | 'thumb-md';
 		missing?: (uuid: string, alt: string) => string;
+		urlBuilder?: AttachmentUrlBuilder;
 	}
 ): string {
 	// Save/restore rather than clear-to-null so a nested render (a resolver
@@ -434,7 +443,8 @@ export function renderMarkedWithAttachments(
 		resolver: ctx.resolver,
 		workspaceSlug: ctx.workspaceSlug,
 		imageVariant: ctx.imageVariant ?? 'thumb-md',
-		missing: ctx.missing
+		missing: ctx.missing,
+		urlBuilder: ctx.urlBuilder
 	};
 	try {
 		return marked(content) as string;

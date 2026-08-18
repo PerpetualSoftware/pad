@@ -1417,6 +1417,12 @@ func (s *Server) setupRouter() {
 
 			// Share link resolution (outside workspace scope, no auth required)
 			r.Get("/s/{token}", s.handleResolveShareLink)
+			// Share-link asset bytes (BUG-2389 2b / TASK-2637): rendered image
+			// VARIANTS for attachments embedded in the shared content. Same
+			// public/no-auth group; protected links gate on a short-lived
+			// signed ref minted by handleResolveShareLink. Originals and
+			// file downloads are out of scope by authorization.
+			r.Get("/s/{token}/attachments/{attachmentID}", s.handleGetShareLinkAttachment)
 
 			// Claim-code redemption (PLAN-1519 / TASK-1521 / IDEA-1517 §4).
 			// POST /api/v1/oauth/claim with body {workspace, code} grants

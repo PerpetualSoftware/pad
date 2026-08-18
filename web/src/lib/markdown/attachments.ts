@@ -38,6 +38,20 @@ export interface AttachmentMeta {
  */
 export type AttachmentResolver = (uuid: string) => AttachmentMeta | null | undefined;
 
+/**
+ * Builds the byte URL for an attachment reference, overriding the default
+ * workspace-scoped path (`attachmentDownloadUrl`). Public share pages supply
+ * one that points at the token-scoped `/api/v1/s/{token}/attachments/{id}`
+ * endpoint and carries the short-lived signature for protected links
+ * (BUG-2389 2b / TASK-2637). When absent, callers fall back to
+ * `attachmentDownloadUrl(workspaceSlug, …)`, so every existing surface is
+ * unaffected.
+ */
+export type AttachmentUrlBuilder = (
+	uuid: string,
+	variant?: 'thumb-sm' | 'thumb-md' | 'original'
+) => string;
+
 /** URL scheme used in markdown content. Mirrored on the Go side. */
 const ATTACHMENT_URL_PREFIX = 'pad-attachment:';
 
@@ -126,9 +140,12 @@ export function renderAttachmentImage(
 	meta: AttachmentMeta,
 	alt: string,
 	workspaceSlug: string,
-	variant: 'thumb-sm' | 'thumb-md' = 'thumb-md'
+	variant: 'thumb-sm' | 'thumb-md' = 'thumb-md',
+	urlBuilder?: AttachmentUrlBuilder
 ): string {
-	const src = attachmentDownloadUrl(workspaceSlug, meta.id, variant);
+	const src = urlBuilder
+		? urlBuilder(meta.id, variant)
+		: attachmentDownloadUrl(workspaceSlug, meta.id, variant);
 	const altText = alt && alt.trim() !== '' ? alt : meta.filename;
 	const sizeAttrs =
 		meta.width && meta.height && meta.width > 0 && meta.height > 0
@@ -145,9 +162,10 @@ export function renderAttachmentImage(
 export function renderAttachmentChip(
 	meta: AttachmentMeta,
 	displayText: string | undefined,
-	workspaceSlug: string
+	workspaceSlug: string,
+	urlBuilder?: AttachmentUrlBuilder
 ): string {
-	const href = attachmentDownloadUrl(workspaceSlug, meta.id);
+	const href = urlBuilder ? urlBuilder(meta.id) : attachmentDownloadUrl(workspaceSlug, meta.id);
 	const label = displayText && displayText.trim() !== '' ? displayText : meta.filename;
 	const size = formatAttachmentSize(meta.size_bytes);
 	const sizeSpan = size ? ` <span class="file-chip-size">· ${escapeHtml(size)}</span>` : '';
@@ -193,14 +211,21 @@ export function resolveAttachmentImage(
 	workspaceSlug: string,
 	resolver: AttachmentResolver,
 	variant: 'thumb-sm' | 'thumb-md' = 'thumb-md',
-	missing: (uuid: string, alt: string) => string = renderAttachmentMissing
+	missing: (uuid: string, alt: string) => string = renderAttachmentMissing,
+	urlBuilder?: AttachmentUrlBuilder
 ): string {
 	const uuid = parseAttachmentHref(href);
 	if (uuid === null) return '';
 	const meta = resolver(uuid);
 	if (!meta) return missing(uuid, alt);
-	if (isImageMime(meta.mime_type)) return renderAttachmentImage(meta, alt, workspaceSlug, variant);
-	return renderAttachmentChip(meta, alt && alt.trim() !== '' ? alt : meta.filename, workspaceSlug);
+	if (isImageMime(meta.mime_type))
+		return renderAttachmentImage(meta, alt, workspaceSlug, variant, urlBuilder);
+	return renderAttachmentChip(
+		meta,
+		alt && alt.trim() !== '' ? alt : meta.filename,
+		workspaceSlug,
+		urlBuilder
+	);
 }
 
 /**
@@ -214,11 +239,12 @@ export function resolveAttachmentLink(
 	text: string,
 	workspaceSlug: string,
 	resolver: AttachmentResolver,
-	missing: (uuid: string, alt: string) => string = renderAttachmentMissing
+	missing: (uuid: string, alt: string) => string = renderAttachmentMissing,
+	urlBuilder?: AttachmentUrlBuilder
 ): string {
 	const uuid = parseAttachmentHref(href);
 	if (uuid === null) return '';
 	const meta = resolver(uuid);
 	if (!meta) return missing(uuid, text);
-	return renderAttachmentChip(meta, text, workspaceSlug);
+	return renderAttachmentChip(meta, text, workspaceSlug, urlBuilder);
 }

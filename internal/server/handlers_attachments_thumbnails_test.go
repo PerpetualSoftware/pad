@@ -168,12 +168,16 @@ func TestThumbnails_GeneratedOnJPEGUpload(t *testing.T) {
 	}
 }
 
-// TestThumbnails_SkippedForSmallSourceImage — when the parent's
-// dimensions are already within a variant's bound, we don't emit a
-// derived row (the download handler already falls back to original).
-func TestThumbnails_SkippedForSmallSourceImage(t *testing.T) {
+// TestThumbnails_DerivedForSmallSourceImage — TASK-2637 / fork-3 Option C
+// REVERSED the old skip-when-≤bound behavior. A source already within a
+// variant's bound now STILL derives a real row: Resize passes it through
+// unresized (no upscale) and it is re-encoded, so the variant is
+// identity-dimensioned but metadata-stripped and format-normalized. The
+// share byte path serves variants ONLY and never an original, so a small
+// image must have a genuine derived row to render at all.
+func TestThumbnails_DerivedForSmallSourceImage(t *testing.T) {
 	srv, slug := testServerWithAttachments(t)
-	body := makeIntegrationPNG(t, 200, 150) // < both 256 and 1024 → both variants skipped
+	body := makeIntegrationPNG(t, 200, 150) // < both 256 and 1024, previously skipped
 
 	rr := doMultipartUpload(srv, slug, "small.png", body)
 	if rr.Code != http.StatusCreated {
@@ -186,8 +190,13 @@ func TestThumbnails_SkippedForSmallSourceImage(t *testing.T) {
 
 	srv.Stop()
 	for _, variant := range []string{models.AttachmentVariantThumbSm, models.AttachmentVariantThumbMd} {
-		if row, _ := variantRow(t, srv, resp.ID, variant); row != nil {
-			t.Errorf("variant %q should be skipped for small source, got row %s", variant, row.ID)
+		row, err := variantRow(t, srv, resp.ID, variant)
+		if err != nil || row == nil {
+			t.Fatalf("variant %q should be derived for a small source now, got row=%v err=%v", variant, row, err)
+		}
+		// PNG source stays PNG (alpha survives) — pin (c).
+		if row.MimeType != "image/png" {
+			t.Errorf("variant %q MimeType = %q, want image/png (PNG source stays PNG)", variant, row.MimeType)
 		}
 	}
 }

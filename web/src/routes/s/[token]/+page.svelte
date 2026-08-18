@@ -14,7 +14,13 @@
 		type PublicCollection,
 		type PublicItem
 	} from '$lib/components/share/shareView';
-	import type { PublicShareCollection, PublicShareItem, PublicShareView } from '$lib/types';
+	import type {
+		PublicShareCollection,
+		PublicShareItem,
+		PublicShareView,
+		ShareAttachmentRef,
+		SharePayload
+	} from '$lib/types';
 
 	let token = $derived(page.params.token ?? '');
 
@@ -278,6 +284,22 @@
 		syncUrl();
 	}
 
+	// Renderable image-attachment refs from the share payload (BUG-2389 2b /
+	// TASK-2637). Keyed by attachment UUID; PRESENCE means the server minted a
+	// ref (the attachment anchors to this share, is a live image, and has the
+	// served variant). `sig` is the signed "exp=..&sig=.." fragment a protected
+	// link's asset URL must carry — empty/absent for plain links. Shape lives
+	// in $lib/types (ShareAttachmentRef) alongside SharePayload.
+	let attachmentRefs = $state<Record<string, ShareAttachmentRef>>({});
+
+	// Capture attachment_refs from a resolved payload. Called from both load
+	// paths (onMount and the password submit) so the map is populated BEFORE
+	// itemData/collectionData, keeping the render derivations in sync.
+	function applyAttachmentRefs(data: SharePayload | null | undefined) {
+		const refs = data?.attachment_refs;
+		attachmentRefs = refs && typeof refs === 'object' ? refs : {};
+	}
+
 	// Single sanitized markdown pipeline for the whole page: marked → DOMPurify.
 	// Used by both the single-ITEM share view (`renderedContent`) and the
 	// collection inline-expand (`renderItemContent`). Keeping ONE {@html} source
@@ -285,14 +307,40 @@
 	function sanitizeMarkdown(content: string): string {
 		if (!content) return '';
 		try {
-			// Attachment-aware render (BUG-2389): `pad-attachment:` refs no
-			// longer fall through to broken <img>/dead links. Share viewers
-			// have no byte access until the token-scoped read path ships, so
-			// the resolver yields nothing and every reference renders as the
-			// HONEST "not available on shared pages" placeholder — never the
-			// "missing or deleted" one, which would be false here.
+			// Attachment-aware render (BUG-2389 → 2b / TASK-2637). Image
+			// attachments the server minted a ref for (anchored to this share,
+			// live, with a rendered variant) resolve to the token-scoped byte
+			// endpoint; protected links carry the signed suffix from the ref.
+			// Anything absent from the refs map — unanchored, non-image, no
+			// variant, or a protected link whose secret is unconfigured —
+			// resolves to null and renders the HONEST "not available on shared
+			// pages" placeholder, never the "missing or deleted" one.
 			const raw = renderMarkedWithAttachments(content, {
-				resolver: () => null,
+				resolver: (uuid) => {
+					const ref = attachmentRefs[uuid];
+					if (!ref) return null;
+					return {
+						id: uuid,
+						mime_type: ref.mime_type,
+						filename: ref.filename,
+						size_bytes: 0,
+						width: ref.width ?? null,
+						height: ref.height ?? null
+					};
+				},
+				urlBuilder: (uuid, variant) => {
+					const ref = attachmentRefs[uuid];
+					const params = new URLSearchParams();
+					if (variant) params.set('variant', variant);
+					// Merge the server's signed fragment (protected links) so the
+					// signature travels alongside the variant. URLSearchParams
+					// joining is robust to either part being empty.
+					if (ref?.sig) {
+						for (const [k, v] of new URLSearchParams(ref.sig)) params.set(k, v);
+					}
+					const qs = params.toString();
+					return `/api/v1/s/${encodeURIComponent(token)}/attachments/${encodeURIComponent(uuid)}${qs ? `?${qs}` : ''}`;
+				},
 				workspaceSlug: '',
 				missing: renderAttachmentUnavailable
 			});
@@ -355,6 +403,7 @@
 				return;
 			}
 
+			applyAttachmentRefs(data);
 			if (data.type === 'item') {
 				shareType = 'item';
 				let fields: Record<string, any> = {};
@@ -423,6 +472,7 @@
 			}
 			// Re-process the data exactly like onMount does
 			requirePassword = false;
+			applyAttachmentRefs(data);
 			if (data.type === 'item') {
 				shareType = 'item';
 				let fields: Record<string, any> = {};

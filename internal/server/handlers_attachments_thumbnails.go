@@ -45,10 +45,13 @@ var thumbnailSpecs = []struct {
 //   - Source format not supported by the configured processor (e.g.
 //     pure-Go on a WebP upload — the original survives, the user
 //     just sees the original at native resolution).
-//   - Source dimensions known and already smaller than the variant's
-//     target — pointless to encode an upscaled or same-size copy.
 //   - Variant already exists (idempotent reruns from a future
-//     "regenerate thumbnails" admin action).
+//     "regenerate thumbnails" admin action, and from the share-resolve
+//     lazy-derive path that backfills legacy attachments — TASK-2637).
+//
+// A source already within a variant's bounds is NOT skipped: Resize
+// passes it through unresized (no upscale) and it is still re-encoded,
+// which is the point on the share surface — see the loop below.
 //
 // Each successfully-derived variant becomes its own attachments row
 // with parent_id = parentID and variant = "thumb-sm" / "thumb-md".
@@ -99,13 +102,19 @@ func (s *Server) deriveThumbnails(parentID string) {
 	outFormat := attachments.ThumbnailFormat(format)
 
 	for _, spec := range thumbnailSpecs {
-		// Skip when the source is already within the variant's bounds
-		// — the download handler's variant fallback path serves the
-		// original, which is what we'd produce anyway.
-		if parent.Width != nil && parent.Height != nil &&
-			*parent.Width <= spec.MaxLong && *parent.Height <= spec.MaxLong {
-			continue
-		}
+		// NB: we do NOT skip when the source is already within the variant's
+		// bounds. It would be pointless for the AUTHENTICATED download path
+		// (which falls back to the original), but the SHARE byte path
+		// (TASK-2637) serves variants ONLY and never an original — the
+		// invariant Dave ruled is that every byte a share viewer receives has
+		// passed through this decode→re-encode pipeline: metadata (EXIF/GPS)
+		// dropped by construction, format normalized per ThumbnailFormat,
+		// resolution bounded. A ≤bound source therefore still needs a real
+		// derived row. Resize passes the image through unresized in that case
+		// (no upscale — see pureGoProcessor.Resize), so the variant is
+		// identity-dimensioned but genuinely re-encoded and metadata-free; if
+		// thumb-sm and thumb-md come out byte-identical for a tiny source,
+		// content-addressed storage dedupes the blob (two rows, one blob).
 		if existing, err := s.store.GetAttachmentVariant(parent.WorkspaceID, parent.ID, spec.Variant); err == nil && existing != nil {
 			continue
 		}

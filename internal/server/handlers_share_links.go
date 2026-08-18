@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/server/render"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -527,14 +528,21 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "not_found", "Not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		resp := map[string]interface{}{
 			"type":       "item",
 			"item":       publicShareItemDTO(item),
 			"permission": "view",
 			"share_link": map[string]interface{}{
 				"target_type": link.TargetType,
 			},
-		})
+		}
+		// Renderable image-attachment refs embedded in the item's content
+		// (BUG-2389 2b / TASK-2637). Omitted entirely when nothing is
+		// renderable, so the page falls back to the honest placeholder.
+		if refs := s.mintShareAttachmentRefs(link, item.Content); refs != nil {
+			resp["attachment_refs"] = refs
+		}
+		writeJSON(w, http.StatusOK, resp)
 
 	case "collection":
 		coll, err := s.store.GetCollection(link.TargetID)
@@ -622,7 +630,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		}
 		publicCollection["views"] = publicViews
 
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		collResp := map[string]interface{}{
 			"type":       "collection",
 			"collection": publicCollection,
 			"items":      publicItems,
@@ -630,11 +638,129 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			"share_link": map[string]interface{}{
 				"target_type": link.TargetType,
 			},
-		})
+		}
+		// Renderable image-attachment refs across every shared item's content
+		// (BUG-2389 2b / TASK-2637). Anchoring for a collection share accepts
+		// any item IN the collection, enforced per-attachment in
+		// shareAttachmentAnchors.
+		contents := make([]string, 0, len(items))
+		for _, it := range items {
+			contents = append(contents, it.Content)
+		}
+		if refs := s.mintShareAttachmentRefs(link, contents...); refs != nil {
+			collResp["attachment_refs"] = refs
+		}
+		writeJSON(w, http.StatusOK, collResp)
 
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "Not found")
 	}
+}
+
+// shareAttachmentRef is the per-attachment entry in a share payload's
+// `attachment_refs` map (BUG-2389 2b / TASK-2637). Its PRESENCE (keyed by
+// attachment UUID) tells the public share page an embedded reference is
+// renderable: it anchors to the shared target, is a live image, and has the
+// rendered variant the byte endpoint serves. The frontend builds the
+// `<img src>` from the key + Sig; unreferenced/unanchored UUIDs are simply
+// absent, and the page renders the honest "not available" placeholder.
+type shareAttachmentRef struct {
+	// Sig is the signed query fragment ("exp=<unix>&sig=<hex>") a PROTECTED
+	// link's asset URL must carry; empty for PLAIN links, which need no
+	// signature. The frontend merges it with the variant param.
+	Sig string `json:"sig,omitempty"`
+	// MimeType / Filename / Width / Height are the minimal metadata the
+	// client resolver needs to render the embed (image gate, alt fallback,
+	// layout reservation). Width/Height are the VARIANT's dimensions — that
+	// is the image actually served — so the reserved box matches the bytes.
+	MimeType string `json:"mime_type"`
+	Filename string `json:"filename"`
+	Width    *int   `json:"width,omitempty"`
+	Height   *int   `json:"height,omitempty"`
+}
+
+// mintShareAttachmentRefs builds the `attachment_refs` map for a resolved
+// share payload. It scans the shared content bodies for pad-attachment
+// references and, for each one that ANCHORS to this link's target, is a
+// LIVE IMAGE, and HAS the rendered variant the endpoint serves, emits a ref.
+// For PROTECTED links each ref carries a short-lived HMAC signature (fork-2
+// Option C); for PLAIN links Sig stays empty (fork-1). Returns nil when
+// nothing is renderable, so the payload omits the key entirely.
+//
+// Anchoring reuses shareAttachmentAnchors — the SAME predicate the byte
+// endpoint enforces — so the mint side can never advertise a ref the serve
+// side would reject, and vice-versa.
+func (s *Server) mintShareAttachmentRefs(link *models.ShareLink, contents ...string) map[string]shareAttachmentRef {
+	seen := make(map[string]struct{})
+	var uuids []string
+	for _, content := range contents {
+		for _, id := range render.ExtractAttachmentRefs(content) {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			uuids = append(uuids, id)
+		}
+	}
+	if len(uuids) == 0 {
+		return nil
+	}
+
+	protected := link.HasPassword || link.RequireAuth
+	var exp int64
+	var expStr string
+	if protected {
+		exp = time.Now().Add(shareAssetSigTTL).Unix()
+		expStr = strconv.FormatInt(exp, 10)
+	}
+
+	refs := make(map[string]shareAttachmentRef)
+	for _, id := range uuids {
+		att, err := s.store.GetAttachment(id)
+		if err != nil || !s.shareAttachmentAnchors(link, att) {
+			continue
+		}
+		variant, err := s.store.GetAttachmentVariant(link.WorkspaceID, att.ID, shareAssetVariant)
+		if err == nil && variant == nil {
+			// Legacy attachment with no derived variant yet (uploaded before
+			// thumb-md was always-derived, or a small source under the old
+			// skip rule). Derive it NOW — synchronously, so this first resolve
+			// renders the image rather than a placeholder. deriveThumbnails is
+			// idempotent and bounded; new uploads already have the row and pay
+			// nothing here (TASK-2637 / fork-3 Option C: a share viewer must
+			// never receive an original, so we derive rather than fall back).
+			s.deriveThumbnails(att.ID)
+			variant, err = s.store.GetAttachmentVariant(link.WorkspaceID, att.ID, shareAssetVariant)
+		}
+		if err != nil || variant == nil {
+			// Still nothing (derivation unsupported/failed, e.g. a format the
+			// processor can't decode) — don't advertise it; the page shows the
+			// honest placeholder. Never an original.
+			continue
+		}
+		ref := shareAttachmentRef{
+			MimeType: att.MimeType,
+			Filename: att.Filename,
+			Width:    variant.Width,
+			Height:   variant.Height,
+		}
+		if protected {
+			sig := signShareAsset(s.claimSecret, link.ID, att.ID, exp)
+			if sig == "" {
+				// Secret unconfigured (self-host without an encryption key):
+				// cannot mint a protected ref. Omit it — the page degrades to
+				// the #1135 placeholder, NEVER an unsigned bare URL (fork-2
+				// fallback boundary).
+				continue
+			}
+			ref.Sig = "exp=" + expStr + "&sig=" + sig
+		}
+		refs[att.ID] = ref
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return refs
 }
 
 // handleShareLinkViews returns view history for a share link.
