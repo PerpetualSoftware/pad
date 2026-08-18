@@ -45,12 +45,25 @@ describe('shouldWriteRow', () => {
 		expect(shouldWriteRow(row(7), row(7))).toBe(true);
 	});
 
-	// A missing seq is not evidence of being older. Refusing would silently
-	// disable the cache for any row the server has not stamped.
-	it('writes when either side has no seq', () => {
+	// Missing seq is ASYMMETRIC. An incoming row that carries ordering
+	// evidence beats a stored row that has none, and two unstamped rows have
+	// nothing to arbitrate — but a stored STAMPED row must not be overwritten
+	// by a snapshot with no seq at all.
+	it('writes when the incoming row has the only seq, or neither does', () => {
 		expect(shouldWriteRow(row(undefined), row(7))).toBe(true);
-		expect(shouldWriteRow(row(7), row(undefined))).toBe(true);
 		expect(shouldWriteRow(row(undefined), row(undefined))).toBe(true);
+	});
+
+	// The optimistic reorder path clears seq deliberately, to bypass the RAM
+	// guard so the drag paints immediately (TASK-1357). Persisting that copy
+	// is incidental to the intent, and letting it overwrite a stamped row
+	// leaves the cache holding a row with NO seq while the cursor sits past
+	// the delta that would have fixed it — unorderable by either guard on the
+	// next warm boot. Codex round 4; the previous version of this file
+	// asserted the opposite and enshrined the bug.
+	it('REFUSES a seq-less row over a stamped one', () => {
+		expect(shouldWriteRow(row(7), row(undefined))).toBe(false);
+		expect(shouldWriteRow(row(0), row(undefined))).toBe(false);
 	});
 
 	// seq 0 is a real value; treating it as absent would let a stale row

@@ -189,9 +189,27 @@ export async function hydrate(
  * correct semantics are a MERGE, which this layer does not have. That leaves a
  * narrow cross-tab residual (BUG-2635): a tab without the row in RAM can
  * persist an unmerged snapshot over another tab's merged one at the same seq.
- * A missing seq on either side writes too — absence is not evidence of being
- * older, and refusing would silently disable the cache for rows the server has
- * not stamped.
+ * A missing seq is treated ASYMMETRICALLY, which is the part worth reading:
+ *
+ *   - stored row has no seq, incoming does  -> WRITE. The incoming row carries
+ *     ordering evidence the stored one lacks.
+ *   - neither has a seq                     -> WRITE. No evidence either way,
+ *     and refusing would disable the cache for rows the server never stamped.
+ *   - stored row HAS a seq, incoming does not -> REFUSE.
+ *
+ * That last case is not symmetry-breaking for its own sake. The optimistic
+ * reorder path deliberately clears `seq` so the row bypasses localIndex's RAM
+ * guard and paints immediately (TASK-1357); persisting it is incidental to
+ * that intent. Allowing it here lets a delayed optimistic snapshot overwrite an
+ * authoritative row that already landed at a real seq, and the result is worse
+ * than an ordinary stale row: the persisted row then has NO seq at all, so
+ * neither this guard nor the RAM guard can order it on the next warm boot,
+ * while the cursor sits past the delta that would have corrected it.
+ *
+ * Refusing costs nothing the reorder needs. RAM still shows the optimistic
+ * order, and the authoritative response persists with a real seq moments later
+ * — and because the cursor has not advanced past that response, a warm boot in
+ * the meantime simply refetches it.
  *
  * WHY THIS EXISTS. `upsert` hands persistUpserts a snapshot taken from RAM and
  * does not await it. (`applyRetag` used to as well; it now goes through
@@ -234,7 +252,9 @@ export function shouldWriteRow(
 	next: ItemIndexRow,
 ): boolean {
 	if (!existing) return true;
-	if (existing.seq === undefined || next.seq === undefined) return true;
+	if (existing.seq === undefined) return true;
+	// Stored row is stamped and the incoming one is not: no claim to be newer.
+	if (next.seq === undefined) return false;
 	return next.seq >= existing.seq;
 }
 
