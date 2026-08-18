@@ -109,6 +109,58 @@ func TestNewWatchEventsStreamRequest_UnsendableLabelStillConnects(t *testing.T) 
 	}
 }
 
+// TestNewWatchEventsStreamRequest_ArmedSendsQueryParam is PLAN-2613 S2's
+// client half: an armed identity must reach the server as ?armed=true (a
+// query param, not a header — see StreamSessionIdentity.Armed). Asserted
+// by the round trip, matching the label test's stance: the value only
+// matters if it actually arrives, and it is what admits the connection to
+// push delivery, so a broken wiring is a silent consent failure.
+func TestNewWatchEventsStreamRequest_ArmedSendsQueryParam(t *testing.T) {
+	t.Parallel()
+
+	var gotArmed string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotArmed = r.URL.Query().Get("armed")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewClientFromURL(srv.URL)
+	req, err := c.NewWatchEventsStreamRequest(context.Background(), "", StreamSessionIdentity{Armed: true})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request not sendable: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Exactly "true" — the server treats only that value as armed, so
+	// anything else would be a silent no-consent.
+	if gotArmed != "true" {
+		t.Fatalf("armed query param = %q, want %q", gotArmed, "true")
+	}
+}
+
+// TestNewWatchEventsStreamRequest_UnarmedOmitsQueryParam pins absence, not
+// armed=false. Sending armed=false would be indistinguishable at the
+// server (only "true" counts) but invites a reader to treat "present but
+// false" as meaningful, and it must never look like a partially-armed
+// state. A zero identity carries no armed param at all.
+func TestNewWatchEventsStreamRequest_UnarmedOmitsQueryParam(t *testing.T) {
+	t.Parallel()
+
+	c := NewClientFromURL("http://127.0.0.1:0")
+	req, err := c.NewWatchEventsStreamRequest(context.Background(), "", StreamSessionIdentity{Label: "docapp"})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if _, ok := req.URL.Query()["armed"]; ok {
+		t.Fatalf("expected no armed query param for an unarmed identity, got %q", req.URL.RawQuery)
+	}
+}
+
 // TestHeaderSafeLabel covers the pieces the round trip above can't show
 // individually.
 func TestHeaderSafeLabel(t *testing.T) {

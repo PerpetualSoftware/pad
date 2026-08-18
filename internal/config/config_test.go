@@ -51,6 +51,52 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSavePreservesPushVetoForStrictLoader guards PLAN-2613 S2's consent
+// path: a per-user auto_arm=false veto written by Save() must survive an
+// atomic write intact and be read back by the STRICT loader
+// (LoadPushConfigAutoArm), which is what fails a repo's auto_arm opt-in
+// closed. A Save that dropped or corrupted the [push] table would silently
+// re-open the veto.
+func TestSavePreservesPushVetoForStrictLoader(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	veto := false
+	cfg.Push = &PushConfig{AutoArm: &veto}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got, err := LoadPushConfigAutoArm()
+	if err != nil {
+		t.Fatalf("strict load: %v", err)
+	}
+	if got == nil || *got != false {
+		t.Fatalf("expected the auto_arm=false veto to survive Save(), got %v", got)
+	}
+}
+
+// TestLoadPushConfigAutoArmAbsentIsNoOpinion: with no config.toml the
+// strict loader returns (nil, nil) — no opinion, not an error — so an
+// unconfigured machine doesn't fail every consent read.
+func TestLoadPushConfigAutoArmAbsentIsNoOpinion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_DATA_DIR", filepath.Join(home, ".pad"))
+
+	got, err := LoadPushConfigAutoArm()
+	if err != nil {
+		t.Fatalf("absent config must not error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("absent config must read as no opinion (nil), got %v", got)
+	}
+}
+
 func TestLoadWithPadURLMarksConfigConfigured(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

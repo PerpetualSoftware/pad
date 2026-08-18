@@ -84,6 +84,86 @@ type Config struct {
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
 	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
+
+	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
+	// pointer so an absent `[push]` table stays nil and Save() (via the
+	// omitempty tag) never writes an empty table into everyone's
+	// config.toml on the next `pad init` / `pad configure`.
+	Push *PushConfig `toml:"push,omitempty"`
+}
+
+// PushConfig is the `[push]` table in ~/.pad/config.toml — the per-user
+// half of the arm-consent resolution (PLAN-2613 S2, D4).
+type PushConfig struct {
+	// AutoArm is the per-USER auto-arm setting, and it is a pointer for a
+	// reason the resolution depends on: unset (nil) must be
+	// distinguishable from an explicit false. Only an explicit false acts
+	// as a veto — it forces auto-arm OFF even in a repository whose
+	// .pad.toml opted in (deny-wins). Nil means "no opinion" and lets the
+	// repository decide. A true here is deliberately INERT as an enabler:
+	// D4 forbids a machine-global always-on, so a per-user true can never
+	// turn arming on for a repo that didn't opt in itself. See
+	// cli.ResolveAutoArm for the full table.
+	AutoArm *bool `toml:"auto_arm"`
+}
+
+// PushAutoArm returns the per-user auto-arm veto value, nil-safe: a nil
+// *Config or a missing `[push]` table both read as "no opinion" (nil).
+func (c *Config) PushAutoArm() *bool {
+	if c == nil || c.Push == nil {
+		return nil
+	}
+	return c.Push.AutoArm
+}
+
+// userConfigPath resolves the user's config.toml path with the SAME
+// precedence Load() uses (PAD_DATA_DIR, then PAD_DB_PATH's directory,
+// overriding), so a strict reader lands on exactly the file Load would.
+func userConfigPath() string {
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".pad", "config.toml")
+	if v := os.Getenv("PAD_DATA_DIR"); v != "" {
+		path = filepath.Join(v, "config.toml")
+	}
+	if v := os.Getenv("PAD_DB_PATH"); v != "" {
+		path = filepath.Join(filepath.Dir(v), "config.toml")
+	}
+	return path
+}
+
+// LoadPushConfigAutoArm reads ONLY the [push] auto_arm value from the
+// user's config.toml with STRICT fail-closed semantics for the consent
+// gate (PLAN-2613 S2). Unlike Load(), which is deliberately lenient — an
+// unreadable or unparseable config.toml degrades to defaults so the whole
+// CLI doesn't die — this distinguishes the three states a consent
+// decision must not conflate:
+//
+//   - file ABSENT            → (nil, nil): the user has no opinion.
+//   - file present, no [push] → (nil, nil): same.
+//   - file present but UNREADABLE or UNPARSEABLE → (nil, err): the caller
+//     CANNOT confirm the user's veto and must fail closed (not arm),
+//     rather than silently proceeding as if no veto existed.
+//
+// The last case is the fix for Codex round-1 HIGH-1: a malformed
+// config.toml in a repo that opted into auto_arm must not arm.
+func LoadPushConfigAutoArm() (*bool, error) {
+	path := userConfigPath()
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // genuinely absent — no opinion
+		}
+		return nil, fmt.Errorf("stat user config %s: %w", path, err)
+	}
+	var wrapper struct {
+		Push *PushConfig `toml:"push"`
+	}
+	if _, err := toml.DecodeFile(path, &wrapper); err != nil {
+		return nil, fmt.Errorf("read user push config %s: %w", path, err)
+	}
+	if wrapper.Push == nil {
+		return nil, nil
+	}
+	return wrapper.Push.AutoArm, nil
 }
 
 func DefaultConfig() *Config {
@@ -258,13 +338,31 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	f, err := os.OpenFile(c.ConfigPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// Write atomically: encode into a temp file in the same directory and
+	// rename it into place, so a concurrent reader never observes a
+	// truncated or partially-written config.toml. This matters beyond
+	// tidiness for the push-consent gate (PLAN-2613 S2): a monitor
+	// reconnecting while `pad configure` rewrites the file could otherwise
+	// read an empty/partial config, miss a [push] auto_arm=false veto, and
+	// arm despite it (Codex R2 HIGH-1).
+	tmp, err := os.CreateTemp(c.DataDir, ".config-*.toml.tmp")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	if err := toml.NewEncoder(f).Encode(c); err != nil {
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := toml.NewEncoder(tmp).Encode(c); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, c.ConfigPath); err != nil {
 		return err
 	}
 

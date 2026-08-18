@@ -411,6 +411,14 @@ type StreamSessionIdentity struct {
 	// PID is this process's own pid, for telling two sessions with the
 	// same label apart.
 	PID int
+	// Armed is PLAN-2613 S2's consent declaration: when true, the stream
+	// request carries ?armed=true and the server admits this connection to
+	// KindPush delivery (the gate S1 built). False — the zero value — is
+	// the legacy/unarmed shape and receives ordinary watch-matched events
+	// only. Unlike Label/PID this rides a query param, not a header: see
+	// server.sessionArmedQueryParam for why (audit-visible by design, and
+	// reachable by a future non-CLI client that can't set headers).
+	Armed bool
 }
 
 // NewWatchEventsStreamRequest builds an authenticated GET request for
@@ -438,6 +446,18 @@ func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID st
 	}
 	if ident.PID > 0 {
 		req.Header.Set("X-Pad-Session-Pid", strconv.Itoa(ident.PID))
+	}
+	if ident.Armed {
+		// The consent declaration is a QUERY PARAM, not a header —
+		// server.sessionArmedQueryParam documents why (a plain audit-safe
+		// boolean, and reachable by a browser EventSource that can't set
+		// headers). The literal "armed" and the exact value "true" are the
+		// wire contract that side matches; only "true" counts as armed
+		// there, so an unarmed session sends nothing rather than
+		// armed=false.
+		q := req.URL.Query()
+		q.Set("armed", "true")
+		req.URL.RawQuery = q.Encode()
 	}
 	return req, nil
 }
