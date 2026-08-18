@@ -103,7 +103,40 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.21" — current. BUG-2608: bounds `pad_item.action=history`, which
+//   - "0.22" — current. #1066: the pad_item `fields` OBJECT is now a
+//     real write form, and undeclared input keys fail loudly. Two
+//     halves, one contract change:
+//
+//     (1) `fields` alias. Since the BUG-991 normalization, reads return
+//     `fields` as a native object, so writing back the structure you
+//     just read was the obvious call — and it was a silent no-op: not a
+//     declared param, nothing set additionalProperties, so the object
+//     was accepted, never mapped by BuildCLIArgs, and dropped while the
+//     PATCH still ran (success + bumped updated_at + unchanged value).
+//     create/update now fold `fields` into the same path as `field` /
+//     the dedicated params (catalog_item_fields.go). The same key with
+//     CONFLICTING values in two places is REFUSED with a structured
+//     error — refuse-on-ambiguity, same disposition as clear_parent /
+//     clear_assigned_user; equal duplicates collapse to one write.
+//     Non-writer actions refuse a `fields` param loudly rather than
+//     letting the now-declared key be dropped at dispatch.
+//
+//     (2) Strict input validation. The fan-out handler now rejects any
+//     top-level key outside the tool's declared schema (action,
+//     workspace, declared params, and a small documented compat list —
+//     pad_item's v0.16 assigned_user_id / agent_role_id clear form)
+//     with a structured validation_failed naming the offending keys.
+//     This turns every future undeclared-param variant of this bug into
+//     a loud error instead of a silent no-op, across ALL catalog tools.
+//
+//     Bump rationale: (1) is additive (new param), but (2) changes the
+//     contract for inputs that previously "succeeded" — any consumer
+//     relying on an undeclared key being ignored now gets an error.
+//     That reliance was indistinguishable from a bug in the caller
+//     (the key never did anything), so the break is the fix. Single
+//     bump covers both halves; they are one contract change.
+//
+//   - "0.21" — BUG-2608: bounds `pad_item.action=history`, which
 //     was unbounded on every surface. Extends the `limit` param's
 //     vocabulary to cover history (default 50, max 300 — the same pair
 //     list and backlinks already use, so an agent has no third set of
@@ -520,7 +553,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.21"
+const ToolSurfaceVersion = "0.22"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

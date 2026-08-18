@@ -397,6 +397,7 @@ func paramDefToToolOption(p ParamDef) mcp.ToolOption {
 // free to talk to the dispatcher in CLI-flag terms without watching
 // for that collision.
 func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
+	declared := declaredInputKeys(def)
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		input := req.GetArguments()
 		if input == nil {
@@ -410,6 +411,9 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 		if !ok {
 			return errUnknownAction(def, action), nil
 		}
+		if errRes := rejectUndeclaredKeys(def, declared, input); errRes != nil {
+			return errRes, nil
+		}
 		// Clone before stripping so we don't mutate req.Params.Arguments
 		// — defensive against any future mcp-go change that re-reads the
 		// request map after dispatch.
@@ -422,6 +426,73 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 		}
 		return handler(ctx, stripped, env)
 	}
+}
+
+// compatAcceptedInputKeys lists input keys that are ACCEPTED without
+// being schema-declared — documented compatibility forms that predate
+// strict input validation (#1066 / ToolSurfaceVersion 0.22). Additions
+// here should be rare and carry a paper trail; the whole point of
+// strict validation is that an undeclared key fails loudly instead of
+// being silently dropped.
+//
+//   - pad_item assigned_user_id / agent_role_id: the v0.16 remote-
+//     transport clear form (empty string clears the assignment).
+//     Documented, undeprecated, and deliberately never schema-declared
+//     (v0.18's booleans are the discoverable form) — rejecting them
+//     would break working v0.16 consumers for no safety gain.
+var compatAcceptedInputKeys = map[string]map[string]bool{
+	"pad_item": {
+		"assigned_user_id": true,
+		"agent_role_id":    true,
+	},
+}
+
+// declaredInputKeys builds the set of input keys a tool accepts: the
+// routing `action`, the implicit `workspace` (when the schema opts in),
+// every declared ParamDef, and any compat carve-outs. Computed once per
+// handler registration.
+func declaredInputKeys(def ToolDef) map[string]bool {
+	allowed := map[string]bool{"action": true}
+	if def.Schema.Workspace {
+		allowed["workspace"] = true
+	}
+	for _, p := range def.Schema.Params {
+		allowed[p.Name] = true
+	}
+	for k := range compatAcceptedInputKeys[def.Name] {
+		allowed[k] = true
+	}
+	return allowed
+}
+
+// rejectUndeclaredKeys refuses any input key outside the tool's
+// declared schema (#1066, ToolSurfaceVersion 0.22). Before this,
+// nothing set additionalProperties and BuildCLIArgs dropped unmapped
+// keys, so a typo'd or misplaced param was accepted, did nothing, and
+// still returned success — the worst version of wrong. Nil result
+// means the input is clean.
+func rejectUndeclaredKeys(def ToolDef, declared map[string]bool, input map[string]any) *mcp.CallToolResult {
+	var unknown []string
+	for k := range input {
+		if !declared[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	declaredNames := make([]string, 0, len(declared))
+	for k := range declared {
+		declaredNames = append(declaredNames, k)
+	}
+	sort.Strings(declaredNames)
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrValidationFailed,
+		Message: fmt.Sprintf("%s: unknown parameter(s): %s", def.Name, strings.Join(unknown, ", ")),
+		Hint: "Undeclared keys are rejected rather than silently dropped (ToolSurfaceVersion 0.22). Declared parameters: " +
+			strings.Join(declaredNames, ", "),
+	})
 }
 
 // sortedActionNames returns def.Actions' keys in lexical order. Used

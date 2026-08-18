@@ -190,6 +190,13 @@ func TestMakeFanOutHandler_StripsActionFromInput(t *testing.T) {
 	var seen map[string]any
 	def := ToolDef{
 		Name: "pad_test",
+		// days/actor_name are declared because the fan-out boundary now
+		// rejects undeclared input keys (ToolSurfaceVersion 0.22) — the
+		// pass-through under test is for DECLARED params only.
+		Schema: ToolSchema{Params: []ParamDef{
+			{Name: "days", Type: "number"},
+			{Name: "actor_name", Type: "string"},
+		}},
 		Actions: map[string]ActionFn{
 			"audit-log": func(_ context.Context, input map[string]any, _ ActionEnv) (*mcp.CallToolResult, error) {
 				seen = input
