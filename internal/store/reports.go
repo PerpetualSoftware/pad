@@ -18,28 +18,11 @@ import (
 // throughput bucketed over a window, net flow, completed-by-collection, and a
 // current status-distribution snapshot. "Completed" is a status_transitions
 // row INTO a *positive* terminal value (a terminal option that isn't a
-// negative outcome like rejected/cancelled — see negativeTerminals), counted
-// per the collection's done field. Created counts items.created_at.
+// negative outcome like rejected/cancelled — see models.NegativeTerminals),
+// counted per the collection's done field. Created counts items.created_at.
 //
 // Everything routes date math through dialect.DateBucket so the same query
 // runs on SQLite and Postgres.
-
-// negativeTerminals are terminal status values that represent a NON-shipping
-// close (the work didn't complete positively). They're excluded from the
-// "completed" throughput so a rejected idea or cancelled task isn't counted as
-// a completion. Matched case-insensitively against a collection's terminal
-// options. (A future task can make this per-collection configurable; for now
-// it's a sensible global default — PLAN-1628 decision.)
-var negativeTerminals = map[string]bool{
-	"rejected":  true,
-	"cancelled": true,
-	"canceled":  true,
-	"wontfix":   true,
-	"won't fix": true,
-	"duplicate": true,
-	"declined":  true,
-	"abandoned": true,
-}
 
 // ReportOptions parameterizes GetReport.
 type ReportOptions struct {
@@ -692,7 +675,7 @@ func (s *Store) resolveReportCollections(workspaceID string, opts ReportOptions)
 
 		var positives []string
 		for _, v := range terminals {
-			if negativeTerminals[strings.ToLower(strings.TrimSpace(v))] {
+			if models.IsNegativeTerminal(v) {
 				continue
 			}
 			positives = append(positives, v)

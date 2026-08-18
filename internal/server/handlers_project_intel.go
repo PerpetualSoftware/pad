@@ -122,23 +122,81 @@ func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (co
 	return collIDs, itemIDs, visibleIDs, nil
 }
 
-// listTerminalItemsSince fetches items in each of models.DefaultTerminalStatuses
-// (one ListItems call per status — mirrors the CLI's loop rather than OR-ing
-// statuses into a single query), keeping only items updated after cutoff, up
-// to limit items considered per status. A store error for one status is
-// swallowed and the loop continues — matches the CLI's best-effort
-// semantics: a transient failure on one status must not blank out the whole
-// report. The MCP transport inherits this by proxying here (TASK-1916)
-// rather than replicating the loop.
+// listTerminalItemsSince fetches items that reached a *positive* terminal
+// since cutoff. Terminal values are resolved per collection via
+// models.CollectionCompletedWorkValues (schema terminal_options, minus
+// models.NegativeTerminals) rather than iterating the global
+// DefaultTerminalStatuses union — so a collection that only declares
+// "shipped" is not scanned for "done", and a disabled convention is not
+// counted as completed work (BUG-1049).
+//
+// One ListItems call per (done-field, value) pair, scoped to the
+// collections that share that pair (mirrors the CLI's per-status
+// best-effort loop rather than OR-ing values into a single query). A
+// store error for one pair is swallowed and the loop continues: a
+// transient failure on one status must not blank out the whole report.
+// The MCP transport inherits this by proxying here (TASK-1916) rather
+// than replicating the loop.
+//
+// KEEP IN SYNC with cmd/pad/cmd_project.go's listCompletedWorkSince.
 func (s *Server) listTerminalItemsSince(
 	workspaceID string, collIDs, itemIDs []string, cutoff time.Time, limit int,
 ) []models.Item {
+	colls, err := s.store.ListCollections(workspaceID)
+	if err != nil {
+		return nil
+	}
+
+	// Resolve terminals for EVERY collection, including ones the caller
+	// only has an item-level grant on. ListItems treats CollectionIDs OR
+	// ItemIDs as the visibility filter; if we skipped those collections
+	// here we would never query their done-field values and a granted
+	// child in an item-grant-only collection would vanish from changelog
+	// (see TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection).
+	allowed := map[string]bool{}
+	restrict := collIDs != nil
+	if restrict {
+		for _, id := range collIDs {
+			allowed[id] = true
+		}
+	}
+
+	type queryKey struct {
+		field string
+		value string
+	}
+	groups := map[queryKey][]string{}
+	var order []queryKey
+	for _, c := range colls {
+		field, values := models.CollectionCompletedWorkValues(c.Schema, c.Settings)
+		for _, value := range values {
+			k := queryKey{field: field, value: value}
+			if _, exists := groups[k]; !exists {
+				order = append(order, k)
+			}
+			groups[k] = append(groups[k], c.ID)
+		}
+	}
+
 	var out []models.Item
-	for _, status := range models.DefaultTerminalStatuses {
+	for _, k := range order {
+		var queryCollIDs []string
+		if restrict {
+			for _, id := range groups[k] {
+				if allowed[id] {
+					queryCollIDs = append(queryCollIDs, id)
+				}
+			}
+			if len(queryCollIDs) == 0 && len(itemIDs) == 0 {
+				continue
+			}
+		} else {
+			queryCollIDs = groups[k]
+		}
 		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-			CollectionIDs: collIDs,
+			CollectionIDs: queryCollIDs,
 			ItemIDs:       itemIDs,
-			Fields:        map[string]string{"status": status},
+			Fields:        map[string]string{k.field: k.value},
 			Sort:          "updated_at:desc",
 			Limit:         limit,
 		})

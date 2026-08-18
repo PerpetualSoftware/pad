@@ -697,3 +697,42 @@ func TestBackfillStatusTransitions_SeedSeqBelowHop(t *testing.T) {
 		t.Fatalf("create-seed seq (%d) must be below the hop seq (%d)", seedSeq, hopSeq)
 	}
 }
+
+func TestGetReport_DisabledConventionNotCompleted(t *testing.T) {
+	s := testStore(t)
+	u, err := s.CreateUser(models.UserCreate{Name: "C", Email: "c@example.com"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Conv", Slug: "conv", OwnerID: u.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	col, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Conventions",
+		Slug:   "conventions",
+		Prefix: "CONVE",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","draft","disabled"],"terminal_options":["disabled"],"default":"active","required":true}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create conventions: %v", err)
+	}
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:  "Never push directly to main",
+		Fields: `{"status":"active"}`,
+	})
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"disabled"}`)}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	rep, err := s.GetReport(ws.ID, ReportOptions{Window: "week", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if rep.Totals.Completed != 0 {
+		t.Fatalf("disabled convention must not count as completed work, got %d", rep.Totals.Completed)
+	}
+}

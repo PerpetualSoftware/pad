@@ -641,3 +641,110 @@ func TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection(t *t
 		t.Fatalf("expected only the granted child %s, got %+v", child.Ref, resp.Groups)
 	}
 }
+
+// TestProjectStandupEndpoint_DisabledConventionNotCompleted pins BUG-1049:
+// disabling a convention is not completed work. The stock Conventions
+// schema declares terminal_options: ["disabled"]; standup must not list
+// those items under completed just because "disabled" is in the global
+// DefaultTerminalStatuses union.
+func TestProjectStandupEndpoint_DisabledConventionNotCompleted(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	disabled := createItem(t, srv, slug, "conventions", map[string]interface{}{
+		"title":  "Never push directly to main",
+		"fields": `{"status":"disabled"}`,
+	})
+	done := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Shipped it",
+		"fields": `{"status":"done"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/standup", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("standup: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp StandupResponse
+	parseJSON(t, rr, &resp)
+
+	for _, item := range resp.Completed {
+		if item.Ref == disabled.Ref || item.Status == "disabled" {
+			t.Fatalf("disabled convention %s must not appear in standup.completed, got %+v", disabled.Ref, resp.Completed)
+		}
+	}
+	if len(resp.Completed) != 1 || resp.Completed[0].Ref != done.Ref {
+		t.Fatalf("expected only the done task (%s) in completed, got %+v", done.Ref, resp.Completed)
+	}
+}
+
+// TestProjectStandupEndpoint_HonorsCollectionTerminalOptions pins the
+// mechanical half of BUG-1049: listTerminalItemsSince must resolve
+// terminal values per collection via TerminalValuesForDoneField, not the
+// global DefaultTerminalStatuses union. A collection that only declares
+// "shipped" as terminal must not report a "done" item as completed.
+func TestProjectStandupEndpoint_HonorsCollectionTerminalOptions(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+		"name":   "Ships",
+		"slug":   "ships",
+		"prefix": "SHIP",
+		"schema": `{"fields":[{"key":"status","type":"select","options":["open","done","shipped"],"terminal_options":["shipped"],"default":"open"}]}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ships collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	shipped := createItem(t, srv, slug, "ships", map[string]interface{}{
+		"title":  "Actually shipped",
+		"fields": `{"status":"shipped"}`,
+	})
+	createItem(t, srv, slug, "ships", map[string]interface{}{
+		"title":  "Mislabelled done",
+		"fields": `{"status":"done"}`,
+	})
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/standup", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("standup: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp StandupResponse
+	parseJSON(t, rr, &resp)
+
+	if len(resp.Completed) != 1 || resp.Completed[0].Ref != shipped.Ref {
+		t.Fatalf("expected only the shipped item (%s) in completed (done is not terminal on this collection), got %+v", shipped.Ref, resp.Completed)
+	}
+}
+
+func TestProjectChangelogEndpoint_DisabledConventionNotCompleted(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "conventions", map[string]interface{}{
+		"title":  "Never push directly to main",
+		"fields": `{"status":"disabled"}`,
+	})
+	done := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Shipped it",
+		"fields": `{"status":"done"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/changelog", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("changelog: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp ChangelogResponse
+	parseJSON(t, rr, &resp)
+	if resp.Total != 1 {
+		t.Fatalf("expected 1 completed item (the done task), got %d (%+v)", resp.Total, resp)
+	}
+	if len(resp.Groups) != 1 || resp.Groups[0].Items[0].Ref != done.Ref {
+		t.Fatalf("expected only the done task (%s), got %+v", done.Ref, resp.Groups)
+	}
+	for _, g := range resp.Groups {
+		if g.Collection == "Conventions" {
+			t.Fatalf("changelog must not group disabled conventions as completed: %+v", resp.Groups)
+		}
+	}
+}

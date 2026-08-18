@@ -276,3 +276,68 @@ func TestIsTerminalStatusDefault(t *testing.T) {
 		t.Fatal("expected 'in-progress' to NOT be default-terminal")
 	}
 }
+
+func TestIsNegativeTerminal(t *testing.T) {
+	if !IsNegativeTerminal("disabled") {
+		t.Fatal("expected 'disabled' to be a negative terminal (BUG-1049)")
+	}
+	if !IsNegativeTerminal("Rejected") {
+		t.Fatal("expected case-insensitive negative-terminal match")
+	}
+	if IsNegativeTerminal("done") {
+		t.Fatal("expected 'done' to remain a positive terminal")
+	}
+}
+
+func TestPositiveTerminalValuesForDoneField_DropsNegatives(t *testing.T) {
+	// Stock Conventions: the only schema-declared terminal is "disabled",
+	// which is a non-shipping close. Completed-work queries must see an
+	// empty positive set rather than treating the disabled rule as work.
+	schema := CollectionSchema{
+		Fields: []FieldDef{
+			{
+				Key:             "status",
+				Type:            "select",
+				Options:         []string{"active", "draft", "disabled"},
+				TerminalOptions: []string{"disabled"},
+			},
+		},
+	}
+	key, values := PositiveTerminalValuesForDoneField(schema, CollectionSettings{})
+	if key != "status" {
+		t.Fatalf("expected key 'status', got %q", key)
+	}
+	if len(values) != 0 {
+		t.Fatalf("expected no positive terminals for Conventions, got %v", values)
+	}
+}
+
+func TestPositiveTerminalValuesForDoneField_KeepsDone(t *testing.T) {
+	schema := CollectionSchema{
+		Fields: []FieldDef{
+			{
+				Key:             "status",
+				Type:            "select",
+				Options:         []string{"open", "done", "cancelled"},
+				TerminalOptions: []string{"done", "cancelled"},
+			},
+		},
+	}
+	_, values := PositiveTerminalValuesForDoneField(schema, CollectionSettings{})
+	if !reflect.DeepEqual(values, []string{"done"}) {
+		t.Fatalf("expected only 'done' (cancelled is negative), got %v", values)
+	}
+}
+
+func TestCollectionCompletedWorkValues_ParsesJSON(t *testing.T) {
+	key, values := CollectionCompletedWorkValues(
+		`{"fields":[{"key":"status","type":"select","options":["open","shipped"],"terminal_options":["shipped"]}]}`,
+		`{}`,
+	)
+	if key != "status" {
+		t.Fatalf("expected key 'status', got %q", key)
+	}
+	if !reflect.DeepEqual(values, []string{"shipped"}) {
+		t.Fatalf("expected [shipped], got %v", values)
+	}
+}
