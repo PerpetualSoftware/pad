@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -87,6 +88,66 @@ func TerminalValuesForDoneField(
 		}
 	}
 	return fieldKey, DefaultTerminalStatuses
+}
+
+// NegativeTerminals are terminal values that represent a NON-shipping close
+// (the work didn't complete positively). Project report throughput and the
+// standup/changelog "completed" lists exclude these so a rejected idea,
+// cancelled task, or disabled convention is not counted as completed work.
+// Matched case-insensitively.
+//
+// A future task can make this per-collection configurable; for now it's a
+// sensible global default (PLAN-1628). "disabled" is included so collections
+// whose only schema-declared terminal is "disabled" (stock Conventions) do
+// not report turning a rule off as throughput (BUG-1049).
+var NegativeTerminals = map[string]bool{
+	"rejected":  true,
+	"cancelled": true,
+	"canceled":  true,
+	"wontfix":   true,
+	"won't fix": true,
+	"duplicate": true,
+	"declined":  true,
+	"abandoned": true,
+	"disabled":  true,
+}
+
+// IsNegativeTerminal reports whether value is a non-shipping terminal.
+func IsNegativeTerminal(value string) bool {
+	return NegativeTerminals[strings.ToLower(strings.TrimSpace(value))]
+}
+
+// PositiveTerminalValuesForDoneField is TerminalValuesForDoneField minus
+// NegativeTerminals — the values that count as completed *work*.
+func PositiveTerminalValuesForDoneField(
+	schema CollectionSchema,
+	settings CollectionSettings,
+) (fieldKey string, values []string) {
+	fieldKey, terminals := TerminalValuesForDoneField(schema, settings)
+	values = make([]string, 0, len(terminals))
+	for _, v := range terminals {
+		if IsNegativeTerminal(v) {
+			continue
+		}
+		values = append(values, v)
+	}
+	return fieldKey, values
+}
+
+// CollectionCompletedWorkValues unmarshals a collection's persisted schema
+// and settings JSON (best-effort; parse failures fall back the same way
+// TerminalValuesForDoneField does) and returns the done-field key plus the
+// positive terminal values that count as completed work.
+func CollectionCompletedWorkValues(schemaJSON, settingsJSON string) (fieldKey string, values []string) {
+	var schema CollectionSchema
+	var settings CollectionSettings
+	if schemaJSON != "" {
+		_ = json.Unmarshal([]byte(schemaJSON), &schema)
+	}
+	if settingsJSON != "" {
+		_ = json.Unmarshal([]byte(settingsJSON), &settings)
+	}
+	return PositiveTerminalValuesForDoneField(schema, settings)
 }
 
 // TerminalPlaceholdersForDoneField is a SQL-layer convenience that returns

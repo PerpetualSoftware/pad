@@ -265,6 +265,40 @@ func nextCmd() *cobra.Command {
 	}
 }
 
+// listCompletedWorkSince fetches items that reached a *positive* terminal
+// since cutoff. Terminal values are resolved per collection via
+// models.CollectionCompletedWorkValues — KEEP IN SYNC with
+// server.listTerminalItemsSince (BUG-1049). Best-effort per collection
+// and status: a list error skips that query rather than failing the
+// whole report.
+func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, limit int) []models.Item {
+	colls, err := client.ListCollections(ws)
+	if err != nil {
+		return nil
+	}
+	var out []models.Item
+	for _, c := range colls {
+		field, values := models.CollectionCompletedWorkValues(c.Schema, c.Settings)
+		for _, status := range values {
+			params := url.Values{
+				field:   {status},
+				"sort":  {"updated_at:desc"},
+				"limit": {strconv.Itoa(limit)},
+			}
+			items, err := client.ListCollectionItems(ws, c.Slug, params)
+			if err != nil {
+				continue
+			}
+			for _, item := range items {
+				if item.UpdatedAt.After(cutoff) {
+					out = append(out, item)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // --- standup ---
 
 func standupCmd() *cobra.Command {
@@ -315,26 +349,8 @@ func standupCmd() *cobra.Command {
 				return fmt.Errorf("parsing dashboard: %w", err)
 			}
 
-			// Fetch recently completed items (terminal statuses)
-			doneStatuses := models.DefaultTerminalStatuses
-			var completedItems []models.Item
 			cutoff := time.Now().AddDate(0, 0, -days)
-
-			for _, status := range doneStatuses {
-				items, err := client.ListItems(ws, url.Values{
-					"status": {status},
-					"sort":   {"updated_at:desc"},
-					"limit":  {"20"},
-				})
-				if err != nil {
-					continue
-				}
-				for _, item := range items {
-					if item.UpdatedAt.After(cutoff) {
-						completedItems = append(completedItems, item)
-					}
-				}
-			}
+			completedItems := listCompletedWorkSince(client, ws, cutoff, 20)
 
 			// Fetch in-progress items
 			inProgressItems, err := client.ListItems(ws, url.Values{
@@ -689,25 +705,7 @@ func changelogCmd() *cobra.Command {
 				cutoff = time.Now().AddDate(0, 0, -days)
 			}
 
-			// Fetch completed items across all terminal statuses
-			doneStatuses := models.DefaultTerminalStatuses
-			var allItems []models.Item
-
-			for _, status := range doneStatuses {
-				items, err := client.ListItems(ws, url.Values{
-					"status": {status},
-					"sort":   {"updated_at:desc"},
-					"limit":  {"100"},
-				})
-				if err != nil {
-					continue
-				}
-				for _, item := range items {
-					if item.UpdatedAt.After(cutoff) {
-						allItems = append(allItems, item)
-					}
-				}
-			}
+			allItems := listCompletedWorkSince(client, ws, cutoff, 100)
 
 			// Filter by parent if specified
 			filterParent := parentRef
