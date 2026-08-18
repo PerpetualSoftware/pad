@@ -318,6 +318,15 @@ export async function persistUpserts(
  * inserting a snapshot here would resurrect rows a delta may have removed.
  * Rows that have MOVED to another collection are skipped too; see
  * shouldApplyRetag.
+ *
+ * LIMIT: this is still a best-effort WRITE, like everything else in this
+ * module, so a rename is lost outright if the transaction aborts (quota,
+ * eviction, tab freeze) — the catch below swallows it and nothing retries.
+ * A lost rename does not self-heal for the same reason it cannot be reordered:
+ * no item delta re-stamps those rows, and pendingRetags is in-memory. That is
+ * the same gap as BUG-2634, reached by failure rather than by racing, and the
+ * fix it proposes — persist the retag INTENT and reapply it on hydrate —
+ * closes both, which is why this is not a separate patch.
  */
 export function shouldApplyRetag(
 	existing: ItemIndexRow | undefined,
