@@ -85,8 +85,9 @@ fi
 # Release the lock on any exit so a clean session end frees it promptly.
 # INT/TERM must EXIT (a trap handler otherwise resumes the loop, which
 # would keep reconnecting without a lock while a new monitor starts); the
-# EXIT trap then does the cleanup on the way out.
-trap 'rm -rf "$lock" 2>/dev/null' EXIT
+# exit trap (condition 0, the portable spelling of EXIT — some strict
+# /bin/sh reject the EXIT name) then does the cleanup on the way out.
+trap 'rm -rf "$lock" 2>/dev/null' 0
 trap 'exit 130' INT TERM
 
 # --- 2/3. Gate + reconnect loop. Re-check consent before every stream

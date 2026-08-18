@@ -264,7 +264,29 @@ func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *t
 	}
 }
 
+// armSessionForTest puts the process in an armed session so
+// streamWatchEvents' per-notification consent gate (D1) lets events
+// through: a temp HOME/data-dir and a cwd whose .pad.toml sets
+// push.auto_arm=true, with no messaging socket or local override.
+func armSessionForTest(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"demo\"\n[push]\nauto_arm = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workDir)
+}
+
 func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T) {
+	armSessionForTest(t) // consent gate must pass for notifications to be delivered
 	body := "id: 1\nevent: connected\ndata: {\"user_id\":\"u1\"}\n\n" +
 		"id: 2\nevent: notification\ndata: {\"item_ref\":\"TASK-1\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"looks good\"}\n\n" +
 		"id: 3\nevent: notification\ndata: {\"item_ref\":\"TASK-2\",\"kind\":\"status-change\",\"actor\":\"Dave\",\"summary\":\"open → done\"}\n\n"
@@ -273,6 +295,37 @@ func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T)
 	lastID := streamWatchEvents(resp, "")
 	if lastID != "3" {
 		t.Fatalf("expected lastEventID to track the final id, got %q", lastID)
+	}
+}
+
+// TestStreamWatchEvents_StopsWhenNotArmed is the Codex R2 S3 HIGH-1
+// per-notification gate: a session that isn't armed must NOT have events
+// delivered — streamWatchEvents returns at the first notification instead
+// of printing it and moving on. Proven by the cursor stopping at the first
+// event's id rather than advancing to the second.
+func TestStreamWatchEvents_StopsWhenNotArmed(t *testing.T) {
+	// Not armed: temp HOME + a .pad.toml WITHOUT auto_arm, no socket.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"demo\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workDir)
+
+	body := "id: 1\nevent: notification\ndata: {\"item_ref\":\"TASK-1\",\"kind\":\"push\",\"actor\":\"Dave\",\"summary\":\"do it\"}\n\n" +
+		"id: 2\nevent: notification\ndata: {\"item_ref\":\"TASK-2\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"more\"}\n\n"
+
+	resp := fakeSSEResponse(body)
+	lastID := streamWatchEvents(resp, "")
+	if lastID == "2" {
+		t.Fatal("an unarmed session must not have events delivered — streamWatchEvents kept processing past the first notification")
 	}
 }
 
@@ -297,6 +350,7 @@ func TestStreamWatchEvents_SyncRequiredClearsLastEventID(t *testing.T) {
 // sync_required only resets the resume point, it doesn't disable
 // tracking for the rest of the stream.
 func TestStreamWatchEvents_SyncRequiredThenFreshNotification(t *testing.T) {
+	armSessionForTest(t) // consent gate must pass for the notification to be delivered
 	body := "event: sync_required\ndata: {\"reason\":\"gap too large\"}\n\n" +
 		"id: 99\nevent: notification\ndata: {\"item_ref\":\"TASK-9\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"hi\"}\n\n"
 

@@ -421,6 +421,15 @@ func SessionArmState() LocalArmState {
 	if st == nil {
 		return LocalArmAbsent
 	}
+	if !armStateWellFormed(st) {
+		// Parsed as JSON but missing the stamps our writer always sets — a
+		// truncated, hand-crafted, or foreign file (e.g. `{}` or
+		// `{"pid":1}`). Treat it exactly like a parse error: fail CLOSED and
+		// do NOT reap, so it can't be judged owner-dead, reaped, and then
+		// re-armed through auto_arm (Codex R2 S3 HIGH-2). Syntactic validity
+		// is not well-formedness.
+		return LocalArmError
+	}
 	if !armStateOwnerAlive(st) {
 		// Dead owner: reap the stale file so it can't override a future
 		// session (constraint 2). Absent falls back to auto_arm — which is
@@ -433,6 +442,20 @@ func SessionArmState() LocalArmState {
 		return LocalArmOff
 	}
 	return LocalArmOn
+}
+
+// armStateWellFormed reports whether a parsed ArmState carries the stamps
+// writeArmStateFile always sets — a non-empty RFC3339 StartedAt and a
+// positive PID. It is the fail-closed guard against a syntactically-valid
+// but semantically-garbage file (Codex R2 S3 HIGH-2): `{}` has no
+// StartedAt; `{"pid":1}` has a live-looking pid (init) but no StartedAt, so
+// without this it could be judged a live headless arm. It deliberately does
+// NOT validate the owner-identity stamps (socket mtime, ProcStart) — those
+// vary by platform and their absence is the documented headless residual,
+// not a corruption signal; the point here is only to reject files this code
+// could not have written.
+func armStateWellFormed(st *ArmState) bool {
+	return st != nil && st.StartedAt != "" && st.PID > 0
 }
 
 // SessionArmedLocally reports whether this session has a live explicit ARM

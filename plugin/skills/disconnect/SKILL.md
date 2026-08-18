@@ -22,5 +22,6 @@ Steps:
    in this repo will connect again — to turn that off permanently, remove
    `push.auto_arm` from `.pad.toml` (the same deliberate edit that turned it on).
 
-Note: the already-open monitor stream stops on its next reconnect, so there can be a
-brief window before delivery actually ceases. Run `/pad:status` to confirm the state.
+Note: the monitor re-checks consent every couple of seconds and drops the open stream
+when it sees the disarm, so delivery stops within a brief window rather than lingering.
+Run `/pad:status` to confirm the state.

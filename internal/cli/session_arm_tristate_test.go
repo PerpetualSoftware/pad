@@ -114,6 +114,33 @@ func TestTriState_ArmThenDisarmFlips(t *testing.T) {
 	}
 }
 
+// TestArmState_SemanticallyCorruptFailsClosed is the Codex R2 S3 HIGH-2
+// regression: a syntactically-valid but semantically-garbage file (missing
+// the stamps our writer always sets) must fail CLOSED — not be judged
+// owner-dead, reaped, and re-armed via auto_arm; and not be treated as a
+// live headless arm just because it names a live pid like init (1).
+func TestArmState_SemanticallyCorruptFailsClosed(t *testing.T) {
+	for _, body := range []string{`{}`, `{"pid":1}`, `{"pid":1,"armed":true}`} {
+		socketFile := triStateEnv(t) // auto_arm=true repo, so the distinction bites
+		path, err := armStatePath(socketFile, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if got := SessionArmState(); got != LocalArmError {
+			t.Fatalf("body %q: SessionArmState = %v, want LocalArmError", body, got)
+		}
+		if ResolveAnnouncedArmed() {
+			t.Fatalf("body %q: must fail closed — NOT armed and NOT via auto_arm", body)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("body %q: corrupt file must NOT be reaped: %v", body, err)
+		}
+	}
+}
+
 // TestMarkFirstConnect_OncePerSessionAcrossToggles: the boot ritual fires
 // on the first connect only (D8), and the flag survives arm/disarm toggles
 // so a reconnect or a consent flip never re-fires it.

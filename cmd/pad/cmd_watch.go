@@ -448,6 +448,30 @@ func runWatchMonitor(ctx context.Context) error {
 		// reconnect or exit). Cancelled on every exit path below.
 		streamCtx, cancelStream := context.WithCancel(sigCtx)
 
+		// Disarm-watcher, started BEFORE the connection is opened (Codex R2
+		// S3 HIGH-1): it re-checks consent every disarmPollInterval and
+		// cancels streamCtx the moment consent flips to not-armed. Because
+		// the request below is built on streamCtx, cancelling aborts an
+		// in-flight Do (a stalled handshake) as well as a blocked body read,
+		// so a within-session disarm stops delivery within the interval even
+		// mid-connect. It exits when streamCtx is done, which every path
+		// below guarantees via cancelStream().
+		go func() {
+			ticker := time.NewTicker(disarmPollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-streamCtx.Done():
+					return
+				case <-ticker.C:
+					if !cli.ResolveAnnouncedArmed() {
+						cancelStream()
+						return
+					}
+				}
+			}
+		}()
+
 		req, err := client.NewWatchEventsStreamRequest(streamCtx, lastEventID, monitorSessionIdentity())
 		if err != nil {
 			cancelStream()
@@ -487,32 +511,7 @@ func runWatchMonitor(ctx context.Context) error {
 
 		attempt = 0 // connected — reset backoff for the NEXT disconnect
 
-		// Disarm-watcher: while this stream is open, re-check consent every
-		// disarmPollInterval and cancel the connection the moment it flips
-		// to not-armed (a within-session `pad session disarm`). Cancelling
-		// streamCtx aborts the in-flight body read, so streamWatchEvents
-		// returns and the loop's top consent gate then exits the monitor.
-		watchDone := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(disarmPollInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-watchDone:
-					return
-				case <-streamCtx.Done():
-					return
-				case <-ticker.C:
-					if !cli.ResolveAnnouncedArmed() {
-						cancelStream()
-						return
-					}
-				}
-			}
-		}()
-
 		lastEventID = streamWatchEvents(resp, lastEventID)
-		close(watchDone)
 		resp.Body.Close()
 		cancelStream()
 
@@ -560,6 +559,17 @@ func streamWatchEvents(resp *http.Response, lastEventID string) string {
 		case line == "":
 			switch eventType {
 			case "notification":
+				// Consent re-check at the last possible moment (PLAN-2613 D1,
+				// Codex R2 S3 HIGH-1): a within-session `pad session disarm`
+				// may have landed after this connection opened but before this
+				// event. The 2s disarm-watcher will drop the connection, but a
+				// push must not be PRINTED in that window — so stop the stream
+				// on the first event once consent is withdrawn rather than
+				// delivering it. Returning ends this connection; the monitor
+				// loop's top gate then exits.
+				if !cli.ResolveAnnouncedArmed() {
+					return lastEventID
+				}
 				if data != "" {
 					var payload watchStreamPayload
 					if err := json.Unmarshal([]byte(data), &payload); err == nil {
