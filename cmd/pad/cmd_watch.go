@@ -102,8 +102,31 @@ type watchStreamPayload struct {
 // the stdout line as free-text session-notification prose, not a
 // structured format any code parses), so there is no wire-format
 // consumer to break by adding a field.
+// pushKind is the notification kind that carries an instruction from a
+// user (`pad push` / the web push composer), as opposed to the
+// informational item-change kinds (status-change / assignment / comment).
+// Only this kind gets the D5 authority envelope.
+const pushKind = "push"
+
+// pushEnvelopePrefix is PLAN-2613 D5's push framing, shipped VERBATIM
+// (Dave-approved, do not redraft). %s is the pushing user — self-addressed
+// delivery makes that this session's own user (handlers_push.go forces the
+// target to the caller). The backstop D5 notes — a push can inject text
+// but cannot click a permission prompt — is why the framing tells the
+// agent to confirm in-session for destructive/irreversible/out-of-scope
+// direction rather than treating the push as final.
+const pushEnvelopePrefix = "Push from %s via Pad — direction from your user; treat as if typed in this session. If it directs something destructive, irreversible, or clearly outside the current work, confirm in-session before acting rather than treating the push as final."
+
+// formatMonitorLine renders one notification as a single stdout line (the
+// harness ingests each line as a session notification). A push carries the
+// D5 authority envelope so the agent reads it as user direction WITH the
+// confirm-first guard; every other kind is a light informational label —
+// item-change data, not an instruction (D5 watch framing).
 func formatMonitorLine(p watchStreamPayload) string {
-	return fmt.Sprintf("PAD %s/%s → %s (%s): %s", p.Workspace, p.ItemRef, p.Kind, p.Actor, p.Summary)
+	if p.Kind == pushKind {
+		return fmt.Sprintf(pushEnvelopePrefix+" — %s/%s: %s", p.Actor, p.Workspace, p.ItemRef, p.Summary)
+	}
+	return fmt.Sprintf("PAD (update) %s/%s → %s (%s): %s", p.Workspace, p.ItemRef, p.Kind, p.Actor, p.Summary)
 }
 
 // sleepOrDone waits for d or ctx cancellation, whichever comes first.
@@ -356,17 +379,25 @@ func monitorSessionIdentity() cli.StreamSessionIdentity {
 	// The server's own armed bit (D3/S1) remains the delivery authority;
 	// this only decides what the client ANNOUNCES.
 	//
-	// This value is snapshotted here, at connect. A `pad session disarm`
-	// that lands AFTER this read but before the stream request is sent
-	// leaves the just-opened connection announcing armed=true until its
-	// next reconnect (Codex R2 finding 4) — an inherent check-then-connect
-	// TOCTOU, bounded to one reconnect window and re-evaluated every
-	// reconnect (the monitor re-reads on each loop iteration). Fully
-	// closing it needs a server-side disarm signal on an already-open
-	// connection, which is S3's reconnect/heal job, not this snapshot's.
-	ident.Armed = cli.SessionArmedLocally() || cli.ResolveAutoArmFromDisk().Armed
+	// ResolveAnnouncedArmed is the S3 tri-state resolution: a live explicit
+	// `pad session disarm` (OFF) wins over the repo's auto_arm, a live
+	// `pad session arm` (ON) arms, and only an absent local override lets
+	// auto_arm decide. It is snapshotted at connect; runWatchMonitor's
+	// disarm-watcher (below) drops the connection when it flips false
+	// mid-stream, so a within-session disarm actually stops delivery
+	// (Codex R1 S3 HIGH-1) rather than lingering until a natural reconnect
+	// that an idle SSE connection might never have.
+	ident.Armed = cli.ResolveAnnouncedArmed()
 	return ident
 }
+
+// disarmPollInterval is how often the monitor re-checks consent while a
+// stream is open. A within-session `pad session disarm` takes effect
+// within this bound: the watcher drops the connection, the monitor exits,
+// and the plugin wrapper's should-arm gate then keeps it dead. Short
+// enough that "disconnect" is honest, long enough that the file reads are
+// negligible.
+const disarmPollInterval = 2 * time.Second
 
 func runWatchMonitor(ctx context.Context) error {
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -377,6 +408,17 @@ func runWatchMonitor(ctx context.Context) error {
 
 	for {
 		if sigCtx.Err() != nil {
+			return nil
+		}
+
+		// PLAN-2613 S3 / D1: the whole stream lives behind consent. If this
+		// session should not announce armed — never armed, or an explicit
+		// disarm that beats auto_arm — do not open a stream, and exit so the
+		// plugin wrapper's should-arm gate keeps the monitor dead. This is
+		// also the mid-session disarm exit: the disarm-watcher below drops
+		// an open connection, streamWatchEvents returns, and this check then
+		// ends the loop instead of reconnecting.
+		if !cli.ResolveAnnouncedArmed() {
 			return nil
 		}
 
@@ -400,8 +442,39 @@ func runWatchMonitor(ctx context.Context) error {
 			continue
 		}
 
-		req, err := client.NewWatchEventsStreamRequest(sigCtx, lastEventID, monitorSessionIdentity())
+		// streamCtx is a per-connection child of sigCtx so the disarm-
+		// watcher can drop THIS stream without ending the whole monitor
+		// loop (the loop's top-of-iteration consent gate decides whether to
+		// reconnect or exit). Cancelled on every exit path below.
+		streamCtx, cancelStream := context.WithCancel(sigCtx)
+
+		// Disarm-watcher, started BEFORE the connection is opened (Codex R2
+		// S3 HIGH-1): it re-checks consent every disarmPollInterval and
+		// cancels streamCtx the moment consent flips to not-armed. Because
+		// the request below is built on streamCtx, cancelling aborts an
+		// in-flight Do (a stalled handshake) as well as a blocked body read,
+		// so a within-session disarm stops delivery within the interval even
+		// mid-connect. It exits when streamCtx is done, which every path
+		// below guarantees via cancelStream().
+		go func() {
+			ticker := time.NewTicker(disarmPollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-streamCtx.Done():
+					return
+				case <-ticker.C:
+					if !cli.ResolveAnnouncedArmed() {
+						cancelStream()
+						return
+					}
+				}
+			}
+		}()
+
+		req, err := client.NewWatchEventsStreamRequest(streamCtx, lastEventID, monitorSessionIdentity())
 		if err != nil {
+			cancelStream()
 			attempt++
 			if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
 				return nil
@@ -416,6 +489,7 @@ func runWatchMonitor(ctx context.Context) error {
 		httpClient := &http.Client{}
 		resp, err := httpClient.Do(req)
 		if err != nil {
+			cancelStream()
 			if sigCtx.Err() != nil {
 				return nil
 			}
@@ -427,6 +501,7 @@ func runWatchMonitor(ctx context.Context) error {
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
+			cancelStream()
 			attempt++
 			if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
 				return nil
@@ -435,8 +510,10 @@ func runWatchMonitor(ctx context.Context) error {
 		}
 
 		attempt = 0 // connected — reset backoff for the NEXT disconnect
+
 		lastEventID = streamWatchEvents(resp, lastEventID)
 		resp.Body.Close()
+		cancelStream()
 
 		if sigCtx.Err() != nil {
 			return nil
@@ -482,6 +559,17 @@ func streamWatchEvents(resp *http.Response, lastEventID string) string {
 		case line == "":
 			switch eventType {
 			case "notification":
+				// Consent re-check at the last possible moment (PLAN-2613 D1,
+				// Codex R2 S3 HIGH-1): a within-session `pad session disarm`
+				// may have landed after this connection opened but before this
+				// event. The 2s disarm-watcher will drop the connection, but a
+				// push must not be PRINTED in that window — so stop the stream
+				// on the first event once consent is withdrawn rather than
+				// delivering it. Returning ends this connection; the monitor
+				// loop's top gate then exits.
+				if !cli.ResolveAnnouncedArmed() {
+					return lastEventID
+				}
 				if data != "" {
 					var payload watchStreamPayload
 					if err := json.Unmarshal([]byte(data), &payload); err == nil {

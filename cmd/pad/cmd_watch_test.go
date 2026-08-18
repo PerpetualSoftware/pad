@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 // fakeSSEResponse wraps a raw SSE body string in an *http.Response
@@ -68,29 +66,30 @@ func TestFormatMonitorLine(t *testing.T) {
 		want string
 	}{
 		{
-			name: "status change",
+			name: "status change (informational — no envelope)",
 			in:   watchStreamPayload{Workspace: "demo", ItemRef: "TASK-214", Kind: "status-change", Actor: "Dave", Summary: "open → done"},
-			want: "PAD demo/TASK-214 → status-change (Dave): open → done",
+			want: "PAD (update) demo/TASK-214 → status-change (Dave): open → done",
 		},
 		{
-			name: "assignment",
+			name: "assignment (informational — no envelope)",
 			in:   watchStreamPayload{Workspace: "demo", ItemRef: "BUG-5", Kind: "assignment", Actor: "Alice", Summary: "assigned to Alice"},
-			want: "PAD demo/BUG-5 → assignment (Alice): assigned to Alice",
+			want: "PAD (update) demo/BUG-5 → assignment (Alice): assigned to Alice",
 		},
 		{
-			name: "comment",
+			name: "comment (informational — no envelope)",
 			in:   watchStreamPayload{Workspace: "demo", ItemRef: "TASK-1", Kind: "comment", Actor: "Bob", Summary: "fix verified"},
-			want: "PAD demo/TASK-1 → comment (Bob): fix verified",
+			want: "PAD (update) demo/TASK-1 → comment (Bob): fix verified",
 		},
 		{
 			// IDEA-2544 Phase 1, dispatcher review round 2 (codex P1): the
 			// workspace prefix matters most here — push carries an
 			// instruction, so a caller resolving it against the wrong
 			// linked workspace is a worse failure mode than for a passive
-			// fact.
-			name: "push, different workspace than the item ref alone would suggest",
+			// fact. PLAN-2613 D5: a push also carries the authority envelope
+			// (verbatim), which the informational kinds must not.
+			name: "push carries the D5 envelope, verbatim, with the workspace prefix",
 			in:   watchStreamPayload{Workspace: "other-workspace", ItemRef: "TASK-9", Kind: "push", Actor: "Dave", Summary: "triage this with the triage playbook"},
-			want: "PAD other-workspace/TASK-9 → push (Dave): triage this with the triage playbook",
+			want: "Push from Dave via Pad — direction from your user; treat as if typed in this session. If it directs something destructive, irreversible, or clearly outside the current work, confirm in-session before acting rather than treating the push as final. — other-workspace/TASK-9: triage this with the triage playbook",
 		},
 	}
 	for _, c := range cases {
@@ -99,6 +98,24 @@ func TestFormatMonitorLine(t *testing.T) {
 				t.Errorf("formatMonitorLine(%+v) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// TestFormatMonitorLine_OnlyPushGetsEnvelope pins the D5 boundary: the
+// authority framing ("direction from your user") appears for a push and
+// for NOTHING else, so an informational item-change is never mistaken for
+// an instruction.
+func TestFormatMonitorLine_OnlyPushGetsEnvelope(t *testing.T) {
+	const marker = "direction from your user"
+	push := formatMonitorLine(watchStreamPayload{Workspace: "w", ItemRef: "T-1", Kind: "push", Actor: "Dave", Summary: "do it"})
+	if !strings.Contains(push, marker) {
+		t.Fatalf("push line must carry the authority envelope, got %q", push)
+	}
+	for _, kind := range []string{"status-change", "assignment", "comment", "ask"} {
+		line := formatMonitorLine(watchStreamPayload{Workspace: "w", ItemRef: "T-1", Kind: kind, Actor: "Dave", Summary: "x"})
+		if strings.Contains(line, marker) {
+			t.Fatalf("informational kind %q must NOT carry the authority envelope, got %q", kind, line)
+		}
 	}
 }
 
@@ -166,6 +183,45 @@ func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
 	}
 }
 
+// TestRunWatchMonitor_ExitsWhenNotArmed is the Codex R1 S3 HIGH-1 gate:
+// the whole stream lives behind consent (D1), so an unarmed session's
+// monitor must exit ON ITS OWN — not merely on context cancellation — so
+// the plugin wrapper's should-arm gate then keeps it dead. Proven by using
+// a context that outlives the assertion: if the monitor returns before the
+// short deadline, it did so because of the consent gate, not the ctx.
+func TestRunWatchMonitor_ExitsWhenNotArmed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "") // no socket, no arm file
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+
+	workDir := t.TempDir()
+	// .pad.toml present but NO auto_arm → the session is not armed.
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"demo\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runWatchMonitor(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runWatchMonitor did not exit on its own for an unarmed session (HIGH-1 consent gate missing?)")
+	}
+}
+
 // TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation
 // covers the ordering fix directly: a .pad.toml IS present (so the
 // no-workspace gate passes) but the client is unconfigured (no global
@@ -173,6 +229,11 @@ func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
 // return a plain error that the loop folds into the backoff-retry path,
 // not an os.Exit or a blocked prompt. Proven the same way: the goroutine
 // returns promptly once the context is cancelled.
+//
+// The .pad.toml sets push.auto_arm=true so the session is ARMED — otherwise
+// the S3 consent gate (HIGH-1) would exit the monitor before it ever
+// reaches monitorClient, making this test vacuous. Arming keeps it
+// exercising the unconfigured-client backoff path it exists to cover.
 func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -181,8 +242,10 @@ func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *t
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
-	if err := cli.WriteWorkspaceLink(workDir, "test-ws", ""); err != nil {
-		t.Fatalf("WriteWorkspaceLink: %v", err)
+	// Armed via auto_arm, and no URL → configured-workspace gate passes but
+	// the client is unconfigured (the path under test).
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"test-ws\"\n[push]\nauto_arm = true\n"), 0600); err != nil {
+		t.Fatalf("write .pad.toml: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -201,7 +264,29 @@ func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *t
 	}
 }
 
+// armSessionForTest puts the process in an armed session so
+// streamWatchEvents' per-notification consent gate (D1) lets events
+// through: a temp HOME/data-dir and a cwd whose .pad.toml sets
+// push.auto_arm=true, with no messaging socket or local override.
+func armSessionForTest(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"demo\"\n[push]\nauto_arm = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workDir)
+}
+
 func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T) {
+	armSessionForTest(t) // consent gate must pass for notifications to be delivered
 	body := "id: 1\nevent: connected\ndata: {\"user_id\":\"u1\"}\n\n" +
 		"id: 2\nevent: notification\ndata: {\"item_ref\":\"TASK-1\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"looks good\"}\n\n" +
 		"id: 3\nevent: notification\ndata: {\"item_ref\":\"TASK-2\",\"kind\":\"status-change\",\"actor\":\"Dave\",\"summary\":\"open → done\"}\n\n"
@@ -210,6 +295,37 @@ func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T)
 	lastID := streamWatchEvents(resp, "")
 	if lastID != "3" {
 		t.Fatalf("expected lastEventID to track the final id, got %q", lastID)
+	}
+}
+
+// TestStreamWatchEvents_StopsWhenNotArmed is the Codex R2 S3 HIGH-1
+// per-notification gate: a session that isn't armed must NOT have events
+// delivered — streamWatchEvents returns at the first notification instead
+// of printing it and moving on. Proven by the cursor stopping at the first
+// event's id rather than advancing to the second.
+func TestStreamWatchEvents_StopsWhenNotArmed(t *testing.T) {
+	// Not armed: temp HOME + a .pad.toml WITHOUT auto_arm, no socket.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, ".pad.toml"), []byte("workspace = \"demo\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workDir)
+
+	body := "id: 1\nevent: notification\ndata: {\"item_ref\":\"TASK-1\",\"kind\":\"push\",\"actor\":\"Dave\",\"summary\":\"do it\"}\n\n" +
+		"id: 2\nevent: notification\ndata: {\"item_ref\":\"TASK-2\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"more\"}\n\n"
+
+	resp := fakeSSEResponse(body)
+	lastID := streamWatchEvents(resp, "")
+	if lastID == "2" {
+		t.Fatal("an unarmed session must not have events delivered — streamWatchEvents kept processing past the first notification")
 	}
 }
 
@@ -234,6 +350,7 @@ func TestStreamWatchEvents_SyncRequiredClearsLastEventID(t *testing.T) {
 // sync_required only resets the resume point, it doesn't disable
 // tracking for the rest of the stream.
 func TestStreamWatchEvents_SyncRequiredThenFreshNotification(t *testing.T) {
+	armSessionForTest(t) // consent gate must pass for the notification to be delivered
 	body := "event: sync_required\ndata: {\"reason\":\"gap too large\"}\n\n" +
 		"id: 99\nevent: notification\ndata: {\"item_ref\":\"TASK-9\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"hi\"}\n\n"
 

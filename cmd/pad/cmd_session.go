@@ -24,9 +24,75 @@ func sessionCmd() *cobra.Command {
 		sessionArmCmd(),
 		sessionDisarmCmd(),
 		sessionStatusCmd(),
+		sessionShouldArmCmd(),
+		sessionFirstConnectCmd(),
 	)
 	return cmd
 }
+
+// sessionFirstConnectCmd is `pad session first-connect` (PLAN-2613 S3,
+// D8): reports whether this session's first-connect boot ritual should run
+// now and marks it done, so /pad:connect fires the workspace's
+// on-session-start playbooks exactly once per session. Prints
+// {"first_connect": bool}. Not hidden from JSON callers but off the main
+// help — it is a plumbing verb the connect skill calls, paired with arm.
+func sessionFirstConnectCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "first-connect",
+		Short:  "Report+mark whether this is the session's first connect (internal; used by /pad:connect)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			first, err := cli.MarkFirstConnect()
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{"first_connect": first})
+			}
+			if first {
+				fmt.Println("first-connect")
+			} else {
+				fmt.Println("reconnect")
+			}
+			return nil
+		},
+	}
+}
+
+// sessionShouldArmCmd is `pad session should-arm` (PLAN-2613 S3): a quiet
+// exit-code gate for the plugin monitor wrapper. Exit 0 means this session
+// should announce armed right now (a live explicit arm, or auto_arm with
+// no explicit disarm); exit 1 means it should not. It prints nothing, so
+// the wrapper can branch on `$?` without parsing. Hidden — it is an
+// internal plugin contract, not a user verb (the user surface is
+// arm/disarm/status).
+//
+// This is what makes the monitor-existence gate real (D1): the `always`
+// auto-arm monitor runs this once and exits when it returns non-zero, so
+// no consent → no stream, and the per-reconnect re-check lets a
+// within-session disarm stop the stream on its next reconnect.
+func sessionShouldArmCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "should-arm",
+		Short:         "Exit 0 if this session should announce armed (internal; used by the plugin monitor)",
+		Hidden:        true,
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cli.ResolveAnnouncedArmed() {
+				return nil // exit 0 — should arm
+			}
+			// Non-zero exit, no output. The sentinel message is silenced.
+			return errNotArmed
+		},
+	}
+}
+
+// errNotArmed is the silent sentinel for `pad session should-arm`'s
+// exit-1 path — SilenceErrors keeps it off the terminal.
+var errNotArmed = fmt.Errorf("not armed")
 
 // sessionRegisterCmd registers the CURRENT process in the on-disk
 // session registry (~/.pad/sessions/<pid>.json). See
@@ -117,39 +183,47 @@ table in the repo's .pad.toml (a deliberate, committed choice).`,
 	}
 }
 
-// sessionDisarmCmd is `pad session disarm` (PLAN-2613 S2, TASK-2617): the
-// withdrawal verb. It removes this session's arm-state file, so a monitor
-// stops announcing armed on its next connect. Idempotent — disarming a
-// session that was never armed is a success, not an error.
+// sessionDisarmCmd is `pad session disarm` (PLAN-2613 S3, TASK-2618): the
+// withdrawal verb. It writes a session-scoped explicit-OFF marker (NOT a
+// file removal), so the session stops accepting pushes for its remaining
+// life EVEN in an auto_arm=true repo — the disconnect verb must not be a
+// lie there. The marker dies with the session (same liveness as an arm),
+// so across sessions auto_arm remains the standing contract; permanent-off
+// is a .pad.toml edit. Idempotent.
 func sessionDisarmCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "disarm",
 		Short: "Withdraw this session's consent to pad push notifications",
-		Long: `Disarm this session: remove its local arm-state file so it stops
-accepting 'pad push' notifications.
+		Long: `Disarm this session: stop accepting 'pad push' notifications for the
+rest of this session.
 
-Idempotent — disarming a session that was not armed still succeeds.
+This holds even when the repository opted in via .pad.toml
+'push.auto_arm = true' — the disconnect is session-scoped and wins for this
+session. It does NOT revoke the repo's standing consent: a NEW session in
+an auto_arm repo arms again. To turn auto-arm off permanently, remove
+'push.auto_arm' from .pad.toml (the same deliberate edit that turned it on).
 
-Note: this withdraws an EXPLICIT 'pad session arm'. If the repository
-opted in via .pad.toml 'push.auto_arm = true', the session still auto-arms
-by policy; remove that setting to stop it.`,
+Idempotent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			removed, path, err := cli.RemoveArmState()
+			path, err := cli.WriteDisarmState()
 			if err != nil {
 				return err
 			}
+			// Whether auto_arm would otherwise re-arm THIS session tells the
+			// user if the disarm actually changed anything visible.
+			autoArm := cli.ResolveAutoArmFromDisk().Armed
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{
-					"armed":     false,
-					"was_armed": removed,
-					"path":      path,
+					"armed":              false,
+					"disarmed":           true,
+					"path":               path,
+					"auto_arm_would_arm": autoArm,
 				})
 			}
-			if removed {
-				fmt.Println("Disarmed this session — it no longer accepts pad push notifications.")
-			} else {
-				fmt.Println("This session was not armed; nothing to disarm.")
+			fmt.Println("Disarmed this session — it no longer accepts pad push notifications.")
+			if autoArm {
+				fmt.Println("(This repo has push.auto_arm=true; a NEW session will arm again. Remove it from .pad.toml to stop that.)")
 			}
 			return nil
 		},
@@ -160,9 +234,14 @@ by policy; remove that setting to stop it.`,
 // contract S4's composer and other tooling can read).
 type sessionStatusJSON struct {
 	Workspace string `json:"workspace,omitempty"`
-	// LocalArmed is whether THIS session has a live local arm declaration
-	// (the explicit `pad session arm` path). It reflects intent on this
+	// LocalState is THIS session's tri-state local override (PLAN-2613 S3):
+	// "armed" (explicit `pad session arm`), "disarmed" (explicit `pad
+	// session disarm`, which beats auto_arm for this session), or "none"
+	// (no live override — auto_arm decides). It reflects intent on this
 	// machine, not server state.
+	LocalState string `json:"local_state"`
+	// LocalArmed is the boolean shorthand: LocalState == "armed". Retained
+	// for a simple read; LocalState carries the full tri-state.
 	LocalArmed bool `json:"local_armed"`
 	// AutoArm is the resolved .pad.toml + per-user config decision (the
 	// auto path).
@@ -174,8 +253,9 @@ type sessionStatusJSON struct {
 	// says so, so the off state reads as "couldn't confirm" rather than
 	// "not opted in".
 	AutoArmConfigError bool `json:"auto_arm_config_error"`
-	// Announced is what a stream this session opens now would declare:
-	// LocalArmed OR AutoArm.
+	// Announced is what a stream this session opens now would declare
+	// (ResolveAnnouncedArmed): a live explicit local override wins (armed
+	// arms, disarmed does not), otherwise auto_arm decides.
 	Announced bool `json:"announced_armed"`
 	// ServerReachable reports whether the server answered; when false the
 	// session counts are unknown, not zero.
@@ -199,15 +279,16 @@ func sessionStatusCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			decision := cli.ResolveAutoArmFromDisk()
-			localArmed := cli.SessionArmedLocally()
+			localState := cli.SessionArmState()
 
 			st := sessionStatusJSON{
-				LocalArmed:         localArmed,
+				LocalState:         localArmStateString(localState),
+				LocalArmed:         localState == cli.LocalArmOn,
 				AutoArm:            decision.Armed,
 				AutoArmRepo:        decision.RepoAutoArm,
 				AutoArmVeto:        decision.UserVeto,
 				AutoArmConfigError: decision.ConfigUnreadable,
-				Announced:          localArmed || decision.Armed,
+				Announced:          cli.ResolveAnnouncedArmed(),
 			}
 			if ws, err := cli.DetectWorkspace(workspaceFlag); err == nil {
 				st.Workspace = ws
@@ -277,6 +358,20 @@ func serverSessionCounts() (sessionCounts, bool) {
 	return counts, true
 }
 
+// localArmStateString maps the tri-state to the stable JSON token.
+func localArmStateString(s cli.LocalArmState) string {
+	switch s {
+	case cli.LocalArmOn:
+		return "armed"
+	case cli.LocalArmOff:
+		return "disarmed"
+	case cli.LocalArmError:
+		return "error"
+	default:
+		return "none"
+	}
+}
+
 func printSessionStatus(st sessionStatusJSON) {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	ws := st.Workspace
@@ -285,11 +380,16 @@ func printSessionStatus(st sessionStatusJSON) {
 	}
 	fmt.Fprintf(tw, "Workspace:\t%s\n", ws)
 
-	local := "not armed"
-	if st.LocalArmed {
+	local := "none (no explicit arm/disarm this session)"
+	switch st.LocalState {
+	case "armed":
 		local = "armed (pad session arm)"
+	case "disarmed":
+		local = "disarmed (pad session disarm) — wins for this session"
+	case "error":
+		local = "unreadable local state — failing closed (run pad session arm to reset)"
 	}
-	fmt.Fprintf(tw, "Local arm:\t%s\n", local)
+	fmt.Fprintf(tw, "Local state:\t%s\n", local)
 
 	auto := "off"
 	switch {
@@ -307,6 +407,12 @@ func printSessionStatus(st sessionStatusJSON) {
 		announced = "yes — this session declares consent on connect"
 	}
 	fmt.Fprintf(tw, "Announced:\t%s\n", announced)
+
+	// The honest tri-state note the ruling requires: an explicit disarm in
+	// an auto_arm repo holds only for this session.
+	if st.LocalState == "disarmed" && st.AutoArm {
+		fmt.Fprintf(tw, "Note:\tdisarmed this session; auto_arm will re-arm the next session\n")
+	}
 
 	if st.ServerReachable {
 		fmt.Fprintf(tw, "Server sees:\t%d connected, %d accepting pushes\n", st.Connected, st.Accepting)
