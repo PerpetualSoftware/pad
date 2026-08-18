@@ -188,7 +188,11 @@
 			// nothing accepting, the action copies instead. The array (not
 			// `count`) is what the server enumerated; the two can only disagree
 			// if something is wrong, in which case enumeration is the honest one.
-			presence = { state: 'known', count: resp.sessions?.filter((s) => s.armed).length ?? 0 };
+			presence = {
+				state: 'known',
+				count: resp.sessions?.filter((s) => s.armed).length ?? 0,
+				connected: resp.sessions?.length ?? 0
+			};
 		} catch {
 			if (!stillCurrent()) return;
 			presenceAppliedSeq = seq;
@@ -370,15 +374,20 @@
 		if (presence.state === 'unknown') {
 			return 'Can’t tell if an agent is connected — actions copy to your clipboard';
 		}
-		if (presence.count === 0) {
-			// "accepting", not "connected": a session may be connected but not
-			// armed, in which case a push is dropped and the action copies
-			// (PLAN-2613 S4). The count above is already the accepting subset.
-			return 'No agent session accepting pushes — actions copy to your clipboard';
+		// Honest split (PLAN-2613 S4, D3): `count` is the ACCEPTING subset that
+		// decides push-vs-copy; `connected` is the total, shown so a
+		// connected-but-unarmed session isn't hidden behind a bare zero.
+		const accepting = presence.count;
+		const connected = presence.connected ?? accepting;
+		if (accepting === 0) {
+			return connected > 0
+				? `${connected} connected, 0 accepting pushes — actions copy; run /pad:connect to enable`
+				: 'No agent session connected — actions copy to your clipboard';
 		}
-		return presence.count === 1
-			? 'Pushes to your agent session'
-			: `Pushes to your ${presence.count} agent sessions accepting pushes`;
+		const ofConnected = connected > accepting ? ` (of ${connected} connected)` : '';
+		return accepting === 1
+			? `Pushes to 1 accepting session${ofConnected}`
+			: `Pushes to ${accepting} accepting sessions${ofConnected}`;
 	});
 
 	function resetCreateForm() {

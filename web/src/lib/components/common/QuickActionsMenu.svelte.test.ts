@@ -509,7 +509,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		const { host, component } = mountMenu();
 		await openMenu(host);
 		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-			'No agent session accepting pushes — actions copy to your clipboard'
+			'No agent session connected — actions copy to your clipboard'
 		);
 		unmount(component);
 		host.remove();
@@ -518,10 +518,46 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		const live = mountMenu();
 		await openMenu(live.host);
 		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-			'Pushes to your 2 agent sessions accepting pushes'
+			'Pushes to 2 accepting sessions'
 		);
 		unmount(live.component);
 		live.host.remove();
+	});
+
+	it('shows the accepting-of-connected split when some sessions are unarmed (PLAN-2613 S4)', async () => {
+		// 3 connected, 1 accepting — the honest split D3 wants, not a bare "1".
+		sessionsListMock.mockResolvedValue({
+			sessions: [
+				{ id: 's1', armed: true },
+				{ id: 's2', armed: false },
+				{ id: 's3', armed: false }
+			],
+			count: 3
+		});
+		const { host, component } = mountMenu();
+		await openMenu(host);
+		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			'Pushes to 1 accepting session (of 3 connected)'
+		);
+		unmount(component);
+		host.remove();
+
+		// Connected but none accepting: the tagline names both and points at
+		// the enable path rather than reading as "nobody there".
+		sessionsListMock.mockResolvedValue({
+			sessions: [
+				{ id: 's1', armed: false },
+				{ id: 's2', armed: false }
+			],
+			count: 2
+		});
+		const none = mountMenu();
+		await openMenu(none.host);
+		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			'2 connected, 0 accepting pushes — actions copy; run /pad:connect to enable'
+		);
+		unmount(none.component);
+		none.host.remove();
 	});
 });
 
@@ -553,7 +589,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 
 			// The first read landed: the menu is armed to push.
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your agent session'
+				'Pushes to 1 accepting session'
 			);
 
 			// Four poll intervals later — nothing has refreshed it. (The TAGLINE
@@ -600,7 +636,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			vi.setSystemTime(Date.now() + 5 * 60_000);
 			flushSync();
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your agent session'
+				'Pushes to 1 accepting session'
 			);
 
 			// The decision must not inherit that staleness.
@@ -635,7 +671,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			await vi.advanceTimersByTimeAsync(29_000);
 			flushSync();
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your agent session'
+				'Pushes to 1 accepting session'
 			);
 
 			// Just past it — and well before the next 10s poll tick at t=40s.
@@ -667,7 +703,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			flushSync();
 
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your agent session'
+				'Pushes to 1 accepting session'
 			);
 			actionRow(host, 'Ship it').click();
 			await vi.advanceTimersByTimeAsync(0);

@@ -79,7 +79,12 @@ export function isPrePublishRefusal(err: unknown): boolean {
  * `handleListSessions` returns 503 rather than an empty list to avoid.
  */
 export type PushPresence =
-	| { state: 'known'; count: number }
+	// `count` is the ACCEPTING (armed) count — the routing gate: only an armed
+	// session receives a push (PLAN-2613 S4). `connected` is the total live
+	// count, carried alongside so a tagline can show the honest split
+	// ("M accepting of N connected") without a second read; optional so
+	// routing-only consumers need not supply it.
+	| { state: 'known'; count: number; connected?: number }
 	| { state: 'unknown' };
 
 /** Why a prompt went to the clipboard instead of an agent session. */
