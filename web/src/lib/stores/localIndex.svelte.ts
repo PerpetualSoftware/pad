@@ -67,6 +67,7 @@ import {
 	persistUpserts,
 	wipe as persistWipe,
 } from './localIndexPersistence';
+import { preserveProjectionMetadata, mergeEqualSeqProjection } from './itemRowMerge';
 import { localSearch } from './localSearch.svelte';
 import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 
@@ -218,30 +219,11 @@ function toSkinny(row: ItemIndexRow | Item): ItemIndexRow {
 	return row;
 }
 
-// Full mutation responses intentionally omit local-first-only projections.
-// Carry the existing value across optimistic replacements until the
-// authoritative index/delta row for that seq arrives.
-function preserveProjectionMetadata(
-	existing: ItemIndexRow | undefined,
-	next: ItemIndexRow,
-): ItemIndexRow {
-	if (existing && !('is_unparented' in next) && 'is_unparented' in existing) {
-		return { ...next, is_unparented: existing.is_unparented };
-	}
-	return next;
-}
-
-// An index/delta row with the same seq as an optimistic mutation response is
-// not stale when it contributes projection metadata that response omitted.
-function mergeEqualSeqProjection(
-	existing: ItemIndexRow,
-	incoming: ItemIndexRow,
-): ItemIndexRow | null {
-	if ('is_unparented' in incoming && incoming.is_unparented !== existing.is_unparented) {
-		return { ...existing, is_unparented: incoming.is_unparented };
-	}
-	return null;
-}
+// `preserveProjectionMetadata` and `mergeEqualSeqProjection` moved to the pure
+// shared module `itemRowMerge.ts` (PLAN-2636 unit 2) so the IDB persistence
+// layer can apply the same equal-seq merge without importing this Svelte store.
+// Imported at the top of this file; RAM behaviour is unchanged (bit-identical
+// move, pinned by the localIndex tests).
 
 /**
  * Cursors are decimal-encoded `seq` values as opaque strings — but
@@ -538,6 +520,7 @@ export const localIndex = {
 							items: [],
 							cursor: state.cursor,
 							includesUnparentedMetadata: state.includesUnparentedMetadata,
+							retags: {},
 						}
 					: await persistHydrate(userId, ws);
 				if (isStale()) return;
