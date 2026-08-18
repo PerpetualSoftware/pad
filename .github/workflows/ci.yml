@@ -77,6 +77,12 @@ jobs:
           version: v2.11.4
           args: --timeout=5m
           only-new-issues: false
+          # Skip the pre-lint `golangci-lint config verify`, which fetches its
+          # JSON schema over the network from golangci-lint.run and fails the
+          # required Go gate when that host is slow/unreachable — no lint
+          # finding, no code involvement (BUG-2568). A malformed .golangci.yml
+          # is still caught by the lint run itself, just with a worse message.
+          verify: false
           # Cap the blast radius of a stale-cache event to ~24h. The action's
           # cache stores the resolved issue list from a prior pass; if any
           # one pass writes degenerate results (analyzer upgrade, plugin
@@ -372,9 +378,15 @@ jobs:
     name: E2E (Playwright)
     runs-on: ubuntu-latest
     # Build the binary + UI once and reuse across Playwright projects.
-    # The suite is small (<10s at the time of writing — see TASK-733 for
-    # follow-up coverage); the `timeout-minutes` cap is a sanity check.
-    timeout-minutes: 10
+    # The cap is a runaway sanity check, not a perf budget. It covers
+    # build-web + build-binary + install-playwright + ~190 tests: a clean
+    # pass is ~8-10m, but a single flaky-test retry tips the total past a
+    # 10m cap and the job is CANCELLED mid-suite while every test passed —
+    # a required gate going red with zero code involvement (BUG-2645
+    # mechanism b: marginal timeout). 15m absorbs one retry while still
+    # killing a genuine hang. Evidence pair: an 8m10s clean rerun vs a
+    # 10m18s cancel at the same SHA.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
