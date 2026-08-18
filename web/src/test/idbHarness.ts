@@ -16,6 +16,8 @@
 import { openDB, type IDBPDatabase } from 'idb';
 import { vi } from 'vitest';
 import type { ItemIndexRow } from '$lib/types';
+import type { Tombstone } from '$lib/stores/itemRowMerge';
+import { IDB_FORMAT_VERSION } from '$lib/stores/localIndexPersistence';
 
 /**
  * Mirrors localIndexPersistence.dbName EXACTLY so the harness addresses the
@@ -52,14 +54,16 @@ export async function loadPersistence(): Promise<
  * (verified in the unit-1 spike), so writes through one are visible to the
  * other, exactly like two browser tabs.
  *
- * Opens at IDB format version 1 with the same stores localIndexPersistence
- * creates, so it never triggers an unexpected upgrade.
+ * Opens at the module's CURRENT IDB format version (IDB_FORMAT_VERSION) with
+ * the same stores localIndexPersistence creates, so it never triggers an
+ * unexpected upgrade and never VersionErrors against a module-owned DB at that
+ * version. Imported from the module so the two can't drift.
  */
 export async function openSecondConnection(
 	userId: string | null,
 	ws: string,
 ): Promise<IDBPDatabase> {
-	return openDB(harnessDbName(userId, ws), 1, {
+	return openDB(harnessDbName(userId, ws), IDB_FORMAT_VERSION, {
 		upgrade(db) {
 			if (!db.objectStoreNames.contains('items')) {
 				db.createObjectStore('items', { keyPath: 'id' });
@@ -67,8 +71,49 @@ export async function openSecondConnection(
 			if (!db.objectStoreNames.contains('meta')) {
 				db.createObjectStore('meta', { keyPath: 'key' });
 			}
+			if (!db.objectStoreNames.contains('tombstones')) {
+				db.createObjectStore('tombstones', { keyPath: 'id' });
+			}
 		},
 	});
+}
+
+/** Raw read of a single persisted tombstone by id (BUG-2633) — ground truth. */
+export async function rawTombstone(
+	userId: string | null,
+	ws: string,
+	id: string,
+): Promise<Tombstone | undefined> {
+	const db = await openSecondConnection(userId, ws);
+	try {
+		return (await db.get('tombstones', id)) as Tombstone | undefined;
+	} finally {
+		db.close();
+	}
+}
+
+/** Raw read of every persisted tombstone — ground truth for the store's size. */
+export async function rawTombstones(userId: string | null, ws: string): Promise<Tombstone[]> {
+	const db = await openSecondConnection(userId, ws);
+	try {
+		return (await db.getAll('tombstones')) as Tombstone[];
+	} finally {
+		db.close();
+	}
+}
+
+/** Raw read of the durable retag overlay map (BUG-2634), or undefined if unset. */
+export async function rawRetags(
+	userId: string | null,
+	ws: string,
+): Promise<Record<string, string> | undefined> {
+	const db = await openSecondConnection(userId, ws);
+	try {
+		const row = (await db.get('meta', 'retags')) as { map?: Record<string, string> } | undefined;
+		return row?.map;
+	} finally {
+		db.close();
+	}
 }
 
 /**

@@ -35,6 +35,25 @@
 
 import { openDB, type IDBPDatabase } from 'idb';
 import type { ItemIndexRow } from '$lib/types';
+import { resolveRowWrite, type Tombstone } from './itemRowMerge';
+
+/**
+ * IDB FORMAT version — the argument to `openDB`, used by the library to drive
+ * store-creation migrations. Bumped 1 → 2 in PLAN-2636 unit 2 to add the
+ * `tombstones` object store (BUG-2633). Distinct from
+ * `LOCAL_INDEX_SCHEMA_VERSION`, which versions the ROW SHAPE: the row shape did
+ * not change, so that constant stays 3. A v1 DB reopening under v2 gets the
+ * upgrade callback with `oldVersion === 1`; `items`/`meta` data is RETAINED and
+ * only the new store is created (empty — old exposure until first resync, not
+ * corruption). An OLD build reopening a v2 DB at version 1 gets a VersionError,
+ * which `open()` catches → returns null → that tab degrades to memory-only.
+ * Fail-safe and transient during a deploy.
+ *
+ * Exported so the test harness opens second connections / raw readers at the
+ * SAME format version the module creates — a drift there would VersionError
+ * every raw read once the module owns a higher-versioned DB.
+ */
+export const IDB_FORMAT_VERSION = 2;
 
 /**
  * SCHEMA_VERSION is the cache-shape contract. Bump it whenever the
@@ -51,15 +70,41 @@ export interface HydrateResult {
 	items: ItemIndexRow[];
 	cursor: string;
 	includesUnparentedMetadata: boolean | null;
+	/**
+	 * The durable retag overlay applied to `items` before return (BUG-2634):
+	 * `collection_id → newSlug`. Returned for inspection; `items` already
+	 * reflect it, so the warm-boot caller needs no further action. Empty when
+	 * no rename has been persisted. See `persistRetag`.
+	 */
+	retags: Record<string, string>;
 }
 
-/** Shape of the single row stored in the `meta` store. */
+/** Shape of the sync row stored in the `meta` store (keyed by `key: 'sync'`). */
 interface MetaRow {
 	key: 'sync';
 	cursor: string;
 	schemaVersion: number;
 	includesUnparentedMetadata: boolean;
 }
+
+/**
+ * The durable retag overlay row in the `meta` store (BUG-2634), keyed by
+ * `key: 'retags'`. `map` is `collection_id → latest new slug`; last rename per
+ * collection wins, mirroring RAM's `pendingRetags`. Written in the same tx as
+ * the row rewrites by `persistRetag`, applied at read time by `hydrate`, and
+ * dropped by `persistReplace` (authoritative snapshot supersedes).
+ */
+interface RetagsRow {
+	key: 'retags';
+	map: Record<string, string>;
+}
+
+/**
+ * A hard-delete tombstone row in the `tombstones` store (BUG-2633). Structural
+ * alias of `Tombstone` from itemRowMerge — kept as the persisted shape's name
+ * at the store boundary.
+ */
+type TombstoneRow = Tombstone;
 
 // Open IDB connections are cached per (user, workspace) pair. The
 // map key matches `dbName()` so cache slots can't collide across
@@ -90,6 +135,36 @@ function key(userId: string | null, ws: string): string {
 }
 
 /**
+ * Decode a cursor string to its numeric `seq` for tombstone stamping. Cursors
+ * are decimal-encoded seq values; a non-numeric / empty cursor decodes to 0,
+ * matching localIndex's `cursorAsNum`. A tombstone stamped 0 is the weakest
+ * possible ordering evidence — it refuses only seq-less and seq-0 resurrections
+ * — which is the correct floor when no real cursor is in hand.
+ */
+function seqFromCursor(cursor: string): number {
+	const n = Number(cursor);
+	return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Write a tombstone for `id` at `deletedAtSeq`, but NEVER lower an existing
+ * tombstone's stamp (codex F4). Tombstone puts are otherwise last-write-wins,
+ * so an out-of-order cross-tab eviction (a lower-cursor delta arriving after a
+ * higher one) could weaken the gate and let a stale row between the two stamps
+ * resurrect. Keeping the max makes the stamp monotonic. Best-effort like every
+ * other write here — a failed put is swallowed so `tx.done` still resolves.
+ */
+async function raiseTombstone(
+	store: { get(key: string): Promise<unknown>; put(value: TombstoneRow): Promise<unknown> },
+	id: string,
+	deletedAtSeq: number,
+): Promise<void> {
+	const prior = (await store.get(id)) as TombstoneRow | undefined;
+	const seq = prior ? Math.max(prior.deletedAtSeq, deletedAtSeq) : deletedAtSeq;
+	store.put({ id, deletedAtSeq: seq } satisfies TombstoneRow).catch(() => undefined);
+}
+
+/**
  * Open the workspace's IDB database for the given user, creating
  * object stores on first run. Cached so subsequent calls reuse the
  * connection. Returns null on any storage failure — callers must
@@ -105,17 +180,24 @@ async function open(
 	if (cached) return cached;
 
 	try {
-		// The version arg to openDB is the IDB-format version (used
-		// for migrations). We pin it to 1 and use our own
-		// `schemaVersion` row in `meta` for content-shape versioning.
-		// That keeps schema bumps decoupled from idb library quirks.
-		const db = await openDB(dbName(userId, ws), 1, {
+		// The version arg to openDB is the IDB-FORMAT version, used by the
+		// library to drive store-creation migrations. It is now 2 (was 1) to
+		// add the `tombstones` store — see IDB_FORMAT_VERSION. Content-shape
+		// versioning stays decoupled in the `schemaVersion` row in `meta`
+		// (LOCAL_INDEX_SCHEMA_VERSION), so a row-shape bump and a format bump
+		// remain independent. The upgrade callback is idempotent per store, so
+		// it serves both a fresh v2 create (all three stores) and a v1 → v2
+		// upgrade (only `tombstones` is missing; `items`/`meta` are retained).
+		const db = await openDB(dbName(userId, ws), IDB_FORMAT_VERSION, {
 			upgrade(db) {
 				if (!db.objectStoreNames.contains('items')) {
 					db.createObjectStore('items', { keyPath: 'id' });
 				}
 				if (!db.objectStoreNames.contains('meta')) {
 					db.createObjectStore('meta', { keyPath: 'key' });
+				}
+				if (!db.objectStoreNames.contains('tombstones')) {
+					db.createObjectStore('tombstones', { keyPath: 'id' });
 				}
 			},
 		});
@@ -142,7 +224,12 @@ export async function hydrate(
 	userId: string | null,
 	ws: string,
 ): Promise<HydrateResult> {
-	const empty: HydrateResult = { items: [], cursor: '0', includesUnparentedMetadata: null };
+	const empty: HydrateResult = {
+		items: [],
+		cursor: '0',
+		includesUnparentedMetadata: null,
+		retags: {},
+	};
 	if (!isSupported()) return empty;
 
 	const db = await open(userId, ws);
@@ -150,9 +237,8 @@ export async function hydrate(
 
 	try {
 		const tx = db.transaction(['items', 'meta'], 'readonly');
-		const meta = (await tx.objectStore('meta').get('sync')) as
-			| MetaRow
-			| undefined;
+		const metaStore = tx.objectStore('meta');
+		const meta = (await metaStore.get('sync')) as MetaRow | undefined;
 
 		// Schema-version mismatch is the "your local cache is from a
 		// previous incompatible build" case. Drop everything and
@@ -163,12 +249,50 @@ export async function hydrate(
 			return empty;
 		}
 
-		const items = (await tx.objectStore('items').getAll()) as ItemIndexRow[];
+		const retagsRow = (await metaStore.get('retags')) as RetagsRow | undefined;
+		const retags = retagsRow?.map ?? {};
+		const rawRows = (await tx.objectStore('items').getAll()) as ItemIndexRow[];
 		await tx.done.catch(() => undefined);
+
+		// Apply the durable retag overlay (BUG-2634) AFTER the read: a collection
+		// rename touches no items, so no delta re-stamps a persisted row cached
+		// under the dead slug, and RAM's `pendingRetags` repair is in-memory /
+		// single-session. Reapplying the persisted intent on every hydrate is what
+		// makes a rename survive a reload. Membership + already-current checks
+		// mirror `shouldApplyRetag`: only rows whose `collection_id` matches the
+		// renamed collection are touched, and a row already carrying the new slug
+		// is left alone (also skips a row that has since MOVED to another
+		// collection — its `collection_id` no longer matches).
+		//
+		// RESIDUAL (codex F3, lead-accepted option (a)). This ALWAYS trusts the
+		// recorded rename, so it can revert a NEWER authoritative slug. TRIGGER: a
+		// tab records rename coll-a v0->v1 (overlay {coll-a:v1}), MISSES the later
+		// v1->v2 rename SSE (reconnect gap), then receives an item-delta carrying
+		// collection_slug=v2 — hydrate rewrites v2 back to v1. There is no LOCAL
+		// fix: `collection_slug` is out-of-band, renames carry no item seq, so the
+		// 2634 racing OLD-slug delta and this F3 NEWER-slug delta are
+		// indistinguishable (both arrive with seq > the rename cursor, slug !=
+		// overlay). Clearing the overlay on a divergent-slug delta only flips which
+		// case loses — it sacrifices the common 2634 race to protect the missed-SSE
+		// rarity. HEAL PATHS: (1) the next rename event for coll-a overwrites the
+		// overlay (latest-wins); (2) the BUG-2601 SSE-heal / sync-pass reconcile
+		// re-stamps the live slug; (3) any full resync -> persistReplace drops the
+		// overlay. The true disambiguator is server-side collection-slug versioning
+		// (not built here). Net strictly better than main, where the rename is lost
+		// across every reload.
+		const items = (rawRows ?? []).map((row) => {
+			const newSlug = row.collection_id ? retags[row.collection_id] : undefined;
+			if (newSlug !== undefined && row.collection_slug !== newSlug) {
+				return { ...row, collection_slug: newSlug };
+			}
+			return row;
+		});
+
 		return {
-			items: items ?? [],
+			items,
 			cursor: meta?.cursor ?? '0',
 			includesUnparentedMetadata: meta?.includesUnparentedMetadata ?? null,
+			retags,
 		};
 	} catch {
 		return empty;
@@ -176,88 +300,25 @@ export async function hydrate(
 }
 
 /**
- * Decide whether `next` may overwrite the row already stored under the same
- * id. The IDB analogue of localIndex's in-RAM `mergeRow` seq guard, which the
- * persistence layer never had (BUG-2609).
+ * WHY THE WRITE POLICY EXISTS (the race resolveRowWrite arbitrates). `upsert`
+ * hands persistUpserts a snapshot taken from RAM and does not await it. An SSE
+ * delta for the same row can commit its own atomic rows+cursor transaction in
+ * between, after which the older snapshot lands LAST and would leave IDB
+ * holding a pre-delta row while the persisted cursor sits past that delta —
+ * warm boot then hydrates the stale row and `/items-changes?since=cursor` never
+ * returns it again (BUG-2609). RAM is unaffected (single-threaded and
+ * seq-guarded); only the warm-boot cache can regress. The read-modify-write is
+ * done INSIDE the transaction so the decision compares against committed state
+ * at write time, not snapshot time — IDB serializes overlapping readwrite
+ * transactions on a store, so the `get` always sees a competing tx's committed
+ * `put`.
  *
- * Returns false in exactly two cases: `next` is strictly older than what is
- * stored, or `next` carries no seq while the stored row does (see the
- * asymmetry note below). Equal seq still writes: RAM merges same-seq projections before persisting, so the
- * incoming row is the merged one, and refusing it would drop that merge.
- * Refusing would also mirror the bug onto persistDelta, where a re-delivered
- * same-seq row carrying computed projection fields would be skipped. The
- * honest reading is that accept-or-refuse is the wrong axis at equal seq — the
- * correct semantics are a MERGE, which this layer does not have. That leaves a
- * narrow cross-tab residual (BUG-2635): a tab without the row in RAM can
- * persist an unmerged snapshot over another tab's merged one at the same seq.
- * A missing seq is treated ASYMMETRICALLY, which is the part worth reading:
- *
- *   - stored row has no seq, incoming does  -> WRITE. The incoming row carries
- *     ordering evidence the stored one lacks.
- *   - neither has a seq                     -> WRITE. No evidence either way,
- *     and refusing would disable the cache for rows the server never stamped.
- *   - stored row HAS a seq, incoming does not -> REFUSE.
- *
- * That last case is not symmetry-breaking for its own sake. The optimistic
- * reorder path deliberately clears `seq` so the row bypasses localIndex's RAM
- * guard and paints immediately (TASK-1357); persisting it is incidental to
- * that intent. Allowing it here lets a delayed optimistic snapshot overwrite an
- * authoritative row that already landed at a real seq, and the result is worse
- * than an ordinary stale row: the persisted row then has NO seq at all, so
- * neither this guard nor the RAM guard can order it on the next warm boot,
- * while the cursor sits past the delta that would have corrected it.
- *
- * Refusing costs nothing the reorder needs. RAM still shows the optimistic
- * order, and the authoritative response persists with a real seq moments later
- * — and because the cursor has not advanced past that response, a warm boot in
- * the meantime simply refetches it.
- *
- * WHY THIS EXISTS. `upsert` hands persistUpserts a snapshot taken from RAM and
- * does not await it. (`applyRetag` used to as well; it now goes through
- * persistRetag, for the reason in the exclusion list below.) An SSE delta for the same row can commit
- * its own atomic rows+cursor transaction in between, after which the older
- * snapshot lands LAST and leaves IDB holding a pre-delta row while the
- * persisted cursor sits past that delta. Warm boot then hydrates the stale row
- * and `/items-changes?since=cursor` never returns it again — stale until the
- * item happens to change. RAM is unaffected (single-threaded and seq-guarded);
- * only the warm-boot cache can regress.
- *
- * WHAT THIS GUARD DOES NOT COVER, so nobody reads it as covering more:
- *
- *   - RETAGS do not come through here at all. `applyRetag` changes
- *     collection_slug WITHOUT bumping seq, so a whole-row retag snapshot would
- *     be refused whenever a newer delta had landed — and losing a rename is
- *     permanent, not self-healing (no item delta re-stamps it, and
- *     pendingRetags is in-memory and single-session). Renames go through
- *     persistRetag, which rewrites the one field in place.
- *
- *     That closes the direction where the RETAG is the late write. It does not
- *     close the reverse: a delta captured before the rename can commit after
- *     it, whole-row put an older collection_slug at a NEWER seq, and pass this
- *     guard legitimately. collection_slug simply is not ordered by seq — it is
- *     out-of-band relative to the item's own version — so no seq comparison
- *     can arbitrate it. Fixing that means making the rename DURABLE (persisted
- *     retag intent, reapplied on hydrate) rather than a racing write; filed as
- *     BUG-2634. Pre-existing — a blind put lost the same race.
- *
- *   - HARD DELETES can still be resurrected. If persistDelta removes a row and
- *     advances the cursor, a delayed snapshot for that id finds nothing stored,
- *     passes this guard, and reinserts it behind the cursor — the same
- *     invisible-to-delta-sync shape this bug is about, in the delete direction.
- *     Refusing it needs a tombstone with its own seq, i.e. an IDB schema
- *     change; filed as BUG-2633 rather than half-built here. Pre-existing: a
- *     blind put resurrected it too.
+ * The decision itself — seq guard + no-seq asymmetry (BUG-2609), tombstone gate
+ * (BUG-2633), equal-seq projection MERGE (BUG-2635), and projection preserve on
+ * write — is the pure `resolveRowWrite` in `itemRowMerge.ts`, shared with RAM's
+ * `mergeRow`. This module owns only the transaction and the tombstone delete on
+ * supersession.
  */
-export function shouldWriteRow(
-	existing: ItemIndexRow | undefined,
-	next: ItemIndexRow,
-): boolean {
-	if (!existing) return true;
-	if (existing.seq === undefined) return true;
-	// Stored row is stamped and the incoming one is not: no claim to be newer.
-	if (next.seq === undefined) return false;
-	return next.seq >= existing.seq;
-}
 
 /**
  * Upsert a batch of rows in a single transaction. Used by
@@ -274,18 +335,19 @@ export async function persistUpserts(
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
-		const tx = db.transaction('items', 'readwrite');
-		const store = tx.objectStore('items');
-		// Read-modify-write per row, INSIDE the transaction, so the comparison
-		// is against what is stored at write time rather than at snapshot
-		// time. A blind put here is what let an older snapshot land after a
-		// newer delta (BUG-2609). The extra get doubles the operations on a
-		// cache write-through, which is cheap next to a row that goes stale
-		// until the item next changes.
+		const tx = db.transaction(['items', 'tombstones'], 'readwrite');
+		const itemsStore = tx.objectStore('items');
+		const tombstones = tx.objectStore('tombstones');
 		for (const row of rows) {
-			const existing = (await store.get(row.id)) as ItemIndexRow | undefined;
-			if (!shouldWriteRow(existing, row)) continue;
-			store.put(row).catch(() => undefined);
+			const stored = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
+			const tombstone = (await tombstones.get(row.id)) as TombstoneRow | undefined;
+			const decision = resolveRowWrite(stored, tombstone, row);
+			if (decision.action === 'skip') continue;
+			itemsStore.put(decision.row).catch(() => undefined);
+			// The write is authoritative supersession of a hard delete (rule 1):
+			// clear the tombstone in the SAME tx so it can't re-refuse a later
+			// legitimate write for this id.
+			if (tombstone) tombstones.delete(row.id).catch(() => undefined);
 		}
 		await tx.done;
 	} catch {
@@ -301,8 +363,8 @@ export async function persistUpserts(
  * renamed" — and expressing it as a whole-row put makes it two claims at once,
  * the second of which is false: it also asserts every other field still looks
  * like the snapshot taken from RAM. That second claim is what the seq guard in
- * shouldWriteRow has to refuse when a newer delta has landed, and refusing it
- * drops the rename with it.
+ * `resolveRowWrite` has to refuse when a newer delta has landed, and refusing
+ * it drops the rename with it.
  *
  * Dropping the rename is NOT self-healing, which is the reason this function
  * exists instead of an exemption from the guard. `applyRetag` does not bump
@@ -319,14 +381,19 @@ export async function persistUpserts(
  * Rows that have MOVED to another collection are skipped too; see
  * shouldApplyRetag.
  *
- * LIMIT: this is still a best-effort WRITE, like everything else in this
- * module, so a rename is lost outright if the transaction aborts (quota,
- * eviction, tab freeze) — the catch below swallows it and nothing retries.
- * A lost rename does not self-heal for the same reason it cannot be reordered:
- * no item delta re-stamps those rows, and pendingRetags is in-memory. That is
- * the same gap as BUG-2634, reached by failure rather than by racing, and the
- * fix it proposes — persist the retag INTENT and reapply it on hydrate —
- * closes both, which is why this is not a separate patch.
+ * DURABLE OVERLAY (BUG-2634, PLAN-2636 unit 2). Rewriting the rows in place is
+ * still racy in the other direction: a delta captured BEFORE the rename can
+ * commit AFTER it and whole-row put an older `collection_slug` at a newer seq,
+ * which no seq compare can arbitrate (the slug is out-of-band relative to the
+ * item's version). And a lost write (tx abort) drops the rename with nothing to
+ * retry it. Both are closed by ALSO persisting the retag INTENT: `persistRetag`
+ * upserts `{key:'retags', map:{[collectionId]: newSlug}}` in the `meta` store,
+ * in the SAME tx as the row rewrites, and `hydrate` reapplies the overlay to
+ * every matching row after the read. A racing older-slug delta is then
+ * corrected on the next hydrate rather than surviving. Latest rename per
+ * collection wins (read-modify-write the map). `persistReplace` drops the key —
+ * an authoritative snapshot already carries the live slug (BUG-2601), so a
+ * stale overlay reapplied over it could regress a newer rename.
  */
 export function shouldApplyRetag(
 	existing: ItemIndexRow | undefined,
@@ -355,13 +422,21 @@ export async function persistRetag(
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
-		const tx = db.transaction('items', 'readwrite');
+		const tx = db.transaction(['items', 'meta'], 'readwrite');
 		const store = tx.objectStore('items');
 		for (const id of ids) {
 			const existing = (await store.get(id)) as ItemIndexRow | undefined;
 			if (!shouldApplyRetag(existing, collectionId, newSlug)) continue;
 			store.put({ ...existing!, collection_slug: newSlug }).catch(() => undefined);
 		}
+		// Persist the retag INTENT (BUG-2634) in the same tx: read-modify-write
+		// the `retags` overlay map so hydrate can reapply the rename to rows a
+		// racing older-slug delta or a lost in-place write left wrong. Latest
+		// rename per collection wins.
+		const metaStore = tx.objectStore('meta');
+		const existingOverlay = (await metaStore.get('retags')) as RetagsRow | undefined;
+		const map = { ...(existingOverlay?.map ?? {}), [collectionId]: newSlug };
+		metaStore.put({ key: 'retags', map } satisfies RetagsRow).catch(() => undefined);
 		await tx.done;
 	} catch {
 		/* swallow — best-effort cache */
@@ -381,7 +456,9 @@ export async function persistRetag(
  * populated). Hard removals are either passed as `removeIds` (so a
  * moved-out eviction lands in the SAME tx as the cursor advance and
  * can't resurrect on warm boot — BUG-1675) or, for paths without a
- * cursor advance, go through `persistRemovals`.
+ * cursor advance, go through `persistRemovals`. Each hard removal also
+ * writes a tombstone stamped with this delta's cursor so a delayed stale
+ * snapshot can't reinsert the id behind the cursor (BUG-2633).
  */
 export async function persistDelta(
 	userId: string | null,
@@ -395,19 +472,32 @@ export async function persistDelta(
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
-		const tx = db.transaction(['items', 'meta'], 'readwrite');
+		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
-		// Same guard as persistUpserts: the race runs in both directions, so a
-		// delta must not overwrite a row that is already NEWER in the cache
-		// either. Skipping a row here is safe with the cursor advance below —
-		// a newer stored row already reflects state past this delta.
+		const tombstones = tx.objectStore('tombstones');
+		// Same policy as persistUpserts (resolveRowWrite): the race runs in both
+		// directions, so a delta must not overwrite a row that is already NEWER
+		// in the cache, and a tombstone must refuse a stale resurrection.
+		// Skipping a row here is safe with the cursor advance below — a newer
+		// stored row already reflects state past this delta.
 		for (const row of rows) {
-			const existing = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
-			if (!shouldWriteRow(existing, row)) continue;
-			itemsStore.put(row).catch(() => undefined);
+			const stored = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
+			const tombstone = (await tombstones.get(row.id)) as TombstoneRow | undefined;
+			const decision = resolveRowWrite(stored, tombstone, row);
+			if (decision.action === 'skip') continue;
+			itemsStore.put(decision.row).catch(() => undefined);
+			if (tombstone) tombstones.delete(row.id).catch(() => undefined);
 		}
+		// Hard removals (moved-out evictions — BUG-1675) land a TOMBSTONE stamped
+		// with this delta's cursor in the SAME tx (BUG-2633). The resurrect
+		// window is exactly "behind the persisted cursor", so the cursor is the
+		// right stamp: a delayed snapshot for this id at seq <= cursor is stale
+		// and resolveRowWrite refuses it; a genuinely newer one (seq > cursor)
+		// supersedes and clears the tombstone.
+		const deletedAtSeq = seqFromCursor(cursor);
 		for (const id of removeIds) {
 			itemsStore.delete(id).catch(() => undefined);
+			await raiseTombstone(tombstones, id, deletedAtSeq);
 		}
 		tx.objectStore('meta')
 			.put({
@@ -434,6 +524,18 @@ export async function persistDelta(
  * behind it indefinitely. A single transaction over the still-open
  * connection sidesteps that — the clear and the puts commit together (or not
  * at all), and no connection is ever torn down.
+ *
+ * RESIDUAL (codex F2, lead-accepted). Clearing `tombstones` for ids the
+ * snapshot omits reopens, for those ids, the cross-tab resurrection window a
+ * tombstone otherwise closes: a stale `persistUpserts` from ANOTHER tab — one
+ * that did not run this resync, so its RAM `fencedIds` does not cover the id —
+ * can land after the clear and reinsert an omitted row behind the replacement
+ * cursor. This is PRE-EXISTING to the item-clear below: before unit 2 the same
+ * tab could resurrect the same row with no tombstone in the picture at all, so
+ * tombstones only ever ADDED protection and this clear does not widen the
+ * hazard. Within one tab the `fencedIds` guard refuses the stale upsert before
+ * it reaches persistence. Self-healing: the next resync recomputes the fence
+ * and re-drops the row. Not worth a key-diff in this tx to close.
  */
 export async function persistReplace(
 	userId: string | null,
@@ -446,15 +548,23 @@ export async function persistReplace(
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
-		const tx = db.transaction(['items', 'meta'], 'readwrite');
+		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		// Queued before the puts; IDB executes requests against a store in
 		// issue order, so the clear always lands first.
 		itemsStore.clear().catch(() => undefined);
+		// The authoritative snapshot supersedes every tombstone and every
+		// pending rename: its rows ARE the current truth under the (possibly
+		// downgraded) scope, and its slugs are already live (BUG-2601). Drop
+		// both overlays so a stale tombstone can't refuse a legitimate row and a
+		// stale retag can't regress a newer slug on the next hydrate.
+		tx.objectStore('tombstones').clear().catch(() => undefined);
+		const metaStore = tx.objectStore('meta');
+		metaStore.delete('retags').catch(() => undefined);
 		for (const row of rows) {
 			itemsStore.put(row).catch(() => undefined);
 		}
-		tx.objectStore('meta')
+		metaStore
 			.put({
 				key: 'sync',
 				cursor,
@@ -473,6 +583,14 @@ export async function persistReplace(
  * 403 purge (TASK-1360) and any other hard-delete path. Soft deletes
  * stay in the cache as upserts with `deleted_at` populated — they
  * flow through `persistUpserts`.
+ *
+ * Like `persistDelta`'s `removeIds`, a removal lands a TOMBSTONE so a delayed
+ * snapshot can't resurrect the id (BUG-2633). This path has no cursor advance
+ * in hand, so it stamps the strongest floor available: the PERSISTED cursor
+ * (`meta.sync`) when a sync has happened, else the removed row's OWN seq (codex
+ * F1 — an `upsert` can persist a row before any sync writes meta.sync, and that
+ * row must still be un-resurrectable after removal), else 0. `raiseTombstone`
+ * never lowers an existing stamp.
  */
 export async function persistRemovals(
 	userId: string | null,
@@ -483,10 +601,22 @@ export async function persistRemovals(
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
-		const tx = db.transaction('items', 'readwrite');
+		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const store = tx.objectStore('items');
+		const meta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+		const tombstones = tx.objectStore('tombstones');
+		const cursorSeq = meta ? seqFromCursor(meta.cursor) : undefined;
 		for (const id of ids) {
+			const stored = (await store.get(id)) as ItemIndexRow | undefined;
 			store.delete(id).catch(() => undefined);
+			// ALWAYS tombstone, even with no persisted cursor (codex F1): an upsert
+			// can write a row before any sync stamps meta.sync, and without a
+			// tombstone a delayed snapshot would resurrect that removed row. Stamp
+			// the strongest floor available — the persisted cursor if we have one,
+			// else the removed row's OWN seq (a snapshot at <= that seq is the same
+			// row or older; a genuinely newer create still supersedes), else 0.
+			const stamp = cursorSeq ?? (typeof stored?.seq === 'number' ? stored.seq : 0);
+			await raiseTombstone(tombstones, id, stamp);
 		}
 		await tx.done;
 	} catch {
