@@ -455,8 +455,43 @@ func (s *Store) DeleteDocument(id string) error {
 }
 
 func (s *Store) RestoreDocument(id string) (*models.Document, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Read the soft-deleted document's content + workspace inside the tx so
+	// we can re-stamp its attachment references before it becomes live again.
+	// GetDocument filters deleted_at IS NULL, so it can't see this row yet.
+	var content, workspaceID string
+	if err := tx.QueryRow(s.q(`
+		SELECT content, workspace_id FROM documents WHERE id = ? AND deleted_at IS NOT NULL
+	`), id).Scan(&content, &workspaceID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		return nil, err
+	}
+
+	// BUG-2629: re-assert the document's attachment references at the moment
+	// it becomes live again. While archived, the live AttachmentReferenced
+	// scan can't see this document's refs (BUG-2614 only scans live docs), so
+	// the orphan GC may have let their last_referenced_at go stale; a claim
+	// racing this restore keys on that stamp, not the live scan. Stamp BEFORE
+	// the deleted_at clear, in this tx, per stampAttachmentRefsTx's ORDERING
+	// note: the stamp's row-lock makes a concurrent claim block until commit
+	// and re-evaluate against the fresh stamp — refusing. Document refs are
+	// necessarily never-attached (no document_id column on attachments), so
+	// this is the leg with nothing else standing between it and the claim.
+	// Prevention only: an already-reclaimed blob is gone (stamp matches zero
+	// rows).
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, content); err != nil {
+		return nil, err
+	}
+
 	ts := now()
-	result, err := s.db.Exec(s.q(`
+	result, err := tx.Exec(s.q(`
 		UPDATE documents SET deleted_at = NULL, updated_at = ?, status = 'draft'
 		WHERE id = ? AND deleted_at IS NOT NULL
 	`), ts, id)
@@ -466,6 +501,9 @@ func (s *Store) RestoreDocument(id string) (*models.Document, error) {
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return nil, sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return s.GetDocument(id)
 }
