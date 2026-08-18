@@ -1,7 +1,14 @@
 [
   {
-    "name": "pad-events",
-    "command": "while ! pad watch --help >/dev/null 2>&1; do sleep 3600; done; exec pad watch --stream --for-session",
-    "description": "Pad item events: explicit subscriptions (pad watch <ref> — includes assignment changes on watched items) and pushes addressed to you (pad push <ref> -m, or the web item view's push composer, which can target one of your sessions or broadcast to all of them; ask-events are reserved in the wire contract but not yet emitted). Silent when the pad CLI isn't installed, no .pad.toml is present, or padd is unreachable."
+    "name": "pad-events-auto",
+    "when": "always",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/pad-monitor.sh",
+    "description": "Pad item events for repos that opted in via .pad.toml push.auto_arm. Exits immediately (no stream, nothing listening) unless this session has consented — the security gate (PLAN-2613). Use /pad:connect to enable pushes for a session that didn't auto-arm."
+  },
+  {
+    "name": "pad-events-connect",
+    "when": "on-skill-invoke:connect",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/pad-monitor.sh",
+    "description": "Pad item events after you run /pad:connect. Starts the push/watch stream for this session once you've consented; /pad:disconnect stops it. Explicit subscriptions (pad watch <ref>) and pushes addressed to you (pad push, or the web item view's push composer) arrive as notifications. Silent when the pad CLI isn't installed, no .pad.toml is present, or padd is unreachable."
   }
 ]

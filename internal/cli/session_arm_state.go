@@ -63,6 +63,27 @@ import (
 // means armed, and disarm removes it rather than flipping it.
 type ArmState struct {
 	Armed bool `json:"armed"`
+	// Disarmed makes the file TRI-STATE (PLAN-2613 S3). S2 had two states:
+	// a present (armed) file or none. S3 adds an explicit-OFF value so a
+	// within-session `pad session disarm` can withdraw consent even in an
+	// auto_arm=true repo — the disconnect verb must not be a lie there. A
+	// file with Disarmed=true is a session-scoped explicit OFF that BEATS
+	// auto_arm for its owner session, under the SAME liveness rules as an
+	// armed file: it dies with the session (reaped when the owner is dead),
+	// so across sessions auto_arm remains the standing contract (permanent
+	// off is a .pad.toml edit, symmetric with how it turned on). When
+	// Disarmed is true the Armed marker is false; presence with a live
+	// owner still identifies the session, the Disarmed flag decides the
+	// meaning. See SessionArmState.
+	Disarmed bool `json:"disarmed,omitempty"`
+	// Booted records that this session has already had its first-connect
+	// boot ritual fired (PLAN-2613 D8): /pad:connect injects the
+	// workspace's on-session-start playbooks on the FIRST connect only, and
+	// re-arms/reconnects must not re-fire it. It is per-session state that
+	// dies with the session (the whole file is reaped when the owner dies),
+	// and it is carried forward across arm/disarm rewrites so toggling
+	// consent doesn't reset the boot flag. See MarkFirstConnect.
+	Booted bool `json:"booted,omitempty"`
 	// PID is the process that wrote the file. For a socket-keyed session
 	// it is informational (the socket is the liveness signal); for the
 	// headless fallback it IS the liveness signal.
@@ -145,22 +166,48 @@ func currentSessionArmKey() (socket, cwd string) {
 	return socket, cwd
 }
 
-// WriteArmState arms the current session: it writes (or idempotently
-// overwrites) this session's arm-state file, mode 0600, and returns the
-// path. It refuses only when there is no key to write under at all — no
-// messaging socket AND no working directory — because a file with neither
-// could never be matched to a session or a repo by a reader.
+// WriteArmState arms the current session (an explicit ON marker). See
+// writeArmStateFile.
 func WriteArmState() (path string, err error) {
+	return writeArmStateFile(false)
+}
+
+// WriteDisarmState writes a session-scoped explicit-OFF marker (PLAN-2613
+// S3): the session withdraws consent for its remaining life, beating a
+// repo's auto_arm opt-in, and the marker dies with the session under the
+// same liveness rules (see ArmState.Disarmed). This is what `pad session
+// disarm` writes — it does NOT remove the file, because absence means
+// "resolve auto_arm", which in an auto_arm repo would immediately re-arm.
+func WriteDisarmState() (path string, err error) {
+	return writeArmStateFile(true)
+}
+
+// writeArmStateFile writes (or idempotently overwrites) this session's
+// arm-state file, mode 0600, with the given disarmed value, and returns
+// the path. It refuses only when there is no key to write under at all —
+// no messaging socket AND no working directory — because a file with
+// neither could never be matched to a session or a repo by a reader.
+func writeArmStateFile(disarmed bool) (path string, err error) {
 	socket, cwd := currentSessionArmKey()
 	if socket == "" && cwd == "" {
-		return "", fmt.Errorf("cannot arm: no messaging socket and no working directory to key the session on")
+		return "", fmt.Errorf("cannot record arm state: no messaging socket and no working directory to key the session on")
 	}
 	p, err := armStatePath(socket, cwd)
 	if err != nil {
 		return "", err
 	}
+	// Carry the boot flag forward across arm/disarm rewrites so toggling
+	// consent within a session doesn't re-fire the first-connect ritual
+	// (D8). Only a LIVE prior file counts — a dead-owner one is a stale
+	// session and its boot state is irrelevant.
+	booted := false
+	if prev, _, rerr := readArmState(); rerr == nil && prev != nil && armStateOwnerAlive(prev) {
+		booted = prev.Booted
+	}
 	st := ArmState{
-		Armed:     true,
+		Armed:     !disarmed,
+		Disarmed:  disarmed,
+		Booted:    booted,
 		PID:       os.Getpid(),
 		Socket:    socket,
 		Cwd:       cwd,
@@ -328,41 +375,111 @@ func armStateOwnerAlive(st *ArmState) bool {
 	return true
 }
 
-// SessionArmedLocally reports whether THIS session has a live local arm
-// declaration. It is the reader half of the file contract: it returns
-// true only for a present file whose owner is still alive, and it
-// opportunistically removes a file whose owner is dead so a crashed
-// session's consent cannot linger (constraint 2). It never errors — every
-// failure path is "not armed", because this gates a security-relevant
-// declaration and must fail closed.
+// LocalArmState is the tri-state of THIS session's local arm-state file
+// (PLAN-2613 S3): a live explicit ON, a live explicit OFF, or absent (no
+// live local override, so the auto_arm config decides).
+type LocalArmState int
+
+const (
+	// LocalArmAbsent: no live local override — resolve auto_arm.
+	LocalArmAbsent LocalArmState = iota
+	// LocalArmOn: a live explicit `pad session arm` — announce armed.
+	LocalArmOn
+	// LocalArmOff: a live explicit `pad session disarm` — announce NOT
+	// armed, beating a repo's auto_arm for this session.
+	LocalArmOff
+)
+
+// SessionArmState reads THIS session's local arm-state file and returns
+// its tri-state. It applies the mandatory liveness check and reaps a
+// dead-owner or malformed file, so a crashed session's override — armed OR
+// disarmed — can't linger (constraint 2). It never errors: every failure
+// path is LocalArmAbsent, which falls back to auto_arm, because this gates
+// consent and must fail to the safe, config-decided answer.
 //
-// This answers "should the stream I am about to open announce armed?" for
-// the EXPLICIT path only. The caller ORs it with the auto_arm config
-// resolution (ResolveAutoArmFromDisk) to get the full announced value —
-// see cmd/pad's monitor wiring.
-func SessionArmedLocally() bool {
+// This is the reader half of the file contract. The full announced value
+// (folding in auto_arm) is ResolveAnnouncedArmed — see cmd/pad's monitor
+// wiring.
+func SessionArmState() LocalArmState {
 	st, path, err := readArmState()
 	if err != nil {
 		// A file that exists but can't be parsed is corrupt. With atomic
-		// writes it can't be a torn in-progress arm, so reap it (best
+		// writes it can't be a torn in-progress write, so reap it (best
 		// effort) rather than leaving it to linger against the reaping
-		// rule (Codex R1 LOW). Fail closed regardless.
+		// rule (Codex R1 LOW). Fall back to auto_arm regardless.
 		if path != "" {
 			reapArmFile(path)
 		}
-		return false
+		return LocalArmAbsent
 	}
 	if st == nil {
-		return false
+		return LocalArmAbsent
 	}
 	if !armStateOwnerAlive(st) {
-		// Dead owner: reap the stale file so it can't arm a future reader
-		// (constraint 2). A failed removal still yields "not armed", the
-		// safe answer.
+		// Dead owner: reap the stale file so it can't override a future
+		// session (constraint 2). Absent falls back to auto_arm — which is
+		// exactly the "across sessions, auto_arm remains the contract"
+		// ruling for a disarmed file too.
 		reapArmFile(path)
-		return false
+		return LocalArmAbsent
 	}
-	return true
+	if st.Disarmed {
+		return LocalArmOff
+	}
+	return LocalArmOn
+}
+
+// SessionArmedLocally reports whether this session has a live explicit ARM
+// (LocalArmOn). Retained for callers that only ask the ON question; the
+// full tri-state, including an explicit OFF that beats auto_arm, is
+// SessionArmState.
+func SessionArmedLocally() bool {
+	return SessionArmState() == LocalArmOn
+}
+
+// ResolveAnnouncedArmed is the full S3 resolution of what a stream this
+// session opens should announce for ?armed (PLAN-2613 S3): a live explicit
+// local override wins — ON arms, OFF does not (beating auto_arm for this
+// session) — and only in the absence of a live override does the repo's
+// auto_arm config decide.
+func ResolveAnnouncedArmed() bool {
+	switch SessionArmState() {
+	case LocalArmOn:
+		return true
+	case LocalArmOff:
+		return false
+	default:
+		return ResolveAutoArmFromDisk().Armed
+	}
+}
+
+// MarkFirstConnect reports whether THIS session's first-connect boot ritual
+// should run now, and marks it done so a later call (a reconnect) returns
+// false (PLAN-2613 D8). Idempotent per session: the first live call returns
+// true, every later one false; the flag dies with the session.
+//
+// It operates on the arm-state file, which /pad:connect writes before it
+// boots (connect arms first). If no live arm-state file exists — an
+// unexpected call order — it returns true WITHOUT persisting: skipping a
+// boot ritual silently is worse than running it twice (the playbooks are
+// meant to be re-runnable), so this fails toward running it.
+func MarkFirstConnect() (first bool, err error) {
+	st, path, rerr := readArmState()
+	if rerr != nil || st == nil || !armStateOwnerAlive(st) {
+		return true, nil
+	}
+	if st.Booted {
+		return false, nil
+	}
+	st.Booted = true
+	data, merr := json.MarshalIndent(st, "", "  ")
+	if merr != nil {
+		return true, fmt.Errorf("marshal arm state: %w", merr)
+	}
+	if werr := atomicWriteFile(path, data, 0600); werr != nil {
+		return true, fmt.Errorf("write arm state: %w", werr)
+	}
+	return true, nil
 }
 
 // reapArmFile removes a stale arm file, but only after RE-READING it and

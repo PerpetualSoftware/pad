@@ -102,8 +102,31 @@ type watchStreamPayload struct {
 // the stdout line as free-text session-notification prose, not a
 // structured format any code parses), so there is no wire-format
 // consumer to break by adding a field.
+// pushKind is the notification kind that carries an instruction from a
+// user (`pad push` / the web push composer), as opposed to the
+// informational item-change kinds (status-change / assignment / comment).
+// Only this kind gets the D5 authority envelope.
+const pushKind = "push"
+
+// pushEnvelopePrefix is PLAN-2613 D5's push framing, shipped VERBATIM
+// (Dave-approved, do not redraft). %s is the pushing user — self-addressed
+// delivery makes that this session's own user (handlers_push.go forces the
+// target to the caller). The backstop D5 notes — a push can inject text
+// but cannot click a permission prompt — is why the framing tells the
+// agent to confirm in-session for destructive/irreversible/out-of-scope
+// direction rather than treating the push as final.
+const pushEnvelopePrefix = "Push from %s via Pad — direction from your user; treat as if typed in this session. If it directs something destructive, irreversible, or clearly outside the current work, confirm in-session before acting rather than treating the push as final."
+
+// formatMonitorLine renders one notification as a single stdout line (the
+// harness ingests each line as a session notification). A push carries the
+// D5 authority envelope so the agent reads it as user direction WITH the
+// confirm-first guard; every other kind is a light informational label —
+// item-change data, not an instruction (D5 watch framing).
 func formatMonitorLine(p watchStreamPayload) string {
-	return fmt.Sprintf("PAD %s/%s → %s (%s): %s", p.Workspace, p.ItemRef, p.Kind, p.Actor, p.Summary)
+	if p.Kind == pushKind {
+		return fmt.Sprintf(pushEnvelopePrefix+" — %s/%s: %s", p.Actor, p.Workspace, p.ItemRef, p.Summary)
+	}
+	return fmt.Sprintf("PAD (update) %s/%s → %s (%s): %s", p.Workspace, p.ItemRef, p.Kind, p.Actor, p.Summary)
 }
 
 // sleepOrDone waits for d or ctx cancellation, whichever comes first.
@@ -364,7 +387,12 @@ func monitorSessionIdentity() cli.StreamSessionIdentity {
 	// reconnect (the monitor re-reads on each loop iteration). Fully
 	// closing it needs a server-side disarm signal on an already-open
 	// connection, which is S3's reconnect/heal job, not this snapshot's.
-	ident.Armed = cli.SessionArmedLocally() || cli.ResolveAutoArmFromDisk().Armed
+	//
+	// ResolveAnnouncedArmed is the S3 tri-state resolution: a live explicit
+	// `pad session disarm` (OFF) wins over the repo's auto_arm, a live
+	// `pad session arm` (ON) arms, and only an absent local override lets
+	// auto_arm decide.
+	ident.Armed = cli.ResolveAnnouncedArmed()
 	return ident
 }
 

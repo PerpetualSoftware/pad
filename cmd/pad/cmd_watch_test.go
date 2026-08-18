@@ -68,29 +68,30 @@ func TestFormatMonitorLine(t *testing.T) {
 		want string
 	}{
 		{
-			name: "status change",
+			name: "status change (informational — no envelope)",
 			in:   watchStreamPayload{Workspace: "demo", ItemRef: "TASK-214", Kind: "status-change", Actor: "Dave", Summary: "open → done"},
-			want: "PAD demo/TASK-214 → status-change (Dave): open → done",
+			want: "PAD (update) demo/TASK-214 → status-change (Dave): open → done",
 		},
 		{
-			name: "assignment",
+			name: "assignment (informational — no envelope)",
 			in:   watchStreamPayload{Workspace: "demo", ItemRef: "BUG-5", Kind: "assignment", Actor: "Alice", Summary: "assigned to Alice"},
-			want: "PAD demo/BUG-5 → assignment (Alice): assigned to Alice",
+			want: "PAD (update) demo/BUG-5 → assignment (Alice): assigned to Alice",
 		},
 		{
-			name: "comment",
+			name: "comment (informational — no envelope)",
 			in:   watchStreamPayload{Workspace: "demo", ItemRef: "TASK-1", Kind: "comment", Actor: "Bob", Summary: "fix verified"},
-			want: "PAD demo/TASK-1 → comment (Bob): fix verified",
+			want: "PAD (update) demo/TASK-1 → comment (Bob): fix verified",
 		},
 		{
 			// IDEA-2544 Phase 1, dispatcher review round 2 (codex P1): the
 			// workspace prefix matters most here — push carries an
 			// instruction, so a caller resolving it against the wrong
 			// linked workspace is a worse failure mode than for a passive
-			// fact.
-			name: "push, different workspace than the item ref alone would suggest",
+			// fact. PLAN-2613 D5: a push also carries the authority envelope
+			// (verbatim), which the informational kinds must not.
+			name: "push carries the D5 envelope, verbatim, with the workspace prefix",
 			in:   watchStreamPayload{Workspace: "other-workspace", ItemRef: "TASK-9", Kind: "push", Actor: "Dave", Summary: "triage this with the triage playbook"},
-			want: "PAD other-workspace/TASK-9 → push (Dave): triage this with the triage playbook",
+			want: "Push from Dave via Pad — direction from your user; treat as if typed in this session. If it directs something destructive, irreversible, or clearly outside the current work, confirm in-session before acting rather than treating the push as final. — other-workspace/TASK-9: triage this with the triage playbook",
 		},
 	}
 	for _, c := range cases {
@@ -99,6 +100,24 @@ func TestFormatMonitorLine(t *testing.T) {
 				t.Errorf("formatMonitorLine(%+v) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// TestFormatMonitorLine_OnlyPushGetsEnvelope pins the D5 boundary: the
+// authority framing ("direction from your user") appears for a push and
+// for NOTHING else, so an informational item-change is never mistaken for
+// an instruction.
+func TestFormatMonitorLine_OnlyPushGetsEnvelope(t *testing.T) {
+	const marker = "direction from your user"
+	push := formatMonitorLine(watchStreamPayload{Workspace: "w", ItemRef: "T-1", Kind: "push", Actor: "Dave", Summary: "do it"})
+	if !strings.Contains(push, marker) {
+		t.Fatalf("push line must carry the authority envelope, got %q", push)
+	}
+	for _, kind := range []string{"status-change", "assignment", "comment", "ask"} {
+		line := formatMonitorLine(watchStreamPayload{Workspace: "w", ItemRef: "T-1", Kind: kind, Actor: "Dave", Summary: "x"})
+		if strings.Contains(line, marker) {
+			t.Fatalf("informational kind %q must NOT carry the authority envelope, got %q", kind, line)
+		}
 	}
 }
 
