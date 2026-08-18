@@ -76,9 +76,9 @@
      template laid out over paragraphs arrives collapsed. Better learned while
      authoring than by reading it back in a terminal. -->
 <p class="qa-hint">
-	Item actions push the resolved prompt to your connected agent session — as a
-	single line, so line breaks collapse — and copy it to your clipboard when no
-	session is connected. Collection actions always copy. Template variables:
+	Item actions push the resolved prompt to an agent session that's accepting
+	pushes — as a single line, so line breaks collapse — and copy it to your
+	clipboard when none is. Collection actions always copy. Template variables:
 	<code class="qa-var-help">{variableHelp}</code>
 </p>
 

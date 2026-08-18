@@ -255,7 +255,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 	});
 
 	it('pushes the resolved prompt when a session is connected, and leaves the clipboard alone', async () => {
-		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
 		pushMock.mockResolvedValue({ pushed: true });
 
 		const { host, component } = mountMenu();
@@ -287,7 +287,34 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		expect(pushMock).not.toHaveBeenCalled();
 		expect(copyMock).toHaveBeenCalledWith('Ship TASK-14');
 		expect(toastShow.mock.calls[0][0]).toBe(
-			'No agent session connected — copied to clipboard instead'
+			'No agent session accepting pushes — copied to clipboard instead'
+		);
+
+		unmount(component);
+		host.remove();
+	});
+
+	it('copies when sessions are connected but NONE are armed (PLAN-2613 S4), never pushing', async () => {
+		// Two sessions connected, neither accepting pushes. A push would be
+		// dropped server-side, so the action must copy — the same routing as
+		// zero sessions, decided on the ACCEPTING count not the connected one.
+		sessionsListMock.mockResolvedValue({
+			sessions: [
+				{ id: 's1', armed: false },
+				{ id: 's2', armed: false }
+			],
+			count: 2
+		});
+
+		const { host, component } = mountMenu();
+		await openMenu(host);
+		actionRow(host, 'Ship it').click();
+		await vi.waitFor(() => expect(toastShow).toHaveBeenCalled());
+
+		expect(pushMock).not.toHaveBeenCalled();
+		expect(copyMock).toHaveBeenCalledWith('Ship TASK-14');
+		expect(toastShow.mock.calls[0][0]).toBe(
+			'No agent session accepting pushes — copied to clipboard instead'
 		);
 
 		unmount(component);
@@ -345,7 +372,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 			scope: 'item',
 		};
 
-		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
 		pushMock.mockResolvedValue({ pushed: true });
 		const pushed = mountMenu({ actions: [multiline] });
 		await openMenu(pushed.host);
@@ -398,7 +425,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		// text over cannot deliver it twice. It is OFFERED rather than done
 		// because the original gesture is spent by now; the toast button is a
 		// fresh one, which is what makes the clipboard write work.
-		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
 		pushMock.mockRejectedValue(
 			new MockPadApiError({ code: 'unavailable', message: 'Push is not available' })
 		);
@@ -431,7 +458,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		// result would leave a failed copy completely silent — and this is the
 		// one path where that silence means the instruction was neither sent NOR
 		// copied, the worst state the surface can be in.
-		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
 		pushMock.mockRejectedValue(
 			new MockPadApiError({ code: 'rate_limited', message: 'Too many requests' })
 		);
@@ -457,7 +484,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		// unrecognised failure leaves the instruction possibly delivered. A
 		// "Copy instead" button here would invite exactly the duplicate the
 		// message warns about — the endpoint has no idempotency key.
-		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
 		pushMock.mockRejectedValue(new TypeError('Failed to fetch'));
 
 		const { host, component } = mountMenu();
@@ -482,16 +509,16 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		const { host, component } = mountMenu();
 		await openMenu(host);
 		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-			'No agent session connected — actions copy to your clipboard'
+			'No agent session accepting pushes — actions copy to your clipboard'
 		);
 		unmount(component);
 		host.remove();
 
-		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }, { id: 's2' }], count: 2 });
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }, { id: 's2', armed: true }], count: 2 });
 		const live = mountMenu();
 		await openMenu(live.host);
 		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-			'Pushes to your 2 connected agent sessions'
+			'Pushes to your 2 agent sessions accepting pushes'
 		);
 		unmount(live.component);
 		live.host.remove();
@@ -514,7 +541,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 		// one direction that loses the user's instruction.
 		vi.useFakeTimers();
 		try {
-			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1' }], count: 1 });
+			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1', armed: true }], count: 1 });
 			// Every poll after the first hangs forever.
 			sessionsListMock.mockReturnValue(new Promise(() => {}));
 
@@ -526,7 +553,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 
 			// The first read landed: the menu is armed to push.
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your connected agent session'
+				'Pushes to your agent session'
 			);
 
 			// Four poll intervals later — nothing has refreshed it. (The TAGLINE
@@ -559,7 +586,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 		// looks like from the component's point of view.
 		vi.useFakeTimers();
 		try {
-			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1' }], count: 1 });
+			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1', armed: true }], count: 1 });
 			sessionsListMock.mockReturnValue(new Promise(() => {}));
 
 			const { host, component } = mountMenu();
@@ -573,7 +600,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			vi.setSystemTime(Date.now() + 5 * 60_000);
 			flushSync();
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your connected agent session'
+				'Pushes to your agent session'
 			);
 
 			// The decision must not inherit that staleness.
@@ -595,7 +622,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 		// routing has already switched to the clipboard.
 		vi.useFakeTimers();
 		try {
-			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1' }], count: 1 });
+			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1', armed: true }], count: 1 });
 			sessionsListMock.mockReturnValue(new Promise(() => {}));
 
 			const { host, component } = mountMenu();
@@ -608,7 +635,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			await vi.advanceTimersByTimeAsync(29_000);
 			flushSync();
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your connected agent session'
+				'Pushes to your agent session'
 			);
 
 			// Just past it — and well before the next 10s poll tick at t=40s.
@@ -631,7 +658,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 		// would silently retire the whole feature.
 		vi.useFakeTimers();
 		try {
-			sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+			sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
 
 			const { host, component } = mountMenu();
 			(host.querySelector('.trigger-btn') as HTMLButtonElement).click();
@@ -640,7 +667,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			flushSync();
 
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to your connected agent session'
+				'Pushes to your agent session'
 			);
 			actionRow(host, 'Ship it').click();
 			await vi.advanceTimersByTimeAsync(0);

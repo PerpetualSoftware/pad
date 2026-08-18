@@ -180,10 +180,15 @@
 			presenceAppliedSeq = seq;
 			lastAnsweredAt = Date.now();
 			armExpiry();
-			// `sessions.length` over `count`: the array is what the server
-			// actually enumerated, and the two can only disagree if something is
-			// wrong — in which case the enumeration is the honest one.
-			presence = { state: 'known', count: resp.sessions?.length ?? 0 };
+			// Count ACCEPTING sessions, not merely connected ones (PLAN-2613
+			// S4): only an armed session receives a push, so a quick action
+			// that routes to push based on the raw connected count would
+			// fire-and-forget into a connected-but-unarmed session and lose the
+			// prompt. Filtering to armed here makes push-vs-copy honest — with
+			// nothing accepting, the action copies instead. The array (not
+			// `count`) is what the server enumerated; the two can only disagree
+			// if something is wrong, in which case enumeration is the honest one.
+			presence = { state: 'known', count: resp.sessions?.filter((s) => s.armed).length ?? 0 };
 		} catch {
 			if (!stillCurrent()) return;
 			presenceAppliedSeq = seq;
@@ -366,11 +371,14 @@
 			return 'Can’t tell if an agent is connected — actions copy to your clipboard';
 		}
 		if (presence.count === 0) {
-			return 'No agent session connected — actions copy to your clipboard';
+			// "accepting", not "connected": a session may be connected but not
+			// armed, in which case a push is dropped and the action copies
+			// (PLAN-2613 S4). The count above is already the accepting subset.
+			return 'No agent session accepting pushes — actions copy to your clipboard';
 		}
 		return presence.count === 1
-			? 'Pushes to your connected agent session'
-			: `Pushes to your ${presence.count} connected agent sessions`;
+			? 'Pushes to your agent session'
+			: `Pushes to your ${presence.count} agent sessions accepting pushes`;
 	});
 
 	function resetCreateForm() {
@@ -535,8 +543,8 @@
 			Template variables: {'{ref}'} {'{title}'} {'{status}'} {'{priority}'} {'{collection}'} {'{content}'} {'{fields}'}
 			{#if scope === 'item'}
 				<br />
-				Pushes to your connected agent session as a single line; copies to your
-				clipboard when none is connected.
+				Pushes to your agent session as a single line when one is accepting pushes;
+				copies to your clipboard otherwise.
 			{/if}
 		</div>
 		<div class="qa-actions">

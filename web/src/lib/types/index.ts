@@ -1820,6 +1820,13 @@ export interface LiveSession {
 	/** The client process's own pid, absent when it didn't say. Disambiguates
 	 *  two sessions sharing a label; not a process the server can act on. */
 	pid?: number;
+	/** Whether this session declared consent to receive `pad push`
+	 *  notifications (PLAN-2613). Only armed sessions actually RECEIVE a
+	 *  push — the server filters delivery to them — so this is the field the
+	 *  composer targets and counts. Always present (`false` for an unarmed
+	 *  session), never omitted, so "connected but not accepting" is a state
+	 *  the UI can show rather than infer from absence. */
+	armed: boolean;
 	/** When the stream opened (UTC, ISO-8601). */
 	connected_at: string;
 }

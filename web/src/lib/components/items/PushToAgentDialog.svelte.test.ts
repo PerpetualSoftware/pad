@@ -55,17 +55,28 @@ function baseProps(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-/** Sessions payload with `n` live entries. */
+/** Sessions payload with `n` live entries, all ARMED (accepting pushes) by
+ *  default — the common case the pre-PLAN-2613 tests assumed. */
 function sessions(n: number) {
-	return {
-		count: n,
-		sessions: Array.from({ length: n }, (_, i) => ({
-			id: `session-id-${i}`,
-			label: `docapp-${i}`,
-			pid: 1000 + i,
-			connected_at: new Date(Date.now() - 60_000).toISOString()
-		}))
-	};
+	return armedSessions(n, 0);
+}
+
+/** Sessions payload with `armed` accepting entries and `unarmed`
+ *  connected-but-not-accepting entries (PLAN-2613 S4). Armed ones come first
+ *  so their ids are stable (`session-id-0`…) across the tests that target one. */
+function armedSessions(armed: number, unarmed: number) {
+	const make = (i: number, isArmed: boolean) => ({
+		id: `session-id-${i}`,
+		label: `docapp-${i}`,
+		pid: 1000 + i,
+		armed: isArmed,
+		connected_at: new Date(Date.now() - 60_000).toISOString()
+	});
+	const list = [
+		...Array.from({ length: armed }, (_, i) => make(i, true)),
+		...Array.from({ length: unarmed }, (_, i) => make(armed + i, false))
+	];
+	return { count: list.length, sessions: list };
 }
 
 function button(name: string): HTMLButtonElement {
@@ -136,7 +147,7 @@ describe('PushToAgentDialog — presence honesty', () => {
 		await mountSettled();
 
 		const body = bodyText();
-		expect(body).toContain('1 session connected');
+		expect(body).toContain('1 session accepting pushes');
 		// The whole point. If this ever starts asserting delivery, the surface
 		// has begun claiming something the server has no way to know.
 		expect(body).toMatch(/can’t confirm delivery|cannot confirm delivery/i);
@@ -431,16 +442,16 @@ describe('PushToAgentDialog — message handling', () => {
 		render(PushToAgentDialog, { props: baseProps() });
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
-		expect(bodyText()).toContain('1 session connected');
+		expect(bodyText()).toContain('1 session accepting pushes');
 		expect(button('Push').disabled).toBe(false);
 
 		// Three poll intervals with no answer takes us past the server's own
-		// ~30s presence staleness bound. Past that, "1 session connected" is a
+		// ~30s presence staleness bound. Past that, "1 session accepting pushes" is a
 		// claim nothing supports.
 		await vi.advanceTimersByTimeAsync(40_000);
 		flushSync();
 
-		expect(bodyText()).not.toContain('1 session connected');
+		expect(bodyText()).not.toContain('1 session accepting pushes');
 		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
 		// Still sendable — "can't tell" never blocks, only "known zero" does.
 		expect(button('Push').disabled).toBe(false);
@@ -476,7 +487,7 @@ describe('PushToAgentDialog — message handling', () => {
 		render(PushToAgentDialog, { props: baseProps() });
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
-		expect(bodyText()).toContain('1 session connected');
+		expect(bodyText()).toContain('1 session accepting pushes');
 
 		await vi.advanceTimersByTimeAsync(40_000);
 		flushSync();
@@ -484,12 +495,12 @@ describe('PushToAgentDialog — message handling', () => {
 
 		// The stalled pre-expiry poll finally lands. Its data is older than the
 		// expiry we just applied, so it must be dropped rather than reinstating
-		// "1 session connected".
+		// "1 session accepting pushes".
 		releaseStalled(sessions(1));
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
 
-		expect(bodyText()).not.toContain('1 session connected');
+		expect(bodyText()).not.toContain('1 session accepting pushes');
 		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
 	});
 
@@ -513,14 +524,14 @@ describe('PushToAgentDialog — message handling', () => {
 });
 
 describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', () => {
-	it('renders a broadcast default plus one option per connected session', async () => {
+	it('renders a broadcast default plus one option per accepting session', async () => {
 		sessionsListMock.mockResolvedValue(sessions(2));
 		await mountSettled();
 
 		const picker = targetPicker();
 		if (!picker) throw new Error('expected a target picker with 2 live sessions');
 		const options = Array.from(picker.options).map((o) => ({ value: o.value, text: o.textContent }));
-		expect(options[0]).toEqual({ value: '', text: expect.stringContaining('All connected sessions (2)') });
+		expect(options[0]).toEqual({ value: '', text: expect.stringContaining('All accepting sessions (2)') });
 		expect(options[1]).toEqual({ value: 'session-id-0', text: 'docapp-0 (pid 1000)' });
 		expect(options[2]).toEqual({ value: 'session-id-1', text: 'docapp-1 (pid 1001)' });
 	});
@@ -646,6 +657,7 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 					id: 'session-id-1',
 					label: 'docapp-1',
 					pid: 1001,
+					armed: true,
 					connected_at: new Date(Date.now() - 60_000).toISOString()
 				}
 			]
@@ -735,5 +747,66 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 		// Dismissed like a normal success, not re-armed like a miss —
 		// "no auto-resend enablement" (dispatcher round 2).
 		expect(onclose).toHaveBeenCalled();
+	});
+});
+
+describe('PushToAgentDialog — connected vs accepting (PLAN-2613 S4)', () => {
+	it('sessions connected but NONE armed: refuses to send, shows the split, offers enable + clipboard', async () => {
+		sessionsListMock.mockResolvedValue(armedSessions(0, 2)); // 2 connected, 0 accepting
+		await mountSettled();
+
+		const body = bodyText();
+		// The honest-counts state D3 exists for — the two connected sessions
+		// are surfaced, not hidden behind a bare "0".
+		expect(body).toContain('2 sessions connected, 0 accepting pushes');
+		expect(body).toContain('/pad:connect');
+		// NOT the "nobody connected" copy — that would be a different lie.
+		expect(body).not.toContain('No agent session is connected');
+
+		// Send is DISABLED — a push to a connected-but-unarmed session is
+		// dropped server-side, so sending would be the silent fire-and-forget
+		// D3 forbids. Asserted at the mechanism, not just the attribute
+		// (CONVE-12).
+		expect(button('Push').disabled).toBe(true);
+		await fireEvent.click(button('Push'));
+		await tick();
+		expect(pushMock).not.toHaveBeenCalled();
+
+		// The picker offers no target (nothing accepting), and the clipboard
+		// escape hatch is present so the surface isn't a dead end.
+		expect(targetPicker()).toBeNull();
+		expect(() => button('Copy instead')).not.toThrow();
+	});
+
+	it('a mix of armed and unarmed: counts and targets only the accepting subset', async () => {
+		sessionsListMock.mockResolvedValue(armedSessions(1, 2)); // 1 accepting, 3 connected
+		await mountSettled();
+
+		const body = bodyText();
+		expect(body).toContain('1 session accepting pushes');
+		expect(body).toContain('(of 3 connected)');
+		expect(button('Push').disabled).toBe(false);
+
+		// The picker offers ONLY the armed session (+ broadcast), never the
+		// unarmed ones — targeting an unarmed session is a guaranteed miss.
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		const optionValues = Array.from(picker.querySelectorAll('option')).map((o) => o.value);
+		expect(optionValues).toEqual(['', 'session-id-0']); // broadcast + the one armed
+		expect(bodyText()).toContain('All accepting sessions (1)');
+	});
+
+	it('broadcast to a mixed set carries no target (server filters to accepting)', async () => {
+		sessionsListMock.mockResolvedValue(armedSessions(2, 1));
+		await mountSettled();
+
+		// Default is broadcast; send carries the pre-S5 3-arg shape.
+		await fireEvent.click(button('Push'));
+		await tick();
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'Take a look at TASK-5 — Fix the thing'
+		);
 	});
 });

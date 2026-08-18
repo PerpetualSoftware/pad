@@ -25,20 +25,30 @@ THE POINT OF THIS DIALOG IS THE PRESENCE LINE, NOT THE TEXTAREA. `pad push` is
 fire-and-forget: no durable inbox, no ack, no "nobody was listening" warning
 (handlers_push.go — Dave's product call, and defensible for a CLI verb typed by
 someone who knows their own session is running). A button in a web UI has no
-such user. So this dialog answers "is anything listening?" BEFORE the click, and
-words the answer at exactly the confidence the server can support:
+such user. So this dialog answers "is anything ACCEPTING?" BEFORE the click, and
+words the answer at exactly the confidence the server can support.
 
-  - N > 0        → "N session connected". NOT "this will be delivered". The
-                   registry can name a session that died up to ~30s ago (an
-                   ungraceful disconnect is invisible until the next keepalive
-                   write fails), and even a live session gets no delivery
-                   receipt. Send is enabled; the caveat is stated, not implied.
-  - N == 0       → send is DISABLED. With nothing listening, a push is not
-                   "probably lost" — it is definitively lost, because there is
-                   no inbox to land in. Offering the button anyway would make
-                   this surface worse than the clipboard ferry it replaces, so
-                   the empty state offers the clipboard instead (the same
-                   fallback PLAN-2558 S4 rules for quick actions).
+CONNECTED IS NOT ACCEPTING (PLAN-2613 S4, D3). Only an armed session receives a
+push — the server filters delivery to armed sessions — so every count and gate
+below keys on the ACCEPTING (armed) subset, not the raw connected list, and the
+line shows the split honestly rather than hiding the difference:
+
+  - accepting > 0 → "M sessions accepting pushes" (and "of N connected" when
+                   some are connected-but-unarmed). NOT "this will be
+                   delivered": the registry can name a session that died up to
+                   ~30s ago (an ungraceful disconnect is invisible until the
+                   next keepalive write fails), and even a live armed session
+                   gets no delivery receipt. Send is enabled; the caveat is
+                   stated, not implied.
+  - accepting == 0 → send is DISABLED, because a push to no armed session is
+                   definitively lost (no inbox), and a push to a connected-but-
+                   unarmed session is dropped server-side — sending either way
+                   would be the silent fire-and-forget D3 forbids. Two empty
+                   states: nobody connected at all ("start a session"), or
+                   sessions connected but none opted in ("run /pad:connect to
+                   enable"). Both offer the clipboard instead (the same fallback
+                   PLAN-2558 S4 rules for quick actions), so the surface is
+                   never a dead end.
   - can't tell   → send is ENABLED, with the uncertainty stated. A 503 (no
                    presence registry wired) or a network failure means the
                    server cannot answer, and rendering that as zero is the
@@ -207,7 +217,19 @@ server tells you not to run would cost honesty in the case that actually ships.
 		destroyed = true;
 	});
 
-	const sessionCount = $derived(sessions.length);
+	/**
+	 * PLAN-2613 S4 (D3): connected is not the same as ACCEPTING. Only an
+	 * armed session actually receives a push (the server filters delivery to
+	 * armed sessions), so `acceptingSessions` — not the full `sessions` list —
+	 * is what the picker targets, what the count promises, and what enables
+	 * Send. Showing the split ("N connected, M accepting") is the honest
+	 * form: a connected-but-unarmed session is real and worth surfacing so
+	 * the user can enable it (/pad:connect), not hidden so a push silently
+	 * goes nowhere. `count` on the wire is redundant; derive from the array.
+	 */
+	const connectedCount = $derived(sessions.length);
+	const acceptingSessions = $derived(sessions.filter((s) => s.armed));
+	const acceptingCount = $derived(acceptingSessions.length);
 	const collapsed = $derived(collapsePushMessage(message));
 	const messageLength = $derived(pushMessageLength(message));
 	const tooLong = $derived(isPushMessageTooLong(message));
@@ -227,16 +249,20 @@ server tells you not to run would cost honesty in the case that actually ships.
 	// isn't going to happen — and stay silent about one that is.
 	const willCollapse = $derived(collapsed !== '' && collapsed !== trimPushMessage(message));
 
-	/** Nothing is listening, and we are sure of it. The only state that blocks
-	 *  send on presence grounds — 'unknown' deliberately does not. */
-	const noListeners = $derived(presenceState === 'known' && sessionCount === 0);
+	/** Nothing is ACCEPTING pushes, and we are sure of it. The only state that
+	 *  blocks send on presence grounds — 'unknown' deliberately does not.
+	 *  Gated on acceptingCount, not connectedCount (PLAN-2613 S4): a push to a
+	 *  connected-but-unarmed session is silently dropped by the server, so
+	 *  sending with zero accepting would be the fire-and-forget D3 forbids,
+	 *  even when other sessions are connected. */
+	const noAccepting = $derived(presenceState === 'known' && acceptingCount === 0);
 
 	const canSend = $derived(
 		!sending &&
 			!outcomeUnknown &&
 			!empty &&
 			!tooLong &&
-			!noListeners &&
+			!noAccepting &&
 			presenceState !== 'checking'
 	);
 
@@ -258,7 +284,13 @@ server tells you not to run would cost honesty in the case that actually ships.
 	 * path below that clears `sessions` directly.
 	 */
 	function reconcileSelectedSession() {
-		if (selectedSessionId && !sessions.some((s) => s.id === selectedSessionId)) {
+		// The target must be an ARMED session (PLAN-2613 S4) — an unarmed one
+		// can't receive the push. Reads `sessions` directly (freshly assigned
+		// by the caller) rather than the acceptingSessions derived, so it
+		// doesn't depend on derived recompute timing, and never in reactive
+		// position (CONVE-1688). A selection that dropped OR lost its armed
+		// bit falls back to broadcast.
+		if (selectedSessionId && !sessions.some((s) => s.id === selectedSessionId && s.armed)) {
 			selectedSessionId = '';
 		}
 	}
@@ -520,19 +552,36 @@ server tells you not to run would cost honesty in the case that actually ships.
 					{presenceReason} You can still send — but nothing here knows whether it will
 					land anywhere.
 				</p>
-			{:else if sessionCount === 0}
-				<p class="notice notice-warn">
-					<strong>No agent session is connected.</strong>
-					A push isn’t stored anywhere — with nothing listening it would be lost, not
-					queued. Start a session (<code>pad watch --stream</code>) and it will appear
-					here, or copy the message and paste it yourself.
-				</p>
+			{:else if acceptingCount === 0}
+				<!-- Nothing accepting. Two distinct empty states (PLAN-2613 S4):
+				     nobody connected at all, vs. sessions connected but none opted
+				     in — the second is the honest-counts case D3 exists for. -->
+				{#if connectedCount === 0}
+					<p class="notice notice-warn">
+						<strong>No agent session is connected.</strong>
+						A push isn’t stored anywhere — with nothing listening it would be lost, not
+						queued. Start a session (<code>pad watch --stream</code>) and connect it
+						(<code>/pad:connect</code>) so it accepts pushes, or copy the message and
+						paste it yourself.
+					</p>
+				{:else}
+					<p class="notice notice-warn">
+						<strong
+							>{connectedCount}
+							{connectedCount === 1 ? 'session' : 'sessions'} connected, 0 accepting pushes.</strong
+						>
+						A push only reaches a session that has opted in. Run
+						<code>/pad:connect</code> (or <code>pad session arm</code>) in a connected
+						session to enable it, or copy the message and paste it yourself.
+					</p>
+				{/if}
 			{:else}
 				<p class="presence-ok">
 					<strong
-						>{sessionCount}
-						{sessionCount === 1 ? 'session' : 'sessions'} connected</strong
-					>
+						>{acceptingCount}
+						{acceptingCount === 1 ? 'session' : 'sessions'} accepting pushes</strong
+					>{#if connectedCount > acceptingCount}
+						<span class="muted"> (of {connectedCount} connected)</span>{/if}
 					<!-- Two separate hedges, both load-bearing. The registry can name a
 					     session that dropped ungracefully up to ~30s ago, so even
 					     "was listening" is past tense; and nothing acknowledges a
@@ -541,7 +590,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 					that dropped in the last ~30 seconds can still be listed here.
 				</p>
 				<ul class="session-list">
-					{#each sessions as session (session.id)}
+					{#each acceptingSessions as session (session.id)}
 						<li>
 							<span class="session-name">{sessionName(session)}</span>
 							<span class="muted">connected {relativeTime(session.connected_at)}</span>
@@ -557,14 +606,19 @@ server tells you not to run would cost honesty in the case that actually ships.
 		     `noListeners`, so a picker here would offer a choice that can't be
 		     acted on. Broadcast is the default on every fresh open (Fresh-on-
 		     open reset above), never a remembered previous target. -->
-		{#if sessionCount > 0}
+		{#if acceptingCount > 0}
 			<section class="section">
 				<label class="field-label" for={targetId}>Send to</label>
+				<!-- Only ARMED sessions are targetable (PLAN-2613 S4): a push to
+				     an unarmed session is dropped server-side, so offering one as
+				     a target would be offering a guaranteed miss. Broadcast, too,
+				     reaches only accepting sessions (the server filters), so its
+				     count is the accepting count, not the connected one. -->
 				<select id={targetId} class="target-picker" bind:value={selectedSessionId} disabled={sending}>
 					<option value=""
-						>All connected sessions ({sessionCount})</option
+						>All accepting sessions ({acceptingCount})</option
 					>
-					{#each sessions as session (session.id)}
+					{#each acceptingSessions as session (session.id)}
 						<option value={session.id}>{sessionName(session)}</option>
 					{/each}
 				</select>
@@ -631,7 +685,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			<span class="muted footer-status" role="status">Sending…</span>
 		{/if}
 		<Button variant="secondary" disabled={sending} onclick={handleDismiss}>Cancel</Button>
-		{#if noListeners}
+		{#if noAccepting}
 			<Button variant="secondary" disabled={empty || tooLong} onclick={handleCopyInstead}>
 				Copy instead
 			</Button>
