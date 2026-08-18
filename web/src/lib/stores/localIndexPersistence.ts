@@ -176,6 +176,90 @@ export async function hydrate(
 }
 
 /**
+ * Decide whether `next` may overwrite the row already stored under the same
+ * id. The IDB analogue of localIndex's in-RAM `mergeRow` seq guard, which the
+ * persistence layer never had (BUG-2609).
+ *
+ * Returns false in exactly two cases: `next` is strictly older than what is
+ * stored, or `next` carries no seq while the stored row does (see the
+ * asymmetry note below). Equal seq still writes: RAM merges same-seq projections before persisting, so the
+ * incoming row is the merged one, and refusing it would drop that merge.
+ * Refusing would also mirror the bug onto persistDelta, where a re-delivered
+ * same-seq row carrying computed projection fields would be skipped. The
+ * honest reading is that accept-or-refuse is the wrong axis at equal seq — the
+ * correct semantics are a MERGE, which this layer does not have. That leaves a
+ * narrow cross-tab residual (BUG-2635): a tab without the row in RAM can
+ * persist an unmerged snapshot over another tab's merged one at the same seq.
+ * A missing seq is treated ASYMMETRICALLY, which is the part worth reading:
+ *
+ *   - stored row has no seq, incoming does  -> WRITE. The incoming row carries
+ *     ordering evidence the stored one lacks.
+ *   - neither has a seq                     -> WRITE. No evidence either way,
+ *     and refusing would disable the cache for rows the server never stamped.
+ *   - stored row HAS a seq, incoming does not -> REFUSE.
+ *
+ * That last case is not symmetry-breaking for its own sake. The optimistic
+ * reorder path deliberately clears `seq` so the row bypasses localIndex's RAM
+ * guard and paints immediately (TASK-1357); persisting it is incidental to
+ * that intent. Allowing it here lets a delayed optimistic snapshot overwrite an
+ * authoritative row that already landed at a real seq, and the result is worse
+ * than an ordinary stale row: the persisted row then has NO seq at all, so
+ * neither this guard nor the RAM guard can order it on the next warm boot,
+ * while the cursor sits past the delta that would have corrected it.
+ *
+ * Refusing costs nothing the reorder needs. RAM still shows the optimistic
+ * order, and the authoritative response persists with a real seq moments later
+ * — and because the cursor has not advanced past that response, a warm boot in
+ * the meantime simply refetches it.
+ *
+ * WHY THIS EXISTS. `upsert` hands persistUpserts a snapshot taken from RAM and
+ * does not await it. (`applyRetag` used to as well; it now goes through
+ * persistRetag, for the reason in the exclusion list below.) An SSE delta for the same row can commit
+ * its own atomic rows+cursor transaction in between, after which the older
+ * snapshot lands LAST and leaves IDB holding a pre-delta row while the
+ * persisted cursor sits past that delta. Warm boot then hydrates the stale row
+ * and `/items-changes?since=cursor` never returns it again — stale until the
+ * item happens to change. RAM is unaffected (single-threaded and seq-guarded);
+ * only the warm-boot cache can regress.
+ *
+ * WHAT THIS GUARD DOES NOT COVER, so nobody reads it as covering more:
+ *
+ *   - RETAGS do not come through here at all. `applyRetag` changes
+ *     collection_slug WITHOUT bumping seq, so a whole-row retag snapshot would
+ *     be refused whenever a newer delta had landed — and losing a rename is
+ *     permanent, not self-healing (no item delta re-stamps it, and
+ *     pendingRetags is in-memory and single-session). Renames go through
+ *     persistRetag, which rewrites the one field in place.
+ *
+ *     That closes the direction where the RETAG is the late write. It does not
+ *     close the reverse: a delta captured before the rename can commit after
+ *     it, whole-row put an older collection_slug at a NEWER seq, and pass this
+ *     guard legitimately. collection_slug simply is not ordered by seq — it is
+ *     out-of-band relative to the item's own version — so no seq comparison
+ *     can arbitrate it. Fixing that means making the rename DURABLE (persisted
+ *     retag intent, reapplied on hydrate) rather than a racing write; filed as
+ *     BUG-2634. Pre-existing — a blind put lost the same race.
+ *
+ *   - HARD DELETES can still be resurrected. If persistDelta removes a row and
+ *     advances the cursor, a delayed snapshot for that id finds nothing stored,
+ *     passes this guard, and reinserts it behind the cursor — the same
+ *     invisible-to-delta-sync shape this bug is about, in the delete direction.
+ *     Refusing it needs a tombstone with its own seq, i.e. an IDB schema
+ *     change; filed as BUG-2633 rather than half-built here. Pre-existing: a
+ *     blind put resurrected it too.
+ */
+export function shouldWriteRow(
+	existing: ItemIndexRow | undefined,
+	next: ItemIndexRow,
+): boolean {
+	if (!existing) return true;
+	if (existing.seq === undefined) return true;
+	// Stored row is stamped and the incoming one is not: no claim to be newer.
+	if (next.seq === undefined) return false;
+	return next.seq >= existing.seq;
+}
+
+/**
  * Upsert a batch of rows in a single transaction. Used by
  * `applyDelta`/`bootstrap` write-through. Batching matters when an
  * SSE flurry arrives — a single tx is much cheaper than N
@@ -192,9 +276,91 @@ export async function persistUpserts(
 	try {
 		const tx = db.transaction('items', 'readwrite');
 		const store = tx.objectStore('items');
-		// Fire-and-forget per-row put; the .done promise waits for them all.
+		// Read-modify-write per row, INSIDE the transaction, so the comparison
+		// is against what is stored at write time rather than at snapshot
+		// time. A blind put here is what let an older snapshot land after a
+		// newer delta (BUG-2609). The extra get doubles the operations on a
+		// cache write-through, which is cheap next to a row that goes stale
+		// until the item next changes.
 		for (const row of rows) {
+			const existing = (await store.get(row.id)) as ItemIndexRow | undefined;
+			if (!shouldWriteRow(existing, row)) continue;
 			store.put(row).catch(() => undefined);
+		}
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
+ * Persist a collection RENAME by rewriting `collection_slug` on the given rows
+ * IN PLACE, rather than putting whole snapshots (BUG-2609).
+ *
+ * A retag is a field-level intent — "these rows are in a collection that got
+ * renamed" — and expressing it as a whole-row put makes it two claims at once,
+ * the second of which is false: it also asserts every other field still looks
+ * like the snapshot taken from RAM. That second claim is what the seq guard in
+ * shouldWriteRow has to refuse when a newer delta has landed, and refusing it
+ * drops the rename with it.
+ *
+ * Dropping the rename is NOT self-healing, which is the reason this function
+ * exists instead of an exemption from the guard. `applyRetag` does not bump
+ * seq, a collection rename touches no items so no item delta ever re-stamps
+ * them, and localIndex's `pendingRetags` repair is explicitly in-memory and
+ * scoped to a single session's pre-hydration window. A persisted slug that
+ * loses its rename therefore stays wrong across reloads with nothing left to
+ * correct it.
+ *
+ * Reading each row inside the transaction and changing only the one field
+ * keeps both properties: the newer row's fields survive, and the rename lands.
+ * Rows absent from the cache are skipped — there is nothing to rename, and
+ * inserting a snapshot here would resurrect rows a delta may have removed.
+ * Rows that have MOVED to another collection are skipped too; see
+ * shouldApplyRetag.
+ *
+ * LIMIT: this is still a best-effort WRITE, like everything else in this
+ * module, so a rename is lost outright if the transaction aborts (quota,
+ * eviction, tab freeze) — the catch below swallows it and nothing retries.
+ * A lost rename does not self-heal for the same reason it cannot be reordered:
+ * no item delta re-stamps those rows, and pendingRetags is in-memory. That is
+ * the same gap as BUG-2634, reached by failure rather than by racing, and the
+ * fix it proposes — persist the retag INTENT and reapply it on hydrate —
+ * closes both, which is why this is not a separate patch.
+ */
+export function shouldApplyRetag(
+	existing: ItemIndexRow | undefined,
+	collectionId: string,
+	newSlug: string,
+): boolean {
+	if (!existing) return false;
+	// Membership is re-checked HERE, not trusted from the snapshot. A row can
+	// move to another collection between the RAM retag and this transaction,
+	// and applying the renamed collection's slug to it would persist a row
+	// whose collection_id and collection_slug disagree — behind the cursor,
+	// so no delta repairs it (codex round 5).
+	if (existing.collection_id !== collectionId) return false;
+	if (existing.collection_slug === newSlug) return false;
+	return true;
+}
+
+export async function persistRetag(
+	userId: string | null,
+	ws: string,
+	collectionId: string,
+	ids: string[],
+	newSlug: string,
+): Promise<void> {
+	if (!isSupported() || ids.length === 0) return;
+	const db = await open(userId, ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction('items', 'readwrite');
+		const store = tx.objectStore('items');
+		for (const id of ids) {
+			const existing = (await store.get(id)) as ItemIndexRow | undefined;
+			if (!shouldApplyRetag(existing, collectionId, newSlug)) continue;
+			store.put({ ...existing!, collection_slug: newSlug }).catch(() => undefined);
 		}
 		await tx.done;
 	} catch {
@@ -231,7 +397,13 @@ export async function persistDelta(
 	try {
 		const tx = db.transaction(['items', 'meta'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
+		// Same guard as persistUpserts: the race runs in both directions, so a
+		// delta must not overwrite a row that is already NEWER in the cache
+		// either. Skipping a row here is safe with the cursor advance below —
+		// a newer stored row already reflects state past this delta.
 		for (const row of rows) {
+			const existing = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
+			if (!shouldWriteRow(existing, row)) continue;
 			itemsStore.put(row).catch(() => undefined);
 		}
 		for (const id of removeIds) {

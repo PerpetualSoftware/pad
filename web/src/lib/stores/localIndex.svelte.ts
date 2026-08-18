@@ -63,6 +63,7 @@ import {
 	persistDelta,
 	persistRemovals,
 	persistReplace,
+	persistRetag,
 	persistUpserts,
 	wipe as persistWipe,
 } from './localIndexPersistence';
@@ -188,7 +189,18 @@ function applyRetag(ws: string, state: WorkspaceState, collectionId: string, new
 		retagged.push(next);
 	}
 	if (retagged.length > 0) {
-		persistUpserts(state.userId, ws, retagged).catch(() => undefined);
+		// persistRetag, NOT persistUpserts: a rename is a field-level intent,
+		// and persisting it as a whole-row snapshot would be refused by the
+		// IDB seq guard whenever a newer delta has already landed — dropping
+		// the rename with nothing left to reapply it, since a rename produces
+		// no item delta and pendingRetags is in-memory only (BUG-2609).
+		persistRetag(
+			state.userId,
+			ws,
+			collectionId,
+			retagged.map((r) => r.id),
+			newSlug,
+		).catch(() => undefined);
 	}
 }
 
