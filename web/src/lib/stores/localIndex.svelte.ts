@@ -197,6 +197,7 @@ function applyRetag(ws: string, state: WorkspaceState, collectionId: string, new
 		persistRetag(
 			state.userId,
 			ws,
+			collectionId,
 			retagged.map((r) => r.id),
 			newSlug,
 		).catch(() => undefined);

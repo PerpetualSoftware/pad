@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shouldWriteRow } from './localIndexPersistence';
+import { shouldApplyRetag, shouldWriteRow } from './localIndexPersistence';
 import type { ItemIndexRow } from '$lib/types';
 
 /**
@@ -17,6 +17,10 @@ import type { ItemIndexRow } from '$lib/types';
 
 function row(seq: number | undefined, id = 'item-1'): ItemIndexRow {
 	return { id, seq } as unknown as ItemIndexRow;
+}
+
+function collRow(collectionId: string, slug: string, id = 'item-1'): ItemIndexRow {
+	return { id, collection_id: collectionId, collection_slug: slug } as unknown as ItemIndexRow;
 }
 
 describe('shouldWriteRow', () => {
@@ -79,6 +83,33 @@ describe('shouldWriteRow', () => {
 		const storedByDelta = row(101);
 		const staleSnapshot = row(100);
 		expect(shouldWriteRow(storedByDelta, staleSnapshot)).toBe(false);
+	});
+});
+
+/**
+ * shouldApplyRetag is the decision persistRetag makes per row INSIDE its
+ * transaction. Unlike the transaction itself, it is reachable here.
+ */
+describe('shouldApplyRetag', () => {
+	it('renames a row that is still in the renamed collection', () => {
+		expect(shouldApplyRetag(collRow('coll-a', 'old'), 'coll-a', 'new')).toBe(true);
+	});
+
+	// The row moved between the RAM retag and this write. Applying the renamed
+	// collection's slug would persist a row whose collection_id and
+	// collection_slug disagree — behind the cursor, so no delta repairs it.
+	it('REFUSES a row that has moved to another collection', () => {
+		expect(shouldApplyRetag(collRow('coll-b', 'b-slug'), 'coll-a', 'new')).toBe(false);
+	});
+
+	it('skips a row already carrying the new slug (idempotent)', () => {
+		expect(shouldApplyRetag(collRow('coll-a', 'new'), 'coll-a', 'new')).toBe(false);
+	});
+
+	// Absent means the row is not cached — or was removed by a delta. Inserting
+	// it here would resurrect it behind the cursor (the BUG-2633 shape).
+	it('REFUSES an absent row rather than inserting one', () => {
+		expect(shouldApplyRetag(undefined, 'coll-a', 'new')).toBe(false);
 	});
 });
 

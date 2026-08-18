@@ -315,10 +315,29 @@ export async function persistUpserts(
  * keeps both properties: the newer row's fields survive, and the rename lands.
  * Rows absent from the cache are skipped — there is nothing to rename, and
  * inserting a snapshot here would resurrect rows a delta may have removed.
+ * Rows that have MOVED to another collection are skipped too; see
+ * shouldApplyRetag.
  */
+export function shouldApplyRetag(
+	existing: ItemIndexRow | undefined,
+	collectionId: string,
+	newSlug: string,
+): boolean {
+	if (!existing) return false;
+	// Membership is re-checked HERE, not trusted from the snapshot. A row can
+	// move to another collection between the RAM retag and this transaction,
+	// and applying the renamed collection's slug to it would persist a row
+	// whose collection_id and collection_slug disagree — behind the cursor,
+	// so no delta repairs it (codex round 5).
+	if (existing.collection_id !== collectionId) return false;
+	if (existing.collection_slug === newSlug) return false;
+	return true;
+}
+
 export async function persistRetag(
 	userId: string | null,
 	ws: string,
+	collectionId: string,
 	ids: string[],
 	newSlug: string,
 ): Promise<void> {
@@ -330,9 +349,8 @@ export async function persistRetag(
 		const store = tx.objectStore('items');
 		for (const id of ids) {
 			const existing = (await store.get(id)) as ItemIndexRow | undefined;
-			if (!existing) continue;
-			if (existing.collection_slug === newSlug) continue;
-			store.put({ ...existing, collection_slug: newSlug }).catch(() => undefined);
+			if (!shouldApplyRetag(existing, collectionId, newSlug)) continue;
+			store.put({ ...existing!, collection_slug: newSlug }).catch(() => undefined);
 		}
 		await tx.done;
 	} catch {
