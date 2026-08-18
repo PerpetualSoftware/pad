@@ -37,6 +37,10 @@ describe('shouldWriteRow', () => {
 	// persisting (localIndex's mergeRow), so the incoming row IS the merged
 	// one; refusing it would drop that merge and leave the cache behind RAM
 	// with no seq difference to ever correct it.
+	// Within a tab this is right: upsert returns early on equal seq, and any
+	// row that does reach here has been through RAM's projection merge.
+	// Across tabs it leaves a residual (BUG-2635) — accept-or-refuse is the
+	// wrong axis at equal seq, and a merge is what this layer lacks.
 	it('writes on equal seq, because RAM has already merged the projection', () => {
 		expect(shouldWriteRow(row(7), row(7))).toBe(true);
 	});

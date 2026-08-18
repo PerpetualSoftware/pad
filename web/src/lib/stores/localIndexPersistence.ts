@@ -183,6 +183,12 @@ export async function hydrate(
  * Returns false ONLY when `next` is strictly older than what is stored. Equal
  * seq still writes: RAM merges same-seq projections before persisting, so the
  * incoming row is the merged one, and refusing it would drop that merge.
+ * Refusing would also mirror the bug onto persistDelta, where a re-delivered
+ * same-seq row carrying computed projection fields would be skipped. The
+ * honest reading is that accept-or-refuse is the wrong axis at equal seq — the
+ * correct semantics are a MERGE, which this layer does not have. That leaves a
+ * narrow cross-tab residual (BUG-2635): a tab without the row in RAM can
+ * persist an unmerged snapshot over another tab's merged one at the same seq.
  * A missing seq on either side writes too — absence is not evidence of being
  * older, and refusing would silently disable the cache for rows the server has
  * not stamped.
