@@ -180,8 +180,9 @@ export async function hydrate(
  * id. The IDB analogue of localIndex's in-RAM `mergeRow` seq guard, which the
  * persistence layer never had (BUG-2609).
  *
- * Returns false ONLY when `next` is strictly older than what is stored. Equal
- * seq still writes: RAM merges same-seq projections before persisting, so the
+ * Returns false in exactly two cases: `next` is strictly older than what is
+ * stored, or `next` carries no seq while the stored row does (see the
+ * asymmetry note below). Equal seq still writes: RAM merges same-seq projections before persisting, so the
  * incoming row is the merged one, and refusing it would drop that merge.
  * Refusing would also mirror the bug onto persistDelta, where a re-delivered
  * same-seq row carrying computed projection fields would be skipped. The

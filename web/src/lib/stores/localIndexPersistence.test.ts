@@ -138,10 +138,15 @@ describe('the premise behind persistRetag (guard behaviour, not persistRetag its
  *
  * That the guard runs INSIDE the IDB transaction — i.e. compares against what
  * is stored at write time rather than at snapshot time — is not asserted by any
- * test, because this harness has no IndexedDB at all: jsdom does not implement
- * it, `fake-indexeddb` is not a dependency, and `isSupported()` therefore
- * returns false, making every function in the persistence module a no-op under
- * vitest.
+ * test, because there is no IndexedDB to run it against. A plain `.test.ts`
+ * file belongs to vitest's `node` project (environment: 'node', see
+ * vitest.config.ts) rather than the jsdom one, which takes the
+ * browser-suite glob. Node provides no `indexedDB` global, the
+ * jsdom project does not implement one either, and `fake-indexeddb` is not a
+ * dependency. `isSupported()` therefore returns false, so every function in
+ * the persistence module that TOUCHES IDB is a no-op here — the exported
+ * decision helpers tested above are pure and unaffected, which is precisely
+ * why they were extracted.
  *
  * So the interleaving rests on reading the call sites (the `await store.get`
  * immediately before each `put`, both within the transaction) rather than on a
