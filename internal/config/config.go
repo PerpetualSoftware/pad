@@ -84,6 +84,36 @@ type Config struct {
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
 	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
+
+	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
+	// pointer so an absent `[push]` table stays nil and Save() (via the
+	// omitempty tag) never writes an empty table into everyone's
+	// config.toml on the next `pad init` / `pad configure`.
+	Push *PushConfig `toml:"push,omitempty"`
+}
+
+// PushConfig is the `[push]` table in ~/.pad/config.toml — the per-user
+// half of the arm-consent resolution (PLAN-2613 S2, D4).
+type PushConfig struct {
+	// AutoArm is the per-USER auto-arm setting, and it is a pointer for a
+	// reason the resolution depends on: unset (nil) must be
+	// distinguishable from an explicit false. Only an explicit false acts
+	// as a veto — it forces auto-arm OFF even in a repository whose
+	// .pad.toml opted in (deny-wins). Nil means "no opinion" and lets the
+	// repository decide. A true here is deliberately INERT as an enabler:
+	// D4 forbids a machine-global always-on, so a per-user true can never
+	// turn arming on for a repo that didn't opt in itself. See
+	// cli.ResolveAutoArm for the full table.
+	AutoArm *bool `toml:"auto_arm"`
+}
+
+// PushAutoArm returns the per-user auto-arm veto value, nil-safe: a nil
+// *Config or a missing `[push]` table both read as "no opinion" (nil).
+func (c *Config) PushAutoArm() *bool {
+	if c == nil || c.Push == nil {
+		return nil
+	}
+	return c.Push.AutoArm
 }
 
 func DefaultConfig() *Config {
