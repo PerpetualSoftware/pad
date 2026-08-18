@@ -69,7 +69,19 @@ const browserTestDepsInstalled =
 	canResolve('@testing-library/jest-dom') &&
 	canResolve('@sveltejs/vite-plugin-svelte');
 
+// The `idb` project needs fake-indexeddb (PLAN-2636 unit 1). Like the jsdom
+// deps it's declared in package.json but absent in a symlinked worktree until
+// npm install runs; when it can't be resolved we register only the other
+// projects so `npm run test` stays green, and the idb suite activates
+// automatically once the dep is present (mirrors the jsdom self-disable).
+const idbTestDepInstalled = canResolve('fake-indexeddb');
+
 const BROWSER_TEST_GLOB = 'src/**/*.svelte.test.ts';
+// IDB-backed persistence tests. The `.idb.test.ts` suffix routes them to the
+// dedicated `idb` project; they must be excluded from the node project (which
+// has no indexedDB — the persistence layer would silently no-op there and the
+// test would pass vacuously) the same way the svelte glob is.
+const IDB_TEST_GLOB = 'src/**/*.idb.test.ts';
 
 const nodeProject = {
 	resolve: { alias: { $lib } },
@@ -77,13 +89,33 @@ const nodeProject = {
 		name: 'node',
 		environment: 'node',
 		include: ['src/**/*.test.ts'],
-		// The jsdom project owns these; they'd blow up in the plain node env.
-		exclude: [BROWSER_TEST_GLOB],
+		// The jsdom / idb projects own these; they'd blow up or no-op in the
+		// plain node env.
+		exclude: [BROWSER_TEST_GLOB, IDB_TEST_GLOB],
+	},
+};
+
+const idbProject = {
+	resolve: { alias: { $lib } },
+	server: nodeModulesRealPath
+		? { fs: { allow: [projectRoot, nodeModulesRealPath] } }
+		: undefined,
+	test: {
+		name: 'idb',
+		// fake-indexeddb runs in plain node — no DOM needed. Its setup installs
+		// a fresh in-memory IndexedDB per test.
+		environment: 'node',
+		include: [IDB_TEST_GLOB],
+		setupFiles: ['./src/test/setup-idb.ts'],
 	},
 };
 
 export default defineConfig(async () => {
 	const projects: Record<string, unknown>[] = [nodeProject];
+
+	if (idbTestDepInstalled) {
+		projects.push(idbProject);
+	}
 
 	if (browserTestDepsInstalled) {
 		// Dynamic import so a missing plugin can never crash config loading.
