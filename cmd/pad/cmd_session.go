@@ -169,6 +169,11 @@ type sessionStatusJSON struct {
 	AutoArm     bool `json:"auto_arm"`
 	AutoArmRepo bool `json:"auto_arm_repo"`
 	AutoArmVeto bool `json:"auto_arm_user_veto"`
+	// AutoArmConfigError is true when the per-user config.toml exists but
+	// couldn't be read; auto-arm then resolves off (fail closed) and this
+	// says so, so the off state reads as "couldn't confirm" rather than
+	// "not opted in".
+	AutoArmConfigError bool `json:"auto_arm_config_error"`
 	// Announced is what a stream this session opens now would declare:
 	// LocalArmed OR AutoArm.
 	Announced bool `json:"announced_armed"`
@@ -197,11 +202,12 @@ func sessionStatusCmd() *cobra.Command {
 			localArmed := cli.SessionArmedLocally()
 
 			st := sessionStatusJSON{
-				LocalArmed:  localArmed,
-				AutoArm:     decision.Armed,
-				AutoArmRepo: decision.RepoAutoArm,
-				AutoArmVeto: decision.UserVeto,
-				Announced:   localArmed || decision.Armed,
+				LocalArmed:         localArmed,
+				AutoArm:            decision.Armed,
+				AutoArmRepo:        decision.RepoAutoArm,
+				AutoArmVeto:        decision.UserVeto,
+				AutoArmConfigError: decision.ConfigUnreadable,
+				Announced:          localArmed || decision.Armed,
 			}
 			if ws, err := cli.DetectWorkspace(workspaceFlag); err == nil {
 				st.Workspace = ws
@@ -233,7 +239,18 @@ type sessionCounts struct{ connected, accepting int }
 // misleading zero.
 func serverSessionCounts() (sessionCounts, bool) {
 	cfg, err := config.Load()
-	if err != nil || !cfg.IsConfigured() {
+	if err != nil {
+		return sessionCounts{}, false
+	}
+	// Apply the directory's .pad.toml `url` override exactly as the
+	// monitor does (cmd_watch.go's monitorClient), so status queries the
+	// SAME server the monitor connects to. Without this, a repo whose
+	// .pad.toml points at server B would report server A's sessions — or,
+	// with only a repo URL set, wrongly report the server unreachable
+	// (Codex R1 MED-2). The override can also flip Mode to remote, which
+	// makes an otherwise-"not configured" global config usable.
+	applyPadTomlOverride(cfg)
+	if !cfg.IsConfigured() {
 		return sessionCounts{}, false
 	}
 	if err := cli.EnsureServer(cfg); err != nil {
@@ -272,6 +289,8 @@ func printSessionStatus(st sessionStatusJSON) {
 	switch {
 	case st.AutoArm:
 		auto = "on (.pad.toml push.auto_arm)"
+	case st.AutoArmConfigError:
+		auto = "off (user config unreadable — failing closed)"
 	case st.AutoArmVeto:
 		auto = "off (vetoed by per-user config)"
 	}

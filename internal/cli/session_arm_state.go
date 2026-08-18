@@ -68,10 +68,28 @@ type ArmState struct {
 	// headless fallback it IS the liveness signal.
 	PID int `json:"pid"`
 	// Socket is CLAUDE_CODE_MESSAGING_SOCKET at arm time, or "" for the
-	// headless fallback. When set, its continued existence on disk is the
-	// authoritative liveness signal — it outlives the short-lived arm
-	// command and vanishes with the Claude Code session.
+	// headless fallback. When set, its continued existence on disk is a
+	// necessary liveness signal — it outlives the short-lived arm command
+	// and vanishes with the Claude Code session.
 	Socket string `json:"socket,omitempty"`
+	// SocketMtimeUnixNano is the socket file's modification time at arm
+	// time (0 when headless). Existence alone is not enough: a socket
+	// PATH can be reused by a later, unrelated Claude Code session, and a
+	// stale arm file keyed on that path would then arm the new session —
+	// consent-grandfathering (Codex R1 HIGH-2). The socket file's mtime is
+	// its bind (creation) time, so a reused path is a DIFFERENT socket
+	// with a different mtime; the reader requires an exact match, which
+	// ties the file to the specific socket instance it was armed for.
+	SocketMtimeUnixNano int64 `json:"socket_mtime_unix_nano,omitempty"`
+	// ProcStart is an opaque owner-identity token for the HEADLESS
+	// fallback (empty when socket-keyed, or when the platform can't supply
+	// one). It disambiguates PID reuse: a bare "is this pid alive" check
+	// can't tell the original arming process from an unrelated later
+	// process that happens to reuse its pid. On Linux this is the
+	// process's start time from /proc; where unavailable it is empty and
+	// the reader falls back to bare pid-liveness (the documented residual
+	// on the secondary path — see armStateOwnerAlive).
+	ProcStart string `json:"proc_start,omitempty"`
 	// Cwd is the working directory at arm time — the fallback key's source
 	// and useful human context when inspecting the file.
 	Cwd string `json:"cwd"`
@@ -139,14 +157,55 @@ func WriteArmState() (path string, err error) {
 		Cwd:       cwd,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
+	if socket != "" {
+		// Bind the file to this specific socket instance (its mtime), not
+		// just the path, so a reused path can't revive it (HIGH-2).
+		if info, statErr := os.Stat(socket); statErr == nil {
+			st.SocketMtimeUnixNano = info.ModTime().UnixNano()
+		}
+	} else {
+		// Headless: record an owner-identity token so pid reuse can't
+		// revive this file (best effort — empty where unsupported).
+		st.ProcStart, _ = procStartToken(st.PID)
+	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal arm state: %w", err)
 	}
-	if err := os.WriteFile(p, data, 0600); err != nil {
+	// Atomic write: a reader must never observe a half-written file (a
+	// partial file would be an unparseable "malformed" state, and now that
+	// readers reap malformed files, a torn write could be reaped mid-arm).
+	// Write to a temp file in the same directory, then rename — rename is
+	// atomic within a filesystem.
+	if err := atomicWriteFile(p, data, 0600); err != nil {
 		return "", fmt.Errorf("write arm state: %w", err)
 	}
 	return p, nil
+}
+
+// atomicWriteFile writes data to a temp file in path's directory and
+// renames it into place, so a concurrent reader sees either the old file
+// or the complete new one, never a partial write.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".arm-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // RemoveArmState disarms the current session by removing its arm-state
@@ -193,29 +252,51 @@ func readArmState() (st *ArmState, path string, err error) {
 }
 
 // armStateOwnerAlive implements the mandatory liveness check (constraint
-// 2). A socket-keyed file is alive iff its recorded socket still exists on
-// disk — that outlives the short-lived arm command and disappears with
-// the Claude Code session. A headless (no-socket) file is alive iff its
-// recorded pid is still running. Anything uncertain is dead (fail
-// closed): a stale armed file must never arm a future monitor.
+// 2), hardened against owner-identity reuse (Codex R1 HIGH-2). A stale
+// armed file must never arm a future monitor, so "alive" means the
+// recorded owner is not merely present but the SAME owner:
+//
+//   - Socket-keyed: the socket path must still exist AND its mtime must
+//     match the one recorded at arm time. A reused path is a different
+//     socket instance with a different bind time, so the mtime mismatch
+//     rejects it. A file that recorded no mtime (only possible if the
+//     socket had vanished at arm time) can't prove identity and is dead.
+//   - Headless: the pid must be alive AND, when an owner-identity token
+//     was recorded and can be re-read now, it must match — so a reused
+//     pid belonging to an unrelated process is rejected. Where the
+//     platform supplies no token (ProcStart empty, or unreadable now),
+//     this falls back to bare pid-liveness: the documented residual on
+//     the secondary path (the sanctioned headless arming path is
+//     auto_arm, not this file).
+//
+// Anything uncertain is dead (fail closed).
 func armStateOwnerAlive(st *ArmState) bool {
 	if st == nil {
 		return false
 	}
 	if st.Socket != "" {
-		if _, err := os.Stat(st.Socket); err != nil {
-			return false
+		info, err := os.Stat(st.Socket)
+		if err != nil {
+			return false // socket vanished — session gone
 		}
-		return true
+		if st.SocketMtimeUnixNano == 0 {
+			return false // no identity recorded — can't prove it's ours
+		}
+		return info.ModTime().UnixNano() == st.SocketMtimeUnixNano
 	}
-	// Headless fallback: the pid is the only owner we have. A pid <= 0 is
-	// never a live owner; a short-lived arm command's pid will usually be
-	// gone by the time a reader looks, which is exactly why this path is
-	// documented as secondary to auto_arm.
-	if st.PID <= 0 {
+	// Headless fallback: the pid is the owner we have. A pid <= 0 is never
+	// a live owner; a short-lived arm command's pid will usually be gone
+	// by the time a reader looks, which is why this path is documented as
+	// secondary to auto_arm.
+	if st.PID <= 0 || !pidAlive(st.PID) {
 		return false
 	}
-	return pidAlive(st.PID)
+	if st.ProcStart != "" {
+		if now, ok := procStartToken(st.PID); ok {
+			return now == st.ProcStart // reject a reused pid
+		}
+	}
+	return true
 }
 
 // SessionArmedLocally reports whether THIS session has a live local arm
@@ -232,15 +313,40 @@ func armStateOwnerAlive(st *ArmState) bool {
 // see cmd/pad's monitor wiring.
 func SessionArmedLocally() bool {
 	st, path, err := readArmState()
-	if err != nil || st == nil {
+	if err != nil {
+		// A file that exists but can't be parsed is corrupt. With atomic
+		// writes it can't be a torn in-progress arm, so reap it (best
+		// effort) rather than leaving it to linger against the reaping
+		// rule (Codex R1 LOW). Fail closed regardless.
+		if path != "" {
+			reapArmFile(path)
+		}
+		return false
+	}
+	if st == nil {
 		return false
 	}
 	if !armStateOwnerAlive(st) {
-		// Dead owner: reap the stale file (best effort — a failed removal
-		// still yields "not armed", which is the safe answer) so it can't
-		// arm a future reader.
-		_ = os.Remove(path)
+		// Dead owner: reap the stale file so it can't arm a future reader
+		// (constraint 2). A failed removal still yields "not armed", the
+		// safe answer.
+		reapArmFile(path)
 		return false
 	}
 	return true
+}
+
+// reapArmFile removes a stale arm file, but only after RE-READING it and
+// confirming it is still stale — so a concurrent `pad session arm` that
+// rewrote a fresh, live file between our first read and now is not
+// destroyed (a non-destructive reap; Codex R1 MED-1). A tiny window
+// remains between this re-check and the removal, but both outcomes are
+// safe: at worst a just-armed session is disarmed and must re-arm (fail
+// closed), never the reverse. Best effort throughout — a lingering file
+// is simply re-evaluated on the next read.
+func reapArmFile(path string) {
+	if st, _, err := readArmState(); err == nil && st != nil && armStateOwnerAlive(st) {
+		return // someone re-armed with a live owner — leave it
+	}
+	_ = os.Remove(path)
 }

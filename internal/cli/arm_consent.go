@@ -64,6 +64,12 @@ type ArmDecision struct {
 	// UserVeto is true when the per-user config explicitly set auto_arm
 	// to false — the one thing that forces Armed off over a repo opt-in.
 	UserVeto bool
+	// ConfigUnreadable is true when the user's config.toml exists but
+	// could not be read or parsed. The decision fails CLOSED (Armed
+	// false) in that case, because a veto that cannot be read must be
+	// assumed present; the flag lets `pad session status` explain the
+	// off state honestly rather than as an ordinary "not opted in".
+	ConfigUnreadable bool
 }
 
 // ResolveAutoArmFromDisk loads both config sources (the nearest .pad.toml
@@ -74,14 +80,26 @@ type ArmDecision struct {
 // file should never silently arm a session — nor block one path of a CLI
 // verb that has other useful things to report.
 func ResolveAutoArmFromDisk() ArmDecision {
+	// A .pad.toml that exists but can't be parsed leaves repoAutoArm
+	// false — a repo can't opt in through a file we can't read, which is
+	// already the fail-closed direction.
 	repoAutoArm := false
 	if pt, err := LoadPadToml(); err == nil {
 		repoAutoArm = pt.PadTomlAutoArm()
 	}
 
-	var userAutoArm *bool
-	if cfg, err := config.Load(); err == nil {
-		userAutoArm = cfg.PushAutoArm()
+	// The per-user config is read STRICTLY (config.LoadPushConfigAutoArm,
+	// not the lenient config.Load): an existing-but-unreadable config.toml
+	// means we cannot confirm the user hasn't vetoed, so the auto path
+	// must NOT arm (Codex R1 HIGH-1). Local explicit arm is a separate
+	// signal and is unaffected.
+	userAutoArm, err := config.LoadPushConfigAutoArm()
+	if err != nil {
+		return ArmDecision{
+			Armed:            false,
+			RepoAutoArm:      repoAutoArm,
+			ConfigUnreadable: true,
+		}
 	}
 
 	return ArmDecision{

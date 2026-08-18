@@ -116,6 +116,56 @@ func (c *Config) PushAutoArm() *bool {
 	return c.Push.AutoArm
 }
 
+// userConfigPath resolves the user's config.toml path with the SAME
+// precedence Load() uses (PAD_DATA_DIR, then PAD_DB_PATH's directory,
+// overriding), so a strict reader lands on exactly the file Load would.
+func userConfigPath() string {
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".pad", "config.toml")
+	if v := os.Getenv("PAD_DATA_DIR"); v != "" {
+		path = filepath.Join(v, "config.toml")
+	}
+	if v := os.Getenv("PAD_DB_PATH"); v != "" {
+		path = filepath.Join(filepath.Dir(v), "config.toml")
+	}
+	return path
+}
+
+// LoadPushConfigAutoArm reads ONLY the [push] auto_arm value from the
+// user's config.toml with STRICT fail-closed semantics for the consent
+// gate (PLAN-2613 S2). Unlike Load(), which is deliberately lenient — an
+// unreadable or unparseable config.toml degrades to defaults so the whole
+// CLI doesn't die — this distinguishes the three states a consent
+// decision must not conflate:
+//
+//   - file ABSENT            → (nil, nil): the user has no opinion.
+//   - file present, no [push] → (nil, nil): same.
+//   - file present but UNREADABLE or UNPARSEABLE → (nil, err): the caller
+//     CANNOT confirm the user's veto and must fail closed (not arm),
+//     rather than silently proceeding as if no veto existed.
+//
+// The last case is the fix for Codex round-1 HIGH-1: a malformed
+// config.toml in a repo that opted into auto_arm must not arm.
+func LoadPushConfigAutoArm() (*bool, error) {
+	path := userConfigPath()
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // genuinely absent — no opinion
+		}
+		return nil, fmt.Errorf("stat user config %s: %w", path, err)
+	}
+	var wrapper struct {
+		Push *PushConfig `toml:"push"`
+	}
+	if _, err := toml.DecodeFile(path, &wrapper); err != nil {
+		return nil, fmt.Errorf("read user push config %s: %w", path, err)
+	}
+	if wrapper.Push == nil {
+		return nil, nil
+	}
+	return wrapper.Push.AutoArm, nil
+}
+
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	dataDir := filepath.Join(homeDir, ".pad")

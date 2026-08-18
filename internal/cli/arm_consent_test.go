@@ -116,3 +116,35 @@ func TestResolveAutoArmFromDisk_ReadsBothSources(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveAutoArmFromDisk_UnreadableConfigFailsClosed is the Codex R1
+// HIGH-1 regression: a repo that opted into auto_arm must NOT arm when the
+// per-user config.toml exists but can't be parsed — a veto we can't read
+// must be assumed present (fail closed), and the decision must say why.
+func TestResolveAutoArmFromDisk_UnreadableConfigFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dataDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_DATA_DIR", dataDir)
+	// A config.toml that exists but is not valid TOML.
+	if err := os.WriteFile(filepath.Join(dataDir, "config.toml"), []byte("this is [not valid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, ".pad.toml"), []byte("workspace = \"demo\"\n[push]\nauto_arm = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, repoDir)
+
+	got := ResolveAutoArmFromDisk()
+	if got.Armed {
+		t.Fatal("repo opt-in + unreadable user config must fail closed (not armed)")
+	}
+	if !got.ConfigUnreadable {
+		t.Fatal("ConfigUnreadable must be set so status can explain the off state")
+	}
+}

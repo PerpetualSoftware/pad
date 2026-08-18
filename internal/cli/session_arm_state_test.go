@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // armStateTestEnv points HOME (and thus ~/.pad/sessions) at a temp dir and
@@ -162,10 +163,11 @@ func TestArmState_HeadlessDeadPidReaped(t *testing.T) {
 	}
 }
 
-// TestArmState_MalformedFailsClosed: an unparseable arm-state file reads
-// as not-armed rather than erroring or arming — a consent gate fails
-// closed.
-func TestArmState_MalformedFailsClosed(t *testing.T) {
+// TestArmState_MalformedFailsClosedAndReaped: an unparseable arm-state
+// file reads as not-armed (fail closed) AND is reaped — atomic writes
+// mean a malformed file is genuinely corrupt, not a torn in-progress arm
+// (Codex R1 LOW).
+func TestArmState_MalformedFailsClosedAndReaped(t *testing.T) {
 	armStateTestEnv(t, filepath.Join(t.TempDir(), "msg.sock"))
 	path, err := armStatePath(os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET"), "")
 	if err != nil {
@@ -176,6 +178,70 @@ func TestArmState_MalformedFailsClosed(t *testing.T) {
 	}
 	if SessionArmedLocally() {
 		t.Fatal("a malformed arm-state file must fail closed (not armed)")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("malformed arm-state file must be reaped; stat err = %v", err)
+	}
+}
+
+// TestArmState_SocketPathReuseRejected is the Codex R1 HIGH-2 regression:
+// a stale arm file must not arm a session that merely REUSES the socket
+// path. The socket file's mtime binds the arm file to a specific socket
+// instance; a recreated socket at the same path has a different mtime and
+// must read as disarmed (and be reaped).
+func TestArmState_SocketPathReuseRejected(t *testing.T) {
+	socketFile := filepath.Join(t.TempDir(), "msg.sock")
+	if err := os.WriteFile(socketFile, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	armStateTestEnv(t, socketFile)
+
+	path, err := WriteArmState()
+	if err != nil {
+		t.Fatalf("WriteArmState: %v", err)
+	}
+	if !SessionArmedLocally() {
+		t.Fatal("freshly armed session must read as armed")
+	}
+
+	// Simulate the path being reused by a DIFFERENT socket instance: same
+	// path, different mtime. os.Chtimes to a distinct time is deterministic
+	// where a remove+recreate might land on the same coarse timestamp.
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(socketFile, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if SessionArmedLocally() {
+		t.Fatal("a reused socket path (different mtime) must NOT arm the stale file")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("stale-identity file must be reaped; stat err = %v", err)
+	}
+}
+
+// TestReapArmFile_NonDestructive: reap must NOT delete a file that was
+// re-armed with a live owner between the read and the reap (Codex R1
+// MED-1). Simulated by pointing reap at a path that currently holds a
+// live arm.
+func TestReapArmFile_NonDestructive(t *testing.T) {
+	socketFile := filepath.Join(t.TempDir(), "msg.sock")
+	if err := os.WriteFile(socketFile, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	armStateTestEnv(t, socketFile)
+
+	path, err := WriteArmState()
+	if err != nil {
+		t.Fatalf("WriteArmState: %v", err)
+	}
+	// The file at `path` is live. A reap attempt must leave it alone
+	// because the re-read shows a live owner.
+	reapArmFile(path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("non-destructive reap must not delete a live arm file: %v", err)
+	}
+	if !SessionArmedLocally() {
+		t.Fatal("session must still be armed after a no-op reap")
 	}
 }
 
