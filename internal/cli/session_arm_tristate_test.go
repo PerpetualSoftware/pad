@@ -120,7 +120,15 @@ func TestTriState_ArmThenDisarmFlips(t *testing.T) {
 // owner-dead, reaped, and re-armed via auto_arm; and not be treated as a
 // live headless arm just because it names a live pid like init (1).
 func TestArmState_SemanticallyCorruptFailsClosed(t *testing.T) {
-	for _, body := range []string{`{}`, `{"pid":1}`, `{"pid":1,"armed":true}`} {
+	for _, body := range []string{
+		`{}`,
+		`{"pid":1}`,
+		`{"pid":1,"armed":true}`, // no StartedAt
+		// Well-stamped but violates the writer invariant Armed != Disarmed:
+		// neither armed nor disarmed must not resolve to armed (Codex R4).
+		`{"pid":123,"started_at":"2026-08-18T00:00:00Z","armed":false,"disarmed":false}`,
+		`{"pid":123,"started_at":"2026-08-18T00:00:00Z","armed":true,"disarmed":true}`,
+	} {
 		socketFile := triStateEnv(t) // auto_arm=true repo, so the distinction bites
 		path, err := armStatePath(socketFile, "")
 		if err != nil {

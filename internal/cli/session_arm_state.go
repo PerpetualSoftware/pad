@@ -445,17 +445,22 @@ func SessionArmState() LocalArmState {
 }
 
 // armStateWellFormed reports whether a parsed ArmState carries the stamps
-// writeArmStateFile always sets — a non-empty RFC3339 StartedAt and a
-// positive PID. It is the fail-closed guard against a syntactically-valid
-// but semantically-garbage file (Codex R2 S3 HIGH-2): `{}` has no
-// StartedAt; `{"pid":1}` has a live-looking pid (init) but no StartedAt, so
-// without this it could be judged a live headless arm. It deliberately does
-// NOT validate the owner-identity stamps (socket mtime, ProcStart) — those
-// vary by platform and their absence is the documented headless residual,
-// not a corruption signal; the point here is only to reject files this code
-// could not have written.
+// AND invariants writeArmStateFile always produces: a non-empty RFC3339
+// StartedAt, a positive PID, and exactly one of Armed/Disarmed set (the
+// writer sets Armed == !Disarmed). It is the fail-closed guard against a
+// syntactically-valid but semantically-garbage file (Codex R2/R4 S3):
+//   - `{}` has no StartedAt;
+//   - `{"pid":1}` has a live-looking pid (init) but no StartedAt;
+//   - `{"pid":N,"started_at":"…"}` with BOTH armed and disarmed false (or
+//     both true) is not a state the writer emits, and without the
+//     Armed != Disarmed check it would resolve to LocalArmOn and arm.
+//
+// It deliberately does NOT validate the owner-identity stamps (socket
+// mtime, ProcStart) — those vary by platform and their absence is the
+// documented headless residual, not a corruption signal; the point here is
+// only to reject files this code could not have written.
 func armStateWellFormed(st *ArmState) bool {
-	return st != nil && st.StartedAt != "" && st.PID > 0
+	return st != nil && st.StartedAt != "" && st.PID > 0 && st.Armed != st.Disarmed
 }
 
 // SessionArmedLocally reports whether this session has a live explicit ARM
