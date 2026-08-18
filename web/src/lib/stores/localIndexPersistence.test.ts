@@ -66,17 +66,16 @@ describe('shouldWriteRow', () => {
 });
 
 /**
- * persistRetag exists because a rename cannot be expressed as a whole-row
- * snapshot without also asserting every other field, which the seq guard then
- * refuses whenever a newer delta has landed. Losing a rename that way is
- * PERMANENT — a rename touches no items so no delta re-stamps it, and
- * localIndex's pendingRetags repair is in-memory and single-session.
+ * NOT a test of persistRetag — that function is unreachable in this harness
+ * (see the note at the bottom), and a no-op implementation of it would pass
+ * everything in this file. Codex asked for that to be said plainly rather than
+ * left for a reader to work out from the imports.
  *
- * The IDB call itself is not reachable in this harness (see the note below),
- * so what is asserted here is the property that made a separate function
- * necessary: the guard would have dropped the retag.
+ * What IS asserted is the premise that made a separate function necessary: had
+ * retags kept going through persistUpserts, the seq guard would have dropped
+ * them. That premise is checkable here; persistRetag's own behaviour is not.
  */
-describe('why retags cannot go through shouldWriteRow', () => {
+describe('the premise behind persistRetag (guard behaviour, not persistRetag itself)', () => {
 	it('would refuse an un-bumped retag snapshot once a newer delta has landed', () => {
 		const storedByDelta = row(200);
 		// applyRetag copies the row and changes collection_slug WITHOUT
@@ -96,9 +95,19 @@ describe('why retags cannot go through shouldWriteRow', () => {
  * returns false, making every function in the persistence module a no-op under
  * vitest.
  *
- * So the interleaving rests on reading two call sites (the `await store.get`
+ * So the interleaving rests on reading the call sites (the `await store.get`
  * immediately before each `put`, both within the transaction) rather than on a
- * deterministic hook. Closing that gap means adding `fake-indexeddb` as a dev
- * dependency, which is a project decision and cannot be done from a worktree
- * whose node_modules is a symlink — raised rather than assumed.
+ * deterministic hook. The same gap covers persistRetag entirely: nothing here
+ * exercises it, and a no-op version would pass this file.
+ *
+ * What DID verify the transaction actually commits is a live browser run
+ * against a real server — 2625 rows persisted with the fix, and 0 rows with a
+ * control build whose guard refuses every write, which also reproduced the
+ * cursor-ahead-of-rows shape this bug is about. That is evidence the write
+ * path works; it is not a regression test, and it will not run again on its
+ * own.
+ *
+ * Closing the gap properly means adding `fake-indexeddb` as a dev dependency,
+ * which is a project decision and cannot be done from a worktree whose
+ * node_modules is a symlink — raised rather than assumed.
  */

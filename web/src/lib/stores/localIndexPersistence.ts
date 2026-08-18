@@ -187,8 +187,9 @@ export async function hydrate(
  * older, and refusing would silently disable the cache for rows the server has
  * not stamped.
  *
- * WHY THIS EXISTS. `upsert` and `applyRetag` hand persistUpserts a snapshot
- * taken from RAM and do not await it. An SSE delta for the same row can commit
+ * WHY THIS EXISTS. `upsert` hands persistUpserts a snapshot taken from RAM and
+ * does not await it. (`applyRetag` used to as well; it now goes through
+ * persistRetag, for the reason in the exclusion list below.) An SSE delta for the same row can commit
  * its own atomic rows+cursor transaction in between, after which the older
  * snapshot lands LAST and leaves IDB holding a pre-delta row while the
  * persisted cursor sits past that delta. Warm boot then hydrates the stale row
@@ -204,6 +205,15 @@ export async function hydrate(
  *     permanent, not self-healing (no item delta re-stamps it, and
  *     pendingRetags is in-memory and single-session). Renames go through
  *     persistRetag, which rewrites the one field in place.
+ *
+ *     That closes the direction where the RETAG is the late write. It does not
+ *     close the reverse: a delta captured before the rename can commit after
+ *     it, whole-row put an older collection_slug at a NEWER seq, and pass this
+ *     guard legitimately. collection_slug simply is not ordered by seq — it is
+ *     out-of-band relative to the item's own version — so no seq comparison
+ *     can arbitrate it. Fixing that means making the rename DURABLE (persisted
+ *     retag intent, reapplied on hydrate) rather than a racing write; filed as
+ *     BUG-2634. Pre-existing — a blind put lost the same race.
  *
  *   - HARD DELETES can still be resurrected. If persistDelta removes a row and
  *     advances the cursor, a delayed snapshot for that id finds nothing stored,
