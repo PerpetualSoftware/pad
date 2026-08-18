@@ -8,14 +8,17 @@ It holds for the rest of the session even if the repo opted in via
 `.pad.toml push.auto_arm` — a disconnect must not be a lie.
 
 If the `pad` CLI is missing (command not found), say so and point at
-https://getpad.dev/install. If no `.pad.toml` is found in the directory tree, there is
-nothing to disconnect from; say so briefly and stop.
+https://getpad.dev/install. Otherwise ALWAYS run the disarm — do NOT gate it on finding
+a `.pad.toml`. Consent is scoped to this SESSION (keyed by the session, not the
+workspace), so a session that connected in one repo must be able to disconnect from
+anywhere, including a directory with no linked workspace; refusing to disarm there would
+leave it receiving pushes.
 
 Steps:
 
 1. Run `pad session disarm`. This writes a session-scoped explicit-off marker (it does
    not delete config), so the session stops accepting pushes now and stays that way for
-   its remaining life.
+   its remaining life. It works regardless of the current directory's workspace.
 
 2. Tell the user they're disconnected. If the command reported that the repo has
    `auto_arm` on, add the honest caveat: this session is disconnected, but a NEW session
