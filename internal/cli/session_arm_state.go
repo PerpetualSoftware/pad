@@ -81,6 +81,15 @@ type ArmState struct {
 	// with a different mtime; the reader requires an exact match, which
 	// ties the file to the specific socket instance it was armed for.
 	SocketMtimeUnixNano int64 `json:"socket_mtime_unix_nano,omitempty"`
+	// SocketIno / SocketDev are the socket node's inode and device at arm
+	// time (0 on platforms where they can't be read). They are the
+	// STRONGEST identity signal: a socket rebound at the same path gets a
+	// new inode, so this rejects both a lingering stale node reused as-is
+	// and an mtime collision on a coarse-resolution filesystem (Codex R2
+	// finding 2). Where unavailable (non-unix), the reader falls back to
+	// the mtime check alone — the documented residual on those platforms.
+	SocketIno uint64 `json:"socket_ino,omitempty"`
+	SocketDev uint64 `json:"socket_dev,omitempty"`
 	// ProcStart is an opaque owner-identity token for the HEADLESS
 	// fallback (empty when socket-keyed, or when the platform can't supply
 	// one). It disambiguates PID reuse: a bare "is this pid alive" check
@@ -158,10 +167,15 @@ func WriteArmState() (path string, err error) {
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if socket != "" {
-		// Bind the file to this specific socket instance (its mtime), not
-		// just the path, so a reused path can't revive it (HIGH-2).
+		// Bind the file to this specific socket instance — its mtime plus,
+		// where available, its inode+device — not just the path, so a
+		// reused path (or a lingering stale node) can't revive it (HIGH-2,
+		// R2 finding 2).
 		if info, statErr := os.Stat(socket); statErr == nil {
 			st.SocketMtimeUnixNano = info.ModTime().UnixNano()
+			if ino, dev, ok := statIdentity(info); ok {
+				st.SocketIno, st.SocketDev = ino, dev
+			}
 		}
 	} else {
 		// Headless: record an owner-identity token so pid reuse can't
@@ -256,18 +270,20 @@ func readArmState() (st *ArmState, path string, err error) {
 // armed file must never arm a future monitor, so "alive" means the
 // recorded owner is not merely present but the SAME owner:
 //
-//   - Socket-keyed: the socket path must still exist AND its mtime must
-//     match the one recorded at arm time. A reused path is a different
-//     socket instance with a different bind time, so the mtime mismatch
-//     rejects it. A file that recorded no mtime (only possible if the
-//     socket had vanished at arm time) can't prove identity and is dead.
+//   - Socket-keyed: the socket path must still exist AND its recorded
+//     identity must match — inode+device where available (the strongest
+//     signal: a rebound socket gets a new inode), else the socket's
+//     mtime. A reused path, a lingering stale node, or an mtime collision
+//     are all rejected. A file that recorded no mtime (only possible if
+//     the socket had vanished at arm time) can't prove identity and is
+//     dead.
 //   - Headless: the pid must be alive AND, when an owner-identity token
-//     was recorded and can be re-read now, it must match — so a reused
-//     pid belonging to an unrelated process is rejected. Where the
-//     platform supplies no token (ProcStart empty, or unreadable now),
-//     this falls back to bare pid-liveness: the documented residual on
-//     the secondary path (the sanctioned headless arming path is
-//     auto_arm, not this file).
+//     was RECORDED, it must be re-readable now AND match — so a reused pid
+//     (or one whose /proc entry we can no longer verify) is rejected
+//     rather than trusted. Only a file that recorded NO token (a non-Linux
+//     arm) falls back to bare pid-liveness: the documented residual on the
+//     secondary path (the sanctioned headless arming path is auto_arm, not
+//     this file).
 //
 // Anything uncertain is dead (fail closed).
 func armStateOwnerAlive(st *ArmState) bool {
@@ -282,6 +298,15 @@ func armStateOwnerAlive(st *ArmState) bool {
 		if st.SocketMtimeUnixNano == 0 {
 			return false // no identity recorded — can't prove it's ours
 		}
+		// Prefer inode+device when both the file recorded them and the
+		// current node exposes them: it distinguishes a rebound socket at
+		// the same path from the original. Fall back to mtime only when
+		// identity isn't available on this platform.
+		if st.SocketIno != 0 {
+			if ino, dev, ok := statIdentity(info); ok {
+				return ino == st.SocketIno && dev == st.SocketDev
+			}
+		}
 		return info.ModTime().UnixNano() == st.SocketMtimeUnixNano
 	}
 	// Headless fallback: the pid is the owner we have. A pid <= 0 is never
@@ -292,9 +317,13 @@ func armStateOwnerAlive(st *ArmState) bool {
 		return false
 	}
 	if st.ProcStart != "" {
-		if now, ok := procStartToken(st.PID); ok {
-			return now == st.ProcStart // reject a reused pid
-		}
+		// A token was recorded (a Linux arm), so it must be re-readable and
+		// match. If it can't be read now (pid gone from /proc, or a zombie —
+		// procStartToken reports not-ok for state 'Z'), fail closed rather
+		// than trusting bare pid-liveness, which a reused pid would pass
+		// (Codex R2 finding 3).
+		now, ok := procStartToken(st.PID)
+		return ok && now == st.ProcStart
 	}
 	return true
 }

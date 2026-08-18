@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // armStateTestEnv points HOME (and thus ~/.pad/sessions) at a temp dir and
@@ -184,12 +183,15 @@ func TestArmState_MalformedFailsClosedAndReaped(t *testing.T) {
 	}
 }
 
-// TestArmState_SocketPathReuseRejected is the Codex R1 HIGH-2 regression:
-// a stale arm file must not arm a session that merely REUSES the socket
-// path. The socket file's mtime binds the arm file to a specific socket
-// instance; a recreated socket at the same path has a different mtime and
-// must read as disarmed (and be reaped).
-func TestArmState_SocketPathReuseRejected(t *testing.T) {
+// TestArmState_SocketIdentityMismatchRejected is the Codex R1 HIGH-2 / R2
+// finding-2 regression: a stale arm file must not arm a session that
+// merely reuses the socket PATH. On unix the file records the socket's
+// inode; a different node at the same path (a rebind, or a lingering stale
+// node reused as-is) has a different inode and must read as disarmed. The
+// tamper is deterministic — it forces the recorded identity to not match
+// the live socket — where a remove+recreate could coincidentally reuse the
+// inode.
+func TestArmState_SocketIdentityMismatchRejected(t *testing.T) {
 	socketFile := filepath.Join(t.TempDir(), "msg.sock")
 	if err := os.WriteFile(socketFile, nil, 0600); err != nil {
 		t.Fatal(err)
@@ -204,18 +206,60 @@ func TestArmState_SocketPathReuseRejected(t *testing.T) {
 		t.Fatal("freshly armed session must read as armed")
 	}
 
-	// Simulate the path being reused by a DIFFERENT socket instance: same
-	// path, different mtime. os.Chtimes to a distinct time is deterministic
-	// where a remove+recreate might land on the same coarse timestamp.
-	future := time.Now().Add(time.Hour)
-	if err := os.Chtimes(socketFile, future, future); err != nil {
+	// Read the recorded state and corrupt ONLY the inode, leaving the
+	// mtime correct, so this isolates the inode-identity check: mtime-only
+	// logic would wrongly still match. Skip where inode identity isn't
+	// recorded (non-unix), which uses the mtime fallback covered separately.
+	st, _, err := readArmState()
+	if err != nil || st == nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if st.SocketIno == 0 {
+		t.Skip("no inode identity on this platform; mtime fallback covered separately")
+	}
+	st.SocketIno++
+	data, _ := json.MarshalIndent(st, "", "  ")
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
+
 	if SessionArmedLocally() {
-		t.Fatal("a reused socket path (different mtime) must NOT arm the stale file")
+		t.Fatal("a socket-identity mismatch (reused path) must NOT arm the stale file")
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("stale-identity file must be reaped; stat err = %v", err)
+	}
+}
+
+// TestArmState_SocketMtimeFallbackMismatch exercises the non-unix fallback
+// branch (no inode identity available): with SocketIno=0 the reader
+// compares the socket's mtime, and a mismatch must read as disarmed.
+func TestArmState_SocketMtimeFallbackMismatch(t *testing.T) {
+	socketFile := filepath.Join(t.TempDir(), "msg.sock")
+	if err := os.WriteFile(socketFile, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	armStateTestEnv(t, socketFile)
+	path, err := armStatePath(socketFile, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A state with no inode identity (SocketIno=0) and a wrong mtime —
+	// the shape a non-unix arm would produce for a reused path.
+	st := ArmState{
+		Armed:               true,
+		PID:                 os.Getpid(),
+		Socket:              socketFile,
+		SocketMtimeUnixNano: 1, // will not match the real socket
+		Cwd:                 "",
+		StartedAt:           "2026-08-18T00:00:00Z",
+	}
+	data, _ := json.MarshalIndent(st, "", "  ")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if SessionArmedLocally() {
+		t.Fatal("mtime-fallback mismatch must NOT arm the stale file")
 	}
 }
 

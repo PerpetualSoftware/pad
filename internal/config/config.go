@@ -338,13 +338,31 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	f, err := os.OpenFile(c.ConfigPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// Write atomically: encode into a temp file in the same directory and
+	// rename it into place, so a concurrent reader never observes a
+	// truncated or partially-written config.toml. This matters beyond
+	// tidiness for the push-consent gate (PLAN-2613 S2): a monitor
+	// reconnecting while `pad configure` rewrites the file could otherwise
+	// read an empty/partial config, miss a [push] auto_arm=false veto, and
+	// arm despite it (Codex R2 HIGH-1).
+	tmp, err := os.CreateTemp(c.DataDir, ".config-*.toml.tmp")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	if err := toml.NewEncoder(f).Encode(c); err != nil {
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := toml.NewEncoder(tmp).Encode(c); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, c.ConfigPath); err != nil {
 		return err
 	}
 

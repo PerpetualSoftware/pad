@@ -355,6 +355,15 @@ func monitorSessionIdentity() cli.StreamSessionIdentity {
 	// S2→S3 rollout, before the plugin's on-skill-invoke arming exists.
 	// The server's own armed bit (D3/S1) remains the delivery authority;
 	// this only decides what the client ANNOUNCES.
+	//
+	// This value is snapshotted here, at connect. A `pad session disarm`
+	// that lands AFTER this read but before the stream request is sent
+	// leaves the just-opened connection announcing armed=true until its
+	// next reconnect (Codex R2 finding 4) — an inherent check-then-connect
+	// TOCTOU, bounded to one reconnect window and re-evaluated every
+	// reconnect (the monitor re-reads on each loop iteration). Fully
+	// closing it needs a server-side disarm signal on an already-open
+	// connection, which is S3's reconnect/heal job, not this snapshot's.
 	ident.Armed = cli.SessionArmedLocally() || cli.ResolveAutoArmFromDisk().Armed
 	return ident
 }

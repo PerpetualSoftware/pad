@@ -242,14 +242,20 @@ func serverSessionCounts() (sessionCounts, bool) {
 	if err != nil {
 		return sessionCounts{}, false
 	}
-	// Apply the directory's .pad.toml `url` override exactly as the
-	// monitor does (cmd_watch.go's monitorClient), so status queries the
-	// SAME server the monitor connects to. Without this, a repo whose
-	// .pad.toml points at server B would report server A's sessions — or,
-	// with only a repo URL set, wrongly report the server unreachable
-	// (Codex R1 MED-2). The override can also flip Mode to remote, which
-	// makes an otherwise-"not configured" global config usable.
-	applyPadTomlOverride(cfg)
+	// Resolve the target server exactly as the client entry points do: an
+	// explicit --url wins (and promotes Mode to remote), otherwise the
+	// directory's .pad.toml `url` override applies. Without this, status
+	// would query the global config's server while the monitor connects to
+	// the repo's (Codex R1 MED-2), and `--url B` would be ignored entirely
+	// (Codex R2 finding 5).
+	if urlFlag != "" {
+		cfg.URL = urlFlag
+		cfg.LoadedFromFlags = true
+		if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
+			cfg.Mode = config.ModeRemote
+		}
+	}
+	applyPadTomlOverride(cfg) // no-op when --url set (LoadedFromFlags)
 	if !cfg.IsConfigured() {
 		return sessionCounts{}, false
 	}
