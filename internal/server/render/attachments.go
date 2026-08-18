@@ -318,6 +318,37 @@ func ResolveAttachmentReferences(markdown, workspaceSlug string, resolve Attachm
 	return b.String()
 }
 
+// ExtractAttachmentRefs returns the unique attachment UUIDs referenced in
+// `markdown` via `pad-attachment:UUID` image/link syntax, in first-seen
+// order. References inside fenced code blocks are skipped — same rule as
+// ResolveAttachmentReferences, so a docs page that DEMONSTRATES the syntax
+// doesn't cause a live attachment to be treated as embedded.
+//
+// This is the read-side companion the share-link minter uses to decide
+// which attachments a public page will actually render, so it can mint a
+// signed/anchored ref for exactly those and nothing more (TASK-2637).
+func ExtractAttachmentRefs(markdown string) []string {
+	var out []string
+	seen := make(map[string]struct{})
+	for _, c := range splitCodeFences(markdown) {
+		if c.fenced {
+			continue
+		}
+		for _, m := range markdownAttachmentRefRE.FindAllStringSubmatch(c.text, -1) {
+			uuid := strings.TrimSpace(m[3])
+			if uuid == "" {
+				continue
+			}
+			if _, ok := seen[uuid]; ok {
+				continue
+			}
+			seen[uuid] = struct{}{}
+			out = append(out, uuid)
+		}
+	}
+	return out
+}
+
 // codeChunk is a single span of input — either inside a fenced code
 // block (fenced=true) or outside one. ResolveAttachmentReferences
 // skips substitution inside fenced spans so docs that demonstrate the

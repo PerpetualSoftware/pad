@@ -483,3 +483,31 @@ func TestSplitCodeFences_NestedAndUnclosed(t *testing.T) {
 		t.Errorf("second chunk wrong: %#v", chunks[1])
 	}
 }
+
+func TestExtractAttachmentRefs(t *testing.T) {
+	md := "intro ![a](pad-attachment:id-1) then [f](pad-attachment:id-2)\n\n" +
+		"a repeat ![again](pad-attachment:id-1)\n\n" +
+		"```\n![fenced](pad-attachment:id-FENCED)\n```\n\n" +
+		"![tail](pad-attachment:id-3)"
+	got := ExtractAttachmentRefs(md)
+	want := []string{"id-1", "id-2", "id-3"} // deduped, first-seen order, fenced skipped
+	if len(got) != len(want) {
+		t.Fatalf("ExtractAttachmentRefs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ExtractAttachmentRefs[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+	for _, id := range got {
+		if id == "id-FENCED" {
+			t.Error("a fenced-code reference leaked into the extracted refs")
+		}
+	}
+}
+
+func TestExtractAttachmentRefs_None(t *testing.T) {
+	if got := ExtractAttachmentRefs("no attachments here"); got != nil {
+		t.Errorf("expected nil for content with no refs, got %v", got)
+	}
+}

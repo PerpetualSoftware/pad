@@ -136,6 +136,21 @@ export interface SharePayload {
 	};
 	collection?: PublicShareCollection;
 	items?: PublicShareItem[];
+	// Renderable image-attachment refs embedded in the shared content
+	// (BUG-2389 2b / TASK-2637). Keyed by attachment UUID; presence = the
+	// server minted a ref (anchored image with a served variant). `sig` is
+	// the signed "exp=..&sig=.." fragment a protected link's asset URL must
+	// carry — absent for plain links. Omitted entirely when nothing is
+	// renderable.
+	attachment_refs?: Record<string, ShareAttachmentRef>;
+}
+
+export interface ShareAttachmentRef {
+	sig?: string;
+	mime_type: string;
+	filename: string;
+	width?: number | null;
+	height?: number | null;
 }
 
 // ─── Grants ──────────────────────────────────────────────────────────────────

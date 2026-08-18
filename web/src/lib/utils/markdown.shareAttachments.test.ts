@@ -128,3 +128,77 @@ describe('share-page attachment rendering (BUG-2389)', () => {
 		expect(html).toContain('<img src="pad-attachment:');
 	});
 });
+
+// TASK-2637 (BUG-2389 2b) — the share page now supplies a urlBuilder that
+// targets the token-scoped byte endpoint (with the signed suffix for
+// protected links) instead of the workspace path. These pin the frontend
+// seam: the override reaches the <img src>, carries the requested variant,
+// and merges a signed fragment robustly.
+describe('share-page attachment urlBuilder (TASK-2637)', () => {
+	const meta: AttachmentMeta = {
+		id: UUID,
+		filename: 'diagram.png',
+		mime_type: 'image/png',
+		size_bytes: 1234
+	} as AttachmentMeta;
+
+	it('routes the <img src> through urlBuilder, not the workspace path', () => {
+		const html = renderMarkedWithAttachments(IMG_MD, {
+			resolver: () => meta,
+			workspaceSlug: 'ws-1',
+			urlBuilder: (uuid) => `/api/v1/s/tok/attachments/${uuid}`
+		});
+		expect(html).toContain(`<img src="/api/v1/s/tok/attachments/${UUID}"`);
+		// The default workspace URL must NOT appear — the override won.
+		expect(html).not.toContain('/api/v1/workspaces/ws-1/attachments/');
+	});
+
+	it('passes the image variant to urlBuilder', () => {
+		let seen: string | undefined = 'UNCALLED';
+		renderMarkedWithAttachments(IMG_MD, {
+			resolver: () => meta,
+			workspaceSlug: '',
+			imageVariant: 'thumb-md',
+			urlBuilder: (uuid, variant) => {
+				seen = variant;
+				return `/x/${uuid}`;
+			}
+		});
+		expect(seen).toBe('thumb-md');
+	});
+
+	it('merges a signed fragment with the variant param (protected-link shape)', () => {
+		// Mirrors the share page's URLSearchParams merge: sig fragment + variant.
+		const sig = 'exp=123&sig=abc';
+		const build = (uuid: string, variant?: string) => {
+			const params = new URLSearchParams();
+			if (variant) params.set('variant', variant);
+			if (sig) for (const [k, v] of new URLSearchParams(sig)) params.set(k, v);
+			const qs = params.toString();
+			return `/api/v1/s/tok/attachments/${uuid}${qs ? `?${qs}` : ''}`;
+		};
+		const html = renderMarkedWithAttachments(IMG_MD, {
+			resolver: () => meta,
+			workspaceSlug: '',
+			imageVariant: 'thumb-md',
+			urlBuilder: build
+		});
+		expect(html).toContain(`/api/v1/s/tok/attachments/${UUID}?`);
+		expect(html).toContain('variant=thumb-md');
+		expect(html).toContain('exp=123');
+		expect(html).toContain('sig=abc');
+	});
+
+	it('a uuid absent from the refs map still renders the honest placeholder', () => {
+		// The share page resolver returns null for an unanchored/unrenderable
+		// id; that must fall to the unavailable placeholder, never a broken img.
+		const html = renderMarkedWithAttachments(IMG_MD, {
+			resolver: () => null, // not in refs
+			workspaceSlug: '',
+			missing: renderAttachmentUnavailable,
+			urlBuilder: (uuid) => `/api/v1/s/tok/attachments/${uuid}`
+		});
+		expect(html).toContain('attachment-unavailable');
+		expect(html).not.toContain('/api/v1/s/tok/attachments/');
+	});
+});
