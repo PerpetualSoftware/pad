@@ -53,7 +53,6 @@ src/
       collections/           BoardView, ListView
       common/                StatusBadge, badges, modals
       search/                CommandPalette
-      activity/              ActivityFeed
     stores/                  Svelte 5 reactive stores
       workspace.svelte.ts    Workspace state
       collections.svelte.ts  Collection + item state

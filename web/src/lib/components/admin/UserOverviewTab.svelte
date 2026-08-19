@@ -2,8 +2,10 @@
   Overview tab — first thing an admin sees when opening a user modal.
   Vitals header + 3 engagement metric tiles + recent items list.
 
-  Sparkline deliberately omitted per PLAN-1542 decisions; api_requests_7d
+  A sparkline was deliberately omitted per PLAN-1542 decisions; api_requests_7d
   metric also omitted pending IDEA-1556. PLAN-1542 / TASK-1553.
+  (The Sparkline component this referred to was never mounted anywhere and was
+  deleted in TASK-2632; recover it from git history if the decision reverses.)
 
   Consumes:
     GET /admin/users/{id}/metrics  (T1547)
