@@ -48,7 +48,15 @@ func UndeclaredOverrideKeys(overrides map[string]any, targetFields []models.Fiel
 
 // ReservedOverrideKeys returns the override keys naming system metadata, sorted.
 //
-// Reserved keys are never settable through a field-override map, on any path.
+// Reserved keys are never settable through a FIELD-OVERRIDE map, on any path
+// that has one: the same-workspace move, the copy preflight, and the mutating
+// copy (the last two via UndeclaredOverrideKeys against a stripped schema).
+//
+// That is NOT the same as "reserved keys are unwritable". An ordinary `fields`
+// or `fields_patch` map — from the CLI, MCP, the web editor, artifact import,
+// or Pad's own note/decision/convention/GitHub writers — still reaches them,
+// by design for the system writers and as a pre-existing exposure for the
+// rest (BUG-2685). Do not read this function as a general write gate.
 // They are written by Pad's own endpoints — implementation notes and decision
 // log entries through their append helpers (which carry BUG-2627's
 // refuse-rather-than-destroy guard), github_pr through the GitHub link flow —
