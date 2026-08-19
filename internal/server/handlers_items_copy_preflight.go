@@ -204,6 +204,17 @@ type ItemCopyPreflightDestination struct {
 type ItemCopyPreflightFields struct {
 	// Carried are the fields the copy WOULD have, in destination-schema
 	// order.
+	//
+	// Since BUG-2674 this bucket can also contain RESERVED system metadata
+	// (implementation_notes, decision_log, github_pr, convention), appended
+	// after the schema-ordered entries. Those keys are declared by no schema
+	// anywhere — the copy carries them by identity — so a client must not
+	// assume every `carried` entry resolves to a destination FieldDef. They
+	// are distinguishable by `type: "system"` and carry a rendered `label`
+	// rather than an author-supplied one. Before the carry-through they
+	// appeared under `dropped`, which was accurate then; reporting them in
+	// neither bucket would have made the preflight claim "nothing carries
+	// over" for an item whose notes in fact survive.
 	Carried []ItemCopyPreflightCarried `json:"carried"`
 
 	// Dropped are values that will not survive the copy: schema fields
@@ -703,6 +714,31 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		})
 	}
 
+	// Reserved system metadata carries too (BUG-2674), and it is invisible to
+	// the loop above because that walks the DESTINATION SCHEMA and these keys
+	// are declared by no schema anywhere. Reporting them here keeps the
+	// preflight honest in both directions: before the carry-through they at
+	// least showed up under `dropped`, so omitting them now would turn an
+	// accurate "these will be lost" into a silent "nothing carries over" while
+	// the copy in fact retains them — a preflight that under-reports what it
+	// will do is the same defect class as the move that reported nothing.
+	//
+	// Appended after the schema walk, in the enumeration's stable order, so
+	// the destination-schema section of the response is untouched.
+	for _, key := range models.ReservedItemFieldKeys() {
+		val, present := final[key]
+		if !present {
+			continue
+		}
+		resp.Fields.Carried = append(resp.Fields.Carried, ItemCopyPreflightCarried{
+			Key:   key,
+			Label: reservedFieldLabel(key),
+			Type:  "system",
+			Value: val,
+			From:  "migrated",
+		})
+	}
+
 	// dropped — schema fields first, in SOURCE-schema order (MigrateFields
 	// ranges a map, so its Dropped slice arrives in nondeterministic
 	// order and must be re-sorted or repeated calls would differ).
@@ -1080,4 +1116,22 @@ func fieldDefByKey(defs []models.FieldDef, key string) (models.FieldDef, bool) {
 		}
 	}
 	return models.FieldDef{}, false
+}
+
+// reservedFieldLabel renders a human label for a reserved metadata key in the
+// copy preflight. These keys have no FieldDef and therefore no author-supplied
+// Label, so the alternative is showing the raw snake_case key in a dialog whose
+// every other row is titled prose.
+func reservedFieldLabel(key string) string {
+	switch key {
+	case models.ItemFieldImplementationNotes:
+		return "Implementation notes"
+	case models.ItemFieldDecisionLog:
+		return "Decision log"
+	case models.ItemFieldGitHubPR:
+		return "Linked pull request"
+	case models.ItemFieldConvention:
+		return "Convention metadata"
+	}
+	return key
 }

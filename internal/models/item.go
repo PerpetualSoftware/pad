@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -46,6 +47,19 @@ var reservedItemFieldKeys = map[string]struct{}{
 func IsReservedItemField(key string) bool {
 	_, ok := reservedItemFieldKeys[key]
 	return ok
+}
+
+// ReservedItemFieldKeys returns the reserved keys in a stable order, for
+// callers that need to enumerate rather than test membership (schema-key
+// validation, error messages). Sorted so the output is deterministic — an
+// error message that lists these must not reorder between runs.
+func ReservedItemFieldKeys() []string {
+	keys := make([]string, 0, len(reservedItemFieldKeys))
+	for k := range reservedItemFieldKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 type Item struct {

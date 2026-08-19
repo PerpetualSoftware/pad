@@ -136,6 +136,16 @@ func TestMigrateFields_ReservedKeysCarryThroughUntouched(t *testing.T) {
 	pr := map[string]any{"number": float64(42), "url": "https://example.invalid/42"}
 	convention := map[string]any{"trigger": "always", "enforcement": "must"}
 
+	// The expectations are INDEPENDENT deep copies, not aliases of the values
+	// handed to MigrateFields (Codex round 1). Comparing the result against the
+	// same backing objects that were passed in cannot detect an in-place
+	// mutation: both sides change together and DeepEqual stays true. These
+	// copies are the only thing that makes "untouched" mean untouched.
+	wantNotes := []any{map[string]any{"id": "note-1", "summary": "carried"}}
+	wantDecisions := []any{map[string]any{"id": "decision-1", "decision": "carried"}}
+	wantPR := map[string]any{"number": float64(42), "url": "https://example.invalid/42"}
+	wantConvention := map[string]any{"trigger": "always", "enforcement": "must"}
+
 	fields := map[string]any{
 		"implementation_notes": notes,
 		"decision_log":         decisions,
@@ -147,10 +157,10 @@ func TestMigrateFields_ReservedKeysCarryThroughUntouched(t *testing.T) {
 	result := MigrateFields(fields, source, target)
 
 	for key, want := range map[string]any{
-		"implementation_notes": notes,
-		"decision_log":         decisions,
-		"github_pr":            pr,
-		"convention":           convention,
+		"implementation_notes": wantNotes,
+		"decision_log":         wantDecisions,
+		"github_pr":            wantPR,
+		"convention":           wantConvention,
 	} {
 		got, ok := result.Fields[key]
 		if !ok {
@@ -188,13 +198,41 @@ func TestMigrateFields_ReservedKeysBypassSchemaMatching(t *testing.T) {
 	target := []models.FieldDef{{Key: "implementation_notes", Type: "text"}}
 
 	notes := []any{map[string]any{"id": "note-1", "summary": "carried"}}
+	want := []any{map[string]any{"id": "note-1", "summary": "carried"}} // independent copy — see above
 	result := MigrateFields(map[string]any{"implementation_notes": notes}, source, target)
 
 	got, ok := result.Fields["implementation_notes"]
 	if !ok {
 		t.Fatal("implementation_notes must carry through even when the target declares the key")
 	}
-	if !reflect.DeepEqual(got, notes) {
-		t.Errorf("payload must not be coerced by the target FieldDef:\n got %#v\nwant %#v", got, notes)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("payload must not be coerced by the target FieldDef:\n got %#v\nwant %#v", got, want)
+	}
+}
+
+// The schema collision the test above simulates must not be REACHABLE: a
+// collection schema may not declare a reserved key in the first place. Without
+// this, MigrateFields hands the array through untouched and
+// ValidateFieldsDetailed — which iterates schema.Fields and therefore DOES see
+// a declared key — rejects it, turning a move that used to silently destroy the
+// notes into one that fails outright (Codex round 1 P2). Pinning the set here
+// rather than only at the server handler keeps the two lists honest.
+func TestReservedItemFieldKeysAreStableAndComplete(t *testing.T) {
+	got := models.ReservedItemFieldKeys()
+	want := []string{"convention", "decision_log", "github_pr", "implementation_notes"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reserved key set changed:\n got %#v\nwant %#v\n\nIf this is intentional, the new key must ALSO be added to the web's RESERVED_FIELD_KEYS (field-editor-types.ts) so the UI steers authors away before the server 400s.", got, want)
+	}
+	for _, k := range want {
+		if !models.IsReservedItemField(k) {
+			t.Errorf("IsReservedItemField(%q) = false, want true", k)
+		}
+	}
+	// Control: a key that merely LOOKS internal is not reserved. Without
+	// this, a helper returning true for everything passes.
+	for _, k := range []string{"status", "priority", "notes", "github", ""} {
+		if models.IsReservedItemField(k) {
+			t.Errorf("IsReservedItemField(%q) = true, want false", k)
+		}
 	}
 }
