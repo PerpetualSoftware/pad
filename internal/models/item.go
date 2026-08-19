@@ -464,14 +464,23 @@ var ErrStructuredFieldUnreadable = errors.New("structured field is present but u
 //
 //  1. the key is absent          — the first append on an item. Must proceed.
 //  2. the key holds an empty array — well-formed, just empty. Must proceed.
-//  3. the key holds a value that does not decode — the defect. Must REFUSE,
+//  3. the key holds an explicit JSON null — carries no entries. Must proceed.
+//  4. the key holds a value that does not decode — the defect. Must REFUSE,
 //     because the unconditional assign would overwrite that value with a
 //     one-element slice and report success. Observed live: an item whose
 //     implementation_notes was a JSON-ENCODED STRING lost its stored note to a
 //     single `pad item note` call, with no warning on any surface.
 //
 // So this checks decodability directly against the raw value instead of reusing
-// Extract*'s nil, which cannot distinguish (3) from (1) or (2).
+// Extract*'s nil, which cannot distinguish (4) from (1), (2) or (3).
+//
+// T must be the entry type the MATCHING Extract* decodes into. A wrong-but-
+// compiling instantiation is silently destructive rather than merely wrong:
+// encoding/json ignores unknown fields, so ItemImplementationNote ACCEPTS
+// `{"decision":{...}}` while ExtractItemDecisionLog rejects it — the guard would
+// permit an append that the extractor then reads as empty, which is the exact
+// divergence this function exists to prevent. Both directions are pinned by
+// tests; see TestAppendDecisionLogRefusesEntriesOnlyItsOwnTypeRejects.
 func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string) error {
 	raw, ok := fieldsMap[key]
 	if !ok {
