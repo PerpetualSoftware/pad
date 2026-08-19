@@ -105,25 +105,6 @@ func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchem
 	var issues []FieldIssue
 
 	for _, def := range schema.Fields {
-		// A schema must not declare a reserved key, and since BUG-2674 the
-		// collection handlers refuse new ones — but they GRANDFATHER schemas
-		// that already had one, so such a FieldDef can still arrive here.
-		//
-		// It must not be enforced. MigrateFields hands reserved keys through
-		// by identity (they are system-owned, and schema-matching them is
-		// what destroyed them), so a grandfathered `implementation_notes:
-		// text` FieldDef would meet the notes ARRAY and reject it — failing
-		// the whole move or copy on a collection whose only sin is a field
-		// name someone was allowed to pick. Skipping is not "ignoring
-		// validation": these values have no user-authored schema to validate
-		// against, by design.
-		//
-		// Codex round 2 P2-1. The round-1 gate stopped the collision being
-		// CREATED and left the ones already out there unhandled.
-		if models.IsReservedItemField(def.Key) {
-			continue
-		}
-
 		val, exists := fields[def.Key]
 
 		// Apply default if field is missing and a default is defined

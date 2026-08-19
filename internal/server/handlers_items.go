@@ -1940,7 +1940,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// `missing_required_fields` code and message shape, because CLI and
 	// web callers key off it; genuinely invalid VALUES get their own
 	// `invalid_fields` code rather than being mislabelled as missing.
-	if issues := items.ValidateFieldsDetailed(result.Fields, targetSchema); len(issues) > 0 {
+	if issues := items.ValidateFieldsDetailed(result.Fields, items.SchemaForMigratedFields(targetSchema)); len(issues) > 0 {
 		var missing, invalid []string
 		for _, iss := range issues {
 			if iss.Kind == items.IssueRequired {

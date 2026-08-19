@@ -621,7 +621,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// against the TARGET schema — MigrateFields validates migrated
 	// values but an override can smuggle in a value the target schema
 	// doesn't allow (e.g. a status not in the target's options).
-	if err := items.ValidateFields(result.Fields, targetSchema); err != nil {
+	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
 

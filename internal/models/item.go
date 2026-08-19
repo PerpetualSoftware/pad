@@ -32,8 +32,23 @@ const (
 // this existed there were four constants and a single inline || chain in a CLI
 // display path — a shape where the next reserved field added lands in the
 // constants, gets wired into whichever surface prompted it, and silently misses
-// every other. If you add a key here, that is the point: the callers below
-// inherit it without edits.
+// every other.
+//
+// ADDING A KEY HERE IS NOT THE WHOLE JOB, and pretending otherwise would
+// recreate the drift this set exists to stop. Membership tests inherit it for
+// free — MigrateFields' carry, SchemaForMigratedFields, the collection-schema
+// gate, the copy preflight's enumeration, the CLI's display filter. Three
+// places still need a hand edit, because each needs something a set cannot
+// supply:
+//
+//   - referentialItemFieldKeys below — does the new key point OUT of the item?
+//   - reservedFieldLabel (handlers_items_copy_preflight.go) — a human label
+//   - RESERVED_FIELD_KEYS (web/src/lib/components/collections/
+//     field-editor-types.ts) — the client-side gate, deliberately a separate
+//     list because it lowercases and is therefore stricter than this one
+//
+// TestReservedItemFieldKeysAreStableAndComplete fails on any change to this
+// set, which is the reminder to visit all three.
 var reservedItemFieldKeys = map[string]struct{}{
 	ItemFieldGitHubPR:            {},
 	ItemFieldImplementationNotes: {},

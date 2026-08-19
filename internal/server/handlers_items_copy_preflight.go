@@ -644,7 +644,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// ValidateFieldsDetailed injects any remaining schema defaults into
 	// `final` in place, so a key that appears only afterwards has no
 	// origin entry and is reported as "default".
-	issues := items.ValidateFieldsDetailed(final, targetSchema)
+	issues := items.ValidateFieldsDetailed(final, items.SchemaForMigratedFields(targetSchema))
 
 	// DR-12's other half: an override whose VALUE is invalid is rejected,
 	// not bucketed. It is the caller's own input and there is nothing for

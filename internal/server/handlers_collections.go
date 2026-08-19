@@ -16,7 +16,10 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// reservedSchemaFieldKeys are collection schema field keys that collide
+// reservedSchemaFieldKeys are collection schema field keys a schema may not
+// declare. Two unrelated groups, for two unrelated reasons — see below.
+//
+// parent / plan collide
 // with the parent/plan extraction at handlers_items.go:584 (create),
 // :851 (PATCH), and :2147 (list filter). A schema field keyed exactly
 // "parent" or "plan" makes schemaHasField (handlers_items.go:2190) return

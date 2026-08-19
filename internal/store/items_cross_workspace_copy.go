@@ -1052,10 +1052,16 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 		}
 		migrated.Fields[k] = v
 	}
-	if err := items.ValidateFields(migrated.Fields, targetSchema); err != nil {
+	if err := items.ValidateFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, nil, &FieldValidationError{Err: err}
 	}
-	return migrated.Fields, migrated.Dropped, nil
+	// Filtered against the FINAL map, matching the preflight (Codex round 3).
+	// migrated.Dropped is computed before overrides merge and before defaults
+	// are injected, and this list is exposed to the caller as the 201
+	// response's warnings.dropped_fields — so without this the preview said
+	// "carried", the copy PERSISTED the key, and the copy's own response
+	// still reported it dropped. Three surfaces, two answers, one request.
+	return migrated.Fields, items.StillDropped(migrated.Dropped, migrated.Fields), nil
 }
 
 // carryAssigneeTx implements DR-8's assignee rule: the source's assignee

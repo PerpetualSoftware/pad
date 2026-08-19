@@ -204,7 +204,14 @@ func StillDropped(dropped []string, finalFields map[string]any) []string {
 	out := make([]string, 0, len(dropped))
 	seen := make(map[string]struct{}, len(dropped))
 	for _, key := range dropped {
-		if _, restored := finalFields[key]; restored {
+		// PRESENT-AND-NON-NIL is the test, not mere presence. The move path
+		// writes overrides straight into the map including a nil one, where
+		// the copy path deletes the key instead (see migrateCopyFields) — so
+		// on a move, `{"due_date": null}` leaves the key present with a nil
+		// value. Treating that as restored would suppress a REAL drop on the
+		// strength of a key that carries nothing, which is the silent loss
+		// this whole change exists to end (Codex round 3).
+		if v, restored := finalFields[key]; restored && v != nil {
 			continue
 		}
 		if _, dup := seen[key]; dup {
@@ -214,5 +221,51 @@ func StillDropped(dropped []string, finalFields map[string]any) []string {
 		out = append(out, key)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// SchemaForMigratedFields returns schema with any reserved-key FieldDef
+// removed, for validating the OUTPUT of MigrateFields.
+//
+// Only migration and copy need this, which is exactly why it is a separate
+// function rather than a skip inside ValidateFieldsDetailed (Codex round 3).
+// That validator is shared with create, full update and every bulk path, and a
+// blanket skip there would stop enforcing a grandfathered declaration on the
+// paths where the user really is authoring that key — letting arbitrary junk
+// into implementation_notes through create while fields_patch, which uses
+// ValidatePartialFields, kept rejecting it. Full and partial updates
+// disagreeing about the same key is a worse bug than the one being fixed.
+//
+// The narrow problem it does solve: collection schemas may not declare a
+// reserved key since BUG-2674, but that gate GRANDFATHERS existing ones, so a
+// legacy `implementation_notes: text` FieldDef still exists in the wild.
+// MigrateFields hands reserved keys through by identity — they are system-owned
+// and schema-matching them is what destroyed them — so validating the migrated
+// map against that FieldDef would meet the notes ARRAY and reject it, failing
+// every move and copy for a collection whose only sin is a field name someone
+// was once allowed to pick.
+//
+// Returns schema unchanged (no copy) when it declares no reserved key, which is
+// every collection that has not been grandfathered.
+func SchemaForMigratedFields(schema models.CollectionSchema) models.CollectionSchema {
+	var reserved bool
+	for _, f := range schema.Fields {
+		if models.IsReservedItemField(f.Key) {
+			reserved = true
+			break
+		}
+	}
+	if !reserved {
+		return schema
+	}
+
+	out := schema
+	out.Fields = make([]models.FieldDef, 0, len(schema.Fields))
+	for _, f := range schema.Fields {
+		if models.IsReservedItemField(f.Key) {
+			continue
+		}
+		out.Fields = append(out.Fields, f)
+	}
 	return out
 }

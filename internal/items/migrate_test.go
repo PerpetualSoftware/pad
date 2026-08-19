@@ -300,3 +300,123 @@ func TestMigrateFields_ReferentialKeysTravelOnlyWithinTheirContext(t *testing.T)
 		}
 	})
 }
+
+// StillDropped exists because MigrateResult.Dropped is computed BEFORE
+// overrides merge and before defaults are injected, so a key it lists may have
+// been supplied moments later. Reporting those states something false about the
+// item that is about to be written.
+//
+// The nil leg is the one that matters and the one a naive implementation gets
+// wrong: the MOVE path writes overrides straight into the map including a nil,
+// where the COPY path deletes the key. A presence-only filter therefore
+// suppresses a real drop on a move whenever the caller nulls the key.
+func TestStillDropped(t *testing.T) {
+	cases := []struct {
+		name    string
+		dropped []string
+		final   map[string]any
+		want    []string
+	}{
+		{
+			name:    "key restored by an override is no longer dropped",
+			dropped: []string{"count"},
+			final:   map[string]any{"count": "7"},
+			want:    nil,
+		},
+		{
+			name:    "key still absent stays dropped",
+			dropped: []string{"count"},
+			final:   map[string]any{"status": "open"},
+			want:    []string{"count"},
+		},
+		{
+			name:    "key present but NIL is still dropped",
+			dropped: []string{"count"},
+			final:   map[string]any{"count": nil},
+			want:    []string{"count"},
+		},
+		{
+			name:    "output is sorted and de-duplicated",
+			dropped: []string{"zeta", "alpha", "zeta"},
+			final:   map[string]any{},
+			want:    []string{"alpha", "zeta"},
+		},
+		{
+			name:    "empty in, nil out",
+			dropped: nil,
+			final:   map[string]any{"count": "7"},
+			want:    nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StillDropped(tc.dropped, tc.final)
+			if len(got) == 0 && len(tc.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("StillDropped(%#v, %#v) = %#v, want %#v", tc.dropped, tc.final, got, tc.want)
+			}
+		})
+	}
+}
+
+// A grandfathered schema may still declare a reserved key. Validating the
+// MIGRATED map against that FieldDef would reject the system-owned value
+// MigrateFields hands through by identity, failing the whole move.
+//
+// Scoped to migration deliberately: the same skip inside ValidateFieldsDetailed
+// would stop enforcing the declaration on create and full update too, where the
+// user really is authoring that key — and fields_patch would keep rejecting it,
+// so full and partial updates would disagree (Codex round 3).
+func TestSchemaForMigratedFields(t *testing.T) {
+	t.Run("strips a grandfathered reserved declaration", func(t *testing.T) {
+		// The reserved key is FIRST on purpose. With it last, an in-place
+		// implementation (`out.Fields = schema.Fields[:0]` + appends) writes
+		// the surviving field back into the slot it already occupied, so the
+		// input looks untouched and the mutant survives. Putting it first
+		// means the survivor lands in slot 0 and the corruption is visible.
+		// Found by running that exact mutant against the first version of
+		// this test, which passed.
+		schema := models.CollectionSchema{Fields: []models.FieldDef{
+			{Key: "implementation_notes", Type: "text", Required: true},
+			{Key: "status", Type: "select", Options: []string{"open"}},
+		}}
+
+		out := SchemaForMigratedFields(schema)
+
+		for _, f := range out.Fields {
+			if f.Key == "implementation_notes" {
+				t.Fatal("reserved declaration must not reach migration validation")
+			}
+		}
+		if len(out.Fields) != 1 || out.Fields[0].Key != "status" {
+			t.Fatalf("ordinary fields must survive: %#v", out.Fields)
+		}
+		// The input must not be mutated — it is the collection's real schema
+		// and other callers still need the declaration to enforce it.
+		//
+		// Asserted on CONTENTS, not length. Go passes the struct by value, so
+		// the caller's slice HEADER survives an in-place rewrite of the
+		// backing array: `out.Fields = schema.Fields[:0]` followed by appends
+		// leaves len(schema.Fields) == 2 while both elements have been
+		// overwritten. A length check passes that mutant, which it did on the
+		// first version of this test.
+		if len(schema.Fields) != 2 ||
+			schema.Fields[0].Key != "implementation_notes" ||
+			schema.Fields[1].Key != "status" {
+			t.Errorf("input schema was mutated: %#v", schema.Fields)
+		}
+	})
+
+	t.Run("a schema with no reserved key is returned unchanged", func(t *testing.T) {
+		schema := models.CollectionSchema{Fields: []models.FieldDef{
+			{Key: "status", Type: "select", Options: []string{"open"}},
+		}}
+		out := SchemaForMigratedFields(schema)
+		if !reflect.DeepEqual(out, schema) {
+			t.Errorf("got %#v, want the input unchanged", out)
+		}
+	})
+}
