@@ -41,15 +41,21 @@ type serverInfoConnection struct {
 }
 
 type serverInfoAuth struct {
-	CredentialsPath        string         `json:"credentials_path"`
-	CredentialsPresent     bool           `json:"credentials_present"`
-	CredentialsServerURL   string         `json:"credentials_server_url,omitempty"`
-	CredentialsMatchServer bool           `json:"credentials_match_server"`
-	Authenticated          bool           `json:"authenticated"`
-	SessionValid           bool           `json:"session_valid"`
-	SetupRequired          bool           `json:"setup_required"`
-	SetupMethod            string         `json:"setup_method,omitempty"`
-	User                   *cli.LoginUser `json:"user,omitempty"`
+	CredentialsPath        string `json:"credentials_path"`
+	CredentialsPresent     bool   `json:"credentials_present"`
+	CredentialsServerURL   string `json:"credentials_server_url,omitempty"`
+	CredentialsMatchServer bool   `json:"credentials_match_server"`
+	// EnvTokenOverride reports whether PAD_TOKEN is set (#879). When
+	// true, the Authenticated/SessionValid/User fields below describe
+	// the ENV token's identity, not the stored credential's — without
+	// this flag a consumer reading credentials_present=false would
+	// wrongly conclude the CLI is unauthenticated.
+	EnvTokenOverride bool           `json:"env_token_override,omitempty"`
+	Authenticated    bool           `json:"authenticated"`
+	SessionValid     bool           `json:"session_valid"`
+	SetupRequired    bool           `json:"setup_required"`
+	SetupMethod      string         `json:"setup_method,omitempty"`
+	User             *cli.LoginUser `json:"user,omitempty"`
 }
 
 type serverInfoWorkspace struct {
@@ -136,6 +142,8 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 		report.Auth.CredentialsMatchServer = true
 	}
 
+	report.Auth.EnvTokenOverride = cli.EnvToken() != ""
+
 	client := cli.NewClientFromURL(cfg.BaseURL())
 	client.SetAuthToken("")
 
@@ -143,7 +151,12 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 		report.Connection.Error = err.Error()
 	} else {
 		report.Connection.Reachable = true
-		if creds != nil && creds.Token != "" && report.Auth.CredentialsMatchServer {
+		// Probe with the token every other command would use: the
+		// PAD_TOKEN override when set (#879), else the stored
+		// credential for this server.
+		if report.Auth.EnvTokenOverride {
+			client.SetAuthToken(cli.EnvToken())
+		} else if creds != nil && creds.Token != "" && report.Auth.CredentialsMatchServer {
 			client.SetAuthToken(creds.Token)
 		}
 		session, err := client.CheckSession()
@@ -245,6 +258,9 @@ func printServerInfo(report *serverInfoReport) {
 	if report.Auth.CredentialsPresent {
 		fmt.Fprintf(w, "Credentials server:\t%s\n", report.Auth.CredentialsServerURL)
 		fmt.Fprintf(w, "Credentials match current server:\t%s\n", yesNo(report.Auth.CredentialsMatchServer))
+	}
+	if report.Auth.EnvTokenOverride {
+		fmt.Fprintf(w, "Auth source:\tPAD_TOKEN environment override\n")
 	}
 	fmt.Fprintf(w, "Session valid:\t%s\n", yesNo(report.Auth.SessionValid))
 	fmt.Fprintf(w, "Authenticated:\t%s\n", yesNo(report.Auth.Authenticated))

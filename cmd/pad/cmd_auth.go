@@ -342,6 +342,9 @@ func loginCmd() *cobra.Command {
 			}()
 
 			cfg := getConfiguredConfig()
+			if n := envTokenNotice(); n != "" {
+				fmt.Fprintln(os.Stderr, n)
+			}
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}
@@ -801,29 +804,56 @@ func readPasswordFrom(fallback *bufio.Reader) (string, error) {
 	return string(pw), nil
 }
 
+// envTokenNotice returns a one-line warning when PAD_TOKEN is set, or ""
+// when it isn't. login/logout print it to stderr (gh-style) so users
+// aren't surprised that managing stored credentials doesn't change the
+// identity API calls use while the override is active (#879).
+func envTokenNotice() string {
+	if cli.EnvToken() == "" {
+		return ""
+	}
+	return "Note: PAD_TOKEN is set and overrides stored credentials for all API calls."
+}
+
 func logoutCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "Log out of Pad",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfiguredConfig()
+			if n := envTokenNotice(); n != "" {
+				fmt.Fprintln(os.Stderr, n)
+			}
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}
 			client := cli.NewClientFromURL(cfg.BaseURL())
 
-			// Try to invalidate server-side session
-			_ = client.Logout()
+			store, err := cli.LoadStore()
+			if err != nil {
+				return fmt.Errorf("load credentials: %w", err)
+			}
+
+			// Try to invalidate the STORED server-side session. Under
+			// PAD_TOKEN the constructor resolved the env token (#879),
+			// so an unpinned Logout() would invalidate the env token's
+			// session instead of the stored one — pin to the stored
+			// token, and skip the server call entirely when there is no
+			// stored session to invalidate.
+			if cli.EnvToken() != "" {
+				if creds := store.Get(cfg.BaseURL()); creds != nil && creds.Token != "" {
+					client.SetAuthToken(creds.Token)
+					_ = client.Logout()
+				}
+			} else {
+				_ = client.Logout()
+			}
 
 			// Delete only the entry for THIS server. Other servers'
 			// credentials stay intact (TASK-1228 — pre-fix behavior wiped
 			// the whole file). If the entry isn't present, Delete is a
 			// silent no-op which matches what the user expects from
 			// `pad auth logout` against an unauthed server.
-			store, err := cli.LoadStore()
-			if err != nil {
-				return fmt.Errorf("load credentials: %w", err)
-			}
 			store.Delete(cfg.BaseURL())
 			if err := store.Save(); err != nil {
 				return fmt.Errorf("save credentials: %w", err)
@@ -843,26 +873,45 @@ func whoamiCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfiguredConfig()
 
-			// Per-server lookup (TASK-1228). The store may have entries
-			// for other servers — we only care about the configured one.
-			store, err := cli.LoadStore()
-			if err != nil {
-				return fmt.Errorf("load credentials: %w", err)
-			}
-			creds := store.Get(cfg.BaseURL())
-			if creds == nil || creds.Token == "" {
-				fmt.Println("Not logged in. Run 'pad auth login'.")
-				return nil
+			// PAD_TOKEN overrides stored credentials (issue #879): when
+			// set, report the identity the token resolves to via a real
+			// /me fetch — the store may be empty or hold a different
+			// user, and every other command authenticates as the env
+			// token's user, so the store short-circuit below would make
+			// whoami lie.
+			envToken := cli.EnvToken()
+
+			var creds *cli.Credentials
+			if envToken == "" {
+				// Per-server lookup (TASK-1228). The store may have entries
+				// for other servers — we only care about the configured one.
+				store, err := cli.LoadStore()
+				if err != nil {
+					return fmt.Errorf("load credentials: %w", err)
+				}
+				creds = store.Get(cfg.BaseURL())
+				if creds == nil || creds.Token == "" {
+					fmt.Println("Not logged in. Run 'pad auth login'.")
+					return nil
+				}
 			}
 
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
 			}
+			// NewClientFromURL already resolves PAD_TOKEN; only pin the
+			// token explicitly on the stored-credential path.
 			client := cli.NewClientFromURL(cfg.BaseURL())
-			client.SetAuthToken(creds.Token)
+			if creds != nil {
+				client.SetAuthToken(creds.Token)
+			}
 
 			user, err := client.GetCurrentUser()
 			if err != nil {
+				if envToken != "" {
+					fmt.Println("PAD_TOKEN is set but the server rejected it.")
+					return nil
+				}
 				fmt.Println("Session expired. Run 'pad auth login'.")
 				return nil
 			}
@@ -873,6 +922,9 @@ func whoamiCmd() *cobra.Command {
 				fmt.Printf("Name:  %s\n", user.Name)
 				fmt.Printf("Email: %s\n", user.Email)
 				fmt.Printf("Role:  %s\n", user.Role)
+				if envToken != "" {
+					fmt.Println("Auth:  PAD_TOKEN environment override")
+				}
 			}
 			return nil
 		},

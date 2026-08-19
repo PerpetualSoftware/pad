@@ -611,12 +611,19 @@ func printInitStatus(client *cli.Client, cfg *config.Config, ws *models.Workspac
 	}
 	fmt.Println(serverAddr)
 
-	// Auth — entry for the configured server only
-	store, _ := cli.LoadStore()
-	creds := store.Get(cfg.BaseURL())
-	if creds != nil && creds.Email != "" {
-		green.Print("  ✓ Logged in  ")
-		fmt.Println(creds.Email)
+	// Auth — entry for the configured server only. Under the PAD_TOKEN
+	// override (#879) the stored entry is not what API calls use, so
+	// disclose the override instead of implying the stored identity.
+	if cli.EnvToken() != "" {
+		green.Print("  ✓ Auth       ")
+		fmt.Println("PAD_TOKEN environment override")
+	} else {
+		store, _ := cli.LoadStore()
+		creds := store.Get(cfg.BaseURL())
+		if creds != nil && creds.Email != "" {
+			green.Print("  ✓ Logged in  ")
+			fmt.Println(creds.Email)
+		}
 	}
 
 	// Workspace

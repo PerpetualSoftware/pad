@@ -59,12 +59,16 @@ func NewClientFromURL(baseURL string) *Client {
 		},
 	}
 
-	// Auto-load credentials for THIS server URL if any are saved. We use
-	// the original baseURL (without the /api/v1 suffix added below) so
-	// the lookup matches what login/save commands key on. Credentials
-	// for other servers are left untouched in the store — see TASK-1228
-	// / IDEA-1226 for the per-server design.
-	if store, err := LoadStore(); err == nil {
+	// Auth resolution order: PAD_TOKEN env override first (explicit,
+	// per-process — lets concurrent agents on one machine act as
+	// different users, issue #879), then the saved credential for THIS
+	// server URL. We use the original baseURL (without the /api/v1
+	// suffix added below) so the lookup matches what login/save
+	// commands key on. Credentials for other servers are left untouched
+	// in the store — see TASK-1228 / IDEA-1226 for the per-server design.
+	if tok := EnvToken(); tok != "" {
+		c.authToken = tok
+	} else if store, err := LoadStore(); err == nil {
 		if creds := store.Get(baseURL); creds != nil {
 			c.authToken = creds.Token
 		}
