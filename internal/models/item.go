@@ -49,6 +49,34 @@ func IsReservedItemField(key string) bool {
 	return ok
 }
 
+// referentialItemFieldKeys are the reserved keys whose VALUE points at
+// something outside the item — a resource whose meaning depends on the
+// surrounding workspace's context rather than on the item itself.
+//
+// The distinction decides how far they travel (BUG-2674, lead ruling). The
+// carry rule is one sentence: system-minted NON-REFERENTIAL data carries;
+// referential system data carries only where its referent's context still
+// holds. implementation_notes and decision_log describe the item's own history
+// and are true wherever the item is. github_pr names a repository that is a
+// property of the SOURCE workspace's context — carried into a different
+// workspace it renders as a live PR link on an item whose project may have no
+// relationship to that repo, which is a false statement rather than a preserved
+// one.
+//
+// So this is not an exception to the rule; it is the rule's own qualifier doing
+// its job. A same-workspace move leaves the referent's context unchanged, so
+// these carry there.
+var referentialItemFieldKeys = map[string]struct{}{
+	ItemFieldGitHubPR: {},
+}
+
+// IsReferentialItemField reports whether a reserved key's value depends on the
+// workspace context around it. See referentialItemFieldKeys.
+func IsReferentialItemField(key string) bool {
+	_, ok := referentialItemFieldKeys[key]
+	return ok
+}
+
 // ReservedItemFieldKeys returns the reserved keys in a stable order, for
 // callers that need to enumerate rather than test membership (schema-key
 // validation, error messages). Sorted so the output is deterministic — an

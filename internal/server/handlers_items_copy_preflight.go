@@ -271,6 +271,22 @@ type ItemCopyPreflightDropped struct {
 	//                                destination workspace (DR-8)
 	//   "agent_role_not_portable"  — role slugs are workspace-local and
 	//                                never carry (DR-8)
+	//   "referent_not_portable"    — system metadata whose VALUE points at
+	//                                something belonging to the SOURCE
+	//                                workspace's context, so it describes
+	//                                nothing true in the destination
+	//                                (BUG-2674). Today that is github_pr:
+	//                                the repository is a property of the
+	//                                source's project, and carrying it
+	//                                would render a live PR link on an
+	//                                item whose project may have no
+	//                                relationship to that repo. Distinct
+	//                                from no_target_field, which would
+	//                                otherwise be reported here and is
+	//                                simply wrong: no schema declares this
+	//                                key ANYWHERE, so "the destination has
+	//                                no such field" is true of the source
+	//                                too and explains nothing
 	Reason string `json:"reason"`
 }
 
@@ -589,7 +605,13 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// deliberately never read here; the authoritative answer comes from
 	// items.ValidateFieldsDetailed run over the MERGED map, which also
 	// applies destination defaults and type/option/pattern checks.
-	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+	// Scope is COMPUTED, not assumed cross-workspace: this endpoint accepts a
+	// target_workspace equal to the source, and hardcoding CrossWorkspace
+	// would drop a github_pr from a duplicate whose repo context never
+	// changed (BUG-2674). Same computation in the mutating copy, or the two
+	// disagree — the divergence DR-6 exists to prevent.
+	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields,
+		migrateScopeFor(item.WorkspaceID, dst.WorkspaceID()))
 
 	final := make(map[string]any, len(migrated.Fields)+len(input.FieldOverrides))
 	origin := make(map[string]string, len(final))
@@ -745,6 +767,17 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	for _, key := range sortedDroppedKeys(migrated.Dropped, sourceSchema.Fields) {
 		reason := "no_target_field"
 		label := key
+		// A reserved key in Dropped can only have got there one way: it is
+		// referential and this is a cross-workspace copy. The generic
+		// no_target_field would be actively misleading — no schema declares
+		// these keys anywhere, so it is equally true of the source and
+		// explains nothing about why the value is being left behind.
+		if models.IsReservedItemField(key) {
+			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
+				Key: key, Label: reservedFieldLabel(key), Kind: "field", Reason: "referent_not_portable",
+			})
+			continue
+		}
 		srcDef, declaredBySource := fieldDefByKey(sourceSchema.Fields, key)
 		if def, exists := targetDefs[key]; exists {
 			// The key exists downstream, so migration rejected the VALUE.
@@ -1134,4 +1167,14 @@ func reservedFieldLabel(key string) string {
 		return "Convention metadata"
 	}
 	return key
+}
+
+// migrateScopeFor answers the one question items.MigrateScope asks: is the
+// item landing in a different workspace? Shared by the preflight and the
+// mutating copy so the preview cannot promise a carry the copy then drops.
+func migrateScopeFor(sourceWorkspaceID, targetWorkspaceID string) items.MigrateScope {
+	if sourceWorkspaceID == targetWorkspaceID {
+		return items.SameWorkspace
+	}
+	return items.CrossWorkspace
 }

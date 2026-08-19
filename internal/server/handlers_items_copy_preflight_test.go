@@ -2034,3 +2034,60 @@ func TestCopyPreflight_ReportsReservedMetadataAsCarried(t *testing.T) {
 		t.Fatalf("implementation_notes was reported carried but is absent on the copy: %#v", got)
 	}
 }
+
+// BUG-2674, lead ruling. github_pr is REFERENTIAL system metadata: it names a
+// repository belonging to the source workspace's context. It carries on an
+// intra-workspace move (context unchanged) and drops on a cross-workspace copy,
+// where carrying it would render a live PR link on an item whose project may
+// have no relationship to that repo.
+//
+// The drop must be REPORTED — PLAN-2357 DR-17, "None of this may be silent" —
+// and with a reason that explains itself. The generic no_target_field would be
+// misleading here: no schema declares this key anywhere, so it is equally true
+// of the source and says nothing about why the value is being left behind.
+func TestCopyPreflight_ReportsReferentialMetadataAsNotPortable(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+
+	seeded := `{"status":"open","priority":"low","impact":"large","count":7,"code":"abc",` +
+		`"github_pr":{"number":42,"url":"https://example.invalid/42","state":"OPEN"},` +
+		`"implementation_notes":[{"id":"note-1","summary":"travels anywhere"}]}`
+	if _, err := f.srv.store.UpdateItem(f.source.ID, models.ItemUpdate{Fields: &seeded}); err != nil {
+		t.Fatalf("seed referential metadata: %v", err)
+	}
+
+	body := f.resolvableBody()
+	body["field_overrides"] = map[string]any{"ticket": "T-1", "code": "123"}
+	pre := f.ok(body)
+
+	var dropped *ItemCopyPreflightDropped
+	for i := range pre.Fields.Dropped {
+		if pre.Fields.Dropped[i].Key == models.ItemFieldGitHubPR {
+			dropped = &pre.Fields.Dropped[i]
+			break
+		}
+	}
+	if dropped == nil {
+		t.Fatalf("github_pr must be reported dropped on a cross-workspace copy; dropped = %+v", pre.Fields.Dropped)
+	}
+	if dropped.Reason != "referent_not_portable" {
+		t.Errorf("reason = %q, want %q — no_target_field is true of the source too and explains nothing",
+			dropped.Reason, "referent_not_portable")
+	}
+
+	// It must not also be reported carried, and the non-referential sibling
+	// must NOT be swept up with it — that pair is the whole distinction.
+	for _, c := range pre.Fields.Carried {
+		if c.Key == models.ItemFieldGitHubPR {
+			t.Error("github_pr reported both dropped and carried")
+		}
+	}
+	var notesCarried bool
+	for _, c := range pre.Fields.Carried {
+		if c.Key == models.ItemFieldImplementationNotes {
+			notesCarried = true
+		}
+	}
+	if !notesCarried {
+		t.Error("implementation_notes must still carry across workspaces — it describes the item, not its surroundings")
+	}
+}

@@ -602,7 +602,17 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// malformed_override from its own preview. A bad request is a bad request
 	// whether or not the destination happens to be full, and a client told
 	// "you are out of room" cannot fix an override it was never told about.
-	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides)
+	// Scope is COMPUTED from the two workspace ids rather than assumed
+	// cross-workspace: this path also serves a copy whose target IS the source
+	// workspace, and hardcoding CrossWorkspace would drop a github_pr from a
+	// duplicate whose repo context never changed (BUG-2674). The preflight
+	// computes it the same way — a divergence here would have the preview
+	// promising a carry the copy drops, which DR-6 exists to prevent.
+	scope := items.SameWorkspace
+	if sourceWorkspaceID != req.TargetWorkspaceID {
+		scope = items.CrossWorkspace
+	}
+	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1006,7 +1016,7 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 //
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
 // migration dropped.
-func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any) (map[string]any, []string, error) {
+func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any, scope items.MigrateScope) (map[string]any, []string, error) {
 	var sourceSchema, targetSchema models.CollectionSchema
 	if err := json.Unmarshal([]byte(sourceSchemaJSON), &sourceSchema); err != nil {
 		return nil, nil, fmt.Errorf("copy item across workspaces: parse source schema: %w", err)
@@ -1032,7 +1042,7 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 		}
 	}
 
-	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields, scope)
 	for k, v := range overrides {
 		if v == nil {
 			// An explicit null means "leave this unset". DELETE rather than

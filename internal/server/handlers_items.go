@@ -1908,7 +1908,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Migrate fields
-	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+	// SameWorkspace is a property of the endpoint, not a guess: a move
+	// changes the item's COLLECTION and cannot change its workspace — the
+	// cross-workspace path is the copy endpoint. So the repo/member
+	// context around the item is unchanged and referential system
+	// metadata still describes something true (BUG-2674).
+	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields, items.SameWorkspace)
 
 	// Apply overrides
 	for k, v := range input.FieldOverrides {

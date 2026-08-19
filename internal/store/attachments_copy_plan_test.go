@@ -309,7 +309,7 @@ func TestPlanAttachmentCopy_DroppedFieldNotCloned(t *testing.T) {
 		"screenshot": "pad-attachment:" + dropped.ID,
 	}
 
-	migrated := items.MigrateFields(rawFields, sourceSchema, targetSchema)
+	migrated := items.MigrateFields(rawFields, sourceSchema, targetSchema, items.SameWorkspace)
 	if len(migrated.Dropped) != 1 || migrated.Dropped[0] != "screenshot" {
 		t.Fatalf("precondition: MigrateFields dropped %v, want [screenshot]", migrated.Dropped)
 	}

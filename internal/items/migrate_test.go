@@ -18,7 +18,7 @@ func TestMigrateFields_MatchingTypes(t *testing.T) {
 	}
 	fields := map[string]any{"status": "open", "priority": "high"}
 
-	result := MigrateFields(fields, source, target)
+	result := MigrateFields(fields, source, target, SameWorkspace)
 
 	if result.Fields["status"] != "open" {
 		t.Errorf("status: got %v, want 'open'", result.Fields["status"])
@@ -40,7 +40,7 @@ func TestMigrateFields_SelectValueNotInTarget(t *testing.T) {
 	}
 	fields := map[string]any{"status": "in-progress"}
 
-	result := MigrateFields(fields, source, target)
+	result := MigrateFields(fields, source, target, SameWorkspace)
 
 	// "in-progress" is not in target options, should be dropped and default applied
 	if result.Fields["status"] != "todo" {
@@ -58,7 +58,7 @@ func TestMigrateFields_DropsExtraFields(t *testing.T) {
 	}
 	fields := map[string]any{"severity": "high", "browser": "Chrome"}
 
-	result := MigrateFields(fields, source, target)
+	result := MigrateFields(fields, source, target, SameWorkspace)
 
 	if len(result.Dropped) != 2 {
 		t.Errorf("dropped: got %d, want 2", len(result.Dropped))
@@ -76,7 +76,7 @@ func TestMigrateFields_TypeConversion(t *testing.T) {
 	}
 	fields := map[string]any{"count": 42, "status": "open"}
 
-	result := MigrateFields(fields, source, target)
+	result := MigrateFields(fields, source, target, SameWorkspace)
 
 	if result.Fields["count"] != "42" {
 		t.Errorf("count: got %v, want '42'", result.Fields["count"])
@@ -93,7 +93,7 @@ func TestMigrateFields_RequiredFieldMissing(t *testing.T) {
 	}
 	fields := map[string]any{}
 
-	result := MigrateFields(fields, source, target)
+	result := MigrateFields(fields, source, target, SameWorkspace)
 
 	if len(result.Errors) != 1 {
 		t.Errorf("errors: got %d, want 1", len(result.Errors))
@@ -107,7 +107,7 @@ func TestMigrateFields_DefaultApplied(t *testing.T) {
 	}
 	fields := map[string]any{}
 
-	result := MigrateFields(fields, source, target)
+	result := MigrateFields(fields, source, target, SameWorkspace)
 
 	if result.Fields["status"] != "open" {
 		t.Errorf("status: got %v, want 'open'", result.Fields["status"])
@@ -154,7 +154,7 @@ func TestMigrateFields_ReservedKeysCarryThroughUntouched(t *testing.T) {
 		"severity":             "high", // an ordinary key with no target home
 	}
 
-	result := MigrateFields(fields, source, target)
+	result := MigrateFields(fields, source, target, SameWorkspace)
 
 	for key, want := range map[string]any{
 		"implementation_notes": wantNotes,
@@ -199,7 +199,7 @@ func TestMigrateFields_ReservedKeysBypassSchemaMatching(t *testing.T) {
 
 	notes := []any{map[string]any{"id": "note-1", "summary": "carried"}}
 	want := []any{map[string]any{"id": "note-1", "summary": "carried"}} // independent copy — see above
-	result := MigrateFields(map[string]any{"implementation_notes": notes}, source, target)
+	result := MigrateFields(map[string]any{"implementation_notes": notes}, source, target, SameWorkspace)
 
 	got, ok := result.Fields["implementation_notes"]
 	if !ok {
@@ -235,4 +235,68 @@ func TestReservedItemFieldKeysAreStableAndComplete(t *testing.T) {
 			t.Errorf("IsReservedItemField(%q) = true, want false", k)
 		}
 	}
+}
+
+// The carry rule's own qualifier (BUG-2674, lead ruling): system-minted
+// NON-REFERENTIAL data carries everywhere; REFERENTIAL system data carries only
+// where its referent's context still holds. github_pr names a repository that
+// belongs to the source workspace's context — carried into a different
+// workspace it renders as a live PR link on an item whose project may have no
+// relationship to that repo, which is a false statement rather than a preserved
+// one. Notes and decisions describe the item's own history and are true wherever
+// the item is.
+//
+// Both scopes are asserted in one test on purpose. The interesting property is
+// the DIFFERENCE: a implementation that ignored scope entirely, in either
+// direction, passes whichever half you write alone.
+func TestMigrateFields_ReferentialKeysTravelOnlyWithinTheirContext(t *testing.T) {
+	source := []models.FieldDef{}
+	target := []models.FieldDef{}
+
+	pr := map[string]any{"number": float64(42), "url": "https://example.invalid/42"}
+	notes := []any{map[string]any{"id": "note-1", "summary": "history is true anywhere"}}
+	build := func() map[string]any {
+		return map[string]any{"github_pr": pr, "implementation_notes": notes}
+	}
+
+	t.Run("same workspace carries it", func(t *testing.T) {
+		result := MigrateFields(build(), source, target, SameWorkspace)
+		if _, ok := result.Fields["github_pr"]; !ok {
+			t.Error("github_pr must carry within one workspace — the repo context is unchanged")
+		}
+		for _, d := range result.Dropped {
+			if d == "github_pr" {
+				t.Error("github_pr must not be reported dropped within one workspace")
+			}
+		}
+	})
+
+	t.Run("cross workspace drops it AND reports it", func(t *testing.T) {
+		result := MigrateFields(build(), source, target, CrossWorkspace)
+		if _, ok := result.Fields["github_pr"]; ok {
+			t.Error("github_pr must not carry into another workspace — its referent's context is gone")
+		}
+		// Reported, not silently discarded. PLAN-2357 DR-17: "None of this
+		// may be silent." A drop with no report is the defect this whole
+		// unit exists to remove, and it would be perverse to reintroduce it
+		// in the fix's own new branch.
+		var reported bool
+		for _, d := range result.Dropped {
+			if d == "github_pr" {
+				reported = true
+			}
+		}
+		if !reported {
+			t.Errorf("github_pr dropped without a report; Dropped = %#v", result.Dropped)
+		}
+	})
+
+	t.Run("non-referential metadata is unaffected by scope", func(t *testing.T) {
+		for _, scope := range []MigrateScope{SameWorkspace, CrossWorkspace} {
+			result := MigrateFields(build(), source, target, scope)
+			if _, ok := result.Fields["implementation_notes"]; !ok {
+				t.Errorf("scope %v: implementation_notes must carry — it describes the item, not its surroundings", scope)
+			}
+		}
+	})
 }

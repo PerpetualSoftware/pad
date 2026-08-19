@@ -17,14 +17,39 @@ type MigrateResult struct {
 	Errors []string
 }
 
+// MigrateScope says how far the item is travelling. It is a required argument
+// rather than an option with a default because BOTH wrong answers lose
+// something (BUG-2674): using SameWorkspace for a cross-workspace copy carries
+// a github_pr into a workspace whose repository it does not describe, and using
+// CrossWorkspace for an ordinary move DROPS that metadata from an item whose
+// repo context never changed. A caller that has to name its scope cannot pick
+// one by omission.
+type MigrateScope int
+
+const (
+	// SameWorkspace — a collection change within one workspace. The
+	// surrounding context (repository, members, conventions) is unchanged,
+	// so referential system metadata still describes something true.
+	SameWorkspace MigrateScope = iota
+	// CrossWorkspace — the item is landing in a different workspace, where
+	// a referent belonging to the source's context no longer holds.
+	CrossWorkspace
+)
+
 // MigrateFields maps field values from a source schema to a target schema.
 // Fields with matching keys and compatible types are transferred.
 // Incompatible or missing fields are dropped. Required target fields without
 // values after migration are reported as errors.
+//
+// Reserved system metadata (models.IsReservedItemField) bypasses schema
+// matching entirely — it is declared by no schema, so matching it against one
+// is what destroyed it before BUG-2674. Referential reserved keys additionally
+// depend on scope; see MigrateScope.
 func MigrateFields(
 	currentFields map[string]any,
 	sourceSchema []models.FieldDef,
 	targetSchema []models.FieldDef,
+	scope MigrateScope,
 ) MigrateResult {
 	result := MigrateResult{
 		Fields: make(map[string]any),
@@ -60,6 +85,15 @@ func MigrateFields(
 		// them. There is no migration to attempt: they have no source or
 		// target FieldDef to migrate BETWEEN.
 		if models.IsReservedItemField(key) {
+			// Referential metadata travels only as far as its referent's
+			// context. Reported through the ordinary Dropped channel with
+			// no special casing — a user losing a PR link should learn it
+			// the same way they learn about any other dropped value
+			// (PLAN-2357 DR-17: "None of this may be silent").
+			if scope == CrossWorkspace && models.IsReferentialItemField(key) {
+				result.Dropped = append(result.Dropped, key)
+				continue
+			}
 			result.Fields[key] = value
 			continue
 		}
