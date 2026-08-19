@@ -34,12 +34,14 @@ type Client struct {
 	authToken    string // session or API token, sent as Authorization: Bearer
 	agentName    string // optional agent name, sent as X-Pad-Agent header
 
-	// capsOnce guards a single lazy probe of GET /server/capabilities, whose
-	// result is static for the server's lifetime (so once per client is enough).
-	// capsResolves caches whether the server resolves collection slugs itself —
-	// see ServerResolvesCollections.
-	capsOnce     sync.Once
-	capsResolves bool
+	// capMu guards the lazy, cached probe of GET /server/capabilities behind
+	// CollectionNotFoundIsAuthoritative. capProbed is set only once a DEFINITIVE
+	// answer is cached (a 200 with the flag, or a clean 404); a transient probe
+	// failure leaves capProbed false so a later call re-probes rather than
+	// poisoning the cache. capResolves is the cached definitive verdict.
+	capMu       sync.Mutex
+	capProbed   bool
+	capResolves bool
 }
 
 func NewClient(host string, port int) *Client {
@@ -246,30 +248,78 @@ func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*
 	return &result, c.post("/workspaces/"+wsSlug+"/collections/"+collSlug+"/items", input, &result)
 }
 
-// ServerResolvesCollections reports whether the server resolves a collection
-// slug itself — exact-match-first with the singular/alias fallback and the
-// archived-claims refusal (resolveItemCollectionSlug, BUG-2578/2630). It probes
-// GET /server/capabilities once (the result is static for the server's
-// lifetime) and caches it.
+// CollectionNotFoundIsAuthoritative reports whether a collection-not-found from
+// this server should be TRUSTED — i.e. the alias retry in
+// WithCollectionAliasFallback should be SKIPPED. It answers the question the
+// helper actually needs, which is not quite "does the server resolve": it also
+// has to say the safe thing when the answer is unknown.
 //
-// It FAILS SAFE toward "does not resolve": any probe error, an old build that
-// 404s the endpoint, or a response missing the field all return false. That is
-// deliberate — false routes WithCollectionAliasFallback to the legacy
-// client-side alias retry, which is exactly what an old server needs and is
-// non-regressive there (old servers never had the archived-claims protection a
-// retry could defeat). Only an explicit `collection_resolution: true` returns
-// true, which tells the helper the server's not-found is authoritative and must
-// not be retried around.
-func (c *Client) ServerResolvesCollections() bool {
-	c.capsOnce.Do(func() {
+//   - Server advertises collection_resolution=true → true. It already tried the
+//     singular/alias fallback and enforced exact-match + the archived/hidden
+//     refusal (resolveItemCollectionSlug, BUG-2578/2630), so its not-found is
+//     final: do not retry.
+//   - Server DEFINITIVELY lacks the resolver — a clean 404 (no such endpoint) or
+//     an explicit collection_resolution=false → false. Retry the legacy alias;
+//     that old build never had the archived-claims protection a retry could
+//     defeat, so the retry is non-regressive there.
+//   - Probe is INDETERMINATE (a transport error, timeout, or 5xx) → true, and
+//     the result is NOT cached. Failing CLOSED here is the fix for the cache
+//     trap: a single transient blip must not permanently re-enable the retry
+//     and let a write bypass the archived/hidden protection on a resolving
+//     server. The only case this could "cost" is an old server whose
+//     capabilities probe transiently errors instead of returning a clean 404 —
+//     but a missing route returns 404, not a transient error, so a genuine old
+//     build still gets its retry.
+//
+// The definitive verdict is cached (static for the server's lifetime); an
+// indeterminate probe is re-tried on the next call.
+func (c *Client) CollectionNotFoundIsAuthoritative() bool {
+	c.capMu.Lock()
+	defer c.capMu.Unlock()
+	if c.capProbed {
+		return c.capResolves
+	}
+	resolves, definitive := c.probeCollectionResolution()
+	if !definitive {
+		// Fail closed without caching: trust the not-found for THIS call, but
+		// re-probe next time in case the blip clears.
+		return true
+	}
+	c.capResolves = resolves
+	c.capProbed = true
+	return resolves
+}
+
+// probeCollectionResolution issues the one GET /server/capabilities probe and
+// classifies the outcome. definitive is true only when the server gave a clear
+// answer — HTTP 200 (resolves = the advertised flag) or HTTP 404 (resolves =
+// false: a build with no capabilities endpoint has no resolver). A transport
+// error, a 200 whose body will not decode, or any other status (e.g. a 5xx) is
+// NOT definitive.
+func (c *Client) probeCollectionResolution() (resolves, definitive bool) {
+	req, err := c.newRequest("GET", "/server/capabilities", nil)
+	if err != nil {
+		return false, false
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
 		var caps struct {
 			CollectionResolution bool `json:"collection_resolution"`
 		}
-		if err := c.get("/server/capabilities", &caps); err == nil {
-			c.capsResolves = caps.CollectionResolution
+		if err := json.NewDecoder(resp.Body).Decode(&caps); err != nil {
+			return false, false
 		}
-	})
-	return c.capsResolves
+		return caps.CollectionResolution, true
+	case http.StatusNotFound:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func (c *Client) GetItem(wsSlug, itemSlug string) (*models.Item, error) {

@@ -41,17 +41,22 @@ import (
 // That is the Option 1 cleanup tracked on BUG-2630's trail, gated on a
 // min-server-version floor that includes the resolver.
 //
-// serverResolves reports whether the server resolves collection slugs itself
-// (exact-match-first + alias fallback + archived-claims refusal). When it
-// returns true, a collection-not-found is AUTHORITATIVE and the alias retry is
-// skipped; when false (an old build, or the probe failed), the retry runs. Pass
-// nil to force the legacy always-retry behaviour (used only in tests).
+// notFoundIsAuthoritative reports whether a collection-not-found should be
+// TRUSTED — when it returns true the alias retry is skipped, because the server
+// resolves slugs itself (exact-match-first + alias fallback + archived/hidden
+// refusal) and has therefore already ruled the slug absent. It returns false
+// only for a server definitively without the resolver, where the legacy retry
+// is the right non-regressive fallback. Pass nil to FORCE the always-retry
+// behaviour — the right choice for an endpoint that does NOT resolve slugs
+// server-side (the CLI schema lookup hits exact-match-only GetCollection, so its
+// not-found is never authoritative about an alias). See
+// Client.CollectionNotFoundIsAuthoritative.
 //
 // Exported so the cmd/pad item commands can funnel their create / list / move
 // calls through this ONE implementation instead of each re-deriving the
 // send-raw-then-retry dance (BUG-2630 lead ruling: one shared helper, not
 // copied at the call sites).
-func WithCollectionAliasFallback[T any](rawSlug string, serverResolves func() bool, op func(slug string) (T, error)) (T, error) {
+func WithCollectionAliasFallback[T any](rawSlug string, notFoundIsAuthoritative func() bool, op func(slug string) (T, error)) (T, error) {
 	result, err := op(rawSlug)
 	if err == nil {
 		return result, nil
@@ -70,14 +75,12 @@ func WithCollectionAliasFallback[T any](rawSlug string, serverResolves func() bo
 		// sees, since it is their own word.
 		return result, wrapCollectionNotFound(err, rawSlug)
 	}
-	// A server that resolves collections itself has ALREADY tried the alias for
-	// us (server-side, BUG-2578/2630), plus enforced exact-match-first and the
-	// archived-claims/hidden refusal. So its collection-not-found is
-	// authoritative: the slug is absent, archived, or hidden, and retrying the
-	// alias would only defeat that protection (BUG-2630 #1). Only fall back to
-	// the client-side retry for an OLDER server that does not advertise
-	// resolution — which never had the protection a retry could defeat.
-	if serverResolves != nil && serverResolves() {
+	// When the server's not-found is authoritative — it resolves collections
+	// itself (BUG-2578/2630), so it already tried the alias and enforced
+	// exact-match-first + the archived/hidden refusal — retrying the alias would
+	// only defeat that protection (BUG-2630 #1). Only fall back to the
+	// client-side retry for an OLDER server that never had the protection.
+	if notFoundIsAuthoritative != nil && notFoundIsAuthoritative() {
 		return result, wrapCollectionNotFound(err, rawSlug)
 	}
 	result2, err2 := op(normalized)
