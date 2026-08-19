@@ -209,6 +209,99 @@ func TestAppendDecisionLogEntryPreservesExistingNotes(t *testing.T) {
 	}
 }
 
+// BUG-2627. The Append* helpers assigned the rebuilt slice over the key
+// unconditionally, so an existing value that Extract* could not decode was
+// overwritten and destroyed while the call reported success. Reproduced live: an
+// item whose implementation_notes held a JSON-ENCODED STRING lost its stored
+// note to one `pad item note` call, silently.
+//
+// The refusal is asserted on the ERROR *and* on the returned fields being empty
+// — "returns an error" alone would still pass if the helper handed back a
+// mutated fields blob that a caller then wrote (CONVE-12: assert what the wrong
+// behaviour would DO, not what the right one leaves looking unchanged).
+func TestAppendRefusesWhenStructuredFieldIsUnreadable(t *testing.T) {
+	const encodedNotes = `{"implementation_notes":"[{\"summary\":\"stored note\"}]","status":"done"}`
+	const encodedDecisions = `{"decision_log":"[{\"decision\":\"stored decision\"}]"}`
+
+	t.Run("implementation notes", func(t *testing.T) {
+		fields, err := AppendImplementationNote(encodedNotes, ItemImplementationNote{ID: "note-new", Summary: "new"})
+		if !errors.Is(err, ErrStructuredFieldUnreadable) {
+			t.Fatalf("expected ErrStructuredFieldUnreadable, got %v", err)
+		}
+		if fields != "" {
+			t.Fatalf("refused append must return no fields to write, got %q", fields)
+		}
+	})
+
+	t.Run("decision log", func(t *testing.T) {
+		fields, err := AppendDecisionLogEntry(encodedDecisions, ItemDecisionLogEntry{ID: "decision-new", Decision: "new"})
+		if !errors.Is(err, ErrStructuredFieldUnreadable) {
+			t.Fatalf("expected ErrStructuredFieldUnreadable, got %v", err)
+		}
+		if fields != "" {
+			t.Fatalf("refused append must return no fields to write, got %q", fields)
+		}
+	})
+
+	t.Run("object instead of list", func(t *testing.T) {
+		_, err := AppendImplementationNote(`{"implementation_notes":{"summary":"not a list"}}`, ItemImplementationNote{ID: "note-new"})
+		if !errors.Is(err, ErrStructuredFieldUnreadable) {
+			t.Fatalf("expected ErrStructuredFieldUnreadable, got %v", err)
+		}
+	})
+
+	// The message is the only thing a human sees at the moment of refusal, and
+	// PATTE-135 requires its suggested remedy to work in THIS state. It names a
+	// read-only inspection command deliberately — every append path is what is
+	// being refused, so none of them is a safe suggestion here.
+	t.Run("message names the field and a remedy that is not an append", func(t *testing.T) {
+		_, err := AppendImplementationNote(encodedNotes, ItemImplementationNote{ID: "note-new"})
+		msg := err.Error()
+		for _, want := range []string{"implementation_notes", "pad item show", "BUG-2627"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("refusal message missing %q: %s", want, msg)
+			}
+		}
+		if strings.Contains(msg, "pad item note") {
+			t.Errorf("refusal must not suggest an append path — it is destructive in this state: %s", msg)
+		}
+	})
+}
+
+// The guard must key on "present and undecodable", NOT on Extract* returning
+// nil — Extract* also returns nil for an absent key and for a well-formed empty
+// list, and refusing either would break every first append. These are the
+// control legs: without them a guard of the form `if Extract(...) == nil` would
+// pass the refusal test above and still be wrong.
+func TestAppendProceedsWhenStructuredFieldIsAbsentEmptyOrValid(t *testing.T) {
+	cases := []struct {
+		name      string
+		fields    string
+		wantNotes int
+	}{
+		{"absent key", `{"status":"open"}`, 1},
+		{"empty list", `{"implementation_notes":[]}`, 1},
+		{"explicit null", `{"implementation_notes":null}`, 1},
+		{"existing entry is preserved", `{"implementation_notes":[{"id":"note-1","summary":"stored"}]}`, 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fields, err := AppendImplementationNote(tc.fields, ItemImplementationNote{ID: "note-new", Summary: "new"})
+			if err != nil {
+				t.Fatalf("append must proceed, got %v", err)
+			}
+			got := ExtractItemImplementationNotes(fields)
+			if len(got) != tc.wantNotes {
+				t.Fatalf("expected %d note(s), got %#v", tc.wantNotes, got)
+			}
+			if got[len(got)-1].ID != "note-new" {
+				t.Fatalf("new note should be appended last, got %#v", got)
+			}
+		})
+	}
+}
+
 func TestApplyItemConventionMetadataPreservesStatusAndWritesAliases(t *testing.T) {
 	fields, err := ApplyItemConventionMetadata(`{"status":"active"}`, &ItemConventionMetadata{
 		Category:    "pm",
