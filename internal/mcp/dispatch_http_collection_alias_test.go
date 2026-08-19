@@ -101,6 +101,79 @@ func TestHTTPItemCreate_AcceptsSingularOfANonDefaultCollection(t *testing.T) {
 	}
 }
 
+// newShadowFixture builds a workspace holding BOTH a user collection whose slug
+// IS a hardcoded singular ("plan") and its plural ("plans"), so the BUG-2630
+// shadow — the client alias rewriting "plan" to "plans" before the server sees
+// it — has a real collision to expose.
+func newShadowFixture(t *testing.T) *HTTPHandlerDispatcher {
+	t.Helper()
+	s := storetest.NewSQLite(t)
+	srv := server.New(s)
+	t.Cleanup(srv.Stop)
+
+	owner, err := s.CreateUser(models.UserCreate{
+		Email: "shadow-owner@example.com", Name: "Owner", Password: "correct-horse-battery-staple",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Shadow WS", Slug: "shadow-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	for _, c := range []models.CollectionCreate{
+		{Name: "Plans", Slug: "plans", Prefix: "PLANS", Schema: schema},
+		{Name: "Plan", Slug: "plan", Prefix: "PLAN", Schema: schema},
+	} {
+		if _, err := s.CreateCollection(ws.ID, c); err != nil {
+			t.Fatalf("CreateCollection %s: %v", c.Slug, err)
+		}
+	}
+	return &HTTPHandlerDispatcher{Handler: srv, UserResolver: func(context.Context) *models.User { return owner }}
+}
+
+// BUG-2630 over the MCP dispatcher: an exact collection name that happens to be
+// a hardcoded singular must NOT be rewritten into its plural. The item has to
+// land in — and be listable from — the collection the caller actually named.
+func TestHTTPItemCreate_ExactSingularNotShadowedByAlias(t *testing.T) {
+	d := newShadowFixture(t)
+
+	createCtx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "shadow-ws", "collection": "plan", "title": "belongs in plan",
+	})
+	res, err := d.Dispatch(createCtx, []string{"item", "create"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch(item create): %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("create into `plan` over MCP failed: %s", textOf(res))
+	}
+
+	// Present in `plan` (the named collection)...
+	planList := WithDispatchInput(context.Background(), map[string]any{"workspace": "shadow-ws", "collection": "plan"})
+	planRes, err := d.Dispatch(planList, []string{"item", "list"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch(list plan): %v", err)
+	}
+	if !strings.Contains(textOf(planRes), "belongs in plan") {
+		t.Errorf("item did not land in `plan`: %s", textOf(planRes))
+	}
+
+	// ...and ABSENT from `plans` (the alias that used to shadow it).
+	plansList := WithDispatchInput(context.Background(), map[string]any{"workspace": "shadow-ws", "collection": "plans"})
+	plansRes, err := d.Dispatch(plansList, []string{"item", "list"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch(list plans): %v", err)
+	}
+	if strings.Contains(textOf(plansRes), "belongs in plan") {
+		t.Errorf("item was shadowed into `plans` — BUG-2630: %s", textOf(plansRes))
+	}
+}
+
 // A collection that does not exist under any spelling must still fail, so the
 // fallback cannot be mistaken for "any name works".
 func TestHTTPItemCreate_UnknownCollectionStillFails(t *testing.T) {

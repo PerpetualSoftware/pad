@@ -15,7 +15,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
@@ -860,15 +859,13 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 		return "", "", nil, fmt.Errorf("encode body: %w", err)
 	}
 
-	// Normalize singular/shorthand forms ("task" → "tasks", "doc" →
-	// "docs", etc.) the same way the CLI does. Without this, an MCP
-	// caller that mirrors a documented CLI command shape like
-	// `item.create(collection: "task", ...)` would 404 against the
-	// REST handler even though the same call works through
-	// ExecDispatcher (which goes through normalizeCollectionSlug in
-	// cmd/pad/main.go).
-	collection = collections.NormalizeSlug(collection)
-
+	// Send the collection slug verbatim. This dispatcher runs in-process
+	// against the same binary, whose create handler resolves shorthand
+	// server-side with exact-match-first (BUG-2578), so the raw slug keeps
+	// `item.create(collection: "task", ...)` working AND stops the old
+	// client-side alias from shadowing a real collection whose slug IS a
+	// singular like "task" (BUG-2630). The ExecDispatcher path (local stdio)
+	// gets the same behaviour through the CLI's alias-fallback helper.
 	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/collections/%s/items",
 		url.PathEscape(workspace), url.PathEscape(collection))
 	return http.MethodPost, urlPath, body, nil

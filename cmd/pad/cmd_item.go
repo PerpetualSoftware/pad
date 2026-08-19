@@ -199,7 +199,14 @@ Run with --help-collections to see available collections and their status values
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			collSlug := normalizeCollectionSlug(args[0])
+			// Send the RAW slug the user typed; the server's exact-match-first
+			// resolver (BUG-2578) handles shorthand without letting an alias
+			// shadow a real collection of the same singular name (BUG-2630).
+			// The alias fallback below preserves shorthand against servers that
+			// predate the resolver. The schema fetch and the create both go
+			// through the SAME fallback so typed --field values parse against —
+			// and the item lands in — one collection, never a mismatched pair.
+			rawSlug := args[0]
 			title := args[1]
 
 			// Build fields JSON from flags
@@ -228,7 +235,14 @@ Run with --help-collections to see available collections and their status values
 			// degrades gracefully: all values stay as strings, matching
 			// pre-fix behavior.
 			var collSchema models.CollectionSchema
-			if coll, err := client.GetCollection(ws, collSlug); err == nil {
+			// The schema lookup hits exact-match-only GetCollection, which does
+			// NOT resolve slugs server-side, so its not-found is never
+			// authoritative about an alias — always retry (nil gate) so a typed
+			// --field parses against the aliased collection's schema (Codex r2
+			// P2). Best-effort: a miss degrades to string fields either way.
+			if coll, err := cli.WithCollectionAliasFallback(rawSlug, nil, func(slug string) (*models.Collection, error) {
+				return client.GetCollection(ws, slug)
+			}); err == nil {
 				_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
 			}
 			for _, kv := range fieldFlags {
@@ -298,7 +312,9 @@ Run with --help-collections to see available collections and their status values
 				input.AgentRoleID = &role.ID
 			}
 
-			item, err := client.CreateItem(ws, collSlug, input)
+			item, err := cli.WithCollectionAliasFallback(rawSlug, client.CollectionNotFoundIsAuthoritative, func(slug string) (*models.Item, error) {
+				return client.CreateItem(ws, slug, input)
+			})
 			if err != nil {
 				// TASK-788: emit structured marker so MCP stdio classifier
 				// can surface ErrPlanLimitExceeded instead of ErrServerError.
@@ -486,7 +502,12 @@ Examples:
 			var err error
 
 			if len(args) > 0 {
-				items, err = client.ListCollectionItems(ws, normalizeCollectionSlug(args[0]), params)
+				// Raw slug first so an exact collection name is never shadowed
+				// by its singular alias (BUG-2630); the fallback preserves
+				// shorthand against pre-resolver servers (BUG-2578).
+				items, err = cli.WithCollectionAliasFallback(args[0], client.CollectionNotFoundIsAuthoritative, func(slug string) ([]models.Item, error) {
+					return client.ListCollectionItems(ws, slug, params)
+				})
 			} else {
 				items, err = client.ListItems(ws, params)
 			}
@@ -1557,9 +1578,8 @@ Examples:
 			ws := getWorkspace()
 
 			input := map[string]any{
-				"target_collection": normalizeCollectionSlug(args[1]),
-				"actor":             "user",
-				"source":            "cli",
+				"actor":  "user",
+				"source": "cli",
 			}
 
 			// Parse field overrides
@@ -1575,7 +1595,15 @@ Examples:
 				input["field_overrides"] = overrides
 			}
 
-			moved, err := client.MoveItemWithForce(ws, args[0], input, force)
+			// Raw target slug first so an exact collection name is never
+			// shadowed by its alias (BUG-2630); the fallback preserves shorthand
+			// against pre-resolver servers (BUG-2578). Retrying on
+			// collection-not-found is safe: that error means the move never
+			// mutated anything, so no double-write can result.
+			moved, err := cli.WithCollectionAliasFallback(args[1], client.CollectionNotFoundIsAuthoritative, func(slug string) (*models.Item, error) {
+				input["target_collection"] = slug
+				return client.MoveItemWithForce(ws, args[0], input, force)
+			})
 			if err != nil {
 				// IDEA-1494 R3 P1: render the open-children rejection
 				// the same way the regular update path does, so

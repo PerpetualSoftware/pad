@@ -28,9 +28,11 @@ import (
 // as standalone RouteMapper functions instead.
 //
 // All input keys are MCP property names (snake_case per TASK-964).
-// `collection` and `target_collection` placeholders are normalized
-// via collections.NormalizeSlug so callers can pass shorthand
-// ("task" → "tasks") without 404s.
+// Collection slugs are sent verbatim: this dispatcher runs in-process
+// against the same binary, whose item handlers resolve shorthand
+// server-side (exact-match-first, BUG-2578), so the raw slug both keeps
+// shorthand working and avoids the client-side alias shadowing a real
+// collection (BUG-2630).
 type routeSpec struct {
 	// method is the HTTP method (GET / POST / PATCH / DELETE).
 	method string
@@ -85,9 +87,15 @@ func (s routeSpec) toRouteMapper() RouteMapper {
 // reply names the missing input rather than the agent receiving a
 // confusing 404 from the handler tree).
 //
-// The placeholders "collection" / "target_collection" are normalized
-// via collections.NormalizeSlug so shorthand forms like "task" work
-// the same way they do through the CLI.
+// Placeholders are substituted verbatim (path-escaped). It does NOT
+// normalize a collection slug: this dispatcher runs in-process against
+// the same binary, whose item handlers resolve shorthand server-side
+// with exact-match-first (BUG-2578), so sending the raw slug both keeps
+// shorthand working AND stops an alias from shadowing a real collection
+// of the same singular name (BUG-2630). No current routeSpec even uses a
+// {collection}/{target_collection} path placeholder — the standalone
+// item mappers build those paths directly — so this is also dead-code
+// removal in the area BUG-2630 fixed.
 func expandPath(template string, input map[string]any) (string, error) {
 	var out strings.Builder
 	out.Grow(len(template))
@@ -112,9 +120,6 @@ func expandPath(template string, input map[string]any) (string, error) {
 		}
 		if s == "" {
 			return "", fmt.Errorf("input %q must be non-empty for path placeholder", name)
-		}
-		if name == "collection" || name == "target_collection" {
-			s = collections.NormalizeSlug(s)
 		}
 		out.WriteString(url.PathEscape(s))
 		i += end + 1
@@ -1197,8 +1202,11 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 	// "unknown input keys are ignored" behaviour.
 	pathBase := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/items"
 	if coll, _ := input["collection"].(string); coll != "" {
+		// Raw slug: the in-process list handler resolves shorthand
+		// server-side (BUG-2578) so an exact collection name is never
+		// shadowed by its alias (BUG-2630).
 		pathBase = "/api/v1/workspaces/" + url.PathEscape(workspace) +
-			"/collections/" + url.PathEscape(collections.NormalizeSlug(coll)) + "/items"
+			"/collections/" + url.PathEscape(coll) + "/items"
 	}
 
 	values := url.Values{}
@@ -1496,7 +1504,10 @@ func mapItemMove(input map[string]any) (string, string, []byte, error) {
 	}
 
 	payload := map[string]any{
-		"target_collection": collections.NormalizeSlug(target),
+		// Raw slug: the in-process move handler resolves shorthand
+		// server-side (BUG-2578) so an exact collection name is never
+		// shadowed by its alias (BUG-2630).
+		"target_collection": target,
 		"actor":             "user",
 		"source":            "cli",
 	}
