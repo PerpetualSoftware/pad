@@ -491,23 +491,16 @@ func TestMapItemCreate_ExplicitFieldOverridesNamedFlag(t *testing.T) {
 	}
 }
 
-func TestMapItemCreate_NormalizesCollectionAliases(t *testing.T) {
-	// MCP callers may mirror documented CLI shapes ("item create task X")
-	// using singular/short collection names. The CLI normalizes via
-	// collections.NormalizeSlug; the dispatcher does the same so the
-	// HTTP transport doesn't 404 on a call that works through
-	// ExecDispatcher. Locked into a test so the parity doesn't drift.
-	cases := map[string]string{
-		"task":       "tasks",
-		"idea":       "ideas",
-		"doc":        "docs",
-		"plan":       "plans",
-		"bug":        "bugs",
-		"convention": "conventions",
-		"tasks":      "tasks", // already-canonical: no change
-		"my-custom":  "my-custom",
-	}
-	for in, wantSlug := range cases {
+func TestMapItemCreate_SendsRawCollectionSlug(t *testing.T) {
+	// The dispatcher sends the collection slug VERBATIM (BUG-2630). It runs
+	// in-process against the same binary, whose create handler resolves
+	// shorthand server-side with exact-match-first (BUG-2578), so the raw slug
+	// keeps `item.create(collection: "task")` working AND stops the old
+	// client-side alias from shadowing a real collection whose slug IS a
+	// singular like "task". A singular that used to be rewritten must now reach
+	// the server unchanged so the server can decide.
+	cases := []string{"task", "idea", "doc", "plan", "bug", "convention", "tasks", "my-custom"}
+	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {
 			_, path, _, err := mapItemCreate(map[string]any{
 				"workspace": "ws", "collection": in, "title": "x",
@@ -515,9 +508,9 @@ func TestMapItemCreate_NormalizesCollectionAliases(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mapItemCreate: %v", err)
 			}
-			wantPath := "/api/v1/workspaces/ws/collections/" + wantSlug + "/items"
+			wantPath := "/api/v1/workspaces/ws/collections/" + in + "/items"
 			if path != wantPath {
-				t.Errorf("path = %q, want %q", path, wantPath)
+				t.Errorf("path = %q, want %q (slug must be sent verbatim, not aliased)", path, wantPath)
 			}
 		})
 	}

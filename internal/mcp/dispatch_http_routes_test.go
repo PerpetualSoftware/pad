@@ -66,18 +66,12 @@ func TestExpandPath_BasicSubstitution(t *testing.T) {
 	}
 }
 
-func TestExpandPath_NormalizesCollection(t *testing.T) {
-	got, err := expandPath(
-		"/api/v1/workspaces/{workspace}/collections/{collection}/items",
-		map[string]any{"workspace": "docapp", "collection": "task"},
-	)
-	if err != nil {
-		t.Fatalf("expandPath: %v", err)
-	}
-	if !strings.Contains(got, "/collections/tasks/") {
-		t.Errorf("expected `task` to normalize to `tasks`, got %q", got)
-	}
-}
+// TestExpandPath_NormalizesCollection was removed with the collection-slug
+// normalization it guarded (BUG-2630). expandPath no longer rewrites a
+// `{collection}` placeholder — the in-process handlers resolve shorthand
+// server-side (BUG-2578), and rewriting client-side let an alias shadow a real
+// collection of the same singular name. No routeSpec uses that placeholder
+// anyway; the item mappers build collection paths directly.
 
 func TestExpandPath_PathEscapesSpecials(t *testing.T) {
 	got, err := expandPath(
@@ -302,15 +296,18 @@ func TestRoute_ItemList_ExplicitStatusOverridesDefault(t *testing.T) {
 
 func TestRoute_ItemList_CollectionScopedPath(t *testing.T) {
 	_, p, _, err := mapItemList(map[string]any{
-		"workspace": "docapp", "collection": "task", // shorthand
+		"workspace": "docapp", "collection": "task", // singular
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	// Path may carry the non_terminal=true query string from the
-	// no-explicit-status branch — we only assert the path prefix here.
-	if !strings.HasPrefix(p, "/api/v1/workspaces/docapp/collections/tasks/items") {
-		t.Errorf("expected collection-scoped + normalized path, got %q", p)
+	// The slug is sent VERBATIM (BUG-2630): the in-process list handler
+	// resolves shorthand server-side (BUG-2578) and exact-match-first stops an
+	// alias from shadowing a real `task` collection. Path may carry the
+	// non_terminal=true query from the no-explicit-status branch — assert the
+	// prefix only.
+	if !strings.HasPrefix(p, "/api/v1/workspaces/docapp/collections/task/items") {
+		t.Errorf("expected the raw slug in the path, got %q", p)
 	}
 }
 
@@ -447,7 +444,7 @@ func TestRoute_ItemMove(t *testing.T) {
 	m, p, body, err := routeTable["item move"](map[string]any{
 		"workspace":         "docapp",
 		"ref":               "BUG-3",
-		"target_collection": "task", // shorthand
+		"target_collection": "task", // singular, sent verbatim
 		"field":             []any{"priority=high"},
 	})
 	if err != nil {
@@ -463,8 +460,10 @@ func TestRoute_ItemMove(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode body: %v\n%s", err, body)
 	}
-	if payload["target_collection"] != "tasks" {
-		t.Errorf("target_collection not normalized: %v", payload)
+	// Verbatim, not aliased (BUG-2630): the in-process move handler resolves
+	// shorthand server-side (BUG-2578) with exact-match-first.
+	if payload["target_collection"] != "task" {
+		t.Errorf("target_collection should be sent verbatim, got: %v", payload)
 	}
 	if payload["source"] != "cli" {
 		t.Errorf("source not stamped: %v", payload)
