@@ -448,9 +448,74 @@ func ExtractItemDecisionLog(fieldsJSON string) []ItemDecisionLogEntry {
 	return entries
 }
 
+// ErrStructuredFieldUnreadable is returned by the Append* helpers when the item
+// already carries a structured-entry field whose stored value cannot be decoded
+// into its entry slice. Callers should surface it rather than retry: the append
+// is refused precisely because completing it would destroy the stored value.
+var ErrStructuredFieldUnreadable = errors.New("structured field is present but unreadable")
+
+// assertStructuredFieldAppendable refuses an append when key holds a value that
+// does not decode into []T.
+//
+// BUG-2627. The Append* helpers below build the new slice from Extract*, then
+// assign it over the key unconditionally. Extract* returns nil for THREE
+// different reasons and only one of them is a defect, so the nil itself cannot
+// be the refusal condition:
+//
+//  1. the key is absent          — the first append on an item. Must proceed.
+//  2. the key holds an empty array — well-formed, just empty. Must proceed.
+//  3. the key holds an explicit JSON null — carries no entries. Must proceed.
+//  4. the key holds a value that does not decode — the defect. Must REFUSE,
+//     because the unconditional assign would overwrite that value with a
+//     one-element slice and report success. Observed live: an item whose
+//     implementation_notes was a JSON-ENCODED STRING lost its stored note to a
+//     single `pad item note` call, with no warning on any surface.
+//
+// So this checks decodability directly against the raw value instead of reusing
+// Extract*'s nil, which cannot distinguish (4) from (1), (2) or (3).
+//
+// T must be the entry type the MATCHING Extract* decodes into. A wrong-but-
+// compiling instantiation is silently destructive rather than merely wrong:
+// encoding/json ignores unknown fields, so ItemImplementationNote ACCEPTS
+// `{"decision":{...}}` while ExtractItemDecisionLog rejects it — the guard would
+// permit an append that the extractor then reads as empty, which is the exact
+// divergence this function exists to prevent. Both directions are pinned by
+// tests; see TestAppendDecisionLogRefusesEntriesOnlyItsOwnTypeRejects.
+func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string) error {
+	raw, ok := fieldsMap[key]
+	if !ok {
+		return nil // case 1 — absent, nothing to lose.
+	}
+	if raw == nil {
+		return nil // an explicit JSON null carries no entries either.
+	}
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("%w: %q could not be re-encoded for inspection: %w", ErrStructuredFieldUnreadable, key, err)
+	}
+
+	var entries []T
+	if err := json.Unmarshal(payload, &entries); err != nil {
+		// Deliberately does NOT name a repair command. The remedy has to be
+		// one that works in THIS state, and every append path is exactly what
+		// is being refused here; `pad item show --format json` is read-only
+		// and does surface the raw value, so it is the one action safe to
+		// suggest.
+		return fmt.Errorf(
+			"%w: %q holds a value that is not a list of entries, so appending would overwrite and destroy it; "+
+				"inspect the stored value with `pad item show <ref> --format json` and repair it before appending (BUG-2627)",
+			ErrStructuredFieldUnreadable, key)
+	}
+	return nil
+}
+
 func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
+		return "", err
+	}
+	if err := assertStructuredFieldAppendable[ItemImplementationNote](fieldsMap, ItemFieldImplementationNotes); err != nil {
 		return "", err
 	}
 
@@ -463,6 +528,9 @@ func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (s
 func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
+		return "", err
+	}
+	if err := assertStructuredFieldAppendable[ItemDecisionLogEntry](fieldsMap, ItemFieldDecisionLog); err != nil {
 		return "", err
 	}
 
