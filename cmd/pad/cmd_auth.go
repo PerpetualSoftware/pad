@@ -353,14 +353,22 @@ func loginCmd() *cobra.Command {
 			// Check if already logged in with valid session for THIS
 			// server. Per-server lookup (TASK-1228) — saved credentials
 			// for other servers don't short-circuit this login.
-			store, _ := cli.LoadStore()
-			creds := store.Get(cfg.BaseURL())
-			if creds != nil && creds.Token != "" {
-				client.SetAuthToken(creds.Token)
-				user, err := client.GetCurrentUser()
-				if err == nil && user != nil {
-					fmt.Printf("Already logged in as %s (%s)\n", user.Name, user.Email)
-					return nil
+			//
+			// Skipped under PAD_TOKEN (#879): the shortcut reads the
+			// STORE, and printing "Already logged in as <stored user>"
+			// right after the override notice would contradict it —
+			// API calls run as the env token's user regardless. login
+			// manages stored credentials, so proceed to the real flow.
+			if cli.EnvToken() == "" {
+				store, _ := cli.LoadStore()
+				creds := store.Get(cfg.BaseURL())
+				if creds != nil && creds.Token != "" {
+					client.SetAuthToken(creds.Token)
+					user, err := client.GetCurrentUser()
+					if err == nil && user != nil {
+						fmt.Printf("Already logged in as %s (%s)\n", user.Name, user.Email)
+						return nil
+					}
 				}
 			}
 

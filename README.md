@@ -513,7 +513,7 @@ Set `PAD_TOKEN` to a Pad API token (minted under **Settings → API tokens** in 
 PAD_TOKEN=pad_xxxxxxxx pad item list
 ```
 
-`PAD_TOKEN` takes precedence over credentials saved by `pad auth login` — the same convention as `gh`'s `GH_TOKEN`. This is useful for CI, scripts, and machines where several AI agents share one CLI install but should act as different Pad users: give each agent its own token in its process environment, and the credential store is never touched. `pad auth whoami` reports the token's identity (with an `Auth: PAD_TOKEN environment override` line), and `pad auth login`/`logout` warn when the override is active — they manage the stored credentials, which the override bypasses.
+`PAD_TOKEN` takes precedence over credentials saved by `pad auth login` — the same convention as `gh`'s `GH_TOKEN`. This is useful for CI, scripts, and machines where several AI agents share one CLI install but should act as different Pad users: give each agent its own token in its process environment, and the credential store is never touched. `pad auth whoami` reports the token's identity (with an `Auth: PAD_TOKEN environment override` line), and `pad auth login`/`logout` warn when the override is active — they manage the stored credentials, which the override bypasses. Deliberately, `pad auth logout` never invalidates the `PAD_TOKEN` session itself: it signs out the *stored* session only, and the env token's lifecycle belongs to wherever it was minted (revoke it under **Settings → API tokens**).
 
 ```bash
 pad workspace members               # List workspace members

@@ -258,6 +258,17 @@ Examples:
 
 			// ── Step 4: Authentication ────────────────────────────────
 			if !session.Authenticated && !session.SetupRequired {
+				// PAD_TOKEN overrides stored credentials (#879). The client
+				// above already carried the env token into CheckSession, so
+				// landing here means the server REJECTED it. Falling back to
+				// stored credentials would silently run init as a different
+				// user — and the final status line would still claim the
+				// override was active. Fail with the distinct message
+				// instead, mirroring whoami's treatment.
+				if cli.EnvToken() != "" {
+					return fmt.Errorf("PAD_TOKEN is set but the server rejected it — fix or unset PAD_TOKEN, then re-run 'pad init'")
+				}
+
 				// Check if we have saved credentials for THIS server that
 				// still work. Per-server lookup (TASK-1228) — credentials
 				// for other servers are silently ignored here.

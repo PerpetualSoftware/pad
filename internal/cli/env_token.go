@@ -21,6 +21,13 @@ import (
 // Accepts either token type the server takes (padsess_ session or
 // pad_ API token); API tokens are the intended fit (mint under
 // Settings → API tokens in the web UI).
+//
+// Lifecycle asymmetry, deliberate: `pad auth logout` never invalidates
+// the env token's own server-side session — it pins its Logout() call
+// to the STORED token and only deletes the stored entry. The env
+// token's lifecycle belongs to whoever minted it (revoke it where it
+// was minted), exactly gh's GH_TOKEN posture. This is the read-only
+// contract applied to logout, not an oversight.
 func EnvToken() string {
 	return strings.TrimSpace(os.Getenv("PAD_TOKEN"))
 }
