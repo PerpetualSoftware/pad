@@ -1915,7 +1915,28 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// metadata still describes something true (BUG-2674).
 	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields, items.SameWorkspace)
 
-	// Apply overrides
+	// Apply overrides.
+	//
+	// Reserved keys are REFUSED rather than merged (Codex round 4). This path
+	// has no declared-key gate at all — unlike the copy, which runs
+	// UndeclaredOverrideKeys — so without this an override could write
+	// arbitrary junk straight into implementation_notes or decision_log,
+	// bypassing both the schema (which does not declare them) and the
+	// migrated-output validation (which strips them). On the copy the same
+	// hole additionally defeats the scope rule: an override could reintroduce
+	// a github_pr that MigrateFields had just dropped for leaving its
+	// workspace.
+	//
+	// Refusing is the honest answer, not silently dropping the key: a caller
+	// that asked for a value and got an item without it has no way to tell.
+	// System metadata is written through its own endpoints — `pad item note`,
+	// `pad item decide`, `pad github link` — which is where the append guard
+	// from BUG-2627 lives.
+	if bad := items.ReservedOverrideKeys(input.FieldOverrides); len(bad) > 0 {
+		writeError(w, http.StatusBadRequest, "malformed_override",
+			fmt.Sprintf("Field(s) reserved for system metadata and not settable here: %s", strings.Join(bad, ", ")))
+		return
+	}
 	for k, v := range input.FieldOverrides {
 		result.Fields[k] = v
 	}

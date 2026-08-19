@@ -45,3 +45,33 @@ func UndeclaredOverrideKeys(overrides map[string]any, targetFields []models.Fiel
 	sort.Strings(bad)
 	return bad
 }
+
+// ReservedOverrideKeys returns the override keys naming system metadata, sorted.
+//
+// Reserved keys are never settable through a field-override map, on any path.
+// They are written by Pad's own endpoints — implementation notes and decision
+// log entries through their append helpers (which carry BUG-2627's
+// refuse-rather-than-destroy guard), github_pr through the GitHub link flow —
+// and an override reaching them bypasses every one of those checks.
+//
+// On the copy it is worse than a validation hole: MigrateFields drops a
+// referential key like github_pr when the item leaves its workspace (BUG-2674),
+// and an override applied afterwards would put it straight back, defeating the
+// scope rule by the simplest possible route.
+//
+// Callers that already run UndeclaredOverrideKeys against a schema stripped by
+// SchemaForMigratedFields get this for free — a reserved key is undeclared
+// there by construction. This exists for the paths with no schema gate at all.
+func ReservedOverrideKeys(overrides map[string]any) []string {
+	if len(overrides) == 0 {
+		return nil
+	}
+	var bad []string
+	for k := range overrides {
+		if models.IsReservedItemField(k) {
+			bad = append(bad, k)
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}

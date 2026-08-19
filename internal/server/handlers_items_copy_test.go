@@ -1756,3 +1756,88 @@ func TestCopyEndpoint_ReferentialMetadataTravelsOnlyWithinItsWorkspace(t *testin
 		}
 	})
 }
+
+// The scope rule is only as strong as its weakest door (Codex round 4). A
+// cross-workspace copy drops github_pr — and an override naming that key would
+// have put it straight back, because the override merge ran AFTER migration and
+// the migrated-output validation strips reserved declarations rather than
+// enforcing them.
+//
+// Refused, not silently dropped: a caller who asked for a value and got an item
+// without it has no way to tell.
+func TestCopyEndpoint_OverrideCannotReintroduceReferentialMetadata(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+
+	body := f.resolvableBody()
+	body["field_overrides"] = map[string]any{
+		"ticket":    "T-1",
+		"code":      "123",
+		"github_pr": map[string]any{"number": 99, "url": "https://example.invalid/99"},
+	}
+
+	rr := f.callCopy(f.owner, reqOpts{}, body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if code := errCode(t, rr); code != "malformed_override" {
+		t.Errorf("code = %q, want malformed_override", code)
+	}
+
+	// The negative half: nothing may have been created. "Refused" and
+	// "created it anyway, with the PR link" both produce a non-201 if only
+	// the status is checked.
+	created, err := f.srv.store.ListItems(f.wsB.ID, models.ItemListParams{CollectionIDs: []string{f.collB.ID}})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("a refused copy must create nothing; destination has %d item(s)", len(created))
+	}
+}
+
+// The GRANDFATHERED case, which the test above does NOT cover and which is the
+// one the stripped-schema gate exists for.
+//
+// A destination whose schema does not declare github_pr refuses the override
+// either way — UndeclaredOverrideKeys rejects it as undeclared, stripped schema
+// or not. So that test passes with the stripping removed, as a mutation run
+// confirmed. Only a schema that DECLARES a reserved key distinguishes the two:
+// unstripped, the key is "declared" and the override sails through to
+// reintroduce a github_pr the copy just dropped for leaving its workspace.
+//
+// The collection is created through the store, deliberately bypassing the
+// handler gate that now refuses such schemas — that gate grandfathers what
+// already exists, so this is the shape still out there in real workspaces.
+func TestCopyEndpoint_GrandfatheredReservedDeclarationDoesNotUnlockOverrides(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+
+	legacy := mustSchemaCollection(t, f.srv, f.wsB.ID, "Legacy B", `{"fields":[
+		{"key":"status","type":"select","options":["open"],"default":"open"},
+		{"key":"github_pr","type":"text"}
+	]}`)
+
+	body := map[string]any{
+		"target_workspace":  f.wsB.Slug,
+		"target_collection": legacy.Slug,
+		"field_overrides": map[string]any{
+			"github_pr": "https://example.invalid/99",
+		},
+	}
+
+	rr := f.callCopy(f.owner, reqOpts{}, body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("a schema declaring a reserved key must not make it settable; got %d: %s",
+			rr.Code, rr.Body.String())
+	}
+	if code := errCode(t, rr); code != "malformed_override" {
+		t.Errorf("code = %q, want malformed_override", code)
+	}
+
+	created, err := f.srv.store.ListItems(f.wsB.ID, models.ItemListParams{CollectionIDs: []string{legacy.ID}})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("a refused copy must create nothing; destination has %d item(s)", len(created))
+	}
+}

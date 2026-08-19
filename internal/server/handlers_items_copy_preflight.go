@@ -569,7 +569,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// calls. It moved into internal/items in TASK-2365 because two
 	// implementations of "which keys are undeclared" is precisely the DR-6
 	// divergence this pair of endpoints exists to prevent (Codex round 17).
-	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, targetSchema.Fields); len(bad) > 0 {
+	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "malformed_override",
 			"Destination collection has no field(s): "+summarizeKeys(bad))
 		return
@@ -702,7 +702,14 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 
 	// carried / needs_value, walked in destination-schema order so the
 	// response is stable across identical calls.
-	for _, def := range targetSchema.Fields {
+	//
+	// The STRIPPED schema, so a grandfathered reserved declaration is not
+	// walked here and then appended again by the reserved pass below —
+	// emitting the same key twice in one `carried` array (Codex round 4). The
+	// existing preflight/copy parity helper collapses carried entries into a
+	// map, so it could not see the duplicate: a check that de-duplicates
+	// before comparing cannot detect duplication.
+	for _, def := range items.SchemaForMigratedFields(targetSchema).Fields {
 		if iss, bad := issueByKey[def.Key]; bad {
 			reason := "invalid_value"
 			if iss.Kind == items.IssueRequired {

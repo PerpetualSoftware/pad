@@ -336,6 +336,27 @@ func TestStillDropped(t *testing.T) {
 			want:    []string{"count"},
 		},
 		{
+			// Falsy but PRESENT values are restorations. A truthiness-based
+			// filter drops these back into the report, telling the user their
+			// `false` / `0` / `""` was discarded when it is on the item.
+			name:    "false is a restored value, not an absent one",
+			dropped: []string{"archived"},
+			final:   map[string]any{"archived": false},
+			want:    nil,
+		},
+		{
+			name:    "zero is a restored value",
+			dropped: []string{"count"},
+			final:   map[string]any{"count": float64(0)},
+			want:    nil,
+		},
+		{
+			name:    "empty string is a restored value",
+			dropped: []string{"note"},
+			final:   map[string]any{"note": ""},
+			want:    nil,
+		},
+		{
 			name:    "output is sorted and de-duplicated",
 			dropped: []string{"zeta", "alpha", "zeta"},
 			final:   map[string]any{},
@@ -410,6 +431,22 @@ func TestSchemaForMigratedFields(t *testing.T) {
 		}
 	})
 
+	t.Run("strips every reserved key, not just implementation_notes", func(t *testing.T) {
+		// A mutant that special-cases one key passes a single-key fixture.
+		// Driven off the canonical set so a key added later is covered here
+		// without an edit.
+		fields := []models.FieldDef{{Key: "status", Type: "select", Options: []string{"open"}}}
+		for _, k := range models.ReservedItemFieldKeys() {
+			fields = append(fields, models.FieldDef{Key: k, Type: "text"})
+		}
+
+		out := SchemaForMigratedFields(models.CollectionSchema{Fields: fields})
+
+		if len(out.Fields) != 1 || out.Fields[0].Key != "status" {
+			t.Fatalf("every reserved key must be stripped, got %#v", out.Fields)
+		}
+	})
+
 	t.Run("a schema with no reserved key is returned unchanged", func(t *testing.T) {
 		schema := models.CollectionSchema{Fields: []models.FieldDef{
 			{Key: "status", Type: "select", Options: []string{"open"}},
@@ -419,4 +456,42 @@ func TestSchemaForMigratedFields(t *testing.T) {
 			t.Errorf("got %#v, want the input unchanged", out)
 		}
 	})
+}
+
+// A GRANDFATHERED schema can still declare a reserved key. Such a FieldDef must
+// not reach the defaults/required pass: a Default would be injected into system
+// metadata as though a user had authored it, and Required would raise a
+// migration ERROR for a key the user has no way to supply.
+//
+// That error is the reachable half. Bulk move rejects on result.Errors BEFORE
+// it reaches the stripped-schema validation, so a legacy target requiring
+// implementation_notes failed bulk move while single move and copy succeeded —
+// the same key on the same item getting two answers depending on which button
+// was pressed (Codex round 4).
+func TestMigrateFields_GrandfatheredReservedDeclarationIsInert(t *testing.T) {
+	source := []models.FieldDef{}
+	target := []models.FieldDef{
+		{Key: "status", Type: "select", Options: []string{"open"}, Required: true, Default: "open"},
+		{Key: "implementation_notes", Type: "text", Required: true, Default: "SHOULD NOT BE INJECTED"},
+		{Key: "github_pr", Type: "text", Required: true},
+	}
+
+	result := MigrateFields(map[string]any{}, source, target, SameWorkspace)
+
+	if len(result.Errors) != 0 {
+		t.Errorf("a reserved declaration must not produce a required-field error — "+
+			"the user cannot supply it and bulk move rejects on this list: %#v", result.Errors)
+	}
+	for _, key := range []string{"implementation_notes", "github_pr"} {
+		if v, ok := result.Fields[key]; ok {
+			t.Errorf("%s must not receive a schema default (%#v) — system metadata is not "+
+				"authored through a FieldDef", key, v)
+		}
+	}
+	// Control: the ordinary field's default still applies. Without this, a
+	// mutant that skipped the whole defaults pass would pass the assertions
+	// above.
+	if result.Fields["status"] != "open" {
+		t.Errorf("ordinary defaults must still apply, got %#v", result.Fields["status"])
+	}
 }

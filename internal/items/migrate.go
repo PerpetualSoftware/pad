@@ -129,6 +129,18 @@ func MigrateFields(
 
 	// Apply defaults for target fields not yet present
 	for _, f := range targetSchema {
+		// A GRANDFATHERED schema can still declare a reserved key (the gate
+		// added in BUG-2674 refuses new ones but keeps existing collections
+		// working). Such a FieldDef must not reach this loop: a Default would
+		// be injected into system metadata as though a user had authored it,
+		// and Required would produce a migration ERROR for a key the user
+		// cannot supply — which bulk move rejects on before it ever reaches
+		// the stripped-schema validation, so a legacy target requiring
+		// implementation_notes failed bulk move while single move and copy
+		// succeeded. Same key, same item, two answers (Codex round 4).
+		if models.IsReservedItemField(f.Key) {
+			continue
+		}
 		if _, exists := result.Fields[f.Key]; exists {
 			continue
 		}
@@ -246,7 +258,12 @@ func StillDropped(dropped []string, finalFields map[string]any) []string {
 // was once allowed to pick.
 //
 // Returns schema unchanged (no copy) when it declares no reserved key, which is
-// every collection that has not been grandfathered.
+// every collection that has not been grandfathered — so the returned Fields
+// slice may ALIAS the caller's. That is deliberate: this is called on a hot
+// path for schemas that will never need stripping, and copying every one to
+// serve a case that does not exist would be waste. The contract is therefore
+// read-only — treat the result as immutable. Every current caller passes it
+// straight to a validator or an enumeration and none mutates it.
 func SchemaForMigratedFields(schema models.CollectionSchema) models.CollectionSchema {
 	var reserved bool
 	for _, f := range schema.Fields {

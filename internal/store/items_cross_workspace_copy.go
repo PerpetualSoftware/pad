@@ -1025,7 +1025,7 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 	// Refused BEFORE the source item's fields are even parsed, so the
 	// rejection cannot depend on the source's contents — same ordering the
 	// preflight uses for the same reason.
-	if bad := items.UndeclaredOverrideKeys(overrides, targetSchema.Fields); len(bad) > 0 {
+	if bad := items.UndeclaredOverrideKeys(overrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
 		return nil, nil, &UndeclaredOverrideError{Keys: bad}
 	}
 
