@@ -263,13 +263,16 @@ func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*
 //     that old build never had the archived-claims protection a retry could
 //     defeat, so the retry is non-regressive there.
 //   - Probe is INDETERMINATE (a transport error, timeout, or 5xx) → true, and
-//     the result is NOT cached. Failing CLOSED here is the fix for the cache
-//     trap: a single transient blip must not permanently re-enable the retry
-//     and let a write bypass the archived/hidden protection on a resolving
-//     server. The only case this could "cost" is an old server whose
-//     capabilities probe transiently errors instead of returning a clean 404 —
-//     but a missing route returns 404, not a transient error, so a genuine old
-//     build still gets its retry.
+//     the result is NOT cached. Failing CLOSED here is a DELIBERATE asymmetry:
+//     the cost of failing closed on a blip is at worst one alias-shorthand
+//     failure the user can simply re-run, whereas failing OPEN (retrying) risks
+//     a wrong-write that bypasses the archived/hidden protection and cannot be
+//     un-done. A recoverable UX miss is always the safer side of that trade.
+//     Not caching matters for the same reason: a single transient blip must not
+//     permanently re-enable the retry for the rest of the session. The only
+//     case this could "cost" is an old server whose capabilities probe
+//     transiently errors instead of returning a clean 404 — but a missing route
+//     returns 404, not a transient error, so a genuine old build still retries.
 //
 // The definitive verdict is cached (static for the server's lifetime); an
 // indeterminate probe is re-tried on the next call.
