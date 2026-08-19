@@ -64,8 +64,13 @@ func NewClientFromURL(baseURL string) *Client {
 	// the lookup matches what login/save commands key on. Credentials
 	// for other servers are left untouched in the store — see TASK-1228
 	// / IDEA-1226 for the per-server design.
+	//
+	// The active named profile is resolved per invocation (#879 layer 2):
+	// --profile > PAD_PROFILE > "default". PAD_TOKEN (layer 1, #1160)
+	// is a separate override and will sit above this lookup when it
+	// lands — do not reimplement it here.
 	if store, err := LoadStore(); err == nil {
-		if creds := store.Get(baseURL); creds != nil {
+		if creds := store.GetProfile(baseURL, ResolveProfile()); creds != nil {
 			c.authToken = creds.Token
 		}
 	}

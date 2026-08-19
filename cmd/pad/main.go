@@ -20,6 +20,7 @@ var (
 	workspaceFlag string
 	formatFlag    string
 	urlFlag       string
+	profileFlag   string
 )
 
 // truthyEnv reports whether an environment-variable value means "on".
@@ -104,6 +105,11 @@ func newRootCmd() *cobra.Command {
 		// --format, which shadows this persistent flag, so `pad help … --format md`
 		// leaves formatFlag at its "table" default and still passes.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// Stateless profile selection (#879 layer 2): --profile wins
+			// over PAD_PROFILE over "default". Always push the flag value
+			// (including "") so a leftover override from a previous
+			// Execute in the same process cannot leak.
+			cli.SetProfileOverride(profileFlag)
 			switch formatFlag {
 			case "table", "json", "markdown":
 				return nil
@@ -126,6 +132,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace slug override")
 	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format: table, json, markdown")
 	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://app.getpad.dev)")
+	rootCmd.PersistentFlags().StringVar(&profileFlag, "profile", "", "named credential profile (overrides PAD_PROFILE; default: default)")
 
 	rootCmd.AddCommand(
 		padInitCmd(),

@@ -129,7 +129,7 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load credentials: %w", err)
 	}
-	creds := store.Get(cfg.BaseURL())
+	creds := store.GetProfile(cfg.BaseURL(), cli.ResolveProfile())
 	if creds != nil {
 		report.Auth.CredentialsPresent = true
 		report.Auth.CredentialsServerURL = creds.ServerURL

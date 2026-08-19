@@ -172,7 +172,7 @@ func TestLoadStore_V1MigrationDurableOnSave(t *testing.T) {
 	if roundTrip.Version != credentialsVersion {
 		t.Errorf("post-save version = %d, want %d", roundTrip.Version, credentialsVersion)
 	}
-	if got := roundTrip.Credentials["http://127.0.0.1:7777"]; got == nil {
+	if got := roundTrip.Get("http://127.0.0.1:7777"); got == nil {
 		t.Fatalf("post-save missing entry for original server URL; body: %s", body)
 	} else if got.Token != "padsess_v1token" {
 		t.Errorf("post-save token = %q, want padsess_v1token", got.Token)
@@ -182,8 +182,8 @@ func TestLoadStore_V1MigrationDurableOnSave(t *testing.T) {
 	if strings.Contains(body, `"token": "padsess_v1token"`) && !strings.Contains(body, `"credentials"`) {
 		t.Errorf("v2 file unexpectedly retained legacy top-level token: %s", body)
 	}
-	if !strings.Contains(body, `"version": 2`) {
-		t.Errorf("v2 file missing version marker: %s", body)
+	if !strings.Contains(body, `"version": 3`) {
+		t.Errorf("v3 file missing version marker: %s", body)
 	}
 }
 

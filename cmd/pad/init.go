@@ -262,7 +262,7 @@ Examples:
 				// still work. Per-server lookup (TASK-1228) — credentials
 				// for other servers are silently ignored here.
 				store, _ := cli.LoadStore()
-				creds := store.Get(cfg.BaseURL())
+				creds := store.GetProfile(cfg.BaseURL(), cli.ResolveProfile())
 				if creds != nil && creds.Token != "" {
 					client.SetAuthToken(creds.Token)
 					user, err := client.GetCurrentUser()
@@ -613,7 +613,7 @@ func printInitStatus(client *cli.Client, cfg *config.Config, ws *models.Workspac
 
 	// Auth — entry for the configured server only
 	store, _ := cli.LoadStore()
-	creds := store.Get(cfg.BaseURL())
+	creds := store.GetProfile(cfg.BaseURL(), cli.ResolveProfile())
 	if creds != nil && creds.Email != "" {
 		green.Print("  ✓ Logged in  ")
 		fmt.Println(creds.Email)

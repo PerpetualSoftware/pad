@@ -351,7 +351,7 @@ func loginCmd() *cobra.Command {
 			// server. Per-server lookup (TASK-1228) — saved credentials
 			// for other servers don't short-circuit this login.
 			store, _ := cli.LoadStore()
-			creds := store.Get(cfg.BaseURL())
+			creds := store.GetProfile(cfg.BaseURL(), cli.ResolveProfile())
 			if creds != nil && creds.Token != "" {
 				client.SetAuthToken(creds.Token)
 				user, err := client.GetCurrentUser()
@@ -526,7 +526,7 @@ func pollAndSaveCLIAuth(ctx context.Context, client *cli.Client, cfg *config.Con
 				if err != nil {
 					return fmt.Errorf("load credentials: %w", err)
 				}
-				store.Set(cfg.BaseURL(), &cli.Credentials{
+				store.SetProfile(cfg.BaseURL(), cli.ResolveProfile(), &cli.Credentials{
 					Token:  status.Token,
 					UserID: status.User.ID,
 					Email:  status.User.Email,
@@ -743,7 +743,7 @@ func saveCredentials(cfg *config.Config, resp *cli.LoginResponse) error {
 	if err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
-	store.Set(cfg.BaseURL(), &cli.Credentials{
+	store.SetProfile(cfg.BaseURL(), cli.ResolveProfile(), &cli.Credentials{
 		Token:  resp.Token,
 		UserID: resp.User.ID,
 		Email:  resp.User.Email,
@@ -824,7 +824,7 @@ func logoutCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load credentials: %w", err)
 			}
-			store.Delete(cfg.BaseURL())
+			store.DeleteProfile(cfg.BaseURL(), cli.ResolveProfile())
 			if err := store.Save(); err != nil {
 				return fmt.Errorf("save credentials: %w", err)
 			}
@@ -849,7 +849,8 @@ func whoamiCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load credentials: %w", err)
 			}
-			creds := store.Get(cfg.BaseURL())
+			profile := cli.ResolveProfile()
+			creds := store.GetProfile(cfg.BaseURL(), profile)
 			if creds == nil || creds.Token == "" {
 				fmt.Println("Not logged in. Run 'pad auth login'.")
 				return nil
@@ -873,6 +874,9 @@ func whoamiCmd() *cobra.Command {
 				fmt.Printf("Name:  %s\n", user.Name)
 				fmt.Printf("Email: %s\n", user.Email)
 				fmt.Printf("Role:  %s\n", user.Role)
+				if profile != "default" {
+					fmt.Printf("Profile: %s\n", profile)
+				}
 			}
 			return nil
 		},
