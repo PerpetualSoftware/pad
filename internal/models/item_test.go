@@ -243,12 +243,29 @@ func TestAppendRefusesWhenStructuredFieldIsUnreadable(t *testing.T) {
 		}
 	})
 
-	t.Run("object instead of list", func(t *testing.T) {
-		_, err := AppendImplementationNote(`{"implementation_notes":{"summary":"not a list"}}`, ItemImplementationNote{ID: "note-new"})
-		if !errors.Is(err, ErrStructuredFieldUnreadable) {
-			t.Fatalf("expected ErrStructuredFieldUnreadable, got %v", err)
-		}
-	})
+	// Shapes other than the double-encoded string that must also refuse. Each
+	// asserts the empty fields return too, not just the error — the refusal is
+	// only useful if the caller is left with nothing to write.
+	for _, tc := range []struct {
+		name   string
+		fields string
+	}{
+		{"object instead of list", `{"implementation_notes":{"summary":"not a list"}}`},
+		{"list of wrong element type", `{"implementation_notes":[1,2,3]}`},
+		{"list of strings", `{"implementation_notes":["a note"]}`},
+		{"bare number", `{"implementation_notes":42}`},
+		{"known key holding an incompatible nested value", `{"implementation_notes":[{"summary":{"nested":"object"}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields, err := AppendImplementationNote(tc.fields, ItemImplementationNote{ID: "note-new"})
+			if !errors.Is(err, ErrStructuredFieldUnreadable) {
+				t.Fatalf("expected ErrStructuredFieldUnreadable, got %v", err)
+			}
+			if fields != "" {
+				t.Fatalf("refused append must return no fields to write, got %q", fields)
+			}
+		})
+	}
 
 	// The message is the only thing a human sees at the moment of refusal, and
 	// PATTE-135 requires its suggested remedy to work in THIS state. It names a
@@ -299,6 +316,68 @@ func TestAppendProceedsWhenStructuredFieldIsAbsentEmptyOrValid(t *testing.T) {
 				t.Fatalf("new note should be appended last, got %#v", got)
 			}
 		})
+	}
+}
+
+// decision_log gets its own control legs rather than riding on the notes ones.
+// The two helpers carry independent guard calls, so coverage on one says
+// nothing about the other — a guard omitted from AppendDecisionLogEntry, or
+// pointed at the wrong field key, would pass every implementation_notes test.
+func TestAppendDecisionLogProceedsWhenFieldIsAbsentEmptyOrValid(t *testing.T) {
+	cases := []struct {
+		name        string
+		fields      string
+		wantEntries int
+	}{
+		{"absent key", `{"status":"open"}`, 1},
+		{"empty list", `{"decision_log":[]}`, 1},
+		{"explicit null", `{"decision_log":null}`, 1},
+		{"existing entry is preserved", `{"decision_log":[{"id":"decision-1","decision":"stored"}]}`, 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fields, err := AppendDecisionLogEntry(tc.fields, ItemDecisionLogEntry{ID: "decision-new", Decision: "new"})
+			if err != nil {
+				t.Fatalf("append must proceed, got %v", err)
+			}
+			got := ExtractItemDecisionLog(fields)
+			if len(got) != tc.wantEntries {
+				t.Fatalf("expected %d entr(y|ies), got %#v", tc.wantEntries, got)
+			}
+			// Ordering, not just count: a helper that PREPENDED would satisfy
+			// the length assertion on every leg above.
+			if got[len(got)-1].ID != "decision-new" {
+				t.Fatalf("new entry should be appended last, got %#v", got)
+			}
+		})
+	}
+}
+
+// A successful append must not disturb the item's other reserved metadata.
+// github_pr lives in the same fields blob and is rebuilt from the same map, so
+// a helper that assigned a fresh map instead of mutating the parsed one would
+// drop it while every notes assertion stayed green.
+func TestAppendPreservesSiblingReservedFields(t *testing.T) {
+	const withPR = `{"github_pr":{"number":42,"url":"https://github.com/PerpetualSoftware/pad/pull/42","state":"OPEN"},"status":"open"}`
+
+	fields, err := AppendImplementationNote(withPR, ItemImplementationNote{ID: "note-new", Summary: "new"})
+	if err != nil {
+		t.Fatalf("AppendImplementationNote error: %v", err)
+	}
+	if ctx := ExtractItemCodeContext(fields); ctx == nil {
+		t.Fatalf("github_pr must survive an implementation-note append, got %q", fields)
+	}
+
+	fields, err = AppendDecisionLogEntry(fields, ItemDecisionLogEntry{ID: "decision-new", Decision: "new"})
+	if err != nil {
+		t.Fatalf("AppendDecisionLogEntry error: %v", err)
+	}
+	if ctx := ExtractItemCodeContext(fields); ctx == nil {
+		t.Fatalf("github_pr must survive a decision-log append, got %q", fields)
+	}
+	if got := ExtractItemImplementationNotes(fields); len(got) != 1 {
+		t.Fatalf("notes must survive a decision-log append, got %#v", got)
 	}
 }
 
