@@ -44,6 +44,26 @@ func MigrateFields(
 
 	// Migrate each current field value
 	for key, value := range currentFields {
+		// Reserved keys are system-written metadata that no collection
+		// schema declares (BUG-2674). Schema-matching them means they are
+		// absent from every targetDefs and are dropped on every move —
+		// which destroyed well-formed implementation notes, decision logs
+		// and linked-PR metadata outright, silently, on a routine
+		// operation. They carry through untouched instead.
+		//
+		// PLAN-2357 DR-17 already settled the principle for the analogous
+		// case: tags carry because "there is no workspace-scoped foreign
+		// key to break, so dropping them would lose information for no
+		// safety reason". These are the same shape — inert JSON on the
+		// row, nothing that could dangle in a destination collection or
+		// workspace — and the plan's carry list simply never considered
+		// them. There is no migration to attempt: they have no source or
+		// target FieldDef to migrate BETWEEN.
+		if models.IsReservedItemField(key) {
+			result.Fields[key] = value
+			continue
+		}
+
 		targetField, exists := targetDefs[key]
 		if !exists {
 			result.Dropped = append(result.Dropped, key)

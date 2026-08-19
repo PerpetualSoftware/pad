@@ -15,6 +15,39 @@ const (
 	ItemFieldConvention          = "convention"
 )
 
+// reservedItemFieldKeys is the canonical set of field keys Pad itself writes
+// into an item's fields blob. They are deliberately NOT declared by any
+// collection schema — each is rendered from its own dedicated surface rather
+// than as a generic field — which means every code path that reasons about
+// fields by consulting a schema is, by construction, blind to them.
+//
+// That blindness is not hypothetical: it is the shared root of BUG-2627 (the
+// CLI types a --field value by schema lookup, so these keys fall through to a
+// raw string and become unreadable) and BUG-2674 (MigrateFields drops any key
+// absent from the target schema, so a move destroyed them outright). Both were
+// code paths that did not know these keys are special.
+//
+// The set lives here, once, so a caller can ASK instead of re-listing. Before
+// this existed there were four constants and a single inline || chain in a CLI
+// display path — a shape where the next reserved field added lands in the
+// constants, gets wired into whichever surface prompted it, and silently misses
+// every other. If you add a key here, that is the point: the callers below
+// inherit it without edits.
+var reservedItemFieldKeys = map[string]struct{}{
+	ItemFieldGitHubPR:            {},
+	ItemFieldImplementationNotes: {},
+	ItemFieldDecisionLog:         {},
+	ItemFieldConvention:          {},
+}
+
+// IsReservedItemField reports whether key is system-written metadata rather than
+// a user-facing schema field. Callers that filter, migrate, or render an item's
+// fields map should consult this rather than enumerating the constants.
+func IsReservedItemField(key string) bool {
+	_, ok := reservedItemFieldKeys[key]
+	return ok
+}
+
 type Item struct {
 	ID             string     `json:"id"`
 	WorkspaceID    string     `json:"workspace_id"`

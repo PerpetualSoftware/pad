@@ -732,7 +732,7 @@ func showCmd() *cobra.Command {
 				var fields map[string]interface{}
 				if err := json.Unmarshal([]byte(item.Fields), &fields); err == nil {
 					for k, v := range fields {
-						if k == models.ItemFieldGitHubPR || k == models.ItemFieldImplementationNotes || k == models.ItemFieldDecisionLog || k == models.ItemFieldConvention {
+						if models.IsReservedItemField(k) {
 							continue // shown in dedicated section below
 						}
 						if item.Convention != nil && (k == "category" || k == "trigger" || k == "scope" || k == "priority" || k == "enforcement" || k == "surfaces" || k == "commands") {

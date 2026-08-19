@@ -2036,8 +2036,26 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// item_collection_moves inside the move tx, not derived from this
 	// best-effort row.
 	actor, source := actorFromRequest(r)
-	moveMeta := auditMeta(map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug})
-	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
+	moveAudit := map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug}
+	// A move that discards field values says so (BUG-2674). MigrateFields
+	// has always reported them in result.Dropped and this handler has
+	// always thrown that away, so the only record of a field disappearing
+	// was the field being gone. Reserved keys no longer appear here at all
+	// (they carry), which leaves this list meaning what it says: values the
+	// TARGET SCHEMA has no home for.
+	//
+	// It rides the audit metadata rather than the response body because
+	// the response is the bare item — a wrapper would break every existing
+	// consumer — and because the activity timeline is where someone asking
+	// "what happened to my item" actually looks. Joined into one string:
+	// this map is map[string]string, and a raw array here renders as a Go
+	// map literal in the timeline (BUG-2628).
+	if len(result.Dropped) > 0 {
+		dropped := append([]string(nil), result.Dropped...)
+		sort.Strings(dropped)
+		moveAudit["dropped_fields"] = strings.Join(dropped, ", ")
+	}
+	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, auditMeta(moveAudit))
 
 	// Publish events for both old and new collections
 	actorNameForMove := actorNameFromRequest(r)
