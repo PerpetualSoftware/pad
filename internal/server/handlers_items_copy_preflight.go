@@ -611,7 +611,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// changed (BUG-2674). Same computation in the mutating copy, or the two
 	// disagree — the divergence DR-6 exists to prevent.
 	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields,
-		migrateScopeFor(item.WorkspaceID, dst.WorkspaceID()))
+		items.ScopeFor(item.WorkspaceID, dst.WorkspaceID()))
 
 	final := make(map[string]any, len(migrated.Fields)+len(input.FieldOverrides))
 	origin := make(map[string]string, len(final))
@@ -764,7 +764,13 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// dropped — schema fields first, in SOURCE-schema order (MigrateFields
 	// ranges a map, so its Dropped slice arrives in nondeterministic
 	// order and must be re-sorted or repeated calls would differ).
-	for _, key := range sortedDroppedKeys(migrated.Dropped, sourceSchema.Fields) {
+	// Filtered against the FINAL map first (Codex round 2 P2-2): MigrateFields
+	// computes Dropped before overrides merge and before defaults are
+	// injected, so a key it lists may have been supplied since. Reporting a
+	// field as dropped in the same response that reports it CARRIED — which is
+	// what happened, the two buckets disagreeing about one key — is the
+	// preflight lying to the dialog it exists to populate.
+	for _, key := range sortedDroppedKeys(items.StillDropped(migrated.Dropped, final), sourceSchema.Fields) {
 		reason := "no_target_field"
 		label := key
 		// A reserved key in Dropped can only have got there one way: it is
@@ -1167,14 +1173,4 @@ func reservedFieldLabel(key string) string {
 		return "Convention metadata"
 	}
 	return key
-}
-
-// migrateScopeFor answers the one question items.MigrateScope asks: is the
-// item landing in a different workspace? Shared by the preflight and the
-// mutating copy so the preview cannot promise a carry the copy then drops.
-func migrateScopeFor(sourceWorkspaceID, targetWorkspaceID string) items.MigrateScope {
-	if sourceWorkspaceID == targetWorkspaceID {
-		return items.SameWorkspace
-	}
-	return items.CrossWorkspace
 }

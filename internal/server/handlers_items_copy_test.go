@@ -1696,3 +1696,63 @@ func TestCopyEndpoint_RouteIsWired(t *testing.T) {
 		t.Error("the copy returned the SOURCE item; nothing was created")
 	}
 }
+
+// BUG-2674 / Codex round 2 P2-3. The scope rule was proved at the MigrateFields
+// unit level and at the preflight, but nothing proved the MUTATING copy honours
+// it — so a call site passing the wrong scope, which is exactly the mistake the
+// required argument exists to prevent, would have shipped green.
+//
+// Both directions in one test, deliberately: the interesting property is the
+// DIFFERENCE between them, and either half alone is satisfiable by a constant.
+func TestCopyEndpoint_ReferentialMetadataTravelsOnlyWithinItsWorkspace(t *testing.T) {
+	const pr = `{"number":42,"url":"https://example.invalid/42","state":"OPEN","repo":"acme/source-repo"}`
+	const notes = `[{"id":"note-1","summary":"history is true anywhere"}]`
+
+	seed := func(f *copyPreflightFixture) {
+		t.Helper()
+		fields := `{"status":"open","priority":"low","impact":"large","count":7,"code":"abc",` +
+			`"github_pr":` + pr + `,"implementation_notes":` + notes + `}`
+		if _, err := f.srv.store.UpdateItem(f.source.ID, models.ItemUpdate{Fields: &fields}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	t.Run("cross-workspace copy leaves the PR link behind", func(t *testing.T) {
+		f := newCopyPreflightFixture(t)
+		seed(f)
+
+		res := f.copyOK(f.resolvableBody()) // baseBody targets wsB
+		got := f.persistedFields(res.Item.ID)
+
+		if _, ok := got[models.ItemFieldGitHubPR]; ok {
+			t.Errorf("github_pr must not follow an item into another workspace — "+
+				"it names the SOURCE project's repo and renders as a live link on the copy: %#v", got)
+		}
+		if _, ok := got[models.ItemFieldImplementationNotes]; !ok {
+			t.Errorf("implementation_notes describes the item, not its surroundings, and must travel: %#v", got)
+		}
+	})
+
+	t.Run("same-workspace copy keeps it", func(t *testing.T) {
+		f := newCopyPreflightFixture(t)
+		seed(f)
+
+		// Same workspace, copied into its OWN collection — the repo context
+		// around the item is unchanged, so the referent still describes
+		// something true. No field_overrides: resolvableBody's are keyed to
+		// the DESTINATION schema of the cross-workspace fixture (collB), and
+		// the copy correctly refuses an override the destination does not
+		// declare. Migrating collA to collA needs none.
+		body := f.baseBody()
+		body["target_workspace"] = f.wsA.Slug
+		body["target_collection"] = f.collA.Slug
+
+		res := f.copyOK(body)
+		got := f.persistedFields(res.Item.ID)
+
+		if _, ok := got[models.ItemFieldGitHubPR]; !ok {
+			t.Errorf("github_pr must survive a copy that never leaves the workspace; "+
+				"dropping it here would destroy metadata on the strength of a scope that did not change: %#v", got)
+		}
+	})
+}

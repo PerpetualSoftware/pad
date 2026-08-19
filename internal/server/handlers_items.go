@@ -2055,9 +2055,16 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// "what happened to my item" actually looks. Joined into one string:
 	// this map is map[string]string, and a raw array here renders as a Go
 	// map literal in the timeline (BUG-2628).
-	if len(result.Dropped) > 0 {
-		dropped := append([]string(nil), result.Dropped...)
-		sort.Strings(dropped)
+	//
+	// result.Dropped is computed by MigrateFields BEFORE overrides are merged
+	// and before validation injects destination defaults, so a key it lists
+	// may have been supplied moments later. Reporting those would be a
+	// confident falsehood — "we discarded your due_date" about an item that
+	// HAS a due_date — which is worse than the silence this replaced, because
+	// silence at least does not send someone looking for lost data that is
+	// sitting on the item. Filtering against the FINAL map is what makes the
+	// report true at the moment it is written (Codex round 2 P2-2).
+	if dropped := items.StillDropped(result.Dropped, result.Fields); len(dropped) > 0 {
 		moveAudit["dropped_fields"] = strings.Join(dropped, ", ")
 	}
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, auditMeta(moveAudit))

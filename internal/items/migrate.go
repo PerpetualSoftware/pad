@@ -2,6 +2,7 @@ package items
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -35,6 +36,19 @@ const (
 	// a referent belonging to the source's context no longer holds.
 	CrossWorkspace
 )
+
+// ScopeFor answers the one question MigrateScope asks: is the item landing in a
+// different workspace? It lives here, in the package that defines the type, so
+// the copy (store) and its preflight (server) cannot answer it differently —
+// a preview promising a carry the copy then drops is the DR-6 divergence the
+// shared-endpoint design exists to prevent, and two inline comparisons in two
+// packages is exactly how that drift starts.
+func ScopeFor(sourceWorkspaceID, targetWorkspaceID string) MigrateScope {
+	if sourceWorkspaceID == targetWorkspaceID {
+		return SameWorkspace
+	}
+	return CrossWorkspace
+}
 
 // MigrateFields maps field values from a source schema to a target schema.
 // Fields with matching keys and compatible types are transferred.
@@ -169,4 +183,36 @@ func migrateValue(value any, sourceType string, target models.FieldDef) (any, bo
 	default:
 		return nil, false
 	}
+}
+
+// StillDropped filters a MigrateResult.Dropped list down to the keys that are
+// genuinely absent from the FINAL field map.
+//
+// Dropped is computed during migration, before field overrides are merged and
+// before validation injects destination defaults. A key can therefore be listed
+// as dropped and then supplied moments later — a number→select value migration
+// rejected, say, that the caller replaced with a valid one in the same request.
+// Reporting it anyway states something false about the item that is about to be
+// written, and a report that cries loss over data the user can see on the item
+// is worse than no report at all: it teaches the reader to distrust the channel.
+//
+// Returns a sorted slice so callers rendering it get stable output.
+func StillDropped(dropped []string, finalFields map[string]any) []string {
+	if len(dropped) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(dropped))
+	seen := make(map[string]struct{}, len(dropped))
+	for _, key := range dropped {
+		if _, restored := finalFields[key]; restored {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -608,10 +608,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// duplicate whose repo context never changed (BUG-2674). The preflight
 	// computes it the same way — a divergence here would have the preview
 	// promising a carry the copy drops, which DR-6 exists to prevent.
-	scope := items.SameWorkspace
-	if sourceWorkspaceID != req.TargetWorkspaceID {
-		scope = items.CrossWorkspace
-	}
+	scope := items.ScopeFor(sourceWorkspaceID, req.TargetWorkspaceID)
 	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides, scope)
 	if err != nil {
 		return nil, err

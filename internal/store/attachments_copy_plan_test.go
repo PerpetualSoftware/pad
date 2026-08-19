@@ -309,7 +309,12 @@ func TestPlanAttachmentCopy_DroppedFieldNotCloned(t *testing.T) {
 		"screenshot": "pad-attachment:" + dropped.ID,
 	}
 
-	migrated := items.MigrateFields(rawFields, sourceSchema, targetSchema, items.SameWorkspace)
+	// CrossWorkspace, because that is what this fixture models — a copy from
+	// workspace A into workspace B. It was SameWorkspace when the scope
+	// argument was first threaded through (a bulk edit picked the value, not a
+	// reading of the fixture), which is the wrong scope stated confidently in
+	// a test whose whole subject is a cross-workspace copy. Codex round 2.
+	migrated := items.MigrateFields(rawFields, sourceSchema, targetSchema, items.CrossWorkspace)
 	if len(migrated.Dropped) != 1 || migrated.Dropped[0] != "screenshot" {
 		t.Fatalf("precondition: MigrateFields dropped %v, want [screenshot]", migrated.Dropped)
 	}
