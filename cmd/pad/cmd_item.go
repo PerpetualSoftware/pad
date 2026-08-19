@@ -235,7 +235,7 @@ Run with --help-collections to see available collections and their status values
 			// degrades gracefully: all values stay as strings, matching
 			// pre-fix behavior.
 			var collSchema models.CollectionSchema
-			if coll, err := cli.WithCollectionAliasFallback(rawSlug, func(slug string) (*models.Collection, error) {
+			if coll, err := cli.WithCollectionAliasFallback(rawSlug, client.ServerResolvesCollections, func(slug string) (*models.Collection, error) {
 				return client.GetCollection(ws, slug)
 			}); err == nil {
 				_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
@@ -307,7 +307,7 @@ Run with --help-collections to see available collections and their status values
 				input.AgentRoleID = &role.ID
 			}
 
-			item, err := cli.WithCollectionAliasFallback(rawSlug, func(slug string) (*models.Item, error) {
+			item, err := cli.WithCollectionAliasFallback(rawSlug, client.ServerResolvesCollections, func(slug string) (*models.Item, error) {
 				return client.CreateItem(ws, slug, input)
 			})
 			if err != nil {
@@ -500,7 +500,7 @@ Examples:
 				// Raw slug first so an exact collection name is never shadowed
 				// by its singular alias (BUG-2630); the fallback preserves
 				// shorthand against pre-resolver servers (BUG-2578).
-				items, err = cli.WithCollectionAliasFallback(args[0], func(slug string) ([]models.Item, error) {
+				items, err = cli.WithCollectionAliasFallback(args[0], client.ServerResolvesCollections, func(slug string) ([]models.Item, error) {
 					return client.ListCollectionItems(ws, slug, params)
 				})
 			} else {
@@ -1595,7 +1595,7 @@ Examples:
 			// against pre-resolver servers (BUG-2578). Retrying on
 			// collection-not-found is safe: that error means the move never
 			// mutated anything, so no double-write can result.
-			moved, err := cli.WithCollectionAliasFallback(args[1], func(slug string) (*models.Item, error) {
+			moved, err := cli.WithCollectionAliasFallback(args[1], client.ServerResolvesCollections, func(slug string) (*models.Item, error) {
 				input["target_collection"] = slug
 				return client.MoveItemWithForce(ws, args[0], input, force)
 			})

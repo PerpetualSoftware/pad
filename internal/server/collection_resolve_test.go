@@ -156,6 +156,42 @@ func TestResolveItemCollectionSlug_ExactMatchAlwaysWins(t *testing.T) {
 	}
 }
 
+// BUG-2630 #2 (Codex round 1). The legacy semantic aliases the client-side map
+// used to apply (t/i/p/d, phase/phases -> plans) are now resolved SERVER-side,
+// so dropping client normalization — including on the remote MCP transport,
+// which cannot retry — loses nothing. `t` must reach `tasks`.
+func TestResolveItemCollectionSlug_LegacyAbbreviationResolves(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv) // startup template ships `tasks`
+
+	if rr := createItemIn(t, srv, ws, "t", "abbreviated"); rr.Code != http.StatusCreated {
+		t.Fatalf("create via alias `t` = %d: %s — the server must resolve the "+
+			"legacy abbreviation now that clients send it raw", rr.Code, rr.Body)
+	}
+	if got := itemsIn(t, srv, ws, "tasks"); len(got) != 1 || got[0] != "abbreviated" {
+		t.Errorf("items in `tasks` = %v, want [abbreviated]", got)
+	}
+}
+
+// The alias must never OUTRANK an exact match: a workspace with a real `t`
+// collection routes `t` to `t`, not to `tasks`. Same exact-match-first property
+// the ±s fallback already honors, asserted for the alias path too.
+func TestResolveItemCollectionSlug_ExactMatchBeatsAlias(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv) // ships `tasks`
+	makeCollection(t, srv, ws, "T", "t", "TT")
+
+	if rr := createItemIn(t, srv, ws, "t", "belongs in t"); rr.Code != http.StatusCreated {
+		t.Fatalf("create in `t` = %d: %s", rr.Code, rr.Body)
+	}
+	if got := itemsIn(t, srv, ws, "t"); len(got) != 1 || got[0] != "belongs in t" {
+		t.Errorf("items in `t` = %v, want [belongs in t] — the alias outranked an exact match", got)
+	}
+	if got := itemsIn(t, srv, ws, "tasks"); len(got) != 0 {
+		t.Errorf("items in `tasks` = %v, want none — `t` was misrouted to its alias", got)
+	}
+}
+
 // The reverse direction: a workspace whose collection is genuinely singular
 // still answers to the plural a user might type out of habit.
 func TestResolveItemCollectionSlug_PluralOfASingularCollection(t *testing.T) {
@@ -228,6 +264,15 @@ func TestCollectionSlugCandidates(t *testing.T) {
 		// first would misfile the write.
 		{in: "Spec", want: []string{"spec", "specs"}},
 		{in: "Specs", want: []string{"specs", "specss", "spec"}},
+		// Legacy semantic aliases (BUG-2630): the abbreviation lands LAST, after
+		// the structural ±s candidates, so it is only ever a last resort.
+		{in: "t", want: []string{"ts", "tasks"}},
+		{in: "d", want: []string{"ds", "docs"}},
+		{in: "phase", want: []string{"phases", "plans"}},
+		{in: "phases", want: []string{"phasess", "phase", "plans"}},
+		// An alias that duplicates a structural candidate (plan -> plans is both
+		// the +s form AND the NormalizeSlug alias) is not emitted twice.
+		{in: "plan", want: []string{"plans"}},
 	} {
 		got := collectionSlugCandidates(tc.in)
 		if len(got) != len(tc.want) {

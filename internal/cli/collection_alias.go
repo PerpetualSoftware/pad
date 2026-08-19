@@ -41,11 +41,17 @@ import (
 // That is the Option 1 cleanup tracked on BUG-2630's trail, gated on a
 // min-server-version floor that includes the resolver.
 //
+// serverResolves reports whether the server resolves collection slugs itself
+// (exact-match-first + alias fallback + archived-claims refusal). When it
+// returns true, a collection-not-found is AUTHORITATIVE and the alias retry is
+// skipped; when false (an old build, or the probe failed), the retry runs. Pass
+// nil to force the legacy always-retry behaviour (used only in tests).
+//
 // Exported so the cmd/pad item commands can funnel their create / list / move
 // calls through this ONE implementation instead of each re-deriving the
 // send-raw-then-retry dance (BUG-2630 lead ruling: one shared helper, not
 // copied at the call sites).
-func WithCollectionAliasFallback[T any](rawSlug string, op func(slug string) (T, error)) (T, error) {
+func WithCollectionAliasFallback[T any](rawSlug string, serverResolves func() bool, op func(slug string) (T, error)) (T, error) {
 	result, err := op(rawSlug)
 	if err == nil {
 		return result, nil
@@ -64,12 +70,30 @@ func WithCollectionAliasFallback[T any](rawSlug string, op func(slug string) (T,
 		// sees, since it is their own word.
 		return result, wrapCollectionNotFound(err, rawSlug)
 	}
+	// A server that resolves collections itself has ALREADY tried the alias for
+	// us (server-side, BUG-2578/2630), plus enforced exact-match-first and the
+	// archived-claims/hidden refusal. So its collection-not-found is
+	// authoritative: the slug is absent, archived, or hidden, and retrying the
+	// alias would only defeat that protection (BUG-2630 #1). Only fall back to
+	// the client-side retry for an OLDER server that does not advertise
+	// resolution — which never had the protection a retry could defeat.
+	if serverResolves != nil && serverResolves() {
+		return result, wrapCollectionNotFound(err, rawSlug)
+	}
 	result2, err2 := op(normalized)
 	if err2 != nil {
-		// Both the raw slug and its alias failed. Surface an error naming the
-		// RAW slug the user typed, not the alias the client tried on their
-		// behalf — their own words are the ones they can act on.
-		return result, wrapCollectionNotFound(err, rawSlug)
+		if isCollectionNotFound(err2) {
+			// Neither the raw slug nor its alias names a collection. Surface an
+			// error naming the RAW slug the user typed, not the alias the
+			// client tried on their behalf — their own words are the ones they
+			// can act on.
+			return result, wrapCollectionNotFound(err, rawSlug)
+		}
+		// The alias DOES name a real collection, but the operation failed there
+		// for a substantive reason (plan limit, open children, validation,
+		// forbidden). That error is about a real collection and is far more
+		// useful than a misleading "collection not found" — surface it verbatim.
+		return result2, err2
 	}
 	return result2, nil
 }

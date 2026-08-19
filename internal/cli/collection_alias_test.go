@@ -22,7 +22,7 @@ func TestWithCollectionAliasFallback_RawSucceeds_NoRetry(t *testing.T) {
 	// succeeds, so the fallback must NOT retry — retrying would route the user
 	// to the aliased collection they did not name.
 	var calls []string
-	got, err := WithCollectionAliasFallback("plan", func(slug string) (string, error) {
+	got, err := WithCollectionAliasFallback("plan", nil, func(slug string) (string, error) {
 		calls = append(calls, slug)
 		return "landed:" + slug, nil
 	})
@@ -41,7 +41,7 @@ func TestWithCollectionAliasFallback_CollectionNotFound_RetriesAlias(t *testing.
 	// Old-server compat: raw "task" 404s because the collection is "tasks" and
 	// the server has no resolver. The fallback retries with the alias.
 	var calls []string
-	got, err := WithCollectionAliasFallback("task", func(slug string) (string, error) {
+	got, err := WithCollectionAliasFallback("task", nil, func(slug string) (string, error) {
 		calls = append(calls, slug)
 		if slug == "task" {
 			return "", notFoundCollErr()
@@ -62,7 +62,7 @@ func TestWithCollectionAliasFallback_CollectionNotFound_RetriesAlias(t *testing.
 func TestWithCollectionAliasFallback_InvalidCollectionCode_RetriesAlias(t *testing.T) {
 	// The move path reports a missing target collection as invalid_collection.
 	var calls []string
-	_, err := WithCollectionAliasFallback("task", func(slug string) (string, error) {
+	_, err := WithCollectionAliasFallback("task", nil, func(slug string) (string, error) {
 		calls = append(calls, slug)
 		if slug == "task" {
 			return "", invalidCollErr()
@@ -81,7 +81,7 @@ func TestWithCollectionAliasFallback_NonAliasedInput_NoRetry(t *testing.T) {
 	// A slug that NormalizeSlug leaves unchanged ("widgets") has no alias to
 	// try, so a not-found must return immediately without a second call.
 	var calls int
-	_, err := WithCollectionAliasFallback("widgets", func(slug string) (string, error) {
+	_, err := WithCollectionAliasFallback("widgets", nil, func(slug string) (string, error) {
 		calls++
 		return "", notFoundCollErr()
 	})
@@ -106,7 +106,7 @@ func TestWithCollectionAliasFallback_NonCollectionError_NoRetry(t *testing.T) {
 	// succeed against the wrong collection — BUG-2630 in a new costume.
 	var calls []string
 	sentinel := &APIError{Code: "bad_request", Message: "Title is required"}
-	_, err := WithCollectionAliasFallback("plan", func(slug string) (string, error) {
+	_, err := WithCollectionAliasFallback("plan", nil, func(slug string) (string, error) {
 		calls = append(calls, slug)
 		return "", sentinel
 	})
@@ -123,7 +123,7 @@ func TestWithCollectionAliasFallback_BothFail_SurfacesRawError(t *testing.T) {
 	// sees must name the slug they typed ("task"), not the alias tried on their
 	// behalf ("tasks").
 	got := "sentinel-unset"
-	_, err := WithCollectionAliasFallback("task", func(slug string) (string, error) {
+	_, err := WithCollectionAliasFallback("task", nil, func(slug string) (string, error) {
 		got = slug
 		if slug == "task" {
 			return "", notFoundCollErr()
@@ -139,6 +139,63 @@ func TestWithCollectionAliasFallback_BothFail_SurfacesRawError(t *testing.T) {
 	}
 	if apiErr.Message != `collection "task" not found` {
 		t.Fatalf("double-fail error must name the RAW slug, got %q", apiErr.Message)
+	}
+}
+
+func TestWithCollectionAliasFallback_AliasSubstantiveError_Surfaced(t *testing.T) {
+	// Codex P2: when the raw slug misses but the alias names a REAL collection
+	// that fails for a substantive reason (here a plan limit), the user must
+	// see THAT error, not a misleading "collection not found" — the alias
+	// collection exists, so "not found" would be a lie.
+	planLimit := &APIError{Code: "plan_limit_exceeded", Message: "item limit reached"}
+	_, err := WithCollectionAliasFallback("task", nil, func(slug string) (string, error) {
+		if slug == "task" {
+			return "", notFoundCollErr()
+		}
+		return "", planLimit // the "tasks" collection exists but is over limit
+	})
+	if !errors.Is(err, planLimit) {
+		t.Fatalf("expected the substantive alias error surfaced, got %v", err)
+	}
+}
+
+func TestWithCollectionAliasFallback_ServerResolves_SuppressesRetry(t *testing.T) {
+	// BUG-2630 #1: a server that resolves collections itself has already tried
+	// the alias AND enforced exact-match + the archived/hidden refusal, so its
+	// collection-not-found is AUTHORITATIVE. The client must NOT retry the alias
+	// (which would defeat that protection, e.g. redirect an archived `plan` into
+	// a live `plans`).
+	var calls []string
+	_, err := WithCollectionAliasFallback("plan", func() bool { return true }, func(slug string) (string, error) {
+		calls = append(calls, slug)
+		return "", notFoundCollErr()
+	})
+	if len(calls) != 1 || calls[0] != "plan" {
+		t.Fatalf("a resolving server's not-found must not be retried, got %v", calls)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Message != `collection "plan" not found` {
+		t.Fatalf("expected raw-named not-found, got %v", err)
+	}
+}
+
+func TestWithCollectionAliasFallback_ServerLacksResolution_Retries(t *testing.T) {
+	// The other branch: an OLD server that does not advertise resolution never
+	// had the archived-claims protection, so the legacy alias retry runs and is
+	// non-regressive there.
+	var calls []string
+	got, err := WithCollectionAliasFallback("plan", func() bool { return false }, func(slug string) (string, error) {
+		calls = append(calls, slug)
+		if slug == "plan" {
+			return "", notFoundCollErr()
+		}
+		return "landed:" + slug, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "landed:plans" || len(calls) != 2 {
+		t.Fatalf("expected retry into plans, got %q calls=%v", got, calls)
 	}
 }
 

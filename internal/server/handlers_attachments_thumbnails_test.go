@@ -286,10 +286,17 @@ func TestServerCapabilities_Endpoint(t *testing.T) {
 	}
 
 	var resp struct {
-		Image attachments.Capabilities `json:"image"`
+		Image                attachments.Capabilities `json:"image"`
+		CollectionResolution bool                     `json:"collection_resolution"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
+	}
+	// BUG-2630: the CLI reads this flag to decide whether a collection-not-found
+	// is authoritative (skip the alias retry) or whether it is talking to an old
+	// build (retry). This build has the resolver, so it must advertise true.
+	if !resp.CollectionResolution {
+		t.Error("collection_resolution = false; this build resolves collections server-side")
 	}
 	wantFormats := []string{"png", "jpeg", "gif", "bmp", "tiff"}
 	if got, want := strings.Join(resp.Image.ImageFormats, ","), strings.Join(wantFormats, ","); got != want {

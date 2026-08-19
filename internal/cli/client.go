@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -32,6 +33,13 @@ type Client struct {
 	streamClient *http.Client
 	authToken    string // session or API token, sent as Authorization: Bearer
 	agentName    string // optional agent name, sent as X-Pad-Agent header
+
+	// capsOnce guards a single lazy probe of GET /server/capabilities, whose
+	// result is static for the server's lifetime (so once per client is enough).
+	// capsResolves caches whether the server resolves collection slugs itself —
+	// see ServerResolvesCollections.
+	capsOnce     sync.Once
+	capsResolves bool
 }
 
 func NewClient(host string, port int) *Client {
@@ -236,6 +244,32 @@ func (c *Client) ListCollectionItems(wsSlug, collSlug string, params url.Values)
 func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*models.Item, error) {
 	var result models.Item
 	return &result, c.post("/workspaces/"+wsSlug+"/collections/"+collSlug+"/items", input, &result)
+}
+
+// ServerResolvesCollections reports whether the server resolves a collection
+// slug itself — exact-match-first with the singular/alias fallback and the
+// archived-claims refusal (resolveItemCollectionSlug, BUG-2578/2630). It probes
+// GET /server/capabilities once (the result is static for the server's
+// lifetime) and caches it.
+//
+// It FAILS SAFE toward "does not resolve": any probe error, an old build that
+// 404s the endpoint, or a response missing the field all return false. That is
+// deliberate — false routes WithCollectionAliasFallback to the legacy
+// client-side alias retry, which is exactly what an old server needs and is
+// non-regressive there (old servers never had the archived-claims protection a
+// retry could defeat). Only an explicit `collection_resolution: true` returns
+// true, which tells the helper the server's not-found is authoritative and must
+// not be retried around.
+func (c *Client) ServerResolvesCollections() bool {
+	c.capsOnce.Do(func() {
+		var caps struct {
+			CollectionResolution bool `json:"collection_resolution"`
+		}
+		if err := c.get("/server/capabilities", &caps); err == nil {
+			c.capsResolves = caps.CollectionResolution
+		}
+	})
+	return c.capsResolves
 }
 
 func (c *Client) GetItem(wsSlug, itemSlug string) (*models.Item, error) {
