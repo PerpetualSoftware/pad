@@ -16,14 +16,29 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// reservedSchemaFieldKeys are collection schema field keys that collide
+// reservedSchemaFieldKeys are collection schema field keys a schema may not
+// declare. Two unrelated groups, for two unrelated reasons — see below.
+//
+// parent / plan collide
 // with the parent/plan extraction at handlers_items.go:584 (create),
 // :851 (PATCH), and :2147 (list filter). A schema field keyed exactly
 // "parent" or "plan" makes schemaHasField (handlers_items.go:2190) return
 // true, which makes those sites silently skip fields-JSON extraction —
 // disabling subtask linking for the collection with no error anywhere
 // (TASK-1912, stage 1 of the IDEA-1746 consolidation plan).
-var reservedSchemaFieldKeys = []string{"parent", "plan"}
+// The system-metadata keys (implementation_notes, decision_log, github_pr,
+// convention) are reserved here for a DIFFERENT reason, added with BUG-2674.
+// They are written by Pad itself and deliberately live outside every schema —
+// MigrateFields now carries them across a move by identity rather than
+// schema-matching them. A schema that declares one of those keys re-creates
+// the collision the carry-through exists to avoid: the migrated array arrives
+// at ValidateFieldsDetailed, which now DOES see the key (it iterates
+// schema.Fields), and a `text` FieldDef rejects an array — turning a move that
+// previously destroyed the notes into one that fails outright. Forbidding the
+// declaration is the honest fix; coercing or silently skipping validation for
+// a key the schema genuinely declares would be guessing at which meaning the
+// author wanted.
+var reservedSchemaFieldKeys = append([]string{"parent", "plan"}, models.ReservedItemFieldKeys()...)
 
 // validateNoReservedFieldKeys rejects a schema that newly introduces a
 // field keyed "parent" or "plan". prevSchema is nil on collection create

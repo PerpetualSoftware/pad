@@ -1908,9 +1908,35 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Migrate fields
-	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+	// SameWorkspace is a property of the endpoint, not a guess: a move
+	// changes the item's COLLECTION and cannot change its workspace — the
+	// cross-workspace path is the copy endpoint. So the repo/member
+	// context around the item is unchanged and referential system
+	// metadata still describes something true (BUG-2674).
+	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields, items.SameWorkspace)
 
-	// Apply overrides
+	// Apply overrides.
+	//
+	// Reserved keys are REFUSED rather than merged (Codex round 4). This path
+	// has no declared-key gate at all — unlike the copy, which runs
+	// UndeclaredOverrideKeys — so without this an override could write
+	// arbitrary junk straight into implementation_notes or decision_log,
+	// bypassing both the schema (which does not declare them) and the
+	// migrated-output validation (which strips them). On the copy the same
+	// hole additionally defeats the scope rule: an override could reintroduce
+	// a github_pr that MigrateFields had just dropped for leaving its
+	// workspace.
+	//
+	// Refusing is the honest answer, not silently dropping the key: a caller
+	// that asked for a value and got an item without it has no way to tell.
+	// System metadata is written through its own endpoints — `pad item note`,
+	// `pad item decide`, `pad github link` — which is where the append guard
+	// from BUG-2627 lives.
+	if bad := items.ReservedOverrideKeys(input.FieldOverrides); len(bad) > 0 {
+		writeError(w, http.StatusBadRequest, "malformed_override",
+			fmt.Sprintf("Field(s) reserved for system metadata and not settable here: %s", strings.Join(bad, ", ")))
+		return
+	}
 	for k, v := range input.FieldOverrides {
 		result.Fields[k] = v
 	}
@@ -1935,7 +1961,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// `missing_required_fields` code and message shape, because CLI and
 	// web callers key off it; genuinely invalid VALUES get their own
 	// `invalid_fields` code rather than being mislabelled as missing.
-	if issues := items.ValidateFieldsDetailed(result.Fields, targetSchema); len(issues) > 0 {
+	if issues := items.ValidateFieldsDetailed(result.Fields, items.SchemaForMigratedFields(targetSchema)); len(issues) > 0 {
 		var missing, invalid []string
 		for _, iss := range issues {
 			if iss.Kind == items.IssueRequired {
@@ -2036,8 +2062,33 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// item_collection_moves inside the move tx, not derived from this
 	// best-effort row.
 	actor, source := actorFromRequest(r)
-	moveMeta := auditMeta(map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug})
-	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
+	moveAudit := map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug}
+	// A move that discards field values says so (BUG-2674). MigrateFields
+	// has always reported them in result.Dropped and this handler has
+	// always thrown that away, so the only record of a field disappearing
+	// was the field being gone. Reserved keys no longer appear here at all
+	// (they carry), which leaves this list meaning what it says: values the
+	// TARGET SCHEMA has no home for.
+	//
+	// It rides the audit metadata rather than the response body because
+	// the response is the bare item — a wrapper would break every existing
+	// consumer — and because the activity timeline is where someone asking
+	// "what happened to my item" actually looks. Joined into one string:
+	// this map is map[string]string, and a raw array here renders as a Go
+	// map literal in the timeline (BUG-2628).
+	//
+	// result.Dropped is computed by MigrateFields BEFORE overrides are merged
+	// and before validation injects destination defaults, so a key it lists
+	// may have been supplied moments later. Reporting those would be a
+	// confident falsehood — "we discarded your due_date" about an item that
+	// HAS a due_date — which is worse than the silence this replaced, because
+	// silence at least does not send someone looking for lost data that is
+	// sitting on the item. Filtering against the FINAL map is what makes the
+	// report true at the moment it is written (Codex round 2 P2-2).
+	if dropped := items.StillDropped(result.Dropped, result.Fields); len(dropped) > 0 {
+		moveAudit["dropped_fields"] = strings.Join(dropped, ", ")
+	}
+	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, auditMeta(moveAudit))
 
 	// Publish events for both old and new collections
 	actorNameForMove := actorNameFromRequest(r)

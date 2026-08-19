@@ -204,7 +204,7 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move."},
+	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. System-metadata keys (implementation_notes, decision_log, github_pr, convention) are REFUSED here with code=malformed_override, on move and copy alike — they are written by action=note / action=decide and the GitHub link flow, and a raw field write would bypass those guards (BUG-2674)."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},

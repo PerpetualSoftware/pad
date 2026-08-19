@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -14,6 +15,95 @@ const (
 	ItemFieldDecisionLog         = "decision_log"
 	ItemFieldConvention          = "convention"
 )
+
+// reservedItemFieldKeys is the canonical set of field keys Pad itself writes
+// into an item's fields blob. They are deliberately NOT declared by any
+// collection schema — each is rendered from its own dedicated surface rather
+// than as a generic field — which means every code path that reasons about
+// fields by consulting a schema is, by construction, blind to them.
+//
+// That blindness is not hypothetical: it is the shared root of BUG-2627 (the
+// CLI types a --field value by schema lookup, so these keys fall through to a
+// raw string and become unreadable) and BUG-2674 (MigrateFields drops any key
+// absent from the target schema, so a move destroyed them outright). Both were
+// code paths that did not know these keys are special.
+//
+// The set lives here, once, so a caller can ASK instead of re-listing. Before
+// this existed there were four constants and a single inline || chain in a CLI
+// display path — a shape where the next reserved field added lands in the
+// constants, gets wired into whichever surface prompted it, and silently misses
+// every other.
+//
+// ADDING A KEY HERE IS NOT THE WHOLE JOB, and pretending otherwise would
+// recreate the drift this set exists to stop. Membership tests inherit it for
+// free — MigrateFields' carry, SchemaForMigratedFields, the collection-schema
+// gate, the copy preflight's enumeration, the CLI's display filter. Three
+// places still need a hand edit, because each needs something a set cannot
+// supply:
+//
+//   - referentialItemFieldKeys below — does the new key point OUT of the item?
+//   - reservedFieldLabel (handlers_items_copy_preflight.go) — a human label
+//   - RESERVED_FIELD_KEYS (web/src/lib/components/collections/
+//     field-editor-types.ts) — the client-side gate, deliberately a separate
+//     list because it lowercases and is therefore stricter than this one
+//
+// TestReservedItemFieldKeysAreStableAndComplete fails on any change to this
+// set, which is the reminder to visit all three.
+var reservedItemFieldKeys = map[string]struct{}{
+	ItemFieldGitHubPR:            {},
+	ItemFieldImplementationNotes: {},
+	ItemFieldDecisionLog:         {},
+	ItemFieldConvention:          {},
+}
+
+// IsReservedItemField reports whether key is system-written metadata rather than
+// a user-facing schema field. Callers that filter, migrate, or render an item's
+// fields map should consult this rather than enumerating the constants.
+func IsReservedItemField(key string) bool {
+	_, ok := reservedItemFieldKeys[key]
+	return ok
+}
+
+// referentialItemFieldKeys are the reserved keys whose VALUE points at
+// something outside the item — a resource whose meaning depends on the
+// surrounding workspace's context rather than on the item itself.
+//
+// The distinction decides how far they travel (BUG-2674, lead ruling). The
+// carry rule is one sentence: system-minted NON-REFERENTIAL data carries;
+// referential system data carries only where its referent's context still
+// holds. implementation_notes and decision_log describe the item's own history
+// and are true wherever the item is. github_pr names a repository that is a
+// property of the SOURCE workspace's context — carried into a different
+// workspace it renders as a live PR link on an item whose project may have no
+// relationship to that repo, which is a false statement rather than a preserved
+// one.
+//
+// So this is not an exception to the rule; it is the rule's own qualifier doing
+// its job. A same-workspace move leaves the referent's context unchanged, so
+// these carry there.
+var referentialItemFieldKeys = map[string]struct{}{
+	ItemFieldGitHubPR: {},
+}
+
+// IsReferentialItemField reports whether a reserved key's value depends on the
+// workspace context around it. See referentialItemFieldKeys.
+func IsReferentialItemField(key string) bool {
+	_, ok := referentialItemFieldKeys[key]
+	return ok
+}
+
+// ReservedItemFieldKeys returns the reserved keys in a stable order, for
+// callers that need to enumerate rather than test membership (schema-key
+// validation, error messages). Sorted so the output is deterministic — an
+// error message that lists these must not reorder between runs.
+func ReservedItemFieldKeys() []string {
+	keys := make([]string, 0, len(reservedItemFieldKeys))
+	for k := range reservedItemFieldKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 type Item struct {
 	ID             string     `json:"id"`

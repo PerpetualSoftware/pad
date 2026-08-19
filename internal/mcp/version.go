@@ -103,7 +103,7 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.21" — current. BUG-2608: bounds `pad_item.action=history`, which
+//   - "0.21" — BUG-2608: bounds `pad_item.action=history`, which
 //     was unbounded on every surface. Extends the `limit` param's
 //     vocabulary to cover history (default 50, max 300 — the same pair
 //     list and backlinks already use, so an agent has no third set of
@@ -520,7 +520,36 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.21"
+//   - "0.22" — current. BUG-2674: `pad_item.action=move` no longer
+//     destroys an item's system metadata, and now REFUSES a `field`
+//     setter naming one of those keys.
+//
+//     BEHAVIOR bump on the v0.9/v0.16/v0.17 grounds — no tool, action
+//     enum, or param shape changed. Two observable differences:
+//
+//     A move used to drop implementation_notes / decision_log /
+//     github_pr / convention outright, because MigrateFields matched
+//     every key against the destination schema and no schema declares
+//     those. They now carry, and any field the target schema HAS no
+//     home for is reported in the move's activity entry rather than
+//     vanishing. github_pr is the one exception and only across
+//     WORKSPACES (the copy path), where the repository it names
+//     belongs to the source project — reported there as
+//     `referent_not_portable`.
+//
+//     `field: ["implementation_notes=..."]` on a move or copy now
+//     answers `malformed_override` instead of writing the key. That
+//     write was never legitimate: it bypassed the append guard
+//     (BUG-2627) and, on a cross-workspace copy, could reintroduce the
+//     github_pr the migration had just dropped. Agents write these
+//     through `action=note` / `action=decide` and the GitHub link flow.
+//
+//     Compat posture, stated deliberately: today's callers passing such
+//     a setter get a 400 where they previously got a silent corrupt
+//     write. Relying on the old behaviour is relying on a defect, the
+//     same reading v0.17 took for the fields-blob shadowing.
+
+const ToolSurfaceVersion = "0.22"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

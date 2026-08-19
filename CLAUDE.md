@@ -177,6 +177,12 @@ pad item show <ref>           # e.g. pad item show TASK-5
 pad item update <ref> [--status X] [--priority X]
 pad item delete <ref>
 pad item move <ref> <target-collection>
+                              # Collection change WITHIN a workspace (cross-workspace is `item copy`).
+                              # Field values the target schema has no home for are dropped — and since
+                              # BUG-2674 the move REPORTS them, in its activity entry's `dropped_fields`
+                              # and in the item timeline. System metadata (implementation_notes,
+                              # decision_log, github_pr, convention) always survives a move; it used to
+                              # be destroyed silently.
 pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--archive-source] [--field k=v]
                               # Cross-workspace copy; --archive-source makes it a move.
                               # --dry-run previews the field mapping + warnings.
@@ -190,6 +196,15 @@ pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--arc
                               # so a link can silently retarget to a different item or break;
                               # `[[workspace::REF]]` stays a genuine cross-workspace reference.
                               # The web dialog (item pane ⋯ → "Copy or move to workspace…") says the same.
+                              # System metadata (BUG-2674): implementation_notes and decision_log CARRY —
+                              # they describe the item's own history and are true wherever it lands.
+                              # github_pr does NOT carry across workspaces: it names the SOURCE project's
+                              # repo, so on the copy it would render a live PR link about a project the
+                              # destination may have nothing to do with. It is reported in the dropped
+                              # bucket as `referent_not_portable`, and DOES carry on a same-workspace
+                              # move/copy, where the repo context is unchanged. None of these four keys
+                              # (+ `convention`) is settable via `--field` on copy or move — they are
+                              # written by `pad item note` / `pad item decide` / `pad github link`.
 pad item search "query"
 pad project dashboard         # Project dashboard
 pad project next              # Recommended next task

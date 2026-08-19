@@ -204,6 +204,17 @@ type ItemCopyPreflightDestination struct {
 type ItemCopyPreflightFields struct {
 	// Carried are the fields the copy WOULD have, in destination-schema
 	// order.
+	//
+	// Since BUG-2674 this bucket can also contain RESERVED system metadata
+	// (implementation_notes, decision_log, github_pr, convention), appended
+	// after the schema-ordered entries. Those keys are declared by no schema
+	// anywhere — the copy carries them by identity — so a client must not
+	// assume every `carried` entry resolves to a destination FieldDef. They
+	// are distinguishable by `type: "system"` and carry a rendered `label`
+	// rather than an author-supplied one. Before the carry-through they
+	// appeared under `dropped`, which was accurate then; reporting them in
+	// neither bucket would have made the preflight claim "nothing carries
+	// over" for an item whose notes in fact survive.
 	Carried []ItemCopyPreflightCarried `json:"carried"`
 
 	// Dropped are values that will not survive the copy: schema fields
@@ -260,6 +271,22 @@ type ItemCopyPreflightDropped struct {
 	//                                destination workspace (DR-8)
 	//   "agent_role_not_portable"  — role slugs are workspace-local and
 	//                                never carry (DR-8)
+	//   "referent_not_portable"    — system metadata whose VALUE points at
+	//                                something belonging to the SOURCE
+	//                                workspace's context, so it describes
+	//                                nothing true in the destination
+	//                                (BUG-2674). Today that is github_pr:
+	//                                the repository is a property of the
+	//                                source's project, and carrying it
+	//                                would render a live PR link on an
+	//                                item whose project may have no
+	//                                relationship to that repo. Distinct
+	//                                from no_target_field, which would
+	//                                otherwise be reported here and is
+	//                                simply wrong: no schema declares this
+	//                                key ANYWHERE, so "the destination has
+	//                                no such field" is true of the source
+	//                                too and explains nothing
 	Reason string `json:"reason"`
 }
 
@@ -542,7 +569,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// calls. It moved into internal/items in TASK-2365 because two
 	// implementations of "which keys are undeclared" is precisely the DR-6
 	// divergence this pair of endpoints exists to prevent (Codex round 17).
-	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, targetSchema.Fields); len(bad) > 0 {
+	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "malformed_override",
 			"Destination collection has no field(s): "+summarizeKeys(bad))
 		return
@@ -578,7 +605,13 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// deliberately never read here; the authoritative answer comes from
 	// items.ValidateFieldsDetailed run over the MERGED map, which also
 	// applies destination defaults and type/option/pattern checks.
-	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+	// Scope is COMPUTED, not assumed cross-workspace: this endpoint accepts a
+	// target_workspace equal to the source, and hardcoding CrossWorkspace
+	// would drop a github_pr from a duplicate whose repo context never
+	// changed (BUG-2674). Same computation in the mutating copy, or the two
+	// disagree — the divergence DR-6 exists to prevent.
+	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields,
+		items.ScopeFor(item.WorkspaceID, dst.WorkspaceID()))
 
 	final := make(map[string]any, len(migrated.Fields)+len(input.FieldOverrides))
 	origin := make(map[string]string, len(final))
@@ -611,7 +644,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// ValidateFieldsDetailed injects any remaining schema defaults into
 	// `final` in place, so a key that appears only afterwards has no
 	// origin entry and is reported as "default".
-	issues := items.ValidateFieldsDetailed(final, targetSchema)
+	issues := items.ValidateFieldsDetailed(final, items.SchemaForMigratedFields(targetSchema))
 
 	// DR-12's other half: an override whose VALUE is invalid is rejected,
 	// not bucketed. It is the caller's own input and there is nothing for
@@ -669,7 +702,14 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 
 	// carried / needs_value, walked in destination-schema order so the
 	// response is stable across identical calls.
-	for _, def := range targetSchema.Fields {
+	//
+	// The STRIPPED schema, so a grandfathered reserved declaration is not
+	// walked here and then appended again by the reserved pass below —
+	// emitting the same key twice in one `carried` array (Codex round 4). The
+	// existing preflight/copy parity helper collapses carried entries into a
+	// map, so it could not see the duplicate: a check that de-duplicates
+	// before comparing cannot detect duplication.
+	for _, def := range items.SchemaForMigratedFields(targetSchema).Fields {
 		if iss, bad := issueByKey[def.Key]; bad {
 			reason := "invalid_value"
 			if iss.Kind == items.IssueRequired {
@@ -703,12 +743,54 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		})
 	}
 
+	// Reserved system metadata carries too (BUG-2674), and it is invisible to
+	// the loop above because that walks the DESTINATION SCHEMA and these keys
+	// are declared by no schema anywhere. Reporting them here keeps the
+	// preflight honest in both directions: before the carry-through they at
+	// least showed up under `dropped`, so omitting them now would turn an
+	// accurate "these will be lost" into a silent "nothing carries over" while
+	// the copy in fact retains them — a preflight that under-reports what it
+	// will do is the same defect class as the move that reported nothing.
+	//
+	// Appended after the schema walk, in the enumeration's stable order, so
+	// the destination-schema section of the response is untouched.
+	for _, key := range models.ReservedItemFieldKeys() {
+		val, present := final[key]
+		if !present {
+			continue
+		}
+		resp.Fields.Carried = append(resp.Fields.Carried, ItemCopyPreflightCarried{
+			Key:   key,
+			Label: reservedFieldLabel(key),
+			Type:  "system",
+			Value: val,
+			From:  "migrated",
+		})
+	}
+
 	// dropped — schema fields first, in SOURCE-schema order (MigrateFields
 	// ranges a map, so its Dropped slice arrives in nondeterministic
 	// order and must be re-sorted or repeated calls would differ).
-	for _, key := range sortedDroppedKeys(migrated.Dropped, sourceSchema.Fields) {
+	// Filtered against the FINAL map first (Codex round 2 P2-2): MigrateFields
+	// computes Dropped before overrides merge and before defaults are
+	// injected, so a key it lists may have been supplied since. Reporting a
+	// field as dropped in the same response that reports it CARRIED — which is
+	// what happened, the two buckets disagreeing about one key — is the
+	// preflight lying to the dialog it exists to populate.
+	for _, key := range sortedDroppedKeys(items.StillDropped(migrated.Dropped, final), sourceSchema.Fields) {
 		reason := "no_target_field"
 		label := key
+		// A reserved key in Dropped can only have got there one way: it is
+		// referential and this is a cross-workspace copy. The generic
+		// no_target_field would be actively misleading — no schema declares
+		// these keys anywhere, so it is equally true of the source and
+		// explains nothing about why the value is being left behind.
+		if models.IsReservedItemField(key) {
+			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
+				Key: key, Label: reservedFieldLabel(key), Kind: "field", Reason: "referent_not_portable",
+			})
+			continue
+		}
 		srcDef, declaredBySource := fieldDefByKey(sourceSchema.Fields, key)
 		if def, exists := targetDefs[key]; exists {
 			// The key exists downstream, so migration rejected the VALUE.
@@ -1080,4 +1162,22 @@ func fieldDefByKey(defs []models.FieldDef, key string) (models.FieldDef, bool) {
 		}
 	}
 	return models.FieldDef{}, false
+}
+
+// reservedFieldLabel renders a human label for a reserved metadata key in the
+// copy preflight. These keys have no FieldDef and therefore no author-supplied
+// Label, so the alternative is showing the raw snake_case key in a dialog whose
+// every other row is titled prose.
+func reservedFieldLabel(key string) string {
+	switch key {
+	case models.ItemFieldImplementationNotes:
+		return "Implementation notes"
+	case models.ItemFieldDecisionLog:
+		return "Decision log"
+	case models.ItemFieldGitHubPR:
+		return "Linked pull request"
+	case models.ItemFieldConvention:
+		return "Convention metadata"
+	}
+	return key
 }
