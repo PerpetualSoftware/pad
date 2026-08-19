@@ -354,6 +354,60 @@ func TestAppendDecisionLogProceedsWhenFieldIsAbsentEmptyOrValid(t *testing.T) {
 	}
 }
 
+// The decision-log guard must be instantiated with ItemDecisionLogEntry, not
+// merely with SOME entry type. A wrong-but-compiling type parameter passes every
+// other decision test, because the two structs disagree only on shapes that no
+// other case exercises: `{"decision":{...}}` is ACCEPTED by the notes struct
+// (unknown key, ignored) and REJECTED by the log struct (Decision is a string).
+// The guard would then permit an append that ExtractItemDecisionLog reads as
+// empty — which is the exact guard/extractor divergence this whole change exists
+// to prevent, reintroduced one type parameter away. Codex round 2.
+func TestAppendDecisionLogRefusesEntriesOnlyItsOwnTypeRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields string
+	}{
+		{"decision holding an object", `{"decision_log":[{"decision":{"nested":"object"}}]}`},
+		{"rationale holding a list", `{"decision_log":[{"decision":"ok","rationale":["a","b"]}]}`},
+		{"double-encoded string", `{"decision_log":"[{\"decision\":\"stored\"}]"}`},
+		{"list of wrong element type", `{"decision_log":[1,2,3]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields, err := AppendDecisionLogEntry(tc.fields, ItemDecisionLogEntry{ID: "decision-new", Decision: "new"})
+			if !errors.Is(err, ErrStructuredFieldUnreadable) {
+				t.Fatalf("expected ErrStructuredFieldUnreadable, got %v", err)
+			}
+			if fields != "" {
+				t.Fatalf("refused append must return no fields to write, got %q", fields)
+			}
+		})
+	}
+}
+
+// The mirror of the above: shapes only the NOTES struct rejects, so a
+// decision-log type parameter on the notes guard is caught too. `{"summary":{}}`
+// is rejected by ItemImplementationNote (Summary is a string) and accepted by
+// ItemDecisionLogEntry (unknown key, ignored).
+func TestAppendImplementationNoteRefusesEntriesOnlyItsOwnTypeRejects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields string
+	}{
+		{"summary holding an object", `{"implementation_notes":[{"summary":{"nested":"object"}}]}`},
+		{"details holding a list", `{"implementation_notes":[{"summary":"ok","details":["a","b"]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields, err := AppendImplementationNote(tc.fields, ItemImplementationNote{ID: "note-new", Summary: "new"})
+			if !errors.Is(err, ErrStructuredFieldUnreadable) {
+				t.Fatalf("expected ErrStructuredFieldUnreadable, got %v", err)
+			}
+			if fields != "" {
+				t.Fatalf("refused append must return no fields to write, got %q", fields)
+			}
+		})
+	}
+}
+
 // A successful append must not disturb the item's other reserved metadata.
 // github_pr lives in the same fields blob and is rebuilt from the same map, so
 // a helper that assigned a fresh map instead of mutating the parsed one would
