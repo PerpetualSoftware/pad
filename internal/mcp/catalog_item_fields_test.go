@@ -310,3 +310,54 @@ func TestPadItemUpdate_CompatIDParamsStillAccepted(t *testing.T) {
 		t.Fatal("expected dispatch to proceed")
 	}
 }
+
+// TestPadItemExport_AgentOutputPassesStrictGate covers the gap the
+// PR #1159 round-1 review found: the strict input gate runs BEFORE the
+// action handlers, and `output` is neither schema-declared nor (was)
+// compat-listed — so an agent-supplied output path died with "unknown
+// parameter(s): output" before actionItemExport could override it to
+// `-`. The existing TestPadItemExport_OverridesAgentOutput calls the
+// handler directly and bypasses the gate; this one drives the REAL
+// fan-out dispatch path so the gate and the handler are tested
+// together.
+func TestPadItemExport_AgentOutputPassesStrictGate(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "export",
+		"ref":    "PLAYB-3",
+		"output": "/tmp/agent-chosen.pad.md",
+	})
+	if isErr {
+		t.Fatalf("agent-supplied output must pass the gate, got error: %s", msg)
+	}
+	if len(disp.gotPath) == 0 {
+		t.Fatal("nothing dispatched — the gate rejected a key the handler exists to override")
+	}
+	joined := strings.Join(disp.gotArgs, " ")
+	if strings.Contains(joined, "/tmp/agent-chosen.pad.md") {
+		t.Errorf("cliArgs %q must not carry the agent's local output path", joined)
+	}
+	if !strings.Contains(joined, "--output -") {
+		t.Errorf("cliArgs %q should still force stdout via --output -", joined)
+	}
+}
+
+// TestPadItemUpdate_FieldsEmptyKeyRefused: `fields: {"": "v"}` used to
+// pass the '='-in-key check and emit a malformed `field: ["=v"]` entry
+// (PR #1159 round-1 review, bug 2). Empty keys are refused like every
+// other shape error.
+func TestPadItemUpdate_FieldsEmptyKeyRefused(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"": "v"},
+	})
+	if !isErr {
+		t.Fatalf("expected refusal for empty field key, got success: %s", msg)
+	}
+	if !strings.Contains(msg, "empty") {
+		t.Errorf("error should say the key is empty: %s", msg)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+	}
+}

@@ -440,10 +440,21 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 //     Documented, undeprecated, and deliberately never schema-declared
 //     (v0.18's booleans are the discoverable form) — rejecting them
 //     would break working v0.16 consumers for no safety gain.
+//   - pad_item output: agents mirror the CLI's `item export -o <path>`
+//     flag, and actionItemExport exists to OVERRIDE that key to `-`
+//     (the MCP host can't see a local path) — its doc comment says
+//     "agents send it" outright. Rejecting it at the gate would kill
+//     those calls before the override runs (PR #1159 round-1 review,
+//     bug 1). Not schema-declared because advertising a param the
+//     handler always overwrites would invite more of them. The
+//     analogous `file` key on action=import is deliberately NOT
+//     listed: the schema points agents at `artifact`, and a rejection
+//     naming the declared params is the correct steer there.
 var compatAcceptedInputKeys = map[string]map[string]bool{
 	"pad_item": {
 		"assigned_user_id": true,
 		"agent_role_id":    true,
+		"output":           true,
 	},
 }
 

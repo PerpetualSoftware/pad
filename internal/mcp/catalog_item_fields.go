@@ -27,6 +27,15 @@ import (
 //   - Keys with a dedicated top-level param (status, priority,
 //     category, parent, role, assign, tags) are promoted onto that
 //     param — identical effect to passing the param directly.
+//     ACCEPTED TRADE-OFF: a collection whose schema declares a custom
+//     field literally named one of those seven keys gets redirected to
+//     the reserved MCP param instead of the custom field. This layer
+//     cannot see collection schemas (they live server-side, per
+//     workspace), so it cannot disambiguate; the dedicated params
+//     shadow such custom fields everywhere on this tool already, and
+//     the `field: ["key=value"]` path has the same collision. Writing
+//     a shadowed custom field from MCP requires renaming the field —
+//     confirmed as accepted in the PR #1159 round-1 review exchange.
 //   - Every other key merges into the `field` array path as a
 //     "key=value" entry, exactly as if the caller had used
 //     `field: ["key=value"]`. Server-side schema validation applies
@@ -42,6 +51,13 @@ import (
 //     and are refused with the offending key named. (`tags` is the
 //     exception: promoted onto the dedicated param, which accepts an
 //     array.)
+//     KNOWN LIMITATION: this means the read shape is NOT fully
+//     round-trippable for non-scalar field types (multi_select
+//     arrays, json fields) — those refuse loudly rather than write.
+//     Array/JSON value encoding onto the `field` path is a tracked
+//     follow-up (PR #1159 round-1 review, scope note); until then the
+//     refusal names the key so the caller knows which value to move
+//     to a supported path.
 
 // padItemPromotedFieldKeys maps a `fields` object key to the dedicated
 // top-level param it promotes onto. Mirrors the "the dispatcher rolls
@@ -132,6 +148,12 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 
 	for _, k := range keys {
 		v := obj[k]
+		if k == "" {
+			// Without this, {"": "v"} would pass the '=' check below and
+			// emit a malformed `field: ["=v"]` entry (PR #1159 round-1
+			// review, bug 2).
+			return nil, errStructured(prefix, fmt.Errorf("fields: keys cannot be empty"))
+		}
 		if strings.Contains(k, "=") {
 			return nil, errStructured(prefix, fmt.Errorf("fields.%q: field keys cannot contain '='", k))
 		}
