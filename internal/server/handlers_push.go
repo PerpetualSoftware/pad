@@ -218,6 +218,24 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// who's connected, not a promise that count still holds by the time
 	// delivery happens, which is the same staleness every presence
 	// answer on this surface already carries.
+	//
+	// THE "GUARANTEED NO-OP" PREMISE IS NOW MEMORYBUS-ONLY (BUG-2651,
+	// codex round 2). It rested on the bus being in-process: a target
+	// this instance cannot see was, by construction, a target nobody
+	// could deliver to. With watchevents.RedisBus the notification would
+	// reach every instance, so a session held on another one WOULD match
+	// it — and this skip is what stops that, turning a deliverable push
+	// into the no-op the comment describes rather than merely declining
+	// to record one.
+	//
+	// Deliberately NOT changed here. Publishing unconditionally would fix
+	// targeted cross-instance delivery and immediately make the
+	// delivered_sessions=0 in the response a lie in the other direction,
+	// which is a question about what that field promises rather than a
+	// bug in this line. It belongs with the shared-state SessionPresence
+	// that PLAN-2558 S3 already gates on — fixing the registry makes the
+	// snapshot right, and then this skip is correct again for the same
+	// reason it was originally.
 	deliveredSessions := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
 	if targetSessionID == "" || deliveredSessions > 0 {
 		s.watchEvents.Publish(watchevents.Notification{

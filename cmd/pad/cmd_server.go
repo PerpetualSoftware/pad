@@ -669,13 +669,15 @@ func serveCmd() *cobra.Command {
 			// self-hosted single-process binary should keep MemoryBus and
 			// never touch Redis at all — see internal/watchevents' package
 			// doc for what each implementation does and does not fix.
+			var watchBus watchevents.Bus
 			if watchRedis != nil {
-				srv.SetWatchEventsBus(watchevents.NewRedisBus(watchRedis))
+				watchBus = watchevents.NewRedisBus(watchRedis)
 				slog.Info("Watch notification bus using Redis pub/sub")
 			} else {
-				srv.SetWatchEventsBus(watchevents.New())
+				watchBus = watchevents.New()
 				slog.Info("Watch notification bus using in-memory (single instance)")
 			}
+			srv.SetWatchEventsBus(watchBus)
 
 			// Live-session presence registry (PLAN-2558 S1). Wired
 			// unconditionally, and it is now the ONLY in-process piece
@@ -863,6 +865,18 @@ func serveCmd() *cobra.Command {
 				// above to a concrete *metrics.InstrumentedBus return value.
 				eventBus.Close()
 				slog.Info("Event bus closed")
+
+				// Same reasoning for the watch bus, and it matters for the
+				// same reason: GET /api/v1/events/stream is a long-lived
+				// handler blocked on this bus's channel, so leaving it open
+				// keeps http.Server.Shutdown waiting out its full 30s
+				// deadline (codex round 2 on BUG-2651). Closing here rather
+				// than only in srv.Stop() below also tears the Redis
+				// subscription down promptly instead of at the very end.
+				// Both Close implementations are idempotent, so the second
+				// call inside srv.Stop() is a no-op.
+				watchBus.Close()
+				slog.Info("Watch notification bus closed")
 
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()

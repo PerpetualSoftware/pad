@@ -42,26 +42,33 @@ import (
 // being precise about what that costs, because the two halves fail
 // differently:
 //
-//   - DELIVERY (fixed): a broadcast push — TargetUserID with no session
-//     id — used to reach only the sessions on whichever instance handled
-//     the POST. It now reaches all of that user's sessions. A
-//     session-targeted push likewise reaches the instance holding that
-//     session, wherever it is.
+//   - BROADCAST DELIVERY (fixed): a push with TargetUserID and no
+//     session id used to reach only the sessions on whichever instance
+//     handled the POST. It now reaches all of that user's sessions,
+//     wherever they are held.
+//   - TARGETED DELIVERY (still open, and NOT fixed by the bus): a push
+//     naming a specific session id is gated on THIS registry before it
+//     is published at all — see handlers_push.go, which skips the
+//     publish when the id is absent from the local snapshot. So a POST
+//     landing on A for a session held on B still delivers nothing. The
+//     bus would carry it; the gate means it is never put on the bus.
 //   - VISIBILITY (still open): GET /api/v1/sessions answers from ONE
 //     instance's registry, so a user whose session is held on B and who
-//     asks A sees nothing to target. That under-report is unchanged by
-//     BUG-2651 — it is neither better nor worse — so nothing regressed;
-//     a session a caller can SEE is by construction on the instance that
-//     listed it, and pushing to it works.
+//     asks A sees nothing to target. Unchanged by BUG-2651 — neither
+//     better nor worse — so nothing regressed.
 //
-// So the remaining defect is a picker that under-reports, not a push
-// that lies. Do not put the web-UI push surface (PLAN-2558 S3) in front
-// of a multi-process deployment until a shared-state SessionPresence
-// exists: a picker that silently omits half a user's sessions is its own
-// kind of dishonest, even though every session it DOES list is real and
-// reachable. SessionPresence is an interface from day one so that
-// implementation can slot in without touching the stream handler or the
-// endpoint.
+// The two open halves are the same defect wearing different clothes, and
+// one implementation closes both: a shared-state SessionPresence makes
+// the snapshot right, which makes the picker complete AND makes the
+// push gate's premise true again. Do not put the web-UI push surface
+// (PLAN-2558 S3) in front of a multi-process deployment until it exists.
+// SessionPresence is an interface from day one so it can slot in without
+// touching the stream handler or the endpoint.
+//
+// (An earlier version of this note, written with BUG-2651, claimed
+// targeted delivery was fixed too. It was not: that claim was made from
+// reading the bus and this file without reading the push handler's gate,
+// and codex round 2 caught it.)
 
 // LiveSession is one currently-connected user-scoped event stream —
 // i.e. one `GET /api/v1/events/stream` connection being held open.
