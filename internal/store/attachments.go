@@ -1014,26 +1014,23 @@ func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 // announced their arrival, and announcing their removal would hand a consumer
 // a deletion for an id it has never seen.
 //
-// I CHECKED ONE DIRECTION OF THAT AND STATED THE CONCLUSION FOR BOTH, so the
-// correction is recorded here rather than quietly fixed (Codex round 8).
+// THE IMPLICATION RUNS ONE WAY ONLY, which is the whole reason the gate below
+// exists. Never-attached implies never-announced: a row claimable by
+// ClaimNeverAttachedAttachment has item_id IS NULL, no path anywhere sets
+// attachments.item_id back to NULL on an existing row, and every birth path
+// producing a NULL item_id (CreateAttachment, CreateAttachmentTx,
+// CreateAttachmentForLiveItem's own orphan branch) is non-emitting.
 //
-// What is true, and verified: a row claimable by ClaimNeverAttachedAttachment
-// has item_id IS NULL, no path anywhere sets attachments.item_id back to NULL
-// on an existing row, and every birth path that produces a NULL item_id
-// (CreateAttachment, CreateAttachmentTx, CreateAttachmentForLiveItem's own
-// orphan branch) is non-emitting. So never-attached implies never-announced.
+// The CONVERSE is false: plenty of rows reach THIS path having never announced
+// themselves — variants (written by the thumbnail/derivation paths and
+// tombstoned by their original's cascade, so two per image upload), attachments
+// cloned by a cross-workspace copy, and attachments created by workspace
+// import.
 //
-// What does NOT follow, and what I asserted anyway: that everything reaching
-// THIS path announced itself. It does not. Rows arrive here having never
-// emitted attachment.added by at least three routes — variants (written by the
-// thumbnail/derivation paths and tombstoned by their original's cascade),
-// attachments cloned by a cross-workspace copy through CreateAttachmentTx, and
-// attachments created by workspace import.
-//
-// The emit below therefore carries the SAME gate as attachment.added — a
-// user-visible original, attached to an item — so the two are symmetric by
-// construction rather than by argument. That closes the variant route, which is
-// the systematic one.
+// So the emit carries the SAME gate as attachment.added — a user-visible
+// original, attached to an item — and the two are symmetric by construction
+// rather than by argument. That closes the variant route, which is the
+// systematic one.
 //
 // RESIDUE, stated because it is real: an import- or copy-created attachment
 // still passes that gate while never having emitted an addition, so its removal

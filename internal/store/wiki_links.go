@@ -712,7 +712,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// Emitted BEFORE resolveBrokenTitleLinks, which mutates the link INDEX
 	// rather than items — no item row changes there, so it has no members to
 	// carry and belongs outside this event.
-	members, err := s.itemSnapshotsTx(tx, cascaded)
+	members, err := s.outboxMemberSnapshotsTx(tx, cascaded)
 	if err != nil {
 		return err
 	}

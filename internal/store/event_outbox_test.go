@@ -293,10 +293,11 @@ func TestWriteOutboxTx_RejectsNonCanonicalEvent(t *testing.T) {
 	defer tx.Rollback()
 
 	err = writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: ws.ID,
-		EventType:   "item.frobnicated",
-		SubjectKind: kernelevents.SubjectItem,
-		Payload:     []byte(`{"id":"x"}`),
+		WorkspaceID:   ws.ID,
+		EventType:     "item.frobnicated",
+		SubjectKind:   kernelevents.SubjectItem,
+		Payload:       []byte(`{"id":"x"}`),
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	})
 	if err == nil {
 		t.Fatalf("writeOutboxTx accepted a non-canonical event name; the events/1 set is closed, " +
@@ -315,9 +316,10 @@ func TestWriteOutboxTx_RejectsEmptyPayload(t *testing.T) {
 	defer tx.Rollback()
 
 	err = writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: ws.ID,
-		EventType:   kernelevents.ItemCreated,
-		SubjectKind: kernelevents.SubjectItem,
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectKind:   kernelevents.SubjectItem,
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	})
 	if err == nil {
 		t.Fatalf("writeOutboxTx accepted an empty payload; binding predicates evaluate against " +
@@ -339,11 +341,12 @@ func TestWriteOutboxTx_DropsPastCascadeBound(t *testing.T) {
 	// pins time-relative predicates to this value, so accepting one would let
 	// a caller silently change how a predicate evaluates.
 	if err := writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: ws.ID,
-		EventType:   kernelevents.ItemCreated,
-		SubjectID:   "stamped",
-		Payload:     []byte(`{"id":"stamped"}`),
-		OccurredAt:  "1999-01-01T00:00:00Z",
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectID:     "stamped",
+		Payload:       []byte(`{"id":"stamped"}`),
+		OccurredAt:    "1999-01-01T00:00:00Z",
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	}); err != nil {
 		t.Fatalf("writeOutboxTx: %v", err)
 	}
@@ -360,12 +363,13 @@ func TestWriteOutboxTx_DropsPastCascadeBound(t *testing.T) {
 	// mutation itself was legitimate, only the cascade it would extend is
 	// not (SPEC-3 §L5).
 	atBound := OutboxEvent{
-		WorkspaceID: ws.ID,
-		EventType:   kernelevents.ItemCreated,
-		SubjectKind: kernelevents.SubjectItem,
-		SubjectID:   "at-bound",
-		Payload:     []byte(`{"id":"at-bound"}`),
-		Hop:         maxOutboxHop,
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectKind:   kernelevents.SubjectItem,
+		SubjectID:     "at-bound",
+		Payload:       []byte(`{"id":"at-bound"}`),
+		Hop:           maxOutboxHop,
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	}
 	if err := writeOutboxTx(tx, s, atBound); err != nil {
 		t.Fatalf("writeOutboxTx at hop %d: %v", maxOutboxHop, err)
@@ -847,11 +851,12 @@ func TestWriteOutboxTx_RejectsMalformedJSONPayload(t *testing.T) {
 	// would accept it. Validating in Go makes both backends fail identically
 	// rather than one silently persisting an undeliverable event.
 	err = writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: ws.ID,
-		EventType:   kernelevents.ItemCreated,
-		SubjectKind: kernelevents.SubjectItem,
-		SubjectID:   "x",
-		Payload:     []byte(`{"id":"x"`),
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectKind:   kernelevents.SubjectItem,
+		SubjectID:     "x",
+		Payload:       []byte(`{"id":"x"`),
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	})
 	if err == nil {
 		t.Fatalf("writeOutboxTx accepted a malformed JSON payload; on SQLite this persists an " +
@@ -1273,11 +1278,12 @@ func TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted(t *testing.T) {
 
 	// A mismatched kind is refused rather than stored.
 	err = writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: ws.ID,
-		EventType:   kernelevents.ItemCreated,
-		SubjectKind: kernelevents.SubjectComment,
-		SubjectID:   "mismatched",
-		Payload:     []byte(`{"id":"mismatched"}`),
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectKind:   kernelevents.SubjectComment,
+		SubjectID:     "mismatched",
+		Payload:       []byte(`{"id":"mismatched"}`),
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	})
 	if err == nil {
 		t.Fatalf("writeOutboxTx stored item.created under subject kind %q; the drain would "+
@@ -1286,10 +1292,11 @@ func TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted(t *testing.T) {
 
 	// An omitted kind is filled in from the taxonomy.
 	if err := writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: ws.ID,
-		EventType:   kernelevents.ItemCreated,
-		SubjectID:   "derived",
-		Payload:     []byte(`{"id":"derived"}`),
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectID:     "derived",
+		Payload:       []byte(`{"id":"derived"}`),
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	}); err != nil {
 		t.Fatalf("writeOutboxTx with no subject kind: %v", err)
 	}
@@ -1299,5 +1306,58 @@ func TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted(t *testing.T) {
 	}
 	if kind != kernelevents.SubjectItem {
 		t.Fatalf("subject_kind = %q, want %q", kind, kernelevents.SubjectItem)
+	}
+}
+
+// TestWriteOutboxTx_RejectsMismatchedPayloadFamily pins Codex round 10's
+// finding: canonical membership validates the NAME, and said nothing about
+// whether the bytes attached to it were the right shape.
+func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox family")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	// item.created paired with a REF-ONLY deletion payload: both halves are
+	// individually valid — a canonical name and well-formed JSON — and they
+	// were not meant for each other.
+	err = writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectID:     "mixed",
+		Payload:       []byte(`{"id":"mixed","workspace_id":"w"}`),
+		PayloadFamily: kernelevents.PayloadRefOnly,
+	})
+	if err == nil {
+		t.Fatalf("writeOutboxTx accepted a %s payload under %s; a consumer would parse the "+
+			"bytes as an item snapshot and find nothing it expected",
+			kernelevents.PayloadRefOnly, kernelevents.ItemCreated)
+	}
+
+	// And an undeclared family is refused too — silence must not pass for
+	// agreement.
+	err = writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   kernelevents.ItemCreated,
+		SubjectID:   "undeclared",
+		Payload:     []byte(`{"id":"undeclared"}`),
+	})
+	if err == nil {
+		t.Fatalf("writeOutboxTx accepted an event with no declared payload family")
+	}
+}
+
+// TestPayloadFamily_CoversEveryCanonicalEvent keeps the two taxonomy maps from
+// drifting: a canonical name with no declared family would be unwritable, and
+// the failure would surface as a confusing runtime rejection rather than here.
+func TestPayloadFamily_CoversEveryCanonicalEvent(t *testing.T) {
+	for _, name := range kernelevents.Canonical() {
+		if family, ok := kernelevents.PayloadFamily(name); !ok || family == "" {
+			t.Errorf("canonical event %q has no payload family", name)
+		}
 	}
 }

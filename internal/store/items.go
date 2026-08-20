@@ -2742,13 +2742,11 @@ func (s *Store) DeleteItem(id string) error {
 	// that: the UPDATE carries `deleted_at IS NULL`, so a second delete
 	// matches nothing and this line is never reached.
 	//
-	// The `preArchive != nil` check is therefore NOT a second re-delete guard
-	// today — it is unreachable for that case, and an earlier version of this
-	// comment claiming otherwise was wrong twice over (Codex rounds 3 and 4).
-	// What it IS: the guard that keeps this correct if the order or the
-	// predicate ever changes. Measured, not assumed — moving this emit above
-	// the zero-row return leaves the re-delete test green, because getItemTx
-	// filters archived rows and `preArchive` is already nil by then.
+	// The `preArchive != nil` check is therefore NOT a second re-delete guard:
+	// it is unreachable for that case today. What it IS: the guard that keeps
+	// this correct if the order or the predicate ever changes — moving this
+	// emit above the zero-row return leaves the re-delete test green, because
+	// getItemTx filters archived rows and `preArchive` is already nil by then.
 	//
 	// It also covers the ordinary case where the pre-archive read found no
 	// live row at all, which must not emit an event for an item that was not

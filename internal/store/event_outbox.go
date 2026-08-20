@@ -44,6 +44,12 @@ type OutboxEvent struct {
 	Hop         int
 	OccurredAt  string
 
+	// PayloadFamily is the shape the caller marshalled into Payload. It is a
+	// WRITE-SIDE assertion, checked against the taxonomy and never stored:
+	// the event name already determines the shape, so persisting it would
+	// create a second source of truth that could disagree with the first.
+	PayloadFamily string
+
 	// Attempts and LastError are drain bookkeeping, populated on read.
 	Attempts  int
 	LastError string
@@ -88,6 +94,16 @@ const maxOutboxHop = 4
 func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	if !kernelevents.IsCanonical(ev.EventType) {
 		return fmt.Errorf("outbox: %q is not a canonical events/1 event", ev.EventType)
+	}
+	// The caller declares which payload shape it just marshalled, and the
+	// taxonomy says which shape this event carries. Canonical membership only
+	// ever validated the NAME; without this, item.created could be stored with
+	// a ref-only deletion payload and the write would be accepted (Codex round
+	// 10). Pairing them here means an event and a payload that were not meant
+	// for each other cannot reach the table at all.
+	if want, _ := kernelevents.PayloadFamily(ev.EventType); ev.PayloadFamily != want {
+		return fmt.Errorf("outbox: event %s carries a %q payload, want %q",
+			ev.EventType, ev.PayloadFamily, want)
 	}
 	if len(ev.Payload) == 0 {
 		return fmt.Errorf("outbox: event %s has an empty payload", ev.EventType)
@@ -205,12 +221,10 @@ func marshalEventPayload(v any) ([]byte, error) {
 //
 // A POINTER, not a string with omitempty, and the distinction is the whole
 // point. An item can transition FROM no status at all — "" → "open" is a real
-// status change and item.status_changed fires for it. With omitempty on a
+// status change and item.status_changed fires for it — so with omitempty on a
 // plain string that transition dropped the key entirely, leaving a predicate
 // unable to tell "the prior status was empty" from "this event has no prior
-// status" (Codex round 6). My original reasoning — that an empty string should
-// never appear "where a prior status is meaningless" — was right about the
-// events where it IS meaningless and wrong about the one where it is not.
+// status".
 //
 // So: nil on every event that has no prior status, and present-and-possibly-
 // empty on item.status_changed, where the empty value is data.
@@ -247,7 +261,7 @@ type itemEventPayload struct {
 // Five payload shapes carry data into the outbox:
 //
 //	item (single)   — JOIN-populated assignee name + email. SCRUBBED, here.
-//	item (bulk)     — same snapshots, same scrub, applied in itemSnapshotsTx.
+//	item (bulk)     — same snapshots, same scrub, applied in outboxMemberSnapshotsTx.
 //	comment         — `author` is the comments table's OWN column, and account
 //	                  de-identification does not clear it on live rows either
 //	                  (it nulls user_id only), so a frozen copy is no more
@@ -284,10 +298,11 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 		return err
 	}
 	return writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: item.WorkspaceID,
-		EventType:   eventType,
-		SubjectID:   item.ID,
-		Payload:     payload,
+		WorkspaceID:   item.WorkspaceID,
+		EventType:     eventType,
+		SubjectID:     item.ID,
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
 	})
 }
 
@@ -307,10 +322,11 @@ func (s *Store) emitCommentEventTx(tx *sql.Tx, eventType string, comment *models
 		return err
 	}
 	return writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: comment.WorkspaceID,
-		EventType:   eventType,
-		SubjectID:   comment.ID,
-		Payload:     payload,
+		WorkspaceID:   comment.WorkspaceID,
+		EventType:     eventType,
+		SubjectID:     comment.ID,
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadCommentSnapshot,
 	})
 }
 
@@ -330,10 +346,11 @@ func (s *Store) emitAttachmentEventTx(tx *sql.Tx, eventType string, a *models.At
 		return err
 	}
 	return writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: a.WorkspaceID,
-		EventType:   eventType,
-		SubjectID:   a.ID,
-		Payload:     payload,
+		WorkspaceID:   a.WorkspaceID,
+		EventType:     eventType,
+		SubjectID:     a.ID,
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadAttachmentSnapshot,
 	})
 }
 
@@ -367,10 +384,11 @@ func (s *Store) emitMemberEventTx(tx *sql.Tx, eventType, workspaceID, userID, ro
 		return err
 	}
 	return writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: workspaceID,
-		EventType:   eventType,
-		SubjectID:   userID,
-		Payload:     payload,
+		WorkspaceID:   workspaceID,
+		EventType:     eventType,
+		SubjectID:     userID,
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadMember,
 	})
 }
 
@@ -458,9 +476,10 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 			return err
 		}
 		if err := writeOutboxTx(tx, s, OutboxEvent{
-			WorkspaceID: ws,
-			EventType:   kernelevents.ItemBulkUpdated,
-			Payload:     payload,
+			WorkspaceID:   ws,
+			EventType:     kernelevents.ItemBulkUpdated,
+			Payload:       payload,
+			PayloadFamily: kernelevents.PayloadItemBatch,
 		}); err != nil {
 			return err
 		}
@@ -468,8 +487,13 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 	return nil
 }
 
-// itemSnapshotsTx reads the given items in-tx, de-duplicated, skipping any
-// that no longer resolve.
+// outboxMemberSnapshotsTx builds the MEMBER LIST FOR AN item.bulk_updated
+// PAYLOAD. It is not a general "read these items" helper, and the name says so
+// on purpose (Codex round 10): it applies three outbox policies a maintainer
+// reusing it for ordinary snapshots would not expect and would not see fail —
+// it DE-DUPLICATES, it SILENTLY SKIPS rows that no longer resolve, and it
+// SCRUBS assignee identity. Any of those makes a general-purpose caller's
+// result quietly incomplete rather than wrong-looking.
 //
 // De-duplication is the point of taking a slice rather than reading as it
 // goes: a bulk mutation can touch the same row twice (two option renames on
@@ -486,7 +510,7 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 // design, so each row gets its own seq. A single batched read would halve it;
 // that is BUG-2718, deliberately not done here because it means a new joined
 // query on the least-reviewed path of a heavily-reviewed change.
-func (s *Store) itemSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error) {
+func (s *Store) outboxMemberSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -548,10 +572,11 @@ func (s *Store) emitRefOnlyDeletionTx(tx *sql.Tx, eventType, workspaceID, subjec
 		return err
 	}
 	return writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: workspaceID,
-		EventType:   eventType,
-		SubjectID:   subjectID,
-		Payload:     payload,
+		WorkspaceID:   workspaceID,
+		EventType:     eventType,
+		SubjectID:     subjectID,
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadRefOnly,
 	})
 }
 

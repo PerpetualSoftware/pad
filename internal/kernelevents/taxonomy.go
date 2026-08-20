@@ -73,7 +73,16 @@ const (
 	// batched.
 	ItemBulkUpdated = "item.bulk_updated"
 
+	// CommentCreated fires on comment creation. Payload: the stored comment
+	// row (body, author, item_id), not the item it hangs off — a binding that
+	// wants "a comment landed on an item matching X" filters the payload's
+	// item_id.
 	CommentCreated = "comment.created"
+
+	// CommentUpdated fires when a comment's body actually changes. A re-save
+	// of an identical body emits nothing, matching the item events, which emit
+	// only when a slice the taxonomy names moved. Payload: the post-update
+	// comment row.
 	CommentUpdated = "comment.updated"
 
 	// CommentDeleted fires on the HARD delete of a comment. Its payload is
@@ -97,8 +106,19 @@ const (
 	// bytes the system just reclaimed.
 	AttachmentRemoved = "attachment.removed"
 
+	// MemberJoined fires when a user is added to a workspace. Payload: the
+	// membership's own columns (workspace_id, user_id, role, created_at). The
+	// subject is the USER — a membership's key is the (workspace, user) pair
+	// and the workspace is already on the envelope. There is deliberately no
+	// member.left in v1: nothing forced it, and the closure rule makes that
+	// silence a versioned fact.
 	MemberJoined = "member.joined"
 
+	// Pack lifecycle events. Declared in the taxonomy because events/1 is the
+	// PUBLIC contract and its shape should not shift when packs arrive, but
+	// NOTHING EMITS THEM TODAY — there is no pack subsystem yet (phase 2+).
+	// A reader looking for their producers will not find one; that is the
+	// current state, not a missing wire-up.
 	PackInstalled = "pack.installed"
 	PackUpgraded  = "pack.upgraded"
 	PackDisabled  = "pack.disabled"
@@ -138,6 +158,69 @@ var canonical = map[string]string{
 	PackInstalled:     SubjectPack,
 	PackUpgraded:      SubjectPack,
 	PackDisabled:      SubjectPack,
+}
+
+// Payload families. Every canonical event produces exactly one payload shape,
+// and the family is what lets a writer check that an event and a payload were
+// meant for each other.
+//
+// Membership in the canonical set says the NAME is real; it says nothing about
+// whether the bytes attached to it are the right shape. Without families, a
+// caller could pair item.created with a ref-only deletion payload and the write
+// would be accepted — the taxonomy would have validated the half that was
+// already obviously correct (Codex round 10).
+const (
+	// PayloadItemSnapshot: a full item snapshot with the prior_status envelope
+	// pseudo-field.
+	PayloadItemSnapshot = "item_snapshot"
+
+	// PayloadItemBatch: member refs, the shared delta, and per-member
+	// snapshots.
+	PayloadItemBatch = "item_batch"
+
+	// PayloadCommentSnapshot / PayloadAttachmentSnapshot: the stored row.
+	PayloadCommentSnapshot    = "comment_snapshot"
+	PayloadAttachmentSnapshot = "attachment_snapshot"
+
+	// PayloadMember: the membership's own columns.
+	PayloadMember = "member"
+
+	// PayloadRefOnly: ids and parent refs, never content. The shape every
+	// hard-delete event uses, so a deletion can never re-ship what it deleted.
+	PayloadRefOnly = "ref_only"
+
+	// PayloadPack: reserved with the pack events; no producer yet.
+	PayloadPack = "pack"
+)
+
+var payloadFamilies = map[string]string{
+	ItemCreated:       PayloadItemSnapshot,
+	ItemUpdated:       PayloadItemSnapshot,
+	ItemStatusChanged: PayloadItemSnapshot,
+	ItemMoved:         PayloadItemSnapshot,
+	ItemDeleted:       PayloadItemSnapshot,
+	ItemRestored:      PayloadItemSnapshot,
+	ItemBulkUpdated:   PayloadItemBatch,
+	CommentCreated:    PayloadCommentSnapshot,
+	CommentUpdated:    PayloadCommentSnapshot,
+	CommentDeleted:    PayloadRefOnly,
+	AttachmentAdded:   PayloadAttachmentSnapshot,
+	AttachmentRemoved: PayloadRefOnly,
+	MemberJoined:      PayloadMember,
+	PackInstalled:     PayloadPack,
+	PackUpgraded:      PayloadPack,
+	PackDisabled:      PayloadPack,
+}
+
+// PayloadFamily returns the payload shape a canonical event carries, and false
+// if the name is not canonical.
+//
+// A writer that knows which shape it is about to marshal calls this to confirm
+// the event name agrees, so an event and a payload that were not meant for each
+// other cannot be stored together.
+func PayloadFamily(name string) (string, bool) {
+	family, ok := payloadFamilies[name]
+	return family, ok
 }
 
 // IsCanonical reports whether name is in the events/1 set.

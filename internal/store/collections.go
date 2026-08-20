@@ -789,7 +789,7 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 	// function rolls the caller's transaction back, so the row count describes
 	// writes that did not commit — a caller observing (N, err) would be reading
 	// a number for changes that never happened (Codex round 4).
-	members, err := s.itemSnapshotsTx(tx, touchedIDs)
+	members, err := s.outboxMemberSnapshotsTx(tx, touchedIDs)
 	if err != nil {
 		return 0, err
 	}
