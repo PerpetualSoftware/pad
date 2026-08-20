@@ -9,6 +9,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -138,6 +139,57 @@ func TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround(t *testing.T) {
 			!strings.Contains(lower, "no working remote") && !strings.Contains(lower, "rather than clearing") {
 			t.Errorf("%q hint mentions the github_pr field write without saying it does not work; got: %s", cmd, hint)
 		}
+	}
+}
+
+// TestReservedKeyRefusalsAgreeAcrossTransports — Codex round 7.
+//
+// Both reserved-key refusals must reach an agent as validation_failed no
+// matter which dispatcher delivered them, because that is what the catalog and
+// instructions.md tell agents to branch on. The move/copy refusal (BUG-2674)
+// matched none of the stdio patterns and arrived as server_error: the same
+// deterministic 400 wearing a transient-looking code on one transport only.
+//
+// Driven through the REAL classifiers with the REAL server message text, so a
+// reworded refusal that stops matching fails here rather than in the field.
+func TestReservedKeyRefusalsAgreeAcrossTransports(t *testing.T) {
+	// Verbatim from handlers_items.go's move/copy override gate.
+	const moveRefusal = "Error: Field(s) reserved for system metadata and not settable here: implementation_notes"
+	// Verbatim shape from the update gate's message builder.
+	const updateRefusal = `Error: "implementation_notes" is system metadata and cannot be set through a field update.`
+
+	for _, tc := range []struct {
+		name   string
+		stderr string
+		body   string
+	}{
+		{"move/copy override refusal (BUG-2674)", moveRefusal,
+			`{"error":{"code":"malformed_override","message":"Field(s) reserved for system metadata and not settable here: implementation_notes"}}`},
+		{"update field-patch refusal (BUG-2627)", updateRefusal,
+			`{"error":{"code":"validation_error","message":"\"implementation_notes\" is system metadata and cannot be set through a field update."}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdio := classifyExecError(context.Background(), []string{"item", "move"}, errors.New("exit 1"), tc.stderr, nil)
+			stdioEnv, ok := stdio.StructuredContent.(ErrorEnvelope)
+			if !ok {
+				t.Fatalf("stdio: expected ErrorEnvelope, got %T", stdio.StructuredContent)
+			}
+
+			remote := classifyHTTPStatus(context.Background(), "item move", 400, []byte(tc.body), nil)
+			remoteEnv, ok := remote.StructuredContent.(ErrorEnvelope)
+			if !ok {
+				t.Fatalf("remote: expected ErrorEnvelope, got %T", remote.StructuredContent)
+			}
+
+			if remoteEnv.Error.Code != ErrValidationFailed {
+				t.Errorf("remote code: got %q, want %q", remoteEnv.Error.Code, ErrValidationFailed)
+			}
+			if stdioEnv.Error.Code != remoteEnv.Error.Code {
+				t.Errorf("the same refusal is classified differently per transport: stdio=%q remote=%q — "+
+					"server_error reads as transient and invites a retry that always fails",
+					stdioEnv.Error.Code, remoteEnv.Error.Code)
+			}
+		})
 	}
 }
 
