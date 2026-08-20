@@ -4548,10 +4548,37 @@ func (s *Store) moveItemWithPreCheckOnce(
 	// read through that key may be empty, which correctly reads as "entered".
 	moveDoneKey := s.doneFieldKey(targetCollectionID)
 	oldFields := existing.Fields
+
+	// preMove is the item as it stands UNDER THE LOCK, immediately before the
+	// UPDATE. It is what the event decisions below compare against, and it is
+	// deliberately not `existing`: `existing` is only refreshed in-tx on the
+	// precheck path, so on the no-precheck path it is the PRE-LOCK pool read
+	// and every field on it — CollectionID included — may already be stale.
+	//
+	// That matters twice over for TASK-2658. A stale CollectionID makes the
+	// item.moved decision wrong outright. And itemUpdatedSliceChanged
+	// documents a precondition that BOTH snapshots come from getItemTx,
+	// because a pool read and an in-tx read can render join-populated fields
+	// differently and the diff would report those differences as changes —
+	// comparing `existing` against the post-move snapshot violated exactly
+	// that precondition (Codex round 1, P2).
+	preMove := existing
 	if precheck == nil {
-		if fresh, ferr := s.getItemTx(tx, itemID); ferr == nil && fresh != nil {
-			oldFields = fresh.Fields
+		// Read it once, and treat a failure as a failure. The previous shape
+		// tolerated a read error by silently keeping the pre-lock value, which
+		// only ever degraded from_status; now it would also silently decide
+		// which events to emit, so a degraded read is no longer an acceptable
+		// outcome. Under a held lock on a row we just resolved live, an error
+		// or a missing row means something is genuinely wrong.
+		fresh, ferr := s.getItemTx(tx, itemID)
+		if ferr != nil {
+			return nil, fmt.Errorf("re-read item under lock: %w", ferr)
 		}
+		if fresh == nil {
+			return nil, sql.ErrNoRows
+		}
+		oldFields = fresh.Fields
+		preMove = fresh
 	}
 
 	// A move's field OVERRIDES can inject a brand-new pad-attachment:
@@ -4624,7 +4651,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, fmt.Errorf("read post-move snapshot: %w", err)
 	}
 	if moved != nil {
-		if targetCollectionID != existing.CollectionID {
+		if targetCollectionID != preMove.CollectionID {
 			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, ""); err != nil {
 				return nil, err
 			}
@@ -4637,7 +4664,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 		// itemUpdatedSliceChanged already excludes collection_id and the
 		// derived collection_*/ref keys, so a pure relocation does not leak
 		// into item.updated's slice.
-		otherChanged, cerr := itemUpdatedSliceChanged(existing, moved, moveDoneKey)
+		otherChanged, cerr := itemUpdatedSliceChanged(preMove, moved, moveDoneKey)
 		if cerr != nil {
 			return nil, cerr
 		}
