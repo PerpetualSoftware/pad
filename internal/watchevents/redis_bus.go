@@ -366,6 +366,30 @@ func (b *RedisBus) replaySince(sinceID int64) []Notification {
 			return nil
 		}
 	}
+
+	// THE TRAILING GAP, known and open (codex round 10). Everything above
+	// reasons about what this instance HAS received. It cannot see a
+	// notification it missed at the END of the sequence: if we hold up to
+	// 100, miss 101 to a disconnect, and a client resumes from 100 before
+	// 102 arrives, there is nothing above 100 in the buffer and this
+	// answers "caught up". The hole only becomes visible when 102 lands,
+	// which is too late for the connection that already resumed.
+	//
+	// The one thing that WOULD reveal it is Redis itself: a GET of
+	// redisWatchSeqKey higher than lastAppendedID means ids exist that we
+	// have not seen. That same read also reveals a counter reset (a value
+	// BELOW ours), so one mechanism closes both open windows.
+	//
+	// Not done here because it is a genuine trade rather than an omission,
+	// and it is product-visible: INCR happens before the message
+	// propagates, so the counter legitimately runs ahead of any instance
+	// for microseconds after every publish. A strict comparison would turn
+	// normal in-flight traffic into spurious sync_required responses, and
+	// there is no principled tolerance to pick. Spurious resyncs are
+	// recoverable and a lost nudge is not — which is the argument FOR doing
+	// it — but that is a call about how chatty the resync path should be,
+	// so it goes to the plan rather than being settled here. Raised on
+	// BUG-2651's trail with both halves.
 	return b.replay.since(sinceID)
 }
 

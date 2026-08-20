@@ -875,6 +875,19 @@ func serveCmd() *cobra.Command {
 				// subscription down promptly instead of at the very end.
 				// Both Close implementations are idempotent, so the second
 				// call inside srv.Stop() is a no-op.
+				//
+				// THE TRADE, which is the same one eventBus above already
+				// makes and is worth naming (codex round 10): closing BEFORE
+				// Shutdown drains handlers means a push already in flight can
+				// Publish into a closed bus, be dropped, and still return
+				// HTTP 200 with pushed:true. Closing AFTER instead would hold
+				// Shutdown for its full 30s deadline on any open stream,
+				// every time. Neither is free; this side loses a message in a
+				// window measured in milliseconds during a deliberate
+				// shutdown, the other side delays every shutdown by half a
+				// minute. Making the handler actually LEARN the publish was
+				// dropped needs Bus.Publish to report it, which is an
+				// interface change and a different unit.
 				watchBus.Close()
 				slog.Info("Watch notification bus closed")
 
