@@ -1,12 +1,10 @@
 <script lang="ts">
 	import type { Editor } from '@tiptap/core';
 	import type { Collection, Item } from '$lib/types';
-	import { parseSchema } from '$lib/types';
+	import { parseSchema, isAgentCollection } from '$lib/types';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-
-	const AGENT_SLUGS = ['conventions', 'playbooks'];
 
 	let {
 		editor,
@@ -36,10 +34,11 @@
 
 	let menuEl = $state<HTMLDivElement>();
 
-	// Sort collections: non-agent first, agent slugs last
+	// Sort collections: non-agent first, agent-facing last. Membership comes
+	// from the bootstrap_include trait (SPEC-5), not a slug list. TASK-2657.
 	let sortedCollections = $derived.by(() => {
-		const normal = collections.filter((c) => !AGENT_SLUGS.includes(c.slug));
-		const agent = collections.filter((c) => AGENT_SLUGS.includes(c.slug));
+		const normal = collections.filter((c) => !isAgentCollection(c));
+		const agent = collections.filter((c) => isAgentCollection(c));
 		return [...normal, ...agent];
 	});
 

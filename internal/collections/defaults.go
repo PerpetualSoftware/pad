@@ -12,8 +12,14 @@ type DefaultCollection struct {
 	Description string
 	Schema      models.CollectionSchema
 	Settings    models.CollectionSettings
-	SortOrder   int
-	IsSystem    bool // System collections (conventions, playbooks) are always visible to members
+	// Traits declares the collection's kernel traits (SPEC-5). Templates
+	// declare them so a NEW workspace gets them at seed time; existing
+	// workspaces are backfilled by migration 080 / pg 058. Between the two,
+	// no kernel behavior is inferred from a collection's slug any more.
+	// TASK-2657.
+	Traits    models.CollectionTraits
+	SortOrder int
+	IsSystem  bool // System collections (conventions, playbooks) are always visible to members
 }
 
 // Defaults returns the six default collections for a new workspace.

@@ -413,6 +413,12 @@ export interface Collection {
 	description: string;
 	schema: string;
 	settings: string;
+	/**
+	 * Kernel-trait declarations (SPEC-5), as a JSON string like `schema` and
+	 * `settings`. Parse with `parseTraits`. Optional because archives and
+	 * fixtures predating TASK-2657 don't carry it.
+	 */
+	traits?: string;
 	sort_order: number;
 	is_default: boolean;
 	is_system: boolean;
@@ -421,6 +427,49 @@ export interface Collection {
 	item_count?: number;
 	active_item_count?: number;
 	prefix: string;
+}
+
+/** One bootstrap_include declaration — see SPEC-5 §Collection traits. */
+export interface BootstrapInclude {
+	mode: 'bodies' | 'metadata';
+	filter?: Record<string, string>;
+	key: string;
+}
+
+export interface CollectionTraits {
+	bootstrap_include?: BootstrapInclude[];
+	invocation_field?: string;
+	artifact_kind?: { kind: string };
+}
+
+/**
+ * Parse a collection's traits blob. Returns an empty object for absent,
+ * empty, or malformed values — a collection that declares nothing is the
+ * common case, not an error worth surfacing in the UI.
+ */
+export function parseTraits(collection: Pick<Collection, 'traits'>): CollectionTraits {
+	if (!collection.traits) return {};
+	try {
+		const parsed = JSON.parse(collection.traits);
+		return parsed && typeof parsed === 'object' ? (parsed as CollectionTraits) : {};
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * True when a collection's items are loaded into an agent's boot context —
+ * i.e. it declares at least one bootstrap_include (SPEC-5).
+ *
+ * This is what the sidebar and the editor's collection pickers group under
+ * "Agent" instead of listing beside ordinary work collections. It replaced a
+ * hardcoded `['conventions', 'playbooks']` array repeated at five call sites,
+ * which mis-grouped any workspace that renamed either collection and could
+ * never recognise a third agent-facing collection. TASK-2657.
+ */
+export function isAgentCollection(collection: Pick<Collection, 'traits'>): boolean {
+	const traits = parseTraits(collection);
+	return (traits.bootstrap_include?.length ?? 0) > 0;
 }
 
 export interface CollectionCreate {

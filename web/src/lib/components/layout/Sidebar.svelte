@@ -9,7 +9,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
-	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
+	import { parseSchema, parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import { getActiveKey } from '$lib/nav/destinations';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -73,13 +73,15 @@
 	let reorderGeneration = 0;
 	const flipDurationMs = 150;
 
-	const agentSlugs = ['conventions', 'playbooks'];
-
+	// Agent-facing collections are those DECLARING a bootstrap_include trait
+	// (SPEC-5) — i.e. whose items load into an agent's boot context — rather
+	// than a hardcoded slug list, which mis-grouped any workspace that renamed
+	// them and could never see a third one. TASK-2657.
 	let regularCollections = $derived(
-		collectionStore.collections.filter(c => !agentSlugs.includes(c.slug))
+		collectionStore.collections.filter(c => !isAgentCollection(c))
 	);
 	let agentCollections = $derived(
-		collectionStore.collections.filter(c => agentSlugs.includes(c.slug))
+		collectionStore.collections.filter(c => isAgentCollection(c))
 	);
 
 	let pickerCollections = $derived(regularCollections);
@@ -595,7 +597,7 @@
 				{/if}
 			</nav>
 
-			{#if !agentSlugs.includes(activeCollectionSlug ?? '') && activeCollectionSlug && activeColl}
+			{#if activeCollectionSlug && activeColl && !isAgentCollection(activeColl)}
 			<div class="actions">
 				<button
 					class="new-item-btn"

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -85,7 +86,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 
 	// Collections
 	rows, err := s.db.Query(s.q(`
-		SELECT id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, is_system, created_at, updated_at
+		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at
 		FROM collections WHERE workspace_id = ? AND deleted_at IS NULL
 		ORDER BY sort_order, name`), ws.ID)
 	if err != nil {
@@ -95,7 +96,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	for rows.Next() {
 		var c models.CollectionExport
 		var isDefault, isSystem bool
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
 		c.IsDefault = isDefault
@@ -243,6 +244,39 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	itemMap := make(map[string]string)
 
 	// Import collections
+	// Workspace-level trait conflicts in the ARCHIVE. The API gate refuses a
+	// duplicate artifact_kind / invocation_field at create and update, but an
+	// archive is written elsewhere and arrives whole, so it can carry a pair
+	// the gate never saw. Import does not REFUSE it — an archive is often the
+	// only copy of a workspace, and rejecting the whole restore over an
+	// ambiguity the resolvers can still work through would be the wrong
+	// trade. What must not happen is that it lands silently: with two
+	// declarations live, which collection receives an imported artifact or
+	// answers an invocation slug depends on collection order. Warn so the
+	// operator can fix it. Codex round 8.
+	seenKinds := map[string]string{}
+	invocationCollection := ""
+	for _, c := range data.Collections {
+		if t, err := models.ParseCollectionTraits(c.Traits); err == nil {
+			if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
+				if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
+					slog.Warn("import: archive declares one artifact kind on two collections; artifact routing will depend on collection order until one is changed",
+						"kind", t.ArtifactKind.Kind, "collections", prev+","+c.Slug, "workspace_id", ws.ID)
+				} else {
+					seenKinds[t.ArtifactKind.Kind] = c.Slug
+				}
+			}
+			if t.InvocationField != "" {
+				if invocationCollection != "" {
+					slog.Warn("import: archive declares invocation routing on two collections; playbook resolution will depend on collection order until one is changed",
+						"collections", invocationCollection+","+c.Slug, "workspace_id", ws.ID)
+				} else {
+					invocationCollection = c.Slug
+				}
+			}
+		}
+	}
+
 	for _, c := range data.Collections {
 		newCollID := newID()
 		collMap[c.ID] = newCollID
@@ -260,11 +294,87 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// boundary rather than at the schema level. IDEA-1488 extends
 		// this to log-and-coerce on non-empty malformed JSON.
 		settings := coerceJSONForImport(c.Settings, "{}", "collections.settings", c.ID, ws.ID, true)
+		// Same coercion for traits, and for the same reason: this INSERT
+		// supplies the column explicitly, so the NOT NULL DEFAULT '{}' never
+		// fires. Archives written before TASK-2657 carry no traits key at
+		// all, which lands here as "" — a pre-traits archive imports as a
+		// collection that declares nothing, which is the honest reading.
+		traits := coerceJSONForImport(c.Traits, "{}", "collections.traits", c.ID, ws.ID, true)
+		// coerceJSONForImport only guarantees the blob is valid JSON. Traits
+		// are declarations that switch kernel behavior on, so an import is
+		// held to the same grammar the API enforces — otherwise a
+		// hand-edited or foreign archive can persist a declaration that
+		// parses as JSON, fails the trait parse, and degrades to "declares
+		// nothing", silently disabling bootstrap or invocation routing for
+		// the imported workspace.
+		//
+		// Degrade rather than reject: an archive is often the only copy of a
+		// workspace, and refusing the whole import over one bad declaration
+		// would be worse than importing it with that collection declaring
+		// nothing — which is exactly what a pre-traits archive does anyway.
+		// Logged so it isn't silent. TASK-2657.
+		// Reject declarations that don't parse or don't validate. The log
+		// deliberately does NOT claim what the collection ends up with —
+		// inference below may still give it the canonical set, and an earlier
+		// version of this said "importing with no declarations" and was then
+		// contradicted three lines later. Codex round 6.
+		discarded := false
+		if parsed, perr := models.ParseCollectionTraits(traits); perr != nil {
+			slog.Warn("import: collection traits could not be parsed; discarding them",
+				"collection", c.Slug, "workspace_id", ws.ID, "error", perr)
+			traits = "{}"
+			discarded = true
+		} else if verr := parsed.Validate(); verr != nil {
+			slog.Warn("import: collection traits failed validation; discarding them",
+				"collection", c.Slug, "workspace_id", ws.ID, "error", verr)
+			traits = "{}"
+			discarded = true
+		}
+
+		// COMPATIBILITY INFERENCE for archives written before traits existed.
+		//
+		// Without this, importing a pre-TASK-2657 export silently reproduces
+		// exactly the defect traits were introduced to fix ([[BUG-2702]]): the
+		// migration backfill cannot help, because it ran long before these
+		// rows were inserted, so the imported conventions/playbooks
+		// collections would carry no declarations and the workspace would
+		// come up with no always-on rules, no playbook invocation routing and
+		// no artifact export. The archive looks fine and the workspace is
+		// quietly inert.
+		//
+		// Only applied when the collection declares NOTHING. A declaration
+		// that survived the round trip is authoritative, including the
+		// deliberate empty one a user can set — but an archive that predates
+		// the column cannot be distinguished from that case, and restoring a
+		// working workspace is worth more than honouring a deliberate clear
+		// that only round-trips through an export. Slug-keyed for the same
+		// reason the migration is: on a row with no declarations, the slug is
+		// the only evidence of intent that exists. Codex round 4.
+		if inferred := collections.CanonicalTraitsForSlug(c.Slug); !inferred.IsZero() {
+			if current, err := models.ParseCollectionTraits(traits); err == nil && current.IsZero() {
+				if encoded, err := inferred.JSON(); err == nil {
+					// Two different situations reach here and the log must
+					// distinguish them: an archive that never had traits
+					// (expected, benign) versus one whose declarations were
+					// just thrown away (a data problem the operator should
+					// know about, even though the outcome is a working
+					// collection either way).
+					if discarded {
+						slog.Warn("import: collection's invalid declarations were discarded; substituting the canonical set for its slug",
+							"collection", c.Slug, "workspace_id", ws.ID)
+					} else {
+						slog.Info("import: collection carried no trait declarations; inferring the canonical set from its slug",
+							"collection", c.Slug, "workspace_id", ws.ID)
+					}
+					traits = encoded
+				}
+			}
+		}
 
 		_, err := tx.Exec(s.q(`
-			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, prefix, sort_order, is_default, is_system, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
+			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, traits, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
 			c.CreatedAt, c.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)

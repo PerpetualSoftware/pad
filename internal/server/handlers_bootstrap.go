@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
@@ -37,7 +38,19 @@ type AgentBootstrap struct {
 	ConventionIndex []AgentBootstrapConventionMeta `json:"convention_index"`
 	Roles           []BootstrapRole                `json:"roles"`
 	Playbooks       []AgentBootstrapPlaybookMeta   `json:"playbooks"`
-	Dashboard       *BootstrapDashboard            `json:"dashboard,omitempty"`
+	// BootstrapIncludes carries every boot payload a workspace declares
+	// beyond the three first-party ones above (SPEC-5 bootstrap_include).
+	//
+	// The three named keys are first-party VIEWS with bespoke projections
+	// that the CLI, skill, MCP, and web already consume; they keep their
+	// shape and are fed from the same declarations. This array is what makes
+	// the surface generic rather than three hardcoded payloads: a collection
+	// declaring an include under any other key reaches agents through it with
+	// no kernel change. Empty in every workspace that declares only the
+	// defaults, which is why it is omitempty — a payload nobody declared
+	// should not cost bytes at every boot. TASK-2657.
+	BootstrapIncludes []BootstrapIncludeGroup `json:"bootstrap_includes,omitempty"`
+	Dashboard         *BootstrapDashboard     `json:"dashboard,omitempty"`
 	// NeedsOnboarding is true when the workspace has ZERO user-created
 	// items — i.e. nothing beyond what SeedCollectionsFromTemplate seeded
 	// at init time. The agent skill reads this on every /pad invocation
@@ -395,20 +408,6 @@ const (
 	bootstrapByRoleCap         = 5
 )
 
-// isCollectionSlugVisible reports whether the named collection survived
-// the visibility filter. Used by the bootstrap path to gate
-// convention/playbook queries on whether the caller can see those
-// collections at all. The slice we're checking is already-filtered, so
-// presence implies visibility.
-func isCollectionSlugVisible(filtered []models.Collection, slug string) bool {
-	for _, c := range filtered {
-		if c.Slug == slug {
-			return true
-		}
-	}
-	return false
-}
-
 // BuildAgentBootstrap assembles the bootstrap blob from store queries.
 // This is the single canonical code path; the HTTP handler, the MCP
 // resource handler, and the MCP `pad_set_workspace` embed all call this.
@@ -494,29 +493,41 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		subItemIDs = grantedItemIDs
 	}
 
+	// Resolve which collections DECLARE boot payloads (SPEC-5
+	// bootstrap_include). This replaced the hardcoded "conventions" /
+	// "playbooks" slugs: bootstrap now asks the workspace what feeds each
+	// payload, so a renamed collection keeps feeding it ([[BUG-2702]]) and a
+	// collection that declares an include participates without kernel changes.
+	// TASK-2657.
+	//
+	// Derived from the collections ALREADY loaded above rather than re-queried.
+	// A second read would cost a full collection scan per bootstrap for data
+	// this request is holding, and — worse — would let the payload mix two
+	// snapshots, so a concurrent collection edit could produce a response whose
+	// declarations disagree with the collection metadata beside them. Codex
+	// round 3. Note this list is the VISIBILITY-FILTERED one, which is why the
+	// per-source visibility gate below is belt-and-braces for restricted
+	// callers rather than the only check.
+	traited := traitedFromModelCollections(collections)
+
 	// Conventions — only the always-on, active set, restricted by the
 	// caller's authorized view. A guest with a grant to one specific
 	// convention item gets only that item, not the whole always-on set.
-	conventionsCollVisible := visibleIDs == nil || isCollectionSlugVisible(collections, "conventions")
-	if conventionsCollVisible {
-		convs, cerr := s.collectAlwaysOnConventions(workspaceID, subCollIDs, subItemIDs)
-		if cerr != nil {
-			return nil, cerr
-		}
-		out.Conventions = convs
-
-		// convention_index: metadata-only catalog of EVERY active
-		// convention (all triggers), so the triggered set is discoverable
-		// without shipping bodies. See AgentBootstrapConventionMeta.
-		idx, ierr := s.collectConventionIndex(workspaceID, subCollIDs, subItemIDs)
-		if ierr != nil {
-			return nil, ierr
-		}
-		out.ConventionIndex = idx
-	} else {
-		out.Conventions = []AgentBootstrapConvention{}
-		out.ConventionIndex = []AgentBootstrapConventionMeta{}
+	// The always-on/active filter is the DECLARATION's, not this code's.
+	convItems, cerr := s.collectBootstrapSourceItems(workspaceID, traited, bootstrapKeyConventions, true, visibleIDs, subCollIDs, subItemIDs)
+	if cerr != nil {
+		return nil, cerr
 	}
+	out.Conventions = projectBootstrapConventions(convItems)
+
+	// convention_index: metadata-only catalog of EVERY active
+	// convention (all triggers), so the triggered set is discoverable
+	// without shipping bodies. See AgentBootstrapConventionMeta.
+	idxItems, ierr := s.collectBootstrapSourceItems(workspaceID, traited, bootstrapKeyConventionIndex, false, visibleIDs, subCollIDs, subItemIDs)
+	if ierr != nil {
+		return nil, ierr
+	}
+	out.ConventionIndex = projectConventionIndex(idxItems)
 
 	// Agent roles — workspace-scoped, not collection-bound. Item counts
 	// MUST be recomputed below for restricted callers from the same
@@ -594,16 +605,23 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	// Playbooks (metadata only) — restricted to the caller's authorized
 	// view. A guest granted one specific playbook item sees that one,
 	// not the whole collection.
-	playbooksCollVisible := visibleIDs == nil || isCollectionSlugVisible(collections, "playbooks")
-	if playbooksCollVisible {
-		playbooks, perr := s.collectPlaybookMetadata(workspaceID, subCollIDs, subItemIDs)
-		if perr != nil {
-			return nil, perr
-		}
-		out.Playbooks = playbooks
-	} else {
-		out.Playbooks = []AgentBootstrapPlaybookMeta{}
+	pbItems, perr := s.collectBootstrapSourceItems(workspaceID, traited, bootstrapKeyPlaybooks, true, visibleIDs, subCollIDs, subItemIDs)
+	if perr != nil {
+		return nil, perr
 	}
+	out.Playbooks = projectPlaybookMetadata(pbItems)
+
+	// Any OTHER declared payload key. The three above are first-party VIEWS
+	// with bespoke projections that agents already consume; every other key a
+	// workspace declares surfaces here in the generic shape. This is what
+	// makes the boot surface genuinely generic rather than three hardcoded
+	// payloads wearing a trait costume — a collection can declare an include
+	// under a new key and it reaches agents with no kernel change.
+	extra, xerr := s.collectGenericBootstrapIncludes(workspaceID, traited, visibleIDs, subCollIDs, subItemIDs)
+	if xerr != nil {
+		return nil, xerr
+	}
+	out.BootstrapIncludes = extra
 
 	// Dashboard — recreate via the existing handler logic if a request
 	// context is available, then wrap in BootstrapDashboard so the
@@ -640,19 +658,55 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 // means "no restriction" (full member); non-nil collIDs + non-nil
 // itemIDs is the guest-with-item-grants shape from guestResourceFilter.
 // A guest granted access to a single convention only sees that one.
-func (s *Server) collectAlwaysOnConventions(workspaceID string, collIDs []string, itemIDs []string) ([]AgentBootstrapConvention, error) {
-	items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-		CollectionSlug: "conventions",
-		CollectionIDs:  collIDs,
-		ItemIDs:        itemIDs,
-		Fields: map[string]string{
-			"status":  "active",
-			"trigger": "always",
-		},
-	})
-	if err != nil {
-		return nil, err
+// collectBootstrapSourceItems runs every declaration feeding `key` and returns
+// the union of their items.
+//
+// This is the one query that replaced three slug-bound ones. What used to be
+// hardcoded here — which collection, and which field filter — now comes from
+// the declarations: the collection is whichever one declares the key, and the
+// filter is the declaration's own equality map. Nothing in this function names
+// a collection or a field value.
+//
+// More than one collection may feed a key; results are concatenated in
+// collection order, and each caller's projection sorts the union.
+//
+// Per-caller visibility is preserved exactly as before: a declaring collection
+// the caller can't see contributes nothing, and collIDs/itemIDs scope the
+// underlying query for guests with item-level grants. TASK-2657.
+func (s *Server) collectBootstrapSourceItems(workspaceID string, traited []collections.TraitedCollection, key string, needsContent bool, visibleIDs []string, collIDs []string, itemIDs []string) ([]models.Item, error) {
+	sources := collections.FindBootstrapIncludes(traited, key)
+	var out []models.Item
+	for _, src := range sources {
+		// Collection-level visibility gate, matching the pre-trait behavior:
+		// nil visibleIDs means a full member (no restriction).
+		if visibleIDs != nil && !isCollectionVisible(src.Collection.ID, visibleIDs) {
+			continue
+		}
+		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
+			CollectionSlug: src.Collection.Slug,
+			CollectionIDs:  collIDs,
+			ItemIDs:        itemIDs,
+			Fields:         src.Include.Filter,
+			// NoContent is a QUERY optimization and is NOT the same question
+			// as the declaration's mode. Mode decides whether bodies are
+			// SHIPPED; some metadata projections still have to READ the body
+			// to derive a field from it — the playbook projection computes
+			// `summary` from the markdown it never emits. Deciding this from
+			// mode alone silently emptied every playbook summary, so the
+			// caller that owns the projection decides.
+			NoContent: !needsContent,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
 	}
+	return out, nil
+}
+
+// projectBootstrapConventions renders convention items into the bodies-mode
+// bootstrap shape, sorted by priority (must > should > nice-to-have) then ref.
+func projectBootstrapConventions(items []models.Item) []AgentBootstrapConvention {
 	out := make([]AgentBootstrapConvention, 0, len(items))
 	for _, it := range items {
 		fields := map[string]any{}
@@ -680,39 +734,19 @@ func (s *Server) collectAlwaysOnConventions(workspaceID string, collIDs []string
 		}
 		return out[i].Ref < out[j].Ref
 	})
-	return out, nil
+	return out
 }
 
-// collectConventionIndex returns the metadata-only catalog of EVERY
-// active convention in the workspace (all triggers, always-on included),
-// projected into AgentBootstrapConventionMeta. Bodies are NOT loaded —
-// the query uses NoContent so the potentially-large markdown column never
-// leaves the DB. This backs AgentBootstrap.ConventionIndex; see that
-// field + AgentBootstrapConventionMeta for why a body-less index is the
-// point (triggered conventions must be discoverable without their bodies
-// flooding the bootstrap). TASK-2004.
-//
-// collIDs / itemIDs scope the underlying ListItems call the same way
-// collectAlwaysOnConventions does: nil collIDs means "no restriction"
-// (full member); non-nil collIDs + non-nil itemIDs is the
-// guest-with-item-grants shape. A guest granted one convention sees only
-// that one in the index.
+// projectConventionIndex renders convention items into the metadata-only
+// catalog shape. Bodies are NOT included — the declaration feeding this key
+// runs in metadata mode, so the markdown column never leaves the DB. See
+// AgentBootstrap.ConventionIndex + AgentBootstrapConventionMeta for why a
+// body-less index is the point (triggered conventions must be discoverable
+// without their bodies flooding the bootstrap). TASK-2004.
 //
 // Sorted by trigger, then ref for a stable, grouped order so an agent can
 // eyeball "how many on-implement conventions exist" at a glance.
-func (s *Server) collectConventionIndex(workspaceID string, collIDs []string, itemIDs []string) ([]AgentBootstrapConventionMeta, error) {
-	items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-		CollectionSlug: "conventions",
-		CollectionIDs:  collIDs,
-		ItemIDs:        itemIDs,
-		NoContent:      true,
-		Fields: map[string]string{
-			"status": "active",
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
+func projectConventionIndex(items []models.Item) []AgentBootstrapConventionMeta {
 	out := make([]AgentBootstrapConventionMeta, 0, len(items))
 	for _, it := range items {
 		fields := map[string]any{}
@@ -734,7 +768,7 @@ func (s *Server) collectConventionIndex(workspaceID string, collIDs []string, it
 		}
 		return out[i].Ref < out[j].Ref
 	})
-	return out, nil
+	return out
 }
 
 // conventionPriorityRank ranks convention priority strings
@@ -755,22 +789,160 @@ func conventionPriorityRank(p string) int {
 	}
 }
 
-// collectPlaybookMetadata returns every playbook in the workspace projected
-// down to the metadata shape. Bodies are NOT included.
+// bootstrapGenericIncludeCap bounds how many items ONE declared payload may
+// contribute to the boot response.
 //
-// collIDs / itemIDs scope the underlying ListItems call: nil collIDs
-// means "no restriction" (full member); non-nil collIDs + non-nil
-// itemIDs is the guest-with-item-grants shape from guestResourceFilter.
-// A guest granted access to a single playbook only sees that one.
-func (s *Server) collectPlaybookMetadata(workspaceID string, collIDs []string, itemIDs []string) ([]AgentBootstrapPlaybookMeta, error) {
-	items, err := s.store.ListItems(workspaceID, models.ItemListParams{
-		CollectionSlug: "playbooks",
-		CollectionIDs:  collIDs,
-		ItemIDs:        itemIDs,
-	})
-	if err != nil {
-		return nil, err
+// SPEC-0 L4: boot-visible content is budgeted, and overflow degrades to
+// on-demand loading rather than an unbounded payload. Without a cap here, a
+// single declaration — `{mode: bodies, filter: {}}` on a collection with ten
+// thousand items — makes every agent's boot arbitrarily large, and in bodies
+// mode that is every item's full markdown. Nothing in the trait grammar stops
+// a workspace from declaring that, and it should not have to: the budget is
+// the HOST's to impose, per L4.
+//
+// The three first-party payloads are deliberately NOT capped here. They have
+// shipped uncapped since before traits, and silently truncating an existing
+// workspace's always-on conventions would be a behavior change well outside
+// this unit — an agent losing rules it has been following is worse than a
+// large payload. Their budget is a separate question, noted rather than
+// bundled. Codex round 5.
+const bootstrapGenericIncludeCap = 50
+
+// BootstrapIncludeGroup is one declared boot payload rendered generically:
+// which collection declared it, in which mode, and the items it selected.
+type BootstrapIncludeGroup struct {
+	Key        string                 `json:"key"`
+	Collection string                 `json:"collection"`
+	Mode       string                 `json:"mode"`
+	Items      []BootstrapIncludeItem `json:"items"`
+	// OverflowCount is how many further items the declaration selected but
+	// the boot budget dropped. Non-zero tells an agent the payload is a
+	// prefix and the rest is available on demand, rather than letting it read
+	// a truncated list as the complete set. Mirrors the dashboard's
+	// `*_overflow_count` fields.
+	OverflowCount int `json:"overflow_count,omitempty"`
+}
+
+// BootstrapIncludeItem is the generic item projection for a declared payload.
+// Content is present only for a bodies-mode declaration.
+type BootstrapIncludeItem struct {
+	Ref     string            `json:"ref"`
+	Title   string            `json:"title"`
+	Content string            `json:"content,omitempty"`
+	Fields  map[string]string `json:"fields,omitempty"`
+}
+
+// traitedFromModelCollections wraps collections.TraitedFromCollections for
+// callers that shadow the package name with a local `collections` variable.
+func traitedFromModelCollections(colls []models.Collection) []collections.TraitedCollection {
+	return collections.TraitedFromCollections(colls)
+}
+
+// Bootstrap payload keys, re-exported at package scope. buildAgentBootstrap
+// shadows the `collections` package name with a local []models.Collection, so
+// the constants are unreachable there under their own qualifier.
+const (
+	bootstrapKeyConventions     = collections.BootstrapKeyConventions
+	bootstrapKeyConventionIndex = collections.BootstrapKeyConventionIndex
+	bootstrapKeyPlaybooks       = collections.BootstrapKeyPlaybooks
+)
+
+// firstPartyBootstrapKeys are the payloads with bespoke top-level projections.
+// A declaration feeding one of these is rendered by that projection, not by
+// the generic path, so the two never double-report the same items.
+var firstPartyBootstrapKeys = map[string]bool{
+	collections.BootstrapKeyConventions:     true,
+	collections.BootstrapKeyConventionIndex: true,
+	collections.BootstrapKeyPlaybooks:       true,
+}
+
+// collectGenericBootstrapIncludes renders every declared payload that is NOT
+// one of the three first-party keys.
+//
+// Ordering is deterministic: collections in their stored order, and each
+// collection's declarations in declaration order. Two collections declaring
+// the same key produce two groups rather than a merged one — the group names
+// its source collection, so an agent can tell contributions apart.
+func (s *Server) collectGenericBootstrapIncludes(workspaceID string, traited []collections.TraitedCollection, visibleIDs []string, collIDs []string, itemIDs []string) ([]BootstrapIncludeGroup, error) {
+	var out []BootstrapIncludeGroup
+	for _, coll := range traited {
+		if visibleIDs != nil && !isCollectionVisible(coll.ID, visibleIDs) {
+			continue
+		}
+		for _, inc := range coll.Traits.BootstrapInclude {
+			if firstPartyBootstrapKeys[inc.Key] {
+				continue
+			}
+			wantBodies := inc.Mode == models.BootstrapModeBodies
+			// Ask for one more than the cap so overflow is DETECTED rather
+			// than inferred from a full page — len(items) == cap is
+			// ambiguous on its own.
+			items, err := s.store.ListItems(workspaceID, models.ItemListParams{
+				CollectionSlug: coll.Slug,
+				CollectionIDs:  collIDs,
+				ItemIDs:        itemIDs,
+				Fields:         inc.Filter,
+				NoContent:      !wantBodies,
+				Limit:          bootstrapGenericIncludeCap + 1,
+			})
+			if err != nil {
+				return nil, err
+			}
+			overflow := 0
+			if len(items) > bootstrapGenericIncludeCap {
+				// The count is a floor, not a total: the query stopped at
+				// cap+1, so all we honestly know is that at least one more
+				// exists. Reported as 1 rather than a fabricated total.
+				overflow = len(items) - bootstrapGenericIncludeCap
+				items = items[:bootstrapGenericIncludeCap]
+			}
+			group := BootstrapIncludeGroup{
+				Key:        inc.Key,
+				Collection: coll.Slug,
+				Mode:       inc.Mode,
+				Items:      make([]BootstrapIncludeItem, 0, len(items)),
+			}
+			for _, it := range items {
+				entry := BootstrapIncludeItem{Ref: it.Ref, Title: it.Title}
+				if wantBodies {
+					entry.Content = it.Content
+				}
+				// Structured fields are flattened to strings: an agent reads
+				// them to route, not to compute, and a stable string map is
+				// cheaper to describe than arbitrary JSON. Non-scalar values
+				// are omitted rather than rendered as Go syntax — see
+				// BUG-2628 for what a raw Go map looks like when it reaches a
+				// user-facing surface.
+				fields := map[string]any{}
+				_ = json.Unmarshal([]byte(it.Fields), &fields)
+				if len(fields) > 0 {
+					flat := make(map[string]string, len(fields))
+					for k, v := range fields {
+						switch tv := v.(type) {
+						case string:
+							flat[k] = tv
+						case bool:
+							flat[k] = strconv.FormatBool(tv)
+						case float64:
+							flat[k] = strconv.FormatFloat(tv, 'f', -1, 64)
+						}
+					}
+					if len(flat) > 0 {
+						entry.Fields = flat
+					}
+				}
+				group.Items = append(group.Items, entry)
+			}
+			group.OverflowCount = overflow
+			out = append(out, group)
+		}
 	}
+	return out, nil
+}
+
+// projectPlaybookMetadata renders playbook items down to the metadata shape.
+// Bodies are NOT included — the agent loads a full body only when invoking.
+func projectPlaybookMetadata(items []models.Item) []AgentBootstrapPlaybookMeta {
 	out := make([]AgentBootstrapPlaybookMeta, 0, len(items))
 	for _, it := range items {
 		fields := map[string]any{}
@@ -817,7 +989,7 @@ func (s *Server) collectPlaybookMetadata(workspaceID string, collIDs []string, i
 		}
 		return out[i].Title < out[j].Title
 	})
-	return out, nil
+	return out
 }
 
 // capBootstrapDashboard wraps a DashboardResponse with the bootstrap's

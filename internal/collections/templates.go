@@ -432,6 +432,17 @@ func conventionsCollection(sortOrder int, triggerOptions, scopeOptions []string)
 		Icon:        "\U0001F4CF",
 		Description: "Project rules and conventions that guide agent behavior",
 		SortOrder:   sortOrder,
+		// SPEC-5 §Collection traits. TWO bootstrap includes: the always-on
+		// rules ship as full bodies because the agent must follow them, and
+		// every active convention also ships as a body-less index entry so
+		// triggered rules are discoverable without their bodies flooding the
+		// boot payload. status=active is load-bearing in both — without it,
+		// draft conventions reach agents as if they were policy.
+		//
+		// Defined once in CanonicalTraitsForSlug so the template, the
+		// import-time compatibility inference, and the migration backfill
+		// cannot drift apart.
+		Traits: CanonicalTraitsForSlug("conventions"),
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{
@@ -488,6 +499,14 @@ func playbooksCollection(sortOrder int, triggerOptions, scopeOptions []string) D
 		Icon:        "\U0001F4D8",
 		Description: "Multi-step workflows that agents follow for specific actions",
 		SortOrder:   sortOrder,
+		// SPEC-5 §Collection traits. ONE metadata include with NO filter:
+		// draft and deprecated playbooks are listed deliberately, so an agent
+		// can see that a half-written playbook exists. The run gate refuses
+		// non-active ones separately (BUG-2020) — listing is not permission.
+		// invocation_field marks this collection as routing by invocation
+		// slug; v1 constrains the value to the literal field name that the
+		// partial unique indexes guard. Single definition, see above.
+		Traits: CanonicalTraitsForSlug("playbooks"),
 		Schema: models.CollectionSchema{
 			Fields: []models.FieldDef{
 				{

@@ -620,7 +620,33 @@ const CmdhelpVersion = "0.1"
 //     condition would stop matching. That client was retrying a
 //     permanent failure.
 
-//   - "0.24" — current. #1066: the pad_item `fields` OBJECT is now a
+//   - "0.25" — current. TASK-2657: `pad_library.activate` resolves its
+//     DESTINATION collection from the target's declared artifact kind
+//     (SPEC-5 collection traits) rather than from the literal slugs
+//     "conventions" / "playbooks".
+//
+//     BEHAVIOR bump, not a shape one — no tool name, action enum, or
+//     parameter changed. Same grounds as v0.9 (list return shape) and
+//     v0.16 (empty-string clear semantics): what the tool DOES changed
+//     while its signature did not, and a consumer reasoning about where
+//     an activation lands needs to know.
+//
+//     Before: activation posted to the literal slug, so a workspace that
+//     had renamed either collection got a not-found with the collection
+//     sitting right there (BUG-2702). After: it posts to whichever
+//     collection declares that artifact kind, falling back to the
+//     canonical slug ONLY when the lookup SUCCEEDS and finds no
+//     declaration — the genuine pre-backfill case. A lookup ERROR is now
+//     surfaced rather than silently falling back, because falling back on
+//     an error means writing to a slug nothing was confirmed about.
+//
+//     Also in this change, not itself a surface bump: `pad_item.list`
+//     against a renamed conventions/playbooks collection still needs the
+//     current slug — the trait moves the KERNEL behaviors, not the
+//     addressing of an explicit collection query. instructions.md says so
+//     now, at the point an agent would otherwise trust the literal.
+//
+//   - "0.24" — #1066: the pad_item `fields` OBJECT is now a
 //     real write form, and undeclared input keys fail loudly. Two
 //     halves, one contract change:
 //
@@ -652,7 +678,7 @@ const CmdhelpVersion = "0.1"
 //     That reliance was indistinguishable from a bug in the caller
 //     (the key never did anything), so the break is the fix. Single
 //     bump covers both halves; they are one contract change.
-const ToolSurfaceVersion = "0.24"
+const ToolSurfaceVersion = "0.25"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

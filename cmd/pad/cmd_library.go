@@ -8,10 +8,39 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/cli"
-
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// libraryTargetSlug resolves where a library entry of the given artifact kind
+// should be activated: whichever collection DECLARES that kind (SPEC-5
+// artifact_kind), not the collection that happens to be named "conventions" or
+// "playbooks". Activating into a renamed collection used to fail with a
+// not-found on a workspace whose collection was sitting right there
+// ([[BUG-2702]]). Falls back to the canonical slug when the workspace predates
+// traits and the lookup finds nothing, so activation still works on a
+// deployment that has not run the backfill. TASK-2657.
+//
+// A LISTING ERROR IS NOT A FALLBACK CASE. Falling back on an error means
+// writing to a slug we never confirmed anything about — and a workspace may
+// legitimately have an ordinary collection sitting on the canonical slug (say
+// the rules collection was renamed to `house-rules` and something unrelated
+// later took `conventions`), so the guess can land a library entry in a
+// collection that has nothing to do with it. An error is propagated instead;
+// the fallback applies ONLY when the lookup SUCCEEDED and simply found no
+// declaring collection, which is the genuine pre-backfill case. Codex round 5.
+func libraryTargetSlug(client *cli.Client, ws, kind, fallback string) (string, error) {
+	colls, err := client.ListCollections(ws)
+	if err != nil {
+		return "", fmt.Errorf("resolve target collection for %s activation: %w", kind, err)
+	}
+	if slug := collections.SlugForArtifactKind(colls, kind); slug != "" {
+		return slug, nil
+	}
+	return fallback, nil
+}
 
 func libraryCmd() *cobra.Command {
 	var categoryFilter string
@@ -351,7 +380,11 @@ Examples:
 					Fields:  string(fieldsJSON),
 				}
 
-				item, err := client.CreateItem(ws, "conventions", input)
+				target, err := libraryTargetSlug(client, ws, string(artifact.KindConvention), "conventions")
+				if err != nil {
+					return err
+				}
+				item, err := client.CreateItem(ws, target, input)
 				if err != nil {
 					if apiErr, ok := err.(*cli.APIError); ok {
 						if apiErr.AsPlanLimit() != nil {
@@ -414,7 +447,11 @@ Examples:
 					Fields:  string(fieldsJSON),
 				}
 
-				item, err := client.CreateItem(ws, "playbooks", input)
+				target, err := libraryTargetSlug(client, ws, string(artifact.KindPlaybook), "playbooks")
+				if err != nil {
+					return err
+				}
+				item, err := client.CreateItem(ws, target, input)
 				if err != nil {
 					if apiErr, ok := err.(*cli.APIError); ok {
 						if apiErr.AsPlanLimit() != nil {

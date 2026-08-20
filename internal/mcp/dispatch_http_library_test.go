@@ -11,6 +11,49 @@ import (
 
 // --- library activate ---
 
+// Destination collection slugs used by the activate tests. They are
+// deliberately NOT "conventions"/"playbooks": with the canonical names, an
+// implementation that ignored traits entirely and always posted to the
+// hardcoded fallback would pass every assertion, so the test would prove
+// nothing about the behaviour it exists to cover (CONVE-12 — an end state two
+// mechanisms both produce is not evidence). Codex round 6 caught exactly that
+// in the first version of these tests.
+const (
+	renamedConventionsSlug = "house-rules"
+	renamedPlaybooksSlug   = "procedures"
+)
+
+// serveCollectionsFor registers the collections listing the activate path
+// consults to resolve its destination from declared artifact kinds
+// (TASK-2657). The real server always serves this endpoint; a fake that omits
+// it makes activation look like a lookup failure, which the dispatcher
+// deliberately refuses rather than falling back on.
+//
+// The listing reports RENAMED collections carrying the canonical declarations,
+// which is the whole point: activation must follow the declaration, not the
+// name.
+func serveCollectionsFor(mux *http.ServeMux, workspace string) {
+	mux.HandleFunc("/api/v1/workspaces/"+workspace+"/collections", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"id":"c1","slug":"` + renamedConventionsSlug + `","traits":"{\"artifact_kind\":{\"kind\":\"convention\"}}"},
+			{"id":"c2","slug":"` + renamedPlaybooksSlug + `","traits":"{\"artifact_kind\":{\"kind\":\"playbook\"}}"}
+		]`))
+	})
+}
+
+// trapCanonicalSlugs fails the test if activation posts to the hardcoded
+// fallback slugs. Without this, a regression to slug-hardcoding would surface
+// only as a missing POST rather than as a named failure.
+func trapCanonicalSlugs(t *testing.T, mux *http.ServeMux, workspace string) {
+	t.Helper()
+	for _, slug := range []string{"conventions", "playbooks"} {
+		mux.HandleFunc("/api/v1/workspaces/"+workspace+"/collections/"+slug+"/items", func(_ http.ResponseWriter, _ *http.Request) {
+			t.Errorf("activation posted to the canonical %q collection; it must follow the artifact_kind declaration to the renamed collection", slug)
+		})
+	}
+}
+
 func TestDispatch_LibraryActivate_ConventionByTitle(t *testing.T) {
 	// Pick a known convention from the seed library — tied to the
 	// convention_library.go constants.
@@ -18,7 +61,7 @@ func TestDispatch_LibraryActivate_ConventionByTitle(t *testing.T) {
 
 	mux := http.NewServeMux()
 	posted := ""
-	mux.HandleFunc("/api/v1/workspaces/docapp/collections/conventions/items", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/docapp/collections/"+renamedConventionsSlug+"/items", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST; got %s", r.Method)
 		}
@@ -30,10 +73,12 @@ func TestDispatch_LibraryActivate_ConventionByTitle(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"item-1","title":"Conventional commit format"}`))
 	})
 	// Playbook endpoint MUST NOT be hit (we found a convention).
-	mux.HandleFunc("/api/v1/workspaces/docapp/collections/playbooks/items", func(_ http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/docapp/collections/"+renamedPlaybooksSlug+"/items", func(_ http.ResponseWriter, _ *http.Request) {
 		t.Errorf("playbook endpoint should not be hit when convention matches")
 	})
 
+	serveCollectionsFor(mux, "docapp")
+	trapCanonicalSlugs(t, mux, "docapp")
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
 	res, err := d.Dispatch(
 		WithDispatchInput(context.Background(), map[string]any{
@@ -82,7 +127,7 @@ func TestDispatch_LibraryActivate_PlaybookByTitle_FallsThroughConventionLookup(t
 
 	mux := http.NewServeMux()
 	posted := ""
-	mux.HandleFunc("/api/v1/workspaces/docapp/collections/playbooks/items", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/docapp/collections/"+renamedPlaybooksSlug+"/items", func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(buf)
 		posted = string(buf)
@@ -91,6 +136,8 @@ func TestDispatch_LibraryActivate_PlaybookByTitle_FallsThroughConventionLookup(t
 		_, _ = w.Write([]byte(`{"id":"pb-1","title":"Ship tasks"}`))
 	})
 
+	serveCollectionsFor(mux, "docapp")
+	trapCanonicalSlugs(t, mux, "docapp")
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
 	res, err := d.Dispatch(
 		WithDispatchInput(context.Background(), map[string]any{

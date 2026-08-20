@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.24)
+## Tool surface (v0.25)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
@@ -80,6 +80,8 @@ pad_item.action: list, collection: "conventions", status: "active"
 ```
 
 Filter by trigger (`always`, `on-implement`, `on-task-complete`, etc.) when relevant — the `convention_index` triggers tell you which filters are worth running.
+
+`"conventions"` above is the DEFAULT collection slug and a workspace may have renamed it, in which case that literal returns nothing while `convention_index` still lists entries — the bootstrap payload resolves by declaration, not by name. When the two disagree, address the items by the `ref`s the index gave you, or find the collection with `pad_collection.action: list`. The same applies to `"playbooks"`; `pad_playbook` resolves by declaration and is unaffected.
 
 ## Adding a workspace to this connection
 
