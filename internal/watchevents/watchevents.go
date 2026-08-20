@@ -144,7 +144,7 @@ type Notification struct {
 
 // Bus is the pub/sub surface the watch pipeline's producers and the
 // GET /api/v1/events/stream consumer share. See the package doc comment
-// for why only an in-process MemoryBus exists in Phase 1.
+// for which implementation serves which deployment shape.
 type Bus interface {
 	// Publish assigns the Notification a monotonic ID, stores it in the
 	// replay buffer, and fans it out to every live Subscribe channel.

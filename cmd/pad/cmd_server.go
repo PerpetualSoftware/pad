@@ -678,14 +678,18 @@ func serveCmd() *cobra.Command {
 			}
 
 			// Live-session presence registry (PLAN-2558 S1). Wired
-			// unconditionally for the same reason and with the same
-			// caveat as the watch bus directly above: in-process only,
-			// no Redis-backed implementation yet. It reports on the
-			// same connections that bus feeds, so the two share a
-			// lifetime and a limitation — see
-			// internal/server/session_presence.go's SINGLE-PROCESS
-			// LIMITATION note before putting the web-UI push surface
-			// (PLAN-2558 S3) in front of a multi-process deployment.
+			// unconditionally, and it is now the ONLY in-process piece
+			// of this pair — the watch bus above stopped being one when
+			// PAD_REDIS_URL is set (BUG-2651). So the old "same caveat
+			// as the bus directly above" reading no longer holds: the
+			// bus delivers across instances, while this registry still
+			// reports only the answering instance's connections.
+			//
+			// See internal/server/session_presence.go's note for what
+			// that costs (a session picker that under-reports, rather
+			// than a push that lies) before putting the web-UI push
+			// surface (PLAN-2558 S3) in front of a multi-process
+			// deployment.
 			srv.SetSessionPresence(server.NewMemorySessionPresence())
 
 			// Yjs collab room manager (PLAN-1248). Single-instance only

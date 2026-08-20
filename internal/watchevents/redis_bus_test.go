@@ -347,15 +347,16 @@ func TestRedisBusPublishFailsClosedWhenIDsAreUnavailable(t *testing.T) {
 	if len(cmds) == 0 {
 		t.Fatal("no Redis command was attempted at all; the fixture is not exercising Publish")
 	}
+	// The id assignment and the publish must be ONE round trip (publishScript),
+	// not a bare INCR followed by a bare PUBLISH. Two calls are what let two
+	// instances interleave and publish their ids out of order — see
+	// publishScript's comment. Seeing either bare command here means the
+	// atomicity fix was undone.
 	for _, name := range cmds {
-		if name == "publish" {
-			t.Fatalf("Publish issued PUBLISH after INCR failed (commands: %v) — the notification would "+
-				"carry an id minted outside the shared counter, which corrupts replay ordering for "+
-				"every instance rather than failing visibly", cmds)
+		if name == "incr" || name == "publish" {
+			t.Fatalf("Publish issued a bare %q (commands: %v) — id assignment and publication must be "+
+				"one atomic script, or two instances can publish their ids out of order", name, cmds)
 		}
-	}
-	if cmds[0] != "incr" {
-		t.Errorf("expected INCR to be attempted first, got %v", cmds)
 	}
 
 	// Belt and braces: nothing may have leaked into local state either.
@@ -408,6 +409,73 @@ func TestRedisBusNotificationSurvivesTheJSONRoundTrip(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("notification did not survive the round trip:\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+// TestRedisBusDecodePayloadRoundTrip covers the wire format publishScript
+// introduced (Codex round 1 P1): the id is assigned inside the Lua script and
+// prepended as "<id>|<json>", so the publisher never knows it and the receiver
+// is the only place the two halves are rejoined.
+//
+// The malformed cases are here because this decoder consumes bytes from a
+// shared channel that any process with the Redis credentials can publish to; a
+// panic or a silently-zero id would both be worse than a logged error.
+func TestRedisBusDecodePayloadRoundTrip(t *testing.T) {
+	want := Notification{
+		WorkspaceID:     "ws-1",
+		ItemRef:         "TASK-214",
+		Kind:            KindPush,
+		TargetUserID:    "user-2",
+		TargetSessionID: "sess-9",
+		Timestamp:       1755000000000,
+	}
+	body, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	got, err := decodePayload("77|" + string(body))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ID != 77 {
+		t.Errorf("id: got %d, want 77 — the id lives in the prefix, not the JSON", got.ID)
+	}
+	want.ID = 77
+	if got != want {
+		t.Errorf("payload did not survive the round trip:\n got: %+v\nwant: %+v", got, want)
+	}
+
+	// A '|' inside the body must not confuse the split: only the FIRST one
+	// separates, which is what makes the format unambiguous.
+	withPipe := Notification{ItemRef: "TASK-1", Summary: "a|b|c"}
+	pipeBody, err := json.Marshal(withPipe)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	gotPipe, err := decodePayload("5|" + string(pipeBody))
+	if err != nil {
+		t.Fatalf("decode with a pipe in the body: %v", err)
+	}
+	if gotPipe.Summary != "a|b|c" || gotPipe.ID != 5 {
+		t.Errorf("pipe in the body broke the split: id=%d summary=%q", gotPipe.ID, gotPipe.Summary)
+	}
+
+	for _, bad := range []struct {
+		name    string
+		payload string
+	}{
+		{"no separator", `{"ItemRef":"TASK-1"}`},
+		{"non-numeric id", `abc|{"ItemRef":"TASK-1"}`},
+		{"body is not JSON", `1|not json`},
+		{"empty", ``},
+	} {
+		t.Run("malformed/"+bad.name, func(t *testing.T) {
+			if _, err := decodePayload(bad.payload); err == nil {
+				t.Fatalf("decodePayload(%q) returned no error; a malformed payload from the shared "+
+					"channel must be rejected, not fanned out with a zero id", bad.payload)
+			}
+		})
 	}
 }
 

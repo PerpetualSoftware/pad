@@ -426,6 +426,19 @@ func (s *Server) Stop() {
 		s.collab.Close()
 	}
 	s.bg.Wait()
+	// Watch/nudge bus (BUG-2651). Closed AFTER bg.Wait() so a background
+	// producer cannot publish into a bus that is already tearing down; both
+	// implementations are safe if one does anyway (MemoryBus finds no
+	// subscribers, RedisBus finds a cancelled context and fails closed).
+	//
+	// This matters more than it did for MemoryBus, whose Close only dropped
+	// channels: RedisBus holds a receive goroutine and a Redis subscription
+	// from construction, so skipping it leaks both for the process's life
+	// (Codex round 1 P2). Closing also closes every subscriber channel, which
+	// is how a still-open SSE stream learns to unwind.
+	if s.watchEvents != nil {
+		s.watchEvents.Close()
+	}
 	s.rateLimiters.Stop() // nil-safe via the RateLimiters receiver guard
 }
 

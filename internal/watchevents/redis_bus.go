@@ -3,7 +3,10 @@ package watchevents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +35,32 @@ const (
 	// turn every replay-gap diagnosis into a question about the other bus.
 	redisWatchSeqKey = "pad:watchevents_seq"
 )
+
+// publishScript assigns the next id and publishes, ATOMICALLY.
+//
+// Doing those as two client calls is not merely unlocked, it is actively
+// order-breaking, and the failure is not theoretical (Codex round 1 P1):
+// instance A runs INCR and gets 1, is descheduled; instance B runs INCR, gets
+// 2, and publishes; A then publishes 1. Every subscriber receives 2 before 1.
+// The replay buffer appends in ARRIVAL order, so it now holds a non-monotonic
+// sequence, and replayBuffer.since() reasons on monotonicity: a resume from 2
+// takes the `sinceID > newestID` branch and answers "gap too large", turning a
+// perfectly healthy reconnect into a spurious sync_required, while a resume
+// from 1 silently skips the notification that arrived late.
+//
+// Redis executes a script atomically on its single thread, so INCR and PUBLISH
+// for one instance both complete before another instance's script begins:
+// publish order equals id order, globally, with no coordination on our side.
+//
+// The id is prepended to the payload as "<id>|<json>" rather than being
+// injected into the JSON, because string-editing JSON inside Lua is a fragile
+// way to save one split. The id is digits and the separator is the FIRST '|',
+// so a '|' anywhere in the payload is unambiguous.
+var publishScript = redis.NewScript(`
+local id = redis.call('INCR', KEYS[1])
+redis.call('PUBLISH', KEYS[2], id .. '|' .. ARGV[1])
+return id
+`)
 
 // RedisBus is the multi-instance implementation of Bus (BUG-2651). Every
 // instance publishes to one shared Redis channel and receives from it, so a
@@ -64,8 +93,17 @@ const (
 //
 // A publisher's OWN subscribers are served through the Redis round trip like
 // everyone else's — Publish never fans out locally. That costs a round trip of
-// latency and buys exactly-once delivery: a local send plus the echo back from
+// latency and buys NO-DOUBLE-DELIVERY: a local send plus the echo back from
 // Redis would deliver twice to the publishing instance's own streams.
+//
+// Not "exactly-once", which an earlier draft of this comment claimed and which
+// is not on offer at any layer here (Codex round 1). Redis pub/sub is
+// at-most-once — a subscriber that is disconnected when a message is published
+// never sees it — and the local send is deliberately non-blocking, so a slow
+// subscriber's notification is dropped and logged rather than awaited. The
+// replay buffer plus Last-Event-ID is the recovery mechanism for both, and it
+// is bounded: DefaultReplayBufferSize entries, after which a resume answers
+// "gap too large" and the consumer resyncs.
 type RedisBus struct {
 	client *redis.Client
 
@@ -108,42 +146,40 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 	return b
 }
 
-// Publish assigns a globally ordered ID via Redis INCR and publishes to the
-// shared channel. It does NOT deliver locally; the receive path does that for
-// every instance including this one.
+// Publish hands the notification to publishScript, which assigns its globally
+// ordered ID and publishes it in one atomic step. It does NOT deliver locally;
+// the receive path does that for every instance including this one.
 //
-// FAIL-CLOSED ON INCR FAILURE, and this is the one place this implementation
-// refuses to follow internal/events.RedisBus, which falls back to a local
-// counter. Two instances falling back at once mint ids from independent
-// counters into a SHARED stream, and replayBuffer.since() reasons on
-// monotonicity to detect gaps — so a disordered id does not degrade replay, it
-// corrupts it silently for every consumer until the buffer rolls over. Note
-// also what the fallback would actually buy: INCR and PUBLISH travel the same
-// connection, so an INCR failure almost always precedes a PUBLISH failure, and
-// the fallback mostly lets a doomed publish proceed carrying a poisoned id.
+// FAIL-CLOSED, where internal/events.RedisBus falls back to a local counter
+// when its id lookup fails. Two instances falling back at once mint ids from
+// independent counters into a SHARED stream, and replayBuffer.since() reasons
+// on monotonicity to detect gaps — so a disordered id does not degrade replay,
+// it corrupts it silently for every consumer until the buffer rolls over.
 // Dropping the notification loses a nudge in a deployment that is already
 // degraded; keeping it breaks resume for everyone.
+//
+// Folding the id assignment INTO the publish also removed the only case where
+// that fallback could have applied: there is no longer a window in which an id
+// exists but the publish has not happened, so "assign or don't" and "publish
+// or don't" are the same decision.
 func (b *RedisBus) Publish(n Notification) {
 	if n.Timestamp == 0 {
 		n.Timestamp = time.Now().UnixMilli()
 	}
 
-	id, err := b.client.Incr(b.ctx, redisWatchSeqKey).Result()
-	if err != nil {
-		slog.Error("watchevents: dropping notification — Redis INCR failed, so no globally ordered ID is available",
-			"error", err, "kind", n.Kind, "item_ref", n.ItemRef)
-		return
-	}
-	n.ID = id
-
+	// n.ID is assigned by the script, so it is marshalled zero and filled in
+	// by the receiver from the "<id>|" prefix. Serializing before the call is
+	// what lets the id assignment and the publish be one atomic step.
 	data, err := json.Marshal(n)
 	if err != nil {
 		slog.Error("watchevents: failed to marshal notification for Redis", "error", err, "kind", n.Kind)
 		return
 	}
-	if err := b.client.Publish(b.ctx, redisWatchChannel, data).Err(); err != nil {
-		slog.Error("watchevents: failed to publish notification to Redis",
-			"error", err, "channel", redisWatchChannel, "kind", n.Kind, "item_ref", n.ItemRef)
+
+	if err := publishScript.Run(b.ctx, b.client,
+		[]string{redisWatchSeqKey, redisWatchChannel}, string(data)).Err(); err != nil {
+		slog.Error("watchevents: dropping notification — Redis publish failed, so no globally ordered ID was assigned",
+			"error", err, "kind", n.Kind, "item_ref", n.ItemRef)
 	}
 }
 
@@ -248,15 +284,38 @@ func (b *RedisBus) receiveMessages() {
 			if !ok {
 				return
 			}
-			var n Notification
-			if err := json.Unmarshal([]byte(msg.Payload), &n); err != nil {
-				slog.Error("watchevents: failed to unmarshal notification from Redis",
+			n, err := decodePayload(msg.Payload)
+			if err != nil {
+				slog.Error("watchevents: failed to decode notification from Redis",
 					"error", err, "channel", msg.Channel)
 				continue
 			}
 			b.fanOutLocally(n)
 		}
 	}
+}
+
+// decodePayload parses the "<id>|<json>" wire form publishScript emits.
+//
+// The id lives outside the JSON because it is assigned inside the Lua script,
+// atomically with the publish (see publishScript). Whatever ID the publisher
+// had in the struct is overwritten by the authoritative one — the publisher
+// never knows it, since the script assigns it after the marshal.
+func decodePayload(payload string) (Notification, error) {
+	sep := strings.IndexByte(payload, '|')
+	if sep < 0 {
+		return Notification{}, fmt.Errorf("payload has no id prefix")
+	}
+	id, err := strconv.ParseInt(payload[:sep], 10, 64)
+	if err != nil {
+		return Notification{}, fmt.Errorf("payload id prefix %q is not an integer: %w", payload[:sep], err)
+	}
+	var n Notification
+	if err := json.Unmarshal([]byte(payload[sep+1:]), &n); err != nil {
+		return Notification{}, fmt.Errorf("payload body is not a Notification: %w", err)
+	}
+	n.ID = id
+	return n, nil
 }
 
 // fanOutLocally appends to the replay buffer and sends to every live local

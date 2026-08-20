@@ -33,11 +33,14 @@ import (
 // THIS NOTE USED TO SAY presence and delivery were blind in the same
 // direction, and that the two had to be fixed together or not at all.
 // That was true when written and is no longer: BUG-2651 shipped
-// watchevents.RedisBus, so DELIVERY is now cross-instance — a push
-// published on A reaches a stream held on B, and B matches it against
-// its own live sessions, which is the only set B needs. What remains
-// per-process is exactly this registry, and it is worth being precise
-// about what that costs, because the two halves fail differently:
+// watchevents.RedisBus, so DELIVERY is now cross-instance WHEN
+// PAD_REDIS_URL IS SET — a push published on A reaches a stream held on
+// B, and B matches it against its own live sessions, which is the only
+// set B needs. Without that env var the deployment is single-process by
+// definition and none of this applies. What remains per-process in a
+// Redis-backed deployment is exactly this registry, and it is worth
+// being precise about what that costs, because the two halves fail
+// differently:
 //
 //   - DELIVERY (fixed): a broadcast push — TargetUserID with no session
 //     id — used to reach only the sessions on whichever instance handled
