@@ -1,0 +1,464 @@
+package store
+
+import (
+	"encoding/json"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// Tests for the transactional event outbox (SPEC-3 §choke point, TASK-2658).
+//
+// The load-bearing case here is the DISJOINT-DELTA RULE (SPEC-3 v1.3):
+// canonical events partition a mutation's delta rather than competing to
+// describe it, and a mutation emits every event whose slice actually changed.
+// The mixed update — status AND a non-status field in one call — is the case a
+// naive "did the status change?" branch gets wrong, so it is tested explicitly
+// rather than left to follow from the two single-slice cases.
+
+// outboxEventsFor returns the canonical event types recorded for an item,
+// sorted for stable comparison.
+func outboxEventsFor(t *testing.T, s *Store, itemID string) []string {
+	t.Helper()
+	rows, err := s.db.Query(s.q(`SELECT event_type FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at, id`), itemID)
+	if err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var et string
+		if err := rows.Scan(&et); err != nil {
+			t.Fatalf("scan event_type: %v", err)
+		}
+		out = append(out, et)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate outbox: %v", err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// outboxPayloadFor returns the decoded payload of the single event of the
+// given type for an item, failing if there is not exactly one.
+func outboxPayloadFor(t *testing.T, s *Store, itemID, eventType string) map[string]any {
+	t.Helper()
+	rows, err := s.db.Query(s.q(`SELECT payload FROM event_outbox WHERE subject_id = ? AND event_type = ?`), itemID, eventType)
+	if err != nil {
+		t.Fatalf("query payload: %v", err)
+	}
+	defer rows.Close()
+
+	var payloads []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatalf("scan payload: %v", err)
+		}
+		payloads = append(payloads, p)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("outbox rows for %s = %d, want exactly 1", eventType, len(payloads))
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(payloads[0]), &m); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	return m
+}
+
+func clearOutbox(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.db.Exec(s.q(`DELETE FROM event_outbox`)); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+}
+
+func TestOutbox_CreateEmitsItemCreatedWithSnapshot(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox create")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	item := createTestItem(t, s, ws.ID, col.ID, "Emitted on create", "body")
+
+	if got := outboxEventsFor(t, s, item.ID); len(got) != 1 || got[0] != kernelevents.ItemCreated {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemCreated)
+	}
+
+	// The payload must carry the SNAPSHOT with item fields at the top level
+	// (embedded, not nested under an "item" key) — SPEC-3 §Bindings applies
+	// query/1 #where fragments verbatim, and query/1 addresses item fields by
+	// their own names.
+	payload := outboxPayloadFor(t, s, item.ID, kernelevents.ItemCreated)
+	if payload["id"] != item.ID {
+		t.Fatalf("payload id = %v, want %s (snapshot is not embedded at the top level)", payload["id"], item.ID)
+	}
+	if payload["title"] != "Emitted on create" {
+		t.Fatalf("payload title = %v, want the created title", payload["title"])
+	}
+	if _, present := payload["prior_status"]; present {
+		t.Fatalf("prior_status present on item.created; it is meaningless there and must be omitted")
+	}
+}
+
+func TestOutbox_BareStatusFlipEmitsStatusChangedOnly(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox status")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Status only", "body")
+	clearOutbox(t, s)
+
+	fields := `{"status":"in-progress"}`
+	updated, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &fields})
+	if err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("UpdateItem returned nil")
+	}
+
+	got := outboxEventsFor(t, s, item.ID)
+	if len(got) != 1 || got[0] != kernelevents.ItemStatusChanged {
+		t.Fatalf("events = %v, want exactly [%s] — a bare status flip must not also emit item.updated",
+			got, kernelevents.ItemStatusChanged)
+	}
+
+	payload := outboxPayloadFor(t, s, item.ID, kernelevents.ItemStatusChanged)
+	if payload["prior_status"] != "open" {
+		t.Fatalf("prior_status = %v, want %q — the envelope pseudo-field is what makes nonterminal→terminal filterable",
+			payload["prior_status"], "open")
+	}
+}
+
+func TestOutbox_MixedUpdateEmitsBothSlices(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox mixed")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Mixed", "body")
+	clearOutbox(t, s)
+
+	// One update that moves TWO slices: the status field and the title.
+	// Under the disjoint-delta rule each slice gets exactly one event.
+	fields := `{"status":"done"}`
+	title := "Mixed, renamed"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &fields, Title: &title}); err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+
+	got := outboxEventsFor(t, s, item.ID)
+	want := []string{kernelevents.ItemStatusChanged, kernelevents.ItemUpdated}
+	sort.Strings(want)
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("events = %v, want %v — a mixed update must emit BOTH slices; branching on "+
+			"\"was this a status update\" drops the item.updated half silently", got, want)
+	}
+}
+
+func TestOutbox_NonStatusUpdateEmitsUpdatedOnly(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox plain")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Plain", "body")
+	clearOutbox(t, s)
+
+	title := "Plain, renamed"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &title}); err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+
+	got := outboxEventsFor(t, s, item.ID)
+	if len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+}
+
+func TestOutbox_NoOpUpdateEmitsNothing(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox noop")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Noop", "body")
+	clearOutbox(t, s)
+
+	// Rewrite the title to the value it already holds. The row is touched
+	// (updated_at and seq both move), but no slice the taxonomy names has
+	// changed — so the disjoint-delta rule emits nothing. This is the leg
+	// that proves the rule diffs SLICES rather than detecting "an update
+	// happened": the excluded bookkeeping columns must not manufacture a
+	// change on their own.
+	same := item.Title
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &same}); err != nil {
+		t.Fatalf("UpdateItem: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, item.ID); len(got) != 0 {
+		t.Fatalf("events = %v, want none — updated_at/seq/last_modified_by move on every "+
+			"mutation and must not be read as a delta", got)
+	}
+}
+
+// TestItemUpdatedSliceChanged_IgnoresPerMutationBookkeeping drives the slice
+// diff DIRECTLY, with hand-built snapshots, because the end-to-end no-op test
+// above cannot see this.
+//
+// WHY IT CANNOT: store.now() formats RFC3339, which is SECOND granularity. A
+// test that creates an item and updates it milliseconds later produces the
+// SAME updated_at string on both snapshots, so the exclusion of updated_at is
+// never exercised — removing "updated_at" from itemDeltaExcludedKeys leaves
+// TestOutbox_NoOpUpdateEmitsNothing green (verified by mutation, not assumed).
+// In production the two writes are seconds or hours apart and the exclusion is
+// entirely load-bearing: without it, EVERY update would emit item.updated and
+// the disjoint-delta rule would be decorative.
+//
+// So the exclusions get an instrument that does not depend on wall-clock luck:
+// two snapshots differing ONLY in the per-mutation bookkeeping columns must
+// compare equal, and one differing in a real field must not.
+func TestItemUpdatedSliceChanged_IgnoresPerMutationBookkeeping(t *testing.T) {
+	base := &models.Item{
+		ID:          "item-1",
+		WorkspaceID: "ws-1",
+		Title:       "Same title",
+		Fields:      `{"status":"open","priority":"high"}`,
+		Seq:         10,
+		UpdatedAt:   time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC),
+	}
+
+	// Only bookkeeping moved: a touched-but-unchanged row.
+	touched := *base
+	touched.Seq = 11
+	touched.UpdatedAt = time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
+	touched.LastModifiedBy = "someone-else"
+
+	changed, err := itemUpdatedSliceChanged(base, &touched, "status")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if changed {
+		t.Fatalf("a row whose only movement was seq/updated_at/last_modified_by reported a delta; " +
+			"every update would emit item.updated and the disjoint-delta rule would be decorative")
+	}
+
+	// The status field alone moved: owned by item.status_changed, so the
+	// item.updated slice must NOT report a change.
+	statusOnly := *base
+	statusOnly.Fields = `{"status":"done","priority":"high"}`
+	changed, err = itemUpdatedSliceChanged(base, &statusOnly, "status")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if changed {
+		t.Fatalf("a bare status change reported an item.updated delta; status is status_changed's " +
+			"slice and would be described twice")
+	}
+
+	// A non-status field inside the same blob moved: that IS item.updated's
+	// slice. This is the leg that proves the status mask is surgical rather
+	// than excluding the whole fields blob.
+	priorityOnly := *base
+	priorityOnly.Fields = `{"status":"open","priority":"low"}`
+	changed, err = itemUpdatedSliceChanged(base, &priorityOnly, "status")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if !changed {
+		t.Fatalf("a priority change inside the fields blob reported NO delta; masking the status " +
+			"key must not mask the whole blob")
+	}
+
+	// Key order in the blob is not semantic.
+	reordered := *base
+	reordered.Fields = `{"priority":"high","status":"open"}`
+	changed, err = itemUpdatedSliceChanged(base, &reordered, "status")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if changed {
+		t.Fatalf("re-serializing the fields blob in a different key order reported a delta")
+	}
+}
+
+func TestWriteOutboxTx_RejectsNonCanonicalEvent(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox reject")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	err = writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   "item.frobnicated",
+		SubjectKind: kernelevents.SubjectItem,
+		Payload:     []byte(`{"id":"x"}`),
+	})
+	if err == nil {
+		t.Fatalf("writeOutboxTx accepted a non-canonical event name; the events/1 set is closed, " +
+			"and an unknown name would reach the PUBLIC webhook surface")
+	}
+}
+
+func TestWriteOutboxTx_RejectsEmptyPayload(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox empty")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	err = writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   kernelevents.ItemCreated,
+		SubjectKind: kernelevents.SubjectItem,
+	})
+	if err == nil {
+		t.Fatalf("writeOutboxTx accepted an empty payload; binding predicates evaluate against " +
+			"the payload snapshot, so such an event is undeliverable by construction")
+	}
+}
+
+func TestWriteOutboxTx_DropsPastCascadeBound(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox hop")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	// At the bound: written. Past it: dropped, and NOT an error — the
+	// mutation itself was legitimate, only the cascade it would extend is
+	// not (SPEC-3 §L5).
+	atBound := OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   kernelevents.ItemCreated,
+		SubjectKind: kernelevents.SubjectItem,
+		SubjectID:   "at-bound",
+		Payload:     []byte(`{"id":"at-bound"}`),
+		Hop:         maxOutboxHop,
+	}
+	if err := writeOutboxTx(tx, s, atBound); err != nil {
+		t.Fatalf("writeOutboxTx at hop %d: %v", maxOutboxHop, err)
+	}
+
+	past := atBound
+	past.ID = ""
+	past.SubjectID = "past-bound"
+	past.Hop = maxOutboxHop + 1
+	if err := writeOutboxTx(tx, s, past); err != nil {
+		t.Fatalf("writeOutboxTx past the cascade bound returned an error; dropping is the bound "+
+			"working and must not fail the mutation: %v", err)
+	}
+
+	var n int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE subject_id = ?`), "past-bound").Scan(&n); err != nil {
+		t.Fatalf("count past-bound: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("past-bound rows = %d, want 0 — the cascade bound did not drop the event", n)
+	}
+
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE subject_id = ?`), "at-bound").Scan(&n); err != nil {
+		t.Fatalf("count at-bound: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("at-bound rows = %d, want 1 — the bound is off by one and is dropping events "+
+			"that should be written", n)
+	}
+}
+
+func TestOutbox_DeleteEmitsPreArchiveSnapshot(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox delete")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "To be archived", "body")
+	clearOutbox(t, s)
+
+	if err := s.DeleteItem(item.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, item.ID); len(got) != 1 || got[0] != kernelevents.ItemDeleted {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemDeleted)
+	}
+
+	// SPEC-3 §Bindings: the payload must be the FINAL PRE-ARCHIVE state. It is
+	// the only thing keeping a deleted item addressable to predicates, which
+	// never consult the live store — so an empty or post-archive snapshot here
+	// makes every item.deleted binding unevaluable.
+	payload := outboxPayloadFor(t, s, item.ID, kernelevents.ItemDeleted)
+	if payload["title"] != "To be archived" {
+		t.Fatalf("payload title = %v, want the pre-archive title", payload["title"])
+	}
+	if payload["id"] != item.ID {
+		t.Fatalf("payload id = %v, want %s", payload["id"], item.ID)
+	}
+}
+
+func TestOutbox_RedeleteEmitsNothing(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox redelete")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Archived once", "body")
+
+	if err := s.DeleteItem(item.ID); err != nil {
+		t.Fatalf("first DeleteItem: %v", err)
+	}
+	clearOutbox(t, s)
+
+	// The second delete affects zero rows: nothing was archived, so nothing
+	// may be announced. An event here would describe a mutation that did not
+	// happen — the exact class of lie the outbox exists to make impossible.
+	if err := s.DeleteItem(item.ID); err == nil {
+		t.Fatalf("re-deleting an archived item unexpectedly succeeded")
+	}
+	if got := outboxEventsFor(t, s, item.ID); len(got) != 0 {
+		t.Fatalf("events = %v, want none — a no-op delete emitted an event", got)
+	}
+}
+
+func TestOutbox_RestoreEmitsItemRestored(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox restore")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Round trip", "body")
+	if err := s.DeleteItem(item.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+	clearOutbox(t, s)
+
+	if _, err := s.RestoreItem(item.ID); err != nil {
+		t.Fatalf("RestoreItem: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, item.ID); len(got) != 1 || got[0] != kernelevents.ItemRestored {
+		t.Fatalf("events = %v, want exactly [%s] — restore was silent before SPEC-3 v1.1 and an "+
+			"item could reappear with no observable event", got, kernelevents.ItemRestored)
+	}
+}
+
+func TestOutbox_MoveEmitsMovedOnlyWhenNothingElseChanged(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox move")
+	from := createTestCollection(t, s, ws.ID, "Tasks")
+	to := createTestCollection(t, s, ws.ID, "Bugs")
+	item := createTestItem(t, s, ws.ID, from.ID, "Relocating", "body")
+	clearOutbox(t, s)
+
+	if _, err := s.MoveItem(item.ID, to.ID, item.Fields); err != nil {
+		t.Fatalf("MoveItem: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, item.ID); len(got) != 1 || got[0] != kernelevents.ItemMoved {
+		t.Fatalf("events = %v, want exactly [%s] — a pure relocation must not leak into "+
+			"item.updated's slice", got, kernelevents.ItemMoved)
+	}
+}

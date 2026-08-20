@@ -438,6 +438,16 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err := stampAttachmentRefsTx(tx, s, ws.ID, it.Content, fieldsJSON); err != nil {
 			return nil, err
 		}
+		// NO EVENT IS EMITTED HERE, AND THAT IS A RULING, NOT AN OVERSIGHT.
+		// This is the second item-creation write path in the codebase — the
+		// other is insertItemTx, which owns the API paths and (from TASK-2658)
+		// the transactional event outbox. Import deliberately stays silent:
+		// SPEC-3 (DOC-2653) §Taxonomy records that events/1 cannot express an
+		// import, so restoring a 900-item archive fires no item.created fan-out
+		// and consumers resync out-of-band. If a future contract version wants
+		// import observable, the spec pre-names the shape — ONE additive
+		// workspace-level `workspace.imported` event, never per-item fan-out.
+		// Do not "fix" this by hanging an outbox write off this INSERT.
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),

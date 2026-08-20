@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/diff"
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -246,9 +247,18 @@ func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.Ite
 // create-time status_transitions row. It neither begins nor commits — the
 // caller owns the transaction boundary.
 //
-// Every creation side effect lives in this one place. Its only caller is
-// createItemTx, which both CreateItem and the cross-workspace copy path
-// (PLAN-2357 / DR-9a) go through, so the two paths cannot drift.
+// Every side effect of an API-PATH creation lives in this one place. Its only
+// caller is createItemTx, which both CreateItem and the cross-workspace copy
+// path (PLAN-2357 / DR-9a) go through, so those two paths cannot drift.
+//
+// The "API-PATH" qualifier is load-bearing and was missing until TASK-2658.
+// This comment used to read "every creation side effect", full stop, and it is
+// not true: ImportWorkspace (export.go) writes items with its own INSERT INTO
+// items and never reaches here. Two units in a row have now been misled by
+// reading a scoped invariant as a global one — TASK-2657 shipped a P1 on the
+// same mistake in this file family. If you are adding a creation side effect,
+// grep `INSERT INTO items` and confirm which of the TWO write paths you need,
+// rather than trusting that this is the only one.
 func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source string, input models.ItemCreate) error {
 	var err error
 
@@ -517,6 +527,19 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	}
 	if item == nil {
 		return nil, fmt.Errorf("created item %s not readable in transaction", id)
+	}
+
+	// The choke point (SPEC-3 / TASK-2658): the item.created event is written
+	// to the outbox on THIS transaction, so it commits with the row it
+	// describes or not at all. Placed after the in-transaction read-back
+	// because the event must carry what the database actually holds, not what
+	// the caller asked for.
+	//
+	// A failure here fails the create. That is not incidental — an outbox
+	// write that degrades to best-effort would look durable while
+	// reintroducing exactly the lost-event window the outbox exists to close.
+	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, ""); err != nil {
+		return nil, err
 	}
 	return item, nil
 }
@@ -2637,6 +2660,17 @@ func (s *Store) updateItemWithParentLinkOnce(
 		updated.LastMutation = &sig
 	}
 
+	// The choke point (SPEC-3 / TASK-2658). Emitted here — after the in-tx
+	// read-back and after the status/assignment deltas are computed, before
+	// COMMIT — because this is the first point where BOTH facts the event
+	// needs are known: what the row now holds, and what changed to get there.
+	// The prior status comes from the same in-tx before/after comparison that
+	// wrote the status_transitions row, so the event and the transition log
+	// cannot disagree about what happened.
+	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -2672,6 +2706,21 @@ func (s *Store) DeleteItem(id string) error {
 		return err
 	}
 
+	// SPEC-3 §Bindings requires item.deleted to carry the FINAL PRE-ARCHIVE
+	// state — that snapshot is the only thing keeping a deleted item
+	// addressable to binding predicates, since they never consult the live
+	// store. Read it here: in-tx, under the seq lock already held, and before
+	// the UPDATE while the row is still live (getItemTx filters archived rows,
+	// so after the write it would return nil).
+	//
+	// In-tx rather than reusing the pre-tx `existing` read above: that read
+	// happened before the lock, so a concurrent update landing in between
+	// would make the event describe a state that was never the final one.
+	preArchive, err := s.getItemTx(tx, id)
+	if err != nil {
+		return fmt.Errorf("read pre-archive snapshot: %w", err)
+	}
+
 	ts := now()
 	result, err := tx.Exec(s.q(`
 		UPDATE items SET deleted_at = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
@@ -2683,6 +2732,17 @@ func (s *Store) DeleteItem(id string) error {
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return sql.ErrNoRows
+	}
+
+	// The emit is gated on the UPDATE having actually archived a row. A
+	// re-delete of an already-archived item affects zero rows and returns
+	// above, so no event is written — the mutation did not happen, and an
+	// event for it would be a lie the outbox is specifically built not to
+	// tell.
+	if preArchive != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, ""); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -2761,6 +2821,23 @@ func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
 	if rows == 0 {
 		return nil, sql.ErrNoRows
 	}
+
+	// item.restored carries the POST-restore snapshot (SPEC-3 v1.1). Read
+	// after the UPDATE, in-tx: the row is live again at this point, so
+	// getItemTx sees it, and the snapshot reflects the state a consumer will
+	// find if it goes looking. Restore was silent before v1.1 — an item could
+	// reappear with no observable event, which broke every consumer's model of
+	// what exists.
+	restored, err := s.getItemTx(tx, id)
+	if err != nil {
+		return nil, fmt.Errorf("read post-restore snapshot: %w", err)
+	}
+	if restored != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, ""); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -4532,6 +4609,42 @@ func (s *Store) moveItemWithPreCheckOnce(
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`), newID(), existing.WorkspaceID, itemID, existing.CollectionID, targetCollectionID, moveSeq, moveTS); err != nil {
 			return nil, fmt.Errorf("record collection move: %w", err)
+		}
+	}
+
+	// The choke point for the move path, applying the same disjoint-delta rule
+	// as the update path (SPEC-3 v1.3). A move is not automatically ONE event:
+	// item.moved owns the location slice, item.status_changed owns the status
+	// field — which this path can change, since it accepts a new fields blob —
+	// and item.updated owns whatever else moved. Emitting only item.moved
+	// would silently drop a status transition that a binding is watching for,
+	// which is precisely the gap the rule exists to close.
+	moved, err := s.getItemTx(tx, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("read post-move snapshot: %w", err)
+	}
+	if moved != nil {
+		if targetCollectionID != existing.CollectionID {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, ""); err != nil {
+				return nil, err
+			}
+		}
+		if newStatus != oldStatus {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, moved, oldStatus); err != nil {
+				return nil, err
+			}
+		}
+		// itemUpdatedSliceChanged already excludes collection_id and the
+		// derived collection_*/ref keys, so a pure relocation does not leak
+		// into item.updated's slice.
+		otherChanged, cerr := itemUpdatedSliceChanged(existing, moved, moveDoneKey)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if otherChanged {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, ""); err != nil {
+				return nil, err
+			}
 		}
 	}
 

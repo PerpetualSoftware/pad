@@ -551,6 +551,21 @@ func TestCreateItemTx_RollbackPersistsNothing(t *testing.T) {
 		tx.Rollback()
 		t.Fatalf("test is vacuous: in-tx seq %d did not advance past %d", phantomSeq, seqBefore)
 	}
+	// POSITIVE CONTROL for the outbox assertion below (TASK-2658). "No outbox
+	// row after rollback" is trivially true if the create never wrote one, so
+	// the row has to be observed INSIDE the transaction first. Without this
+	// leg, deleting the emit call from createItemTxWithID leaves the test
+	// green — which is the exact failure mode this whole unit exists to
+	// prevent, and it would be embarrassing to reproduce it in the test.
+	var inTxEvents int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE subject_id = ?`), phantomID).Scan(&inTxEvents); err != nil {
+		tx.Rollback()
+		t.Fatalf("in-tx outbox count: %v", err)
+	}
+	if inTxEvents != 1 {
+		tx.Rollback()
+		t.Fatalf("in-tx outbox rows for created item = %d, want 1 (the create emitted no event)", inTxEvents)
+	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
@@ -569,6 +584,12 @@ func TestCreateItemTx_RollbackPersistsNothing(t *testing.T) {
 	}
 	if n := scanCount(t, s, `SELECT COUNT(*) FROM status_transitions WHERE item_id = ?`, phantomID); n != 0 {
 		t.Fatalf("status_transitions row survived rollback")
+	}
+	// The event must roll back with the row it describes (SPEC-3 §choke
+	// point, TASK-2658). A leaked event here would advertise an item that
+	// does not exist, to consumers that cannot tell the difference.
+	if n := scanCount(t, s, `SELECT COUNT(*) FROM event_outbox WHERE subject_id = ?`, phantomID); n != 0 {
+		t.Fatalf("event_outbox row survived rollback: a rolled-back mutation leaked an event")
 	}
 	if got := maxWorkspaceSeq(t, s, ws.ID); got != seqBefore {
 		t.Fatalf("workspace seq advanced across rollback: %d -> %d", seqBefore, got)
