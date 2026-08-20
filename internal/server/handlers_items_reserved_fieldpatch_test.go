@@ -177,6 +177,76 @@ func TestPatchItemFieldsPatchRefusalNamesEveryReservedKeyPresent(t *testing.T) {
 	}
 }
 
+// TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable — Codex round 1.
+//
+// PATTE-135 asks that a suggested remedy work in the state the caller is in.
+// On an item whose stored value is ALREADY undecodable, `pad item note` refuses
+// too (BUG-2627 part 3's guard), so naming it unqualified sends the caller
+// round a loop: field write refused → try the note → refused → back to the
+// field write. The message has to say so instead.
+func TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// The TASK-860 shape: the entries array stored as a JSON-encoded STRING.
+	broken := `{"status":"open","implementation_notes":"[{\"summary\":\"legacy\"}]"}`
+	item := createTaskWithFields(t, srv, slug, "Legacy row", broken)
+
+	// Precondition: the row really is in the defect state. Without this the
+	// test could pass against a server that never stored the string at all.
+	stored := getItemFields(t, srv, slug, item.Slug)
+	if _, isString := stored[models.ItemFieldImplementationNotes].(string); !isString {
+		t.Fatalf("fixture did not reproduce the defect shape: %#v", stored[models.ItemFieldImplementationNotes])
+	}
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, map[string]interface{}{
+		"fields_patch": map[string]interface{}{
+			models.ItemFieldImplementationNotes: `[{"summary":"my repair attempt"}]`,
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	_, message := reservedPatchErrorBody(t, rr.Body.String())
+
+	if !strings.Contains(message, "already unreadable") {
+		t.Errorf("message must say the stored value is already unreadable; got: %s", message)
+	}
+	if !strings.Contains(message, "pad item show") {
+		t.Errorf("message must point at the one action that WORKS in this state (inspection); got: %s", message)
+	}
+	// The circular instruction: telling them to run the command that refuses.
+	if strings.Contains(message, "Maintain implementation_notes with") {
+		t.Errorf("message still prescribes the append command, which refuses on this item; got: %s", message)
+	}
+}
+
+// TestPatchItemFieldsPatchRemedyStandsOnAHealthyItem is the counterpart, and
+// the reason the test above proves something: on an item whose stored value is
+// fine, the remedy IS `pad item note` and must still be named.
+func TestPatchItemFieldsPatchRemedyStandsOnAHealthyItem(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Healthy row",
+		`{"status":"open","implementation_notes":[{"id":"note-1","summary":"fine"}]}`)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, map[string]interface{}{
+		"fields_patch": map[string]interface{}{
+			models.ItemFieldImplementationNotes: "[]",
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	_, message := reservedPatchErrorBody(t, rr.Body.String())
+	if !strings.Contains(message, "Maintain implementation_notes with") {
+		t.Errorf("a healthy item must still get the working remedy; got: %s", message)
+	}
+	if strings.Contains(message, "already unreadable") {
+		t.Errorf("healthy item wrongly described as unreadable; got: %s", message)
+	}
+}
+
 // TestPatchItemFieldsPatchAllowsOrdinaryKeys is the over-breadth control leg.
 // Without it, a gate that refused EVERY fields_patch would pass every
 // assertion above.

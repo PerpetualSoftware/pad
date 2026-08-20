@@ -963,8 +963,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// `fields` blob is shared with Pad's own writers (note / decide / github
 	// link, and convention activation through ItemCreate), so item CREATE stays
 	// a mint site — see items.ReservedFieldKeysIn's comment and BUG-2685.
+	//
+	// The item's CURRENT fields go into the message because a remedy has to
+	// work in the state the caller is in: when the stored value is already
+	// undecodable, `pad item note` refuses too, and naming it anyway would
+	// route the caller in a circle (Codex round 1).
 	if bad := items.ReservedFieldKeysIn(input.FieldsPatch); len(bad) > 0 {
-		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldPatchMessage(bad))
+		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldPatchMessage(bad, item.Fields))
 		return
 	}
 

@@ -1215,16 +1215,33 @@ func reservedFieldRemedy(key string) string {
 	return ""
 }
 
+// appendBackedReservedKey reports whether a reserved key's remedy is an APPEND
+// helper — the ones carrying BUG-2627 part 3's refuse-rather-than-destroy
+// guard, and therefore the only ones whose remedy can itself refuse.
+func appendBackedReservedKey(key string) bool {
+	return key == models.ItemFieldImplementationNotes || key == models.ItemFieldDecisionLog
+}
+
 // reservedFieldPatchMessage renders the refusal the field-patch gate returns
 // (BUG-2627 part 2). keys arrive sorted from items.ReservedFieldKeysIn, so the
 // message is stable for a given input — a caller diffing two responses, or a
 // test asserting on one, should not see the order move.
 //
+// currentFields is the item's stored blob, and it is here for one reason: a
+// remedy has to work in the state the caller is actually in (PATTE-135). If the
+// stored value for an append-backed key is ALREADY undecodable, `pad item note`
+// refuses too — so naming it without qualification would send the caller in a
+// circle, which is the failure that convention exists to prevent (Codex round
+// 1). That case gets told the truth instead: nothing user-facing repairs it.
+//
 // The message carries the WHY as well as the what. "Not allowed" alone would
 // read as arbitrary policy; the reason this door is closed is that the write it
 // permits is silently destructive downstream, and a caller who knows that stops
-// looking for a way around the gate.
-func reservedFieldPatchMessage(keys []string) string {
+// looking for a way around the gate. The destructive-downstream clause is
+// stated ONLY for the append-backed keys: github_pr and convention are
+// overwritten by a raw write, not made unreadable-then-unappendable, and
+// claiming otherwise would be a confident wrong explanation.
+func reservedFieldPatchMessage(keys []string, currentFields string) string {
 	var b strings.Builder
 	if len(keys) == 1 {
 		fmt.Fprintf(&b, "%q is system metadata and cannot be set through a field update.", keys[0])
@@ -1235,13 +1252,64 @@ func reservedFieldPatchMessage(keys []string) string {
 		}
 		fmt.Fprintf(&b, "%s are system metadata and cannot be set through a field update.", strings.Join(quoted, ", "))
 	}
+
+	var anyAppendBacked, anyUnreadable bool
 	for _, k := range keys {
-		if remedy := reservedFieldRemedy(k); remedy != "" {
-			fmt.Fprintf(&b, " Maintain %s with %s.", k, remedy)
+		remedy := reservedFieldRemedy(k)
+		if remedy == "" {
+			continue
 		}
+		if appendBackedReservedKey(k) {
+			anyAppendBacked = true
+			if !structuredFieldIsReadable(currentFields, k) {
+				anyUnreadable = true
+				fmt.Fprintf(&b, " %s cannot be repaired from here: its stored value on this item"+
+					" is already unreadable, so %s refuses as well (that refusal is what stops the"+
+					" existing entries being overwritten).", k, remedy)
+				continue
+			}
+		}
+		fmt.Fprintf(&b, " Maintain %s with %s.", k, remedy)
 	}
-	b.WriteString(" A raw field write stores a value Pad cannot read back:" +
-		" the entries become invisible on every surface, and the append path for that key" +
-		" then refuses on this item until the stored value is repaired (BUG-2627).")
+
+	if anyAppendBacked {
+		b.WriteString(" A raw field write stores a value Pad cannot read back:" +
+			" the entries become invisible on every surface, and the append path for that key" +
+			" then refuses on this item until the stored value is repaired (BUG-2627).")
+	} else {
+		b.WriteString(" A raw field write would overwrite what Pad's own writer maintains there," +
+			" bypassing the checks that writer applies (BUG-2627).")
+	}
+	if anyUnreadable {
+		b.WriteString(" Inspect the stored value with `pad item show <ref> --format json`;" +
+			" repairing it takes a full `fields` write, which no CLI flag exposes today.")
+	}
 	return b.String()
+}
+
+// structuredFieldIsReadable reports whether the item's stored value for key
+// decodes as a list of entries — i.e. whether the append helpers would accept
+// an append rather than refusing (BUG-2627 part 3).
+//
+// Deliberately permissive about everything except the one shape that matters:
+// an absent key, an explicit null and an empty array are all appendable, which
+// mirrors assertStructuredFieldAppendable's cases 1-3. Only a value that fails
+// to decode into a list is "unreadable" here, and only that reading changes the
+// message.
+func structuredFieldIsReadable(fieldsJSON, key string) bool {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return true
+	}
+	var blob map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(fieldsJSON), &blob); err != nil {
+		// The whole blob is unparseable — a different and rarer problem than
+		// this message is about. Don't claim anything about one key inside it.
+		return true
+	}
+	raw, ok := blob[key]
+	if !ok {
+		return true
+	}
+	var entries []json.RawMessage
+	return json.Unmarshal(raw, &entries) == nil
 }

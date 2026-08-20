@@ -555,8 +555,10 @@ const CmdhelpVersion = "0.1"
 //
 //     (1) `pad_item.action=update` REFUSES a `field` setter naming
 //     system metadata (implementation_notes, decision_log, github_pr,
-//     convention) with a 400 `validation_error`, where it previously
-//     wrote it. v0.22 closed the same door on move/copy field
+//     convention), where it previously wrote it. HTTP answers 400
+//     `validation_error`; MCP clients see that as `validation_failed`,
+//     which is the code the catalog and instructions.md name, since
+//     that is the one an agent branches on. v0.22 closed the same door on move/copy field
 //     OVERRIDES; this closes it on the ordinary update, which is the
 //     door agents actually reach for. Server-side in the fields_patch
 //     gate, so it lands on BOTH transports at once — remote posts
