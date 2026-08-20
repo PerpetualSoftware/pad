@@ -148,10 +148,11 @@ func TestRedisBusPublishIsIdempotentUnderRetry(t *testing.T) {
 	ch := b.Subscribe()
 
 	const token = redisWatchDedupePrefix + "fixed-token-for-this-test"
-	keys := []string{redisWatchSeqKey, redisWatchChannel, token}
+	keys := []string{redisWatchSeqKey, redisWatchChannel, token, redisWatchEpochKey}
 	payload := `{"ItemRef":"TASK-1","Kind":"comment"}`
+	const epochCandidate = "epoch-for-this-test"
 
-	first, err := publishScript.Run(b.ctx, b.client, keys, payload, redisWatchDedupeTTLSeconds).Int64()
+	first, err := publishScript.Run(b.ctx, b.client, keys, payload, redisWatchDedupeTTLSeconds, epochCandidate).Int64()
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestRedisBusPublishIsIdempotentUnderRetry(t *testing.T) {
 		t.Fatalf("first run returned id %d, want 1", first)
 	}
 
-	second, err := publishScript.Run(b.ctx, b.client, keys, payload, redisWatchDedupeTTLSeconds).Int64()
+	second, err := publishScript.Run(b.ctx, b.client, keys, payload, redisWatchDedupeTTLSeconds, epochCandidate).Int64()
 	if err != nil {
 		t.Fatalf("second run: %v", err)
 	}

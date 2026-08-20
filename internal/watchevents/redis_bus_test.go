@@ -525,6 +525,48 @@ func TestRedisBusColdStartReplayReportsAGap(t *testing.T) {
 	}
 }
 
+// TestRedisBusEpochChangeDropsTheStaleReplayBuffer — codex round 13, and the
+// case pure arithmetic cannot see.
+//
+// Hold 100. Lose the connection. The counter resets and ids 1-101 are
+// published in the NEW space; the only one that reaches us is 101 — which
+// looks exactly like the contiguous successor of 100. Every numeric check
+// passes, the buffer quietly mixes two id spaces, and a client resuming from
+// OLD 100 is handed NEW 101 having silently missed the new space's 1-100.
+//
+// The epoch is the only thing that distinguishes them, because the question is
+// not "is this number bigger" but "is this the same sequence".
+func TestRedisBusEpochChangeDropsTheStaleReplayBuffer(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+
+	for _, id := range []int64{99, 100} {
+		b.fanOutFromRedis("epoch-one", Notification{ID: id, Kind: KindComment, ItemRef: "TASK-old"})
+	}
+
+	// New id space, and its first id we see happens to be 100+1.
+	b.fanOutFromRedis("epoch-two", Notification{ID: 101, Kind: KindComment, ItemRef: "TASK-new"})
+
+	// A client from the OLD epoch must resync rather than be handed an id
+	// from a sequence it was never part of.
+	if got := b.EventsSince(100); got != nil {
+		t.Errorf("a resume from the previous epoch must report a gap; got %+v", got)
+	}
+
+	// A client genuinely INSIDE the new epoch is still served — the control
+	// that stops this becoming "resync everyone forever after any reset".
+	if got := b.EventsSince(101); got == nil {
+		t.Error("a cursor at the new epoch's own id must be servable, not answered with a gap")
+	}
+
+	// And the buffer holds only the new space — the assertion a build that
+	// merely logged the change would fail.
+	fresh := b.EventsSince(0)
+	if len(fresh) != 1 || fresh[0].ItemRef != "TASK-new" {
+		t.Fatalf("after an epoch change the buffer must hold only the new space; got %+v", fresh)
+	}
+}
+
 // TestRedisBusCounterResetDropsTheStaleReplayBuffer — codex round 6.
 //
 // pad:watchevents_seq has no TTL, but it can still vanish: evicted under
@@ -589,9 +631,12 @@ func TestRedisBusDecodePayloadRoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	got, err := decodePayload("77|" + string(body))
+	epoch, got, err := decodePayload("epoch-a|77|" + string(body))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if epoch != "epoch-a" {
+		t.Errorf("epoch: got %q, want epoch-a", epoch)
 	}
 	if got.ID != 77 {
 		t.Errorf("id: got %d, want 77 — the id lives in the prefix, not the JSON", got.ID)
@@ -608,7 +653,7 @@ func TestRedisBusDecodePayloadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	gotPipe, err := decodePayload("5|" + string(pipeBody))
+	_, gotPipe, err := decodePayload("epoch-a|5|" + string(pipeBody))
 	if err != nil {
 		t.Fatalf("decode with a pipe in the body: %v", err)
 	}
@@ -620,13 +665,15 @@ func TestRedisBusDecodePayloadRoundTrip(t *testing.T) {
 		name    string
 		payload string
 	}{
-		{"no separator", `{"ItemRef":"TASK-1"}`},
-		{"non-numeric id", `abc|{"ItemRef":"TASK-1"}`},
-		{"body is not JSON", `1|not json`},
+		{"no separators", `{"ItemRef":"TASK-1"}`},
+		{"only one separator", `1|{"ItemRef":"TASK-1"}`},
+		{"non-numeric id", `epoch-a|abc|{"ItemRef":"TASK-1"}`},
+		{"empty epoch", `|1|{"ItemRef":"TASK-1"}`},
+		{"body is not JSON", `epoch-a|1|not json`},
 		{"empty", ``},
 	} {
 		t.Run("malformed/"+bad.name, func(t *testing.T) {
-			if _, err := decodePayload(bad.payload); err == nil {
+			if _, _, err := decodePayload(bad.payload); err == nil {
 				t.Fatalf("decodePayload(%q) returned no error; a malformed payload from the shared "+
 					"channel must be rejected, not fanned out with a zero id", bad.payload)
 			}

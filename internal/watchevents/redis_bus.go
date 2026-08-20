@@ -37,6 +37,24 @@ const (
 	// turn every replay-gap diagnosis into a question about the other bus.
 	redisWatchSeqKey = "pad:watchevents_seq"
 
+	// redisWatchEpochKey identifies the CURRENT id space, and exists because
+	// numeric detection alone cannot see a reset that has caught back up
+	// (codex round 13).
+	//
+	// The counter resetting is detectable when an id arrives BELOW our
+	// high-water mark. It is invisible when the new space has already climbed
+	// past it: hold 100, lose the connection, the counter resets and ids 1-101
+	// are published, and the only one that reaches us is 101 — which looks
+	// exactly like the contiguous successor of 100. The buffer then mixes two
+	// id spaces and a client resuming from OLD 100 is handed NEW 101, having
+	// silently missed the new space's 1-100.
+	//
+	// An epoch is the only thing that distinguishes them, because the
+	// question is not "is this number bigger" but "is this the same
+	// sequence". Minted once per id space by the publish script and carried
+	// on every message.
+	redisWatchEpochKey = "pad:watchevents_epoch"
+
 	// DEPLOYMENT SCOPING, or rather the lack of it (codex round 3). Both
 	// names above are fixed, so two Pad installations pointed at the SAME
 	// Redis endpoint cross-feed each other's notifications and share one id
@@ -88,8 +106,10 @@ var publishScript = redis.NewScript(`
 if redis.call('SET', KEYS[3], '1', 'NX', 'EX', ARGV[2]) == false then
   return 0
 end
+redis.call('SET', KEYS[4], ARGV[3], 'NX')
+local epoch = redis.call('GET', KEYS[4])
 local id = redis.call('INCR', KEYS[1])
-redis.call('PUBLISH', KEYS[2], id .. '|' .. ARGV[1])
+redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id .. '|' .. ARGV[1])
 return id
 `)
 
@@ -185,6 +205,15 @@ type RedisBus struct {
 	// readable as MISSED rather than merely reordered.
 	knownFrom      int64
 	lastAppendedID int64
+
+	// epoch identifies the id space these ids belong to. A change means the
+	// counter was reset and the buffer describes a sequence that no longer
+	// exists — see redisWatchEpochKey and fanOutFromRedis.
+	epoch string
+	// epochJustChanged makes the next cold start refuse the
+	// contiguous-with-our-view cursor, because across an epoch boundary that
+	// cursor is ambiguous rather than contiguous. See fanOutLocally.
+	epochJustChanged bool
 
 	pubsub *redis.PubSub
 	ctx    context.Context
@@ -288,9 +317,11 @@ func (b *RedisBus) Publish(n Notification) {
 	// second run of the script sees the same token and declines.
 	dedupeKey := redisWatchDedupePrefix + uuid.NewString()
 
+	// The candidate epoch is only adopted when none exists (SET NX inside the
+	// script), so every publisher can offer one and exactly the first wins.
 	if err := publishScript.Run(b.ctx, b.client,
-		[]string{redisWatchSeqKey, redisWatchChannel, dedupeKey},
-		string(data), redisWatchDedupeTTLSeconds).Err(); err != nil {
+		[]string{redisWatchSeqKey, redisWatchChannel, dedupeKey, redisWatchEpochKey},
+		string(data), redisWatchDedupeTTLSeconds, uuid.NewString()).Err(); err != nil {
 		slog.Error("watchevents: dropping notification — Redis publish failed, so no globally ordered ID was assigned",
 			"error", err, "kind", n.Kind, "item_ref", n.ItemRef)
 	}
@@ -600,38 +631,46 @@ func (b *RedisBus) receiveMessages() {
 			if !ok {
 				return
 			}
-			n, err := decodePayload(msg.Payload)
+			epoch, n, err := decodePayload(msg.Payload)
 			if err != nil {
 				slog.Error("watchevents: failed to decode notification from Redis",
 					"error", err, "channel", msg.Channel)
 				continue
 			}
-			b.fanOutLocally(n)
+			b.fanOutFromRedis(epoch, n)
 		}
 	}
 }
 
-// decodePayload parses the "<id>|<json>" wire form publishScript emits.
+// decodePayload parses the "<epoch>|<id>|<json>" wire form publishScript emits.
+//
+// Splitting into exactly three parts on the FIRST two separators is what keeps
+// a '|' inside the JSON body harmless: the epoch is a uuid and the id is
+// digits, so neither can contain one.
 //
 // The id lives outside the JSON because it is assigned inside the Lua script,
 // atomically with the publish (see publishScript). Whatever ID the publisher
 // had in the struct is overwritten by the authoritative one — the publisher
 // never knows it, since the script assigns it after the marshal.
-func decodePayload(payload string) (Notification, error) {
-	sep := strings.IndexByte(payload, '|')
-	if sep < 0 {
-		return Notification{}, fmt.Errorf("payload has no id prefix")
+func decodePayload(payload string) (string, Notification, error) {
+	parts := strings.SplitN(payload, "|", 3)
+	if len(parts) != 3 {
+		return "", Notification{}, fmt.Errorf("payload is not <epoch>|<id>|<json>")
 	}
-	id, err := strconv.ParseInt(payload[:sep], 10, 64)
+	epoch, idPart, body := parts[0], parts[1], parts[2]
+	if epoch == "" {
+		return "", Notification{}, fmt.Errorf("payload has an empty epoch prefix")
+	}
+	id, err := strconv.ParseInt(idPart, 10, 64)
 	if err != nil {
-		return Notification{}, fmt.Errorf("payload id prefix %q is not an integer: %w", payload[:sep], err)
+		return "", Notification{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
 	}
 	var n Notification
-	if err := json.Unmarshal([]byte(payload[sep+1:]), &n); err != nil {
-		return Notification{}, fmt.Errorf("payload body is not a Notification: %w", err)
+	if err := json.Unmarshal([]byte(body), &n); err != nil {
+		return "", Notification{}, fmt.Errorf("payload body is not a Notification: %w", err)
 	}
 	n.ID = id
-	return n, nil
+	return epoch, n, nil
 }
 
 // fanOutLocally appends to the replay buffer and sends to every live local
@@ -641,6 +680,34 @@ func decodePayload(payload string) (Notification, error) {
 // The notification already carries its globally assigned ID from the
 // publishing instance; nothing is renumbered here, which is what keeps
 // Last-Event-ID meaningful across instances.
+// fanOutFromRedis is the receive path's entry point: it applies the EPOCH
+// check, then hands off to fanOutLocally for the id-level bookkeeping.
+//
+// The two are separate because they answer different questions. The epoch asks
+// "is this the same id sequence I have been tracking" — a string comparison
+// that no arithmetic on ids can substitute for. fanOutLocally then asks "am I
+// contiguous within it". Numeric detection alone is blind to a reset that has
+// already climbed past our high-water mark (codex round 13), which is exactly
+// the case the epoch exists for.
+func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
+	b.mu.Lock()
+	if b.epoch == "" {
+		b.epoch = epoch
+	} else if b.epoch != epoch {
+		slog.Warn("watchevents: the notification id space changed; dropping the replay buffer — "+
+			"resumes from the previous epoch will report sync_required",
+			"previous_epoch", b.epoch, "new_epoch", epoch, "id", n.ID)
+		b.epoch = epoch
+		b.replay = newReplayBuffer(b.replaySize)
+		b.lastAppendedID = 0
+		b.knownFrom = 0
+		b.epochJustChanged = true
+	}
+	b.mu.Unlock()
+
+	b.fanOutLocally(n)
+}
+
 func (b *RedisBus) fanOutLocally(n Notification) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -648,8 +715,24 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 	// Coverage bookkeeping before the append — see knownFrom's comment.
 	switch {
 	case b.lastAppendedID == 0:
-		// Cold start: this instance knows nothing before this id.
+		// Cold start: this instance knows nothing before this id, so a client
+		// resuming from the id JUST BELOW it is contiguous with our view and
+		// can be served — knownFrom = n.ID admits exactly that cursor.
+		//
+		// UNLESS we just crossed an epoch, in which case that cursor is
+		// ambiguous rather than contiguous: id spaces can overlap, so a
+		// client presenting n.ID-1 might be holding the OLD sequence's
+		// n.ID-1, which was a different notification entirely. Admitting it
+		// would hand them the new epoch's id as though it followed theirs —
+		// which is the precise failure the epoch check exists to prevent, so
+		// letting it back in one line later would be a poor joke. One higher
+		// refuses it while still serving anyone genuinely inside the new
+		// space.
 		b.knownFrom = n.ID
+		if b.epochJustChanged {
+			b.knownFrom = n.ID + 1
+			b.epochJustChanged = false
+		}
 
 	case n.ID <= b.lastAppendedID:
 		// THE COUNTER WENT BACKWARDS, which means the id space itself
