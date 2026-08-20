@@ -378,10 +378,12 @@ const structuredErrorMarker = "pad-structured-error/v1: "
 // copy off the marker line.
 const storedStateUnreadableHint = "Retrying will not help — the item's stored value has been undecodable since it was written, " +
 	"so every attempt refuses identically, and the append is refused precisely because completing it " +
-	"would overwrite that value. Do not route around it by writing the field another way. Note also that " +
-	"MCP cannot show you the bad value: the fields blob is normalized on this surface and the broken value " +
-	"does not extract, so `pad_item` action=get will not display it either. Report the item to a human, who " +
-	"can read the raw value with `pad item show <ref> --format json` and repair it."
+	"would overwrite that value. Do not route around it by writing the field another way. What you can " +
+	"SEE depends on which is broken: if the whole fields blob fails to parse, `pad_item` action=get shows " +
+	"it to you as a raw string, but if one structured key is at fault MCP hides it — the fields blob is " +
+	"normalized on this surface and a value that does not decode is dropped from the top-level arrays. " +
+	"Either way, report the item to a human, who can read the raw value with `pad item show <ref> --format json` " +
+	"and repair it."
 
 // allowedStructuredErrorCodes is the whitelist of upstream codes the
 // MCP layer will surface verbatim. Two transports consult it:

@@ -62,7 +62,7 @@ Errors come back as a structured envelope with a `code`. Most failures are worth
 
 It means the ITEM'S STORED DATA cannot be decoded — your input was fine. Today it fires when `note` / `decide` would append to an `implementation_notes` / `decision_log` value that is not a list of entries. The operation is refused precisely because completing it would overwrite that value. The refusal is fully deterministic, so retrying — immediately or after a backoff — fails identically every time and changes nothing.
 
-When you see it: tell the user which item is affected, and stop. You cannot inspect the bad value yourself — the `fields` blob is normalized on this surface and a value that doesn't decode is dropped from the top-level arrays, so `action: get` won't show it. A human can read it with `pad item show <ref> --format json`. Do not route around the refusal by writing the field some other way; that is the write that caused it.
+When you see it: tell the user which item is affected, and stop. Whether you can inspect the bad value depends on which layer is broken — if the item's whole `fields` blob fails to parse, `action: get` hands it back as a raw string; if one structured key is at fault, you won't see it at all, because the blob is normalized on this surface and a value that doesn't decode is dropped from the top-level arrays. A human can always read it with `pad item show <ref> --format json`. Do not route around the refusal by writing the field some other way; that is the write that caused it.
 
 ## Project conventions
 
