@@ -1351,27 +1351,109 @@ func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 	}
 }
 
-// TestCanonicalEventsAreFullyDeclared checks that every canonical event
-// resolves BOTH a subject kind and a payload family, and that non-canonical
-// names resolve neither.
+// TestCanonicalEventsAreFullyDeclared pins the events/1 contract surface as an
+// INDEPENDENT COPY: every canonical name, its subject kind and its payload
+// family, written out here as literals.
 //
-// The single taxonomy table makes a half-declared event unrepresentable, so
-// this is a guard against the table being replaced by something looser rather
-// than against today's literals. The non-canonical leg is the one that matters
-// most: an unknown name must report ok=false, not an empty string that a
-// caller declaring nothing would match.
+// The previous version of this test iterated kernelevents.Canonical() and
+// asserted each entry resolved SOMETHING non-empty. That check cannot fail for
+// any table the compiler accepts — eventSpec requires both fields, so a
+// corrupted table (a name deleted, a name added, item.deleted quietly rebased
+// onto the ref-only payload) passed its own validation. A test that agrees with
+// whatever the table says is not a test of the table.
+//
+// So the literals below must DISAGREE with the table when the table moves. That
+// is the point of the duplication, and the duplication is deliberate: this is a
+// PUBLIC contract (SPEC-3 §Taxonomy) where a rename is as breaking as an HTTP
+// route change, and the cost of restating sixteen triples is one edit per
+// intentional contract change — paid at exactly the moment a version note is
+// owed anyway.
+//
+// TASK-2714 edits this table (the handler-path bulk mapping), which is why the
+// independent copy lands as this unit's first commit.
 func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
-	for _, name := range kernelevents.Canonical() {
-		kind, kindOK := kernelevents.SubjectKind(name)
-		if !kindOK || kind == "" {
-			t.Errorf("canonical event %q has no subject kind", name)
-		}
-		family, familyOK := kernelevents.PayloadFamily(name)
-		if !familyOK || family == "" {
-			t.Errorf("canonical event %q has no payload family", name)
+	// The events/1 set at SPEC-3 v1.4. Adding, removing or re-homing an entry
+	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
+	// doc comment in the same commit.
+	want := map[string]struct{ subject, family string }{
+		"item.created":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
+		"item.updated":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
+		"item.status_changed": {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
+		"item.moved":          {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
+		"item.deleted":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
+		"item.restored":       {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
+		"item.bulk_updated":   {kernelevents.SubjectItemBatch, kernelevents.PayloadItemBatch},
+		"comment.created":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot},
+		"comment.updated":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot},
+		"comment.deleted":     {kernelevents.SubjectComment, kernelevents.PayloadRefOnly},
+		"attachment.added":    {kernelevents.SubjectAttachment, kernelevents.PayloadAttachmentSnapshot},
+		"attachment.removed":  {kernelevents.SubjectAttachment, kernelevents.PayloadRefOnly},
+		"member.joined":       {kernelevents.SubjectMember, kernelevents.PayloadMember},
+		"pack.installed":      {kernelevents.SubjectPack, kernelevents.PayloadPack},
+		"pack.upgraded":       {kernelevents.SubjectPack, kernelevents.PayloadPack},
+		"pack.disabled":       {kernelevents.SubjectPack, kernelevents.PayloadPack},
+	}
+
+	// The name constants are pinned to their wire strings separately, because
+	// the map above is keyed on literals: a renamed constant would otherwise
+	// slip through as long as the table and the constant moved together.
+	for constant, wire := range map[string]string{
+		kernelevents.ItemCreated:       "item.created",
+		kernelevents.ItemUpdated:       "item.updated",
+		kernelevents.ItemStatusChanged: "item.status_changed",
+		kernelevents.ItemMoved:         "item.moved",
+		kernelevents.ItemDeleted:       "item.deleted",
+		kernelevents.ItemRestored:      "item.restored",
+		kernelevents.ItemBulkUpdated:   "item.bulk_updated",
+		kernelevents.CommentCreated:    "comment.created",
+		kernelevents.CommentUpdated:    "comment.updated",
+		kernelevents.CommentDeleted:    "comment.deleted",
+		kernelevents.AttachmentAdded:   "attachment.added",
+		kernelevents.AttachmentRemoved: "attachment.removed",
+		kernelevents.MemberJoined:      "member.joined",
+		kernelevents.PackInstalled:     "pack.installed",
+		kernelevents.PackUpgraded:      "pack.upgraded",
+		kernelevents.PackDisabled:      "pack.disabled",
+	} {
+		if constant != wire {
+			t.Errorf("event name constant = %q, want %q on the wire", constant, wire)
 		}
 	}
 
+	got := kernelevents.Canonical()
+	if len(got) != len(want) {
+		t.Errorf("Canonical() has %d events, want %d — the contract set changed", len(got), len(want))
+	}
+
+	seen := make(map[string]bool, len(got))
+	for _, name := range got {
+		seen[name] = true
+		expected, ok := want[name]
+		if !ok {
+			t.Errorf("Canonical() carries %q, which the events/1 contract does not declare", name)
+			continue
+		}
+		kind, kindOK := kernelevents.SubjectKind(name)
+		if !kindOK || kind != expected.subject {
+			t.Errorf("SubjectKind(%q) = (%q, %v), want (%q, true)", name, kind, kindOK, expected.subject)
+		}
+		family, familyOK := kernelevents.PayloadFamily(name)
+		if !familyOK || family != expected.family {
+			t.Errorf("PayloadFamily(%q) = (%q, %v), want (%q, true)", name, family, familyOK, expected.family)
+		}
+		if !kernelevents.IsCanonical(name) {
+			t.Errorf("IsCanonical(%q) = false for an event Canonical() returned", name)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("events/1 declares %q but Canonical() does not return it", name)
+		}
+	}
+
+	// Non-canonical names must report ok=false rather than an empty string a
+	// caller declaring nothing would match — the fail-open shape Codex round 11
+	// found in the two-map version.
 	for _, name := range []string{"", "item.frobnicated", "comment.deleted.v2"} {
 		if _, ok := kernelevents.PayloadFamily(name); ok {
 			t.Errorf("PayloadFamily(%q) reported ok for a non-canonical name", name)
