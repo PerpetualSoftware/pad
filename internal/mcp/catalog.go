@@ -430,7 +430,7 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 
 // compatAcceptedInputKeys lists input keys that are ACCEPTED without
 // being schema-declared — documented compatibility forms that predate
-// strict input validation (#1066 / ToolSurfaceVersion 0.22). Additions
+// strict input validation (#1066 / ToolSurfaceVersion 0.24). Additions
 // here should be rare and carry a paper trail; the whole point of
 // strict validation is that an undeclared key fails loudly instead of
 // being silently dropped.
@@ -477,7 +477,7 @@ func declaredInputKeys(def ToolDef) map[string]bool {
 }
 
 // rejectUndeclaredKeys refuses any input key outside the tool's
-// declared schema (#1066, ToolSurfaceVersion 0.22). Before this,
+// declared schema (#1066, ToolSurfaceVersion 0.24). Before this,
 // nothing set additionalProperties and BuildCLIArgs dropped unmapped
 // keys, so a typo'd or misplaced param was accepted, did nothing, and
 // still returned success — the worst version of wrong. Nil result
@@ -501,7 +501,7 @@ func rejectUndeclaredKeys(def ToolDef, declared map[string]bool, input map[strin
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrValidationFailed,
 		Message: fmt.Sprintf("%s: unknown parameter(s): %s", def.Name, strings.Join(unknown, ", ")),
-		Hint: "Undeclared keys are rejected rather than silently dropped (ToolSurfaceVersion 0.22). Declared parameters: " +
+		Hint: "Undeclared keys are rejected rather than silently dropped (ToolSurfaceVersion 0.24). Declared parameters: " +
 			strings.Join(declaredNames, ", "),
 	})
 }

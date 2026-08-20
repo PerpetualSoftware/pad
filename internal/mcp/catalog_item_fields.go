@@ -11,7 +11,7 @@ import (
 )
 
 // catalog_item_fields.go — the `fields` OBJECT alias on pad_item
-// create/update (#1066, ToolSurfaceVersion 0.22).
+// create/update (#1066, ToolSurfaceVersion 0.24).
 //
 // Why: since the BUG-991 normalization, reads return `fields` as a
 // native object ({"status": "backlog", ...}), so writing back the

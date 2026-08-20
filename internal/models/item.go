@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -14,6 +15,95 @@ const (
 	ItemFieldDecisionLog         = "decision_log"
 	ItemFieldConvention          = "convention"
 )
+
+// reservedItemFieldKeys is the canonical set of field keys Pad itself writes
+// into an item's fields blob. They are deliberately NOT declared by any
+// collection schema — each is rendered from its own dedicated surface rather
+// than as a generic field — which means every code path that reasons about
+// fields by consulting a schema is, by construction, blind to them.
+//
+// That blindness is not hypothetical: it is the shared root of BUG-2627 (the
+// CLI types a --field value by schema lookup, so these keys fall through to a
+// raw string and become unreadable) and BUG-2674 (MigrateFields drops any key
+// absent from the target schema, so a move destroyed them outright). Both were
+// code paths that did not know these keys are special.
+//
+// The set lives here, once, so a caller can ASK instead of re-listing. Before
+// this existed there were four constants and a single inline || chain in a CLI
+// display path — a shape where the next reserved field added lands in the
+// constants, gets wired into whichever surface prompted it, and silently misses
+// every other.
+//
+// ADDING A KEY HERE IS NOT THE WHOLE JOB, and pretending otherwise would
+// recreate the drift this set exists to stop. Membership tests inherit it for
+// free — MigrateFields' carry, SchemaForMigratedFields, the collection-schema
+// gate, the copy preflight's enumeration, the CLI's display filter. Three
+// places still need a hand edit, because each needs something a set cannot
+// supply:
+//
+//   - referentialItemFieldKeys below — does the new key point OUT of the item?
+//   - reservedFieldLabel (handlers_items_copy_preflight.go) — a human label
+//   - RESERVED_FIELD_KEYS (web/src/lib/components/collections/
+//     field-editor-types.ts) — the client-side gate, deliberately a separate
+//     list because it lowercases and is therefore stricter than this one
+//
+// TestReservedItemFieldKeysAreStableAndComplete fails on any change to this
+// set, which is the reminder to visit all three.
+var reservedItemFieldKeys = map[string]struct{}{
+	ItemFieldGitHubPR:            {},
+	ItemFieldImplementationNotes: {},
+	ItemFieldDecisionLog:         {},
+	ItemFieldConvention:          {},
+}
+
+// IsReservedItemField reports whether key is system-written metadata rather than
+// a user-facing schema field. Callers that filter, migrate, or render an item's
+// fields map should consult this rather than enumerating the constants.
+func IsReservedItemField(key string) bool {
+	_, ok := reservedItemFieldKeys[key]
+	return ok
+}
+
+// referentialItemFieldKeys are the reserved keys whose VALUE points at
+// something outside the item — a resource whose meaning depends on the
+// surrounding workspace's context rather than on the item itself.
+//
+// The distinction decides how far they travel (BUG-2674, lead ruling). The
+// carry rule is one sentence: system-minted NON-REFERENTIAL data carries;
+// referential system data carries only where its referent's context still
+// holds. implementation_notes and decision_log describe the item's own history
+// and are true wherever the item is. github_pr names a repository that is a
+// property of the SOURCE workspace's context — carried into a different
+// workspace it renders as a live PR link on an item whose project may have no
+// relationship to that repo, which is a false statement rather than a preserved
+// one.
+//
+// So this is not an exception to the rule; it is the rule's own qualifier doing
+// its job. A same-workspace move leaves the referent's context unchanged, so
+// these carry there.
+var referentialItemFieldKeys = map[string]struct{}{
+	ItemFieldGitHubPR: {},
+}
+
+// IsReferentialItemField reports whether a reserved key's value depends on the
+// workspace context around it. See referentialItemFieldKeys.
+func IsReferentialItemField(key string) bool {
+	_, ok := referentialItemFieldKeys[key]
+	return ok
+}
+
+// ReservedItemFieldKeys returns the reserved keys in a stable order, for
+// callers that need to enumerate rather than test membership (schema-key
+// validation, error messages). Sorted so the output is deterministic — an
+// error message that lists these must not reorder between runs.
+func ReservedItemFieldKeys() []string {
+	keys := make([]string, 0, len(reservedItemFieldKeys))
+	for k := range reservedItemFieldKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 type Item struct {
 	ID             string     `json:"id"`
@@ -448,9 +538,128 @@ func ExtractItemDecisionLog(fieldsJSON string) []ItemDecisionLogEntry {
 	return entries
 }
 
+// ErrStructuredFieldUnreadable is returned by the Append* helpers when the item
+// already carries a structured-entry field whose stored value cannot be decoded
+// into its entry slice. Callers should surface it rather than retry: the append
+// is refused precisely because completing it would destroy the stored value.
+var ErrStructuredFieldUnreadable = errors.New("structured field is present but unreadable")
+
+// assertStructuredFieldAppendable refuses an append when key holds a value that
+// does not decode into []T.
+//
+// BUG-2627. The Append* helpers below build the new slice from Extract*, then
+// assign it over the key unconditionally. Extract* returns nil for FOUR
+// different reasons and only one of them is a defect, so the nil itself cannot
+// be the refusal condition:
+//
+//  1. the key is absent          — the first append on an item. Must proceed.
+//  2. the key holds an empty array — well-formed, just empty. Must proceed.
+//  3. the key holds an explicit JSON null — carries no entries. Must proceed.
+//  4. the key holds a value that does not decode — the defect. Must REFUSE,
+//     because the unconditional assign would overwrite that value with a
+//     one-element slice and report success. Observed live: an item whose
+//     implementation_notes was a JSON-ENCODED STRING lost its stored note to a
+//     single `pad item note` call, with no warning on any surface.
+//
+// So this checks decodability directly against the raw value instead of reusing
+// Extract*'s nil, which cannot distinguish (4) from (1), (2) or (3).
+//
+// T must be the entry type the MATCHING Extract* decodes into. A wrong-but-
+// compiling instantiation is silently destructive rather than merely wrong:
+// encoding/json ignores unknown fields, so ItemImplementationNote ACCEPTS
+// `{"decision":{...}}` while ExtractItemDecisionLog rejects it — the guard would
+// permit an append that the extractor then reads as empty, which is the exact
+// divergence this function exists to prevent. Both directions are pinned by
+// tests; see TestAppendDecisionLogRefusesEntriesOnlyItsOwnTypeRejects.
+func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string) error {
+	raw, ok := fieldsMap[key]
+	if !ok {
+		return nil // case 1 — absent, nothing to lose.
+	}
+	if raw == nil {
+		return nil // an explicit JSON null carries no entries either.
+	}
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("%w: %q could not be re-encoded for inspection: %w", ErrStructuredFieldUnreadable, key, err)
+	}
+
+	var entries []T
+	if err := json.Unmarshal(payload, &entries); err != nil {
+		// Deliberately does NOT name a repair command. The remedy has to be
+		// one that works in THIS state, and every append path is exactly what
+		// is being refused here; `pad item show --format json` is read-only
+		// and does surface the raw value, so it is the one action safe to
+		// suggest.
+		return fmt.Errorf(
+			"%w: %q holds a value that is not a list of entries, so appending would overwrite and destroy it; "+
+				"inspect the stored value with `pad item show <ref> --format json` and repair it before appending (BUG-2627)",
+			ErrStructuredFieldUnreadable, key)
+	}
+	return nil
+}
+
+// unreadableFieldsBlob tags an append's fields-parse failure as
+// ErrStructuredFieldUnreadable (Codex round 5).
+//
+// The classification, not the failure, is what this changes. An item whose
+// whole fields column will not parse is unreadable in exactly the sense
+// BUG-2675's code exists for — deterministic, unfixable by the caller, and
+// pointless to retry — but the bare parse error carried none of that, so it
+// reached agents as `server_error` and invited the retry loop the code was
+// added to stop. Same reasoning, one level out from the per-key guard.
+func unreadableFieldsBlob(err error) error {
+	return fmt.Errorf("%w: the item's fields blob does not parse, so nothing can be appended to it; "+
+		"inspect it with `pad item show <ref> --format json` and repair it: %w", ErrStructuredFieldUnreadable, err)
+}
+
+// StructuredFieldIsAppendable reports whether an append to key would be
+// ACCEPTED on an item carrying fieldsJSON — i.e. whether the Append* helpers
+// would proceed rather than refusing with ErrStructuredFieldUnreadable.
+//
+// It exists so a caller that wants to TALK about appendability asks the same
+// question the guard answers, instead of re-deriving it. BUG-2627 part 2's
+// refusal message names `pad item note` as the remedy, which is a lie whenever
+// that command would itself refuse; the message therefore has to agree with the
+// guard EXACTLY, and a second decode written to look equivalent is not exact.
+// Codex round 2 caught a first version of it that decoded into
+// []json.RawMessage: a stored `[1]` passed there and failed the real guard, so
+// the message prescribed a command that refuses.
+//
+// The entry type per key matches the matching Extract*, for the reason
+// assertStructuredFieldAppendable documents at length: json ignores unknown
+// fields, so the WRONG-but-compiling instantiation silently permits what the
+// extractor rejects.
+//
+// A fieldsJSON that will not parse AT ALL returns false, because that is the
+// honest answer to the question asked: the Append* helpers bail on the same
+// parse and return an error, so an append would not be accepted. An earlier
+// version returned true on the reasoning that a broken outer blob is "a
+// different problem" — which is true of the CAUSE and irrelevant to the
+// CALLER, who would have been told to run a command that cannot succeed
+// (Codex round 4).
+func StructuredFieldIsAppendable(fieldsJSON, key string) bool {
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return false
+	}
+	switch key {
+	case ItemFieldImplementationNotes:
+		return assertStructuredFieldAppendable[ItemImplementationNote](fieldsMap, key) == nil
+	case ItemFieldDecisionLog:
+		return assertStructuredFieldAppendable[ItemDecisionLogEntry](fieldsMap, key) == nil
+	}
+	// No append helper owns this key, so nothing can refuse an append to it.
+	return true
+}
+
 func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
+		return "", unreadableFieldsBlob(err)
+	}
+	if err := assertStructuredFieldAppendable[ItemImplementationNote](fieldsMap, ItemFieldImplementationNotes); err != nil {
 		return "", err
 	}
 
@@ -463,6 +672,9 @@ func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (s
 func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
+		return "", unreadableFieldsBlob(err)
+	}
+	if err := assertStructuredFieldAppendable[ItemDecisionLogEntry](fieldsMap, ItemFieldDecisionLog); err != nil {
 		return "", err
 	}
 
@@ -538,6 +750,15 @@ func parseMutableItemFields(fieldsJSON string) (map[string]any, error) {
 	var fieldsMap map[string]any
 	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
 		return nil, fmt.Errorf("parse item fields: %w", err)
+	}
+	if fieldsMap == nil {
+		// A literal `null` unmarshals into a NIL map with no error, and every
+		// caller here goes on to assign into what it gets back — so `pad item
+		// note` against an item whose fields column holds "null" panicked with
+		// "assignment to entry in nil map" rather than appending (reproduced;
+		// Codex round 3 on BUG-2627). An absent blob and a null blob mean the
+		// same thing to every caller, so they get the same empty map.
+		return map[string]any{}, nil
 	}
 	return fieldsMap, nil
 }

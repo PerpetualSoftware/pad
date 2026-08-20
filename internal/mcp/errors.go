@@ -3,12 +3,15 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -159,6 +162,28 @@ const (
 	// hard duplicate. Details carries ref/expected_updated_at/
 	// actual_updated_at from the server (TASK-2022).
 	ErrUpdateConflict ErrorCode = "update_conflict"
+
+	// ErrStoredStateUnreadable fires when an operation is refused because
+	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
+	// implementation_notes / decision_log field whose value is not a list
+	// of entries (BUG-2627 part 3's guard, surfaced by BUG-2675).
+	//
+	// The load-bearing property is that it is RETRY-HOSTILE. The failure is
+	// deterministic: the stored value has been undecodable since it was
+	// written, possibly for months, and every retry refuses identically.
+	// An agent seeing this should surface the item and STOP, not back off
+	// and try again.
+	//
+	// Distinct from the three codes it would otherwise collapse into, each
+	// of which misleads in its own direction:
+	//   - ErrValidationFailed says the INPUT was bad. It wasn't — a valid
+	//     note against a valid item. What's wrong is state the caller never
+	//     supplied and cannot see.
+	//   - ErrConflict says something is racing. Nothing is.
+	//   - ErrServerError says the fault is ours and reads as transient,
+	//     which is the classification this code replaces and the reason an
+	//     agent would retry a refusal that can never succeed.
+	ErrStoredStateUnreadable ErrorCode = "stored_state_unreadable"
 )
 
 // ErrorEnvelope is the wire shape returned to MCP clients on tool
@@ -346,6 +371,20 @@ func envelopeFrom(res *mcp.CallToolResult) ErrorEnvelope {
 // bumping both packages and reviewing the allow-list.
 const structuredErrorMarker = "pad-structured-error/v1: "
 
+// storedStateUnreadableHint mirrors cli.StoredStateUnreadableHint — duplicated
+// for the same reason structuredErrorMarker is, and pinned equal to it by
+// TestCLIAndMCPAgreeOnTheCodeString. Both transports hand the agent the same
+// guidance: HTTP builds the envelope from this constant, stdio lifts the CLI's
+// copy off the marker line.
+const storedStateUnreadableHint = "Retrying will not help — the item's stored value has been undecodable since it was written, " +
+	"so every attempt refuses identically, and the append is refused precisely because completing it " +
+	"would overwrite that value. Do not route around it by writing the field another way. What you can " +
+	"SEE depends on which is broken: if the whole fields blob fails to parse, `pad_item` action=get shows " +
+	"it to you as a raw string, but if one structured key is at fault MCP hides it — the fields blob is " +
+	"normalized on this surface and a value that does not decode is dropped from the top-level arrays. " +
+	"Either way, report the item to a human, who can read the raw value with `pad item show <ref> --format json` " +
+	"and repair it."
+
 // allowedStructuredErrorCodes is the whitelist of upstream codes the
 // MCP layer will surface verbatim. Two transports consult it:
 //
@@ -370,6 +409,15 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"open_children":       {}, // IDEA-1494
 	"plan_limit_exceeded": {}, // TASK-788
 	"update_conflict":     {}, // TASK-2022 (optimistic concurrency)
+	// BUG-2675. The only entry whose marker is written for a LOCALLY
+	// generated refusal rather than an upstream APIError — the CLI's
+	// append helpers refuse before any request is made (see
+	// cli.WriteStoredStateUnreadableError). The HTTP transport reaches the
+	// same code by its own route (dispatchItemNote / dispatchItemDecide
+	// classify models.ErrStructuredFieldUnreadable directly), so this entry
+	// is what keeps stdio from being the transport that still says
+	// server_error.
+	"stored_state_unreadable": {},
 }
 
 // extractStructuredCLIError scans stderr for the
@@ -407,6 +455,7 @@ func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
 		Error struct {
 			Code    string          `json:"code"`
 			Message string          `json:"message"`
+			Hint    string          `json:"hint,omitempty"`
 			Details json.RawMessage `json:"details,omitempty"`
 		} `json:"error"`
 	}
@@ -422,9 +471,15 @@ func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
 		// Unknown code. Don't forward — regex classifier handles it.
 		return nil
 	}
+	// Hint is forwarded when the writer set one (BUG-2675, Codex round 2).
+	// Without this the two transports delivered the same CODE and different
+	// guidance: remote MCP told the agent retrying is pointless and how to
+	// inspect the item, stdio got an empty hint. The existing marker writers
+	// set no hint, so they are unaffected.
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrorCode(env.Error.Code),
 		Message: env.Error.Message,
+		Hint:    env.Error.Hint,
 		Details: env.Error.Details,
 	})
 }
@@ -539,7 +594,28 @@ var (
 	// modify archived item") which are validation-shaped server
 	// rejections previously falling through to server_error
 	// (BUG-987 bug 11 round 2).
-	reValidationFailed = regexp.MustCompile(`(invalid|missing required|must be one of|validation|cannot )`)
+	//
+	// Two additions cover the reserved-key / override refusal family, which
+	// this bump documents as behaving the same on both transports:
+	//
+	//   - "not settable" — the move/copy reserved-key refusal (BUG-2674):
+	//     "Field(s) reserved for system metadata and not settable here: ..."
+	//   - "has no field" — the copy's undeclared-override refusal:
+	//     "Destination collection has no field(s): ..."
+	//
+	// Neither matched, so stdio reported a deterministic 400 as server_error
+	// while remote HTTP called it validation_failed — the same refusal, two
+	// codes, and the transient-looking one invites a retry that always fails.
+	// (The family's third message, "Invalid override value(s)", was already
+	// covered by `invalid`.)
+	//
+	// Matching prose is a stopgap and reads like one: the structural fix is
+	// the `pad-structured-error/v1:` marker, which carries the code instead of
+	// inferring it. Until a refusal emits that, TestReservedKeyRefusalsAgree-
+	// AcrossTransports is where a new one has to be added — it drives both
+	// real classifiers with the real server text, so a reworded message fails
+	// there rather than in an agent's retry loop (Codex rounds 7-8).
+	reValidationFailed = regexp.MustCompile(`(invalid|missing required|must be one of|validation|not settable|has no field|cannot )`)
 	// Only match QUOTED slugs to avoid capturing stop-words like "not"
 	// in generic "Workspace not found" / "workspace not visible"
 	// messages. Quoted forms come from CLI stderr ("workspace 'foo'
@@ -1251,6 +1327,30 @@ func dispatcherErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
 		Code:    ErrServerError,
 		Message: fmt.Sprintf("%s: %s failed", cmdKey, op),
 		Hint:    hint,
+	})
+}
+
+// structuredAppendErrorResult classifies a failure from one of the Append*
+// helpers (BUG-2675).
+//
+// Every other failure in those dispatchers really is an internal fault and
+// keeps dispatcherErrorResult's ErrServerError. The refusal is the exception:
+// the server is working correctly and the ITEM's stored value is unreadable,
+// so ErrServerError's "our fault, probably transient" framing is wrong in both
+// halves — it invites a retry of something that can never succeed.
+//
+// Kept as a wrapper rather than a branch inside dispatcherErrorResult because
+// dispatcherErrorResult is the honest answer for every one of its ~20 other
+// call sites, and teaching it one caller's domain error would make it the place
+// where the next such special case also lands.
+func structuredAppendErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
+	if !errors.Is(err, models.ErrStructuredFieldUnreadable) {
+		return dispatcherErrorResult(cmdKey, op, err)
+	}
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrStoredStateUnreadable,
+		Message: fmt.Sprintf("%s refused: %s", cmdKey, err.Error()),
+		Hint:    storedStateUnreadableHint,
 	})
 }
 

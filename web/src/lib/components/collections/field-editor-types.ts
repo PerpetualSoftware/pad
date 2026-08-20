@@ -100,6 +100,17 @@ export const RESERVED_FIELD_KEYS: ReadonlySet<string> = new Set([
 	// them here too so the UI steers authors away before they hit the 400.
 	'parent',
 	'plan',
+	// BUG-2674: system-written metadata that deliberately lives OUTSIDE every
+	// schema. MigrateFields carries these across a collection move by identity
+	// rather than schema-matching them, so a schema that declares one puts a
+	// FieldDef in front of a value the migration hands through untouched —
+	// e.g. a `text` field receiving the notes array, which then fails
+	// validation and blocks the move. Server rejects newly-added occurrences;
+	// reserved here too so the UI steers authors away before the 400.
+	'implementation_notes',
+	'decision_log',
+	'github_pr',
+	'convention',
 	'created_by',
 	'last_modified_by',
 	'source',

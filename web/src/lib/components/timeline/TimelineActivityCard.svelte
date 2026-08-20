@@ -82,6 +82,20 @@
 			{/each}
 		</div>
 	{/if}
+	<!--
+		BUG-2674. A move can discard field values the destination schema has no
+		home for. The server has always computed that list and now records it in
+		the move's audit metadata; without this row it stayed invisible to the
+		one surface most likely to be asked "what happened to my item", which
+		would leave the loss silent in exactly the place the fix exists to make
+		it loud. Server joins the keys, so this renders a string, not an array.
+	-->
+	{#if activity.action === 'moved' && metadata.dropped_fields}
+		<div class="dropped">
+			<span class="dropped-label">Dropped on move:</span>
+			<span class="dropped-keys">{metadata.dropped_fields}</span>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -144,6 +158,27 @@
 		flex-wrap: wrap;
 		gap: var(--space-1);
 		padding-left: var(--space-1);
+	}
+
+	.dropped {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.3em;
+		padding-left: var(--space-1);
+		font-size: 0.75em;
+		color: var(--text-muted);
+	}
+
+	.dropped-label {
+		font-weight: 600;
+	}
+
+	.dropped-keys {
+		/* Long key lists wrap rather than widening the card, which lives in
+		   a pane whose width is not the card's to negotiate. */
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 
 	.change-pill {

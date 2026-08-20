@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,6 +60,16 @@ func noteCmd() *cobra.Command {
 			}
 			fields, err := models.AppendImplementationNote(item.Fields, entry)
 			if err != nil {
+				// BUG-2675: the append refusal is retry-hostile — the stored
+				// value is undecodable and every retry refuses identically.
+				// Emit the structured marker so a stdio MCP agent gets that
+				// code instead of a generic server_error it may retry.
+				if errors.Is(err, models.ErrStructuredFieldUnreadable) {
+					cli.WriteStoredStateUnreadableError(os.Stderr, err)
+					// Bare error so cobra exits non-zero without re-printing
+					// the (already-rendered) message.
+					return fmt.Errorf("note refused: %s is unreadable on this item", models.ItemFieldImplementationNotes)
+				}
 				return err
 			}
 
@@ -131,6 +142,11 @@ func decideCmd() *cobra.Command {
 			}
 			fields, err := models.AppendDecisionLogEntry(item.Fields, entry)
 			if err != nil {
+				// BUG-2675 — same retry-hostile refusal as `pad item note`.
+				if errors.Is(err, models.ErrStructuredFieldUnreadable) {
+					cli.WriteStoredStateUnreadableError(os.Stderr, err)
+					return fmt.Errorf("decision refused: %s is unreadable on this item", models.ItemFieldDecisionLog)
+				}
 				return err
 			}
 

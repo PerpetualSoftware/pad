@@ -15,7 +15,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
@@ -228,11 +227,19 @@ var noRemoteEquivalent = map[string]string{
 	// `github` commands chain `git rev-parse` + `gh` CLI for the
 	// branch/PR data they write to the linked item — that data
 	// inherently lives in the agent's local checkout, not on
-	// pad-cloud. Agents with their own GitHub tools can update items
-	// via `item update --field github_pr=...` once they have the data.
-	"github link":   "needs the agent's local git branch + `gh` CLI; agents pass PR data via `item update --field github_pr=...`",
+	// pad-cloud.
+	//
+	// These hints USED to send agents to `item update --field
+	// github_pr=...`, and that advice was wrong: ingestFieldKVP stores
+	// every `field` value as a STRING, so the PR data lands
+	// double-encoded, no link appears, and the call reports success —
+	// the worst shape a workaround can have (BUG-2696, found reviewing
+	// BUG-2627). Until that is fixed there is no working remote path,
+	// and saying so is better than sending an agent down one that
+	// silently does nothing.
+	"github link":   "needs the agent's local git branch + `gh` CLI. There is currently NO working remote alternative: `item update --field github_pr=...` stores the value as a string, so no link appears even though the call succeeds (BUG-2696). Hand PR linking to a human rather than retrying.",
 	"github status": "needs the agent's local git branch + `gh` CLI; query GitHub directly via the agent's tools",
-	"github unlink": "needs the agent's local git branch + `gh` CLI; clear PR data via `item update --field github_pr=null`",
+	"github unlink": "needs the agent's local git branch + `gh` CLI. Same as `github link`: `item update --field github_pr=null` stores the string \"null\" rather than clearing the key (BUG-2696), so there is no working remote path today.",
 	// `project reconcile` shells out to `gh` CLI to compare stored
 	// PR metadata against live GitHub state — same locality argument.
 	"project reconcile": "shells out to `gh` CLI to compare stored PR metadata against live GitHub state; agents reconcile via their own GitHub tools + `item update`",
@@ -860,15 +867,13 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 		return "", "", nil, fmt.Errorf("encode body: %w", err)
 	}
 
-	// Normalize singular/shorthand forms ("task" → "tasks", "doc" →
-	// "docs", etc.) the same way the CLI does. Without this, an MCP
-	// caller that mirrors a documented CLI command shape like
-	// `item.create(collection: "task", ...)` would 404 against the
-	// REST handler even though the same call works through
-	// ExecDispatcher (which goes through normalizeCollectionSlug in
-	// cmd/pad/main.go).
-	collection = collections.NormalizeSlug(collection)
-
+	// Send the collection slug verbatim. This dispatcher runs in-process
+	// against the same binary, whose create handler resolves shorthand
+	// server-side with exact-match-first (BUG-2578), so the raw slug keeps
+	// `item.create(collection: "task", ...)` working AND stops the old
+	// client-side alias from shadowing a real collection whose slug IS a
+	// singular like "task" (BUG-2630). The ExecDispatcher path (local stdio)
+	// gets the same behaviour through the CLI's alias-fallback helper.
 	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/collections/%s/items",
 		url.PathEscape(workspace), url.PathEscape(collection))
 	return http.MethodPost, urlPath, body, nil

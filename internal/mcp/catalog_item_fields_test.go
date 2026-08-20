@@ -8,7 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 )
 
-// Tests for the #1066 contract (ToolSurfaceVersion 0.22):
+// Tests for the #1066 contract (ToolSurfaceVersion 0.24):
 //
 //  1. pad_item create/update accept a `fields` OBJECT as an alias that
 //     merges into the same path as the `field` array — the read shape

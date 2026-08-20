@@ -103,39 +103,6 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.22" — current. #1066: the pad_item `fields` OBJECT is now a
-//     real write form, and undeclared input keys fail loudly. Two
-//     halves, one contract change:
-//
-//     (1) `fields` alias. Since the BUG-991 normalization, reads return
-//     `fields` as a native object, so writing back the structure you
-//     just read was the obvious call — and it was a silent no-op: not a
-//     declared param, nothing set additionalProperties, so the object
-//     was accepted, never mapped by BuildCLIArgs, and dropped while the
-//     PATCH still ran (success + bumped updated_at + unchanged value).
-//     create/update now fold `fields` into the same path as `field` /
-//     the dedicated params (catalog_item_fields.go). The same key with
-//     CONFLICTING values in two places is REFUSED with a structured
-//     error — refuse-on-ambiguity, same disposition as clear_parent /
-//     clear_assigned_user; equal duplicates collapse to one write.
-//     Non-writer actions refuse a `fields` param loudly rather than
-//     letting the now-declared key be dropped at dispatch.
-//
-//     (2) Strict input validation. The fan-out handler now rejects any
-//     top-level key outside the tool's declared schema (action,
-//     workspace, declared params, and a small documented compat list —
-//     pad_item's v0.16 assigned_user_id / agent_role_id clear form)
-//     with a structured validation_failed naming the offending keys.
-//     This turns every future undeclared-param variant of this bug into
-//     a loud error instead of a silent no-op, across ALL catalog tools.
-//
-//     Bump rationale: (1) is additive (new param), but (2) changes the
-//     contract for inputs that previously "succeeded" — any consumer
-//     relying on an undeclared key being ignored now gets an error.
-//     That reliance was indistinguishable from a bug in the caller
-//     (the key never did anything), so the break is the fix. Single
-//     bump covers both halves; they are one contract change.
-//
 //   - "0.21" — BUG-2608: bounds `pad_item.action=history`, which
 //     was unbounded on every surface. Extends the `limit` param's
 //     vocabulary to cover history (default 50, max 300 — the same pair
@@ -553,7 +520,139 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.22"
+//   - "0.22" — BUG-2674: `pad_item.action=move` no longer
+//     destroys an item's system metadata, and now REFUSES a `field`
+//     setter naming one of those keys.
+//
+//     BEHAVIOR bump on the v0.9/v0.16/v0.17 grounds — no tool, action
+//     enum, or param shape changed. Two observable differences:
+//
+//     A move used to drop implementation_notes / decision_log /
+//     github_pr / convention outright, because MigrateFields matched
+//     every key against the destination schema and no schema declares
+//     those. They now carry, and any field the target schema HAS no
+//     home for is reported in the move's activity entry rather than
+//     vanishing. github_pr is the one exception and only across
+//     WORKSPACES (the copy path), where the repository it names
+//     belongs to the source project — reported there as
+//     `referent_not_portable`.
+//
+//     `field: ["implementation_notes=..."]` on a move or copy now
+//     answers `malformed_override` instead of writing the key. That
+//     write was never legitimate: it bypassed the append guard
+//     (BUG-2627) and, on a cross-workspace copy, could reintroduce the
+//     github_pr the migration had just dropped. Agents write these
+//     through `action=note` / `action=decide` and the GitHub link flow.
+//
+//     Compat posture, stated deliberately: today's callers passing such
+//     a setter get a 400 where they previously got a silent corrupt
+//     write. Relying on the old behaviour is relying on a defect, the
+//     same reading v0.17 took for the fields-blob shadowing.
+//
+//   - "0.23" — BUG-2627 part 2 + BUG-2675, one bump for two
+//     changes at the same door. BEHAVIOR bump on the v0.9/v0.16/v0.17/
+//     v0.22 grounds — no tool, action enum, or param shape changed.
+//
+//     (1) `pad_item.action=update` REFUSES a `field` setter naming
+//     implementation_notes, decision_log or convention, where it
+//     previously wrote it. HTTP answers 400 `validation_error`; MCP
+//     clients see that as `validation_failed`, which is the code the
+//     catalog and instructions.md name, since that is the one an agent
+//     branches on.
+//
+//     `github_pr` is deliberately NOT refused, and the exception is
+//     load-bearing rather than a soft edge. The rule being applied is
+//     "a raw write is refused where a real writer exists"; for the
+//     other three that writer reaches every surface, and for github_pr
+//     it does not — `pad github link` needs a local git checkout and
+//     the `gh` CLI, so it is excluded from remote MCP by name, and
+//     noRemoteEquivalent points remote agents at
+//     `item update --field github_pr=...` as the alternative. Refusing
+//     it would have deleted the only door those agents have and
+//     answered with a message naming a command they cannot run (Codex
+//     round 3).
+//
+//     Round 4 then found that door does not actually work: a `field`
+//     value is stored as a STRING on every surface, so the PR data
+//     lands double-encoded and no link appears — the BUG-2627 shape one
+//     key over, filed as BUG-2696. That does not change the exemption
+//     (refusing would leave remote agents with strictly less), but it
+//     does change what the catalog and instructions.md may PROMISE, so
+//     both now say the door is open and broken rather than advertising
+//     a capability that isn't there. v0.22 closed the same door on move/copy field
+//     OVERRIDES; this closes it on the ordinary update, which is the
+//     door agents actually reach for. Server-side in the fields_patch
+//     gate, so it lands on BOTH transports at once — remote posts
+//     fields_patch directly, and stdio's CLI (`pad item update
+//     --field`) lowers into the same key. That was verified at both
+//     call sites rather than assumed, because a fix that reaches one
+//     transport is the shape v0.16 shipped and v0.17 had to finish.
+//
+//     Compat posture, same as v0.22's: today's callers passing such a
+//     setter get a 400 where they previously got a write that made the
+//     entries unreadable everywhere AND disabled `action=note` /
+//     `action=decide` on that item until the row was repaired. Relying
+//     on the old behaviour is relying on a defect.
+//
+//     Item CREATE is deliberately NOT covered: its full-`fields` door
+//     is shared with Pad's own writers (convention activation lowers
+//     into it), so it needs a different rule, tracked in BUG-2685.
+//
+//     (2) NEW ERROR CODE `stored_state_unreadable` (BUG-2675) — the
+//     first addition to the closed ErrorCode set since v0.14's
+//     update_conflict. Fires when an operation is refused because the
+//     ITEM'S STORED value cannot be decoded: today, `action=note` /
+//     `action=decide` against a field whose stored value is not a list
+//     of entries (the v0.22-era guard from BUG-2627 part 3).
+//
+//     It replaces `server_error` for exactly that condition, which was
+//     wrong in both halves — not our fault, and not transient. The
+//     defining property is RETRY-HOSTILITY: the refusal is fully
+//     deterministic, so an agent that backs off and retries burns
+//     round-trips against a state only a repair can clear. Both
+//     transports emit it: HTTP classifies the sentinel error directly,
+//     stdio via the `pad-structured-error/v1:` marker the CLI now
+//     writes for its own local refusal.
+//
+//     ADDITIVE for consumers that switch on code — an unknown code was
+//     always possible and the envelope shape is unchanged — but a
+//     client that pattern-matched `server_error` to detect this
+//     condition would stop matching. That client was retrying a
+//     permanent failure.
+
+//   - "0.24" — current. #1066: the pad_item `fields` OBJECT is now a
+//     real write form, and undeclared input keys fail loudly. Two
+//     halves, one contract change:
+//
+//     (1) `fields` alias. Since the BUG-991 normalization, reads return
+//     `fields` as a native object, so writing back the structure you
+//     just read was the obvious call — and it was a silent no-op: not a
+//     declared param, nothing set additionalProperties, so the object
+//     was accepted, never mapped by BuildCLIArgs, and dropped while the
+//     PATCH still ran (success + bumped updated_at + unchanged value).
+//     create/update now fold `fields` into the same path as `field` /
+//     the dedicated params (catalog_item_fields.go). The same key with
+//     CONFLICTING values in two places is REFUSED with a structured
+//     error — refuse-on-ambiguity, same disposition as clear_parent /
+//     clear_assigned_user; equal duplicates collapse to one write.
+//     Non-writer actions refuse a `fields` param loudly rather than
+//     letting the now-declared key be dropped at dispatch.
+//
+//     (2) Strict input validation. The fan-out handler now rejects any
+//     top-level key outside the tool's declared schema (action,
+//     workspace, declared params, and a small documented compat list —
+//     pad_item's v0.16 assigned_user_id / agent_role_id clear form)
+//     with a structured validation_failed naming the offending keys.
+//     This turns every future undeclared-param variant of this bug into
+//     a loud error instead of a silent no-op, across ALL catalog tools.
+//
+//     Bump rationale: (1) is additive (new param), but (2) changes the
+//     contract for inputs that previously "succeeded" — any consumer
+//     relying on an undeclared key being ignored now gets an error.
+//     That reliance was indistinguishable from a bug in the caller
+//     (the key never did anything), so the break is the fix. Single
+//     bump covers both halves; they are one contract change.
+const ToolSurfaceVersion = "0.24"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -602,7 +602,14 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// malformed_override from its own preview. A bad request is a bad request
 	// whether or not the destination happens to be full, and a client told
 	// "you are out of room" cannot fix an override it was never told about.
-	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides)
+	// Scope is COMPUTED from the two workspace ids rather than assumed
+	// cross-workspace: this path also serves a copy whose target IS the source
+	// workspace, and hardcoding CrossWorkspace would drop a github_pr from a
+	// duplicate whose repo context never changed (BUG-2674). The preflight
+	// computes it the same way — a divergence here would have the preview
+	// promising a carry the copy drops, which DR-6 exists to prevent.
+	scope := items.ScopeFor(sourceWorkspaceID, req.TargetWorkspaceID)
+	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1006,7 +1013,7 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 //
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
 // migration dropped.
-func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any) (map[string]any, []string, error) {
+func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any, scope items.MigrateScope) (map[string]any, []string, error) {
 	var sourceSchema, targetSchema models.CollectionSchema
 	if err := json.Unmarshal([]byte(sourceSchemaJSON), &sourceSchema); err != nil {
 		return nil, nil, fmt.Errorf("copy item across workspaces: parse source schema: %w", err)
@@ -1018,7 +1025,7 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 	// Refused BEFORE the source item's fields are even parsed, so the
 	// rejection cannot depend on the source's contents — same ordering the
 	// preflight uses for the same reason.
-	if bad := items.UndeclaredOverrideKeys(overrides, targetSchema.Fields); len(bad) > 0 {
+	if bad := items.UndeclaredOverrideKeys(overrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
 		return nil, nil, &UndeclaredOverrideError{Keys: bad}
 	}
 
@@ -1032,7 +1039,7 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 		}
 	}
 
-	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields, scope)
 	for k, v := range overrides {
 		if v == nil {
 			// An explicit null means "leave this unset". DELETE rather than
@@ -1045,10 +1052,16 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 		}
 		migrated.Fields[k] = v
 	}
-	if err := items.ValidateFields(migrated.Fields, targetSchema); err != nil {
+	if err := items.ValidateFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, nil, &FieldValidationError{Err: err}
 	}
-	return migrated.Fields, migrated.Dropped, nil
+	// Filtered against the FINAL map, matching the preflight (Codex round 3).
+	// migrated.Dropped is computed before overrides merge and before defaults
+	// are injected, and this list is exposed to the caller as the 201
+	// response's warnings.dropped_fields — so without this the preview said
+	// "carried", the copy PERSISTED the key, and the copy's own response
+	// still reported it dropped. Three surfaces, two answers, one request.
+	return migrated.Fields, items.StillDropped(migrated.Dropped, migrated.Fields), nil
 }
 
 // carryAssigneeTx implements DR-8's assignee rule: the source's assignee

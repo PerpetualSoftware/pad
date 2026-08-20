@@ -191,7 +191,7 @@ func TestMakeFanOutHandler_StripsActionFromInput(t *testing.T) {
 	def := ToolDef{
 		Name: "pad_test",
 		// days/actor_name are declared because the fan-out boundary now
-		// rejects undeclared input keys (ToolSurfaceVersion 0.22) — the
+		// rejects undeclared input keys (ToolSurfaceVersion 0.24) — the
 		// pass-through under test is for DECLARED params only.
 		Schema: ToolSchema{Params: []ParamDef{
 			{Name: "days", Type: "number"},
