@@ -600,6 +600,20 @@ func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string
 	return nil
 }
 
+// unreadableFieldsBlob tags an append's fields-parse failure as
+// ErrStructuredFieldUnreadable (Codex round 5).
+//
+// The classification, not the failure, is what this changes. An item whose
+// whole fields column will not parse is unreadable in exactly the sense
+// BUG-2675's code exists for — deterministic, unfixable by the caller, and
+// pointless to retry — but the bare parse error carried none of that, so it
+// reached agents as `server_error` and invited the retry loop the code was
+// added to stop. Same reasoning, one level out from the per-key guard.
+func unreadableFieldsBlob(err error) error {
+	return fmt.Errorf("%w: the item's fields blob does not parse, so nothing can be appended to it; "+
+		"inspect it with `pad item show <ref> --format json` and repair it: %w", ErrStructuredFieldUnreadable, err)
+}
+
 // StructuredFieldIsAppendable reports whether an append to key would be
 // ACCEPTED on an item carrying fieldsJSON — i.e. whether the Append* helpers
 // would proceed rather than refusing with ErrStructuredFieldUnreadable.
@@ -643,7 +657,7 @@ func StructuredFieldIsAppendable(fieldsJSON, key string) bool {
 func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
-		return "", err
+		return "", unreadableFieldsBlob(err)
 	}
 	if err := assertStructuredFieldAppendable[ItemImplementationNote](fieldsMap, ItemFieldImplementationNotes); err != nil {
 		return "", err
@@ -658,7 +672,7 @@ func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (s
 func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
-		return "", err
+		return "", unreadableFieldsBlob(err)
 	}
 	if err := assertStructuredFieldAppendable[ItemDecisionLogEntry](fieldsMap, ItemFieldDecisionLog); err != nil {
 		return "", err

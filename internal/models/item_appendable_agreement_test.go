@@ -17,6 +17,7 @@ package models
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -143,6 +144,15 @@ func TestAppendSurvivesAMalformedOuterBlob(t *testing.T) {
 			if tc.wantError {
 				if err == nil {
 					t.Fatalf("fields=%q: expected an error, got out=%q", tc.fields, out)
+				}
+				// Codex round 5: an unparseable blob is unreadable in exactly
+				// BUG-2675's sense — deterministic and unfixable by the
+				// caller. Without the sentinel it reaches agents as
+				// server_error, which reads as transient and invites the
+				// retry loop that code exists to stop.
+				if !errors.Is(err, ErrStructuredFieldUnreadable) {
+					t.Fatalf("fields=%q: error must carry ErrStructuredFieldUnreadable so the refusal is "+
+						"classified retry-hostile; got: %v", tc.fields, err)
 				}
 				return
 			}

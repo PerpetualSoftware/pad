@@ -110,6 +110,37 @@ func TestStdioSurfacesStoredStateUnreadable(t *testing.T) {
 	}
 }
 
+// TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround — Codex round 5.
+//
+// noRemoteEquivalent's text IS the message a remote agent receives when it
+// calls `github link`, which makes it the artifact that reaches the actor. It
+// told agents to use `item update --field github_pr=...`; that write stores a
+// string, so no link appears and the call reports success (BUG-2696).
+//
+// This is deliberately a NEGATIVE assertion on the prescription rather than a
+// positive one on the wording: the point is that no future edit quietly
+// reinstates the recommendation while the underlying write is still broken.
+// Delete this test when BUG-2696 is fixed — at that point the advice becomes
+// true and should come back.
+func TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround(t *testing.T) {
+	for _, cmd := range []string{"github link", "github unlink"} {
+		hint, ok := noRemoteEquivalent[cmd]
+		if !ok {
+			t.Fatalf("%q is no longer in noRemoteEquivalent — if it gained a remote implementation, "+
+				"revisit BUG-2696 and this test", cmd)
+		}
+		if !strings.Contains(hint, "BUG-2696") {
+			t.Errorf("%q hint must name the bug that makes the field workaround useless; got: %s", cmd, hint)
+		}
+		// The failure this guards: prescribing the write without the caveat.
+		lower := strings.ToLower(hint)
+		if strings.Contains(lower, "github_pr") &&
+			!strings.Contains(lower, "no working remote") && !strings.Contains(lower, "rather than clearing") {
+			t.Errorf("%q hint mentions the github_pr field write without saying it does not work; got: %s", cmd, hint)
+		}
+	}
+}
+
 // TestCLIAndMCPAgreeOnTheCodeString pins the two duplicated string constants
 // together. They are deliberately not shared (internal/mcp does not import
 // internal/cli in production code), so the only thing keeping them equal is
