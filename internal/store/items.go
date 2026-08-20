@@ -2734,11 +2734,23 @@ func (s *Store) DeleteItem(id string) error {
 		return sql.ErrNoRows
 	}
 
-	// The emit is gated on the UPDATE having actually archived a row. A
-	// re-delete of an already-archived item affects zero rows and returns
-	// above, so no event is written — the mutation did not happen, and an
-	// event for it would be a lie the outbox is specifically built not to
-	// tell.
+	// A re-delete of an already-archived item must announce nothing: the
+	// mutation did not happen, and an event for it would be a lie the outbox
+	// exists not to tell.
+	//
+	// TWO INDEPENDENT GUARDS produce that, and it is worth naming both because
+	// a mutation test cannot distinguish them (measured — moving this emit
+	// above the zero-row return leaves the re-delete test green):
+	//
+	//  1. The zero-row return above. The UPDATE carries `deleted_at IS NULL`,
+	//     so a second delete matches nothing and this code is never reached.
+	//  2. THE NIL SNAPSHOT, which is the one that actually fires first.
+	//     getItemTx filters archived rows, so on a re-delete `preArchive` is
+	//     already nil by the time the UPDATE runs — there is no snapshot to
+	//     emit even if the row count said otherwise.
+	//
+	// Guard 2 is load-bearing rather than defensive: it is also what keeps
+	// this correct if the UPDATE's predicate is ever loosened.
 	if preArchive != nil {
 		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, ""); err != nil {
 			return err

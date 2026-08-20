@@ -678,14 +678,44 @@ func TestOutbox_CollectionOptionRenameEmitsOneBulkEvent(t *testing.T) {
 		t.Fatalf("members = %d, want 2 — per-member snapshots are what keep item-level bindings "+
 			"evaluable across a batched delivery", len(members))
 	}
-	// The snapshots must be POST-migration: a pre-migration snapshot would
-	// carry the value the mutation just removed.
+	// MEMBER IDENTITY, not just count (Codex round 3): a reader that returned
+	// the same member twice, or the wrong items entirely, would satisfy a
+	// count-only assertion while making per-member binding evaluation fire on
+	// the wrong set.
+	gotIDs := map[string]bool{}
 	for _, raw := range members {
 		m, _ := raw.(map[string]any)
+		id, _ := m["id"].(string)
+		if gotIDs[id] {
+			t.Fatalf("member %s appears twice; a duplicate makes per-member evaluation fire "+
+				"twice on one item", id)
+		}
+		gotIDs[id] = true
+		// The snapshots must be POST-migration: a pre-migration snapshot would
+		// carry the value the mutation just removed.
 		fields, _ := m["fields"].(string)
 		if !strings.Contains(fields, "doing") {
 			t.Fatalf("member snapshot fields = %q, want the POST-migration value", fields)
 		}
+	}
+	if !gotIDs[a.ID] || !gotIDs[b.ID] {
+		t.Fatalf("members = %v, want exactly the two migrated items %s and %s", gotIDs, a.ID, b.ID)
+	}
+
+	// THE DELTA, which is the only part of the payload that says what the one
+	// mutation actually did. An emitter that dropped it would leave consumers
+	// with two changed items and no explanation.
+	delta, _ := payload["delta"].(map[string]any)
+	if delta["kind"] != "field_option_renamed" {
+		t.Fatalf("delta kind = %v, want %q", delta["kind"], "field_option_renamed")
+	}
+	renames, _ := delta["renames"].([]any)
+	if len(renames) != 1 {
+		t.Fatalf("delta renames = %v, want one entry describing status in-progress→doing", renames)
+	}
+	r0, _ := renames[0].(map[string]any)
+	if r0["field"] != "status" || r0["from"] != "in-progress" || r0["to"] != "doing" {
+		t.Fatalf("delta rename = %v, want {field:status from:in-progress to:doing}", r0)
 	}
 }
 
@@ -722,5 +752,88 @@ func TestOutbox_WikiTitleCascadeEmitsOneBulkEvent(t *testing.T) {
 	if content, _ := m["content"].(string); !strings.Contains(content, "[[New Title]]") {
 		t.Fatalf("member content = %q, want the REWRITTEN content — the cascade's whole delta is "+
 			"content, so a pre-rewrite snapshot makes the event useless", content)
+	}
+}
+
+// TestItemUpdatedSliceChanged_NonDefaultAndNonStringDoneKey covers two gaps
+// Codex round 3 found in the classification tests above: every other test uses
+// the default "status" key, so a classifier hard-coded to mask "status" would
+// pass them all; and none of them exercise a done-key value the status
+// machinery cannot read.
+func TestItemUpdatedSliceChanged_NonDefaultAndNonStringDoneKey(t *testing.T) {
+	// A CUSTOM done-field key must behave exactly as "status" does. A
+	// classifier that masks the literal "status" instead of the collection's
+	// declared key fails here and nowhere else.
+	base := &models.Item{ID: "i", WorkspaceID: "w", Fields: `{"stage":"open","note":"a"}`}
+	stageOnly := *base
+	stageOnly.Fields = `{"stage":"done","note":"a"}`
+	changed, err := itemUpdatedSliceChanged(base, &stageOnly, "stage")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if changed {
+		t.Fatalf("a bare change to the CUSTOM done field %q reported an item.updated delta; "+
+			"the mask must follow the collection's declared key, not the literal \"status\"", "stage")
+	}
+
+	// The same custom key, but the value is a NUMBER. extractFieldValue only
+	// reads JSON strings, so status_changed will never report this — and if
+	// the mask deleted the key anyway, the remainder would compare equal and
+	// the mutation would emit NOTHING AT ALL. A real field change has to land
+	// in item.updated's slice when no other event can describe it.
+	numBefore := &models.Item{ID: "i", WorkspaceID: "w", Fields: `{"stage":1}`}
+	numAfter := &models.Item{ID: "i", WorkspaceID: "w", Fields: `{"stage":2}`}
+	changed, err = itemUpdatedSliceChanged(numBefore, numAfter, "stage")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if !changed {
+		t.Fatalf("a numeric done-field change reported NO delta; status_changed cannot see a " +
+			"non-string value either, so this mutation would be silently unobservable")
+	}
+
+	// A non-object blob cannot have anything masked out of it. It still has to
+	// yield a correct changed/did-not-change answer.
+	arrBefore := &models.Item{ID: "i", WorkspaceID: "w", Fields: `[{"status":"open"}]`}
+	arrAfter := &models.Item{ID: "i", WorkspaceID: "w", Fields: `[{"status":"done"}]`}
+	changed, err = itemUpdatedSliceChanged(arrBefore, arrAfter, "status")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if !changed {
+		t.Fatalf("a change inside a non-object fields blob reported NO delta")
+	}
+	changed, err = itemUpdatedSliceChanged(arrBefore, arrBefore, "status")
+	if err != nil {
+		t.Fatalf("itemUpdatedSliceChanged: %v", err)
+	}
+	if changed {
+		t.Fatalf("an unchanged non-object fields blob reported a delta")
+	}
+}
+
+func TestWriteOutboxTx_RejectsMalformedJSONPayload(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox malformed")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	// Postgres would reject this at the INSERT (JSONB); SQLite's TEXT column
+	// would accept it. Validating in Go makes both backends fail identically
+	// rather than one silently persisting an undeliverable event.
+	err = writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   kernelevents.ItemCreated,
+		SubjectKind: kernelevents.SubjectItem,
+		SubjectID:   "x",
+		Payload:     []byte(`{"id":"x"`),
+	})
+	if err == nil {
+		t.Fatalf("writeOutboxTx accepted a malformed JSON payload; on SQLite this persists an " +
+			"event no consumer can parse, while Postgres refuses the same write")
 	}
 }

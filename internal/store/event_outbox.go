@@ -84,6 +84,17 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	if len(ev.Payload) == 0 {
 		return fmt.Errorf("outbox: event %s has an empty payload", ev.EventType)
 	}
+	// Validate here rather than leaning on the column type, because the column
+	// types DISAGREE: Postgres stores payload as JSONB and rejects malformed
+	// JSON at the INSERT, SQLite stores it as unconstrained TEXT and accepts
+	// it. Without this, the same bad payload fails a mutation on one backend
+	// and silently persists an undeliverable event on the other — a
+	// dual-dialect divergence in the one place the whole design is trying to
+	// make trustworthy (Codex round 3). Validating in Go makes the failure
+	// identical on both.
+	if !json.Valid(ev.Payload) {
+		return fmt.Errorf("outbox: event %s has a malformed JSON payload", ev.EventType)
+	}
 	if ev.Hop > maxOutboxHop {
 		// Cascade bound reached. Dropping is the designed behaviour, but a
 		// silent drop would make a runaway binding indistinguishable from a
@@ -360,13 +371,23 @@ func (s *Store) itemSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error
 // when deciding whether item.updated's slice moved.
 //
 // AN EXCLUSION LIST, NOT AN INCLUSION LIST, and that direction is the point. A
-// column added to items later is included in the comparison by default, so the
-// worst a future schema change can do is emit an extra item.updated — visible,
+// new column that REACHES models.Item's JSON is compared by default, so the
+// worst such a schema change can do is emit an extra item.updated — visible,
 // arguable, fixable. An inclusion list would fail the other way: the new column
-// would be silently invisible to the delta, and a mutation that changed it
-// would emit nothing at all. Silent absence is the failure mode this whole unit
-// exists to eliminate, so it must not be reintroduced by the mechanism that
-// decides what to emit.
+// would be silently invisible, and a mutation that changed it would emit
+// nothing at all.
+//
+// THE LIMIT OF THAT GUARANTEE, stated precisely because the sloppy version of
+// this comment overclaimed it (Codex round 3): the diff sees the SNAPSHOT, not
+// the row. A column that models.Item does not carry — or carries as `json:"-"`
+// — is invisible here no matter what this list says. `items.last_restore_seq`
+// and the content-flush watermarks are exactly that, so a write touching ONLY
+// one of them emits nothing. Today that is unreachable in practice: every
+// caller that moves them also writes content or fields in the same mutation.
+// It is not structurally guaranteed, and a future column added to the table but
+// not to the model would inherit the same blind spot — so ADDING A PERSISTED
+// COLUMN THAT MATTERS TO CONSUMERS MEANS ADDING IT TO models.Item, not just to
+// the schema.
 //
 // Each exclusion is one of three things: bookkeeping that changes on EVERY
 // mutation (updated_at, seq, last_modified_by) and would therefore make the
@@ -396,6 +417,27 @@ var itemDeltaExcludedKeys = []string{
 	"item_number",
 }
 
+// fieldValueIsString reports whether the item's fields blob holds a JSON string
+// at key — the only shape extractFieldValue, and therefore the whole
+// status-transition path, can read. A missing key counts as a string ("" is
+// what extractFieldValue returns for it, and a cleared status is a legitimate
+// status transition).
+func fieldValueIsString(it *models.Item, key string) bool {
+	if it == nil {
+		return false
+	}
+	var f map[string]any
+	if err := json.Unmarshal([]byte(it.Fields), &f); err != nil {
+		return false
+	}
+	v, present := f[key]
+	if !present || v == nil {
+		return true
+	}
+	_, ok := v.(string)
+	return ok
+}
+
 // itemUpdatedSliceChanged reports whether anything outside the status and
 // location slices differs between two in-transaction snapshots of one item.
 //
@@ -406,6 +448,24 @@ var itemDeltaExcludedKeys = []string{
 // from a different query would silently compare rendering differences as if
 // they were changes.
 func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool, error) {
+	// MASK THE DONE KEY ONLY WHEN item.status_changed CAN ACTUALLY SEE IT.
+	//
+	// The status machinery (extractFieldValue) reads a done-key value only when
+	// it is a JSON STRING; anything else — a number, a bool, an object — reads
+	// as "". So for a numeric done field, `{"stage":1}` → `{"stage":2}` is a
+	// change status_changed will never report. Masking the key unconditionally
+	// then deleted it from BOTH snapshots, the remainder compared equal, and the
+	// mutation emitted NOTHING AT ALL: a real field change, silently unobservable
+	// (Codex round 3).
+	//
+	// The rule that fixes it is the disjoint-delta rule read carefully: a slice
+	// belongs to status_changed only if status_changed will describe it. When it
+	// will not, the change falls back to item.updated's slice, where something
+	// can. So mask only when both sides hold a string at that key — which is
+	// exactly the condition under which the status delta is visible.
+	maskStatus := statusKey == "" ||
+		(fieldValueIsString(before, statusKey) && fieldValueIsString(after, statusKey))
+
 	normalize := func(it *models.Item) (string, error) {
 		raw, err := json.Marshal(it)
 		if err != nil {
@@ -422,7 +482,7 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 		// nested delete rather than a top-level one. Re-marshalling the blob
 		// through a map also normalizes key order, which means a rewrite that
 		// only reorders keys is correctly NOT a change.
-		if statusKey != "" {
+		if statusKey != "" && maskStatus {
 			if blob, ok := m["fields"].(string); ok {
 				var f map[string]any
 				if err := json.Unmarshal([]byte(blob), &f); err == nil {
@@ -433,10 +493,13 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 					}
 					m["fields"] = string(nb)
 				}
-				// An unparseable fields blob is left verbatim. It compares
-				// byte-for-byte on both sides, so a corrupt blob still yields
-				// a correct "changed / did not change" answer; it just cannot
-				// have the status key masked out of it.
+				// An unparseable fields blob (an array, a scalar, corrupt JSON)
+				// is left verbatim. It compares byte-for-byte on both sides, so
+				// a corrupt blob still yields a correct changed / did-not-change
+				// answer; it just cannot have the status key masked out of it.
+				// Leaving such a change to item.updated is the honest outcome:
+				// the status machinery cannot see it either, so item.updated is
+				// the only event that can describe it at all.
 			}
 		}
 		// Map marshalling sorts keys, so this is a stable canonical form.
