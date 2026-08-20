@@ -476,6 +476,24 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		// exceeds the newest id it holds, which after the reset is a small
 		// number — so those clients resync, which is the only honest
 		// outcome. Clients in the NEW space keep working immediately.
+		//
+		// RESIDUAL WINDOW, accepted (codex round 8). This fires when the
+		// first post-reset notification ARRIVES, so between the counter
+		// resetting and the next publish, this instance still holds and will
+		// still replay the old ids. A client reconnecting inside that window
+		// with a low Last-Event-ID gets buffered entries it has already
+		// seen. Nothing here can detect the reset earlier: the counter lives
+		// in Redis and this instance only learns about it by receiving
+		// something.
+		//
+		// Not closed, deliberately. The shapes that would are a GET of the
+		// counter on every resume (network I/O on a latency-sensitive path,
+		// and it must not happen under this mutex — a Redis call inside the
+		// lock that fan-out needs is its own hazard) or a background poller
+		// (a goroutine and a Redis round trip per tick, forever, against a
+		// condition measured in years). The exposure is redelivery of
+		// notifications the client already has, bounded by the window and
+		// self-healing on the next publish.
 		slog.Warn("watchevents: notification id went backwards; the Redis sequence counter was reset. "+
 			"Dropping the replay buffer — resumes from the previous id space will report sync_required",
 			"previous", b.lastAppendedID, "got", n.ID)

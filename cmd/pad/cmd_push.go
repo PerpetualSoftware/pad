@@ -36,9 +36,15 @@ func pushCmd() *cobra.Command {
 		Long: fmt.Sprintf(`pad push <ref> -m "message"
     Publish a self-addressed push notification on an item. Every one of
     your OWN connected plugin-monitor sessions (pad watch --stream
-    --for-session) receives it — this is fire-and-forget over the
-    in-memory watch-events bus, with no durable inbox: a push with no
-    connected session listening is simply not seen (Phase 1 scope).
+    --for-session) receives it — fire-and-forget over the watch-events
+    bus, with no durable inbox: a push with no connected session
+    listening is simply not seen (Phase 1 scope).
+
+    On a multi-instance deployment (PAD_REDIS_URL set) a BROADCAST push
+    reaches your sessions on every instance. A push naming one session
+    is still resolved against the server that handles the request, so
+    targeting a session connected to a different instance finds nothing
+    and sends nothing — see BUG-2651.
 
     -m/--message is required and must not be blank; it is the
     instruction text the receiving agent acts on (load the item first,
