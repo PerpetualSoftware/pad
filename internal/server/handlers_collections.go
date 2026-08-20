@@ -102,6 +102,74 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, colls)
 }
 
+// validateCollectionTraits parses and validates an inbound traits blob.
+// An empty blob is legal — most collections declare nothing. TASK-2657.
+func validateCollectionTraits(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	traits, err := models.ParseCollectionTraits(raw)
+	if err != nil {
+		return err
+	}
+	return traits.Validate()
+}
+
+// checkTraitConflicts refuses a declaration that would make a workspace-level
+// resolution ambiguous: two collections declaring the same artifact_kind, or
+// two declaring invocation_field.
+//
+// SPEC-0 L6 — conflicts fail loud, never silent merges. Without this the
+// resolvers still have to pick one, and they pick by collection order, so
+// which collection receives an imported artifact or answers `/pad <slug>`
+// would depend on sort_order and creation time. That is a coin flip wearing a
+// rule's clothes. Codex round 7.
+//
+// BEST-EFFORT, NOT AN INVARIANT — say so plainly rather than let the name
+// imply more than it delivers (Codex round 8). This reads and then writes
+// without holding a lock across both, so two concurrent owner-level writes can
+// both pass and mint a duplicate. Workspace IMPORT bypasses it entirely by
+// design, and a rename that frees a canonical slug can produce a duplicate
+// with no write to this path at all.
+//
+// The database-level version — a partial unique index on the extracted trait,
+// the shape migration 054 already uses for invocation_slug — is deliberately
+// NOT added in phase 0: existing deployments can already hold duplicates (the
+// rename-then-reseed path produces one), so creating such an index would fail
+// the migration on exactly the databases that most need fixing. That wants a
+// de-duplication pass first, which is its own unit.
+//
+// So this gate closes the common case — a user or agent declaring a duplicate
+// through the API — and the resolvers keep their documented order-dependent
+// behaviour for duplicates arriving any other way, because refusing to resolve
+// at read time would break a workspace rather than a request.
+//
+// excludeCollID is the collection being updated, so a collection never
+// conflicts with itself.
+func (s *Server) checkTraitConflicts(workspaceID, raw, excludeCollID string) error {
+	traits, err := models.ParseCollectionTraits(raw)
+	if err != nil || traits.IsZero() {
+		return nil
+	}
+	existing, err := s.store.ListTraitedCollections(workspaceID)
+	if err != nil {
+		return err
+	}
+	for _, other := range existing {
+		if other.ID == excludeCollID {
+			continue
+		}
+		if traits.ArtifactKind != nil && other.Traits.ArtifactKind != nil &&
+			other.Traits.ArtifactKind.Kind == traits.ArtifactKind.Kind {
+			return fmt.Errorf("collection %q already declares artifact_kind %q; two collections declaring one kind would make imports and exports depend on collection order", other.Slug, traits.ArtifactKind.Kind)
+		}
+		if traits.InvocationField != "" && other.Traits.InvocationField != "" {
+			return fmt.Errorf("collection %q already declares invocation_field; two invocation-routing collections would make playbook resolution depend on collection order", other.Slug)
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
@@ -119,6 +187,10 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		// precedent).
 		if errors.Is(err, models.ErrInvalidSettingsType) {
 			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidSettingsType.Error())
+			return
+		}
+		if errors.Is(err, models.ErrInvalidTraitsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidTraitsType.Error())
 			return
 		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -140,6 +212,19 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
+	}
+
+	// Kernel traits are declarations that switch on kernel behavior, so a
+	// malformed one must be refused rather than stored: a stored blob that
+	// fails to parse degrades to "declares nothing", which is silently the
+	// wrong behavior instead of a loud error (SPEC-0 L6). TASK-2657.
+	if err := validateCollectionTraits(input.Traits); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.checkTraitConflicts(workspaceID, input.Traits, ""); err != nil {
+		writeError(w, http.StatusConflict, "conflict", err.Error())
+		return
 	}
 
 	coll, err := s.store.CreateCollection(workspaceID, input)
@@ -219,8 +304,27 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidSettingsType.Error())
 			return
 		}
+		if errors.Is(err, models.ErrInvalidTraitsType) {
+			writeError(w, http.StatusBadRequest, "bad_request", models.ErrInvalidTraitsType.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
+	}
+
+	// Same fail-loud gate as create: a malformed declaration is refused, not
+	// stored as a blob that silently parses to "declares nothing". A nil
+	// Traits (every pre-TASK-2657 client) skips this and leaves the stored
+	// declarations untouched.
+	if input.Traits != nil {
+		if err := validateCollectionTraits(*input.Traits); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		if err := s.checkTraitConflicts(workspaceID, *input.Traits, coll.ID); err != nil {
+			writeError(w, http.StatusConflict, "conflict", err.Error())
+			return
+		}
 	}
 
 	// BUG-2265: validate the optimistic-concurrency token's format at the

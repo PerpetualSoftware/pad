@@ -6,7 +6,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { itemUrlId } from '$lib/types';
+	import { itemUrlId, isAgentCollection } from '$lib/types';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { Item, Collection, RoleBoardLane, AgentRole } from '$lib/types';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
@@ -80,7 +80,7 @@
 	// doesn't qualify (Codex round 2).
 	let eligibleCollections = $derived(
 		collectionStore.collections.filter(
-			(c) => !['conventions', 'playbooks'].includes(c.slug)
+			(c) => !isAgentCollection(c)
 				&& workspaceStore.canEditCollection(c.id)
 		)
 	);

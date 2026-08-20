@@ -64,12 +64,24 @@ type CollectionExport struct {
 	Description string `json:"description"`
 	Schema      string `json:"schema"`
 	Settings    string `json:"settings"`
-	Prefix      string `json:"prefix"`
-	SortOrder   int    `json:"sort_order"`
-	IsDefault   bool   `json:"is_default"`
-	IsSystem    bool   `json:"is_system"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	// Traits carries the collection's kernel-trait declarations (SPEC-5).
+	// omitempty so an archive from a deployment where nothing declares traits
+	// omits the key entirely rather than carrying a noise "{}" on every
+	// collection, and so an import of an older archive is unambiguous (absent,
+	// not empty).
+	//
+	// This does NOT make a pre-TASK-2657 archive round-trip byte-identically:
+	// import defaults a missing value to "{}" in the column, and any collection
+	// the migration then backfills re-exports WITH declarations. Round-tripping
+	// an old archive through a current deployment is expected to gain traits —
+	// that is the backfill working, not export drift.
+	Traits    string `json:"traits,omitempty"`
+	Prefix    string `json:"prefix"`
+	SortOrder int    `json:"sort_order"`
+	IsDefault bool   `json:"is_default"`
+	IsSystem  bool   `json:"is_system"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // ItemExport holds an item's data for export.

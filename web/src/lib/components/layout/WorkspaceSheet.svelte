@@ -14,6 +14,7 @@
 	import { goto, afterNavigate } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { isAgentCollection } from '$lib/types';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { getPrimaryDestinations, getActiveKey } from '$lib/nav/destinations';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
@@ -34,12 +35,12 @@
 			.filter((d) => !(d.guestHidden && isGuest))
 	);
 
-	const agentSlugs = ['conventions', 'playbooks'];
+	// Grouped by the bootstrap_include trait, not a slug list. TASK-2657.
 	let regularCollections = $derived(
-		collectionStore.collections.filter((c) => !agentSlugs.includes(c.slug))
+		collectionStore.collections.filter((c) => !isAgentCollection(c))
 	);
 	let agentCollections = $derived(
-		collectionStore.collections.filter((c) => agentSlugs.includes(c.slug))
+		collectionStore.collections.filter((c) => isAgentCollection(c))
 	);
 
 	// Close on navigation (the tiles/collections navigate on select).

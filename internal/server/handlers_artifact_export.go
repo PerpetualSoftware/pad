@@ -12,20 +12,43 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// kindForCollectionSlug maps a collection slug to the artifact Kind it
-// exports as. Only the playbooks and conventions collections carry the
-// structured frontmatter the artifact format understands; everything else
-// is not exportable as an artifact. Returns (kind, true) for a supported
-// slug, ("", false) otherwise.
-func kindForCollectionSlug(slug string) (artifact.Kind, bool) {
-	switch slug {
-	case "playbooks":
-		return artifact.KindPlaybook, true
-	case "conventions":
-		return artifact.KindConvention, true
-	default:
-		return "", false
+// kindForCollection resolves the artifact Kind a collection exports as from
+// its artifact_kind trait (SPEC-5 §Collection traits). Returns (kind, true)
+// when the collection declares one, ("", false) otherwise — a collection that
+// declares no artifact kind is not exportable as an artifact.
+//
+// Replaces a slug switch on "playbooks"/"conventions". The switch broke as
+// soon as either collection was renamed, silently making its items
+// unexportable ([[BUG-2702]]); the trait travels with the collection.
+// TASK-2657.
+// The returned string is a human-facing reason when ok is false: the two
+// refusals are different facts and an operator debugging an export needs to
+// know WHICH. Collapsing them was the round-3 finding — a collection that
+// declares `widget` was told it declares nothing at all.
+func kindForCollection(coll *models.Collection) (artifact.Kind, bool, string) {
+	if coll == nil {
+		return "", false, "Collection not found"
 	}
+	traits, err := models.ParseCollectionTraits(coll.Traits)
+	if err != nil {
+		return "", false, "This collection's trait declarations could not be read, so its artifact kind is unknown"
+	}
+	if traits.ArtifactKind == nil || traits.ArtifactKind.Kind == "" {
+		return "", false, "This collection does not declare an artifact kind, so its items cannot be exported as artifacts"
+	}
+	kind := artifact.Kind(traits.ArtifactKind.Kind)
+	// The declared kind must be one the artifact format actually knows how to
+	// serialize. SPEC-5 permits a collection to declare any kind string —
+	// unknown kinds are legal, they simply don't round-trip — so this is not
+	// rejected at declaration time. But without this check an unknown kind
+	// would sail through to artifact.Encode, which returns ErrUnknownKind and
+	// gets reported as a 500. A collection whose kind this build can't encode
+	// is "not exportable as an artifact", which is a 400, exactly like a
+	// collection that declares no kind at all.
+	if _, err := artifact.FieldKeysForKind(kind); err != nil {
+		return "", false, fmt.Sprintf("This collection declares artifact kind %q, which this version of Pad cannot export", kind)
+	}
+	return kind, true, ""
 }
 
 // handleExportItemArtifact serializes a single playbook or convention item to
@@ -65,10 +88,9 @@ func (s *Server) handleExportItemArtifact(w http.ResponseWriter, r *http.Request
 		writeInternalError(w, fmt.Errorf("export: item %s has no collection", item.Slug))
 		return
 	}
-	kind, ok := kindForCollectionSlug(coll.Slug)
+	kind, ok, reason := kindForCollection(coll)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "unsupported_collection",
-			"Only playbooks and conventions can be exported as artifacts")
+		writeError(w, http.StatusBadRequest, "unsupported_collection", reason)
 		return
 	}
 

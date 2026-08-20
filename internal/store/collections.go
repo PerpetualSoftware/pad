@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -45,6 +46,13 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	if settings == "" {
 		settings = "{}"
 	}
+	// Traits default to "{}" (declares nothing), which is correct for every
+	// ordinary collection — kernel traits are opt-in and absence is never an
+	// error. The column is NOT NULL, so the empty case must be a real object.
+	traits := input.Traits
+	if strings.TrimSpace(traits) == "" {
+		traits = "{}"
+	}
 	icon := input.Icon
 	description := input.Description
 
@@ -73,9 +81,9 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	}
 
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), ts, ts)
+		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert collection: %w", err)
 	}
@@ -104,7 +112,7 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 // not this model: it omits workspace_id and deleted_at because an import
 // assigns a fresh workspace and an export skips deleted rows. A column added
 // here but not there hydrates everywhere and still vanishes on export/import.
-const collectionColumns = `id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at`
+const collectionColumns = `id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, created_at, updated_at, deleted_at`
 
 // collectionSelect is the shared prefix each single-row accessor completes
 // with its own predicate. Assembled from constants, so the full statement is
@@ -149,7 +157,7 @@ func (s *Store) scanCollectionRow(q rowQueryer, query string, args ...any) (*mod
 
 	err := q.QueryRow(s.q(query), args...).Scan(
 		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
+		&c.Schema, &c.Settings, &c.Traits, &c.SortOrder, &isDefault, &c.IsSystem,
 		&createdAt, &updatedAt, &deletedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -254,10 +262,47 @@ func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection,
 	return result, rows.Err()
 }
 
+// ListTraitedCollections returns every live collection in the workspace paired
+// with its parsed kernel traits (SPEC-5). This is the lookup that replaced
+// slug literals: a consumer asks which collection DECLARES a behavior rather
+// than naming "conventions" or "playbooks", so the behavior survives a rename
+// ([[BUG-2702]]).
+//
+// A collection whose traits blob fails to parse is returned with EMPTY traits
+// rather than failing the whole call. One malformed declaration must not take
+// down bootstrap, export, or seeding for the entire workspace — it degrades to
+// "this collection declares nothing", which is the same as the pre-trait
+// behavior for any collection that isn't conventions or playbooks. Declarations
+// are validated on the way IN (create/update/seed), so a stored blob that
+// doesn't parse means something wrote around those gates. TASK-2657.
+func (s *Store) ListTraitedCollections(workspaceID string) ([]collections.TraitedCollection, error) {
+	rows, err := s.db.Query(
+		s.q(`SELECT id, slug, traits FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, created_at ASC`),
+		workspaceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list traited collections: %w", err)
+	}
+	defer rows.Close()
+	var out []collections.TraitedCollection
+	for rows.Next() {
+		var id, slug, raw string
+		if err := rows.Scan(&id, &slug, &raw); err != nil {
+			return nil, fmt.Errorf("scan traited collection: %w", err)
+		}
+		traits, perr := models.ParseCollectionTraits(raw)
+		if perr != nil {
+			traits = models.CollectionTraits{}
+		}
+		out = append(out, collections.TraitedCollection{ID: id, Slug: slug, Traits: traits})
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,
-		       c.schema, c.settings, c.sort_order, c.is_default, c.is_system, c.created_at, c.updated_at,
+		       c.schema, c.settings, c.traits, c.sort_order, c.is_default, c.is_system, c.created_at, c.updated_at,
 		       COUNT(i.id) as item_count
 		FROM collections c
 		LEFT JOIN items i ON i.collection_id = c.id AND i.deleted_at IS NULL
@@ -277,7 +322,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		var isDefault bool
 		if err := rows.Scan(
 			&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-			&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
+			&c.Schema, &c.Settings, &c.Traits, &c.SortOrder, &isDefault, &c.IsSystem,
 			&createdAt, &updatedAt, &c.ItemCount,
 		); err != nil {
 			return nil, err
@@ -373,6 +418,20 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	if input.Schema != nil {
 		sets = append(sets, "schema = ?")
 		args = append(args, *input.Schema)
+	}
+	// Traits are updated ONLY when explicitly supplied. Every existing client
+	// rebuilds schema/settings without knowing traits exist, so a nil here is
+	// overwhelmingly "this caller doesn't know about traits" rather than
+	// "clear them" — and treating it as a clear would silently disarm the
+	// kernel behaviors a collection declares. Clearing is still reachable:
+	// send an explicit "{}". TASK-2657.
+	if input.Traits != nil {
+		traits := strings.TrimSpace(*input.Traits)
+		if traits == "" {
+			traits = "{}"
+		}
+		sets = append(sets, "traits = ?")
+		args = append(args, traits)
 	}
 	if input.Settings != nil {
 		// Normalize the empty-string sentinel to a valid JSON object before
@@ -788,6 +847,18 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		if err != nil {
 			return fmt.Errorf("marshal settings for %s: %w", def.Slug, err)
 		}
+		// Validate the template's own trait declarations on the way in. A
+		// malformed declaration in first-party template code would otherwise
+		// seed a workspace whose kernel behaviors silently never fire — the
+		// exact failure mode traits exist to remove. Fail at seed time
+		// instead (SPEC-0 L6, fail loud). TASK-2657.
+		if err := def.Traits.Validate(); err != nil {
+			return fmt.Errorf("invalid traits for %s: %w", def.Slug, err)
+		}
+		traitsJSON, err := def.Traits.JSON()
+		if err != nil {
+			return fmt.Errorf("marshal traits for %s: %w", def.Slug, err)
+		}
 
 		_, err = s.CreateCollection(workspaceID, models.CollectionCreate{
 			Name:        def.Name,
@@ -797,6 +868,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 			Description: def.Description,
 			Schema:      string(schemaJSON),
 			Settings:    string(settingsJSON),
+			Traits:      traitsJSON,
 			IsDefault:   true,
 			IsSystem:    def.IsSystem,
 		})
@@ -859,16 +931,37 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 			return err
 		}
 	}
+	// Starter conventions and playbooks route by TRAIT, not by slug: the
+	// destination is whichever collection declares it holds items of that
+	// artifact kind. A template that renames its conventions collection still
+	// gets its starter pack seeded into the right place. TASK-2657.
+	traited, err := s.ListTraitedCollections(workspaceID)
+	if err != nil {
+		return fmt.Errorf("resolve collection traits for seeding: %w", err)
+	}
+	conventionsSlug := ""
+	if c := collections.FindByArtifactKind(traited, string(artifact.KindConvention)); c != nil {
+		conventionsSlug = c.Slug
+	}
+	playbooksSlug := ""
+	if c := collections.FindByArtifactKind(traited, string(artifact.KindPlaybook)); c != nil {
+		playbooksSlug = c.Slug
+	}
+
 	// Starter conventions
-	for _, conv := range seedConventions {
-		if err := seedItem("conventions", conv.Title, conv.Content, conv.Fields); err != nil {
-			return err
+	if conventionsSlug != "" {
+		for _, conv := range seedConventions {
+			if err := seedItem(conventionsSlug, conv.Title, conv.Content, conv.Fields); err != nil {
+				return err
+			}
 		}
 	}
 	// Starter playbooks
-	for _, pb := range seedPlaybooks {
-		if err := seedItem("playbooks", pb.Title, pb.Content, pb.Fields); err != nil {
-			return err
+	if playbooksSlug != "" {
+		for _, pb := range seedPlaybooks {
+			if err := seedItem(playbooksSlug, pb.Title, pb.Content, pb.Fields); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -889,9 +982,9 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 	// Seeded last so any future template that ships its own
 	// "Onboard a workspace"-titled playbook can take precedence —
 	// the seedItem helper is idempotent by title inside a collection.
-	if templateName != "" {
+	if templateName != "" && playbooksSlug != "" {
 		onboardSeed := collections.OnboardSeedPlaybook()
-		if err := seedItem("playbooks", onboardSeed.Title, onboardSeed.Content, onboardSeed.Fields); err != nil {
+		if err := seedItem(playbooksSlug, onboardSeed.Title, onboardSeed.Content, onboardSeed.Fields); err != nil {
 			return err
 		}
 	}

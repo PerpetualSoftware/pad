@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -18,17 +19,42 @@ type artifactImportResponse struct {
 	Warnings []string `json:"warnings"`
 }
 
-// collectionSlugForKind maps an artifact Kind to the destination collection
-// slug in a workspace.
-func collectionSlugForKind(k artifact.Kind) (string, bool) {
-	switch k {
-	case artifact.KindPlaybook:
-		return "playbooks", true
-	case artifact.KindConvention:
-		return "conventions", true
-	default:
-		return "", false
+// collectionIDForKind resolves an artifact Kind to the destination collection
+// in a workspace: whichever collection DECLARES that kind via its
+// artifact_kind trait (SPEC-5 §Collection traits).
+//
+// Replaces a hardcoded kind→slug map. The map assumed the destination was
+// always named "playbooks"/"conventions", so importing into a workspace that
+// had renamed either collection 404'd even though the collection was right
+// there ([[BUG-2702]]). TASK-2657.
+//
+// visibleCollIDs restricts the candidates to collections the caller can see;
+// nil means an unrestricted caller. Filtering BEFORE selection matters for the
+// same reason it does in resolvePlaybook: with more than one collection
+// declaring a kind, picking the first and then failing the visibility check
+// lets a hidden collection shadow a visible one, so an import would be refused
+// even though a destination the caller can write to exists. Codex round 2.
+//
+// Returns ("", nil) when no visible collection declares the kind — the caller
+// reports that as a workspace with nowhere to put this artifact.
+func (s *Server) collectionIDForKind(workspaceID string, k artifact.Kind, visibleCollIDs []string) (string, error) {
+	traited, err := s.store.ListTraitedCollections(workspaceID)
+	if err != nil {
+		return "", err
 	}
+	candidates := traited
+	if visibleCollIDs != nil {
+		candidates = traited[:0:0]
+		for _, c := range traited {
+			if isCollectionVisible(c.ID, visibleCollIDs) {
+				candidates = append(candidates, c)
+			}
+		}
+	}
+	if c := collections.FindByArtifactKind(candidates, string(k)); c != nil {
+		return c.ID, nil
+	}
+	return "", nil
 }
 
 // handleImportArtifact imports a single playbook/convention artifact (Markdown
@@ -64,21 +90,29 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collSlug, ok := collectionSlugForKind(art.Kind)
-	if !ok {
-		// Decode already validates the kind, so this is defensive.
-		writeError(w, http.StatusBadRequest, "unknown_kind", "Unknown artifact kind")
+	importVisibleIDs, ivErr := s.visibleCollectionIDs(r, workspaceID)
+	if ivErr != nil {
+		writeInternalError(w, ivErr)
 		return
 	}
-
-	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+	collID, err := s.collectionIDForKind(workspaceID, art.Kind, importVisibleIDs)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if collID == "" {
+		writeError(w, http.StatusNotFound, "not_found",
+			fmt.Sprintf("This workspace has no collection that accepts %q artifacts", art.Kind))
+		return
+	}
+	coll, err := s.store.GetCollection(collID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	if coll == nil {
 		writeError(w, http.StatusNotFound, "not_found",
-			fmt.Sprintf("This workspace has no %q collection to import into", collSlug))
+			fmt.Sprintf("This workspace has no collection that accepts %q artifacts", art.Kind))
 		return
 	}
 
@@ -87,12 +121,11 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	if !s.requireEditPermission(w, r, workspaceID, "", coll.ID) {
 		return
 	}
-	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
-	if visErr != nil {
-		writeInternalError(w, visErr)
-		return
-	}
-	if !isCollectionVisible(coll.ID, visibleIDs) {
+	// Belt-and-braces: collectionIDForKind already selected from the visible
+	// set, so this cannot fail for a restricted caller. Kept because the
+	// resolution above may change and this is the gate handleCreateItem
+	// applies; it reuses the same set rather than re-querying.
+	if !isCollectionVisible(coll.ID, importVisibleIDs) {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}

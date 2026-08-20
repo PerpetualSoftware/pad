@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -33,7 +35,8 @@ import (
 //   - The CLI uses `models.BuildConventionItemFields` for
 //     conventions (deals with surfaces/enforcement/commands metadata)
 //     but builds the playbook fields by hand. We match exactly.
-//   - The CLI's "conventions" / "playbooks" target collection slugs
+//   - The target collection, resolved from each entry's artifact kind via the
+//     collection that DECLARES it (SPEC-5), falling back to the canonical slug
 //     are hardcoded; we do the same. Workspaces from non-software
 //     templates may not have these collections, in which case the
 //     POST will 404 — same UX the CLI delivers.
@@ -65,7 +68,11 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 		if err != nil {
 			return dispatcherErrorResult(cmdKey, "build convention fields", err), nil
 		}
-		return d.postLibraryItem(ctx, user, workspace, "conventions", cmdKey, conv.Title, conv.Content, fieldsJSON)
+		target, terr := d.libraryTargetCollection(ctx, user, workspace, string(artifact.KindConvention), "conventions")
+		if terr != nil {
+			return dispatcherErrorResult(cmdKey, "resolve target collection", terr), nil
+		}
+		return d.postLibraryItem(ctx, user, workspace, target, cmdKey, conv.Title, conv.Content, fieldsJSON)
 	}
 
 	if pb := collections.GetLibraryPlaybook(title); pb != nil {
@@ -88,7 +95,11 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 		if err != nil {
 			return dispatcherErrorResult(cmdKey, "encode playbook fields", err), nil
 		}
-		return d.postLibraryItem(ctx, user, workspace, "playbooks", cmdKey, pb.Title, pb.Content, string(fieldsJSON))
+		target, terr := d.libraryTargetCollection(ctx, user, workspace, string(artifact.KindPlaybook), "playbooks")
+		if terr != nil {
+			return dispatcherErrorResult(cmdKey, "resolve target collection", terr), nil
+		}
+		return d.postLibraryItem(ctx, user, workspace, target, cmdKey, pb.Title, pb.Content, string(fieldsJSON))
 	}
 
 	return NewErrorResult(ErrorPayload{
@@ -102,6 +113,44 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 // collection's items endpoint. Shared between conventions /
 // playbooks branches of dispatchLibraryActivate so the URL +
 // envelope shape stays in lockstep.
+
+// libraryTargetCollection resolves where a library entry of the given artifact
+// kind should be activated: whichever collection DECLARES that kind (SPEC-5
+// artifact_kind), not the one that happens to be named "conventions" or
+// "playbooks". Activating into a workspace whose collection was renamed used
+// to fail not-found with the collection sitting right there ([[BUG-2702]]).
+//
+// A LOOKUP FAILURE IS NOT A FALLBACK CASE. Falling back on an error means
+// writing to a slug we never confirmed anything about, and a workspace may
+// legitimately have an ordinary collection sitting on the canonical slug, so
+// the guess can land a library entry somewhere unrelated. Errors are returned;
+// the fallback applies ONLY when the read SUCCEEDED and no collection declares
+// the kind, which is the genuine pre-backfill case. Codex round 5.
+func (d *HTTPHandlerDispatcher) libraryTargetCollection(
+	ctx context.Context,
+	user *models.User,
+	workspace, kind, fallback string,
+) (string, error) {
+	req, err := d.buildAuthedRequest(ctx, http.MethodGet,
+		"/api/v1/workspaces/"+url.PathEscape(workspace)+"/collections", nil, user)
+	if err != nil {
+		return "", fmt.Errorf("resolve target collection: %w", err)
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		return "", fmt.Errorf("resolve target collection: listing collections returned %d", rec.Code)
+	}
+	var colls []models.Collection
+	if err := json.Unmarshal(rec.Body.Bytes(), &colls); err != nil {
+		return "", fmt.Errorf("resolve target collection: decode collections: %w", err)
+	}
+	if slug := collections.SlugForArtifactKind(colls, kind); slug != "" {
+		return slug, nil
+	}
+	return fallback, nil
+}
+
 func (d *HTTPHandlerDispatcher) postLibraryItem(
 	ctx context.Context,
 	user *models.User,

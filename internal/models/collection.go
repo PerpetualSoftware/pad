@@ -44,21 +44,28 @@ type CollectionSettings struct {
 }
 
 type Collection struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspace_id"`
-	Name        string     `json:"name"`
-	Slug        string     `json:"slug"`
-	Icon        string     `json:"icon"`
-	Description string     `json:"description"`
-	Schema      string     `json:"schema"`   // JSON string in DB, parsed via methods
-	Settings    string     `json:"settings"` // JSON string in DB
-	Prefix      string     `json:"prefix"`
-	SortOrder   int        `json:"sort_order"`
-	IsDefault   bool       `json:"is_default"`
-	IsSystem    bool       `json:"is_system"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Icon        string `json:"icon"`
+	Description string `json:"description"`
+	Schema      string `json:"schema"`   // JSON string in DB, parsed via methods
+	Settings    string `json:"settings"` // JSON string in DB
+	// Traits is the collection's kernel-trait declaration set (SPEC-5), a
+	// JSON string in the DB parsed via ParseCollectionTraits. Its own column
+	// rather than a key inside Schema on purpose: Schema is overwritten
+	// wholesale on update and every client rebuilds it fields-only, so a
+	// traits key stored there is destroyed by any ordinary collection edit.
+	// See collection_traits.go for the full rationale. TASK-2657.
+	Traits    string     `json:"traits"`
+	Prefix    string     `json:"prefix"`
+	SortOrder int        `json:"sort_order"`
+	IsDefault bool       `json:"is_default"`
+	IsSystem  bool       `json:"is_system"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 
 	// Computed (not stored)
 	ItemCount       int `json:"item_count"`
@@ -73,6 +80,7 @@ type CollectionCreate struct {
 	Description string `json:"description,omitempty"`
 	Schema      string `json:"schema,omitempty"`
 	Settings    string `json:"settings,omitempty"`
+	Traits      string `json:"traits,omitempty"`
 	IsDefault   bool   `json:"is_default,omitempty"`
 	IsSystem    bool   `json:"is_system,omitempty"`
 }
@@ -85,14 +93,19 @@ type FieldMigration struct {
 }
 
 type CollectionUpdate struct {
-	Name        *string          `json:"name,omitempty"`
-	Prefix      *string          `json:"prefix,omitempty"`
-	Icon        *string          `json:"icon,omitempty"`
-	Description *string          `json:"description,omitempty"`
-	Schema      *string          `json:"schema,omitempty"`
-	Settings    *string          `json:"settings,omitempty"`
-	SortOrder   *int             `json:"sort_order,omitempty"`
-	Migrations  []FieldMigration `json:"migrations,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Prefix      *string `json:"prefix,omitempty"`
+	Icon        *string `json:"icon,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Schema      *string `json:"schema,omitempty"`
+	Settings    *string `json:"settings,omitempty"`
+	// Traits, when non-nil, replaces the collection's kernel-trait
+	// declarations. Nil leaves them untouched — which is the case for every
+	// client that rebuilds a collection's schema/settings blobs without
+	// knowing traits exist, and is why traits survive an ordinary edit.
+	Traits     *string          `json:"traits,omitempty"`
+	SortOrder  *int             `json:"sort_order,omitempty"`
+	Migrations []FieldMigration `json:"migrations,omitempty"`
 	// ExpectedUpdatedAt, when non-empty, opts into optimistic-concurrency
 	// control (BUG-2265, mirroring the item pattern from IDEA-1480): the
 	// store re-reads the row's updated_at under the workspace write lock and
@@ -121,6 +134,7 @@ func (c *CollectionCreate) UnmarshalJSON(data []byte) error {
 	type alias CollectionCreate
 	aux := struct {
 		Settings json.RawMessage `json:"settings,omitempty"`
+		Traits   json.RawMessage `json:"traits,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 
@@ -132,6 +146,15 @@ func (c *CollectionCreate) UnmarshalJSON(data []byte) error {
 		return err
 	} else if settingsStr != nil {
 		c.Settings = *settingsStr
+	}
+
+	// `traits` gets the same both-shapes treatment as `settings`: the field
+	// is a JSON string in storage, but any reasonable client sends a nested
+	// object. TASK-2657.
+	if traitsStr, err := flexJSONToString(aux.Traits, '{', ErrInvalidTraitsType); err != nil {
+		return err
+	} else if traitsStr != nil {
+		c.Traits = *traitsStr
 	}
 
 	return nil
@@ -149,6 +172,7 @@ func (u *CollectionUpdate) UnmarshalJSON(data []byte) error {
 	type alias CollectionUpdate
 	aux := struct {
 		Settings json.RawMessage `json:"settings,omitempty"`
+		Traits   json.RawMessage `json:"traits,omitempty"`
 		*alias
 	}{alias: (*alias)(u)}
 
@@ -161,6 +185,15 @@ func (u *CollectionUpdate) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	u.Settings = settingsStr
+
+	// Absent `traits` stays nil, which UpdateCollection reads as "leave the
+	// declarations alone" — the case for every client that predates traits.
+	// TASK-2657.
+	traitsStr, err := flexJSONToString(aux.Traits, '{', ErrInvalidTraitsType)
+	if err != nil {
+		return err
+	}
+	u.Traits = traitsStr
 
 	return nil
 }

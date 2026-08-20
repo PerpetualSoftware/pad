@@ -63,7 +63,7 @@ var padLibraryTool = ToolDef{
 	},
 }
 
-const padLibraryToolDescription = `Convention + playbook library — global catalog of pre-built entries that workspaces activate into their own conventions/playbooks collections.
+const padLibraryToolDescription = `Convention + playbook library — global catalog of pre-built entries that workspaces activate into whichever of their collections declares the matching artifact kind (by default, conventions and playbooks).
 
 Actions:
   list     — Browse the library. By default playbooks come back as metadata + a short
@@ -74,10 +74,12 @@ Actions:
              then playbooks — same precedence activate uses, so a title resolves to the
              same kind in both surfaces.
              Required: title.
-  activate — Create a workspace item from a library entry by title. Conventions land
-             in the conventions collection, playbooks land in the playbooks collection,
-             with all fields (trigger, scope, surfaces, enforcement, invocation_slug,
-             arguments) carried through from the library definition.
+  activate — Create a workspace item from a library entry by title. The destination is
+             whichever collection DECLARES that artifact kind — normally the workspace's
+             conventions / playbooks collections, but it follows them if they were
+             renamed rather than assuming the name. All fields (trigger, scope, surfaces,
+             enforcement, invocation_slug, arguments) carry through from the library
+             definition.
              Required: workspace, title.
 
 The library itself is workspace-agnostic — list/get don't need workspace context. The

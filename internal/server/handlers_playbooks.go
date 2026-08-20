@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/go-chi/chi/v5"
 )
@@ -97,12 +98,21 @@ func (s *Server) handleListPlaybooks(w http.ResponseWriter, r *http.Request) {
 		subCollIDs = fullCollIDs
 		subItemIDs = grantedItemIDs
 	}
-	meta, err := s.collectPlaybookMetadata(workspaceID, subCollIDs, subItemIDs)
+	// Same trait-driven source as the bootstrap's playbooks payload, so the
+	// two can never disagree about which collection holds playbooks — and so
+	// `pad playbook list` keeps working when that collection is renamed
+	// ([[BUG-2702]]). TASK-2657.
+	traited, err := s.store.ListTraitedCollections(workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, meta)
+	items, err := s.collectBootstrapSourceItems(workspaceID, traited, bootstrapKeyPlaybooks, true, visibleIDs, subCollIDs, subItemIDs)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projectPlaybookMetadata(items))
 }
 
 // handleShowPlaybook returns the full playbook item identified by ref,
@@ -120,7 +130,12 @@ func (s *Server) handleShowPlaybook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "ref required")
 		return
 	}
-	item, err := s.resolvePlaybook(workspaceID, identifier)
+	resolveVisibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	item, err := s.resolvePlaybook(workspaceID, identifier, resolveVisibleIDs)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
@@ -148,7 +163,12 @@ func (s *Server) handleRunPlaybook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "ref required")
 		return
 	}
-	item, err := s.resolvePlaybook(workspaceID, identifier)
+	resolveVisibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	item, err := s.resolvePlaybook(workspaceID, identifier, resolveVisibleIDs)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
@@ -294,30 +314,74 @@ func extractAllowDraft(rawArgs []string, current bool) ([]string, bool) {
 // resolvePlaybook finds a playbook by either its invocation_slug, its
 // item slug, or its issue ref. invocation_slug takes precedence — that's
 // the user-facing identifier callers will type most often.
-func (s *Server) resolvePlaybook(workspaceID, identifier string) (*models.Item, error) {
-	// First, try invocation_slug. If we find an exact match, return it.
-	bySlug, err := s.store.ListItems(workspaceID, models.ItemListParams{
-		CollectionSlug: "playbooks",
-		Fields:         map[string]string{"invocation_slug": identifier},
-		Limit:          1,
-	})
+// Which collections participate is resolved from the invocation_field trait
+// (SPEC-5), not from the literal slug "playbooks": renaming the collection
+// used to unregister every invokable playbook at once, so `/pad ship` fell
+// through to natural-language routing with no sign the playbook still existed
+// ([[BUG-2702]]). TASK-2657.
+func (s *Server) resolvePlaybook(workspaceID, identifier string, visibleCollIDs []string) (*models.Item, error) {
+	traited, err := s.store.ListTraitedCollections(workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	if len(bySlug) == 1 {
-		return &bySlug[0], nil
+	routing := collections.FindByInvocationField(traited)
+	// Consider only collections the CALLER can see. Before traits this was
+	// structurally impossible — resolution named one collection — but any
+	// number may now declare invocation_field, and resolving across all of
+	// them then rejecting on visibility lets a hidden collection SHADOW a
+	// visible one: the resolver returns the hidden item, the caller's
+	// visibility check refuses it, and the visible playbook with the same
+	// invocation slug becomes unreachable. Filtering first makes the hidden
+	// collection invisible to resolution rather than merely unreadable, so
+	// shadowing cannot occur and no 404 is contingent on a row the caller was
+	// never allowed to know about. Codex round 2.
+	//
+	// nil visibleCollIDs means an unrestricted caller (full member) — the
+	// same convention every other bootstrap/list path in this package uses.
+	if visibleCollIDs != nil {
+		filtered := routing[:0:0]
+		for _, c := range routing {
+			if isCollectionVisible(c.ID, visibleCollIDs) {
+				filtered = append(filtered, c)
+			}
+		}
+		routing = filtered
 	}
+	if len(routing) == 0 {
+		return nil, fmt.Errorf("playbook %q not found: this workspace has no collection that routes by invocation slug", identifier)
+	}
+
+	// First, try the invocation field. If we find an exact match, return it.
+	// The FIELD NAME comes from the declaration; v1 constrains it to
+	// invocation_slug so it stays covered by the partial unique indexes that
+	// guard uniqueness (SPEC-5 v1.1 amendment 4).
+	for _, coll := range routing {
+		bySlug, err := s.store.ListItems(workspaceID, models.ItemListParams{
+			CollectionSlug: coll.Slug,
+			Fields:         map[string]string{coll.Traits.InvocationField: identifier},
+			Limit:          1,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(bySlug) == 1 {
+			return &bySlug[0], nil
+		}
+	}
+
 	// Fall back to standard item resolution (UUID, ref, or item slug),
-	// then verify it lives in the playbooks collection so a stray
+	// then verify it lives in a routing collection so a stray
 	// TASK-5 doesn't surface here.
 	item, err := s.store.ResolveItem(workspaceID, identifier)
 	if err != nil || item == nil {
 		return nil, fmt.Errorf("playbook %q not found", identifier)
 	}
-	if item.CollectionSlug != "playbooks" {
-		return nil, fmt.Errorf("item %s is not a playbook", item.Ref)
+	for _, coll := range routing {
+		if item.CollectionSlug == coll.Slug {
+			return item, nil
+		}
 	}
-	return item, nil
+	return nil, fmt.Errorf("item %s is not a playbook", item.Ref)
 }
 
 // parsePlaybookArguments pulls the `arguments` field out of the

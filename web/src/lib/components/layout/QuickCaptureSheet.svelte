@@ -19,7 +19,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
+	import { parseSchema, parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 
 	let {
@@ -36,9 +36,9 @@
 
 	// Agent/system collections (conventions, playbooks) are structured forms,
 	// not quick-capture targets — mirror the Sidebar's regularCollections split.
-	const agentSlugs = ['conventions', 'playbooks'];
+	// Grouped by the bootstrap_include trait, not a slug list. TASK-2657.
 	let collections = $derived(
-		collectionStore.collections.filter((c) => !agentSlugs.includes(c.slug))
+		collectionStore.collections.filter((c) => !isAgentCollection(c))
 	);
 
 	let selectedSlug = $state('');
