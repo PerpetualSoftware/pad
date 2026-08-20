@@ -349,8 +349,22 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 func (b *RedisBus) replaySince(sinceID int64) []Notification {
 	// sinceID == 0 is a fresh subscriber asking for everything buffered; it
 	// is not resuming from a position, so there is no position to span.
-	if sinceID > 0 && b.knownFrom > 0 && sinceID+1 < b.knownFrom {
-		return nil
+	if sinceID > 0 {
+		// knownFrom == 0 means this instance has received NOTHING yet, which
+		// is strictly LESS knowledge than "contiguous from X" and must
+		// therefore produce at least as strong a signal (codex round 9). The
+		// earlier version skipped the check entirely in that state, so an
+		// empty buffer answered any cursor with an empty-but-non-nil slice —
+		// which the SSE handler reads as "caught up".
+		//
+		// The scenario is a restart, not an exotic one: replica B comes up
+		// while Redis is at 100, id 101 is published before B's subscription
+		// is live, and a client reconnects to B with Last-Event-ID 100 before
+		// 102 arrives. B says caught-up, then delivers 102, and 101 is gone
+		// with nothing to tell anyone.
+		if b.knownFrom == 0 || sinceID+1 < b.knownFrom {
+			return nil
+		}
 	}
 	return b.replay.since(sinceID)
 }

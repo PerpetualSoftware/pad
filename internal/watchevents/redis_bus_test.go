@@ -465,6 +465,31 @@ func TestRedisBusReplayReportsAHoleAsAGap(t *testing.T) {
 	}
 }
 
+// TestRedisBusResumeAgainstAnEmptyBusReportsAGap — codex round 9, P1.
+//
+// A replica that has received NOTHING knows nothing, which is strictly less
+// than "contiguous from X" — so it must answer a resume at least as
+// conservatively. It did the opposite: with knownFrom still 0 the coverage
+// check was skipped entirely, an empty buffer returned an empty-but-non-nil
+// slice, and the SSE handler read that as "caught up". The client then
+// silently lost everything published while the replica was down.
+func TestRedisBusResumeAgainstAnEmptyBusReportsAGap(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+
+	if got := b.EventsSince(100); got != nil {
+		t.Errorf("a bus that has received nothing cannot vouch for a cursor at 100; "+
+			"want a gap, got %#v", got)
+	}
+
+	// A FRESH subscriber presents no cursor and must not be handed a resync
+	// just because the buffer is empty — that would turn every cold start
+	// into a spurious sync_required for every new connection.
+	if fresh := b.EventsSince(0); fresh == nil {
+		t.Error("sinceID=0 is not a resume; an empty bus must answer it with an empty replay, not a gap")
+	}
+}
+
 // TestRedisBusColdStartReplayReportsAGap — codex round 4, the case the first
 // version of the hole check missed entirely.
 //
