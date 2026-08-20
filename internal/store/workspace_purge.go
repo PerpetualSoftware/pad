@@ -168,6 +168,15 @@ func (s *Store) CountAttachmentsForStorageKeyOutsideWorkspace(storageKey, worksp
 // clears the RESTRICT FK to workspaces while preserving the audit trail —
 // the de-identify posture DeleteAccountAtomic uses for audit rows.
 var purgeWorkspaceChildDeletes = []struct{ what, query string }{
+	// --- event outbox (TASK-2658) ---
+	// Purged explicitly BECAUSE it has no foreign key. The outbox deliberately
+	// carries none so a row can outlive its subject (an item.deleted event is
+	// dispatched after its item is gone), which means nothing deletes these
+	// rows on its behalf. Payloads hold full item content and comment bodies,
+	// so leaving them behind would keep a purged workspace's text readable
+	// indefinitely — the exact thing a purge exists to prevent (Codex round 2).
+	{"event outbox", `DELETE FROM event_outbox WHERE workspace_id = ?`},
+
 	// --- item child rows (before items) ---
 	{"comment reactions", `DELETE FROM comment_reactions WHERE comment_id IN (SELECT id FROM comments WHERE workspace_id = ?)`},
 	{"comments", `DELETE FROM comments WHERE workspace_id = ?`},

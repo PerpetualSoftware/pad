@@ -653,7 +653,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// If registering via invitation, automatically add the user to the
 	// workspace and mark the invitation as accepted.
 	if invitation != nil {
-		_ = s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role)
+		// Not fatal (see BUG-2715), but no longer silent: TASK-2658 made
+		// AddWorkspaceMember transactional, so it can now fail for a reason
+		// unrelated to the membership row itself — and the invitation is
+		// consumed on the next line either way.
+		if err := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role); err != nil {
+			slog.Error("invitation accepted but member was not added",
+				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", err)
+		}
 		_ = s.store.AcceptInvitation(invitation.ID)
 	}
 

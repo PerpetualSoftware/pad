@@ -262,6 +262,100 @@ func (s *Store) emitMemberEventTx(tx *sql.Tx, eventType, workspaceID, userID, ro
 	})
 }
 
+// bulkItemEventPayload is the wire shape of item.bulk_updated (SPEC-3 v1.1):
+// member refs, the shared delta, and PER-MEMBER SNAPSHOTS.
+//
+// The per-member snapshots are not optional decoration. v1.1 makes wire
+// delivery batched but binding evaluation PER-MEMBER — the dispatcher runs
+// item-level selectors against each member snapshot — so a payload without
+// them would silently make bulk mutations invisible to every item.updated and
+// status_changed binding, which is the gap the batch event was admitted to
+// avoid rather than create.
+type bulkItemEventPayload struct {
+	// Delta describes what the one mutation did, shared across members
+	// (e.g. {"kind":"field_option_renamed","field":"status","from":"wip","to":"in-progress"}).
+	Delta map[string]any `json:"delta"`
+
+	MemberCount int            `json:"member_count"`
+	Members     []*models.Item `json:"members"`
+}
+
+// emitBulkItemEventTx writes one item.bulk_updated event covering every member
+// of a single-transaction bulk mutation.
+//
+// ONE EVENT, NOT N — this is TASK-1668's anti-flood decision, which SPEC-3
+// v1.1 made canonical: a mutation the user experiences as ONE action (renaming
+// a select option, renaming an item and cascading its backlinks) must not
+// arrive at a webhook consumer as hundreds of separate deliveries.
+//
+// PAYLOAD SIZE IS DELIBERATELY UNBOUNDED IN V1, and that is a decision rather
+// than an oversight. The alternatives both cost correctness: capping the
+// member list silently drops binding evaluation for the tail, and omitting
+// `content` from the snapshots would break precisely the bindings that matter
+// for the wiki-title cascade, whose entire delta IS content. One large row is
+// the trade the batch event exists to make — the flood argument was about wire
+// deliveries and consumer rate limits, not about a single stored row — and the
+// payload is bounded by data the mutation already touched. If a real workspace
+// shows this producing unreasonable rows, bounding it is a measured follow-up,
+// not a guess made here.
+//
+// A bulk mutation that touched nothing writes nothing: an empty member set is
+// not an event.
+func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*models.Item, delta map[string]any) error {
+	if len(members) == 0 {
+		return nil
+	}
+	payload, err := marshalEventPayload(bulkItemEventPayload{
+		Delta:       delta,
+		MemberCount: len(members),
+		Members:     members,
+	})
+	if err != nil {
+		return err
+	}
+	return writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: workspaceID,
+		EventType:   kernelevents.ItemBulkUpdated,
+		Payload:     payload,
+	})
+}
+
+// itemSnapshotsTx reads the given items in-tx, de-duplicated, skipping any
+// that no longer resolve.
+//
+// De-duplication is the point of taking a slice rather than reading as it
+// goes: a bulk mutation can touch the same row twice (two option renames on
+// different fields of one item), and a member list carrying that row twice —
+// once in an intermediate state — would make per-member binding evaluation
+// fire twice on one item, the second time against a state that never existed
+// as a final value.
+func (s *Store) itemSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(ids))
+	out := make([]*models.Item, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		item, err := s.getItemTx(tx, id)
+		if err != nil {
+			return nil, fmt.Errorf("outbox: read bulk member snapshot %s: %w", id, err)
+		}
+		if item == nil {
+			// Archived or gone between the write and here. Skipping is
+			// correct: a member snapshot the event cannot produce is one no
+			// predicate could have evaluated anyway, and inventing a
+			// placeholder would put a shape in the payload that never existed.
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 // itemDeltaExcludedKeys are the snapshot keys that must not count as a change
 // when deciding whether item.updated's slice moved.
 //
@@ -407,6 +501,20 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 // v1 promises at-least-once with duplicates possible, not ordering. The id tie
 // break exists so the drain itself is deterministic when timestamps collide,
 // not so consumers can infer sequence.
+//
+// DELIBERATELY CROSS-WORKSPACE AND UNAUTHORIZED, which is safe only because of
+// who may call it. The drain is a single server-internal loop that must serve
+// every workspace in the instance; scoping it per workspace would mean asking
+// it to enumerate workspaces first, which is both slower and no more secure.
+// The authorization boundary for these payloads is the DISPATCHER — it decides
+// which surface each event reaches, and a webhook endpoint is registered by the
+// workspace's own owner.
+//
+// The rule that keeps that true: this returns raw payloads containing full item
+// content and comment bodies, so it must never be reachable from an HTTP
+// handler, an MCP tool, or anything else carrying a user's identity. If you
+// find yourself calling it from a request path, the answer is a
+// workspace-scoped query with an authorization check, not this (Codex round 2).
 func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 	if limit <= 0 {
 		limit = 100

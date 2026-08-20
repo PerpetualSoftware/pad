@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -611,5 +612,115 @@ func TestOutbox_CrossWorkspaceMoveEmitsSourceArchive(t *testing.T) {
 	// transaction — the move is two canonical events, not one.
 	if got := outboxEventsFor(t, f.s, res.Item.ID); len(got) != 1 || got[0] != kernelevents.ItemCreated {
 		t.Fatalf("destination events = %v, want exactly [%s]", got, kernelevents.ItemCreated)
+	}
+}
+
+// outboxBulkPayload returns the single item.bulk_updated payload in the
+// outbox, failing unless there is exactly one.
+func outboxBulkPayload(t *testing.T, s *Store) map[string]any {
+	t.Helper()
+	rows, err := s.db.Query(s.q(`SELECT payload FROM event_outbox WHERE event_type = ?`), kernelevents.ItemBulkUpdated)
+	if err != nil {
+		t.Fatalf("query bulk payloads: %v", err)
+	}
+	defer rows.Close()
+
+	var payloads []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatalf("scan payload: %v", err)
+		}
+		payloads = append(payloads, p)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("item.bulk_updated rows = %d, want exactly 1 — a bulk mutation must emit ONE "+
+			"wire event, not per-row fan-out", len(payloads))
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(payloads[0]), &m); err != nil {
+		t.Fatalf("decode bulk payload: %v", err)
+	}
+	return m
+}
+
+func TestOutbox_CollectionOptionRenameEmitsOneBulkEvent(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox option rename")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	a := createTestItem(t, s, ws.ID, col.ID, "One", "body")
+	b := createTestItem(t, s, ws.ID, col.ID, "Two", "body")
+	wip := `{"status":"in-progress"}`
+	for _, it := range []*models.Item{a, b} {
+		if _, err := s.UpdateItem(it.ID, models.ItemUpdate{Fields: &wip}); err != nil {
+			t.Fatalf("seed status: %v", err)
+		}
+	}
+	clearOutbox(t, s)
+
+	n, err := s.MigrateItemFieldValues(col.ID, []models.FieldMigration{
+		{Field: "status", RenameOptions: map[string]string{"in-progress": "doing"}},
+	})
+	if err != nil {
+		t.Fatalf("MigrateItemFieldValues: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("migrated rows = %d, want 2 — the test is not exercising a bulk mutation", n)
+	}
+
+	payload := outboxBulkPayload(t, s)
+	if got := payload["member_count"]; got != float64(2) {
+		t.Fatalf("member_count = %v, want 2", got)
+	}
+	members, _ := payload["members"].([]any)
+	if len(members) != 2 {
+		t.Fatalf("members = %d, want 2 — per-member snapshots are what keep item-level bindings "+
+			"evaluable across a batched delivery", len(members))
+	}
+	// The snapshots must be POST-migration: a pre-migration snapshot would
+	// carry the value the mutation just removed.
+	for _, raw := range members {
+		m, _ := raw.(map[string]any)
+		fields, _ := m["fields"].(string)
+		if !strings.Contains(fields, "doing") {
+			t.Fatalf("member snapshot fields = %q, want the POST-migration value", fields)
+		}
+	}
+}
+
+func TestOutbox_WikiTitleCascadeEmitsOneBulkEvent(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox cascade")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Old Title", "the target")
+	linker := createTestItem(t, s, ws.ID, col.ID, "Linker", "points at [[Old Title]] here")
+	clearOutbox(t, s)
+
+	newTitle := "New Title"
+	if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	// The renamed item emits its own item.updated for its own slice...
+	if got := outboxEventsFor(t, s, target.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("renamed item events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+
+	// ...and the cascade's rewritten backlinks arrive as ONE batch event, not
+	// as per-backlink fan-out.
+	payload := outboxBulkPayload(t, s)
+	if payload["member_count"] != float64(1) {
+		t.Fatalf("member_count = %v, want 1", payload["member_count"])
+	}
+	members, _ := payload["members"].([]any)
+	m, _ := members[0].(map[string]any)
+	if m["id"] != linker.ID {
+		t.Fatalf("member id = %v, want the backlink item %s", m["id"], linker.ID)
+	}
+	if content, _ := m["content"].(string); !strings.Contains(content, "[[New Title]]") {
+		t.Fatalf("member content = %q, want the REWRITTEN content — the cascade's whole delta is "+
+			"content, so a pre-rewrite snapshot makes the event useless", content)
 	}
 }

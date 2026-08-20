@@ -35,6 +35,12 @@ var wsChildTables = []string{
 	"workspace_invitations", "custom_templates", "api_tokens", "share_links",
 	"oauth_connection_workspaces", "user_report_layouts",
 	"member_collection_access", "workspace_members", "attachments", "activities",
+	// event_outbox has NO foreign key to workspaces (TASK-2658 — an outbox row
+	// must outlive its subject), so nothing deletes it on the purge's behalf.
+	// It holds full item content and comment bodies, so an omission here keeps
+	// a purged workspace's text readable indefinitely. Listing it makes the
+	// exhaustive-purge test cover it.
+	"event_outbox",
 }
 
 func (s *Store) mustExec(t *testing.T, query string, args ...interface{}) {
