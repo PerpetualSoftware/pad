@@ -86,10 +86,15 @@ const (
 // for one instance both complete before another instance's script begins:
 // publish order equals id order, globally, with no coordination on our side.
 //
-// The id is prepended to the payload as "<id>|<json>" rather than being
-// injected into the JSON, because string-editing JSON inside Lua is a fragile
-// way to save one split. The id is digits and the separator is the FIRST '|',
-// so a '|' anywhere in the payload is unambiguous.
+// The epoch and id are PREPENDED as "<epoch>|<id>|<json>" rather than injected
+// into the JSON, because string-editing JSON inside Lua is a fragile way to
+// save a split. The epoch is a uuid and the id is digits, so neither can
+// contain a '|' and splitting on the first two is unambiguous however the body
+// is punctuated.
+//
+// The epoch is not decoration: it is what distinguishes a reset id space from a
+// continuing one when the new space has already climbed past an instance's
+// high-water mark. See redisWatchEpochKey before considering it removable.
 // The dedupe key makes the script IDEMPOTENT UNDER RETRY, which it needs to be
 // because go-redis retries a command when the reply is lost to a network error
 // (codex round 5). Without it, a script that ran and whose reply never came
@@ -304,8 +309,8 @@ func (b *RedisBus) Publish(n Notification) {
 	}
 
 	// n.ID is assigned by the script, so it is marshalled zero and filled in
-	// by the receiver from the "<id>|" prefix. Serializing before the call is
-	// what lets the id assignment and the publish be one atomic step.
+	// by the receiver from the "<epoch>|<id>|" prefix. Serializing before the
+	// call is what lets the id assignment and the publish be one atomic step.
 	data, err := json.Marshal(n)
 	if err != nil {
 		slog.Error("watchevents: failed to marshal notification for Redis", "error", err, "kind", n.Kind)

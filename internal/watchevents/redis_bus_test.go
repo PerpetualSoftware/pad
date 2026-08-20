@@ -610,9 +610,10 @@ func TestRedisBusCounterResetDropsTheStaleReplayBuffer(t *testing.T) {
 }
 
 // TestRedisBusDecodePayloadRoundTrip covers the wire format publishScript
-// introduced (Codex round 1 P1): the id is assigned inside the Lua script and
-// prepended as "<id>|<json>", so the publisher never knows it and the receiver
-// is the only place the two halves are rejoined.
+// introduced (Codex round 1 P1) and extended in round 13: the epoch and id are
+// both assigned inside the Lua script and prepended as "<epoch>|<id>|<json>",
+// so the publisher never knows either and the receiver is the only place the
+// three parts are rejoined.
 //
 // The malformed cases are here because this decoder consumes bytes from a
 // shared channel that any process with the Redis credentials can publish to; a
