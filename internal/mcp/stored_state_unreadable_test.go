@@ -167,6 +167,15 @@ func TestReservedKeyRefusalsAgreeAcrossTransports(t *testing.T) {
 			`{"error":{"code":"malformed_override","message":"Field(s) reserved for system metadata and not settable here: implementation_notes"}}`},
 		{"update field-patch refusal (BUG-2627)", updateRefusal,
 			`{"error":{"code":"validation_error","message":"\"implementation_notes\" is system metadata and cannot be set through a field update."}}`},
+		// Codex round 8: the COPY path words its refusal differently again,
+		// and round 7's fix only covered the move wording. Same class, third
+		// message.
+		{"copy undeclared-override refusal", "Error: Destination collection has no field(s): github_pr",
+			`{"error":{"code":"validation_error","message":"Destination collection has no field(s): github_pr"}}`},
+		// Control leg: a message the pattern list ALREADY covered. Without it
+		// this table could pass by matching everything.
+		{"copy invalid-override refusal", `Error: Invalid override value(s): effort must be one of s, m, l`,
+			`{"error":{"code":"validation_error","message":"Invalid override value(s): effort must be one of s, m, l"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stdio := classifyExecError(context.Background(), []string{"item", "move"}, errors.New("exit 1"), tc.stderr, nil)

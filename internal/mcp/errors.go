@@ -595,14 +595,27 @@ var (
 	// rejections previously falling through to server_error
 	// (BUG-987 bug 11 round 2).
 	//
-	// "not settable" is the move/copy reserved-key refusal from BUG-2674
-	// ("Field(s) reserved for system metadata and not settable here: ...").
-	// It matched nothing here, so stdio reported a deterministic 400 as
-	// server_error while remote HTTP called it validation_failed — the same
-	// refusal, two codes, and the transient-looking one invites a retry that
-	// always fails. Carried over from v0.22 and fixed with BUG-2627 part 2,
-	// which documents the two refusals as agreeing (Codex round 7).
-	reValidationFailed = regexp.MustCompile(`(invalid|missing required|must be one of|validation|not settable|cannot )`)
+	// Two additions cover the reserved-key / override refusal family, which
+	// this bump documents as behaving the same on both transports:
+	//
+	//   - "not settable" — the move/copy reserved-key refusal (BUG-2674):
+	//     "Field(s) reserved for system metadata and not settable here: ..."
+	//   - "has no field" — the copy's undeclared-override refusal:
+	//     "Destination collection has no field(s): ..."
+	//
+	// Neither matched, so stdio reported a deterministic 400 as server_error
+	// while remote HTTP called it validation_failed — the same refusal, two
+	// codes, and the transient-looking one invites a retry that always fails.
+	// (The family's third message, "Invalid override value(s)", was already
+	// covered by `invalid`.)
+	//
+	// Matching prose is a stopgap and reads like one: the structural fix is
+	// the `pad-structured-error/v1:` marker, which carries the code instead of
+	// inferring it. Until a refusal emits that, TestReservedKeyRefusalsAgree-
+	// AcrossTransports is where a new one has to be added — it drives both
+	// real classifiers with the real server text, so a reworded message fails
+	// there rather than in an agent's retry loop (Codex rounds 7-8).
+	reValidationFailed = regexp.MustCompile(`(invalid|missing required|must be one of|validation|not settable|has no field|cannot )`)
 	// Only match QUOTED slugs to avoid capturing stop-words like "not"
 	// in generic "Workspace not found" / "workspace not visible"
 	// messages. Quoted forms come from CLI stderr ("workspace 'foo'
