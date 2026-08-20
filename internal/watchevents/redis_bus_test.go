@@ -208,53 +208,75 @@ drain:
 // a window a few nanoseconds wide, so a test built on one subscribe is a
 // coin-flip dressed as an assertion.
 //
-// This takes many chances instead: a producer runs continuously while
-// subscribers join over and over, and each join checks the ONE signature the
-// defect leaves — an id that appears in the replay slice AND then arrives on
-// the channel. No accounting of the whole id space, no timing assumptions
-// beyond "drain briefly"; just the intersection, which must be empty every
-// time.
+// BUG-2707: "many chances" turned out to be the same coin flip repeated —
+// an unsynchronized producer looping every 5 microseconds against 600
+// independent subscribes, hoping OS scheduling would occasionally interleave
+// them. On this environment it stopped landing at all (0-2 of 600), which
+// tripped the anti-vacuity guard below and made main red. Raising the
+// attempt count or loosening that guard would have papered over exactly the
+// silent-false-pass risk it exists to catch.
+//
+// So this drives the interleaving instead of hoping for it, via
+// RedisBus.afterSubscribeRegister — a seam at the one boundary the single
+// mutex collapses into an atomic step (see that field's comment). Each
+// attempt arms the hook to release a producer goroutine that calls
+// fanOutLocally the instant this subscribe call has registered its channel
+// but before it reads the replay buffer. Because the hook fires while mu is
+// still held, the producer's Lock() is provably forced to wait for the
+// read+return to finish — reproducing the register/read boundary on EVERY
+// attempt, not just the lucky ones. The assertion is unchanged: an id that
+// shows up in the replay slice AND arrives on the channel is the defect's one
+// signature, and it must never happen.
 func TestRedisBusSubscribeAndReplayNeverDoubleDelivers(t *testing.T) {
-	const attempts = 600
+	const attempts = 30
 
 	b := newLocalOnlyBus(4096)
 	defer b.Close()
 
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := int64(1); ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			b.fanOutLocally(Notification{ID: i, Kind: KindStatusChange, ItemRef: "TASK-1"})
-			time.Sleep(5 * time.Microsecond)
-		}
-	}()
-	defer func() {
-		close(stop)
-		wg.Wait()
-	}()
+	// A small backlog before the first subscribe, so `missed` is non-empty
+	// from attempt 0 — the notifications each attempt forces live (below)
+	// grow it further for every later attempt.
+	nextID := int64(1)
+	for ; nextID <= 5; nextID++ {
+		b.fanOutLocally(Notification{ID: nextID, Kind: KindStatusChange, ItemRef: "TASK-1"})
+	}
 
 	straddled := 0
 	for i := 0; i < attempts; i++ {
+		liveID := nextID
+		nextID++
+
+		producerDone := make(chan struct{})
+		b.afterSubscribeRegister = func() {
+			// Runs on the SAME goroutine as SubscribeAndReplaySince, while it
+			// still holds mu. Starting the producer here (rather than
+			// waiting for it) is what avoids deadlocking against the lock
+			// this goroutine is holding — see afterSubscribeRegister's
+			// comment.
+			go func() {
+				b.fanOutLocally(Notification{ID: liveID, Kind: KindStatusChange, ItemRef: "TASK-1"})
+				close(producerDone)
+			}()
+		}
+
 		ch, missed := b.SubscribeAndReplaySince(0)
+		b.afterSubscribeRegister = nil
+
+		// Block until the forced fan-out has actually completed before
+		// draining, so the drain is not itself racing the producer — it
+		// only needs to observe a send that has already happened.
+		select {
+		case <-producerDone:
+		case <-time.After(time.Second):
+			b.Unsubscribe(ch)
+			t.Fatalf("attempt %d: forced fan-out for id=%d never completed", i, liveID)
+		}
 
 		replayed := make(map[int64]struct{}, len(missed))
 		for _, n := range missed {
 			replayed[n.ID] = struct{}{}
 		}
 
-		// NON-BLOCKING drain, and the reason is what makes this test both
-		// fast and exact. In the split-lock layout the duplicate is SENT
-		// before the buffer is read — register, unlock, [fan-out sends],
-		// lock, read — so by the time this call has returned, the duplicate
-		// is already sitting in the channel's buffer. Waiting on a timer
-		// bought nothing but 11 seconds of CI time.
 		got := 0
 	drain:
 		for {
@@ -279,12 +301,16 @@ func TestRedisBusSubscribeAndReplayNeverDoubleDelivers(t *testing.T) {
 		b.Unsubscribe(ch)
 	}
 
-	// Same anti-vacuity guard as above, applied to the whole run: if no
-	// attempt ever saw both a replay and a live delivery, this test spun
-	// without ever approaching the boundary and its silence means nothing.
-	if straddled == 0 {
-		t.Fatalf("none of %d attempts saw both replayed and live notifications; "+
-			"the producer and the subscriber never overlapped", attempts)
+	// The forced interleaving above makes every attempt straddle by
+	// construction, so this is no longer "did we get lucky at least once" —
+	// it is a seam-health check. Anything less than every attempt means the
+	// forced fan-out is landing somewhere other than register-then-read
+	// (afterSubscribeRegister has drifted from that boundary, or the
+	// synchronization above is wrong), and the run is back to proving
+	// nothing about the window.
+	if straddled != attempts {
+		t.Fatalf("only %d/%d attempts straddled the subscribe boundary; the forced interleaving "+
+			"is not landing where it should — see afterSubscribeRegister's comment", straddled, attempts)
 	}
 	t.Logf("%d/%d attempts straddled the subscribe boundary", straddled, attempts)
 }
