@@ -837,3 +837,35 @@ func TestWriteOutboxTx_RejectsMalformedJSONPayload(t *testing.T) {
 			"event no consumer can parse, while Postgres refuses the same write")
 	}
 }
+
+func TestOutbox_NoOpCommentEditEmitsNothing(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox comment noop")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Commented", "body")
+
+	c, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Body: "same"})
+	if err != nil {
+		t.Fatalf("CreateComment: %v", err)
+	}
+	clearOutbox(t, s)
+
+	// Re-saving an identical body still MATCHES the row — the UPDATE keys on
+	// id alone and updated_at moves — so the row-count check cannot suppress
+	// this. Comparing the body is what does.
+	if _, err := s.UpdateComment(c.ID, "same"); err != nil {
+		t.Fatalf("UpdateComment: %v", err)
+	}
+	if got := outboxEventsFor(t, s, c.ID); len(got) != 0 {
+		t.Fatalf("events = %v, want none — a no-op comment edit must not announce a change", got)
+	}
+
+	// ...and a real edit still does.
+	if _, err := s.UpdateComment(c.ID, "different"); err != nil {
+		t.Fatalf("UpdateComment: %v", err)
+	}
+	if got := outboxEventsFor(t, s, c.ID); len(got) != 1 || got[0] != kernelevents.CommentUpdated {
+		t.Fatalf("events = %v, want exactly [%s] — the no-op gate must not suppress real edits",
+			got, kernelevents.CommentUpdated)
+	}
+}

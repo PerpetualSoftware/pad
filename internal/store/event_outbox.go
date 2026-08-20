@@ -52,10 +52,18 @@ type OutboxEvent struct {
 // maxOutboxHop is SPEC-3 §L5's synchronous cascade bound: a binding-triggered
 // mutation inherits hop+1 and the kernel drops past depth 4.
 //
-// Bounds SYNCHRONOUS cascades only, and deliberately so — a queued playbook
-// run executed later, or a webhook consumer calling back through the API,
-// legitimately starts fresh at hop 0. Pretending otherwise would be
-// unenforceable, which is why SPEC-3 pairs this with per-pack quotas on
+// NOT YET EXERCISED IN PRODUCTION, and worth saying so rather than letting the
+// paragraph below read as a description of running behaviour. There is no
+// binding kernel yet (phase 2+), so nothing propagates a hop and every
+// production write leaves Hop at 0 — this bound and the column behind it are
+// the contract's shape, landed with the schema so the field does not have to
+// be retrofitted onto rows later. Its enforcement is covered by tests only.
+// Per-pack quota accounting, the other half of §L5, is likewise unimplemented.
+//
+// The rule it will enforce: bounds SYNCHRONOUS cascades only, deliberately —
+// a queued playbook run executed later, or a webhook consumer calling back
+// through the API, legitimately starts fresh at hop 0. Pretending otherwise
+// would be unenforceable, which is why SPEC-3 pairs it with per-pack quotas on
 // durable output rather than resting containment on the hop count alone.
 const maxOutboxHop = 4
 
@@ -96,11 +104,16 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 		return fmt.Errorf("outbox: event %s has a malformed JSON payload", ev.EventType)
 	}
 	if ev.Hop > maxOutboxHop {
-		// Cascade bound reached. Dropping is the designed behaviour, but a
-		// silent drop would make a runaway binding indistinguishable from a
-		// binding that never fired, so the drop is the caller's to observe:
-		// it is reported as a nil error with no row written, and the
-		// dispatcher's quota accounting is what surfaces the pattern.
+		// Cascade bound reached: drop the event, keep the mutation. No
+		// production caller can reach this today (see maxOutboxHop — nothing
+		// propagates a hop yet); it is here so the bound exists before the
+		// thing that needs it.
+		//
+		// When it does become reachable, a silent drop would make a runaway
+		// binding indistinguishable from one that never fired, so surfacing it
+		// is owed then — via the dispatcher's quota accounting, which is also
+		// still unimplemented. Recorded as an obligation rather than described
+		// as if it were already in place.
 		return nil
 	}
 

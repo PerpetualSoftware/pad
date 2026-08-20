@@ -685,9 +685,15 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add the importer as workspace owner (mirrors handleCreateWorkspace)
+	// Add the importer as workspace owner (mirrors handleCreateWorkspace).
+	// Same posture as that path: not fatal (BUG-2715), but not discarded —
+	// an import that silently fails here returns 201 for a workspace nobody
+	// can administer.
 	if userID != "" {
-		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
+		if err := s.store.AddWorkspaceMember(ws.ID, userID, "owner"); err != nil {
+			slog.Error("workspace imported but importer was not added as owner",
+				"workspace_id", ws.ID, "user_id", userID, "error", err)
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, ws)

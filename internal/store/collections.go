@@ -785,15 +785,19 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 	// Snapshots are read AFTER every UPDATE in this transaction, so a row
 	// touched by two migrations in one call is carried once, in its final
 	// state, rather than twice in intermediate ones.
+	// Report ZERO on failure, not totalAffected. Every error out of this
+	// function rolls the caller's transaction back, so the row count describes
+	// writes that did not commit — a caller observing (N, err) would be reading
+	// a number for changes that never happened (Codex round 4).
 	members, err := s.itemSnapshotsTx(tx, touchedIDs)
 	if err != nil {
-		return totalAffected, err
+		return 0, err
 	}
 	if err := s.emitBulkItemEventTx(tx, workspaceID, members, map[string]any{
 		"kind":    "field_option_renamed",
 		"renames": renames,
 	}); err != nil {
-		return totalAffected, err
+		return 0, err
 	}
 
 	return totalAffected, nil

@@ -1,12 +1,10 @@
-// Package kernelevents defines the events/1 contract surface — the closed set
-// of canonical event names, the envelope every event carries, and the mapping
-// from a canonical name onto the per-surface wire vocabularies.
+// Package kernelevents defines the events/1 contract surface: the closed set of
+// canonical event names and the subject kind each one is about.
 //
 // This package is the contract, not the plumbing. SPEC-3 (DOC-2653) calls the
 // taxonomy a PUBLIC contract rather than internal wiring: connected apps
 // consume these names through webhooks, so a name here is as load-bearing as
-// an HTTP route. Storage lives in the store's event_outbox table; dispatch
-// lives in the server's drain loop; both refer back to the names defined here.
+// an HTTP route. Storage lives in the store's event_outbox table.
 //
 // Two rules from SPEC-3 shape everything below:
 //
@@ -17,11 +15,20 @@
 //     IsCanonical exists — a typo'd name must fail loudly at the choke point
 //     rather than travel to a consumer that will never recognize it.
 //
-//   - THE CHOKE POINT OWNS THE MAPPING. Before this package, SSE used
-//     snake_case names published from one set of hand-calls and webhooks used
+//   - THE CHOKE POINT WILL OWN THE MAPPING — and does not yet. Today SSE uses
+//     snake_case names published from one set of hand-calls and webhooks use
 //     dot-form string literals passed at a different set of hand-calls; the
-//     two vocabularies drifted because nothing tied them together. Under
-//     events/1 both surfaces derive from one canonical name (SPEC-3 v1.1).
+//     two vocabularies drifted because nothing ties them together. SPEC-3 v1.1
+//     rules that both surfaces derive from one canonical name, but THIS
+//     PACKAGE DOES NOT IMPLEMENT THAT MAPPING: it maps a canonical name to a
+//     subject kind and nothing else. The surface mapping, the drain that would
+//     use it, and the retirement of the legacy hand-calls are TASK-2714.
+//
+// SO, PLAINLY, SO NOBODY READS AN INTENTION AS A DESCRIPTION: as of this
+// package's introduction the outbox FILLS and nothing drains it. Every legacy
+// SSE publish and hand-called webhook dispatch still fires exactly as before.
+// ListPendingOutboxEvents has no production caller. That is the agreed shape
+// of this change, not an unfinished edge.
 package kernelevents
 
 // Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.1).

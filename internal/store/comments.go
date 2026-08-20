@@ -88,8 +88,8 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	}
 	defer tx.Rollback()
 
-	var workspaceID string
-	if err := tx.QueryRow(s.q(`SELECT workspace_id FROM comments WHERE id = ?`), id).Scan(&workspaceID); err != nil {
+	var workspaceID, bodyBefore string
+	if err := tx.QueryRow(s.q(`SELECT workspace_id, body FROM comments WHERE id = ?`), id).Scan(&workspaceID, &bodyBefore); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
 		}
@@ -109,14 +109,23 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 		return nil, sql.ErrNoRows
 	}
 
-	// Gated on the UPDATE having changed a row — the zero-row case returns
-	// above, so a no-op edit announces nothing.
-	updated, err := s.getCommentQ(tx, id)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.emitCommentEventTx(tx, kernelevents.CommentUpdated, updated); err != nil {
-		return nil, err
+	// Two gates, and the second one is the real no-op gate.
+	//
+	// The zero-row return above only catches a MISSING comment: the UPDATE
+	// matches on id alone, so re-saving an identical body still touches the
+	// row (updated_at moves) and still reports one row affected. An earlier
+	// version of this comment claimed that path suppressed a no-op edit; it
+	// does not (Codex round 4). Comparing the body is what does — and it keeps
+	// comment.updated consistent with the item events, which emit only when a
+	// slice the taxonomy names actually moved.
+	if body != bodyBefore {
+		updated, err := s.getCommentQ(tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.emitCommentEventTx(tx, kernelevents.CommentUpdated, updated); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

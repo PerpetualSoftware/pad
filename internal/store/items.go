@@ -2738,19 +2738,21 @@ func (s *Store) DeleteItem(id string) error {
 	// mutation did not happen, and an event for it would be a lie the outbox
 	// exists not to tell.
 	//
-	// TWO INDEPENDENT GUARDS produce that, and it is worth naming both because
-	// a mutation test cannot distinguish them (measured — moving this emit
-	// above the zero-row return leaves the re-delete test green):
+	// In the CURRENT code order, the zero-row return above is what produces
+	// that: the UPDATE carries `deleted_at IS NULL`, so a second delete
+	// matches nothing and this line is never reached.
 	//
-	//  1. The zero-row return above. The UPDATE carries `deleted_at IS NULL`,
-	//     so a second delete matches nothing and this code is never reached.
-	//  2. THE NIL SNAPSHOT, which is the one that actually fires first.
-	//     getItemTx filters archived rows, so on a re-delete `preArchive` is
-	//     already nil by the time the UPDATE runs — there is no snapshot to
-	//     emit even if the row count said otherwise.
+	// The `preArchive != nil` check is therefore NOT a second re-delete guard
+	// today — it is unreachable for that case, and an earlier version of this
+	// comment claiming otherwise was wrong twice over (Codex rounds 3 and 4).
+	// What it IS: the guard that keeps this correct if the order or the
+	// predicate ever changes. Measured, not assumed — moving this emit above
+	// the zero-row return leaves the re-delete test green, because getItemTx
+	// filters archived rows and `preArchive` is already nil by then.
 	//
-	// Guard 2 is load-bearing rather than defensive: it is also what keeps
-	// this correct if the UPDATE's predicate is ever loosened.
+	// It also covers the ordinary case where the pre-archive read found no
+	// live row at all, which must not emit an event for an item that was not
+	// there to archive.
 	if preArchive != nil {
 		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, ""); err != nil {
 			return err

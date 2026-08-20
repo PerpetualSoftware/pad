@@ -173,9 +173,13 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Mirror the JSON-import path's owner-attachment so the workspace
-	// shows up under the importer's account.
+	// shows up under the importer's account — including its error posture:
+	// not fatal (BUG-2715), but not discarded either.
 	if userID != "" {
-		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
+		if err := s.store.AddWorkspaceMember(ws.ID, userID, "owner"); err != nil {
+			slog.Error("bundle imported but importer was not added as owner",
+				"workspace_id", ws.ID, "user_id", userID, "error", err)
+		}
 	}
 	writeJSON(w, http.StatusCreated, ws)
 }
