@@ -329,19 +329,55 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 	if len(members) == 0 {
 		return nil
 	}
-	payload, err := marshalEventPayload(bulkItemEventPayload{
-		Delta:       delta,
-		MemberCount: len(members),
-		Members:     members,
-	})
-	if err != nil {
-		return err
+
+	// PARTITION BY THE MEMBERS' OWN WORKSPACE, never by the caller's.
+	//
+	// The caller passes the workspace it thinks the mutation belongs to, and
+	// for the collection-option rename that is exactly right. The wiki-title
+	// cascade is not so obviously safe: its source query selects on
+	// `target_item_id` alone and carries each source row's workspace_id
+	// per-row rather than assuming the renamed item's — so a member in a
+	// different workspace is not excluded by construction.
+	//
+	// Publishing a member snapshot under someone else's workspace_id would put
+	// one workspace's item content on another workspace's webhook. Whether
+	// that is reachable today is not the question worth answering: partitioning
+	// costs one map and makes it impossible, and "unreachable" is a property of
+	// today's queries rather than of this function.
+	//
+	// The caller's workspaceID is used only when a member somehow carries none.
+	byWorkspace := map[string][]*models.Item{}
+	var order []string
+	for _, m := range members {
+		ws := m.WorkspaceID
+		if ws == "" {
+			ws = workspaceID
+		}
+		if _, seen := byWorkspace[ws]; !seen {
+			order = append(order, ws)
+		}
+		byWorkspace[ws] = append(byWorkspace[ws], m)
 	}
-	return writeOutboxTx(tx, s, OutboxEvent{
-		WorkspaceID: workspaceID,
-		EventType:   kernelevents.ItemBulkUpdated,
-		Payload:     payload,
-	})
+
+	for _, ws := range order {
+		group := byWorkspace[ws]
+		payload, err := marshalEventPayload(bulkItemEventPayload{
+			Delta:       delta,
+			MemberCount: len(group),
+			Members:     group,
+		})
+		if err != nil {
+			return err
+		}
+		if err := writeOutboxTx(tx, s, OutboxEvent{
+			WorkspaceID: ws,
+			EventType:   kernelevents.ItemBulkUpdated,
+			Payload:     payload,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // itemSnapshotsTx reads the given items in-tx, de-duplicated, skipping any

@@ -869,3 +869,78 @@ func TestOutbox_NoOpCommentEditEmitsNothing(t *testing.T) {
 			got, kernelevents.CommentUpdated)
 	}
 }
+
+// TestEmitBulkItemEventTx_PartitionsByMemberWorkspace pins the multi-tenancy
+// property: a member snapshot must never be published under a workspace that
+// is not its own.
+//
+// The wiki-title cascade's source query selects on target_item_id alone and
+// carries each source row's workspace_id per-row, so a cross-workspace member
+// is not excluded by construction. Publishing the whole member set under the
+// caller's workspace would put one workspace's item content on another
+// workspace's webhook — so the emitter partitions rather than trusting that
+// today's queries happen never to produce one.
+func TestEmitBulkItemEventTx_PartitionsByMemberWorkspace(t *testing.T) {
+	s := testStore(t)
+	wsA := createTestWorkspace(t, s, "Partition A")
+	wsB := createTestWorkspace(t, s, "Partition B")
+
+	members := []*models.Item{
+		{ID: "a1", WorkspaceID: wsA.ID, Fields: "{}"},
+		{ID: "b1", WorkspaceID: wsB.ID, Fields: "{}"},
+		{ID: "a2", WorkspaceID: wsA.ID, Fields: "{}"},
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	// Caller passes workspace A, as the cascade would when A's item was renamed.
+	if err := s.emitBulkItemEventTx(tx, wsA.ID, members, map[string]any{"kind": "test"}); err != nil {
+		tx.Rollback()
+		t.Fatalf("emitBulkItemEventTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	rows, err := s.db.Query(s.q(`SELECT workspace_id, payload FROM event_outbox WHERE event_type = ? ORDER BY workspace_id`),
+		kernelevents.ItemBulkUpdated)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	counts := map[string]int{}
+	for rows.Next() {
+		var ws, payload string
+		if err := rows.Scan(&ws, &payload); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(payload), &m); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		ms, _ := m["members"].([]any)
+		counts[ws] = len(ms)
+		// Every member in this row must belong to the row's workspace.
+		for _, raw := range ms {
+			mm, _ := raw.(map[string]any)
+			if mm["workspace_id"] != ws {
+				t.Fatalf("event for workspace %s carries a member from %v — one workspace's item "+
+					"content would reach another workspace's webhook", ws, mm["workspace_id"])
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate: %v", err)
+	}
+
+	if len(counts) != 2 {
+		t.Fatalf("bulk events = %d, want 2 (one per member workspace); a single event means the "+
+			"member set was published under the caller's workspace", len(counts))
+	}
+	if counts[wsA.ID] != 2 || counts[wsB.ID] != 1 {
+		t.Fatalf("member counts = %v, want {A:2, B:1}", counts)
+	}
+}
