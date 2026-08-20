@@ -172,12 +172,22 @@ func marshalEventPayload(v any) ([]byte, error) {
 // works unchanged against an item in an event.
 //
 // prior_status sits alongside them as the envelope pseudo-field SPEC-3 names,
-// which is what makes "nonterminal → terminal" filterable. Omitted entirely
-// unless set, so it never appears as an empty string on events where a prior
-// status is meaningless.
+// which is what makes "nonterminal → terminal" filterable.
+//
+// A POINTER, not a string with omitempty, and the distinction is the whole
+// point. An item can transition FROM no status at all — "" → "open" is a real
+// status change and item.status_changed fires for it. With omitempty on a
+// plain string that transition dropped the key entirely, leaving a predicate
+// unable to tell "the prior status was empty" from "this event has no prior
+// status" (Codex round 6). My original reasoning — that an empty string should
+// never appear "where a prior status is meaningless" — was right about the
+// events where it IS meaningless and wrong about the one where it is not.
+//
+// So: nil on every event that has no prior status, and present-and-possibly-
+// empty on item.status_changed, where the empty value is data.
 type itemEventPayload struct {
 	*models.Item
-	PriorStatus string `json:"prior_status,omitempty"`
+	PriorStatus *string `json:"prior_status,omitempty"`
 }
 
 // emitItemEventTx writes one item-subject event to the outbox on the caller's
@@ -187,7 +197,10 @@ type itemEventPayload struct {
 // A snapshot assembled from the caller's input rather than from the row is the
 // bug this design exists to prevent: it would describe what the caller asked
 // for, while the event claims to describe what happened.
-func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus string) error {
+// priorStatus is a POINTER so a transition from an empty prior status is
+// distinguishable from an event that has none — pass nil for every event other
+// than item.status_changed.
+func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus *string) error {
 	if item == nil {
 		return fmt.Errorf("outbox: %s has no item snapshot", eventType)
 	}
@@ -389,6 +402,15 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 // once in an intermediate state — would make per-member binding evaluation
 // fire twice on one item, the second time against a state that never existed
 // as a final value.
+//
+// COST, stated rather than discovered later: this is N sequential joined reads
+// for N members, inside the caller's transaction and under whatever lock the
+// caller holds (Codex round 6). The honest framing is that it roughly DOUBLES
+// an already-N-long lock hold rather than introducing one — the migration loop
+// this serves already issues N sequential UPDATEs under the same lock, by
+// design, so each row gets its own seq. A single batched read would halve it;
+// that is BUG-2718, deliberately not done here because it means a new joined
+// query on the least-reviewed path of a heavily-reviewed change.
 func (s *Store) itemSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -589,7 +611,10 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 // motivated the rule.
 func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey string) error {
 	if statusChanged {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, after, priorStatus); err != nil {
+		// Taken by address unconditionally: an empty prior status is a real
+		// prior status here, not an absent one.
+		prior := priorStatus
+		if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, after, &prior); err != nil {
 			return err
 		}
 	}
@@ -599,7 +624,7 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 		return err
 	}
 	if otherChanged {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, ""); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, nil); err != nil {
 			return err
 		}
 	}

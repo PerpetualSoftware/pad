@@ -1162,7 +1162,7 @@ func (s *Store) archiveItemForCopyTx(tx *sql.Tx, workspaceID, itemID, ts string)
 		return 0, fmt.Errorf("copy item across workspaces: source item %s was not archived", itemID)
 	}
 	if preArchive != nil {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, ""); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, nil); err != nil {
 			return 0, err
 		}
 	}

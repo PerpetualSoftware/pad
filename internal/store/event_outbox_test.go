@@ -944,3 +944,55 @@ func TestEmitBulkItemEventTx_PartitionsByMemberWorkspace(t *testing.T) {
 		t.Fatalf("member counts = %v, want {A:2, B:1}", counts)
 	}
 }
+
+// TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus pins the SPEC-3
+// conformance point Codex round 6 found: prior_status must be PRESENT on
+// item.status_changed even when the prior status was empty.
+//
+// An item can transition from no status at all, and that is a real status
+// change. With `omitempty` on a plain string the key vanished, leaving a
+// binding predicate unable to distinguish "the prior status was empty" from
+// "this event carries no prior status" — which is exactly the distinction the
+// envelope pseudo-field exists to make.
+func TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox empty prior")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "No status yet", "body")
+
+	// Clear the status first, so the next write is a genuine ""→value change.
+	cleared := `{"status":""}`
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &cleared}); err != nil {
+		t.Fatalf("clear status: %v", err)
+	}
+	clearOutbox(t, s)
+
+	set := `{"status":"open"}`
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &set}); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, item.ID); len(got) != 1 || got[0] != kernelevents.ItemStatusChanged {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemStatusChanged)
+	}
+	payload := outboxPayloadFor(t, s, item.ID, kernelevents.ItemStatusChanged)
+	raw, present := payload["prior_status"]
+	if !present {
+		t.Fatalf("prior_status is ABSENT on a \"\"→open transition; a predicate cannot tell an "+
+			"empty prior status from an event that has none. payload keys: %v", payload)
+	}
+	if raw != "" {
+		t.Fatalf("prior_status = %v, want the empty string", raw)
+	}
+
+	// And it must still be absent where it is genuinely meaningless.
+	clearOutbox(t, s)
+	title := "Renamed"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &title}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	updatedPayload := outboxPayloadFor(t, s, item.ID, kernelevents.ItemUpdated)
+	if _, present := updatedPayload["prior_status"]; present {
+		t.Fatalf("prior_status present on item.updated, where there is no prior status to report")
+	}
+}

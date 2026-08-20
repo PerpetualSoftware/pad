@@ -538,7 +538,7 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	// A failure here fails the create. That is not incidental — an outbox
 	// write that degrades to best-effort would look durable while
 	// reintroducing exactly the lost-event window the outbox exists to close.
-	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, ""); err != nil {
+	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, nil); err != nil {
 		return nil, err
 	}
 	return item, nil
@@ -2754,7 +2754,7 @@ func (s *Store) DeleteItem(id string) error {
 	// live row at all, which must not emit an event for an item that was not
 	// there to archive.
 	if preArchive != nil {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, ""); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, nil); err != nil {
 			return err
 		}
 	}
@@ -2847,7 +2847,7 @@ func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
 		return nil, fmt.Errorf("read post-restore snapshot: %w", err)
 	}
 	if restored != nil {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, ""); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -4666,12 +4666,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 	}
 	if moved != nil {
 		if targetCollectionID != preMove.CollectionID {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, ""); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, nil); err != nil {
 				return nil, err
 			}
 		}
 		if newStatus != oldStatus {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, moved, oldStatus); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, moved, &oldStatus); err != nil {
 				return nil, err
 			}
 		}
@@ -4683,7 +4683,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 			return nil, cerr
 		}
 		if otherChanged {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, ""); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, nil); err != nil {
 				return nil, err
 			}
 		}
