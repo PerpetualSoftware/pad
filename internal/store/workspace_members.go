@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -19,13 +20,34 @@ import (
 const InvitationTTL = 14 * 24 * time.Hour
 
 // AddWorkspaceMember adds a user to a workspace with the given role.
+//
+// Transactional as of TASK-2658 — it was a bare Exec before. The membership
+// row and its member.joined event must commit together or not at all (SPEC-3
+// §choke point); a self-committing INSERT followed by a separate emit is the
+// exact shape that loses events on a crash and leaks them on a later failure.
+// The transaction wraps a single INSERT, so it costs nothing beyond the
+// BEGIN/COMMIT pair.
 func (s *Store) AddWorkspaceMember(workspaceID, userID, role string) error {
 	ts := now()
-	_, err := s.db.Exec(s.q(`
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("add workspace member: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO workspace_members (workspace_id, user_id, role, created_at)
 		VALUES (?, ?, ?, ?)
-	`), workspaceID, userID, role, ts)
-	if err != nil {
+	`), workspaceID, userID, role, ts); err != nil {
+		return fmt.Errorf("add workspace member: %w", err)
+	}
+
+	if err := s.emitMemberEventTx(tx, kernelevents.MemberJoined, workspaceID, userID, role, ts); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("add workspace member: %w", err)
 	}
 	return nil

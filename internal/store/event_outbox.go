@@ -179,6 +179,89 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 	})
 }
 
+// emitCommentEventTx writes one comment-subject event to the outbox on the
+// caller's transaction.
+//
+// The subject is the COMMENT, not the item it hangs off. A binding that wants
+// "a comment landed on an item matching X" filters the payload's item_id; a
+// binding keyed on the item as subject would be unable to distinguish a
+// comment from an edit to the item itself.
+func (s *Store) emitCommentEventTx(tx *sql.Tx, eventType string, comment *models.Comment) error {
+	if comment == nil {
+		return fmt.Errorf("outbox: %s has no comment snapshot", eventType)
+	}
+	payload, err := marshalEventPayload(comment)
+	if err != nil {
+		return err
+	}
+	return writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: comment.WorkspaceID,
+		EventType:   eventType,
+		SubjectID:   comment.ID,
+		Payload:     payload,
+	})
+}
+
+// emitAttachmentEventTx writes one attachment-subject event to the outbox on
+// the caller's transaction.
+//
+// Callers own the decision about WHICH attachment rows are event-worthy —
+// variants and derived rows are attachments too, and this helper deliberately
+// does not second-guess that gate, because the caller is the only place that
+// knows how the row was produced.
+func (s *Store) emitAttachmentEventTx(tx *sql.Tx, eventType string, a *models.Attachment) error {
+	if a == nil {
+		return fmt.Errorf("outbox: %s has no attachment snapshot", eventType)
+	}
+	payload, err := marshalEventPayload(a)
+	if err != nil {
+		return err
+	}
+	return writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: a.WorkspaceID,
+		EventType:   eventType,
+		SubjectID:   a.ID,
+		Payload:     payload,
+	})
+}
+
+// memberEventPayload is the wire shape of a member-subject event.
+//
+// A hand-built struct rather than a model, because workspace_members has no
+// model type — it is a join row. The keys are the row's own columns so a
+// binding predicate addresses them by the names they have in the database,
+// consistent with how the item payload works.
+type memberEventPayload struct {
+	WorkspaceID string `json:"workspace_id"`
+	UserID      string `json:"user_id"`
+	Role        string `json:"role"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// emitMemberEventTx writes one member-subject event to the outbox on the
+// caller's transaction.
+//
+// The subject id is the USER, which is the only identifier a membership has —
+// the row's key is the (workspace, user) pair and the workspace is already on
+// the envelope.
+func (s *Store) emitMemberEventTx(tx *sql.Tx, eventType, workspaceID, userID, role, ts string) error {
+	payload, err := marshalEventPayload(memberEventPayload{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+		Role:        role,
+		CreatedAt:   ts,
+	})
+	if err != nil {
+		return err
+	}
+	return writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: workspaceID,
+		EventType:   eventType,
+		SubjectID:   userID,
+		Payload:     payload,
+	})
+}
+
 // itemDeltaExcludedKeys are the snapshot keys that must not count as a change
 // when deciding whether item.updated's slice moved.
 //

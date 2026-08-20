@@ -462,3 +462,116 @@ func TestOutbox_MoveEmitsMovedOnlyWhenNothingElseChanged(t *testing.T) {
 			"item.updated's slice", got, kernelevents.ItemMoved)
 	}
 }
+
+func TestOutbox_CommentCreateAndUpdateEmit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox comments")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Commented", "body")
+	clearOutbox(t, s)
+
+	c, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Body: "first"})
+	if err != nil {
+		t.Fatalf("CreateComment: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, c.ID); len(got) != 1 || got[0] != kernelevents.CommentCreated {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.CommentCreated)
+	}
+
+	// The SUBJECT is the comment, not the item it hangs off — a binding keyed
+	// on the item as subject could not tell a comment from an edit to the item.
+	payload := outboxPayloadFor(t, s, c.ID, kernelevents.CommentCreated)
+	if payload["id"] != c.ID {
+		t.Fatalf("payload id = %v, want the comment id %s", payload["id"], c.ID)
+	}
+	// The payload must be the STORED row: a snapshot assembled from caller
+	// input would carry the body but not the values the write path filled in.
+	if payload["body"] != "first" {
+		t.Fatalf("payload body = %v, want %q", payload["body"], "first")
+	}
+	if payload["item_id"] != item.ID {
+		t.Fatalf("payload item_id = %v, want %s — a comment binding filters on this", payload["item_id"], item.ID)
+	}
+
+	clearOutbox(t, s)
+	if _, err := s.UpdateComment(c.ID, "edited"); err != nil {
+		t.Fatalf("UpdateComment: %v", err)
+	}
+	if got := outboxEventsFor(t, s, c.ID); len(got) != 1 || got[0] != kernelevents.CommentUpdated {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.CommentUpdated)
+	}
+	updatedPayload := outboxPayloadFor(t, s, c.ID, kernelevents.CommentUpdated)
+	if updatedPayload["body"] != "edited" {
+		t.Fatalf("payload body = %v, want the POST-update body; an in-tx read that took the pool "+
+			"connection instead of the tx would return the pre-write row here", updatedPayload["body"])
+	}
+}
+
+func TestOutbox_AttachmentAddedSkipsVariants(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox attachments")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Has attachments", "body")
+	clearOutbox(t, s)
+
+	original := &models.Attachment{
+		WorkspaceID: ws.ID,
+		ItemID:      &item.ID,
+		StorageKey:  "blob/original",
+		Filename:    "photo.jpg",
+		MimeType:    "image/jpeg",
+		SizeBytes:   1234,
+	}
+	if err := s.CreateAttachmentForLiveItem(original); err != nil {
+		t.Fatalf("CreateAttachmentForLiveItem(original): %v", err)
+	}
+	if got := outboxEventsFor(t, s, original.ID); len(got) != 1 || got[0] != kernelevents.AttachmentAdded {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.AttachmentAdded)
+	}
+
+	// A THUMBNAIL IS AN ATTACHMENT ROW TOO. Without the gate, one image
+	// upload announces three attachment.added events — two of them for files
+	// no user added. This is the leg that proves the gate exists; deleting it
+	// makes this test fail rather than making it pass more easily.
+	variant := models.AttachmentVariantThumbMd
+	thumb := &models.Attachment{
+		WorkspaceID: ws.ID,
+		ItemID:      &item.ID,
+		ParentID:    &original.ID,
+		Variant:     &variant,
+		StorageKey:  "blob/thumb-md",
+		Filename:    "photo-thumb.jpg",
+		MimeType:    "image/jpeg",
+		SizeBytes:   234,
+	}
+	if err := s.CreateAttachmentForLiveItem(thumb); err != nil {
+		t.Fatalf("CreateAttachmentForLiveItem(thumb): %v", err)
+	}
+	if got := outboxEventsFor(t, s, thumb.ID); len(got) != 0 {
+		t.Fatalf("events for a %s variant = %v, want none — variants are derived rows, not "+
+			"attachments a user added", variant, got)
+	}
+}
+
+func TestOutbox_MemberJoinedEmits(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox members")
+	user := createTestUser(t, s, "joiner@example.com", "Joiner", "pw-joiner-123")
+	clearOutbox(t, s)
+
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, user.ID); len(got) != 1 || got[0] != kernelevents.MemberJoined {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.MemberJoined)
+	}
+	payload := outboxPayloadFor(t, s, user.ID, kernelevents.MemberJoined)
+	if payload["role"] != "editor" {
+		t.Fatalf("payload role = %v, want %q", payload["role"], "editor")
+	}
+	if payload["workspace_id"] != ws.ID {
+		t.Fatalf("payload workspace_id = %v, want %s", payload["workspace_id"], ws.ID)
+	}
+}

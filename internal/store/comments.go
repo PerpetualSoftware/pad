@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -54,6 +55,18 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 	if err != nil {
 		return nil, fmt.Errorf("insert comment: %w", err)
 	}
+
+	// The choke point (SPEC-3 / TASK-2658): comment.created commits with the
+	// comment it describes. Read back in-tx so the payload is the stored row
+	// rather than the caller's input.
+	created, err := s.getCommentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.emitCommentEventTx(tx, kernelevents.CommentCreated, created); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment: %w", err)
 	}
@@ -95,6 +108,17 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	if n == 0 {
 		return nil, sql.ErrNoRows
 	}
+
+	// Gated on the UPDATE having changed a row — the zero-row case returns
+	// above, so a no-op edit announces nothing.
+	updated, err := s.getCommentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.emitCommentEventTx(tx, kernelevents.CommentUpdated, updated); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment update: %w", err)
 	}
@@ -103,7 +127,26 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 
 // GetComment returns a single comment by ID.
 func (s *Store) GetComment(id string) (*models.Comment, error) {
-	row := s.db.QueryRow(s.q(`
+	return s.getCommentQ(s.db, id)
+}
+
+// getCommentQ is GetComment against any Queryer, so a caller holding a
+// transaction can read the row it just wrote.
+//
+// The reason is correctness before it is anything else: a read issued on s.db
+// takes a DIFFERENT connection, which cannot see the transaction's uncommitted
+// write. s.GetComment(id) called before COMMIT returns the pre-write row, or
+// no row at all for a comment being created — so an event built from it would
+// describe a state that is not the one committing. Event emission needs an
+// in-tx snapshot by design, so it must have an in-tx read to get one.
+//
+// The pool-contention hazard BUG-2409 covers is real too but secondary here,
+// and worth stating precisely rather than from memory: this store bounds
+// SQLite at sqliteMaxOpenConns (16), not one connection, so a pool read from
+// inside a transaction is a contention and lock-ordering risk under load, not
+// an unconditional deadlock.
+func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
+	row := q.QueryRow(s.q(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,

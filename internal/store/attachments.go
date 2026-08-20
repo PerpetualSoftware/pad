@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -174,6 +175,28 @@ func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment) error {
 
 	if err := s.createAttachmentOn(tx, a); err != nil {
 		return err
+	}
+
+	// The choke point (SPEC-3 / TASK-2658): attachment.added, written in the
+	// same transaction as the row and under the same parent-item lock, so the
+	// event cannot outlive a refused insert.
+	//
+	// GATED TO USER-VISIBLE ORIGINALS, and the gate is the whole subtlety
+	// here. Variants are ATTACHMENT ROWS too — a thumbnail carries ParentID
+	// plus Variant "thumb-sm"/"thumb-md" (models.Attachment) — so an ungated
+	// emit fires three attachment.added events for one image upload, two of
+	// them announcing files no user added and no binding wants. A derived row
+	// always has a parent, so "no parent, and not a non-original variant" is
+	// the test.
+	//
+	// What this deliberately still ADMITS: a transform output (rotate/crop),
+	// which is a new top-level attachment with no ParentID — a user did add
+	// it, it is independently addressable, and calling it derived would be a
+	// judgment about provenance the row itself does not make.
+	if a.ParentID == nil && (a.Variant == nil || *a.Variant == models.AttachmentVariantOriginal) {
+		if err := s.emitAttachmentEventTx(tx, kernelevents.AttachmentAdded, a); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
