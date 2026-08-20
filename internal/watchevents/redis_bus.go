@@ -3,6 +3,7 @@ package watchevents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -409,6 +410,17 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 		return false
 	}
 	if remote == b.highestSeen() {
+		// Agreed as of this instant, so there is nothing to settle for.
+		//
+		// WHAT THIS DOES NOT COVER, and cannot (codex round 12): a
+		// notification published AFTER this read and missed by this instance
+		// is invisible to any check made here — and shrinking the window by
+		// settling anyway would not close it, since the same race exists in
+		// the instant after this function returns. The check's honest scope
+		// is "what was missed BEFORE the resume"; a message missed after it
+		// is a property of at-most-once pub/sub with no per-connection ack,
+		// and the only real answer to that is a durable stream (Redis
+		// Streams with consumer groups) rather than a longer wait here.
 		return false
 	}
 
@@ -453,16 +465,29 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 // see resumeOutrunsLocalView for why failing closed here would be worse.
 func (b *RedisBus) sharedCounter() (int64, bool) {
 	v, err := b.client.Get(b.ctx, redisWatchSeqKey).Int64()
-	if err != nil {
-		if err != redis.Nil {
-			slog.Warn("watchevents: could not read the sequence counter to validate a resume; "+
-				"answering from local knowledge only", "error", err)
-		}
-		// redis.Nil means nothing has ever been published, so there is
-		// nothing this instance could have missed.
+	switch {
+	case err == nil:
+		return v, true
+	case errors.Is(err, redis.Nil):
+		// ABSENT IS A VALUE, NOT A FAILURE, and reading it as the latter was
+		// a bug (codex round 12). "No counter" legitimately means zero — on a
+		// fresh deployment nothing has been published, so there is nothing to
+		// have missed and 0 == 0 agrees with an instance that has seen
+		// nothing. But the key can also DISAPPEAR after this bus has seen
+		// ids, via FLUSHDB or eviction, and treating that as unreadable meant
+		// falling back to local knowledge and cheerfully replaying an id
+		// space the authority no longer has — while the next publish starts
+		// again at 1.
+		//
+		// Returning 0-and-readable makes that case fall out of the ordinary
+		// comparison: an instance holding 101 disagrees with an authority at
+		// 0, does not converge, and the resume is answered with a gap.
+		return 0, true
+	default:
+		slog.Warn("watchevents: could not read the sequence counter to validate a resume; "+
+			"answering from local knowledge only", "error", err)
 		return 0, false
 	}
-	return v, true
 }
 
 func (b *RedisBus) highestSeen() int64 {

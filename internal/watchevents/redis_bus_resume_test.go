@@ -223,6 +223,50 @@ func TestResumeFallsBackToLocalKnowledgeWhenTheCounterIsUnreadable(t *testing.T)
 	}
 }
 
+// TestResumeReportsAGapWhenTheCounterKeyDisappears — codex round 12, P2.
+//
+// The sequence key can vanish after this bus has seen ids (FLUSHDB, eviction).
+// Reading redis.Nil as "unreadable" meant falling back to local knowledge and
+// replaying an id space the authority no longer has, while the next publish
+// starts again at 1. Absent is a VALUE — zero — and an instance holding ids
+// disagrees with it.
+func TestResumeReportsAGapWhenTheCounterKeyDisappears(t *testing.T) {
+	b, mr := newMiniredisBus(t, 64)
+
+	ch := b.Subscribe()
+	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
+	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("precondition: only %d of 2 notifications arrived", i)
+		}
+	}
+	b.Unsubscribe(ch)
+
+	mr.Del(redisWatchSeqKey)
+
+	_, missed := b.SubscribeAndReplaySince(1)
+	if missed != nil {
+		t.Fatalf("the counter is gone while this instance holds ids 1-2; replaying a dead id space "+
+			"is exactly what the next publish (starting again at 1) will collide with; got %+v", missed)
+	}
+}
+
+// TestResumeOnAVirginDeploymentDoesNotReportAGap is the control for the case
+// above: an absent counter on a bus that has seen nothing is genuine agreement
+// at zero, not a gap. Without this leg, "absent means gap" would pass the test
+// above while resyncing every first connection on a fresh deployment.
+func TestResumeOnAVirginDeploymentDoesNotReportAGap(t *testing.T) {
+	b, _ := newMiniredisBus(t, 64)
+
+	if b.resumeOutrunsLocalView(5) {
+		t.Error("nothing has ever been published and this instance has seen nothing; " +
+			"there is no gap to report")
+	}
+}
+
 // TestResumeIsUnaffectedForAFreshSubscriber — sinceID 0 is not a resume, so it
 // must not pay the settle window or be handed a gap.
 func TestResumeIsUnaffectedForAFreshSubscriber(t *testing.T) {
