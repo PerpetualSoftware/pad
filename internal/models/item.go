@@ -618,14 +618,17 @@ func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string
 // fields, so the WRONG-but-compiling instantiation silently permits what the
 // extractor rejects.
 //
-// A fieldsJSON that will not parse at all returns true. That is a different and
-// rarer problem than this predicate is about, and claiming "unappendable" for a
-// blob nobody can read would put a specific wrong explanation in front of a
-// user instead of no explanation.
+// A fieldsJSON that will not parse AT ALL returns false, because that is the
+// honest answer to the question asked: the Append* helpers bail on the same
+// parse and return an error, so an append would not be accepted. An earlier
+// version returned true on the reasoning that a broken outer blob is "a
+// different problem" — which is true of the CAUSE and irrelevant to the
+// CALLER, who would have been told to run a command that cannot succeed
+// (Codex round 4).
 func StructuredFieldIsAppendable(fieldsJSON, key string) bool {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
-		return true
+		return false
 	}
 	switch key {
 	case ItemFieldImplementationNotes:

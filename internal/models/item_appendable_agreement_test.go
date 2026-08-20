@@ -61,6 +61,23 @@ func TestStructuredFieldIsAppendableAgreesWithTheGuard(t *testing.T) {
 		},
 	}
 
+	// Malformed OUTER blobs, which the table above cannot express because it
+	// builds a well-formed object around the value. Codex round 4: the
+	// predicate claimed these were appendable while the helpers error on the
+	// same parse, so the refusal message prescribed a command that fails.
+	for _, k := range keys {
+		for _, fieldsJSON := range []string{`[]`, `not json`, `{"unterminated":`} {
+			t.Run(k.key+"/malformed outer blob "+fieldsJSON, func(t *testing.T) {
+				predicate := StructuredFieldIsAppendable(fieldsJSON, k.key)
+				guardAccepts := k.append(fieldsJSON) == nil
+				if predicate != guardAccepts {
+					t.Fatalf("disagreement on fields=%q: predicate says appendable=%v, the append helper says %v",
+						fieldsJSON, predicate, guardAccepts)
+				}
+			})
+		}
+	}
+
 	for _, k := range keys {
 		for _, shape := range shapes {
 			t.Run(k.key+"/"+shape.name, func(t *testing.T) {

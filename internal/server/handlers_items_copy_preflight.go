@@ -1278,9 +1278,10 @@ func reservedFieldPatchMessage(keys []string, currentFields string) string {
 	}
 
 	if anyAppendBacked {
-		b.WriteString(" A raw field write stores a value Pad cannot read back:" +
-			" the entries become invisible on every surface, and the append path for that key" +
-			" then refuses on this item until the stored value is repaired (BUG-2627).")
+		b.WriteString(" A raw field write bypasses the writer that maintains it — and from the CLI or MCP" +
+			" it also stores a value Pad cannot read back, because a `--field` value is typed by schema" +
+			" lookup and these keys are in no schema: the entries go invisible on every surface, and the" +
+			" append path then refuses on this item until the stored value is repaired (BUG-2627).")
 	} else {
 		b.WriteString(" A raw field write would overwrite what Pad's own writer maintains there," +
 			" bypassing the checks that writer applies (BUG-2627).")

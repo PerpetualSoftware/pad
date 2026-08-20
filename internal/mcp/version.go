@@ -568,8 +568,18 @@ const CmdhelpVersion = "0.1"
 //     the `gh` CLI, so it is excluded from remote MCP by name, and
 //     noRemoteEquivalent points remote agents at
 //     `item update --field github_pr=...` as the alternative. Refusing
-//     it would have deleted a documented capability and answered with a
-//     message naming a command that audience cannot run (Codex round 3). v0.22 closed the same door on move/copy field
+//     it would have deleted the only door those agents have and
+//     answered with a message naming a command they cannot run (Codex
+//     round 3).
+//
+//     Round 4 then found that door does not actually work: a `field`
+//     value is stored as a STRING on every surface, so the PR data
+//     lands double-encoded and no link appears — the BUG-2627 shape one
+//     key over, filed as BUG-2696. That does not change the exemption
+//     (refusing would leave remote agents with strictly less), but it
+//     does change what the catalog and instructions.md may PROMISE, so
+//     both now say the door is open and broken rather than advertising
+//     a capability that isn't there. v0.22 closed the same door on move/copy field
 //     OVERRIDES; this closes it on the ordinary update, which is the
 //     door agents actually reach for. Server-side in the fields_patch
 //     gate, so it lands on BOTH transports at once — remote posts
