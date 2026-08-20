@@ -76,9 +76,9 @@ type pushResponse struct {
 	// reports 1 and two sessions receive it; with none of its own, it
 	// reports 0 while a remote session receives it anyway.
 	//
-	// Not corrected here, because the fix is not a better count — it is
-	// the shared-state SessionPresence that PLAN-2558 S3 already gates
-	// on. Any local arithmetic would just be a more elaborate way of
+	// Filed as BUG-2698 alongside the targeted-push half. Not corrected
+	// here, because the fix is not a better count — it is the shared-state
+	// SessionPresence that PLAN-2558 S3 already gates on. Any local arithmetic would just be a more elaborate way of
 	// asking one replica what all of them are doing. Targeted pushes do
 	// not have the over-report half of this problem, for the unhappy
 	// reason that the same locality stops them being published at all.

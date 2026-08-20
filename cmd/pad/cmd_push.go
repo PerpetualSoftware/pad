@@ -44,7 +44,7 @@ func pushCmd() *cobra.Command {
     reaches your sessions on every instance. A push naming one session
     is still resolved against the server that handles the request, so
     targeting a session connected to a different instance finds nothing
-    and sends nothing — see BUG-2651.
+    and sends nothing — see BUG-2698.
 
     -m/--message is required and must not be blank; it is the
     instruction text the receiving agent acts on (load the item first,

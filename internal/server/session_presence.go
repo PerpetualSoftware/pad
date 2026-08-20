@@ -57,8 +57,8 @@ import (
 //     asks A sees nothing to target. Unchanged by BUG-2651 — neither
 //     better nor worse — so nothing regressed.
 //
-// The two open halves are the same defect wearing different clothes, and
-// one implementation closes both: a shared-state SessionPresence makes
+// The two open halves are the same defect wearing different clothes (filed
+// together as BUG-2698), and one implementation closes both: a shared-state SessionPresence makes
 // the snapshot right, which makes the picker complete AND makes the
 // push gate's premise true again. Do not put the web-UI push surface
 // (PLAN-2558 S3) in front of a multi-process deployment until it exists.

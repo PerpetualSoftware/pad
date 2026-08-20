@@ -329,6 +329,11 @@ func (b *RedisBus) Subscribe() chan Notification {
 // only the replay is unavailable, and the caller should treat it like the SSE
 // handler's sync_required signal.
 func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification) {
+	// Consulted BEFORE the lock: it sleeps and does network I/O. See its
+	// comment for why that ordering is also the only one that preserves the
+	// subscribe-and-replay guarantee.
+	forceGap := b.resumeOutrunsLocalView(sinceID)
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan Notification, 64)
@@ -337,7 +342,93 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		return ch, nil
 	}
 	b.subscribers[ch] = struct{}{}
+	if forceGap {
+		return ch, nil
+	}
 	return ch, b.replaySince(sinceID)
+}
+
+// settleWindow is how long resumeOutrunsLocalView waits before deciding that
+// ids it has not seen are MISSED rather than merely in flight.
+//
+// The counter is incremented inside the publish script, and the message then
+// has to reach this instance — so a counter running ahead of our high-water
+// mark is the NORMAL state for a moment after every publish. That window is
+// bounded by propagation time (a local network hop), while a genuinely missed
+// message never arrives at all. So the discriminator is TIME, not magnitude:
+// wait out the propagation window and re-read. This is the lead's ruling on
+// BUG-2651, and it is what avoids inventing an unprincipled "how many ids
+// behind is too many" threshold.
+const settleWindow = 250 * time.Millisecond
+
+// resumeOutrunsLocalView reports whether a resume from sinceID is asking about
+// ids this instance cannot vouch for, by asking the one authority that knows:
+// the shared counter.
+//
+// WHY THIS EXISTS. The local coverage bookkeeping (knownFrom) detects a hole
+// once a LATER id arrives to reveal it. It is blind to the trailing case —
+// hold 100, miss 101, client resumes from 100 before 102 lands — where the
+// buffer simply has nothing above the cursor and "caught up" is
+// indistinguishable from "nothing happened". A silently lost nudge is
+// unbounded staleness; a spurious resync costs one redundant fetch. That
+// asymmetry is why this is worth a network read on a path that only runs on
+// reconnect.
+//
+// It also catches the counter having gone BACKWARDS — a reset this instance
+// has not yet observed — because any DISAGREEMENT between the authority and
+// our high-water mark means our replay cannot be trusted for this cursor.
+//
+// Called WITHOUT the mutex held, and deliberately: it sleeps and does network
+// I/O, neither of which may happen inside the lock the fan-out needs. It is
+// also called BEFORE subscribing rather than between subscribe and replay,
+// which would reopen the double-delivery window SubscribeAndReplaySince
+// exists to close. Nothing is lost by waiting first: fanOutLocally appends to
+// the replay buffer regardless of who is subscribed, so anything arriving
+// during the settle beat is picked up by the replay read afterwards.
+//
+// A failed read answers false — proceed on local knowledge. Turning a Redis
+// hiccup into a resync for every reconnecting client would be a worse failure
+// than the one this is guarding against.
+func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
+	if sinceID <= 0 || b.client == nil {
+		return false
+	}
+
+	remote, err := b.client.Get(b.ctx, redisWatchSeqKey).Int64()
+	if err != nil {
+		if err != redis.Nil {
+			slog.Warn("watchevents: could not read the sequence counter to validate a resume; "+
+				"answering from local knowledge only", "error", err)
+		}
+		// redis.Nil means nothing has ever been published, so there is
+		// nothing this instance could have missed.
+		return false
+	}
+
+	b.mu.Lock()
+	held := b.lastAppendedID
+	b.mu.Unlock()
+	if remote == held {
+		return false
+	}
+
+	// Give propagation its beat before calling it a miss.
+	select {
+	case <-b.ctx.Done():
+		return false
+	case <-time.After(settleWindow):
+	}
+
+	b.mu.Lock()
+	held = b.lastAppendedID
+	b.mu.Unlock()
+	if remote == held {
+		return false
+	}
+
+	slog.Warn("watchevents: resume cannot be served from this instance's view; reporting a gap",
+		"since_id", sinceID, "highest_seen", held, "shared_counter", remote)
+	return true
 }
 
 // replaySince is replayBuffer.since plus the hole check. Callers must hold mu.
@@ -367,29 +458,10 @@ func (b *RedisBus) replaySince(sinceID int64) []Notification {
 		}
 	}
 
-	// THE TRAILING GAP, known and open (codex round 10). Everything above
-	// reasons about what this instance HAS received. It cannot see a
-	// notification it missed at the END of the sequence: if we hold up to
-	// 100, miss 101 to a disconnect, and a client resumes from 100 before
-	// 102 arrives, there is nothing above 100 in the buffer and this
-	// answers "caught up". The hole only becomes visible when 102 lands,
-	// which is too late for the connection that already resumed.
-	//
-	// The one thing that WOULD reveal it is Redis itself: a GET of
-	// redisWatchSeqKey higher than lastAppendedID means ids exist that we
-	// have not seen. That same read also reveals a counter reset (a value
-	// BELOW ours), so one mechanism closes both open windows.
-	//
-	// Not done here because it is a genuine trade rather than an omission,
-	// and it is product-visible: INCR happens before the message
-	// propagates, so the counter legitimately runs ahead of any instance
-	// for microseconds after every publish. A strict comparison would turn
-	// normal in-flight traffic into spurious sync_required responses, and
-	// there is no principled tolerance to pick. Spurious resyncs are
-	// recoverable and a lost nudge is not — which is the argument FOR doing
-	// it — but that is a call about how chatty the resync path should be,
-	// so it goes to the plan rather than being settled here. Raised on
-	// BUG-2651's trail with both halves.
+	// NOTE: everything above reasons about what this instance HAS received,
+	// which cannot see a notification missed at the END of the sequence.
+	// That half is handled before the lock is taken — see
+	// resumeOutrunsLocalView, which the resume path consults.
 	return b.replay.since(sinceID)
 }
 
@@ -402,6 +474,20 @@ func (b *RedisBus) Unsubscribe(ch chan Notification) {
 	}
 }
 
+// EventsSince answers from THIS INSTANCE'S LOCAL VIEW ONLY, and deliberately
+// does not run resumeOutrunsLocalView's authority check.
+//
+// The asymmetry with SubscribeAndReplaySince is intentional rather than an
+// oversight. The Bus interface already documents EventsSince as the standalone
+// primitive "for tests and any future caller that doesn't need the atomic
+// subscribe-and-replay guarantee"; the SSE handler — the one caller whose
+// answer a user depends on — uses SubscribeAndReplaySince. Teaching this method
+// to sleep for a settle window and make a network call would surprise every one
+// of those callers for no benefit they asked for.
+//
+// If a future caller DOES need a trustworthy resume without subscribing, the
+// honest move is to give it the check explicitly, not to make this one
+// silently expensive.
 func (b *RedisBus) EventsSince(sinceID int64) []Notification {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -524,14 +610,14 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		// in Redis and this instance only learns about it by receiving
 		// something.
 		//
-		// Not closed, deliberately. The shapes that would are a GET of the
-		// counter on every resume (network I/O on a latency-sensitive path,
-		// and it must not happen under this mutex — a Redis call inside the
-		// lock that fan-out needs is its own hazard) or a background poller
-		// (a goroutine and a Redis round trip per tick, forever, against a
-		// condition measured in years). The exposure is redelivery of
-		// notifications the client already has, bounded by the window and
-		// self-healing on the next publish.
+		// CLOSED, as of the trailing-gap work: resumeOutrunsLocalView reads
+		// the shared counter on every resume, and a value BELOW our
+		// high-water mark is exactly this reset seen from the other side. So
+		// a client reconnecting inside this window is told to resync rather
+		// than handed stale ids. This arm still matters — it is what repairs
+		// the instance's own state when the first post-reset message
+		// arrives, and it is the only thing that fixes a bus with no
+		// reconnecting clients at all.
 		slog.Warn("watchevents: notification id went backwards; the Redis sequence counter was reset. "+
 			"Dropping the replay buffer — resumes from the previous id space will report sync_required",
 			"previous", b.lastAppendedID, "got", n.ID)
