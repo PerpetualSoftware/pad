@@ -1466,3 +1466,88 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		}
 	}
 }
+
+// insertOutboxRow writes one outbox row directly, so a retention test can pin
+// occurred_at / dispatched_at to values a real emit would never produce on
+// demand.
+func insertOutboxRow(t *testing.T, s *Store, id, workspaceID, occurredAt string, dispatchedAt *string) {
+	t.Helper()
+	if _, err := s.db.Exec(s.q(`
+		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at, dispatched_at)
+		VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+	`), id, workspaceID, kernelevents.ItemCreated, kernelevents.SubjectItem, "subj-"+id,
+		`{"id":"subj-`+id+`","title":"frozen"}`, occurredAt, dispatchedAt); err != nil {
+		t.Fatalf("insert outbox row %s: %v", id, err)
+	}
+}
+
+func outboxRowIDs(t *testing.T, s *Store) []string {
+	t.Helper()
+	rows, err := s.db.Query(s.q(`SELECT id FROM event_outbox ORDER BY id`))
+	if err != nil {
+		t.Fatalf("query outbox ids: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan id: %v", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate outbox ids: %v", err)
+	}
+	return out
+}
+
+// TestOutbox_PruneUndispatchedBoundsTheFrozenPayloadWindow pins the privacy
+// half of retention (TASK-2714 requirement 3).
+//
+// PruneDispatchedOutbox filters on dispatched_at IS NOT NULL, so a row that
+// can NEVER be delivered is unreachable by it and keeps its frozen payload
+// forever. Both legs below discriminate a plausible wrong implementation: a
+// prune that dropped the dispatched_at IS NULL clause would take the dispatched
+// row too (and hand that table's retention two owners with different windows),
+// and one that ignored the cutoff would take the young pending row that a
+// retry is still owed.
+func TestOutbox_PruneUndispatchedBoundsTheFrozenPayloadWindow(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox retention")
+	clearOutbox(t, s)
+
+	old := time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339)
+	recent := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	dispatchedAt := time.Now().UTC().Add(-71 * time.Hour).Format(time.RFC3339)
+
+	insertOutboxRow(t, s, "a-old-pending", ws.ID, old, nil)
+	insertOutboxRow(t, s, "b-old-dispatched", ws.ID, old, &dispatchedAt)
+	insertOutboxRow(t, s, "c-recent-pending", ws.ID, recent, nil)
+
+	// The test asserts its own premise: without all three rows present, the
+	// survivor checks below would pass for a reason unrelated to the prune.
+	if got := outboxRowIDs(t, s); len(got) != 3 {
+		t.Fatalf("seeded rows = %v, want 3", got)
+	}
+
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	n, err := s.PruneUndispatchedOutbox(cutoff)
+	if err != nil {
+		t.Fatalf("PruneUndispatchedOutbox: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d rows, want 1 (only the aged pending row)", n)
+	}
+
+	got := outboxRowIDs(t, s)
+	want := []string{"b-old-dispatched", "c-recent-pending"}
+	if len(got) != len(want) {
+		t.Fatalf("survivors = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("survivors = %v, want %v", got, want)
+		}
+	}
+}

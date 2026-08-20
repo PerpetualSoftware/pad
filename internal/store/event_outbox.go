@@ -910,3 +910,52 @@ func (s *Store) PruneDispatchedOutbox(before string) (int64, error) {
 	}
 	return n, nil
 }
+
+// PruneUndispatchedOutbox deletes events that were never dispatched and are
+// older than the given timestamp, returning how many rows went.
+//
+// This one DROPS COMMITTED EVENTS, which is the opposite of everything else in
+// this file, so the reason has to be explicit rather than inferred from the
+// name.
+//
+// SPEC-3 makes payload privacy TEMPORAL: an outbox payload is a frozen
+// snapshot, and account deletion's de-identify posture reaches only live rows,
+// so a payload that never drains keeps whatever it captured for as long as the
+// row survives. PruneDispatchedOutbox cannot reach these — it filters on
+// dispatched_at IS NOT NULL — so without this, a row that can never be
+// delivered (a workspace whose only webhook was deleted, an endpoint that 4xxs
+// forever, an event whose surfaces all reject it) keeps its frozen payload
+// indefinitely. The retention window is what makes the privacy claim finite,
+// and a window only one of its two halves can close is not a window.
+//
+// So the trade is stated plainly: at-least-once delivery holds WITHIN the
+// retention window and not past it. That is why the caller's max-age must be
+// far larger than any retry schedule — the rows this reaches are ones no
+// further attempt would help, and the alternative to dropping them is keeping
+// user content in a table nothing will ever read.
+//
+// Deleting is deliberate rather than stamping them dispatched: a dispatched
+// stamp would be a lie in the durable record, and this table is the only
+// evidence of what the kernel emitted. A row that leaves is honestly absent; a
+// row marked delivered that never was would corrupt every later answer to "did
+// this mutation emit?".
+//
+// Callers log the count — an undispatchable event reaching its max age is a
+// delivery problem that has been failing for the whole window, and the number
+// is the only place it becomes visible.
+func (s *Store) PruneUndispatchedOutbox(before string) (int64, error) {
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM event_outbox WHERE dispatched_at IS NULL AND occurred_at < ?
+	`), before)
+	if err != nil {
+		return 0, fmt.Errorf("prune undispatched outbox: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Advisory, exactly as in PruneDispatchedOutbox: the DELETE already
+		// succeeded, and reporting a count failure as a prune failure would
+		// make a caller retry a completed prune.
+		return 0, nil
+	}
+	return n, nil
+}
