@@ -1168,6 +1168,11 @@ func fieldDefByKey(defs []models.FieldDef, key string) (models.FieldDef, bool) {
 // copy preflight. These keys have no FieldDef and therefore no author-supplied
 // Label, so the alternative is showing the raw snake_case key in a dialog whose
 // every other row is titled prose.
+//
+// Kept adjacent to reservedFieldRemedy below: both are hand-maintained per-key
+// tables over models.ReservedItemFieldKeys(), and putting them in one place is
+// what stops a new key getting a label and no remedy. Both are covered by
+// TestReservedFieldTablesAreExhaustive.
 func reservedFieldLabel(key string) string {
 	switch key {
 	case models.ItemFieldImplementationNotes:
@@ -1180,4 +1185,63 @@ func reservedFieldLabel(key string) string {
 		return "Convention metadata"
 	}
 	return key
+}
+
+// reservedFieldRemedy names the write path that legitimately maintains a
+// reserved metadata key, for the refusal message the field-patch gate emits
+// (BUG-2627 part 2).
+//
+// It is per-key rather than one sentence because the remedies genuinely differ,
+// and a message naming `pad item note` for a github_pr rejection would send the
+// caller somewhere that cannot help them — the failure PATTE-135 exists to
+// prevent. The empty string means "no user-facing write path", which the caller
+// renders as a plain refusal rather than inventing a command; an unhelpful-but-
+// true message beats a confident wrong one.
+//
+// Every remedy here was run against `--help` when it was written. `convention`
+// deliberately has none: its metadata is stamped at activation / create time
+// (models.BuildConventionItemFields), and a convention item's user-facing
+// trigger / scope / priority are ORDINARY schema fields, so `pad item update
+// --field trigger=always` is unaffected by this gate and needs no mention.
+func reservedFieldRemedy(key string) string {
+	switch key {
+	case models.ItemFieldImplementationNotes:
+		return "`pad item note <ref> \"<summary>\"` (MCP: pad_item action=note)"
+	case models.ItemFieldDecisionLog:
+		return "`pad item decide <ref> \"<decision>\"` (MCP: pad_item action=decide)"
+	case models.ItemFieldGitHubPR:
+		return "`pad github link <ref>` / `pad github unlink <ref>`"
+	}
+	return ""
+}
+
+// reservedFieldPatchMessage renders the refusal the field-patch gate returns
+// (BUG-2627 part 2). keys arrive sorted from items.ReservedFieldKeysIn, so the
+// message is stable for a given input — a caller diffing two responses, or a
+// test asserting on one, should not see the order move.
+//
+// The message carries the WHY as well as the what. "Not allowed" alone would
+// read as arbitrary policy; the reason this door is closed is that the write it
+// permits is silently destructive downstream, and a caller who knows that stops
+// looking for a way around the gate.
+func reservedFieldPatchMessage(keys []string) string {
+	var b strings.Builder
+	if len(keys) == 1 {
+		fmt.Fprintf(&b, "%q is system metadata and cannot be set through a field update.", keys[0])
+	} else {
+		quoted := make([]string, 0, len(keys))
+		for _, k := range keys {
+			quoted = append(quoted, fmt.Sprintf("%q", k))
+		}
+		fmt.Fprintf(&b, "%s are system metadata and cannot be set through a field update.", strings.Join(quoted, ", "))
+	}
+	for _, k := range keys {
+		if remedy := reservedFieldRemedy(k); remedy != "" {
+			fmt.Fprintf(&b, " Maintain %s with %s.", k, remedy)
+		}
+	}
+	b.WriteString(" A raw field write stores a value Pad cannot read back:" +
+		" the entries become invisible on every surface, and the append path for that key" +
+		" then refuses on this item until the stored value is repaired (BUG-2627).")
+	return b.String()
 }

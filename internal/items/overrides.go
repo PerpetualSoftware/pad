@@ -46,21 +46,36 @@ func UndeclaredOverrideKeys(overrides map[string]any, targetFields []models.Fiel
 	return bad
 }
 
-// ReservedOverrideKeys returns the override keys naming system metadata, sorted.
+// ReservedFieldKeysIn returns the keys of a caller-supplied field map that name
+// system metadata, sorted.
 //
-// Reserved keys are never settable through a FIELD-OVERRIDE map, on any path
-// that has one: the same-workspace move, the copy preflight, and the mutating
-// copy (the last two via UndeclaredOverrideKeys against a stripped schema).
+// Two kinds of map are gated by it, and they are gated for the same reason:
 //
-// That is NOT the same as "reserved keys are unwritable". An ordinary `fields`
-// or `fields_patch` map — from the CLI, MCP, the web editor, artifact import,
-// or Pad's own note/decision/convention/GitHub writers — still reaches them,
-// by design for the system writers and as a pre-existing exposure for the
-// rest (BUG-2685). Do not read this function as a general write gate.
-// They are written by Pad's own endpoints — implementation notes and decision
-// log entries through their append helpers (which carry BUG-2627's
-// refuse-rather-than-destroy guard), github_pr through the GitHub link flow —
-// and an override reaching them bypasses every one of those checks.
+//   - FIELD-OVERRIDE maps, on every path that has one: the same-workspace move,
+//     the copy preflight, and the mutating copy (the last two via
+//     UndeclaredOverrideKeys against a stripped schema).
+//   - `fields_patch`, the partial-update door every USER field-setter lowers
+//     into — `pad item update --field`, the MCP `field` param on both
+//     transports, and anything else PATCHing an item (BUG-2627 part 2).
+//
+// It was named ReservedOverrideKeys until the second caller arrived; the list
+// and the semantics are unchanged.
+//
+// That is still NOT the same as "reserved keys are unwritable", and the
+// remaining hole is deliberate rather than missed. A FULL `fields` blob reaches
+// them, because that door is shared: `pad item note` / `pad item decide` /
+// `pad github link` send one, and so does convention activation via
+// models.BuildConventionItemFields → ItemCreate. Closing it would break the
+// system writers it exists for. So item CREATE is still a mint site for a
+// hand-written reserved key, tracked with the rest of the surface in BUG-2685.
+//
+// What the fields_patch gate buys is that the UPDATE door — the one a user or
+// an agent actually reaches for, on all three transports — can no longer write
+// a reserved key at all. That matters because the append helpers
+// (AppendImplementationNote / AppendDecisionLogEntry) refuse rather than
+// destroy an undecodable stored value (BUG-2627 part 3): a `--field` write
+// that lands a malformed blob does not merely look wrong, it disables the
+// legitimate append path for that item until someone repairs the row.
 //
 // On the copy it is worse than a validation hole: MigrateFields drops a
 // referential key like github_pr when the item leaves its workspace (BUG-2674),
@@ -70,12 +85,12 @@ func UndeclaredOverrideKeys(overrides map[string]any, targetFields []models.Fiel
 // Callers that already run UndeclaredOverrideKeys against a schema stripped by
 // SchemaForMigratedFields get this for free — a reserved key is undeclared
 // there by construction. This exists for the paths with no schema gate at all.
-func ReservedOverrideKeys(overrides map[string]any) []string {
-	if len(overrides) == 0 {
+func ReservedFieldKeysIn(fields map[string]any) []string {
+	if len(fields) == 0 {
 		return nil
 	}
 	var bad []string
-	for k := range overrides {
+	for k := range fields {
 		if models.IsReservedItemField(k) {
 			bad = append(bad, k)
 		}

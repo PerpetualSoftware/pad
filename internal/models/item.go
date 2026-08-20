@@ -548,7 +548,7 @@ var ErrStructuredFieldUnreadable = errors.New("structured field is present but u
 // does not decode into []T.
 //
 // BUG-2627. The Append* helpers below build the new slice from Extract*, then
-// assign it over the key unconditionally. Extract* returns nil for THREE
+// assign it over the key unconditionally. Extract* returns nil for FOUR
 // different reasons and only one of them is a defect, so the nil itself cannot
 // be the refusal condition:
 //

@@ -520,7 +520,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-//   - "0.22" — current. BUG-2674: `pad_item.action=move` no longer
+//   - "0.22" — BUG-2674: `pad_item.action=move` no longer
 //     destroys an item's system metadata, and now REFUSES a `field`
 //     setter naming one of those keys.
 //
@@ -548,8 +548,56 @@ const CmdhelpVersion = "0.1"
 //     a setter get a 400 where they previously got a silent corrupt
 //     write. Relying on the old behaviour is relying on a defect, the
 //     same reading v0.17 took for the fields-blob shadowing.
+//
+//   - "0.23" — current. BUG-2627 part 2 + BUG-2675, one bump for two
+//     changes at the same door. BEHAVIOR bump on the v0.9/v0.16/v0.17/
+//     v0.22 grounds — no tool, action enum, or param shape changed.
+//
+//     (1) `pad_item.action=update` REFUSES a `field` setter naming
+//     system metadata (implementation_notes, decision_log, github_pr,
+//     convention) with a 400 `validation_error`, where it previously
+//     wrote it. v0.22 closed the same door on move/copy field
+//     OVERRIDES; this closes it on the ordinary update, which is the
+//     door agents actually reach for. Server-side in the fields_patch
+//     gate, so it lands on BOTH transports at once — remote posts
+//     fields_patch directly, and stdio's CLI (`pad item update
+//     --field`) lowers into the same key. That was verified at both
+//     call sites rather than assumed, because a fix that reaches one
+//     transport is the shape v0.16 shipped and v0.17 had to finish.
+//
+//     Compat posture, same as v0.22's: today's callers passing such a
+//     setter get a 400 where they previously got a write that made the
+//     entries unreadable everywhere AND disabled `action=note` /
+//     `action=decide` on that item until the row was repaired. Relying
+//     on the old behaviour is relying on a defect.
+//
+//     Item CREATE is deliberately NOT covered: its full-`fields` door
+//     is shared with Pad's own writers (convention activation lowers
+//     into it), so it needs a different rule, tracked in BUG-2685.
+//
+//     (2) NEW ERROR CODE `stored_state_unreadable` (BUG-2675) — the
+//     first addition to the closed ErrorCode set since v0.14's
+//     update_conflict. Fires when an operation is refused because the
+//     ITEM'S STORED value cannot be decoded: today, `action=note` /
+//     `action=decide` against a field whose stored value is not a list
+//     of entries (the v0.22-era guard from BUG-2627 part 3).
+//
+//     It replaces `server_error` for exactly that condition, which was
+//     wrong in both halves — not our fault, and not transient. The
+//     defining property is RETRY-HOSTILITY: the refusal is fully
+//     deterministic, so an agent that backs off and retries burns
+//     round-trips against a state only a repair can clear. Both
+//     transports emit it: HTTP classifies the sentinel error directly,
+//     stdio via the `pad-structured-error/v1:` marker the CLI now
+//     writes for its own local refusal.
+//
+//     ADDITIVE for consumers that switch on code — an unknown code was
+//     always possible and the envelope shape is unchanged — but a
+//     client that pattern-matched `server_error` to detect this
+//     condition would stop matching. That client was retrying a
+//     permanent failure.
 
-const ToolSurfaceVersion = "0.22"
+const ToolSurfaceVersion = "0.23"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

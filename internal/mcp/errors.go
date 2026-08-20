@@ -3,12 +3,15 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -159,6 +162,28 @@ const (
 	// hard duplicate. Details carries ref/expected_updated_at/
 	// actual_updated_at from the server (TASK-2022).
 	ErrUpdateConflict ErrorCode = "update_conflict"
+
+	// ErrStoredStateUnreadable fires when an operation is refused because
+	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
+	// implementation_notes / decision_log field whose value is not a list
+	// of entries (BUG-2627 part 3's guard, surfaced by BUG-2675).
+	//
+	// The load-bearing property is that it is RETRY-HOSTILE. The failure is
+	// deterministic: the stored value has been undecodable since it was
+	// written, possibly for months, and every retry refuses identically.
+	// An agent seeing this should surface the item and STOP, not back off
+	// and try again.
+	//
+	// Distinct from the three codes it would otherwise collapse into, each
+	// of which misleads in its own direction:
+	//   - ErrValidationFailed says the INPUT was bad. It wasn't — a valid
+	//     note against a valid item. What's wrong is state the caller never
+	//     supplied and cannot see.
+	//   - ErrConflict says something is racing. Nothing is.
+	//   - ErrServerError says the fault is ours and reads as transient,
+	//     which is the classification this code replaces and the reason an
+	//     agent would retry a refusal that can never succeed.
+	ErrStoredStateUnreadable ErrorCode = "stored_state_unreadable"
 )
 
 // ErrorEnvelope is the wire shape returned to MCP clients on tool
@@ -370,6 +395,15 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"open_children":       {}, // IDEA-1494
 	"plan_limit_exceeded": {}, // TASK-788
 	"update_conflict":     {}, // TASK-2022 (optimistic concurrency)
+	// BUG-2675. The only entry whose marker is written for a LOCALLY
+	// generated refusal rather than an upstream APIError — the CLI's
+	// append helpers refuse before any request is made (see
+	// cli.WriteStoredStateUnreadableError). The HTTP transport reaches the
+	// same code by its own route (dispatchItemNote / dispatchItemDecide
+	// classify models.ErrStructuredFieldUnreadable directly), so this entry
+	// is what keeps stdio from being the transport that still says
+	// server_error.
+	"stored_state_unreadable": {},
 }
 
 // extractStructuredCLIError scans stderr for the
@@ -1251,6 +1285,33 @@ func dispatcherErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
 		Code:    ErrServerError,
 		Message: fmt.Sprintf("%s: %s failed", cmdKey, op),
 		Hint:    hint,
+	})
+}
+
+// structuredAppendErrorResult classifies a failure from one of the Append*
+// helpers (BUG-2675).
+//
+// Every other failure in those dispatchers really is an internal fault and
+// keeps dispatcherErrorResult's ErrServerError. The refusal is the exception:
+// the server is working correctly and the ITEM's stored value is unreadable,
+// so ErrServerError's "our fault, probably transient" framing is wrong in both
+// halves — it invites a retry of something that can never succeed.
+//
+// Kept as a wrapper rather than a branch inside dispatcherErrorResult because
+// dispatcherErrorResult is the honest answer for every one of its ~20 other
+// call sites, and teaching it one caller's domain error would make it the place
+// where the next such special case also lands.
+func structuredAppendErrorResult(cmdKey, op string, err error) *mcp.CallToolResult {
+	if !errors.Is(err, models.ErrStructuredFieldUnreadable) {
+		return dispatcherErrorResult(cmdKey, op, err)
+	}
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrStoredStateUnreadable,
+		Message: fmt.Sprintf("%s refused: %s", cmdKey, err.Error()),
+		Hint: "Retrying will not help — the item's stored value has been undecodable since it was written, " +
+			"so every attempt refuses identically. Read the raw value with `pad_item` action=get (or " +
+			"`pad item show <ref> --format json` at the CLI), repair it, then re-run this call. " +
+			"Do not route around the refusal: completing the append would overwrite the stored value.",
 	})
 }
 
