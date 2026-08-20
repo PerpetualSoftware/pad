@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -70,11 +71,37 @@ const (
 // injected into the JSON, because string-editing JSON inside Lua is a fragile
 // way to save one split. The id is digits and the separator is the FIRST '|',
 // so a '|' anywhere in the payload is unambiguous.
+// The dedupe key makes the script IDEMPOTENT UNDER RETRY, which it needs to be
+// because go-redis retries a command when the reply is lost to a network error
+// (codex round 5). Without it, a script that ran and whose reply never came
+// back would run AGAIN on retry: the same notification published twice under
+// two different ids. Both copies look perfectly valid — correct ordering,
+// distinct ids — so nothing downstream could tell them apart, and on the push
+// path a duplicate is a duplicate DISPATCH into an agent harness, not just a
+// repeated line in a feed.
+//
+// SET NX on a caller-generated token turns the retry into a no-op: the retry
+// carries the same KEYS[3], the SET fails, and the script returns 0 without
+// publishing. The TTL only has to outlive a retry burst, not a session.
 var publishScript = redis.NewScript(`
+if redis.call('SET', KEYS[3], '1', 'NX', 'EX', ARGV[2]) == false then
+  return 0
+end
 local id = redis.call('INCR', KEYS[1])
 redis.call('PUBLISH', KEYS[2], id .. '|' .. ARGV[1])
 return id
 `)
+
+const (
+	// redisWatchDedupePrefix namespaces the per-publish idempotency tokens.
+	redisWatchDedupePrefix = "pad:watchevents:pub:"
+
+	// redisWatchDedupeTTLSeconds bounds how long a token is remembered. It
+	// only has to cover a client-side retry burst — go-redis gives up after
+	// MaxRetries with backoff measured in milliseconds — so a minute is
+	// generous, and the keys are small and expire on their own.
+	redisWatchDedupeTTLSeconds = 60
+)
 
 // RedisBus is the multi-instance implementation of Bus (BUG-2651). Every
 // instance publishes to one shared Redis channel and receives from it, so a
@@ -184,6 +211,30 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 	}
 	// Eager subscription — see the type comment (2).
 	b.pubsub = client.Subscribe(ctx, redisWatchChannel)
+
+	// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
+	// establishes the subscription asynchronously, so without this the
+	// constructor hands back a bus that is not yet listening — and Redis
+	// pub/sub is at-most-once, so everything published in that window is
+	// lost to this instance, silently.
+	//
+	// Found as a test flake (a second bus constructed and published to
+	// immediately received nothing), which is exactly the shape a rolling
+	// deploy has: a replica comes up, and traffic reaches it before its
+	// subscription is live. The window is small and entirely real.
+	//
+	// A failure here is logged rather than fatal: the receive loop's
+	// Channel() re-subscribes on reconnect, so a bus that missed its first
+	// confirmation still recovers — it just cannot promise it was listening
+	// from the moment it was constructed.
+	subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer subCancel()
+	if _, err := b.pubsub.Receive(subCtx); err != nil {
+		slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
+			"notifications published before it establishes will be missed by this instance",
+			"error", err, "channel", redisWatchChannel)
+	}
+
 	b.wg.Add(1)
 	go b.receiveMessages()
 	return b
@@ -219,8 +270,14 @@ func (b *RedisBus) Publish(n Notification) {
 		return
 	}
 
+	// A fresh token per logical publish — NOT per attempt, which is the
+	// point: go-redis reuses the same arguments on its own retries, so the
+	// second run of the script sees the same token and declines.
+	dedupeKey := redisWatchDedupePrefix + uuid.NewString()
+
 	if err := publishScript.Run(b.ctx, b.client,
-		[]string{redisWatchSeqKey, redisWatchChannel}, string(data)).Err(); err != nil {
+		[]string{redisWatchSeqKey, redisWatchChannel, dedupeKey},
+		string(data), redisWatchDedupeTTLSeconds).Err(); err != nil {
 		slog.Error("watchevents: dropping notification — Redis publish failed, so no globally ordered ID was assigned",
 			"error", err, "kind", n.Kind, "item_ref", n.ItemRef)
 	}

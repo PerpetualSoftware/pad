@@ -18,6 +18,7 @@ toolchain go1.26.6
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/disintegration/imaging v1.6.2
 	github.com/fatih/color v1.19.0
 	github.com/go-chi/chi/v5 v5.3.1
@@ -112,6 +113,7 @@ require (
 	github.com/subosito/gotenv v1.4.2 // indirect
 	github.com/test-go/testify v1.1.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace v0.46.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
