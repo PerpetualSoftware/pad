@@ -101,7 +101,23 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// a ref-only deletion payload and the write would be accepted (Codex round
 	// 10). Pairing them here means an event and a payload that were not meant
 	// for each other cannot reach the table at all.
-	if want, _ := kernelevents.PayloadFamily(ev.EventType); ev.PayloadFamily != want {
+	want, known := kernelevents.PayloadFamily(ev.EventType)
+	if !known || want == "" {
+		// FAIL CLOSED on an event the taxonomy cannot describe. Discarding the
+		// ok meant an unknown family resolved to "", which a caller declaring
+		// nothing would then MATCH — the check passing precisely when it had
+		// no idea what the answer should be.
+		//
+		// UNREACHABLE TODAY, and said plainly rather than left to imply it is
+		// the protection: the canonical table co-locates subject kind and
+		// payload family in one entry, so a canonical event cannot be missing
+		// a family, and IsCanonical above has already rejected everything
+		// else. Verified by mutation — disabling this arm changes no test,
+		// because the mismatch check below catches the reachable cases. It
+		// stays as the guard for a future table that separates the two again.
+		return fmt.Errorf("outbox: event %s has no declared payload family", ev.EventType)
+	}
+	if ev.PayloadFamily != want {
 		return fmt.Errorf("outbox: event %s carries a %q payload, want %q",
 			ev.EventType, ev.PayloadFamily, want)
 	}

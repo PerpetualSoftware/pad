@@ -1351,13 +1351,36 @@ func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 	}
 }
 
-// TestPayloadFamily_CoversEveryCanonicalEvent keeps the two taxonomy maps from
-// drifting: a canonical name with no declared family would be unwritable, and
-// the failure would surface as a confusing runtime rejection rather than here.
-func TestPayloadFamily_CoversEveryCanonicalEvent(t *testing.T) {
+// TestCanonicalEventsAreFullyDeclared checks that every canonical event
+// resolves BOTH a subject kind and a payload family, and that non-canonical
+// names resolve neither.
+//
+// The single taxonomy table makes a half-declared event unrepresentable, so
+// this is a guard against the table being replaced by something looser rather
+// than against today's literals. The non-canonical leg is the one that matters
+// most: an unknown name must report ok=false, not an empty string that a
+// caller declaring nothing would match.
+func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 	for _, name := range kernelevents.Canonical() {
-		if family, ok := kernelevents.PayloadFamily(name); !ok || family == "" {
+		kind, kindOK := kernelevents.SubjectKind(name)
+		if !kindOK || kind == "" {
+			t.Errorf("canonical event %q has no subject kind", name)
+		}
+		family, familyOK := kernelevents.PayloadFamily(name)
+		if !familyOK || family == "" {
 			t.Errorf("canonical event %q has no payload family", name)
+		}
+	}
+
+	for _, name := range []string{"", "item.frobnicated", "comment.deleted.v2"} {
+		if _, ok := kernelevents.PayloadFamily(name); ok {
+			t.Errorf("PayloadFamily(%q) reported ok for a non-canonical name", name)
+		}
+		if _, ok := kernelevents.SubjectKind(name); ok {
+			t.Errorf("SubjectKind(%q) reported ok for a non-canonical name", name)
+		}
+		if kernelevents.IsCanonical(name) {
+			t.Errorf("IsCanonical(%q) = true", name)
 		}
 	}
 }

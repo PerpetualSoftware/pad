@@ -135,31 +135,23 @@ const (
 	SubjectPack       = "pack"
 )
 
-// canonical is the closed events/1 set mapped to its subject kind.
+// eventSpec is everything the kernel knows about one canonical event.
 //
-// A map rather than a slice because every consumer of this list is asking a
-// membership question — the closure rule is enforced by lookup, and the
-// subject kind falls out of the same entry instead of living in a second
-// table that could disagree with this one.
-var canonical = map[string]string{
-	ItemCreated:       SubjectItem,
-	ItemUpdated:       SubjectItem,
-	ItemStatusChanged: SubjectItem,
-	ItemMoved:         SubjectItem,
-	ItemDeleted:       SubjectItem,
-	ItemRestored:      SubjectItem,
-	ItemBulkUpdated:   SubjectItemBatch,
-	CommentCreated:    SubjectComment,
-	CommentUpdated:    SubjectComment,
-	CommentDeleted:    SubjectComment,
-	AttachmentAdded:   SubjectAttachment,
-	AttachmentRemoved: SubjectAttachment,
-	MemberJoined:      SubjectMember,
-	PackInstalled:     SubjectPack,
-	PackUpgraded:      SubjectPack,
-	PackDisabled:      SubjectPack,
+// ONE TABLE, not two maps keyed on the same names. A second map is a second
+// source of truth that can disagree with the first — and it disagreed
+// dangerously: a canonical event missing from a separate family map would
+// resolve to the empty family, which a caller declaring nothing would then
+// MATCH, so the check would fail OPEN exactly when it was needed (Codex round
+// 11, on code round 10 had just added). Co-locating the fields makes the drift
+// unrepresentable rather than tested-for.
+type eventSpec struct {
+	subject string
+	payload string
 }
 
+// canonical is the closed events/1 set. Adding an entry here is the ONLY way
+// to add a canonical event, and the compiler requires both fields, so a new
+// event cannot arrive half-declared.
 // Payload families. Every canonical event produces exactly one payload shape,
 // and the family is what lets a writer check that an event and a payload were
 // meant for each other.
@@ -193,23 +185,23 @@ const (
 	PayloadPack = "pack"
 )
 
-var payloadFamilies = map[string]string{
-	ItemCreated:       PayloadItemSnapshot,
-	ItemUpdated:       PayloadItemSnapshot,
-	ItemStatusChanged: PayloadItemSnapshot,
-	ItemMoved:         PayloadItemSnapshot,
-	ItemDeleted:       PayloadItemSnapshot,
-	ItemRestored:      PayloadItemSnapshot,
-	ItemBulkUpdated:   PayloadItemBatch,
-	CommentCreated:    PayloadCommentSnapshot,
-	CommentUpdated:    PayloadCommentSnapshot,
-	CommentDeleted:    PayloadRefOnly,
-	AttachmentAdded:   PayloadAttachmentSnapshot,
-	AttachmentRemoved: PayloadRefOnly,
-	MemberJoined:      PayloadMember,
-	PackInstalled:     PayloadPack,
-	PackUpgraded:      PayloadPack,
-	PackDisabled:      PayloadPack,
+var canonical = map[string]eventSpec{
+	ItemCreated:       {SubjectItem, PayloadItemSnapshot},
+	ItemUpdated:       {SubjectItem, PayloadItemSnapshot},
+	ItemStatusChanged: {SubjectItem, PayloadItemSnapshot},
+	ItemMoved:         {SubjectItem, PayloadItemSnapshot},
+	ItemDeleted:       {SubjectItem, PayloadItemSnapshot},
+	ItemRestored:      {SubjectItem, PayloadItemSnapshot},
+	ItemBulkUpdated:   {SubjectItemBatch, PayloadItemBatch},
+	CommentCreated:    {SubjectComment, PayloadCommentSnapshot},
+	CommentUpdated:    {SubjectComment, PayloadCommentSnapshot},
+	CommentDeleted:    {SubjectComment, PayloadRefOnly},
+	AttachmentAdded:   {SubjectAttachment, PayloadAttachmentSnapshot},
+	AttachmentRemoved: {SubjectAttachment, PayloadRefOnly},
+	MemberJoined:      {SubjectMember, PayloadMember},
+	PackInstalled:     {SubjectPack, PayloadPack},
+	PackUpgraded:      {SubjectPack, PayloadPack},
+	PackDisabled:      {SubjectPack, PayloadPack},
 }
 
 // PayloadFamily returns the payload shape a canonical event carries, and false
@@ -219,8 +211,8 @@ var payloadFamilies = map[string]string{
 // the event name agrees, so an event and a payload that were not meant for each
 // other cannot be stored together.
 func PayloadFamily(name string) (string, bool) {
-	family, ok := payloadFamilies[name]
-	return family, ok
+	spec, ok := canonical[name]
+	return spec.payload, ok
 }
 
 // IsCanonical reports whether name is in the events/1 set.
@@ -238,8 +230,8 @@ func IsCanonical(name string) bool {
 // SubjectKind returns the subject kind for a canonical event name, and false
 // if the name is not canonical.
 func SubjectKind(name string) (string, bool) {
-	kind, ok := canonical[name]
-	return kind, ok
+	spec, ok := canonical[name]
+	return spec.subject, ok
 }
 
 // Canonical returns the events/1 set. The returned slice is freshly built on
