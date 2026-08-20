@@ -112,6 +112,81 @@ func TestResumeToleratesAnInFlightCounter(t *testing.T) {
 	}
 }
 
+// TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle — codex
+// round 11, P1. The first version of the check re-read only the LOCAL side, so
+// it compared against a stale counter snapshot: id 2 arrives during the beat,
+// the captured remote was 2, and it declared convergence — while id 3 had been
+// published and missed in the meantime.
+func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.T) {
+	b, mr := newMiniredisBus(t, 64)
+
+	ch := b.Subscribe()
+	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("precondition: the first notification never arrived")
+	}
+	b.Unsubscribe(ch)
+
+	if err := mr.Set(redisWatchSeqKey, "2"); err != nil {
+		t.Fatalf("set counter: %v", err)
+	}
+	go func() {
+		time.Sleep(settleWindow / 4)
+		// The id the first read was waiting for lands...
+		b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-2"})
+		// ...while a THIRD is published elsewhere and never reaches us.
+		_ = mr.Set(redisWatchSeqKey, "3")
+	}()
+
+	_, missed := b.SubscribeAndReplaySince(1)
+	if missed != nil {
+		t.Fatalf("id 3 exists and never reached this instance; the resume must report a gap "+
+			"rather than converge against a stale counter snapshot; got %+v", missed)
+	}
+}
+
+// TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish — codex round 11, P2,
+// the other direction. A GET can land just before a publish completes and
+// return a value BELOW what this instance already holds. Comparing against
+// that stale snapshot forever meant an unnecessary full resync for a client
+// that had missed nothing.
+func TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish(t *testing.T) {
+	b, mr := newMiniredisBus(t, 64)
+
+	ch := b.Subscribe()
+	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
+	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("precondition: only %d of 2 notifications arrived", i)
+		}
+	}
+	b.Unsubscribe(ch)
+
+	// The counter reads BEHIND what we hold — the shape a read racing a
+	// publish produces. It catches up during the settle window.
+	if err := mr.Set(redisWatchSeqKey, "1"); err != nil {
+		t.Fatalf("set counter: %v", err)
+	}
+	go func() {
+		time.Sleep(settleWindow / 4)
+		_ = mr.Set(redisWatchSeqKey, "2")
+	}()
+
+	_, missed := b.SubscribeAndReplaySince(1)
+	if missed == nil {
+		t.Fatal("this instance holds everything the counter ends up reporting; resyncing here " +
+			"would punish a client that missed nothing")
+	}
+	if len(missed) != 1 || missed[0].ID != 2 {
+		t.Errorf("resume from 1: got %+v, want just id 2", missed)
+	}
+}
+
 // TestResumeFallsBackToLocalKnowledgeWhenTheCounterIsUnreadable — a Redis
 // hiccup must not turn every reconnect into a resync. Failing closed here would
 // be a worse failure than the one the check guards against, because it fires on

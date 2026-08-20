@@ -389,12 +389,70 @@ const settleWindow = 250 * time.Millisecond
 // A failed read answers false — proceed on local knowledge. Turning a Redis
 // hiccup into a resync for every reconnecting client would be a worse failure
 // than the one this is guarding against.
+//
+// CHATTINESS BOUND, stated because it is the cost side of the lead's ruling
+// (chatty-but-correct beats quiet-but-lossy): the condition is agreement
+// between the two reads, so a resume that happens while publishing is
+// CONTINUOUS across the whole settle window can find them disagreeing every
+// time and resync. That is bounded by this stream being low-volume by design
+// (status changes, comments and pushes — the package's own sizing note calls
+// out that it is not the per-workspace firehose) and by resumes only
+// happening on reconnect. If a workload ever makes this chatty in practice,
+// the fix is a longer settle window, not a magnitude threshold.
 func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 	if sinceID <= 0 || b.client == nil {
 		return false
 	}
 
-	remote, err := b.client.Get(b.ctx, redisWatchSeqKey).Int64()
+	remote, ok := b.sharedCounter()
+	if !ok {
+		return false
+	}
+	if remote == b.highestSeen() {
+		return false
+	}
+
+	// Give propagation its beat, then re-read BOTH SIDES.
+	//
+	// Re-reading only the local side was the first version of this and it was
+	// wrong in both directions (codex round 11). The captured counter is a
+	// SNAPSHOT: if id 101 lands during the beat while 102 is published and
+	// missed, comparing against the stale 101 says "converged" and loses 102;
+	// and a GET that raced just before a publish can report a value BELOW
+	// what we already hold, which then never matches and resyncs a client
+	// that missed nothing.
+	//
+	// Agreement between the authority and this instance is the condition, and
+	// it has to be evaluated on two fresh reads or it is not agreement at all.
+	select {
+	case <-b.ctx.Done():
+		return false
+	case <-time.After(settleWindow):
+	}
+
+	remote, ok = b.sharedCounter()
+	if !ok {
+		return false
+	}
+	held := b.highestSeen()
+	if remote == held {
+		return false
+	}
+
+	// Any remaining disagreement is a gap, in either direction: still BEHIND
+	// means ids exist that never reached us, still AHEAD means the counter
+	// was reset under us and our buffer belongs to a dead id space. Both make
+	// this instance's replay untrustworthy for this cursor.
+	slog.Warn("watchevents: resume cannot be served from this instance's view; reporting a gap",
+		"since_id", sinceID, "highest_seen", held, "shared_counter", remote)
+	return true
+}
+
+// sharedCounter reads the authoritative sequence value. The bool is false when
+// it could not be read, which callers treat as "answer from local knowledge" —
+// see resumeOutrunsLocalView for why failing closed here would be worse.
+func (b *RedisBus) sharedCounter() (int64, bool) {
+	v, err := b.client.Get(b.ctx, redisWatchSeqKey).Int64()
 	if err != nil {
 		if err != redis.Nil {
 			slog.Warn("watchevents: could not read the sequence counter to validate a resume; "+
@@ -402,33 +460,15 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 		}
 		// redis.Nil means nothing has ever been published, so there is
 		// nothing this instance could have missed.
-		return false
+		return 0, false
 	}
+	return v, true
+}
 
+func (b *RedisBus) highestSeen() int64 {
 	b.mu.Lock()
-	held := b.lastAppendedID
-	b.mu.Unlock()
-	if remote == held {
-		return false
-	}
-
-	// Give propagation its beat before calling it a miss.
-	select {
-	case <-b.ctx.Done():
-		return false
-	case <-time.After(settleWindow):
-	}
-
-	b.mu.Lock()
-	held = b.lastAppendedID
-	b.mu.Unlock()
-	if remote == held {
-		return false
-	}
-
-	slog.Warn("watchevents: resume cannot be served from this instance's view; reporting a gap",
-		"since_id", sinceID, "highest_seen", held, "shared_counter", remote)
-	return true
+	defer b.mu.Unlock()
+	return b.lastAppendedID
 }
 
 // replaySince is replayBuffer.since plus the hole check. Callers must hold mu.
