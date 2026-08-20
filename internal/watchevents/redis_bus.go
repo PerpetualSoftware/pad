@@ -182,6 +182,30 @@ type RedisBus struct {
 	replaySize  int
 	closed      bool
 
+	// afterSubscribeRegister is a test-only seam, nil in production and thus
+	// zero-cost there. SubscribeAndReplaySince calls it, while still holding
+	// mu, at the exact instant AFTER the subscriber is registered and BEFORE
+	// the replay buffer is read — the boundary that the single mutex
+	// collapses into one atomic step, and the boundary a reintroduced
+	// split-lock layout (events.RedisBus's template; see the type comment
+	// (3)) would place its unlock/relock around.
+	//
+	// TestRedisBusSubscribeAndReplayNeverDoubleDelivers uses it to force a
+	// concurrent fanOutLocally to attempt the lock right here, on every
+	// attempt, instead of racing an unsynchronized goroutine and hoping for a
+	// microsecond of overlap (which is what made that test flake — see its
+	// comment). Because the hook fires while mu is still held, the forced
+	// fan-out is provably blocked until the read+return completes; that is
+	// what the test is asserting still holds.
+	//
+	// The seam's value is tied to its POSITION, not its mere existence: if
+	// SubscribeAndReplaySince is ever restructured — e.g. split into two
+	// critical sections — this call must move with the register/read
+	// boundary, or the test starts exercising a spot that no longer
+	// corresponds to where a real regression would open a window, and passes
+	// while proving nothing.
+	afterSubscribeRegister func()
+
 	// knownFrom / lastAppendedID bound what this instance can HONESTLY
 	// replay — a failure mode MemoryBus structurally cannot have and this
 	// one can (codex rounds 3 and 4).
@@ -379,6 +403,9 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		return ch, nil
 	}
 	b.subscribers[ch] = struct{}{}
+	if b.afterSubscribeRegister != nil {
+		b.afterSubscribeRegister()
+	}
 	if forceGap {
 		return ch, nil
 	}
