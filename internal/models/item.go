@@ -734,6 +734,15 @@ func parseMutableItemFields(fieldsJSON string) (map[string]any, error) {
 	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
 		return nil, fmt.Errorf("parse item fields: %w", err)
 	}
+	if fieldsMap == nil {
+		// A literal `null` unmarshals into a NIL map with no error, and every
+		// caller here goes on to assign into what it gets back — so `pad item
+		// note` against an item whose fields column holds "null" panicked with
+		// "assignment to entry in nil map" rather than appending (reproduced;
+		// Codex round 3 on BUG-2627). An absent blob and a null blob mean the
+		// same thing to every caller, so they get the same empty map.
+		return map[string]any{}, nil
+	}
 	return fieldsMap, nil
 }
 

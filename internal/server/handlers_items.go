@@ -944,8 +944,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// BUG-2627 part 2: `fields_patch` is the door every USER field-setter
 	// lowers into — `pad item update --field` (cmd_item.go), the MCP `field`
 	// param on the remote transport (dispatch_http_advanced.go), and the same
-	// param on stdio by way of that CLI. None of them may write system
-	// metadata, so the refusal sits here, once, rather than at each client.
+	// param on stdio by way of that CLI. None of them may write the system
+	// metadata that HAS another writer, so the refusal sits here, once, rather
+	// than at each client. `github_pr` is exempt and PatchRefusedFieldKeysIn
+	// explains why: it is the one reserved key for which this door IS the
+	// sanctioned cross-surface writer, because `pad github link` cannot run on
+	// remote MCP at all.
 	//
 	// It sits with the mutual-exclusion check above rather than in the
 	// fields_patch block below because both are "reject an illegitimate patch
@@ -968,7 +972,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// work in the state the caller is in: when the stored value is already
 	// undecodable, `pad item note` refuses too, and naming it anyway would
 	// route the caller in a circle (Codex round 1).
-	if bad := items.ReservedFieldKeysIn(input.FieldsPatch); len(bad) > 0 {
+	if bad := items.PatchRefusedFieldKeysIn(input.FieldsPatch); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldPatchMessage(bad, item.Fields))
 		return
 	}

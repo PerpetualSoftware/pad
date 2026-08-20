@@ -74,12 +74,6 @@ func TestPatchItemFieldsPatchRefusesReservedKeys(t *testing.T) {
 			wantRemedy: "pad item decide",
 		},
 		{
-			name:       "github_pr names the github link flow",
-			key:        models.ItemFieldGitHubPR,
-			value:      map[string]any{"url": "https://example.test/pr/1"},
-			wantRemedy: "pad github link",
-		},
-		{
 			// convention has no user-facing write path, so the message
 			// must refuse WITHOUT inventing a command to point at.
 			name:        "convention refuses without inventing a remedy",
@@ -114,7 +108,7 @@ func TestPatchItemFieldsPatchRefusesReservedKeys(t *testing.T) {
 			if tc.wantNoRemed {
 				// The failure this guards against is a message that sends the
 				// caller to a command which cannot maintain this key.
-				for _, wrong := range []string{"pad item note", "pad item decide", "pad github link"} {
+				for _, wrong := range []string{"pad item note", "pad item decide"} {
 					if strings.Contains(message, wrong) {
 						t.Errorf("message for %q must not point at %q, which does not write it; got: %s",
 							tc.key, wrong, message)
@@ -174,6 +168,43 @@ func TestPatchItemFieldsPatchRefusalNamesEveryReservedKeyPresent(t *testing.T) {
 	got := getItemFields(t, srv, slug, item.Slug)
 	if got["status"] != "open" {
 		t.Errorf("a refused patch applied its non-reserved keys anyway: %v", got)
+	}
+}
+
+// TestPatchItemFieldsPatchStillWritesGitHubPR — Codex round 3, P1.
+//
+// `github_pr` is the one reserved key this gate must NOT refuse. `pad github
+// link` needs the caller's local git branch and the `gh` CLI, so it is excluded
+// from the remote MCP surface by name, and internal/mcp/dispatch_http.go's
+// noRemoteEquivalent map directs remote agents to
+// `item update --field github_pr=...` as the sanctioned alternative. Refusing
+// it here removed a documented capability from those agents and answered with
+// a message naming a command they cannot run — a circular remedy aimed at the
+// exact audience the gate was supposed to help.
+//
+// This asserts the WRITE LANDS, not merely that no error came back: a gate
+// that refused silently would satisfy a status-only assertion.
+func TestPatchItemFieldsPatchStillWritesGitHubPR(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, map[string]interface{}{
+		"fields_patch": map[string]interface{}{
+			models.ItemFieldGitHubPR: map[string]any{"number": 1160, "url": "https://example.test/pr/1160"},
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("github_pr must remain writable through fields_patch — remote MCP has no other way to link a PR; got %d: %s",
+			rr.Code, rr.Body.String())
+	}
+	got := getItemFields(t, srv, slug, item.Slug)
+	pr, ok := got[models.ItemFieldGitHubPR].(map[string]any)
+	if !ok {
+		t.Fatalf("github_pr did not persist: %#v", got[models.ItemFieldGitHubPR])
+	}
+	if pr["url"] != "https://example.test/pr/1160" {
+		t.Errorf("github_pr value not stored verbatim: %#v", pr)
 	}
 }
 
@@ -303,10 +334,17 @@ func TestPatchItemFullFieldsStillWritesReservedKeys(t *testing.T) {
 // why it needs a test rather than vigilance. This forces the author to make
 // the "no remedy exists" call DELIBERATELY by adding the key here.
 func TestReservedFieldTablesAreExhaustive(t *testing.T) {
-	// Keys whose remedy is deliberately empty because no user-facing write
-	// path maintains them. Adding a key here is the deliberate call.
+	// Keys whose remedy is deliberately empty. Adding a key here is the
+	// deliberate call, and each needs its own reason:
+	//
+	//   - convention — written at activation / create time, with no update
+	//     path to name.
+	//   - github_pr — never refused by the patch gate at all
+	//     (items.PatchRefusedFieldKeysIn exempts it), so a remedy here would
+	//     be advice for a rejection that cannot happen.
 	noRemedy := map[string]bool{
 		models.ItemFieldConvention: true,
+		models.ItemFieldGitHubPR:   true,
 	}
 
 	for _, key := range models.ReservedItemFieldKeys() {

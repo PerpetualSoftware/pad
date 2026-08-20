@@ -554,11 +554,22 @@ const CmdhelpVersion = "0.1"
 //     v0.22 grounds — no tool, action enum, or param shape changed.
 //
 //     (1) `pad_item.action=update` REFUSES a `field` setter naming
-//     system metadata (implementation_notes, decision_log, github_pr,
-//     convention), where it previously wrote it. HTTP answers 400
-//     `validation_error`; MCP clients see that as `validation_failed`,
-//     which is the code the catalog and instructions.md name, since
-//     that is the one an agent branches on. v0.22 closed the same door on move/copy field
+//     implementation_notes, decision_log or convention, where it
+//     previously wrote it. HTTP answers 400 `validation_error`; MCP
+//     clients see that as `validation_failed`, which is the code the
+//     catalog and instructions.md name, since that is the one an agent
+//     branches on.
+//
+//     `github_pr` is deliberately NOT refused, and the exception is
+//     load-bearing rather than a soft edge. The rule being applied is
+//     "a raw write is refused where a real writer exists"; for the
+//     other three that writer reaches every surface, and for github_pr
+//     it does not — `pad github link` needs a local git checkout and
+//     the `gh` CLI, so it is excluded from remote MCP by name, and
+//     noRemoteEquivalent points remote agents at
+//     `item update --field github_pr=...` as the alternative. Refusing
+//     it would have deleted a documented capability and answered with a
+//     message naming a command that audience cannot run (Codex round 3). v0.22 closed the same door on move/copy field
 //     OVERRIDES; this closes it on the ordinary update, which is the
 //     door agents actually reach for. Server-side in the fields_patch
 //     gate, so it lands on BOTH transports at once — remote posts

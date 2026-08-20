@@ -1198,19 +1198,24 @@ func reservedFieldLabel(key string) string {
 // renders as a plain refusal rather than inventing a command; an unhelpful-but-
 // true message beats a confident wrong one.
 //
-// Every remedy here was run against `--help` when it was written. `convention`
-// deliberately has none: its metadata is stamped at activation / create time
-// (models.BuildConventionItemFields), and a convention item's user-facing
-// trigger / scope / priority are ORDINARY schema fields, so `pad item update
-// --field trigger=always` is unaffected by this gate and needs no mention.
+// Every remedy here was run against `--help` when it was written. Two keys
+// deliberately have none, for opposite reasons:
+//
+//   - `convention` — its metadata is stamped at activation / create time
+//     (models.BuildConventionItemFields), and a convention item's user-facing
+//     trigger / scope / priority are ORDINARY schema fields, so `pad item
+//     update --field trigger=always` is unaffected by this gate.
+//   - `github_pr` — it never reaches this message at all. The patch door does
+//     not refuse it (items.PatchRefusedFieldKeysIn exempts it, because on
+//     remote MCP that door is its only writer), so naming `pad github link`
+//     here would be prescribing a command for a refusal that cannot happen —
+//     and prescribing it to the one audience that cannot run it.
 func reservedFieldRemedy(key string) string {
 	switch key {
 	case models.ItemFieldImplementationNotes:
 		return "`pad item note <ref> \"<summary>\"` (MCP: pad_item action=note)"
 	case models.ItemFieldDecisionLog:
 		return "`pad item decide <ref> \"<decision>\"` (MCP: pad_item action=decide)"
-	case models.ItemFieldGitHubPR:
-		return "`pad github link <ref>` / `pad github unlink <ref>`"
 	}
 	return ""
 }

@@ -87,6 +87,58 @@ func TestStructuredFieldIsAppendableAgreesWithTheGuard(t *testing.T) {
 	}
 }
 
+// TestAppendSurvivesAMalformedOuterBlob — Codex round 3, P2.
+//
+// parseMutableItemFields unmarshalled a literal `null` into a NIL map with no
+// error, and both Append* helpers then assign into whatever they get back — so
+// `pad item note` against an item whose fields column holds "null" PANICKED
+// with "assignment to entry in nil map" instead of appending. Reproduced before
+// the fix.
+//
+// The predicate says such an item is appendable, which is the right answer; it
+// is the append that had to be made true. The other malformed outer shapes
+// (an array, garbage) return a clean error and must keep doing so — a panic and
+// an error are not interchangeable to a caller, and the whole point here is
+// that a caller told "use pad item note" gets something it can act on.
+func TestAppendSurvivesAMalformedOuterBlob(t *testing.T) {
+	cases := []struct {
+		name      string
+		fields    string
+		wantError bool
+	}{
+		{"literal null", `null`, false},
+		{"empty string", ``, false},
+		{"empty object", `{}`, false},
+		{"array instead of object", `[]`, true},
+		{"not json at all", `not json`, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A panic fails the test rather than taking the process with it.
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("AppendImplementationNote panicked on fields=%q: %v", tc.fields, r)
+				}
+			}()
+
+			out, err := AppendImplementationNote(tc.fields, ItemImplementationNote{ID: "n1", Summary: "s"})
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("fields=%q: expected an error, got out=%q", tc.fields, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("fields=%q: unexpected error: %v", tc.fields, err)
+			}
+			if notes := ExtractItemImplementationNotes(out); len(notes) != 1 {
+				t.Fatalf("fields=%q: expected the note to land, got %d entries in %q", tc.fields, len(notes), out)
+			}
+		})
+	}
+}
+
 // TestStructuredFieldIsAppendableIgnoresForeignKeys pins the scoping: an
 // unreadable value under one key must not make a DIFFERENT key look
 // unappendable, or a decision_log refusal would blame implementation_notes.
