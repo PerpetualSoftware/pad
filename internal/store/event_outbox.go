@@ -123,17 +123,30 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	if ev.OccurredAt == "" {
 		ev.OccurredAt = now()
 	}
-	if ev.SubjectKind == "" {
-		kind, ok := kernelevents.SubjectKind(ev.EventType)
-		if !ok {
-			// Unreachable: IsCanonical above already established membership,
-			// and both answers come from the same map. Guarded anyway so a
-			// future split of those two lookups cannot silently write rows
-			// with an empty subject_kind.
-			return fmt.Errorf("outbox: no subject kind for canonical event %q", ev.EventType)
-		}
-		ev.SubjectKind = kind
+	// SUBJECT KIND IS DERIVED, NEVER TRUSTED. It is a pure function of the
+	// event name, so a caller-supplied value can only ever agree with the
+	// taxonomy or be wrong — and a wrong one persists silently and misroutes
+	// the event at drain time (Codex round 9). Before this, a non-empty value
+	// was taken as given, so `item.created` could be stored with
+	// subject_kind "comment" and nothing would notice; every test happened to
+	// pass either the correct value or none, which is exactly the blind spot
+	// that lets a bug like this survive eight review rounds.
+	kind, ok := kernelevents.SubjectKind(ev.EventType)
+	if !ok {
+		// Unreachable: IsCanonical above already established membership, and
+		// both answers come from the same map. Guarded anyway so a future
+		// split of those two lookups cannot silently write rows with an empty
+		// subject_kind.
+		return fmt.Errorf("outbox: no subject kind for canonical event %q", ev.EventType)
 	}
+	// A caller that supplied a DIFFERENT kind believes something false about
+	// the taxonomy. Silently correcting it would fix this row and leave the
+	// belief in place, so it is an error rather than an overwrite.
+	if ev.SubjectKind != "" && ev.SubjectKind != kind {
+		return fmt.Errorf("outbox: event %s has subject kind %q, want %q",
+			ev.EventType, ev.SubjectKind, kind)
+	}
+	ev.SubjectKind = kind
 
 	_, err := tx.Exec(s.q(`
 		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at)

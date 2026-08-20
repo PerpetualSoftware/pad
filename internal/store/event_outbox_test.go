@@ -1232,3 +1232,51 @@ func TestOutbox_VariantClaimEmitsNothing(t *testing.T) {
 			"announce its removal", got)
 	}
 }
+
+// TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted pins the round-9 finding.
+//
+// subject_kind is a pure function of the event name, so a caller-supplied
+// value can only agree with the taxonomy or be wrong — and a wrong one used to
+// persist silently and would misroute the event at drain time. Every earlier
+// test passed either the correct value or none, which is precisely why this
+// survived eight rounds of review.
+func TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox subject kind")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	// A mismatched kind is refused rather than stored.
+	err = writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   kernelevents.ItemCreated,
+		SubjectKind: kernelevents.SubjectComment,
+		SubjectID:   "mismatched",
+		Payload:     []byte(`{"id":"mismatched"}`),
+	})
+	if err == nil {
+		t.Fatalf("writeOutboxTx stored item.created under subject kind %q; the drain would "+
+			"route it as a comment", kernelevents.SubjectComment)
+	}
+
+	// An omitted kind is filled in from the taxonomy.
+	if err := writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   kernelevents.ItemCreated,
+		SubjectID:   "derived",
+		Payload:     []byte(`{"id":"derived"}`),
+	}); err != nil {
+		t.Fatalf("writeOutboxTx with no subject kind: %v", err)
+	}
+	var kind string
+	if err := tx.QueryRow(s.q(`SELECT subject_kind FROM event_outbox WHERE subject_id = ?`), "derived").Scan(&kind); err != nil {
+		t.Fatalf("read subject kind: %v", err)
+	}
+	if kind != kernelevents.SubjectItem {
+		t.Fatalf("subject_kind = %q, want %q", kind, kernelevents.SubjectItem)
+	}
+}
