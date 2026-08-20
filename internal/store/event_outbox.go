@@ -190,6 +190,51 @@ type itemEventPayload struct {
 	PriorStatus *string `json:"prior_status,omitempty"`
 }
 
+// scrubItemPII returns a copy of the item with the JOIN-POPULATED assignee
+// identity removed, for storage in an event payload.
+//
+// An outbox payload is a FROZEN snapshot that outlives its subject by design.
+// Account deletion's de-identify posture (DeleteAccountAtomic) nulls
+// comments.user_id, items.created_by_user_id and so on precisely so a departed
+// user's identity stops being readable while the rows survive — but it reaches
+// only LIVE rows. A frozen payload keeps whatever it captured, so an assignee's
+// NAME AND EMAIL ADDRESS would remain legible in the outbox after the account
+// that owned them was deleted, and today nothing drains or prunes the table.
+//
+// THE RULE APPLIED, stated as the rule rather than as a proxy for it: remove
+// DIRECTLY IDENTIFYING personal data — a human name, an email address — and
+// keep opaque identifiers and row state. assigned_user_id stays: a binding
+// predicate filters on it, and after the account is gone it is a dangling
+// reference to nobody rather than a way to identify anyone. The name and email
+// are denormalized lookups a consumer can resolve for itself if it is
+// entitled to.
+//
+// Deliberately NOT scrubbed: collection_*/ref and the parent fields, which are
+// derived metadata rather than identity — predicates address items by
+// collection, so removing them would cost real expressiveness for no privacy
+// gain.
+//
+// POPULATION, enumerated rather than fixed one instance at a time (CONVE-18).
+// Five payload shapes carry data into the outbox:
+//
+//	item (single)   — JOIN-populated assignee name + email. SCRUBBED, here.
+//	item (bulk)     — same snapshots, same scrub, applied in itemSnapshotsTx.
+//	comment         — `author` is the comments table's OWN column, and account
+//	                  de-identification does not clear it on live rows either
+//	                  (it nulls user_id only), so a frozen copy is no more
+//	                  legible than the live row. Left alone deliberately.
+//	attachment      — uploaded_by, the attachments table's own column. Same.
+//	member.joined   — user_id only, an opaque identifier.
+//
+// So exactly one shape needed scrubbing, and the reason it stood out is that
+// it was the only one carrying a JOIN rather than the row.
+func scrubItemPII(item *models.Item) *models.Item {
+	clone := *item
+	clone.AssignedUserName = ""
+	clone.AssignedUserEmail = ""
+	return &clone
+}
+
 // emitItemEventTx writes one item-subject event to the outbox on the caller's
 // transaction, carrying the post-mutation snapshot.
 //
@@ -204,7 +249,8 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 	if item == nil {
 		return fmt.Errorf("outbox: %s has no item snapshot", eventType)
 	}
-	payload, err := marshalEventPayload(itemEventPayload{Item: item, PriorStatus: priorStatus})
+	snapshot := scrubItemPII(item)
+	payload, err := marshalEventPayload(itemEventPayload{Item: snapshot, PriorStatus: priorStatus})
 	if err != nil {
 		return err
 	}
@@ -433,7 +479,11 @@ func (s *Store) itemSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error
 			// placeholder would put a shape in the payload that never existed.
 			continue
 		}
-		out = append(out, item)
+		// Same scrub the single-item events get — a bulk payload is no less
+		// durable, and this is the SECOND of the two places item snapshots
+		// enter a payload. Population: 2 producers (emitItemEventTx, here),
+		// both scrubbed.
+		out = append(out, scrubItemPII(item))
 	}
 	return out, nil
 }

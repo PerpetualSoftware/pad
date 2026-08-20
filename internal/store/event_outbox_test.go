@@ -996,3 +996,50 @@ func TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus(t *testing.T) {
 		t.Fatalf("prior_status present on item.updated, where there is no prior status to report")
 	}
 }
+
+// TestOutbox_PayloadsOmitAssigneeIdentity pins the privacy-lifecycle property.
+//
+// An outbox payload is a frozen snapshot that outlives its subject by design.
+// Account deletion's de-identify pass nulls user identity on LIVE rows so a
+// departed user stops being legible; it cannot reach a frozen payload. If the
+// payload captured the assignee's name and email, those would stay readable in
+// the outbox after the account was deleted — and today nothing drains or prunes
+// the table.
+func TestOutbox_PayloadsOmitAssigneeIdentity(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox PII")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	user := createTestUser(t, s, "assignee@example.com", "Assignee Person", "pw-assignee-123")
+	if err := s.AddWorkspaceMember(ws.ID, user.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	item := createTestItem(t, s, ws.ID, col.ID, "Assigned", "body")
+	clearOutbox(t, s)
+
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{AssignedUserID: &user.ID}); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	payload := outboxPayloadFor(t, s, item.ID, kernelevents.ItemUpdated)
+
+	// The item's OWN column stays — a predicate filters on it and it is an
+	// opaque id, not personal data.
+	if payload["assigned_user_id"] != user.ID {
+		t.Fatalf("assigned_user_id = %v, want %s — the item's own column must survive the scrub",
+			payload["assigned_user_id"], user.ID)
+	}
+	// The join-populated identity must not.
+	for _, key := range []string{"assigned_user_name", "assigned_user_email"} {
+		if v, present := payload[key]; present {
+			t.Fatalf("payload carries %s = %v; a frozen snapshot keeps it legible after the "+
+				"account is deleted, which the de-identify pass cannot reach", key, v)
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "assignee@example.com") {
+		t.Fatalf("payload contains the assignee's email address anywhere: %s", raw)
+	}
+}
