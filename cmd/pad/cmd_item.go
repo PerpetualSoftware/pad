@@ -1280,7 +1280,7 @@ Examples:
 	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is silently ignored, it does NOT clear — use --clear-parent")
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
-	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set a field (repeatable): --field key=value; system metadata (implementation_notes, decision_log, github_pr, convention) is refused — use `pad item note` / `pad item decide` / `pad github link`")
+	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set a field (repeatable): --field key=value; system metadata is refused — implementation_notes via `pad item note`, decision_log via `pad item decide`, github_pr via `pad github link`, convention via `pad library activate`")
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "set the item's sort_order rank (lower appears first; used by child lists and drag-reorder)")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")

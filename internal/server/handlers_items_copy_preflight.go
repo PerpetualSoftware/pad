@@ -1261,7 +1261,7 @@ func reservedFieldPatchMessage(keys []string, currentFields string) string {
 		}
 		if appendBackedReservedKey(k) {
 			anyAppendBacked = true
-			if !structuredFieldIsReadable(currentFields, k) {
+			if !models.StructuredFieldIsAppendable(currentFields, k) {
 				anyUnreadable = true
 				fmt.Fprintf(&b, " %s cannot be repaired from here: its stored value on this item"+
 					" is already unreadable, so %s refuses as well (that refusal is what stops the"+
@@ -1285,31 +1285,4 @@ func reservedFieldPatchMessage(keys []string, currentFields string) string {
 			" repairing it takes a full `fields` write, which no CLI flag exposes today.")
 	}
 	return b.String()
-}
-
-// structuredFieldIsReadable reports whether the item's stored value for key
-// decodes as a list of entries — i.e. whether the append helpers would accept
-// an append rather than refusing (BUG-2627 part 3).
-//
-// Deliberately permissive about everything except the one shape that matters:
-// an absent key, an explicit null and an empty array are all appendable, which
-// mirrors assertStructuredFieldAppendable's cases 1-3. Only a value that fails
-// to decode into a list is "unreadable" here, and only that reading changes the
-// message.
-func structuredFieldIsReadable(fieldsJSON, key string) bool {
-	if fieldsJSON == "" || fieldsJSON == "{}" {
-		return true
-	}
-	var blob map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(fieldsJSON), &blob); err != nil {
-		// The whole blob is unparseable — a different and rarer problem than
-		// this message is about. Don't claim anything about one key inside it.
-		return true
-	}
-	raw, ok := blob[key]
-	if !ok {
-		return true
-	}
-	var entries []json.RawMessage
-	return json.Unmarshal(raw, &entries) == nil
 }

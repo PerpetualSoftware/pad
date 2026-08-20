@@ -600,6 +600,43 @@ func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string
 	return nil
 }
 
+// StructuredFieldIsAppendable reports whether an append to key would be
+// ACCEPTED on an item carrying fieldsJSON — i.e. whether the Append* helpers
+// would proceed rather than refusing with ErrStructuredFieldUnreadable.
+//
+// It exists so a caller that wants to TALK about appendability asks the same
+// question the guard answers, instead of re-deriving it. BUG-2627 part 2's
+// refusal message names `pad item note` as the remedy, which is a lie whenever
+// that command would itself refuse; the message therefore has to agree with the
+// guard EXACTLY, and a second decode written to look equivalent is not exact.
+// Codex round 2 caught a first version of it that decoded into
+// []json.RawMessage: a stored `[1]` passed there and failed the real guard, so
+// the message prescribed a command that refuses.
+//
+// The entry type per key matches the matching Extract*, for the reason
+// assertStructuredFieldAppendable documents at length: json ignores unknown
+// fields, so the WRONG-but-compiling instantiation silently permits what the
+// extractor rejects.
+//
+// A fieldsJSON that will not parse at all returns true. That is a different and
+// rarer problem than this predicate is about, and claiming "unappendable" for a
+// blob nobody can read would put a specific wrong explanation in front of a
+// user instead of no explanation.
+func StructuredFieldIsAppendable(fieldsJSON, key string) bool {
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return true
+	}
+	switch key {
+	case ItemFieldImplementationNotes:
+		return assertStructuredFieldAppendable[ItemImplementationNote](fieldsMap, key) == nil
+	case ItemFieldDecisionLog:
+		return assertStructuredFieldAppendable[ItemDecisionLogEntry](fieldsMap, key) == nil
+	}
+	// No append helper owns this key, so nothing can refuse an append to it.
+	return true
+}
+
 func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {

@@ -371,6 +371,16 @@ func envelopeFrom(res *mcp.CallToolResult) ErrorEnvelope {
 // bumping both packages and reviewing the allow-list.
 const structuredErrorMarker = "pad-structured-error/v1: "
 
+// storedStateUnreadableHint mirrors cli.StoredStateUnreadableHint — duplicated
+// for the same reason structuredErrorMarker is, and pinned equal to it by
+// TestCLIAndMCPAgreeOnTheCodeString. Both transports hand the agent the same
+// guidance: HTTP builds the envelope from this constant, stdio lifts the CLI's
+// copy off the marker line.
+const storedStateUnreadableHint = "Retrying will not help — the item's stored value has been undecodable since it was written, " +
+	"so every attempt refuses identically. Read the raw value with `pad_item` action=get (or " +
+	"`pad item show <ref> --format json` at the CLI), repair it, then re-run this call. " +
+	"Do not route around the refusal: completing the append would overwrite the stored value."
+
 // allowedStructuredErrorCodes is the whitelist of upstream codes the
 // MCP layer will surface verbatim. Two transports consult it:
 //
@@ -441,6 +451,7 @@ func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
 		Error struct {
 			Code    string          `json:"code"`
 			Message string          `json:"message"`
+			Hint    string          `json:"hint,omitempty"`
 			Details json.RawMessage `json:"details,omitempty"`
 		} `json:"error"`
 	}
@@ -456,9 +467,15 @@ func extractStructuredCLIError(stderr string) *mcp.CallToolResult {
 		// Unknown code. Don't forward — regex classifier handles it.
 		return nil
 	}
+	// Hint is forwarded when the writer set one (BUG-2675, Codex round 2).
+	// Without this the two transports delivered the same CODE and different
+	// guidance: remote MCP told the agent retrying is pointless and how to
+	// inspect the item, stdio got an empty hint. The existing marker writers
+	// set no hint, so they are unaffected.
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrorCode(env.Error.Code),
 		Message: env.Error.Message,
+		Hint:    env.Error.Hint,
 		Details: env.Error.Details,
 	})
 }
@@ -1308,10 +1325,7 @@ func structuredAppendErrorResult(cmdKey, op string, err error) *mcp.CallToolResu
 	return NewErrorResult(ErrorPayload{
 		Code:    ErrStoredStateUnreadable,
 		Message: fmt.Sprintf("%s refused: %s", cmdKey, err.Error()),
-		Hint: "Retrying will not help — the item's stored value has been undecodable since it was written, " +
-			"so every attempt refuses identically. Read the raw value with `pad_item` action=get (or " +
-			"`pad item show <ref> --format json` at the CLI), repair it, then re-run this call. " +
-			"Do not route around the refusal: completing the append would overwrite the stored value.",
+		Hint:    storedStateUnreadableHint,
 	})
 }
 

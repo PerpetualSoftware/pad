@@ -87,6 +87,19 @@ func TestStdioSurfacesStoredStateUnreadable(t *testing.T) {
 	if !strings.Contains(env.Error.Message, models.ItemFieldDecisionLog) {
 		t.Errorf("message must carry the refusal text; got: %s", env.Error.Message)
 	}
+	// Codex round 2: the same CODE with different GUIDANCE per transport is
+	// the same gap as a code only one transport emits. Compared against the
+	// HTTP path's envelope rather than against a literal, so the assertion
+	// fails if either side changes alone.
+	httpEnv := structuredAppendErrorResult("item decide", "append decision", refusal).
+		StructuredContent.(ErrorEnvelope)
+	if env.Error.Hint != httpEnv.Error.Hint {
+		t.Errorf("stdio hint differs from the HTTP hint for the same condition:\n stdio: %q\n http:  %q",
+			env.Error.Hint, httpEnv.Error.Hint)
+	}
+	if env.Error.Hint == "" {
+		t.Error("hint is empty on both transports — the retry-hostile guidance is the point of the code")
+	}
 
 	// The human line must survive too — a marker-only stderr would leave a
 	// person running the CLI staring at a JSON blob.
@@ -106,6 +119,10 @@ func TestCLIAndMCPAgreeOnTheCodeString(t *testing.T) {
 		t.Fatalf("cli.StoredStateUnreadableCode = %q, mcp.ErrStoredStateUnreadable = %q — "+
 			"the stdio marker would be dropped as an unknown code",
 			cli.StoredStateUnreadableCode, ErrStoredStateUnreadable)
+	}
+	if cli.StoredStateUnreadableHint != storedStateUnreadableHint {
+		t.Errorf("the duplicated hint constants have drifted:\n cli: %q\n mcp: %q",
+			cli.StoredStateUnreadableHint, storedStateUnreadableHint)
 	}
 	if _, allowed := allowedStructuredErrorCodes[string(ErrStoredStateUnreadable)]; !allowed {
 		t.Fatal("stored_state_unreadable missing from allowedStructuredErrorCodes — " +

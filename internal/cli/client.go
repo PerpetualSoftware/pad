@@ -1512,6 +1512,19 @@ func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictD
 // the stdio transport surface it instead of collapsing it to server_error.
 const StoredStateUnreadableCode = "stored_state_unreadable"
 
+// StoredStateUnreadableHint is the recovery guidance that rides along with the
+// code. It is duplicated in internal/mcp (which does not import this package in
+// production code, for the same dependency-graph reason StructuredErrorMarker
+// is duplicated); TestCLIAndMCPAgreeOnTheCodeString asserts the two match.
+//
+// It exists as a constant rather than being left to each transport because a
+// hint the remote transport delivers and the stdio one does not is the same
+// class of gap as a code only one transport emits (Codex round 2).
+const StoredStateUnreadableHint = "Retrying will not help — the item's stored value has been undecodable since it was written, " +
+	"so every attempt refuses identically. Read the raw value with `pad_item` action=get (or " +
+	"`pad item show <ref> --format json` at the CLI), repair it, then re-run this call. " +
+	"Do not route around the refusal: completing the append would overwrite the stored value."
+
 // WriteStoredStateUnreadableError formats a local refusal to w in the canonical
 // two-track shape, mirroring WriteOpenChildrenError / WriteUpdateConflictError:
 //
@@ -1531,6 +1544,7 @@ func WriteStoredStateUnreadableError(w io.Writer, err error) {
 		"error": map[string]any{
 			"code":    StoredStateUnreadableCode,
 			"message": err.Error(),
+			"hint":    StoredStateUnreadableHint,
 		},
 	}
 	if data, mErr := json.Marshal(envelope); mErr == nil {
