@@ -335,6 +335,27 @@ func TestWriteOutboxTx_DropsPastCascadeBound(t *testing.T) {
 	}
 	defer tx.Rollback()
 
+	// A caller-supplied occurred_at is IGNORED — the write stamps it. SPEC-3
+	// pins time-relative predicates to this value, so accepting one would let
+	// a caller silently change how a predicate evaluates.
+	if err := writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: ws.ID,
+		EventType:   kernelevents.ItemCreated,
+		SubjectID:   "stamped",
+		Payload:     []byte(`{"id":"stamped"}`),
+		OccurredAt:  "1999-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("writeOutboxTx: %v", err)
+	}
+	var stamped string
+	if err := tx.QueryRow(s.q(`SELECT occurred_at FROM event_outbox WHERE subject_id = ?`), "stamped").Scan(&stamped); err != nil {
+		t.Fatalf("read occurred_at: %v", err)
+	}
+	if stamped == "1999-01-01T00:00:00Z" {
+		t.Fatalf("occurred_at was taken from the caller; a supplied timestamp silently changes " +
+			"how `within` predicates evaluate")
+	}
+
 	// At the bound: written. Past it: dropped, and NOT an error — the
 	// mutation itself was legitimate, only the cascade it would extend is
 	// not (SPEC-3 §L5).

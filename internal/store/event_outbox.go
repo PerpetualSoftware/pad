@@ -120,9 +120,25 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	if ev.ID == "" {
 		ev.ID = newID()
 	}
-	if ev.OccurredAt == "" {
-		ev.OccurredAt = now()
-	}
+	// occurred_at is STAMPED HERE, never accepted from the caller — same
+	// reasoning as subject_kind, applied to the rest of the class rather than
+	// waiting for a review to name the next member (CONVE-18).
+	//
+	// SPEC-3 §Bindings pins time-relative predicates (`within`) to this value,
+	// so a wrong one silently changes how a predicate evaluates — the same
+	// shape of silent harm a wrong subject_kind causes at routing time. No
+	// caller sets it today, and "the moment the event was written" is the only
+	// honest value while the write is transactional with the mutation.
+	//
+	// The enumeration, so the next reader does not have to redo it: of the
+	// eight fields on OutboxEvent, event_type is validated against the closed
+	// set, payload is validated as non-empty JSON, hop is bounded, subject_kind
+	// and occurred_at are derived, and id defaults but fails LOUDLY on a
+	// duplicate (primary key). That leaves workspace_id and subject_id as
+	// genuine caller inputs — neither is derivable, both are checked at their
+	// own call sites, and the bulk emitter partitions rather than trusting the
+	// workspace it is handed.
+	ev.OccurredAt = now()
 	// SUBJECT KIND IS DERIVED, NEVER TRUSTED. It is a pure function of the
 	// event name, so a caller-supplied value can only ever agree with the
 	// taxonomy or be wrong — and a wrong one persists silently and misroutes
