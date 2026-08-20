@@ -412,6 +412,54 @@ func TestRedisBusNotificationSurvivesTheJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRedisBusReplayReportsAHoleAsAGap — codex round 3.
+//
+// MemoryBus assigns every id itself, so its replay buffer is contiguous by
+// construction and the ONLY gap it can report is eviction. RedisBus receives
+// ids over at-most-once pub/sub, so it can miss one: buffer holds 100 and 102,
+// is nowhere near full, and the underlying replayBuffer.since() would answer a
+// resume from 100 with just [102] — losing 101 silently, with no sync_required
+// for the consumer to act on.
+//
+// The assertion is on the RESUME THAT SPANS THE HOLE returning nil, and — the
+// part that keeps it from being over-broad — on the resumes that do NOT span
+// it still working. A bus that answered nil to everything after one hole would
+// satisfy the first half alone.
+func TestRedisBusReplayReportsAHoleAsAGap(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+
+	b.fanOutLocally(Notification{ID: 99, Kind: KindComment, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 100, Kind: KindComment, ItemRef: "TASK-1"})
+	// 101 is never received — the subscription blipped.
+	b.fanOutLocally(Notification{ID: 102, Kind: KindComment, ItemRef: "TASK-1"})
+
+	if got := b.EventsSince(100); got != nil {
+		t.Errorf("a resume from 100 must span the missing 101 and report a gap; got %+v", got)
+	}
+	if got := b.EventsSince(99); got != nil {
+		t.Errorf("a resume from 99 also spans the hole; got %+v", got)
+	}
+
+	// Resumes that do not span the hole still work.
+	after := b.EventsSince(101)
+	if after == nil {
+		t.Fatal("a resume from 101 does not span the hole and must replay normally, not report a gap")
+	}
+	if len(after) != 1 || after[0].ID != 102 {
+		t.Errorf("resume from 101: got %+v, want just id 102", after)
+	}
+	if latest := b.EventsSince(102); len(latest) != 0 {
+		t.Errorf("resume from the newest id should be caught-up-empty, got %+v", latest)
+	}
+
+	// And a fresh subscriber (sinceID 0) is not resuming from a position, so
+	// it must not be handed a gap signal for a hole it never spanned.
+	if fresh := b.EventsSince(0); fresh == nil {
+		t.Error("sinceID=0 is a fresh subscriber, not a resume; it must not report a gap")
+	}
+}
+
 // TestRedisBusDecodePayloadRoundTrip covers the wire format publishScript
 // introduced (Codex round 1 P1): the id is assigned inside the Lua script and
 // prepended as "<id>|<json>", so the publisher never knows it and the receiver

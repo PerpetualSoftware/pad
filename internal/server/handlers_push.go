@@ -67,6 +67,21 @@ type pushResponse struct {
 	// and, for a targeted push, skips the publish entirely when the
 	// target isn't in that snapshot — see its doc comment — so a 0 here
 	// is never a race, it's a guarantee: nothing was sent.
+	//
+	// THAT GUARANTEE IS PER-PROCESS, and in a Redis-backed deployment
+	// that makes this count wrong in BOTH directions for a BROADCAST push
+	// (BUG-2651, codex round 3). The count comes from the local presence
+	// registry while the bus now delivers everywhere: with one armed
+	// session on each of two replicas, the replica handling the POST
+	// reports 1 and two sessions receive it; with none of its own, it
+	// reports 0 while a remote session receives it anyway.
+	//
+	// Not corrected here, because the fix is not a better count — it is
+	// the shared-state SessionPresence that PLAN-2558 S3 already gates
+	// on. Any local arithmetic would just be a more elaborate way of
+	// asking one replica what all of them are doing. Targeted pushes do
+	// not have the over-report half of this problem, for the unhappy
+	// reason that the same locality stops them being published at all.
 	DeliveredSessions int `json:"delivered_sessions"`
 }
 

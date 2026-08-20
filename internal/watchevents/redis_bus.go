@@ -34,6 +34,20 @@ const (
 	// whenever the other published — harmless for ordering, but it would
 	// turn every replay-gap diagnosis into a question about the other bus.
 	redisWatchSeqKey = "pad:watchevents_seq"
+
+	// DEPLOYMENT SCOPING, or rather the lack of it (codex round 3). Both
+	// names above are fixed, so two Pad installations pointed at the SAME
+	// Redis endpoint cross-feed each other's notifications and share one id
+	// counter — and selecting different logical DBs does not help, because
+	// Redis pub/sub is not namespaced by DB at all.
+	//
+	// Left unscoped deliberately: internal/events has used flat `pad:events:`
+	// / `pad:event_seq` names since it shipped, and giving one of the two
+	// buses a prefix the other lacks would make the operational rule harder
+	// to state, not easier. The rule for now is the simple one — one Redis
+	// endpoint per Pad installation — and if that ever needs relaxing it
+	// should be relaxed for both buses at once, from shared config, rather
+	// than growing here first.
 )
 
 // publishScript assigns the next id and publishes, ATOMICALLY.
@@ -113,6 +127,27 @@ type RedisBus struct {
 	subscribers map[chan Notification]struct{}
 	replay      *replayBuffer
 	closed      bool
+
+	// lastAppendedID / contiguousFrom detect a HOLE in the received
+	// sequence, which is a failure mode MemoryBus structurally cannot have
+	// and this one can (codex round 3).
+	//
+	// MemoryBus assigns every id itself, so its buffer is contiguous by
+	// construction and replayBuffer.since()'s only gap case is eviction —
+	// the buffer being full and the caller asking for something older than
+	// the oldest entry. Here the ids come from Redis and the delivery is
+	// at-most-once: a subscription that blips can miss 101 and receive 102.
+	// The buffer then holds a hole, is NOT full, and since() happily answers
+	// a resume from 100 with just [102] — 101 silently lost, no
+	// sync_required, and the consumer never learns it missed a nudge.
+	//
+	// contiguousFrom records the id at which the sequence resumed after the
+	// most recent hole (0 = none seen). A resume that would have to span it
+	// is answered as a gap instead. The atomic publish script is what makes
+	// this readable: publish order equals id order globally, so a
+	// non-consecutive id means a message was MISSED rather than reordered.
+	lastAppendedID int64
+	contiguousFrom int64
 
 	pubsub *redis.PubSub
 	ctx    context.Context
@@ -225,7 +260,22 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		return ch, nil
 	}
 	b.subscribers[ch] = struct{}{}
-	return ch, b.replay.since(sinceID)
+	return ch, b.replaySince(sinceID)
+}
+
+// replaySince is replayBuffer.since plus the hole check. Callers must hold mu.
+//
+// Returning nil is the same signal eviction already produces, and the SSE
+// handler already treats it as sync_required — so a missed notification
+// becomes a resync rather than a silent loss, which is the behaviour a
+// consumer of MemoryBus would expect and get.
+func (b *RedisBus) replaySince(sinceID int64) []Notification {
+	// sinceID == 0 is a fresh subscriber asking for everything buffered; it
+	// is not resuming from a position, so there is no position to span.
+	if sinceID > 0 && b.contiguousFrom > 0 && sinceID+1 < b.contiguousFrom {
+		return nil
+	}
+	return b.replay.since(sinceID)
 }
 
 func (b *RedisBus) Unsubscribe(ch chan Notification) {
@@ -240,7 +290,7 @@ func (b *RedisBus) Unsubscribe(ch chan Notification) {
 func (b *RedisBus) EventsSince(sinceID int64) []Notification {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.replay.since(sinceID)
+	return b.replaySince(sinceID)
 }
 
 // Close stops the receive loop, closes the Redis subscription, and closes every
@@ -328,6 +378,16 @@ func decodePayload(payload string) (Notification, error) {
 func (b *RedisBus) fanOutLocally(n Notification) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// Hole detection before the append — see lastAppendedID's comment.
+	if b.lastAppendedID != 0 && n.ID != b.lastAppendedID+1 {
+		slog.Warn("watchevents: gap in the received notification sequence; resumes across it will report sync_required",
+			"expected", b.lastAppendedID+1, "got", n.ID)
+		b.contiguousFrom = n.ID
+	}
+	if n.ID > b.lastAppendedID {
+		b.lastAppendedID = n.ID
+	}
 
 	b.replay.append(n)
 
