@@ -634,8 +634,11 @@ func serveCmd() *cobra.Command {
 			srv.SetMetrics(m)
 			slog.Info("Prometheus metrics enabled at /metrics")
 
-			// Attach event bus for real-time SSE
+			// Attach event bus for real-time SSE. The client built here is
+			// shared with the watch bus below (BUG-2651) — nil when this is
+			// a single-instance deployment.
 			var eventBus events.EventBus
+			var watchRedis *redis.Client
 			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
 				opts, err := redis.ParseURL(redisURL)
 				if err != nil {
@@ -646,6 +649,7 @@ func serveCmd() *cobra.Command {
 					return fmt.Errorf("redis connection failed: %w", err)
 				}
 				eventBus = events.NewRedisBus(rc)
+				watchRedis = rc
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB)
 			} else {
 				eventBus = events.New()
@@ -655,12 +659,23 @@ func serveCmd() *cobra.Command {
 			eventBus = metrics.NewInstrumentedBus(eventBus, m)
 			srv.SetEventBus(eventBus)
 
-			// Watch/nudge notification bus (TASK-2533). In-process only —
-			// see internal/watchevents' package doc comment for the
-			// single-process/multi-instance limitation. No Redis-backed
-			// implementation exists yet, so this is unconditional (unlike
-			// eventBus above, which branches on PAD_REDIS_URL).
-			srv.SetWatchEventsBus(watchevents.New())
+			// Watch/nudge notification bus (TASK-2533), on the SAME
+			// PAD_REDIS_URL switch as the event bus above (BUG-2651).
+			// Reusing that client rather than dialing a second one: they
+			// address the same server, and one connection pool with two
+			// logical channels is the shape events already assumes.
+			//
+			// The branch is here rather than inside the package because a
+			// self-hosted single-process binary should keep MemoryBus and
+			// never touch Redis at all — see internal/watchevents' package
+			// doc for what each implementation does and does not fix.
+			if watchRedis != nil {
+				srv.SetWatchEventsBus(watchevents.NewRedisBus(watchRedis))
+				slog.Info("Watch notification bus using Redis pub/sub")
+			} else {
+				srv.SetWatchEventsBus(watchevents.New())
+				slog.Info("Watch notification bus using in-memory (single instance)")
+			}
 
 			// Live-session presence registry (PLAN-2558 S1). Wired
 			// unconditionally for the same reason and with the same

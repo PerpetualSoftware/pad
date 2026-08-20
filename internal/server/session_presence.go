@@ -30,26 +30,35 @@ import (
 // deployment (Pad Cloud) a session connected to instance A is invisible
 // to instance B, so /api/v1/sessions under-reports.
 //
-// The precise shape of that matters, because the obvious reading —
-// "presence lies about delivery" — is not quite it. watchevents.Bus has
-// the SAME per-process boundary: a push published on instance A never
-// reaches a stream held on instance B either. So presence and delivery
-// are blind in the same direction, and a request pair that lands on one
-// instance gets a presence answer that correctly predicts what a push
-// would do. What is NOT guaranteed is that the pair lands together — a
-// load balancer is free to route the POST and the GET to different
-// instances, and then the two disagree. So the honest statement is:
-// per-instance presence is as accurate as per-instance delivery, and
-// both stop being trustworthy at the same boundary, for the same
-// reason, and only a shared-state implementation fixes either.
+// THIS NOTE USED TO SAY presence and delivery were blind in the same
+// direction, and that the two had to be fixed together or not at all.
+// That was true when written and is no longer: BUG-2651 shipped
+// watchevents.RedisBus, so DELIVERY is now cross-instance — a push
+// published on A reaches a stream held on B, and B matches it against
+// its own live sessions, which is the only set B needs. What remains
+// per-process is exactly this registry, and it is worth being precise
+// about what that costs, because the two halves fail differently:
 //
-// Hence SessionPresence is an interface from day one: a Redis-backed
-// implementation must be able to slot in without touching the stream
-// handler or the endpoint — and it should land alongside the Redis
-// watchevents.Bus that package's doc comment already anticipates, not
-// separately, since fixing one without the other just moves the
-// disagreement. Do not put the web-UI push surface (PLAN-2558 S3) in
-// front of a multi-process deployment until both exist.
+//   - DELIVERY (fixed): a broadcast push — TargetUserID with no session
+//     id — used to reach only the sessions on whichever instance handled
+//     the POST. It now reaches all of that user's sessions. A
+//     session-targeted push likewise reaches the instance holding that
+//     session, wherever it is.
+//   - VISIBILITY (still open): GET /api/v1/sessions answers from ONE
+//     instance's registry, so a user whose session is held on B and who
+//     asks A sees nothing to target. That under-report is unchanged by
+//     BUG-2651 — it is neither better nor worse — so nothing regressed;
+//     a session a caller can SEE is by construction on the instance that
+//     listed it, and pushing to it works.
+//
+// So the remaining defect is a picker that under-reports, not a push
+// that lies. Do not put the web-UI push surface (PLAN-2558 S3) in front
+// of a multi-process deployment until a shared-state SessionPresence
+// exists: a picker that silently omits half a user's sessions is its own
+// kind of dishonest, even though every session it DOES list is real and
+// reachable. SessionPresence is an interface from day one so that
+// implementation can slot in without touching the stream handler or the
+// endpoint.
 
 // LiveSession is one currently-connected user-scoped event stream —
 // i.e. one `GET /api/v1/events/stream` connection being held open.

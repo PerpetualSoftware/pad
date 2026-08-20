@@ -7,19 +7,28 @@
 // predicate before anything reaches a client (DR-2: no firehose, no
 // wildcard subscriptions).
 //
-// SINGLE-PROCESS LIMITATION. Bus here is an in-process pub/sub, exactly
-// like internal/events.MemoryBus — and it has the same blind spot: in a
-// multi-process padd deployment, a Notification published on one
-// process is never seen by a stream connection held open on a
-// different process, and is silently dropped for that connection. This
-// is precisely why internal/events also ships a RedisBus for
-// multi-instance deployments (Pad Cloud runs that shape). Bus is
-// defined as an interface specifically so a Redis-backed implementation
-// can slot in later without changing any producer or the stream
-// handler; only MemoryBus is implemented in Phase 1. Do not point this
-// package at a multi-process deployment without that follow-up — the
-// local plugin monitor talking to a local, single-process padd is the
-// only supported Phase 1 consumer.
+// TWO IMPLEMENTATIONS, PICKED BY DEPLOYMENT SHAPE. MemoryBus is an
+// in-process pub/sub, exactly like internal/events.MemoryBus, and it has
+// the same blind spot: a Notification published on one process is never
+// seen by a stream connection held open on a different process, and is
+// silently dropped for that connection. RedisBus (BUG-2651, redis_bus.go)
+// closes that by routing every notification through one shared Redis
+// channel. cmd/pad/cmd_server.go picks between them on PAD_REDIS_URL,
+// the same switch the event bus already uses — so a self-hosted
+// single-process binary keeps MemoryBus and never grows a Redis
+// dependency.
+//
+// Bus was defined as an interface from Phase 1 precisely so this could
+// slot in without touching any producer or the stream handler, and that
+// held: RedisBus changed neither.
+//
+// STILL PER-PROCESS, and worth knowing before assuming multi-instance is
+// finished: internal/server's SessionPresence registry. RedisBus makes
+// DELIVERY cross-instance — a push published on A now reaches a stream on
+// B, and B matches it against its own live sessions — but the
+// GET /api/v1/sessions listing still reports only the answering
+// instance's connections. See session_presence.go's own note for which
+// half that leaves open.
 package watchevents
 
 import (
