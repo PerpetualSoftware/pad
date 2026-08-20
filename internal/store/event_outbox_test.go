@@ -575,3 +575,41 @@ func TestOutbox_MemberJoinedEmits(t *testing.T) {
 		t.Fatalf("payload workspace_id = %v, want %s", payload["workspace_id"], ws.ID)
 	}
 }
+
+// TestOutbox_CrossWorkspaceMoveEmitsSourceArchive pins the gap that made this
+// test exist.
+//
+// archiveItemForCopyTx deliberately REPRODUCES DeleteItem's UPDATE inside the
+// copy's own transaction rather than calling it, so that the archive is atomic
+// with the destination write. The consequence nobody had to think about before
+// TASK-2658 is that it does not inherit DeleteItem's emit either: without an
+// explicit one, a cross-workspace MOVE archives the source silently while an
+// ordinary archive of the same item announces itself. Invisible until something
+// consumes the outbox, at which point moves just stop being observable.
+func TestOutbox_CrossWorkspaceMoveEmitsSourceArchive(t *testing.T) {
+	f := newCopyFixture(t)
+	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Moving out", "body")
+	clearOutbox(t, f.s)
+
+	req := f.req()
+	req.SourceItemID = src.ID
+	req.ArchiveSource = true
+	res := f.copy(t, req)
+
+	if got := outboxEventsFor(t, f.s, src.ID); len(got) != 1 || got[0] != kernelevents.ItemDeleted {
+		t.Fatalf("source events = %v, want exactly [%s] — the move archived the source with no event",
+			got, kernelevents.ItemDeleted)
+	}
+
+	// The pre-archive snapshot must be the SOURCE's state, not the clone's.
+	payload := outboxPayloadFor(t, f.s, src.ID, kernelevents.ItemDeleted)
+	if payload["workspace_id"] != f.wsA.ID {
+		t.Fatalf("payload workspace_id = %v, want the SOURCE workspace %s", payload["workspace_id"], f.wsA.ID)
+	}
+
+	// And the destination item still emits its own creation, from the same
+	// transaction — the move is two canonical events, not one.
+	if got := outboxEventsFor(t, f.s, res.Item.ID); len(got) != 1 || got[0] != kernelevents.ItemCreated {
+		t.Fatalf("destination events = %v, want exactly [%s]", got, kernelevents.ItemCreated)
+	}
+}

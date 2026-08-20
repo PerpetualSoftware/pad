@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/items"
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -45,6 +46,17 @@ import (
 // FANOUT IS NOT HERE EITHER (DR-14). No activity row, no SSE publish, no
 // webhook. Emitting inside the transaction would leak an event for a copy that
 // then rolls back. The caller emits post-commit from CrossWorkspaceCopyResult.
+//
+// NARROWED BY TASK-2658, deliberately and without reversing DR-14's reasoning.
+// The transactional event OUTBOX is written here — by createItemTx for the
+// destination item, and by archiveItemForCopyTx for a move's source archive.
+// That is not fanout: it is the durable record that the mutation happened, and
+// it is exempt from DR-14's rationale rather than an exception to it. DR-14
+// refuses in-transaction emission because a rollback would leak an event; an
+// outbox row written on the SAME transaction rolls back WITH the copy, so the
+// leak DR-14 names cannot occur. The three things DR-14 actually lists —
+// activity row, SSE publish, webhook — still happen post-commit at the caller,
+// unchanged.
 
 // ErrCopyCrossBackendAttachments is returned when the copy would have to move
 // attachment BYTES between storage backends.
@@ -1113,6 +1125,24 @@ func (s *Store) archiveItemForCopyTx(tx *sql.Tx, workspaceID, itemID, ts string)
 	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
 		return 0, err
 	}
+
+	// The event has to be reproduced here for the SAME reason the archive is
+	// (TASK-2658). Because this path deliberately does not call DeleteItem, it
+	// does not inherit DeleteItem's item.deleted emit either — so a
+	// cross-workspace MOVE would archive the source with no event while an
+	// ordinary archive of the same item emits one. That asymmetry is invisible
+	// until something consumes the outbox, at which point moves silently stop
+	// being observable; catching it now is cheaper than discovering it as a
+	// missing-event bug later.
+	//
+	// Same ordering as DeleteItem: snapshot BEFORE the UPDATE, in-tx, while
+	// the row is still live (getItemTx filters archived rows), because SPEC-3
+	// requires the final pre-archive state.
+	preArchive, err := s.getItemTx(tx, itemID)
+	if err != nil {
+		return 0, fmt.Errorf("copy item across workspaces: read pre-archive snapshot: %w", err)
+	}
+
 	res, err := tx.Exec(s.q(`
 		UPDATE items SET deleted_at = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
 		WHERE id = ? AND deleted_at IS NULL
@@ -1131,6 +1161,12 @@ func (s *Store) archiveItemForCopyTx(tx *sql.Tx, workspaceID, itemID, ts string)
 		// happen.
 		return 0, fmt.Errorf("copy item across workspaces: source item %s was not archived", itemID)
 	}
+	if preArchive != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, ""); err != nil {
+			return 0, err
+		}
+	}
+
 	var seq int64
 	if err := tx.QueryRow(s.q(`SELECT seq FROM items WHERE id = ?`), itemID).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("copy item across workspaces: read archive seq: %w", err)
