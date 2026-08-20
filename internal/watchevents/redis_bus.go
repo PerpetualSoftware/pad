@@ -128,26 +128,34 @@ type RedisBus struct {
 	replay      *replayBuffer
 	closed      bool
 
-	// lastAppendedID / contiguousFrom detect a HOLE in the received
-	// sequence, which is a failure mode MemoryBus structurally cannot have
-	// and this one can (codex round 3).
+	// knownFrom / lastAppendedID bound what this instance can HONESTLY
+	// replay — a failure mode MemoryBus structurally cannot have and this
+	// one can (codex rounds 3 and 4).
 	//
 	// MemoryBus assigns every id itself, so its buffer is contiguous by
 	// construction and replayBuffer.since()'s only gap case is eviction —
 	// the buffer being full and the caller asking for something older than
-	// the oldest entry. Here the ids come from Redis and the delivery is
-	// at-most-once: a subscription that blips can miss 101 and receive 102.
-	// The buffer then holds a hole, is NOT full, and since() happily answers
-	// a resume from 100 with just [102] — 101 silently lost, no
-	// sync_required, and the consumer never learns it missed a nudge.
+	// the oldest entry. Here the ids come from Redis, and this instance's
+	// view has TWO ways of not covering what a client asks for:
 	//
-	// contiguousFrom records the id at which the sequence resumed after the
-	// most recent hole (0 = none seen). A resume that would have to span it
-	// is answered as a gap instead. The atomic publish script is what makes
-	// this readable: publish order equals id order globally, so a
-	// non-consecutive id means a message was MISSED rather than reordered.
+	//  1. A HOLE. Delivery is at-most-once, so a subscription that blips can
+	//     miss 101 and receive 102. The buffer then holds a hole, is nowhere
+	//     near full, and since() would answer a resume from 100 with just
+	//     [102] — 101 silently lost, no sync_required.
+	//  2. A COLD START, which the first version of this missed. A replica
+	//     that restarts while Redis is at 101 has an EMPTY buffer and no
+	//     lastAppendedID, so its first received message (say 102) recorded no
+	//     hole at all. A client reconnecting to it with Last-Event-ID 100
+	//     silently skipped 101 by exactly the same route.
+	//
+	// knownFrom collapses both: it is the lowest id from which this
+	// instance's buffer is contiguous. It is SET on the first append (before
+	// which we know nothing) and RESET on every hole (before which we no
+	// longer know anything usable). A resume from below it is answered as a
+	// gap. The atomic publish script is what makes a non-consecutive id
+	// readable as MISSED rather than merely reordered.
+	knownFrom      int64
 	lastAppendedID int64
-	contiguousFrom int64
 
 	pubsub *redis.PubSub
 	ctx    context.Context
@@ -272,7 +280,7 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 func (b *RedisBus) replaySince(sinceID int64) []Notification {
 	// sinceID == 0 is a fresh subscriber asking for everything buffered; it
 	// is not resuming from a position, so there is no position to span.
-	if sinceID > 0 && b.contiguousFrom > 0 && sinceID+1 < b.contiguousFrom {
+	if sinceID > 0 && b.knownFrom > 0 && sinceID+1 < b.knownFrom {
 		return nil
 	}
 	return b.replay.since(sinceID)
@@ -379,11 +387,15 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Hole detection before the append — see lastAppendedID's comment.
-	if b.lastAppendedID != 0 && n.ID != b.lastAppendedID+1 {
+	// Coverage bookkeeping before the append — see knownFrom's comment.
+	switch {
+	case b.lastAppendedID == 0:
+		// Cold start: this instance knows nothing before this id.
+		b.knownFrom = n.ID
+	case n.ID != b.lastAppendedID+1:
 		slog.Warn("watchevents: gap in the received notification sequence; resumes across it will report sync_required",
 			"expected", b.lastAppendedID+1, "got", n.ID)
-		b.contiguousFrom = n.ID
+		b.knownFrom = n.ID
 	}
 	if n.ID > b.lastAppendedID {
 		b.lastAppendedID = n.ID

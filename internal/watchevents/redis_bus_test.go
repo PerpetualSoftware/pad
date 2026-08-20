@@ -460,6 +460,41 @@ func TestRedisBusReplayReportsAHoleAsAGap(t *testing.T) {
 	}
 }
 
+// TestRedisBusColdStartReplayReportsAGap — codex round 4, the case the first
+// version of the hole check missed entirely.
+//
+// A replica that restarts while Redis is already at 101 has an empty buffer.
+// Its first received message might be 102, and because there is no previous id
+// to compare against, nothing looks like a hole. A client reconnecting to THAT
+// replica with Last-Event-ID 100 would have been handed [102] — skipping 101
+// as silently as the hole case, by a different route.
+func TestRedisBusColdStartReplayReportsAGap(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+
+	// This instance's first sight of the stream is id 102.
+	b.fanOutLocally(Notification{ID: 102, Kind: KindComment, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 103, Kind: KindComment, ItemRef: "TASK-1"})
+
+	if got := b.EventsSince(100); got != nil {
+		t.Errorf("a resume from 100 asks for 101, which this instance never saw; want a gap, got %+v", got)
+	}
+
+	// A resume from exactly the id before the first one we saw is contiguous
+	// with our view, so it must replay rather than resync — the boundary that
+	// separates this from an over-broad "always gap after a cold start".
+	if got := b.EventsSince(101); got == nil {
+		t.Fatal("a resume from 101 is contiguous with the first id we saw (102) and must replay")
+	} else if len(got) != 2 {
+		t.Errorf("resume from 101: got %d entries, want 102 and 103: %+v", len(got), got)
+	}
+
+	// And a fresh subscriber still gets what is buffered.
+	if fresh := b.EventsSince(0); len(fresh) != 2 {
+		t.Errorf("fresh subscriber: got %d entries, want 2: %+v", len(fresh), fresh)
+	}
+}
+
 // TestRedisBusDecodePayloadRoundTrip covers the wire format publishScript
 // introduced (Codex round 1 P1): the id is assigned inside the Lua script and
 // prepended as "<id>|<json>", so the publisher never knows it and the receiver
