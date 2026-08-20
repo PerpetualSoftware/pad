@@ -488,6 +488,44 @@ func (s *Store) itemSnapshotsTx(tx *sql.Tx, ids []string) ([]*models.Item, error
 	return out, nil
 }
 
+// refOnlyDeletionPayload is the wire shape of a hard-delete event
+// (comment.deleted, attachment.removed) — SPEC-3 v1.4.
+//
+// IDS AND PARENT REFS, NEVER CONTENT. A deletion event exists so a consumer
+// can reconcile its model; shipping the deleted body or an attachment's
+// storage key would hand out a durable copy of exactly what was removed. Every
+// field here is an identifier: nothing a consumer did not already receive on
+// the create event, and nothing that re-exposes the subject.
+type refOnlyDeletionPayload struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	ItemID      string `json:"item_id,omitempty"`
+	ParentID    string `json:"parent_id,omitempty"`
+}
+
+// emitRefOnlyDeletionTx writes one ref-only hard-delete event.
+//
+// Kept as its own helper rather than a flag on the existing emitters so the
+// ref-only shape cannot be reached with a full snapshot by accident: there is
+// no parameter here that could carry one.
+func (s *Store) emitRefOnlyDeletionTx(tx *sql.Tx, eventType, workspaceID, subjectID, itemID, parentID string) error {
+	payload, err := marshalEventPayload(refOnlyDeletionPayload{
+		ID:          subjectID,
+		WorkspaceID: workspaceID,
+		ItemID:      itemID,
+		ParentID:    parentID,
+	})
+	if err != nil {
+		return err
+	}
+	return writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID: workspaceID,
+		EventType:   eventType,
+		SubjectID:   subjectID,
+		Payload:     payload,
+	})
+}
+
 // itemDeltaExcludedKeys are the snapshot keys that must not count as a change
 // when deciding whether item.updated's slice moved.
 //

@@ -1004,8 +1004,46 @@ func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 // row-before-bytes contract and same IRREVOCABILITY note as
 // ClaimNeverAttachedAttachment: once true, no recovery surface can
 // bring the row back.
+// TASK-2658: a successful claim also emits the ref-only attachment.removed
+// event, in the SAME transaction as the delete.
+//
+// Only THIS claim path emits, and the asymmetry with
+// ClaimNeverAttachedAttachment is deliberate rather than an oversight. That
+// one reclaims rows that were NEVER attached to an item, and attachment.added
+// fires only for attachments written against a live item — so those rows never
+// announced their arrival, and announcing their removal would hand a consumer
+// a deletion for an id it has never seen. A soft-deleted row, by contrast, WAS
+// attached and did emit, so its removal closes a loop the consumer is holding
+// open.
+//
+// The transaction does not weaken the claim protocol (BUG-2415): the claim's
+// conditionality lives entirely in the DELETE's WHERE clause, which is
+// unchanged, and wrapping one conditional statement plus one INSERT in a
+// transaction leaves the row-before-bytes contract and the IRREVOCABILITY note
+// exactly as they were.
 func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bool, error) {
-	res, err := s.db.Exec(s.q(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("claim soft-deleted attachment: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Read the refs BEFORE the delete — afterwards there is no row to read
+	// them from. A missing row is not an error here: it means another sweep
+	// (or a restore) got there first, and the claim below will match zero rows
+	// and report false, which is the existing contract.
+	var workspaceID string
+	var itemID sql.NullString
+	refsKnown := true
+	switch err := tx.QueryRow(s.q(`SELECT workspace_id, item_id FROM attachments WHERE id = ?`), id).
+		Scan(&workspaceID, &itemID); {
+	case errors.Is(err, sql.ErrNoRows):
+		refsKnown = false
+	case err != nil:
+		return false, fmt.Errorf("claim soft-deleted attachment refs: %w", err)
+	}
+
+	res, err := tx.Exec(s.q(`
 		DELETE FROM attachments
 		WHERE id = ?
 		  AND deleted_at IS NOT NULL
@@ -1018,7 +1056,24 @@ func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bo
 	if err != nil {
 		return false, fmt.Errorf("claim soft-deleted attachment rows: %w", err)
 	}
-	return n == 1, nil
+	if n != 1 {
+		// Nothing claimed: commit the (empty) transaction and report false,
+		// preserving the existing contract exactly.
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("claim soft-deleted attachment: %w", err)
+		}
+		return false, nil
+	}
+
+	if refsKnown {
+		if err := s.emitRefOnlyDeletionTx(tx, kernelevents.AttachmentRemoved, workspaceID, id, itemID.String, ""); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("claim soft-deleted attachment: %w", err)
+	}
+	return true, nil
 }
 
 // AttachmentHashesWithRows reports which of the given content hashes have

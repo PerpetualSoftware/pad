@@ -76,7 +76,26 @@ const (
 	CommentCreated = "comment.created"
 	CommentUpdated = "comment.updated"
 
+	// CommentDeleted fires on the HARD delete of a comment. Its payload is
+	// REF-ONLY (SPEC-3 v1.4) — ids and parent refs, never the deleted body.
+	//
+	// The asymmetry with ItemDeleted is deliberate and load-bearing. An item
+	// "delete" is an archive: the row survives, so its snapshot stays
+	// addressable and carrying it costs nothing that is not already there. A
+	// comment delete is a hard delete, and a deletion event that re-ships the
+	// content it deletes hands every consumer a durable copy of exactly what
+	// the user asked to remove. The consumer needs to reconcile its model,
+	// not to receive the body again.
+	CommentDeleted = "comment.deleted"
+
 	AttachmentAdded = "attachment.added"
+
+	// AttachmentRemoved fires when an attachment row is hard-deleted (orphan
+	// GC). REF-ONLY for the same reason as CommentDeleted, and with a sharper
+	// edge: an attachment payload carries the filename, content hash and
+	// STORAGE KEY, so re-shipping it on removal would hand out a locator for
+	// bytes the system just reclaimed.
+	AttachmentRemoved = "attachment.removed"
 
 	MemberJoined = "member.joined"
 
@@ -112,7 +131,9 @@ var canonical = map[string]string{
 	ItemBulkUpdated:   SubjectItemBatch,
 	CommentCreated:    SubjectComment,
 	CommentUpdated:    SubjectComment,
+	CommentDeleted:    SubjectComment,
 	AttachmentAdded:   SubjectAttachment,
+	AttachmentRemoved: SubjectAttachment,
 	MemberJoined:      SubjectMember,
 	PackInstalled:     SubjectPack,
 	PackUpgraded:      SubjectPack,

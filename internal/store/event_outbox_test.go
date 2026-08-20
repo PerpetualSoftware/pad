@@ -1043,3 +1043,126 @@ func TestOutbox_PayloadsOmitAssigneeIdentity(t *testing.T) {
 		t.Fatalf("payload contains the assignee's email address anywhere: %s", raw)
 	}
 }
+
+func TestOutbox_CommentDeleteEmitsRefOnly(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox comment delete")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Commented", "body")
+
+	const secret = "the body a user asked to remove"
+	c, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Body: secret})
+	if err != nil {
+		t.Fatalf("CreateComment: %v", err)
+	}
+	clearOutbox(t, s)
+
+	if err := s.DeleteComment(c.ID); err != nil {
+		t.Fatalf("DeleteComment: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, c.ID); len(got) != 1 || got[0] != kernelevents.CommentDeleted {
+		t.Fatalf("events = %v, want exactly [%s] — without a delete marker a hard-deleted "+
+			"comment's created event is the only record it existed", got, kernelevents.CommentDeleted)
+	}
+
+	payload := outboxPayloadFor(t, s, c.ID, kernelevents.CommentDeleted)
+	if payload["id"] != c.ID || payload["item_id"] != item.ID || payload["workspace_id"] != ws.ID {
+		t.Fatalf("payload = %v, want the ids a consumer needs to reconcile", payload)
+	}
+	// REF-ONLY is the whole contract (SPEC-3 v1.4): a deletion event must not
+	// re-ship what it deletes.
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("comment.deleted payload contains the deleted body: %s", raw)
+	}
+	if _, present := payload["body"]; present {
+		t.Fatalf("comment.deleted payload carries a body key: %v", payload)
+	}
+}
+
+func TestOutbox_SoftDeletedAttachmentClaimEmitsRefOnly(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox attachment removed")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Has attachment", "body")
+
+	const storageKey = "blob/secret-locator"
+	att := &models.Attachment{
+		WorkspaceID: ws.ID,
+		ItemID:      &item.ID,
+		StorageKey:  storageKey,
+		Filename:    "private-notes.pdf",
+		MimeType:    "application/pdf",
+		SizeBytes:   99,
+	}
+	if err := s.CreateAttachmentForLiveItem(att); err != nil {
+		t.Fatalf("CreateAttachmentForLiveItem: %v", err)
+	}
+	if err := s.SoftDeleteAttachment(att.ID); err != nil {
+		t.Fatalf("SoftDeleteAttachment: %v", err)
+	}
+	clearOutbox(t, s)
+
+	claimed, err := s.ClaimSoftDeletedAttachment(att.ID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ClaimSoftDeletedAttachment: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("claim did not take the row; the test is not exercising the emit path")
+	}
+
+	if got := outboxEventsFor(t, s, att.ID); len(got) != 1 || got[0] != kernelevents.AttachmentRemoved {
+		t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.AttachmentRemoved)
+	}
+	payload := outboxPayloadFor(t, s, att.ID, kernelevents.AttachmentRemoved)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The sharp edge: an attachment payload carries the STORAGE KEY, so a
+	// full-snapshot removal event would hand out a locator for bytes the
+	// system just reclaimed.
+	if strings.Contains(string(raw), storageKey) {
+		t.Fatalf("attachment.removed payload contains the storage key: %s", raw)
+	}
+	if strings.Contains(string(raw), "private-notes.pdf") {
+		t.Fatalf("attachment.removed payload contains the filename: %s", raw)
+	}
+}
+
+func TestOutbox_NeverAttachedClaimEmitsNothing(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox never attached")
+
+	// An orphan: never attached to an item, so it never emitted
+	// attachment.added either.
+	orphan := &models.Attachment{
+		WorkspaceID: ws.ID,
+		StorageKey:  "blob/orphan",
+		Filename:    "stray.bin",
+		MimeType:    "application/octet-stream",
+		SizeBytes:   10,
+	}
+	if err := s.CreateAttachment(orphan); err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+	clearOutbox(t, s)
+
+	claimed, err := s.ClaimNeverAttachedAttachment(orphan.ID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ClaimNeverAttachedAttachment: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("claim did not take the row; the test is not exercising the path")
+	}
+
+	// Announcing this removal would hand a consumer a deletion for an id it
+	// has never seen. The asymmetry with the soft-deleted claim is the point.
+	if got := outboxEventsFor(t, s, orphan.ID); len(got) != 0 {
+		t.Fatalf("events = %v, want none — this row never emitted attachment.added", got)
+	}
+}

@@ -268,14 +268,51 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 }
 
 // DeleteComment removes a comment by ID.
+// DeleteComment hard-deletes a comment and emits the ref-only
+// comment.deleted event in the same transaction (SPEC-3 v1.4 / TASK-2658).
+//
+// Transactional as of TASK-2658 — it was a bare Exec. The delete marker is
+// what resolves the conflict round 7 exposed: without it, a hard-deleted
+// comment's undispatched created/updated rows were the ONLY record it ever
+// existed, which forced a false choice between dropping committed events
+// (breaking the outbox guarantee) and delivering the deleted body forever.
+// With it, the created event still delivers, the deletion is announced
+// ref-only, and retention prunes both — privacy of a frozen payload is
+// temporal, not achieved by deleting rows out from under a consumer.
+//
+// The identifiers are read BEFORE the DELETE, in-tx, because after it there is
+// no row to read them from.
 func (s *Store) DeleteComment(id string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM comments WHERE id = ?"), id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete comment: %w", err)
+	}
+	defer tx.Rollback()
+
+	var workspaceID, itemID string
+	var parentID sql.NullString
+	switch err := tx.QueryRow(s.q(`SELECT workspace_id, item_id, parent_id FROM comments WHERE id = ?`), id).
+		Scan(&workspaceID, &itemID, &parentID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return sql.ErrNoRows
+	case err != nil:
+		return fmt.Errorf("delete comment: read refs: %w", err)
+	}
+
+	result, err := tx.Exec(s.q("DELETE FROM comments WHERE id = ?"), id)
 	if err != nil {
 		return fmt.Errorf("delete comment: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return sql.ErrNoRows
+	}
+
+	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, workspaceID, id, itemID, parentID.String); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete comment: %w", err)
 	}
 	return nil
 }
