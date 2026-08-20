@@ -1166,3 +1166,69 @@ func TestOutbox_NeverAttachedClaimEmitsNothing(t *testing.T) {
 		t.Fatalf("events = %v, want none — this row never emitted attachment.added", got)
 	}
 }
+
+// TestOutbox_VariantClaimEmitsNothing pins the symmetry Codex round 8 found
+// missing: a row that could not have emitted attachment.added must not emit
+// attachment.removed.
+//
+// Variants are the systematic case. A thumbnail is written silently (it carries
+// a parent, so the add gate excludes it), then tombstoned by its original's
+// cascade, and arrives at ClaimSoftDeletedAttachment like any other soft-deleted
+// row. Before the gates were made symmetric it announced a removal for a subject
+// no consumer had ever been told about.
+func TestOutbox_VariantClaimEmitsNothing(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox variant removal")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Has thumbnail", "body")
+
+	original := &models.Attachment{
+		WorkspaceID: ws.ID,
+		ItemID:      &item.ID,
+		StorageKey:  "blob/orig",
+		Filename:    "photo.jpg",
+		MimeType:    "image/jpeg",
+		SizeBytes:   100,
+	}
+	if err := s.CreateAttachmentForLiveItem(original); err != nil {
+		t.Fatalf("create original: %v", err)
+	}
+	variant := models.AttachmentVariantThumbMd
+	thumb := &models.Attachment{
+		WorkspaceID: ws.ID,
+		ItemID:      &item.ID,
+		ParentID:    &original.ID,
+		Variant:     &variant,
+		StorageKey:  "blob/thumb",
+		Filename:    "photo-thumb.jpg",
+		MimeType:    "image/jpeg",
+		SizeBytes:   10,
+	}
+	if err := s.CreateAttachmentForLiveItem(thumb); err != nil {
+		t.Fatalf("create thumb: %v", err)
+	}
+	// Confirm the premise rather than assuming it: the variant never announced
+	// its arrival. Without this leg the test could pass because nothing was
+	// ever emitted for the wrong reason.
+	if got := outboxEventsFor(t, s, thumb.ID); len(got) != 0 {
+		t.Fatalf("variant emitted %v on creation; the premise of this test is wrong", got)
+	}
+
+	if err := s.SoftDeleteAttachment(thumb.ID); err != nil {
+		t.Fatalf("SoftDeleteAttachment: %v", err)
+	}
+	clearOutbox(t, s)
+
+	claimed, err := s.ClaimSoftDeletedAttachment(thumb.ID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ClaimSoftDeletedAttachment: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("claim did not take the variant row; the test is not exercising the path")
+	}
+
+	if got := outboxEventsFor(t, s, thumb.ID); len(got) != 0 {
+		t.Fatalf("events = %v, want none — a row that could not announce its arrival must not "+
+			"announce its removal", got)
+	}
+}

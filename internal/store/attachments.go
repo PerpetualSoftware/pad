@@ -1012,7 +1012,35 @@ func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 // one reclaims rows that were NEVER attached to an item, and attachment.added
 // fires only for attachments written against a live item — so those rows never
 // announced their arrival, and announcing their removal would hand a consumer
-// a deletion for an id it has never seen. A soft-deleted row, by contrast, WAS
+// a deletion for an id it has never seen.
+//
+// I CHECKED ONE DIRECTION OF THAT AND STATED THE CONCLUSION FOR BOTH, so the
+// correction is recorded here rather than quietly fixed (Codex round 8).
+//
+// What is true, and verified: a row claimable by ClaimNeverAttachedAttachment
+// has item_id IS NULL, no path anywhere sets attachments.item_id back to NULL
+// on an existing row, and every birth path that produces a NULL item_id
+// (CreateAttachment, CreateAttachmentTx, CreateAttachmentForLiveItem's own
+// orphan branch) is non-emitting. So never-attached implies never-announced.
+//
+// What does NOT follow, and what I asserted anyway: that everything reaching
+// THIS path announced itself. It does not. Rows arrive here having never
+// emitted attachment.added by at least three routes — variants (written by the
+// thumbnail/derivation paths and tombstoned by their original's cascade),
+// attachments cloned by a cross-workspace copy through CreateAttachmentTx, and
+// attachments created by workspace import.
+//
+// The emit below therefore carries the SAME gate as attachment.added — a
+// user-visible original, attached to an item — so the two are symmetric by
+// construction rather than by argument. That closes the variant route, which is
+// the systematic one.
+//
+// RESIDUE, stated because it is real: an import- or copy-created attachment
+// still passes that gate while never having emitted an addition, so its removal
+// announces a subject the consumer never saw. The failure mode is noise rather
+// than harm — an unknown id in a delete is ignorable, where the reverse
+// (announced, never retracted) would leave stale state — and the deeper cause
+// is the deliberate silence of the import and copy paths, not this one. A soft-deleted row, by contrast, WAS
 // attached and did emit, so its removal closes a loop the consumer is holding
 // open.
 //
@@ -1033,10 +1061,10 @@ func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bo
 	// (or a restore) got there first, and the claim below will match zero rows
 	// and report false, which is the existing contract.
 	var workspaceID string
-	var itemID sql.NullString
+	var itemID, parentID, variant sql.NullString
 	refsKnown := true
-	switch err := tx.QueryRow(s.q(`SELECT workspace_id, item_id FROM attachments WHERE id = ?`), id).
-		Scan(&workspaceID, &itemID); {
+	switch err := tx.QueryRow(s.q(`SELECT workspace_id, item_id, parent_id, variant FROM attachments WHERE id = ?`), id).
+		Scan(&workspaceID, &itemID, &parentID, &variant); {
 	case errors.Is(err, sql.ErrNoRows):
 		refsKnown = false
 	case err != nil:
@@ -1065,7 +1093,12 @@ func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bo
 		return false, nil
 	}
 
-	if refsKnown {
+	// Same gate as attachment.added: a user-visible ORIGINAL attached to an
+	// item. Symmetry by construction — if it could not have announced its
+	// arrival, it does not announce its removal.
+	announceable := refsKnown && itemID.Valid && itemID.String != "" &&
+		!parentID.Valid && (!variant.Valid || variant.String == models.AttachmentVariantOriginal)
+	if announceable {
 		if err := s.emitRefOnlyDeletionTx(tx, kernelevents.AttachmentRemoved, workspaceID, id, itemID.String, ""); err != nil {
 			return false, err
 		}
