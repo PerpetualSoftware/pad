@@ -529,7 +529,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 		CreatedBy: userActorLabel(user),
 	})
 	if err != nil {
-		return dispatcherErrorResult(cmdKey, "append note", err), nil
+		return structuredAppendErrorResult(cmdKey, "append note", err), nil
 	}
 
 	body, err := json.Marshal(map[string]any{"fields": updated})
@@ -582,7 +582,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 		CreatedBy: userActorLabel(user),
 	})
 	if err != nil {
-		return dispatcherErrorResult(cmdKey, "append decision", err), nil
+		return structuredAppendErrorResult(cmdKey, "append decision", err), nil
 	}
 
 	body, err := json.Marshal(map[string]any{"fields": updated})

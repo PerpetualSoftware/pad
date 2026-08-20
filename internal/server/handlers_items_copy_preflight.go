@@ -1168,6 +1168,11 @@ func fieldDefByKey(defs []models.FieldDef, key string) (models.FieldDef, bool) {
 // copy preflight. These keys have no FieldDef and therefore no author-supplied
 // Label, so the alternative is showing the raw snake_case key in a dialog whose
 // every other row is titled prose.
+//
+// Kept adjacent to reservedFieldRemedy below: both are hand-maintained per-key
+// tables over models.ReservedItemFieldKeys(), and putting them in one place is
+// what stops a new key getting a label and no remedy. Both are covered by
+// TestReservedFieldTablesAreExhaustive.
 func reservedFieldLabel(key string) string {
 	switch key {
 	case models.ItemFieldImplementationNotes:
@@ -1180,4 +1185,110 @@ func reservedFieldLabel(key string) string {
 		return "Convention metadata"
 	}
 	return key
+}
+
+// reservedFieldRemedy names the write path that legitimately maintains a
+// reserved metadata key, for the refusal message the field-patch gate emits
+// (BUG-2627 part 2).
+//
+// It is per-key rather than one sentence because the remedies genuinely differ,
+// and a message naming `pad item note` for a github_pr rejection would send the
+// caller somewhere that cannot help them — the failure PATTE-135 exists to
+// prevent. The empty string means "no user-facing write path", which the caller
+// renders as a plain refusal rather than inventing a command; an unhelpful-but-
+// true message beats a confident wrong one.
+//
+// Every remedy here was run against `--help` when it was written. Two keys
+// deliberately have none, for opposite reasons:
+//
+//   - `convention` — its metadata is stamped at activation / create time
+//     (models.BuildConventionItemFields), and a convention item's user-facing
+//     trigger / scope / priority are ORDINARY schema fields, so `pad item
+//     update --field trigger=always` is unaffected by this gate.
+//   - `github_pr` — it never reaches this message at all. The patch door does
+//     not refuse it (items.PatchRefusedFieldKeysIn exempts it, because on
+//     remote MCP that door is its only writer), so naming `pad github link`
+//     here would be prescribing a command for a refusal that cannot happen —
+//     and prescribing it to the one audience that cannot run it.
+func reservedFieldRemedy(key string) string {
+	switch key {
+	case models.ItemFieldImplementationNotes:
+		return "`pad item note <ref> \"<summary>\"` (MCP: pad_item action=note)"
+	case models.ItemFieldDecisionLog:
+		return "`pad item decide <ref> \"<decision>\"` (MCP: pad_item action=decide)"
+	}
+	return ""
+}
+
+// appendBackedReservedKey reports whether a reserved key's remedy is an APPEND
+// helper — the ones carrying BUG-2627 part 3's refuse-rather-than-destroy
+// guard, and therefore the only ones whose remedy can itself refuse.
+func appendBackedReservedKey(key string) bool {
+	return key == models.ItemFieldImplementationNotes || key == models.ItemFieldDecisionLog
+}
+
+// reservedFieldPatchMessage renders the refusal the field-patch gate returns
+// (BUG-2627 part 2). keys arrive sorted from items.ReservedFieldKeysIn, so the
+// message is stable for a given input — a caller diffing two responses, or a
+// test asserting on one, should not see the order move.
+//
+// currentFields is the item's stored blob, and it is here for one reason: a
+// remedy has to work in the state the caller is actually in (PATTE-135). If the
+// stored value for an append-backed key is ALREADY undecodable, `pad item note`
+// refuses too — so naming it without qualification would send the caller in a
+// circle, which is the failure that convention exists to prevent (Codex round
+// 1). That case gets told the truth instead: nothing user-facing repairs it.
+//
+// The message carries the WHY as well as the what. "Not allowed" alone would
+// read as arbitrary policy; the reason this door is closed is that the write it
+// permits is silently destructive downstream, and a caller who knows that stops
+// looking for a way around the gate. The destructive-downstream clause is
+// stated ONLY for the append-backed keys: github_pr and convention are
+// overwritten by a raw write, not made unreadable-then-unappendable, and
+// claiming otherwise would be a confident wrong explanation.
+func reservedFieldPatchMessage(keys []string, currentFields string) string {
+	var b strings.Builder
+	if len(keys) == 1 {
+		fmt.Fprintf(&b, "%q is system metadata and cannot be set through a field update.", keys[0])
+	} else {
+		quoted := make([]string, 0, len(keys))
+		for _, k := range keys {
+			quoted = append(quoted, fmt.Sprintf("%q", k))
+		}
+		fmt.Fprintf(&b, "%s are system metadata and cannot be set through a field update.", strings.Join(quoted, ", "))
+	}
+
+	var anyAppendBacked, anyUnreadable bool
+	for _, k := range keys {
+		remedy := reservedFieldRemedy(k)
+		if remedy == "" {
+			continue
+		}
+		if appendBackedReservedKey(k) {
+			anyAppendBacked = true
+			if !models.StructuredFieldIsAppendable(currentFields, k) {
+				anyUnreadable = true
+				fmt.Fprintf(&b, " %s cannot be repaired from here: its stored value on this item"+
+					" is already unreadable, so %s refuses as well (that refusal is what stops the"+
+					" existing entries being overwritten).", k, remedy)
+				continue
+			}
+		}
+		fmt.Fprintf(&b, " Maintain %s with %s.", k, remedy)
+	}
+
+	if anyAppendBacked {
+		b.WriteString(" A raw field write bypasses the writer that maintains it — and from the CLI or MCP" +
+			" it also stores a value Pad cannot read back, because a `--field` value is typed by schema" +
+			" lookup and these keys are in no schema: the entries go invisible on every surface, and the" +
+			" append path then refuses on this item until the stored value is repaired (BUG-2627).")
+	} else {
+		b.WriteString(" A raw field write would overwrite what Pad's own writer maintains there," +
+			" bypassing the checks that writer applies (BUG-2627).")
+	}
+	if anyUnreadable {
+		b.WriteString(" Inspect the stored value with `pad item show <ref> --format json`;" +
+			" repairing it takes a full `fields` write, which no CLI flag exposes today.")
+	}
+	return b.String()
 }

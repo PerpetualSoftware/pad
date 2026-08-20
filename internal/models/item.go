@@ -548,7 +548,7 @@ var ErrStructuredFieldUnreadable = errors.New("structured field is present but u
 // does not decode into []T.
 //
 // BUG-2627. The Append* helpers below build the new slice from Extract*, then
-// assign it over the key unconditionally. Extract* returns nil for THREE
+// assign it over the key unconditionally. Extract* returns nil for FOUR
 // different reasons and only one of them is a defect, so the nil itself cannot
 // be the refusal condition:
 //
@@ -600,10 +600,64 @@ func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string
 	return nil
 }
 
+// unreadableFieldsBlob tags an append's fields-parse failure as
+// ErrStructuredFieldUnreadable (Codex round 5).
+//
+// The classification, not the failure, is what this changes. An item whose
+// whole fields column will not parse is unreadable in exactly the sense
+// BUG-2675's code exists for — deterministic, unfixable by the caller, and
+// pointless to retry — but the bare parse error carried none of that, so it
+// reached agents as `server_error` and invited the retry loop the code was
+// added to stop. Same reasoning, one level out from the per-key guard.
+func unreadableFieldsBlob(err error) error {
+	return fmt.Errorf("%w: the item's fields blob does not parse, so nothing can be appended to it; "+
+		"inspect it with `pad item show <ref> --format json` and repair it: %w", ErrStructuredFieldUnreadable, err)
+}
+
+// StructuredFieldIsAppendable reports whether an append to key would be
+// ACCEPTED on an item carrying fieldsJSON — i.e. whether the Append* helpers
+// would proceed rather than refusing with ErrStructuredFieldUnreadable.
+//
+// It exists so a caller that wants to TALK about appendability asks the same
+// question the guard answers, instead of re-deriving it. BUG-2627 part 2's
+// refusal message names `pad item note` as the remedy, which is a lie whenever
+// that command would itself refuse; the message therefore has to agree with the
+// guard EXACTLY, and a second decode written to look equivalent is not exact.
+// Codex round 2 caught a first version of it that decoded into
+// []json.RawMessage: a stored `[1]` passed there and failed the real guard, so
+// the message prescribed a command that refuses.
+//
+// The entry type per key matches the matching Extract*, for the reason
+// assertStructuredFieldAppendable documents at length: json ignores unknown
+// fields, so the WRONG-but-compiling instantiation silently permits what the
+// extractor rejects.
+//
+// A fieldsJSON that will not parse AT ALL returns false, because that is the
+// honest answer to the question asked: the Append* helpers bail on the same
+// parse and return an error, so an append would not be accepted. An earlier
+// version returned true on the reasoning that a broken outer blob is "a
+// different problem" — which is true of the CAUSE and irrelevant to the
+// CALLER, who would have been told to run a command that cannot succeed
+// (Codex round 4).
+func StructuredFieldIsAppendable(fieldsJSON, key string) bool {
+	fieldsMap, err := parseMutableItemFields(fieldsJSON)
+	if err != nil {
+		return false
+	}
+	switch key {
+	case ItemFieldImplementationNotes:
+		return assertStructuredFieldAppendable[ItemImplementationNote](fieldsMap, key) == nil
+	case ItemFieldDecisionLog:
+		return assertStructuredFieldAppendable[ItemDecisionLogEntry](fieldsMap, key) == nil
+	}
+	// No append helper owns this key, so nothing can refuse an append to it.
+	return true
+}
+
 func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
-		return "", err
+		return "", unreadableFieldsBlob(err)
 	}
 	if err := assertStructuredFieldAppendable[ItemImplementationNote](fieldsMap, ItemFieldImplementationNotes); err != nil {
 		return "", err
@@ -618,7 +672,7 @@ func AppendImplementationNote(fieldsJSON string, note ItemImplementationNote) (s
 func AppendDecisionLogEntry(fieldsJSON string, entry ItemDecisionLogEntry) (string, error) {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
-		return "", err
+		return "", unreadableFieldsBlob(err)
 	}
 	if err := assertStructuredFieldAppendable[ItemDecisionLogEntry](fieldsMap, ItemFieldDecisionLog); err != nil {
 		return "", err
@@ -696,6 +750,15 @@ func parseMutableItemFields(fieldsJSON string) (map[string]any, error) {
 	var fieldsMap map[string]any
 	if err := json.Unmarshal([]byte(fieldsJSON), &fieldsMap); err != nil {
 		return nil, fmt.Errorf("parse item fields: %w", err)
+	}
+	if fieldsMap == nil {
+		// A literal `null` unmarshals into a NIL map with no error, and every
+		// caller here goes on to assign into what it gets back — so `pad item
+		// note` against an item whose fields column holds "null" panicked with
+		// "assignment to entry in nil map" rather than appending (reproduced;
+		// Codex round 3 on BUG-2627). An absent blob and a null blob mean the
+		// same thing to every caller, so they get the same empty map.
+		return map[string]any{}, nil
 	}
 	return fieldsMap, nil
 }

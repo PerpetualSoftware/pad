@@ -1501,6 +1501,62 @@ func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictD
 	fmt.Fprintln(w, "Re-read the item (pad item show) and retry with the current timestamp.")
 }
 
+// StoredStateUnreadableCode is the structured error code for "the item's
+// STORED value cannot be decoded, so the operation is refused and retrying is
+// pointless" (BUG-2675).
+//
+// Unlike every other code the CLI emits a marker for, this one is generated
+// LOCALLY — models.AppendImplementationNote / AppendDecisionLogEntry refuse
+// before any request is made, so there is no APIError to carry it. Keep in
+// lockstep with internal/mcp's allowedStructuredErrorCodes, which is what makes
+// the stdio transport surface it instead of collapsing it to server_error.
+const StoredStateUnreadableCode = "stored_state_unreadable"
+
+// StoredStateUnreadableHint is the recovery guidance that rides along with the
+// code. It is duplicated in internal/mcp (which does not import this package in
+// production code, for the same dependency-graph reason StructuredErrorMarker
+// is duplicated); TestCLIAndMCPAgreeOnTheCodeString asserts the two match.
+//
+// It exists as a constant rather than being left to each transport because a
+// hint the remote transport delivers and the stdio one does not is the same
+// class of gap as a code only one transport emits (Codex round 2).
+const StoredStateUnreadableHint = "Retrying will not help — the item's stored value has been undecodable since it was written, " +
+	"so every attempt refuses identically, and the append is refused precisely because completing it " +
+	"would overwrite that value. Do not route around it by writing the field another way. What you can " +
+	"SEE depends on which is broken: if the whole fields blob fails to parse, `pad_item` action=get shows " +
+	"it to you as a raw string, but if one structured key is at fault MCP hides it — the fields blob is " +
+	"normalized on this surface and a value that does not decode is dropped from the top-level arrays. " +
+	"Either way, report the item to a human, who can read the raw value with `pad item show <ref> --format json` " +
+	"and repair it."
+
+// WriteStoredStateUnreadableError formats a local refusal to w in the canonical
+// two-track shape, mirroring WriteOpenChildrenError / WriteUpdateConflictError:
+//
+//  1. A single `pad-structured-error/v1: {json}\n` marker line — consumed by
+//     the MCP stdio classifier so an agent gets the retry-hostile code rather
+//     than a generic server_error it may reasonably retry forever.
+//  2. The human-readable message.
+//
+// The message is the error's own text: the append helpers already phrase the
+// refusal with the inspect-first remedy, and re-wording it here would give the
+// two transports different prose for the same condition.
+func WriteStoredStateUnreadableError(w io.Writer, err error) {
+	if err == nil {
+		return
+	}
+	envelope := map[string]any{
+		"error": map[string]any{
+			"code":    StoredStateUnreadableCode,
+			"message": err.Error(),
+			"hint":    StoredStateUnreadableHint,
+		},
+	}
+	if data, mErr := json.Marshal(envelope); mErr == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+	fmt.Fprintln(w, err.Error())
+}
+
 // PlanLimitDetails is the parsed shape of APIError.Details when
 // Code == "plan_limit_exceeded" (TASK-788).
 type PlanLimitDetails struct {

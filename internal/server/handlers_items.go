@@ -941,6 +941,42 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// BUG-2627 part 2: `fields_patch` is the door every USER field-setter
+	// lowers into — `pad item update --field` (cmd_item.go), the MCP `field`
+	// param on the remote transport (dispatch_http_advanced.go), and the same
+	// param on stdio by way of that CLI. None of them may write the system
+	// metadata that HAS another writer, so the refusal sits here, once, rather
+	// than at each client. `github_pr` is exempt and PatchRefusedFieldKeysIn
+	// explains why: it is the one reserved key for which this door IS the
+	// sanctioned cross-surface writer, because `pad github link` cannot run on
+	// remote MCP at all.
+	//
+	// It sits with the mutual-exclusion check above rather than in the
+	// fields_patch block below because both are "reject an illegitimate patch
+	// SHAPE before doing any merge work", and neither needs the collection
+	// loaded to decide.
+	//
+	// Why refuse rather than drop the key: a `--field implementation_notes=...`
+	// write is not merely ineffective. It stores a value the extractor cannot
+	// decode, which makes the entries invisible on every surface AND trips the
+	// append guard (BUG-2627 part 3) so the legitimate `pad item note` path
+	// refuses on that item until someone repairs the row. Silently dropping it
+	// would leave the caller believing they had written history they had not.
+	//
+	// Scope, stated because it is deliberate: this closes UPDATE only. The full
+	// `fields` blob is shared with Pad's own writers (note / decide / github
+	// link, and convention activation through ItemCreate), so item CREATE stays
+	// a mint site — see items.ReservedFieldKeysIn's comment and BUG-2685.
+	//
+	// The item's CURRENT fields go into the message because a remedy has to
+	// work in the state the caller is in: when the stored value is already
+	// undecodable, `pad item note` refuses too, and naming it anyway would
+	// route the caller in a circle (Codex round 1).
+	if bad := items.PatchRefusedFieldKeysIn(input.FieldsPatch); len(bad) > 0 {
+		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldPatchMessage(bad, item.Fields))
+		return
+	}
+
 	// TASK-2022: validate the optimistic-concurrency token's format at the
 	// boundary so a malformed value is a clean 400 rather than surfacing from
 	// the store as a generic 500. The store re-parses (guaranteed to succeed)
@@ -1932,7 +1968,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// System metadata is written through its own endpoints — `pad item note`,
 	// `pad item decide`, `pad github link` — which is where the append guard
 	// from BUG-2627 lives.
-	if bad := items.ReservedOverrideKeys(input.FieldOverrides); len(bad) > 0 {
+	if bad := items.ReservedFieldKeysIn(input.FieldOverrides); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "malformed_override",
 			fmt.Sprintf("Field(s) reserved for system metadata and not settable here: %s", strings.Join(bad, ", ")))
 		return

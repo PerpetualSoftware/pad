@@ -70,7 +70,7 @@ func TestUndeclaredOverrideKeys(t *testing.T) {
 //   - on the COPY it additionally defeats the scope rule — MigrateFields drops
 //     github_pr when the item leaves its workspace, and an override applied
 //     afterwards puts it straight back.
-func TestReservedOverrideKeys(t *testing.T) {
+func TestReservedFieldKeysIn(t *testing.T) {
 	cases := []struct {
 		name      string
 		overrides map[string]any
@@ -116,12 +116,12 @@ func TestReservedOverrideKeys(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ReservedOverrideKeys(tc.overrides)
+			got := ReservedFieldKeysIn(tc.overrides)
 			if len(got) == 0 && len(tc.want) == 0 {
 				return
 			}
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("ReservedOverrideKeys(%#v) = %#v, want %#v", tc.overrides, got, tc.want)
+				t.Errorf("ReservedFieldKeysIn(%#v) = %#v, want %#v", tc.overrides, got, tc.want)
 			}
 		})
 	}
