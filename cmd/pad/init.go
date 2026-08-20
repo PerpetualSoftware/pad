@@ -258,6 +258,17 @@ Examples:
 
 			// ── Step 4: Authentication ────────────────────────────────
 			if !session.Authenticated && !session.SetupRequired {
+				// PAD_TOKEN overrides stored credentials (#879). The client
+				// above already carried the env token into CheckSession, so
+				// landing here means the server REJECTED it. Falling back to
+				// stored credentials would silently run init as a different
+				// user — and the final status line would still claim the
+				// override was active. Fail with the distinct message
+				// instead, mirroring whoami's treatment.
+				if cli.EnvToken() != "" {
+					return fmt.Errorf("PAD_TOKEN is set but the server rejected it — fix or unset PAD_TOKEN, then re-run 'pad init'")
+				}
+
 				// Check if we have saved credentials for THIS server that
 				// still work. Per-server lookup (TASK-1228) — credentials
 				// for other servers are silently ignored here.
@@ -611,12 +622,19 @@ func printInitStatus(client *cli.Client, cfg *config.Config, ws *models.Workspac
 	}
 	fmt.Println(serverAddr)
 
-	// Auth — entry for the configured server only
-	store, _ := cli.LoadStore()
-	creds := store.Get(cfg.BaseURL())
-	if creds != nil && creds.Email != "" {
-		green.Print("  ✓ Logged in  ")
-		fmt.Println(creds.Email)
+	// Auth — entry for the configured server only. Under the PAD_TOKEN
+	// override (#879) the stored entry is not what API calls use, so
+	// disclose the override instead of implying the stored identity.
+	if cli.EnvToken() != "" {
+		green.Print("  ✓ Auth       ")
+		fmt.Println("PAD_TOKEN environment override")
+	} else {
+		store, _ := cli.LoadStore()
+		creds := store.Get(cfg.BaseURL())
+		if creds != nil && creds.Email != "" {
+			green.Print("  ✓ Logged in  ")
+			fmt.Println(creds.Email)
+		}
 	}
 
 	// Workspace
