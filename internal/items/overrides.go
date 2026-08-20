@@ -106,8 +106,16 @@ func ReservedFieldKeysIn(fields map[string]any) []string {
 // door refuses (BUG-2627 part 2), sorted. It is ReservedFieldKeysIn minus the
 // keys whose only cross-surface writer IS this door.
 //
-// Today that exemption is `github_pr`, and it is not a softening — it is the
-// rule applied honestly. The other three reserved keys have a real writer on
+// THE RULE, because the list below is only a snapshot of it: refuse a raw write
+// WHERE A REAL WRITER EXISTS. When a key is added to reserved metadata, ask
+// whether every audience that can reach this door has another way in — the CLI,
+// remote MCP, and stdio MCP each separately. If one does not, exempting it is
+// not a softening, it is the rule; refusing would hand that audience a message
+// naming a command they cannot run, which is the disease this bug family is
+// about rather than a cure for it. Do not pattern-match a new key onto the
+// exemption list; evaluate it against the predicate (lead ruling, 2026-08-20).
+//
+// Today that exemption is `github_pr`, and here is the working of it. The other three reserved keys have a real writer on
 // every surface that can reach them: implementation_notes and decision_log have
 // `note` / `decide` (CLI and both MCP transports), and `convention` has library
 // activation (likewise). `github_pr` does not. `pad github link` needs the
