@@ -2,21 +2,22 @@ package watchevents
 
 // BUG-2651 — RedisBus.
 //
-// WHAT IS AND IS NOT COVERED HERE, stated up front because the gap is real:
-// there is no Redis in CI and no miniredis/redismock in go.mod (internal/events'
-// RedisBus has no tests at all for the same reason). So these tests drive the
-// two halves that do not need a server —
+// THIS FILE drives the parts that need no server:
 //
 //   - the LOCAL half (fanOutLocally + Subscribe/SubscribeAndReplaySince/
 //     Unsubscribe/Close), which is where the concurrency contract lives and
 //     where a port of events.RedisBus's two-lock layout would break;
-//   - Publish's fail-closed branch, driven with a client pointed at a closed
-//     port, which is a real INCR failure rather than a simulated one;
-//   - the JSON round trip a notification takes through Redis.
+//   - the coverage bookkeeping that turns a hole, a cold start, or a Redis
+//     counter reset into an honest resync;
+//   - Publish's behaviour when Redis is unreachable, driven with a client
+//     pointed at a closed port — a real failure rather than a simulated one;
+//   - the payload codec.
 //
-// NOT covered: the actual pub/sub round trip (channel name, subscription
-// lifecycle against a live server). That needs a Redis, and adding one is a
-// dependency decision rather than a test-writing one.
+// The Redis ROUND TRIP — channel name, Lua KEYS/ARGV mapping, shared counter,
+// cross-instance delivery, dedupe, subscription teardown — lives in
+// redis_bus_integration_test.go against miniredis. An earlier version of this
+// header said that coverage did not exist and could not without a dependency
+// decision. The decision was made; see that file's header for what forced it.
 
 import (
 	"context"
