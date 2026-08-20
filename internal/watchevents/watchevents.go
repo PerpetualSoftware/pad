@@ -7,19 +7,32 @@
 // predicate before anything reaches a client (DR-2: no firehose, no
 // wildcard subscriptions).
 //
-// SINGLE-PROCESS LIMITATION. Bus here is an in-process pub/sub, exactly
-// like internal/events.MemoryBus — and it has the same blind spot: in a
-// multi-process padd deployment, a Notification published on one
-// process is never seen by a stream connection held open on a
-// different process, and is silently dropped for that connection. This
-// is precisely why internal/events also ships a RedisBus for
-// multi-instance deployments (Pad Cloud runs that shape). Bus is
-// defined as an interface specifically so a Redis-backed implementation
-// can slot in later without changing any producer or the stream
-// handler; only MemoryBus is implemented in Phase 1. Do not point this
-// package at a multi-process deployment without that follow-up — the
-// local plugin monitor talking to a local, single-process padd is the
-// only supported Phase 1 consumer.
+// TWO IMPLEMENTATIONS, PICKED BY DEPLOYMENT SHAPE. MemoryBus is an
+// in-process pub/sub, exactly like internal/events.MemoryBus, and it has
+// the same blind spot: a Notification published on one process is never
+// seen by a stream connection held open on a different process, and is
+// silently dropped for that connection. RedisBus (BUG-2651, redis_bus.go)
+// closes that by routing every notification through one shared Redis
+// channel. cmd/pad/cmd_server.go picks between them on PAD_REDIS_URL,
+// the same switch the event bus already uses — so a self-hosted
+// single-process binary keeps MemoryBus and never grows a Redis
+// dependency.
+//
+// Bus was defined as an interface from Phase 1 precisely so this could
+// slot in without touching any producer or the stream handler, and that
+// held: RedisBus changed neither.
+//
+// STILL PER-PROCESS, and worth knowing before assuming multi-instance is
+// finished: internal/server's SessionPresence registry. What RedisBus
+// fixes is delivery of what is actually PUBLISHED — a broadcast push, a
+// status change, a comment — which now reaches a stream on any instance.
+// What it does not fix is a SESSION-TARGETED push, because
+// handlers_push.go consults that per-process registry and skips the
+// publish entirely when the named session is not local; the bus would
+// carry it, but it is never put on the bus. The
+// GET /api/v1/sessions listing is per-process for the same reason.
+// See session_presence.go's own note — one shared-state implementation
+// closes both.
 package watchevents
 
 import (
@@ -49,9 +62,12 @@ const (
 	// right now rather than waiting on assignment/watch semantics. NOT
 	// "publishes exactly one" unconditionally as of PLAN-2558 S5
 	// (TASK-2588): handlePushToItem decides whether to publish at all —
-	// a session-targeted request whose id matches no live session skips
-	// the publish entirely (a guaranteed no-op; see TargetSessionID and
-	// pushResponse.DeliveredSessions' doc comments in handlers_push.go).
+	// a session-targeted request whose id matches no LOCAL live session
+	// skips the publish entirely. That was a guaranteed no-op under
+	// MemoryBus and is merely a skip under RedisBus, where the session
+	// might be live on another instance; see handlers_push.go's own
+	// comment on that gate, plus TargetSessionID and
+	// pushResponse.DeliveredSessions there.
 	// KindAsk is push's reserved sibling in the other direction
 	// (harness→human) — see TargetUserID's doc comment for the shared
 	// envelope shape the two are meant to converge on.
@@ -135,7 +151,7 @@ type Notification struct {
 
 // Bus is the pub/sub surface the watch pipeline's producers and the
 // GET /api/v1/events/stream consumer share. See the package doc comment
-// for why only an in-process MemoryBus exists in Phase 1.
+// for which implementation serves which deployment shape.
 type Bus interface {
 	// Publish assigns the Notification a monotonic ID, stores it in the
 	// replay buffer, and fans it out to every live Subscribe channel.
@@ -266,6 +282,9 @@ type MemoryBus struct {
 	subscribers map[chan Notification]struct{}
 	seq         int64
 	replay      *replayBuffer
+	// closed makes a post-Close Subscribe hand back an already-closed
+	// channel rather than one nobody will ever close — see Subscribe.
+	closed bool
 }
 
 // New creates a MemoryBus with the default replay buffer size.
@@ -326,6 +345,16 @@ func (b *MemoryBus) Subscribe() chan Notification {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan Notification, 64)
+	if b.closed {
+		// Subscribing after Close used to register a channel that nobody
+		// would ever close, so a consumer ranging over it blocked forever —
+		// reachable during shutdown, where Stop closes the bus while a
+		// stream handler is still running. RedisBus guarded this from the
+		// start and the two implementations must not differ in a way a
+		// consumer can feel (codex round 2 on BUG-2651).
+		close(ch)
+		return ch
+	}
 	b.subscribers[ch] = struct{}{}
 	return ch
 }
@@ -340,6 +369,11 @@ func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, [
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan Notification, 64)
+	if b.closed {
+		// Same post-Close guard as Subscribe.
+		close(ch)
+		return ch, nil
+	}
 	b.subscribers[ch] = struct{}{}
 	missed := b.replay.since(sinceID)
 	return ch, missed
@@ -363,6 +397,10 @@ func (b *MemoryBus) EventsSince(sinceID int64) []Notification {
 func (b *MemoryBus) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	b.closed = true
 	for ch := range b.subscribers {
 		delete(b.subscribers, ch)
 		close(ch)

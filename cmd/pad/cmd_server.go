@@ -634,8 +634,11 @@ func serveCmd() *cobra.Command {
 			srv.SetMetrics(m)
 			slog.Info("Prometheus metrics enabled at /metrics")
 
-			// Attach event bus for real-time SSE
+			// Attach event bus for real-time SSE. The client built here is
+			// shared with the watch bus below (BUG-2651) — nil when this is
+			// a single-instance deployment.
 			var eventBus events.EventBus
+			var watchRedis *redis.Client
 			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
 				opts, err := redis.ParseURL(redisURL)
 				if err != nil {
@@ -646,6 +649,7 @@ func serveCmd() *cobra.Command {
 					return fmt.Errorf("redis connection failed: %w", err)
 				}
 				eventBus = events.NewRedisBus(rc)
+				watchRedis = rc
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB)
 			} else {
 				eventBus = events.New()
@@ -655,22 +659,39 @@ func serveCmd() *cobra.Command {
 			eventBus = metrics.NewInstrumentedBus(eventBus, m)
 			srv.SetEventBus(eventBus)
 
-			// Watch/nudge notification bus (TASK-2533). In-process only —
-			// see internal/watchevents' package doc comment for the
-			// single-process/multi-instance limitation. No Redis-backed
-			// implementation exists yet, so this is unconditional (unlike
-			// eventBus above, which branches on PAD_REDIS_URL).
-			srv.SetWatchEventsBus(watchevents.New())
+			// Watch/nudge notification bus (TASK-2533), on the SAME
+			// PAD_REDIS_URL switch as the event bus above (BUG-2651).
+			// Reusing that client rather than dialing a second one: they
+			// address the same server, and one connection pool with two
+			// logical channels is the shape events already assumes.
+			//
+			// The branch is here rather than inside the package because a
+			// self-hosted single-process binary should keep MemoryBus and
+			// never touch Redis at all — see internal/watchevents' package
+			// doc for what each implementation does and does not fix.
+			var watchBus watchevents.Bus
+			if watchRedis != nil {
+				watchBus = watchevents.NewRedisBus(watchRedis)
+				slog.Info("Watch notification bus using Redis pub/sub")
+			} else {
+				watchBus = watchevents.New()
+				slog.Info("Watch notification bus using in-memory (single instance)")
+			}
+			srv.SetWatchEventsBus(watchBus)
 
 			// Live-session presence registry (PLAN-2558 S1). Wired
-			// unconditionally for the same reason and with the same
-			// caveat as the watch bus directly above: in-process only,
-			// no Redis-backed implementation yet. It reports on the
-			// same connections that bus feeds, so the two share a
-			// lifetime and a limitation — see
-			// internal/server/session_presence.go's SINGLE-PROCESS
-			// LIMITATION note before putting the web-UI push surface
-			// (PLAN-2558 S3) in front of a multi-process deployment.
+			// unconditionally, and it is now the ONLY in-process piece
+			// of this pair — the watch bus above stopped being one when
+			// PAD_REDIS_URL is set (BUG-2651). So the old "same caveat
+			// as the bus directly above" reading no longer holds: the
+			// bus delivers across instances, while this registry still
+			// reports only the answering instance's connections.
+			//
+			// See internal/server/session_presence.go's note for what
+			// that costs (a session picker that under-reports, rather
+			// than a push that lies) before putting the web-UI push
+			// surface (PLAN-2558 S3) in front of a multi-process
+			// deployment.
 			srv.SetSessionPresence(server.NewMemorySessionPresence())
 
 			// Yjs collab room manager (PLAN-1248). Single-instance only
@@ -844,6 +865,31 @@ func serveCmd() *cobra.Command {
 				// above to a concrete *metrics.InstrumentedBus return value.
 				eventBus.Close()
 				slog.Info("Event bus closed")
+
+				// Same reasoning for the watch bus, and it matters for the
+				// same reason: GET /api/v1/events/stream is a long-lived
+				// handler blocked on this bus's channel, so leaving it open
+				// keeps http.Server.Shutdown waiting out its full 30s
+				// deadline (codex round 2 on BUG-2651). Closing here rather
+				// than only in srv.Stop() below also tears the Redis
+				// subscription down promptly instead of at the very end.
+				// Both Close implementations are idempotent, so the second
+				// call inside srv.Stop() is a no-op.
+				//
+				// THE TRADE, which is the same one eventBus above already
+				// makes and is worth naming (codex round 10): closing BEFORE
+				// Shutdown drains handlers means a push already in flight can
+				// Publish into a closed bus, be dropped, and still return
+				// HTTP 200 with pushed:true. Closing AFTER instead would hold
+				// Shutdown for its full 30s deadline on any open stream,
+				// every time. Neither is free; this side loses a message in a
+				// window measured in milliseconds during a deliberate
+				// shutdown, the other side delays every shutdown by half a
+				// minute. Making the handler actually LEARN the publish was
+				// dropped needs Bus.Publish to report it, which is an
+				// interface change and a different unit.
+				watchBus.Close()
+				slog.Info("Watch notification bus closed")
 
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()

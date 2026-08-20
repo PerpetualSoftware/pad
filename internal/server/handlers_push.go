@@ -67,6 +67,21 @@ type pushResponse struct {
 	// and, for a targeted push, skips the publish entirely when the
 	// target isn't in that snapshot — see its doc comment — so a 0 here
 	// is never a race, it's a guarantee: nothing was sent.
+	//
+	// THAT GUARANTEE IS PER-PROCESS, and in a Redis-backed deployment
+	// that makes this count wrong in BOTH directions for a BROADCAST push
+	// (BUG-2651, codex round 3). The count comes from the local presence
+	// registry while the bus now delivers everywhere: with one armed
+	// session on each of two replicas, the replica handling the POST
+	// reports 1 and two sessions receive it; with none of its own, it
+	// reports 0 while a remote session receives it anyway.
+	//
+	// Filed as BUG-2698 alongside the targeted-push half. Not corrected
+	// here, because the fix is not a better count — it is the shared-state
+	// SessionPresence that PLAN-2558 S3 already gates on. Any local arithmetic would just be a more elaborate way of
+	// asking one replica what all of them are doing. Targeted pushes do
+	// not have the over-report half of this problem, for the unhappy
+	// reason that the same locality stops them being published at all.
 	DeliveredSessions int `json:"delivered_sessions"`
 }
 
@@ -218,6 +233,24 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// who's connected, not a promise that count still holds by the time
 	// delivery happens, which is the same staleness every presence
 	// answer on this surface already carries.
+	//
+	// THE "GUARANTEED NO-OP" PREMISE IS NOW MEMORYBUS-ONLY (BUG-2651,
+	// codex round 2). It rested on the bus being in-process: a target
+	// this instance cannot see was, by construction, a target nobody
+	// could deliver to. With watchevents.RedisBus the notification would
+	// reach every instance, so a session held on another one WOULD match
+	// it — and this skip is what stops that, turning a deliverable push
+	// into the no-op the comment describes rather than merely declining
+	// to record one.
+	//
+	// Deliberately NOT changed here. Publishing unconditionally would fix
+	// targeted cross-instance delivery and immediately make the
+	// delivered_sessions=0 in the response a lie in the other direction,
+	// which is a question about what that field promises rather than a
+	// bug in this line. It belongs with the shared-state SessionPresence
+	// that PLAN-2558 S3 already gates on — fixing the registry makes the
+	// snapshot right, and then this skip is correct again for the same
+	// reason it was originally.
 	deliveredSessions := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
 	if targetSessionID == "" || deliveredSessions > 0 {
 		s.watchEvents.Publish(watchevents.Notification{
