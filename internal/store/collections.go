@@ -706,6 +706,15 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 	ts := now()
 	var totalAffected int64
 
+	// TASK-2658: this loop rewrites items.fields on every row carrying the old
+	// option value — a real change to item state that consumers cache — and it
+	// emitted nothing before. It is a SINGLE-TRANSACTION bulk mutation, so it
+	// gets one in-tx item.bulk_updated rather than per-row item.updated: a user
+	// renaming one select option must not arrive at a webhook consumer as
+	// hundreds of deliveries (TASK-1668 / SPEC-3 v1.1).
+	var touchedIDs []string
+	var renames []map[string]any
+
 	for _, m := range migrations {
 		for oldVal, newVal := range m.RenameOptions {
 			if oldVal == newVal {
@@ -759,9 +768,38 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 				}
 				n, _ := result.RowsAffected()
 				totalAffected += n
+				if n > 0 {
+					touchedIDs = append(touchedIDs, id)
+				}
+			}
+			if len(ids) > 0 {
+				renames = append(renames, map[string]any{
+					"field": m.Field,
+					"from":  oldVal,
+					"to":    newVal,
+				})
 			}
 		}
 	}
+
+	// Snapshots are read AFTER every UPDATE in this transaction, so a row
+	// touched by two migrations in one call is carried once, in its final
+	// state, rather than twice in intermediate ones.
+	// Report ZERO on failure, not totalAffected. Every error out of this
+	// function rolls the caller's transaction back, so the row count describes
+	// writes that did not commit — a caller observing (N, err) would be reading
+	// a number for changes that never happened (Codex round 4).
+	members, err := s.outboxMemberSnapshotsTx(tx, touchedIDs)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.emitBulkItemEventTx(tx, workspaceID, members, map[string]any{
+		"kind":    "field_option_renamed",
+		"renames": renames,
+	}); err != nil {
+		return 0, err
+	}
+
 	return totalAffected, nil
 }
 

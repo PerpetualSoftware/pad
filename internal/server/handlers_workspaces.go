@@ -300,9 +300,19 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add the creator as workspace owner
+	// Add the creator as workspace owner.
+	//
+	// The error is still not fatal here (changing that is BUG-2715 — a failure
+	// leaves an OWNERLESS workspace and a 201), but it is no longer discarded
+	// silently. TASK-2658 gave AddWorkspaceMember a second way to fail: it now
+	// writes member.joined transactionally, so an outbox failure rolls the
+	// membership back too. Widening a swallowed error without at least making
+	// it visible is how a new failure mode goes unnoticed for a year.
 	if userID := currentUserID(r); userID != "" {
-		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
+		if err := s.store.AddWorkspaceMember(ws.ID, userID, "owner"); err != nil {
+			slog.Error("workspace created but creator was not added as owner",
+				"workspace_id", ws.ID, "user_id", userID, "error", err)
+		}
 	}
 
 	// OAuth connection auto-add (PLAN-1519 / TASK-1521 / IDEA-1517 §1):
@@ -675,9 +685,15 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add the importer as workspace owner (mirrors handleCreateWorkspace)
+	// Add the importer as workspace owner (mirrors handleCreateWorkspace).
+	// Same posture as that path: not fatal (BUG-2715), but not discarded —
+	// an import that silently fails here returns 201 for a workspace nobody
+	// can administer.
 	if userID != "" {
-		_ = s.store.AddWorkspaceMember(ws.ID, userID, "owner")
+		if err := s.store.AddWorkspaceMember(ws.ID, userID, "owner"); err != nil {
+			slog.Error("workspace imported but importer was not added as owner",
+				"workspace_id", ws.ID, "user_id", userID, "error", err)
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, ws)

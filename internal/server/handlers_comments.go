@@ -116,6 +116,15 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	// This prevents duplicate timeline entries (one for the comment, one for the activity).
 	// Only set ActivityID on success — comments.activity_id has a FK constraint,
 	// and CreateActivity returns an ID even on insert failure.
+	//
+	// THE ORDER IS FORCED, and it leaves a window: the activity commits in its
+	// own transaction before CreateComment runs, so any CreateComment failure
+	// leaves an orphan "commented" activity with no comment behind it. It
+	// cannot simply be reordered — the comment carries the activity's id, so
+	// the activity has to exist first. Pre-existing (a unique violation or DB
+	// error always could), widened slightly by TASK-2658 giving CreateComment
+	// one more way to fail. Tracked as BUG-2716; closing it needs a store-level
+	// call that writes both rows in one transaction.
 	if activityID, err := s.logActivityWithMetaReturningID(workspaceID, item.ID, "commented", r, ""); err == nil && activityID != "" {
 		input.ActivityID = activityID
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -174,6 +175,28 @@ func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment) error {
 
 	if err := s.createAttachmentOn(tx, a); err != nil {
 		return err
+	}
+
+	// The choke point (SPEC-3 / TASK-2658): attachment.added, written in the
+	// same transaction as the row and under the same parent-item lock, so the
+	// event cannot outlive a refused insert.
+	//
+	// GATED TO USER-VISIBLE ORIGINALS, and the gate is the whole subtlety
+	// here. Variants are ATTACHMENT ROWS too — a thumbnail carries ParentID
+	// plus Variant "thumb-sm"/"thumb-md" (models.Attachment) — so an ungated
+	// emit fires three attachment.added events for one image upload, two of
+	// them announcing files no user added and no binding wants. A derived row
+	// always has a parent, so "no parent, and not a non-original variant" is
+	// the test.
+	//
+	// What this deliberately still ADMITS: a transform output (rotate/crop),
+	// which is a new top-level attachment with no ParentID — a user did add
+	// it, it is independently addressable, and calling it derived would be a
+	// judgment about provenance the row itself does not make.
+	if a.ParentID == nil && (a.Variant == nil || *a.Variant == models.AttachmentVariantOriginal) {
+		if err := s.emitAttachmentEventTx(tx, kernelevents.AttachmentAdded, a); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -981,8 +1004,71 @@ func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 // row-before-bytes contract and same IRREVOCABILITY note as
 // ClaimNeverAttachedAttachment: once true, no recovery surface can
 // bring the row back.
+// TASK-2658: a successful claim also emits the ref-only attachment.removed
+// event, in the SAME transaction as the delete.
+//
+// Only THIS claim path emits, and the asymmetry with
+// ClaimNeverAttachedAttachment is deliberate rather than an oversight. That
+// one reclaims rows that were NEVER attached to an item, and attachment.added
+// fires only for attachments written against a live item — so those rows never
+// announced their arrival, and announcing their removal would hand a consumer
+// a deletion for an id it has never seen.
+//
+// THE IMPLICATION RUNS ONE WAY ONLY, which is the whole reason the gate below
+// exists. Never-attached implies never-announced: a row claimable by
+// ClaimNeverAttachedAttachment has item_id IS NULL, no path anywhere sets
+// attachments.item_id back to NULL on an existing row, and every birth path
+// producing a NULL item_id (CreateAttachment, CreateAttachmentTx,
+// CreateAttachmentForLiveItem's own orphan branch) is non-emitting.
+//
+// The CONVERSE is false: plenty of rows reach THIS path having never announced
+// themselves — variants (written by the thumbnail/derivation paths and
+// tombstoned by their original's cascade, so two per image upload), attachments
+// cloned by a cross-workspace copy, and attachments created by workspace
+// import.
+//
+// So the emit carries the SAME gate as attachment.added — a user-visible
+// original, attached to an item — and the two are symmetric by construction
+// rather than by argument. That closes the variant route, which is the
+// systematic one.
+//
+// RESIDUE, stated because it is real: an import- or copy-created attachment
+// still passes that gate while never having emitted an addition, so its removal
+// announces a subject the consumer never saw. The failure mode is noise rather
+// than harm — an unknown id in a delete is ignorable, where the reverse
+// (announced, never retracted) would leave stale state — and the deeper cause
+// is the deliberate silence of the import and copy paths, not this one. A soft-deleted row, by contrast, WAS
+// attached and did emit, so its removal closes a loop the consumer is holding
+// open.
+//
+// The transaction does not weaken the claim protocol (BUG-2415): the claim's
+// conditionality lives entirely in the DELETE's WHERE clause, which is
+// unchanged, and wrapping one conditional statement plus one INSERT in a
+// transaction leaves the row-before-bytes contract and the IRREVOCABILITY note
+// exactly as they were.
 func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bool, error) {
-	res, err := s.db.Exec(s.q(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("claim soft-deleted attachment: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Read the refs BEFORE the delete — afterwards there is no row to read
+	// them from. A missing row is not an error here: it means another sweep
+	// (or a restore) got there first, and the claim below will match zero rows
+	// and report false, which is the existing contract.
+	var workspaceID string
+	var itemID, parentID, variant sql.NullString
+	refsKnown := true
+	switch err := tx.QueryRow(s.q(`SELECT workspace_id, item_id, parent_id, variant FROM attachments WHERE id = ?`), id).
+		Scan(&workspaceID, &itemID, &parentID, &variant); {
+	case errors.Is(err, sql.ErrNoRows):
+		refsKnown = false
+	case err != nil:
+		return false, fmt.Errorf("claim soft-deleted attachment refs: %w", err)
+	}
+
+	res, err := tx.Exec(s.q(`
 		DELETE FROM attachments
 		WHERE id = ?
 		  AND deleted_at IS NOT NULL
@@ -995,7 +1081,29 @@ func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bo
 	if err != nil {
 		return false, fmt.Errorf("claim soft-deleted attachment rows: %w", err)
 	}
-	return n == 1, nil
+	if n != 1 {
+		// Nothing claimed: commit the (empty) transaction and report false,
+		// preserving the existing contract exactly.
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("claim soft-deleted attachment: %w", err)
+		}
+		return false, nil
+	}
+
+	// Same gate as attachment.added: a user-visible ORIGINAL attached to an
+	// item. Symmetry by construction — if it could not have announced its
+	// arrival, it does not announce its removal.
+	announceable := refsKnown && itemID.Valid && itemID.String != "" &&
+		!parentID.Valid && (!variant.Valid || variant.String == models.AttachmentVariantOriginal)
+	if announceable {
+		if err := s.emitRefOnlyDeletionTx(tx, kernelevents.AttachmentRemoved, workspaceID, id, itemID.String, ""); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("claim soft-deleted attachment: %w", err)
+	}
+	return true, nil
 }
 
 // AttachmentHashesWithRows reports which of the given content hashes have

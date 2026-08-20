@@ -654,6 +654,10 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// bracket via links.RewriteBracketAt, then UPDATE the source's
 	// content + re-parse to refresh the index.
 	ts := now()
+	// Members of the item.bulk_updated emitted after the loop — only sources
+	// whose content this cascade actually rewrote, not every candidate it
+	// examined.
+	var cascaded []string
 	for _, work := range works {
 		newContent := work.content
 		mutated := false
@@ -692,6 +696,32 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 		if err := s.replaceWikiLinks(tx, work.id, work.workspaceID, newContent); err != nil {
 			return fmt.Errorf("cascade rename: reparse %s: %w", work.id, err)
 		}
+		cascaded = append(cascaded, work.id)
+	}
+
+	// TASK-2658: the cascade rewrites the CONTENT of every item that linked to
+	// the renamed one by title. Before this, only the renamed item emitted —
+	// its backlinks changed silently, so a consumer's cached copy of each one
+	// went stale with nothing to tell it.
+	//
+	// ONE item.bulk_updated rather than N item.updated: renaming a popular
+	// item can rewrite hundreds of backlinks, and the user performed ONE
+	// action (SPEC-3 v1.1 / TASK-1668). Per-member snapshots keep item-level
+	// bindings evaluable, which is what makes the batching safe.
+	//
+	// Emitted BEFORE resolveBrokenTitleLinks, which mutates the link INDEX
+	// rather than items — no item row changes there, so it has no members to
+	// carry and belongs outside this event.
+	members, err := s.outboxMemberSnapshotsTx(tx, cascaded)
+	if err != nil {
+		return err
+	}
+	if err := s.emitBulkItemEventTx(tx, workspaceID, members, map[string]any{
+		"kind":            "wiki_title_cascade",
+		"renamed_item_id": renamedItemID,
+		"new_title":       newTitle,
+	}); err != nil {
+		return err
 	}
 
 	// (2) Flip newly-resolvable broken rows under the NEW title.

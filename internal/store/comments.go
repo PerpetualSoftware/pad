@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -54,6 +55,18 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 	if err != nil {
 		return nil, fmt.Errorf("insert comment: %w", err)
 	}
+
+	// The choke point (SPEC-3 / TASK-2658): comment.created commits with the
+	// comment it describes. Read back in-tx so the payload is the stored row
+	// rather than the caller's input.
+	created, err := s.getCommentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.emitCommentEventTx(tx, kernelevents.CommentCreated, created); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment: %w", err)
 	}
@@ -75,8 +88,8 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	}
 	defer tx.Rollback()
 
-	var workspaceID string
-	if err := tx.QueryRow(s.q(`SELECT workspace_id FROM comments WHERE id = ?`), id).Scan(&workspaceID); err != nil {
+	var workspaceID, bodyBefore string
+	if err := tx.QueryRow(s.q(`SELECT workspace_id, body FROM comments WHERE id = ?`), id).Scan(&workspaceID, &bodyBefore); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
 		}
@@ -95,6 +108,26 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	if n == 0 {
 		return nil, sql.ErrNoRows
 	}
+
+	// Two gates, and the second one is the real no-op gate.
+	//
+	// The zero-row return above only catches a MISSING comment: the UPDATE
+	// matches on id alone, so re-saving an identical body still touches the
+	// row (updated_at moves) and still reports one row affected. An earlier
+	// version of this comment claimed that path suppressed a no-op edit; it
+	// does not (Codex round 4). Comparing the body is what does — and it keeps
+	// comment.updated consistent with the item events, which emit only when a
+	// slice the taxonomy names actually moved.
+	if body != bodyBefore {
+		updated, err := s.getCommentQ(tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.emitCommentEventTx(tx, kernelevents.CommentUpdated, updated); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment update: %w", err)
 	}
@@ -103,7 +136,26 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 
 // GetComment returns a single comment by ID.
 func (s *Store) GetComment(id string) (*models.Comment, error) {
-	row := s.db.QueryRow(s.q(`
+	return s.getCommentQ(s.db, id)
+}
+
+// getCommentQ is GetComment against any Queryer, so a caller holding a
+// transaction can read the row it just wrote.
+//
+// The reason is correctness before it is anything else: a read issued on s.db
+// takes a DIFFERENT connection, which cannot see the transaction's uncommitted
+// write. s.GetComment(id) called before COMMIT returns the pre-write row, or
+// no row at all for a comment being created — so an event built from it would
+// describe a state that is not the one committing. Event emission needs an
+// in-tx snapshot by design, so it must have an in-tx read to get one.
+//
+// The pool-contention hazard BUG-2409 covers is real too but secondary here,
+// and worth stating precisely rather than from memory: this store bounds
+// SQLite at sqliteMaxOpenConns (16), not one connection, so a pool read from
+// inside a transaction is a contention and lock-ordering risk under load, not
+// an unconditional deadlock.
+func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
+	row := q.QueryRow(s.q(`
 		SELECT c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,
@@ -216,14 +268,51 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 }
 
 // DeleteComment removes a comment by ID.
+// DeleteComment hard-deletes a comment and emits the ref-only
+// comment.deleted event in the same transaction (SPEC-3 v1.4 / TASK-2658).
+//
+// Transactional as of TASK-2658 — it was a bare Exec. The delete marker is
+// what resolves the conflict round 7 exposed: without it, a hard-deleted
+// comment's undispatched created/updated rows were the ONLY record it ever
+// existed, which forced a false choice between dropping committed events
+// (breaking the outbox guarantee) and delivering the deleted body forever.
+// With it, the created event still delivers, the deletion is announced
+// ref-only, and retention prunes both — privacy of a frozen payload is
+// temporal, not achieved by deleting rows out from under a consumer.
+//
+// The identifiers are read BEFORE the DELETE, in-tx, because after it there is
+// no row to read them from.
 func (s *Store) DeleteComment(id string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM comments WHERE id = ?"), id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete comment: %w", err)
+	}
+	defer tx.Rollback()
+
+	var workspaceID, itemID string
+	var parentID sql.NullString
+	switch err := tx.QueryRow(s.q(`SELECT workspace_id, item_id, parent_id FROM comments WHERE id = ?`), id).
+		Scan(&workspaceID, &itemID, &parentID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return sql.ErrNoRows
+	case err != nil:
+		return fmt.Errorf("delete comment: read refs: %w", err)
+	}
+
+	result, err := tx.Exec(s.q("DELETE FROM comments WHERE id = ?"), id)
 	if err != nil {
 		return fmt.Errorf("delete comment: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return sql.ErrNoRows
+	}
+
+	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, workspaceID, id, itemID, parentID.String); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete comment: %w", err)
 	}
 	return nil
 }
