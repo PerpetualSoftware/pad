@@ -29,6 +29,17 @@ import (
 // the catalog just forwards the input.
 
 func init() {
+	// The `fields` OBJECT param is a create/update writer (see
+	// catalog_item_fields.go). Every other action wraps in a loud
+	// refusal so a declared-but-meaningless `fields` can't flow to
+	// dispatch and be silently dropped by BuildCLIArgs — the exact
+	// failure mode the #1066 contract removes.
+	for name, fn := range padItemTool.Actions {
+		if name == "create" || name == "update" {
+			continue
+		}
+		padItemTool.Actions[name] = rejectFieldsParam("pad_item."+name, fn)
+	}
 	appendToCatalog(padItemTool)
 }
 
@@ -40,9 +51,11 @@ var padItemTool = ToolDef{
 		Params:    padItemSchemaParams,
 	},
 	Actions: map[string]ActionFn{
-		// Lifecycle
-		"create": passThrough([]string{"item", "create"}),
-		"update": passThrough([]string{"item", "update"}),
+		// Lifecycle. create/update are CUSTOM (catalog_item_fields.go):
+		// they fold an optional `fields` OBJECT into the dedicated-param
+		// + `field`-array paths before dispatching (#1066).
+		"create": actionItemCreate,
+		"update": actionItemUpdate,
 		"delete": passThrough([]string{"item", "delete"}),
 		"get":    passThrough([]string{"item", "show"}),
 		// list is CUSTOM (not passThrough) so a bare agent list stays
@@ -204,7 +217,12 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. implementation_notes, decision_log and convention are REFUSED here on update (BUG-2627) and on move/copy (BUG-2674) — both reach you as code=validation_failed with the server's explanation in the hint (the server's own finer-grained code is not forwarded, so branch on the message if you need to tell the two apart). Each has its own writer: implementation_notes -> action=note, decision_log -> action=decide, convention -> library activation (no update path at all). github_pr is the EXCEPTION on UPDATE ONLY — it is still refused on move/copy, where an override would reintroduce the key the migration just dropped (BUG-2674). The update exemption exists because `pad github link` needs a local git checkout and the `gh` CLI, leaving no other door; note it does not currently WORK either — a `field` value arrives as a string, so the PR data lands double-encoded and no link appears (BUG-2696), so hand PR linking to a human rather than retrying. On CREATE none of them are blocked, because that door is shared with Pad's own writers — but do not hand-write implementation_notes / decision_log there: the value Pad stores cannot be read back, which hides the existing entries AND makes note/decide refuse on that item until it is repaired."},
+	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. implementation_notes, decision_log and convention are REFUSED here on update (BUG-2627) and on move/copy (BUG-2674) — both reach you as code=validation_failed with the server's explanation in the hint (the server's own finer-grained code is not forwarded, so branch on the message if you need to tell the two apart). Each has its own writer: implementation_notes -> action=note, decision_log -> action=decide, convention -> library activation (no update path at all). github_pr is the EXCEPTION on UPDATE ONLY — it is still refused on move/copy, where an override would reintroduce the key the migration just dropped (BUG-2674). The update exemption exists because `pad github link` needs a local git checkout and the `gh` CLI, leaving no other door; note it does not currently WORK either — a `field` value arrives as a string, so the PR data lands double-encoded and no link appears (BUG-2696), so hand PR linking to a human rather than retrying. On CREATE none of them are blocked, because that door is shared with Pad's own writers — but do not hand-write implementation_notes / decision_log there: the value Pad stores cannot be read back, which hides the existing entries AND makes note/decide refuse on that item until it is repaired. On create/update the `fields` OBJECT param is an equivalent alternative."},
+	// `fields`: the OBJECT alias for the write path (#1066). Reads
+	// return `fields` as a native object, so writing that same shape
+	// back is what agents naturally do — it used to be silently
+	// dropped. See catalog_item_fields.go for the merge contract.
+	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values must be scalars (tags may be an array) — non-scalar field types (multi_select, json) are refused, not written; pass those via a supported path until array/JSON encoding lands."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
@@ -251,18 +269,22 @@ const padItemToolDescription = `Item operations — the consolidated CRUD + rela
 Actions:
   create        — Create a new item.
                   Required: collection, title.
-                  Optional: status, priority, category, content, parent, role, assign, tags, field.
+                  Optional: status, priority, category, content, parent, role, assign, tags,
+                  field, fields.
                   Use the dedicated top-level params (status / priority / category / parent
                   / role / assign / tags) for those named fields — the dispatcher rolls
                   them into the item's fields JSON automatically. The 'field' param is
                   the escape hatch for SCHEMA-DECLARED custom fields without a dedicated
-                  param; accepts an array of "key=value" strings.
+                  param; accepts an array of "key=value" strings. The 'fields' OBJECT
+                  (the same shape reads return, e.g. {"status":"done","effort":"l"}) is
+                  an equivalent write form; the same key with CONFLICTING values in two
+                  places is refused rather than resolved.
                   The 'tags' param accepts a JSON array of strings (e.g. ["v1","frontend"])
                   — NOT a comma-separated string.
   update        — Update an item by ref.
                   Required: ref. At least one mutable field.
                   Optional: title, status, priority, content, role, assign, parent, comment, tags,
-                  expected_updated_at.
+                  field, fields, expected_updated_at.
                   Same placement rules as create. Field updates are applied as a
                   field-level MERGE server-side (only the keys you set change; the
                   rest are preserved), so concurrent single-field updates no longer

@@ -549,7 +549,7 @@ const CmdhelpVersion = "0.1"
 //     write. Relying on the old behaviour is relying on a defect, the
 //     same reading v0.17 took for the fields-blob shadowing.
 //
-//   - "0.23" — current. BUG-2627 part 2 + BUG-2675, one bump for two
+//   - "0.23" — BUG-2627 part 2 + BUG-2675, one bump for two
 //     changes at the same door. BEHAVIOR bump on the v0.9/v0.16/v0.17/
 //     v0.22 grounds — no tool, action enum, or param shape changed.
 //
@@ -620,7 +620,39 @@ const CmdhelpVersion = "0.1"
 //     condition would stop matching. That client was retrying a
 //     permanent failure.
 
-const ToolSurfaceVersion = "0.23"
+//   - "0.24" — current. #1066: the pad_item `fields` OBJECT is now a
+//     real write form, and undeclared input keys fail loudly. Two
+//     halves, one contract change:
+//
+//     (1) `fields` alias. Since the BUG-991 normalization, reads return
+//     `fields` as a native object, so writing back the structure you
+//     just read was the obvious call — and it was a silent no-op: not a
+//     declared param, nothing set additionalProperties, so the object
+//     was accepted, never mapped by BuildCLIArgs, and dropped while the
+//     PATCH still ran (success + bumped updated_at + unchanged value).
+//     create/update now fold `fields` into the same path as `field` /
+//     the dedicated params (catalog_item_fields.go). The same key with
+//     CONFLICTING values in two places is REFUSED with a structured
+//     error — refuse-on-ambiguity, same disposition as clear_parent /
+//     clear_assigned_user; equal duplicates collapse to one write.
+//     Non-writer actions refuse a `fields` param loudly rather than
+//     letting the now-declared key be dropped at dispatch.
+//
+//     (2) Strict input validation. The fan-out handler now rejects any
+//     top-level key outside the tool's declared schema (action,
+//     workspace, declared params, and a small documented compat list —
+//     pad_item's v0.16 assigned_user_id / agent_role_id clear form)
+//     with a structured validation_failed naming the offending keys.
+//     This turns every future undeclared-param variant of this bug into
+//     a loud error instead of a silent no-op, across ALL catalog tools.
+//
+//     Bump rationale: (1) is additive (new param), but (2) changes the
+//     contract for inputs that previously "succeeded" — any consumer
+//     relying on an undeclared key being ignored now gets an error.
+//     That reliance was indistinguishable from a bug in the caller
+//     (the key never did anything), so the break is the fix. Single
+//     bump covers both halves; they are one contract change.
+const ToolSurfaceVersion = "0.24"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
