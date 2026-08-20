@@ -153,6 +153,7 @@ type RedisBus struct {
 	mu          sync.Mutex
 	subscribers map[chan Notification]struct{}
 	replay      *replayBuffer
+	replaySize  int
 	closed      bool
 
 	// knownFrom / lastAppendedID bound what this instance can HONESTLY
@@ -201,11 +202,22 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // NewRedisBusWithReplaySize is NewRedisBus with a custom replay capacity
 // (tests use a small one, exactly like NewWithReplaySize).
 func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
+	if size <= 0 {
+		// newReplayBuffer(0) returns a buffer whose first append panics on a
+		// zero-length backing slice. That was reachable here in a way it is
+		// not for MemoryBus, because the epoch-reset path REBUILDS the buffer
+		// at runtime — a bad size would turn a Redis counter reset into a
+		// crash rather than a resync. (MemoryBus's NewWithReplaySize has the
+		// same trap for a caller passing 0; left alone as pre-existing and
+		// off this bug's path, but it is the same trap.)
+		size = DefaultReplayBufferSize
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &RedisBus{
 		client:      client,
 		subscribers: make(map[chan Notification]struct{}),
 		replay:      newReplayBuffer(size),
+		replaySize:  size,
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -449,14 +461,33 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 	case b.lastAppendedID == 0:
 		// Cold start: this instance knows nothing before this id.
 		b.knownFrom = n.ID
+
+	case n.ID <= b.lastAppendedID:
+		// THE COUNTER WENT BACKWARDS, which means the id space itself
+		// restarted — pad:watchevents_seq evicted under maxmemory, lost to a
+		// FLUSHDB, or restored from an older snapshot (codex round 6). Ids
+		// are no longer comparable across that boundary, so KEEPING the old
+		// entries is what does the damage: the ring would hold 99,100,101
+		// alongside a fresh 1,2,3, and a resume from 2 would replay the
+		// stale hundreds as though they were newer.
+		//
+		// Dropping the buffer makes every resume from the old space answer
+		// nil instead — replayBuffer.since() returns nil once sinceID
+		// exceeds the newest id it holds, which after the reset is a small
+		// number — so those clients resync, which is the only honest
+		// outcome. Clients in the NEW space keep working immediately.
+		slog.Warn("watchevents: notification id went backwards; the Redis sequence counter was reset. "+
+			"Dropping the replay buffer — resumes from the previous id space will report sync_required",
+			"previous", b.lastAppendedID, "got", n.ID)
+		b.replay = newReplayBuffer(b.replaySize)
+		b.knownFrom = n.ID
+
 	case n.ID != b.lastAppendedID+1:
 		slog.Warn("watchevents: gap in the received notification sequence; resumes across it will report sync_required",
 			"expected", b.lastAppendedID+1, "got", n.ID)
 		b.knownFrom = n.ID
 	}
-	if n.ID > b.lastAppendedID {
-		b.lastAppendedID = n.ID
-	}
+	b.lastAppendedID = n.ID
 
 	b.replay.append(n)
 

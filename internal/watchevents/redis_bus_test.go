@@ -56,8 +56,12 @@ func newLocalOnlyBus(size int) *RedisBus {
 	return &RedisBus{
 		subscribers: make(map[chan Notification]struct{}),
 		replay:      newReplayBuffer(size),
-		ctx:         ctx,
-		cancel:      cancel,
+		// replaySize matters: the epoch-reset path rebuilds the buffer from
+		// it, and a fixture that left it zero turned a counter reset into a
+		// panic rather than a resync.
+		replaySize: size,
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -492,6 +496,48 @@ func TestRedisBusColdStartReplayReportsAGap(t *testing.T) {
 	// And a fresh subscriber still gets what is buffered.
 	if fresh := b.EventsSince(0); len(fresh) != 2 {
 		t.Errorf("fresh subscriber: got %d entries, want 2: %+v", len(fresh), fresh)
+	}
+}
+
+// TestRedisBusCounterResetDropsTheStaleReplayBuffer — codex round 6.
+//
+// pad:watchevents_seq has no TTL, but it can still vanish: evicted under
+// maxmemory, dropped by a FLUSHDB, or restored from an older snapshot. Ids then
+// restart at 1 while this instance's ring still holds the hundreds. Keeping
+// both is what corrupts replay — a resume from 2 in the NEW space would be
+// handed the stale 99/100/101 as though they were newer.
+func TestRedisBusCounterResetDropsTheStaleReplayBuffer(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+
+	for _, id := range []int64{99, 100, 101} {
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-old"})
+	}
+
+	// Redis counter reset: ids restart.
+	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-new"})
+	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-new"})
+
+	// A client from the OLD id space must be told to resync, not handed
+	// entries from the new one (or, worse, the stale ones it already saw).
+	if got := b.EventsSince(100); got != nil {
+		t.Errorf("a resume from the pre-reset id space must report a gap; got %+v", got)
+	}
+
+	// A client in the NEW space works normally, and must never see a stale
+	// entry — which is the assertion a build that merely logged the reset
+	// and kept the buffer would fail.
+	after := b.EventsSince(1)
+	if after == nil {
+		t.Fatal("a resume from 1 is inside the new id space and must replay")
+	}
+	for _, n := range after {
+		if n.ItemRef != "TASK-new" {
+			t.Fatalf("replay after a counter reset returned a pre-reset entry: %+v", n)
+		}
+	}
+	if len(after) != 1 || after[0].ID != 2 {
+		t.Errorf("resume from 1: got %+v, want just id 2", after)
 	}
 }
 
