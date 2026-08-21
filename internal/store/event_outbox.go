@@ -922,9 +922,17 @@ func (s *Store) MarkOutboxDispatched(ids []string) error {
 
 // MarkOutboxAttemptFailed records a failed dispatch attempt, leaving the event
 // pending so the next drain retries it.
+//
+// The CLAIM IS RELEASED here, not left to expire. A transient failure means
+// the event is still owed and nothing is in flight for it; holding the claim
+// until the lease times out would idle the row for the whole lease window for
+// no reason, and on a single-instance deployment that is the only reason it
+// would ever wait at all.
 func (s *Store) MarkOutboxAttemptFailed(id, reason string) error {
 	if _, err := s.db.Exec(s.q(`
-		UPDATE event_outbox SET attempts = attempts + 1, last_error = ? WHERE id = ? AND dispatched_at IS NULL
+		UPDATE event_outbox
+		SET attempts = attempts + 1, last_error = ?, claimed_at = NULL, claimed_by = NULL
+		WHERE id = ? AND dispatched_at IS NULL
 	`), reason, id); err != nil {
 		return fmt.Errorf("mark outbox attempt failed %s: %w", id, err)
 	}
@@ -1004,4 +1012,194 @@ func (s *Store) PruneUndispatchedOutbox(before string) (int64, error) {
 		return 0, nil
 	}
 	return n, nil
+}
+
+// ClaimPendingOutboxEvents claims up to limit pending events for one drain
+// pass and returns them, oldest first.
+//
+// WHY A CLAIM AT ALL. Pad Cloud runs N instances against one database and each
+// runs the drain, so an unclaimed pending row is delivered N times BY
+// CONSTRUCTION. SPEC-3 permits duplicates — consumers dedupe on the event id —
+// but "occasionally, after a crash" and "always, once per instance" are
+// different promises, and only the first is one a consumer can budget for.
+//
+// The arbiter is the CONDITIONAL UPDATE, not the SELECT that finds candidates.
+// Two instances reading the same candidate list is expected and harmless: each
+// row's UPDATE carries its own claim-availability predicate, so one instance
+// writes it and the other matches zero rows. This is BUG-2415's orphan-GC
+// protocol, and it is dialect-uniform on purpose — Postgres FOR UPDATE SKIP
+// LOCKED plus a separate SQLite path would be two implementations of one
+// behaviour, only one of which ever runs where it matters.
+//
+// leaseCutoff is the claim expiry: a row claimed before it is claimable again,
+// because an instance that dies between claiming and dispatching must not
+// strand its events. At-least-once is exactly the promise that makes
+// re-claiming safe.
+//
+// BATCHES ARE CLAIMED WHOLE, past the limit if necessary. A batch split across
+// two passes would be folded into two wire events each reporting a partial
+// member count — the limit is a throughput knob, and letting it decide what a
+// bulk operation "was" would make the wire event's truth depend on queue depth.
+// Rows of a batch another instance already holds are simply not ours; the wire
+// payload carries the batch id so a consumer can correlate a split that a
+// concurrent claim did produce.
+func (s *Store) ClaimPendingOutboxEvents(drainer string, limit int, leaseCutoff string) ([]OutboxEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	// The token, not the drainer name, is what identifies THIS pass: a
+	// drainer that claims twice in the same second would otherwise read back
+	// its previous pass's rows as well.
+	token := drainer + ":" + newID()
+
+	ids, err := s.pendingClaimCandidates(limit, leaseCutoff)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	if err := s.claimOutboxIDs(token, ids, leaseCutoff); err != nil {
+		return nil, err
+	}
+	return s.outboxEventsClaimedBy(token)
+}
+
+// claimOutboxIDs is the ARBITER: one conditional UPDATE per candidate, each
+// carrying its own claim-availability predicate.
+//
+// Split out from ClaimPendingOutboxEvents so a test can drive it with a
+// deliberately STALE candidate list — the race this exists for. Called with
+// ids the caller selected earlier, it must claim only those still available,
+// which is not observable through the public entry point (whose candidate
+// query has already filtered them).
+func (s *Store) claimOutboxIDs(token string, ids []string, leaseCutoff string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("claim outbox events: %w", err)
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.Exec(s.q(`
+			UPDATE event_outbox
+			SET claimed_at = ?, claimed_by = ?
+			WHERE id = ?
+			  AND dispatched_at IS NULL
+			  AND (claimed_at IS NULL OR claimed_at < ?)
+		`), now(), token, id, leaseCutoff); err != nil {
+			return fmt.Errorf("claim outbox event %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("claim outbox events: %w", err)
+	}
+	return nil
+}
+
+// pendingClaimCandidates returns the ids a claim pass should attempt: the
+// oldest claimable pending rows, plus every claimable sibling of any batch
+// they belong to.
+func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id, COALESCE(batch_id, '')
+		FROM event_outbox
+		WHERE dispatched_at IS NULL
+		  AND (claimed_at IS NULL OR claimed_at < ?)
+		ORDER BY occurred_at, id
+		LIMIT ?
+	`), leaseCutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list claimable outbox events: %w", err)
+	}
+	defer rows.Close()
+
+	seen := map[string]bool{}
+	var ids []string
+	var batches []string
+	for rows.Next() {
+		var id, batch string
+		if err := rows.Scan(&id, &batch); err != nil {
+			return nil, fmt.Errorf("scan claimable outbox event: %w", err)
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if batch != "" {
+			batches = append(batches, batch)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimable outbox events: %w", err)
+	}
+
+	for _, batch := range batches {
+		siblings, err := s.claimableBatchSiblings(batch, leaseCutoff)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range siblings {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, nil
+}
+
+func (s *Store) claimableBatchSiblings(batchID, leaseCutoff string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id
+		FROM event_outbox
+		WHERE batch_id = ?
+		  AND dispatched_at IS NULL
+		  AND (claimed_at IS NULL OR claimed_at < ?)
+	`), batchID, leaseCutoff)
+	if err != nil {
+		return nil, fmt.Errorf("list batch siblings: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan batch sibling: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate batch siblings: %w", err)
+	}
+	return ids, nil
+}
+
+func (s *Store) outboxEventsClaimedBy(token string) ([]OutboxEvent, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id, workspace_id, event_type, subject_kind, COALESCE(subject_id, ''), payload, hop, occurred_at, attempts, COALESCE(last_error, ''), COALESCE(batch_id, '')
+		FROM event_outbox
+		WHERE claimed_by = ? AND dispatched_at IS NULL
+		ORDER BY occurred_at, id
+	`), token)
+	if err != nil {
+		return nil, fmt.Errorf("read claimed outbox events: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OutboxEvent
+	for rows.Next() {
+		var ev OutboxEvent
+		var payload string
+		if err := rows.Scan(&ev.ID, &ev.WorkspaceID, &ev.EventType, &ev.SubjectKind, &ev.SubjectID,
+			&payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError, &ev.BatchID); err != nil {
+			return nil, fmt.Errorf("scan claimed outbox event: %w", err)
+		}
+		ev.Payload = []byte(payload)
+		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimed outbox events: %w", err)
+	}
+	return out, nil
 }

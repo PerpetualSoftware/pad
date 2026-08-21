@@ -1486,11 +1486,16 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 // demand.
 func insertOutboxRow(t *testing.T, s *Store, id, workspaceID, occurredAt string, dispatchedAt *string) {
 	t.Helper()
+	insertOutboxRowBatch(t, s, id, workspaceID, occurredAt, dispatchedAt, "")
+}
+
+func insertOutboxRowBatch(t *testing.T, s *Store, id, workspaceID, occurredAt string, dispatchedAt *string, batchID string) {
+	t.Helper()
 	if _, err := s.db.Exec(s.q(`
-		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at, dispatched_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at, dispatched_at, batch_id)
+		VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, NULLIF(?, ''))
 	`), id, workspaceID, kernelevents.ItemCreated, kernelevents.SubjectItem, "subj-"+id,
-		`{"id":"subj-`+id+`","title":"frozen"}`, occurredAt, dispatchedAt); err != nil {
+		`{"id":"subj-`+id+`","title":"frozen"}`, occurredAt, dispatchedAt, batchID); err != nil {
 		t.Fatalf("insert outbox row %s: %v", id, err)
 	}
 }
@@ -1688,4 +1693,193 @@ func TestOutbox_WithEventBatchStampsEveryMutationPath(t *testing.T) {
 		}
 		assertBatch(t, solo.ID, "")
 	})
+}
+
+func claimedIDs(evs []OutboxEvent) []string {
+	out := make([]string, 0, len(evs))
+	for _, e := range evs {
+		out = append(out, e.ID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestOutbox_ClaimIsExclusiveUntilTheLeaseExpires is the multi-instance guard.
+// Every instance of a cloud deployment runs the drain, so without the claim
+// each pending row is delivered once PER INSTANCE — by construction, not by
+// accident.
+func TestOutbox_ClaimIsExclusiveUntilTheLeaseExpires(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox claim")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+	insertOutboxRow(t, s, "row-b", ws.ID, occurred, nil)
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+
+	first, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if got := claimedIDs(first); len(got) != 2 {
+		t.Fatalf("instance-1 claimed %v, want both rows", got)
+	}
+
+	second, err := s.ClaimPendingOutboxEvents("instance-2", 10, live)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("instance-2 claimed %v — every event would be delivered once per instance", claimedIDs(second))
+	}
+
+	// A drainer that died holding claims must not strand them: past the lease,
+	// the rows are claimable again. At-least-once is what makes that safe.
+	expired := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	third, err := s.ClaimPendingOutboxEvents("instance-2", 10, expired)
+	if err != nil {
+		t.Fatalf("post-lease claim: %v", err)
+	}
+	if got := claimedIDs(third); len(got) != 2 {
+		t.Fatalf("post-lease claim got %v, want both rows — a dead instance stranded them", got)
+	}
+}
+
+// TestOutbox_ClaimTakesWholeBatchesPastTheLimit pins the rule that keeps a
+// folded wire event true: the limit is a throughput knob, and letting it split
+// a batch would make one bulk operation arrive as two events each reporting a
+// partial member count.
+func TestOutbox_ClaimTakesWholeBatchesPastTheLimit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox batch claim")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRowBatch(t, s, "b-1", ws.ID, occurred, nil, "batch-x")
+	insertOutboxRowBatch(t, s, "b-2", ws.ID, occurred, nil, "batch-x")
+	insertOutboxRowBatch(t, s, "b-3", ws.ID, occurred, nil, "batch-x")
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	claimed, err := s.ClaimPendingOutboxEvents("instance-1", 1, live)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	got := claimedIDs(claimed)
+	if len(got) != 3 {
+		t.Fatalf("claimed %v with limit=1, want all three members of batch-x", got)
+	}
+	for _, ev := range claimed {
+		if ev.BatchID != "batch-x" {
+			t.Errorf("claimed row %s carries batch %q, want batch-x", ev.ID, ev.BatchID)
+		}
+	}
+
+	// Control: an unbatched row is still bounded by the limit, so the
+	// expansion above is batch-specific rather than the limit being ignored.
+	clearOutbox(t, s)
+	insertOutboxRow(t, s, "s-1", ws.ID, occurred, nil)
+	insertOutboxRow(t, s, "s-2", ws.ID, occurred, nil)
+	single, err := s.ClaimPendingOutboxEvents("instance-1", 1, live)
+	if err != nil {
+		t.Fatalf("control claim: %v", err)
+	}
+	if len(single) != 1 {
+		t.Fatalf("control claimed %v with limit=1, want exactly one row", claimedIDs(single))
+	}
+}
+
+// TestOutbox_FailedAttemptReleasesTheClaim: a transient failure means the
+// event is still owed and nothing is in flight, so the next tick must be able
+// to take it. Holding the claim until the lease expired would idle the row for
+// the whole window — and on a single-instance deployment that is the only
+// reason it would ever wait at all.
+func TestOutbox_FailedAttemptReleasesTheClaim(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox claim release")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+
+	claimed, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim = %v, %v; want one row", claimedIDs(claimed), err)
+	}
+	// Premise: it really is unavailable while claimed, so the re-claim below
+	// proves the release rather than the claim never having applied.
+	if again, err := s.ClaimPendingOutboxEvents("instance-2", 10, live); err != nil || len(again) != 0 {
+		t.Fatalf("row was claimable while claimed (%v, %v)", claimedIDs(again), err)
+	}
+
+	if err := s.MarkOutboxAttemptFailed("row-a", "endpoint timed out"); err != nil {
+		t.Fatalf("MarkOutboxAttemptFailed: %v", err)
+	}
+
+	retry, err := s.ClaimPendingOutboxEvents("instance-2", 10, live)
+	if err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	if len(retry) != 1 {
+		t.Fatalf("re-claim got %v, want the released row", claimedIDs(retry))
+	}
+	if retry[0].Attempts != 1 {
+		t.Errorf("attempts = %d, want 1 — the failed attempt was not recorded", retry[0].Attempts)
+	}
+	if retry[0].LastError != "endpoint timed out" {
+		t.Errorf("last_error = %q, want the recorded reason", retry[0].LastError)
+	}
+}
+
+// TestOutbox_ClaimArbitratesTheRaceNotJustTheQuery drives the conditional
+// UPDATE with a STALE candidate list — the case the public entry point cannot
+// produce, because its own candidate query has already filtered held rows.
+//
+// Without this, the exclusivity test above passes for an implementation whose
+// UPDATE has no availability predicate at all: the candidate filter alone
+// produces the same end state single-threaded (CONVE-12 — name the other
+// mechanism that produces the end state, then assert against IT). Under real
+// concurrency that implementation double-claims every row two instances select
+// at the same moment, which is precisely the multi-instance bug the claim
+// exists to prevent.
+func TestOutbox_ClaimArbitratesTheRaceNotJustTheQuery(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox claim race")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+
+	// Instance 2 selects candidates FIRST — before instance 1 claims. This is
+	// the window: both instances have the row in their candidate list.
+	stale, err := s.pendingClaimCandidates(10, live)
+	if err != nil {
+		t.Fatalf("candidates: %v", err)
+	}
+	if len(stale) != 1 {
+		t.Fatalf("candidates = %v, want the one pending row", stale)
+	}
+
+	won, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil || len(won) != 1 {
+		t.Fatalf("instance-1 claim = %v, %v; want the row", claimedIDs(won), err)
+	}
+
+	// Instance 2 now runs its UPDATE against the list it selected before the
+	// claim landed. The predicate on each statement is the only thing that can
+	// stop it.
+	const loser = "instance-2:stale-token"
+	if err := s.claimOutboxIDs(loser, stale, live); err != nil {
+		t.Fatalf("loser claim: %v", err)
+	}
+	got, err := s.outboxEventsClaimedBy(loser)
+	if err != nil {
+		t.Fatalf("read loser claims: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("instance-2 also claimed %v — both instances would deliver the same event", claimedIDs(got))
+	}
 }
