@@ -118,9 +118,12 @@ type pushResponse struct {
 	// push in that state is refused with a 503 instead and never reaches
 	// this struct, so a null is always a broadcast.
 	//
-	// Consumers: treat null as "unknown", not as falsy. Existing clients
-	// are unaffected in practice — internal/cli's PushResult has no such
-	// field, and the web's type has always been optional.
+	// Consumers: treat null as "unknown", not as falsy. Both clients carry
+	// it — internal/cli's PushResult mirrors it as a *int (untagged, so
+	// `pad push --format json` prints an explicit null rather than
+	// omitting the key), and the web's type is `number | null | undefined`
+	// with all three states documented there. An ABSENT key is a third
+	// thing again: a server predating session targeting.
 	DeliveredSessions *int `json:"delivered_sessions"`
 }
 

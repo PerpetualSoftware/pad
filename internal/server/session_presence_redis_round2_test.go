@@ -316,8 +316,13 @@ func TestRedisSessionPresence_RemoveAfterCloseStillWaits(t *testing.T) {
 		client:        client,
 		sessionKeyTTL: time.Minute,
 		renewInterval: 5 * time.Millisecond,
-		drainTimeout:  100 * time.Millisecond,
-		renewals:      make(map[string]*renewal),
+		// Long enough that the wait below is observable. The BOUND on that
+		// wait is asserted separately, by the test after this one — the two
+		// properties pull against each other (wait, but not forever) and
+		// conflating them into one deadline would let either failure hide
+		// behind the other.
+		drainTimeout: 5 * time.Second,
+		renewals:     make(map[string]*renewal),
 		onRenewWrite: func() {
 			once.Do(func() {
 				close(entered)
@@ -329,7 +334,8 @@ func TestRedisSessionPresence_RemoveAfterCloseStillWaits(t *testing.T) {
 	id := p.Add("user-1", SessionIdentity{Armed: true})
 	<-entered
 
-	p.Close() // drains, times out on the parked renewal, returns
+	closeDone := make(chan struct{})
+	go func() { p.Close(); close(closeDone) }()
 
 	removed := make(chan struct{})
 	go func() {
@@ -343,10 +349,11 @@ func TestRedisSessionPresence_RemoveAfterCloseStillWaits(t *testing.T) {
 	select {
 	case <-removed:
 		t.Fatal("Remove returned after Close while a renewal was still in flight; that renewal can re-create the entry after the delete")
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(300 * time.Millisecond):
 	}
 
 	close(release)
+	<-closeDone
 
 	select {
 	case <-removed:
@@ -362,5 +369,57 @@ func TestRedisSessionPresence_RemoveAfterCloseStillWaits(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("a ghost session survived Remove-after-Close (%d listed)", len(sessions))
+	}
+}
+
+// TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop —
+// codex round 11, and the counterweight to the test above.
+//
+// Those two properties pull against each other: Remove must WAIT for an
+// in-flight renewal (or a ghost survives the delete), and must NOT wait
+// forever (or a parked renewal holds http.Server.Shutdown). Round 10
+// bounded the wrong branch — the post-Close fallback rather than the
+// `<-rn.done` path a shutdown actually takes, because Close RETAINS its
+// entries so the handler finds one. The hang survived its own fix.
+//
+// Asserting the bound needs its own test rather than a shorter deadline on
+// the one above, which would make each failure indistinguishable from the
+// other.
+func TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	p := &RedisSessionPresence{
+		client:        client,
+		sessionKeyTTL: time.Minute,
+		renewInterval: 5 * time.Millisecond,
+		drainTimeout:  200 * time.Millisecond,
+		renewals:      make(map[string]*renewal),
+		onRenewWrite: func() {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		},
+	}
+	t.Cleanup(func() { close(release) })
+
+	id := p.Add("user-1", SessionIdentity{Armed: true})
+	<-entered // parked, and nothing will release it
+
+	removed := make(chan struct{})
+	go func() {
+		p.Remove("user-1", id)
+		close(removed)
+	}()
+
+	select {
+	case <-removed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Remove never returned against a renewal that will not stop — a disconnecting handler holds http.Server.Shutdown forever")
 	}
 }

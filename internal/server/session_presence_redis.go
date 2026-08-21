@@ -442,8 +442,22 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 		// Stop AND wait, in that order and outside the lock. Stopping alone
 		// leaves an in-flight renewal free to re-create the entry after the
 		// delete below (codex round 1, P2).
+		//
+		// BOUNDED, and this is the branch that matters (codex round 11).
+		// Round 10 bounded only the post-Close fallback below, which was
+		// the wrong half: Close RETAINS its renewal entries, so a handler
+		// unwinding during shutdown finds one here and takes this path —
+		// and an unbounded `<-rn.done` against a parked renewal held
+		// http.Server.Shutdown exactly as before. Same deadline, same
+		// trade: a ghost that expires on its TTL beats a shutdown that
+		// never returns.
 		rn.stop()
-		<-rn.done
+		select {
+		case <-rn.done:
+		case <-time.After(p.drain()):
+			slog.Warn("session presence: renewal did not stop before deregistration; the entry may briefly reappear until its TTL",
+				"user_id", userID, "timeout", p.drain())
+		}
 	}
 
 	// A fresh context, NOT the cancelled renewal one: this is the clean
