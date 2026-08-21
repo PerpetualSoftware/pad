@@ -708,3 +708,165 @@ func TestRedisSessionPresence_CapPrunesStaleMembersBeforeRefusing(t *testing.T) 
 		t.Fatalf("a live session must be admitted past an index full of expired members; listed %d", len(sessions))
 	}
 }
+
+// TestRedisSessionPresence_UnadmittedRenewalsAreStillCapped — codex round
+// 20, and the hole two earlier fixes opened between them.
+//
+// Round 18: a registration that fails on TRANSPORT keeps its renewal, so a
+// blip recovers on the next tick. Round 19: renewals bypass the cap, so an
+// admitted session whose index member was pruned is never locked out.
+// Together: a user opens streams while Redis is unreachable and every one
+// of them registers the moment it recovers, cap and all.
+//
+// The bypass is a property of having been ADMITTED, not of being a
+// renewal. Driven through write() with the flag renewLoop would actually
+// pass, since that is where the decision lives.
+func TestRedisSessionPresence_UnadmittedRenewalsAreStillCapped(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(p.Close)
+	ctx := t.Context()
+
+	for i := 0; i < maxSessionsPerUser; i++ {
+		p.Add("user-1", SessionIdentity{Armed: true})
+	}
+
+	// A stream that never registered — what an Add during a Redis outage
+	// leaves behind. Its renewal asks for admission, so the cap applies.
+	err := p.write(ctx, "user-1", "never-registered", `{"id":"never-registered"}`, false)
+	if !errors.Is(err, errSessionLimitReached) {
+		t.Fatalf("an unadmitted session's renewal must still be capped, got %v", err)
+	}
+
+	sessions, listErr := p.ListForUser("user-1")
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	// The wrong behaviour's fingerprint: the registry past its own bound.
+	if len(sessions) != maxSessionsPerUser {
+		t.Fatalf("registry exceeded its cap via a recovery path: %d entries", len(sessions))
+	}
+}
+
+// TestRedisSessionPresence_AdmissionIsRecordedOnAddSuccess is the control
+// for the test above: an ADMITTED session's renewal must still bypass the
+// cap, or round 19's permanent-lockout bug returns. Without this, a fix
+// that simply capped every renewal would pass the test above and look
+// correct.
+func TestRedisSessionPresence_AdmissionIsRecordedOnAddSuccess(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(p.Close)
+
+	var first string
+	for i := 0; i < maxSessionsPerUser; i++ {
+		id := p.Add("user-1", SessionIdentity{Armed: true})
+		if i == 0 {
+			first = id
+		}
+	}
+
+	p.mu.Lock()
+	rn, ok := p.renewals[renewalKey("user-1", first)]
+	p.mu.Unlock()
+	if !ok {
+		t.Fatal("a registered session must have a renewal")
+	}
+	if !rn.admitted.Load() {
+		t.Fatal("a session whose registration write succeeded must be marked admitted — otherwise its renewals get capped and round 19's lockout returns")
+	}
+}
+
+// TestRedisSessionPresence_RenewLoopPassesAdmissionState — the WIRING, not
+// the knob.
+//
+// TestRedisSessionPresence_UnadmittedRenewalsAreStillCapped drives write()
+// directly and proves the cap logic. It does NOT prove renewLoop passes the
+// right flag into it: mutating renewLoop to hardcode `true` leaves that
+// test green, which is the day-49 lesson exactly — a parameter that must
+// arrive from a caller is tested at the layer that owns the caller.
+//
+// So this one goes through the real renewal goroutine. It parks that
+// goroutine inside its write via the onRenewWrite seam while the fixture is
+// arranged, because the first draft of this test raced its own setup: with
+// the renewal ticking every 20ms it could register legitimately, while
+// there was still room under the cap, before the setup had filled it. That
+// is correct behaviour being caught by a test that had not established its
+// own precondition — the failure was mine, not the code's.
+func TestRedisSessionPresence_RenewLoopPassesAdmissionState(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	p := &RedisSessionPresence{
+		client:        client,
+		sessionKeyTTL: time.Minute,
+		renewInterval: 20 * time.Millisecond,
+		renewals:      make(map[string]*renewal),
+		onRenewWrite: func() {
+			once.Do(func() {
+				close(parked)
+				<-release
+			})
+		},
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		p.Close()
+		p.waitForDrain(5 * time.Second)
+	})
+	ctx := t.Context()
+
+	id := p.Add("user-1", SessionIdentity{Armed: true})
+	<-parked // its renewal is now held before any write
+
+	p.mu.Lock()
+	rn := p.renewals[renewalKey("user-1", id)]
+	p.mu.Unlock()
+	if rn == nil {
+		t.Fatal("precondition: the session should have a renewal")
+	}
+
+	// Rewrite it into the state an Add during a Redis outage leaves behind:
+	// never admitted, absent from both the entry and the index.
+	rn.admitted.Store(false)
+	if err := client.Del(ctx, sessionKey("user-1", id)).Err(); err != nil {
+		t.Fatalf("clear entry: %v", err)
+	}
+	if err := client.SRem(ctx, sessionIndexKey("user-1"), id).Err(); err != nil {
+		t.Fatalf("clear index: %v", err)
+	}
+
+	// Fill the cap, so admission is the only question left.
+	for i := 0; i < maxSessionsPerUser; i++ {
+		p.Add("user-1", SessionIdentity{Armed: true})
+	}
+	if n, err := client.SCard(ctx, sessionIndexKey("user-1")).Result(); err != nil || n != maxSessionsPerUser {
+		t.Fatalf("precondition: expected a full cap, got %d (err %v)", n, err)
+	}
+
+	close(release)
+	time.Sleep(200 * time.Millisecond) // several renewal ticks
+
+	members, err := client.SMembers(ctx, sessionIndexKey("user-1")).Result()
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	for _, m := range members {
+		if m == id {
+			t.Fatal("an unadmitted session's renewal registered past a full cap — renewLoop is not passing its admission state")
+		}
+	}
+	if len(members) != maxSessionsPerUser {
+		t.Fatalf("registry past its cap: %d members", len(members))
+	}
+}

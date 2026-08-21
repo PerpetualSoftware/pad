@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -256,6 +257,22 @@ const (
 type renewal struct {
 	stop context.CancelFunc
 	done chan struct{}
+	// admitted records whether this session was ever successfully
+	// REGISTERED, which is what decides whether its renewals bypass the cap
+	// (codex round 20).
+	//
+	// Two earlier decisions combined into a hole. A registration that
+	// failed on TRANSPORT keeps its renewal, so a blip recovers on the next
+	// tick (round 18). Renewals bypass the cap, so an admitted session
+	// whose index member was pruned can never be locked out (round 19).
+	// Together they meant a user could open 500 streams during a Redis
+	// outage and have all 500 register the moment it recovered — the cap
+	// defeated by the path that exists to recover from failure.
+	//
+	// The bypass is a property of having been ADMITTED, not of being a
+	// renewal. A session that never registered is still asking for
+	// admission, however many times it asks.
+	admitted atomic.Bool
 }
 
 // pruneIndexScript removes index members whose session key is GONE,
@@ -435,6 +452,7 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	rn := &renewal{stop: cancel, done: make(chan struct{})}
+	rn.admitted.Store(writeErr == nil)
 
 	// Registered under the lock AFTER the write, and the closed-check still
 	// makes this safe against a racing Close: either Close sees this entry
@@ -590,16 +608,26 @@ func (p *RedisSessionPresence) renewLoop(ctx context.Context, rn *renewal, userI
 			if p.onRenewWrite != nil {
 				p.onRenewWrite()
 			}
-			// renewing=true: the cap admits NEW connections, and this one
-			// was already admitted (a capped session never gets a renewal
-			// goroutine at all — see Add). Subjecting a renewal to the cap
-			// meant a live session whose key was evicted and whose index
-			// member was then pruned could be refused FOREVER if another
-			// connection took the freed slot — permanently unlisted and
-			// untargetable while still connected (codex round 19). The
-			// overshoot this allows is bounded by the number of already-
-			// admitted sessions, which is the cap.
-			if err := p.write(ctx, userID, sessionID, payload, true); err != nil && ctx.Err() == nil {
+			// The cap is bypassed only for a session that was ADMITTED.
+			//
+			// For an admitted one the bypass is necessary: its key can be
+			// evicted and its index member then pruned, at which point the
+			// script sees a brand-new id, and if another connection took
+			// the freed slot its renewals would be refused forever —
+			// connected but permanently unlisted (codex round 19).
+			//
+			// For one that never registered, a renewal is still a request
+			// for ADMISSION, and must be capped like any other. Otherwise a
+			// user opens streams during a Redis outage and every one of
+			// them registers when it recovers (codex round 20).
+			admitted := rn.admitted.Load()
+			err := p.write(ctx, userID, sessionID, payload, admitted)
+			if err == nil && !admitted {
+				// It registered on retry — from here it is admitted, and
+				// its later renewals get the bypass above.
+				rn.admitted.Store(true)
+			}
+			if err != nil && ctx.Err() == nil {
 				slog.Warn("session presence: failed to renew session entry",
 					"error", err, "user_id", userID)
 			}
