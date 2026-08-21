@@ -237,6 +237,32 @@ func sessionKey(userID, sessionID string) string {
 	return userIDKeyPrefix(userID) + sessionID
 }
 
+// DEPLOYMENT SCOPING, inherited from internal/watchevents/redis_bus.go's
+// note of the same name and restated here because this is a THIRD
+// keyspace living under the same rule (codex round 3).
+//
+// These names are fixed, like `pad:events:` / `pad:event_seq` /
+// `pad:watchevents` before them, so the operational rule is unchanged and
+// unconditional: ONE REDIS ENDPOINT PER PAD INSTALLATION. Selecting
+// different logical DBs does not rescue it — pub/sub is not namespaced by
+// DB at all, so the buses cross-feed regardless, and two installations
+// sharing one DB would merge these session registries too.
+//
+// What that would cost HERE, stated precisely rather than alarmingly:
+// both keys are scoped by user id, and user ids are UUIDs minted per
+// installation, so a merged registry only exposes one installation's
+// sessions to another where the same UUID exists in both — which in
+// practice means a cloned database, not two independent deployments. The
+// same condition gates the bus's cross-feed, since delivery is filtered on
+// TargetUserID. It is a real hazard for a cloned install and not one for a
+// coincidental collision.
+//
+// Deliberately NOT fixed by growing a prefix here: redis_bus.go's own note
+// rules that if the flat names ever need scoping it should happen for
+// every keyspace at once, from shared config, rather than one file growing
+// a prefix the others lack. Adding one here would make the operational
+// rule harder to state, not easier. Tracked as BUG-2724.
+//
 // sessionIndexKey is the per-user SET of that user's session ids. Scoped
 // per user because every read is user-scoped — there is no "list all
 // sessions on this server" consumer and there should not be one (see

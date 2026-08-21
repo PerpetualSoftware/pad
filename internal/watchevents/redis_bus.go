@@ -367,7 +367,14 @@ func (b *RedisBus) Publish(n Notification) error {
 	if err := publishScript.Run(b.ctx, b.client,
 		[]string{redisWatchSeqKey, redisWatchChannel, dedupeKey, redisWatchEpochKey},
 		string(data), redisWatchDedupeTTLSeconds, uuid.NewString()).Err(); err != nil {
-		slog.Error("watchevents: dropping notification — Redis publish failed, so no globally ordered ID was assigned",
+		// WORDED AS UNCONFIRMED, not as a drop (codex round 3). The earlier
+		// text said "dropping notification ... no globally ordered ID was
+		// assigned", which contradicts what this error actually means and
+		// contradicted the return path four lines down: go-redis retries a
+		// command whose reply was lost, so the script may already have run
+		// and published. An operator who reads "dropped" and re-sends turns
+		// a possible delivery into a duplicate DISPATCH.
+		slog.Error("watchevents: publish outcome UNCONFIRMED — the Redis call failed, but a lost reply can mean the notification was published anyway; do not re-send without checking",
 			"error", err, "kind", n.Kind, "item_ref", n.ItemRef)
 		// Returned as a plain wrapped error, deliberately NOT ErrBusClosed
 		// and deliberately not described as a drop to the caller, however

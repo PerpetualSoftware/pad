@@ -461,6 +461,21 @@ type PushResult struct {
 	Workspace string `json:"workspace"`
 	Pushed    bool   `json:"pushed"`
 	Message   string `json:"message"`
+	// DeliveredSessions mirrors the server's field of the same name — how
+	// many of the caller's own live sessions the push's delivery predicate
+	// matched. It was missing here while this struct's doc comment claimed
+	// to mirror the response shape, so `pad push --format json` silently
+	// dropped it (codex round 3 on BUG-2698/2699).
+	//
+	// A POINTER, because the field is genuinely tri-state on the wire:
+	// a number is a real count; NULL means the notification was published
+	// but the presence registry could not be read to count it (BUG-2698);
+	// and an ABSENT key means a server predating session targeting. The
+	// second and third are both `nil` here — a CLI consumer that needs to
+	// tell them apart has to read the raw body, which no caller does. What
+	// matters is that neither is reported as 0, because 0 means "reached
+	// nobody" and both of these mean "unknown".
+	DeliveredSessions *int `json:"delivered_sessions,omitempty"`
 }
 
 // PushItem publishes a self-addressed push notification (IDEA-2544
