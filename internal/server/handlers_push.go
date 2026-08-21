@@ -19,8 +19,8 @@ type pushRequest struct {
 	// OWN live sessions from the S1 presence registry — narrows, within a
 	// set already limited to ARMED sessions that can see the item (PLAN-2558 S5,
 	// TASK-2588; GET /api/v1/sessions is where a caller learns the id).
-	// Omitted (the pre-S5 shape) means broadcast to every one of the
-	// caller's connected sessions, unchanged. API + TS client + web
+	// Omitted (the pre-S5 shape) means broadcast to every session in that
+	// same set — armed, item-visible, the caller's own — unchanged. API + TS client + web
 	// picker only in this slice, per CONVE-1741 — no CLI flag and no MCP
 	// surface for SETTING it.
 	//

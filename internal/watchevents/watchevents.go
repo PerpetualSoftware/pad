@@ -154,9 +154,10 @@ type Notification struct {
 	// event-stream connections (PLAN-2558 S5, TASK-2588). Populated only
 	// on Kind == KindPush, and only when the pusher named a specific
 	// session id from the S1 presence registry (GET /api/v1/sessions);
-	// empty means "every one of TargetUserID's connected sessions" —
-	// broadcast is targeted-with-an-empty-predicate, not a separate
-	// code path. watchNotificationVisible checks this against the
+	// empty means "every one of TargetUserID's sessions that the delivery
+	// predicate admits" — armed, and able to see the item — rather than
+	// every CONNECTED one; broadcast is targeted-with-an-empty-SESSION-
+	// predicate, not a separate code path and not an unfiltered one. watchNotificationVisible checks this against the
 	// SAME session id session_presence.go handed the connection at
 	// Add() time, exactly parallel to how TargetUserID gates against
 	// the connected caller's user id. An id that names no live session
