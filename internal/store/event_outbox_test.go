@@ -1570,7 +1570,8 @@ func TestOutbox_PruneUndispatchedBoundsTheFrozenPayloadWindow(t *testing.T) {
 	}
 
 	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
-	n, err := s.PruneUndispatchedOutbox(cutoff)
+	liveClaim := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	n, err := s.PruneUndispatchedOutbox(cutoff, liveClaim)
 	if err != nil {
 		t.Fatalf("PruneUndispatchedOutbox: %v", err)
 	}
@@ -2084,5 +2085,47 @@ func TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass(t *testing.T) {
 	}
 	if pending, err := s.ListPendingOutboxEvents(10); err != nil || len(pending) != 0 {
 		t.Errorf("live ack left %d pending (err %v)", len(pending), err)
+	}
+}
+
+// TestOutbox_PruneUndispatchedSparesAClaimedRow: every instance runs
+// retention, so without a claim check one instance's prune deletes a row
+// another is mid-delivery on — the delivery then succeeds while the ack
+// matches zero rows, and a crash in that window loses an event the outbox had
+// already committed (codex round 4).
+func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox prune vs claim")
+	clearOutbox(t, s)
+
+	old := time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339)
+	insertOutboxRow(t, s, "a-claimed", ws.ID, old, nil)
+	insertOutboxRow(t, s, "b-unclaimed", ws.ID, old, nil)
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	// Claim only the first row, by asking for exactly one.
+	claimed, err := s.ClaimPendingOutboxEvents("instance-1", 1, live)
+	if err != nil || len(claimed) != 1 || claimed[0].ID != "a-claimed" {
+		t.Fatalf("claim = %v, %v; want exactly a-claimed", claimedIDs(claimed), err)
+	}
+
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	n, err := s.PruneUndispatchedOutbox(cutoff, live)
+	if err != nil {
+		t.Fatalf("PruneUndispatchedOutbox: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d rows, want 1 — the claimed row must survive and the unclaimed one must not", n)
+	}
+	got := outboxRowIDs(t, s)
+	if len(got) != 1 || got[0] != "a-claimed" {
+		t.Fatalf("survivors = %v, want [a-claimed]", got)
+	}
+
+	// An EXPIRED claim is fair game — that is what expiry means — so the
+	// exemption is about live deliveries, not about claimed rows forever.
+	expired := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	if n, err := s.PruneUndispatchedOutbox(cutoff, expired); err != nil || n != 1 {
+		t.Errorf("prune with an expired lease removed %d rows (err %v), want 1", n, err)
 	}
 }

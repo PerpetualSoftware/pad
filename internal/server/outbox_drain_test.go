@@ -381,12 +381,12 @@ func TestOutboxDrain_RetentionRefusesANonPositiveWindow(t *testing.T) {
 	// second as a zero-window cutoff survives `occurred_at < cutoff` whether
 	// or not anything refused to run. The end state was reachable by another
 	// mechanism (CONVE-12) — and worse, by a clock.
-	if err := srv.runOutboxRetention(0, 0); err == nil {
+	if err := srv.runOutboxRetention(0, 0, 0); err == nil {
 		t.Fatal("a zero retention window was accepted; its cutoff is `now`, which deletes every row including undelivered ones")
 	}
 
 	// The positive control: a sane window is not refused.
-	if err := srv.runOutboxRetention(time.Hour, 24*time.Hour); err != nil {
+	if err := srv.runOutboxRetention(time.Hour, 24*time.Hour, 5*time.Minute); err != nil {
 		t.Errorf("a positive window was refused: %v", err)
 	}
 	if after := pendingOutboxCount(t, srv); after != before {

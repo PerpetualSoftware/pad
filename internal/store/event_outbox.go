@@ -852,6 +852,13 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 // break exists so the drain itself is deterministic when timestamps collide,
 // not so consumers can infer sequence.
 //
+// NOT THE DRAIN'S QUERY. The drain claims (ClaimPendingOutboxEvents) so that
+// multi-instance deployments do not deliver every row once per instance; this
+// unclaimed read survives as the DIAGNOSTIC view — "what is still owed?" — and
+// is what tests assert against. Said plainly because a reader finding two
+// pending-row readers should not have to guess which one production uses
+// (codex round 4).
+//
 // DELIBERATELY CROSS-WORKSPACE AND UNAUTHORIZED, which is safe only because of
 // who may call it. The drain is a single server-internal loop that must serve
 // every workspace in the instance; scoping it per workspace would mean asking
@@ -917,11 +924,15 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 // round 3). A stale ack now matches zero rows, which is exactly right: the
 // event is the new claim's problem.
 func (s *Store) MarkOutboxDispatched(claimToken string, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
+	// TOKEN FIRST, then the empty-id short-circuit. The other order makes the
+	// refusal conditional on there being work to do, so a caller with no token
+	// gets nil for an empty list and an error otherwise — a contract that
+	// depends on the argument it is not about (codex round 4).
 	if claimToken == "" {
 		return fmt.Errorf("mark outbox dispatched: no claim token")
+	}
+	if len(ids) == 0 {
+		return nil
 	}
 	ts := now()
 	tx, err := s.db.Begin()
@@ -1025,13 +1036,24 @@ func (s *Store) PruneDispatchedOutbox(before string) (int64, error) {
 // row marked delivered that never was would corrupt every later answer to "did
 // this mutation emit?".
 //
+// LIVE CLAIMS ARE EXEMPT. Every instance runs retention, so without the
+// leaseCutoff condition one instance's prune could delete a row another is
+// mid-delivery on: the delivery would then succeed while the ack matched zero
+// rows, and a crash in that window loses an event the outbox had committed
+// (codex round 4). A row whose claim has expired is fair game — that is what
+// expiry means — so this is the same predicate the claim uses, applied to
+// deletion.
+//
 // Callers log the count — an undispatchable event reaching its max age is a
 // delivery problem that has been failing for the whole window, and the number
 // is the only place it becomes visible.
-func (s *Store) PruneUndispatchedOutbox(before string) (int64, error) {
+func (s *Store) PruneUndispatchedOutbox(before, leaseCutoff string) (int64, error) {
 	res, err := s.db.Exec(s.q(`
-		DELETE FROM event_outbox WHERE dispatched_at IS NULL AND occurred_at < ?
-	`), before)
+		DELETE FROM event_outbox
+		WHERE dispatched_at IS NULL
+		  AND occurred_at < ?
+		  AND (claimed_at IS NULL OR claimed_at < ?)
+	`), before, leaseCutoff)
 	if err != nil {
 		return 0, fmt.Errorf("prune undispatched outbox: %w", err)
 	}

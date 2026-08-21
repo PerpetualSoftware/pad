@@ -72,10 +72,15 @@ const (
 	// concurrent claim can split one operation across two events, which the
 	// payload's batch_id lets a consumer correlate).
 	//
-	// Per-member binding evaluation comes for free rather than from special
-	// handling: every member of a bulk mutation writes its OWN canonical
-	// event, so whatever binding engine arrives (phase 2+; none exists today)
-	// sees each member individually. Only wire delivery is batched.
+	// Per-member binding evaluation is satisfied two different ways, and the
+	// distinction matters to anyone reading the payloads. The HANDLER path
+	// (bulk endpoint) loops over per-item store mutations, so every member
+	// writes its OWN canonical event and a future binding engine sees them
+	// individually; the header exists only to batch the WIRE delivery. The
+	// STORE-side single-transaction producers (a collection option rename, a
+	// wiki-title cascade) have no such loop — for those, the member snapshots
+	// carried INSIDE this event's payload are the only per-member view there
+	// is. Nothing evaluates selectors today; the binding engine is phase 2+.
 	ItemBulkUpdated = "item.bulk_updated"
 
 	// CommentCreated fires on comment creation. Payload: the stored comment

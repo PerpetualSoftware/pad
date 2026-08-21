@@ -212,7 +212,7 @@ func (s *Server) runOutboxDrainTick() {
 		s.deliverOutboxUnit(unit)
 	}
 
-	if err := s.runOutboxRetention(settings.dispatchedRetention, settings.undispatchedMaxAge); err != nil {
+	if err := s.runOutboxRetention(settings.dispatchedRetention, settings.undispatchedMaxAge, settings.lease); err != nil {
 		slog.Error("outbox drain: retention pass failed", "error", err)
 	}
 }
@@ -382,15 +382,15 @@ func (s *Server) failOutboxRows(claimToken string, ids []string, reason string) 
 // row written in the same second as the cutoff survives `occurred_at <
 // cutoff` either way). Returning the refusal makes the guard assert-able
 // without depending on the clock.
-func (s *Server) runOutboxRetention(dispatchedRetention, undispatchedMaxAge time.Duration) error {
+func (s *Server) runOutboxRetention(dispatchedRetention, undispatchedMaxAge, lease time.Duration) error {
 	// A non-positive window would make the cutoff `now` and delete the entire
 	// table — the pending set included. Refuse rather than normalize: reaching
 	// here with a zero means a caller bypassed resolveOutboxDrainSettings, and
 	// quietly substituting a default would hide that from whoever added the
 	// bypass.
-	if dispatchedRetention <= 0 || undispatchedMaxAge <= 0 {
-		err := fmt.Errorf("refusing to prune with a non-positive retention window (dispatched %s, undispatched %s)",
-			dispatchedRetention, undispatchedMaxAge)
+	if dispatchedRetention <= 0 || undispatchedMaxAge <= 0 || lease <= 0 {
+		err := fmt.Errorf("refusing to prune with a non-positive retention window (dispatched %s, undispatched %s, lease %s)",
+			dispatchedRetention, undispatchedMaxAge, lease)
 		slog.Error("outbox drain: " + err.Error())
 		return err
 	}
@@ -400,7 +400,10 @@ func (s *Server) runOutboxRetention(dispatchedRetention, undispatchedMaxAge time
 	}
 
 	undispatchedBefore := time.Now().UTC().Add(-undispatchedMaxAge).Format(time.RFC3339)
-	n, err := s.store.PruneUndispatchedOutbox(undispatchedBefore)
+	// The same lease cutoff the claim uses: a row another instance is
+	// currently delivering must survive this pass.
+	leaseCutoff := time.Now().UTC().Add(-lease).Format(time.RFC3339)
+	n, err := s.store.PruneUndispatchedOutbox(undispatchedBefore, leaseCutoff)
 	if err != nil {
 		slog.Error("outbox drain: pruning undispatched events failed", "error", err)
 		return err
