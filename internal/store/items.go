@@ -3315,6 +3315,41 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy strin
 		return nil, err
 	}
 
+	// item.updated for the CHILD, on this transaction (TASK-2714, codex round
+	// 4; SPEC-3 v1.6 clarification).
+	//
+	// A parent link writes the item's OWN row — it advances seq and flips the
+	// is_unparented bit — and that is the criterion the contract uses to
+	// divide these two rulings: a mutation that touches the item's row emits
+	// item.updated, and a relationship-graph link (blocks / blocked-by), which
+	// writes only the links table, stays silent under v1.5.
+	//
+	// The regression that forced it: createItemChecked calls this AFTER
+	// CreateItem has already committed item.created with a pre-link snapshot,
+	// then re-reads the item for its own response. The hand-called webhook
+	// this replaced dispatched that re-read, so a consumer saw the parent;
+	// under the drain, the frozen created row is all there was. created
+	// (pre-link) then updated (post-link) is a true history — a frozen
+	// pre-link snapshot with no correction is not.
+	//
+	// The snapshot MUST come from getItemTx: a pool read takes a different
+	// connection, cannot see this uncommitted write, and would emit the
+	// pre-link state under a post-link event.
+	//
+	// EMITTED HERE RATHER THAN IN setParentLinkTx, which is the shared core.
+	// UpdateItemWithParentLink reuses that core inside the item-update
+	// transaction and already emits its own item events from the field diff;
+	// putting the emit in the shared function would double-emit on that path.
+	child, err := s.getItemTx(tx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if child != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, child, nil, ""); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit parent link: %w", err)
 	}

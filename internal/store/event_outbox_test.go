@@ -2129,3 +2129,62 @@ func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
 		t.Errorf("prune with an expired lease removed %d rows (err %v), want 1", n, err)
 	}
 }
+
+// TestOutbox_SetParentLinkEmitsItemUpdated pins the fix for the create-with-
+// parent regression (codex round 4).
+//
+// CreateItem commits item.created with a PRE-LINK snapshot, and the parent
+// link lands in a separate transaction afterwards. The hand-called webhook
+// that the drain replaced dispatched the handler's post-link re-read, so a
+// consumer saw the parent; without an event of its own, the frozen created row
+// would be the only thing on the wire.
+//
+// The criterion, per SPEC-3 v1.6: a parent link writes the item's OWN row
+// (seq, the unparented bit), so it emits. A relationship-graph link writes only
+// the links table and stays silent.
+func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox parent link")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+
+	// Premise: the create emitted item.created and nothing else, so the event
+	// asserted below is the LINK's rather than the create's.
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemCreated {
+		t.Fatalf("events after create = %v, want exactly [%s]", got, kernelevents.ItemCreated)
+	}
+	createdSeq := child.Seq
+	clearOutbox(t, s)
+
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	got := outboxEventsFor(t, s, child.ID)
+	if len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("events after linking = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+
+	// The payload must be the POST-link state, which is the whole point: a
+	// snapshot read outside the transaction would carry the pre-link row.
+	payload := outboxPayloadFor(t, s, child.ID, kernelevents.ItemUpdated)
+	seq, ok := payload["seq"].(float64)
+	if !ok {
+		t.Fatalf("payload has no seq: %v", payload["seq"])
+	}
+	if int64(seq) <= createdSeq {
+		t.Errorf("event carries seq %d, want later than the create's %d — this is the pre-link snapshot", int64(seq), createdSeq)
+	}
+	if payload["is_unparented"] == true {
+		t.Error("event says the child is unparented, i.e. it describes the state before the link it is reporting")
+	}
+
+	// The PARENT's row is untouched by this write, so it emits nothing — the
+	// control that keeps the assertion above about the child's row rather than
+	// about "some event fired".
+	if got := outboxEventsFor(t, s, parent.ID); len(got) != 0 {
+		t.Errorf("parent emitted %v; the link does not write the parent's row", got)
+	}
+}
