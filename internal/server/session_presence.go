@@ -248,9 +248,11 @@ type SessionPresence interface {
 	ListForUser(userID string) ([]LiveSession, error)
 }
 
-// MemorySessionPresence is the in-process SessionPresence — see this
-// file's SINGLE-PROCESS LIMITATION note before deploying it behind more
-// than one padd process.
+// MemorySessionPresence is the in-process SessionPresence, and the one a
+// deployment gets when PAD_REDIS_URL is unset — which is also the only
+// deployment shape it is correct for. See this file's WHICH IMPLEMENTATION
+// YOU GET note before putting it behind more than one padd process;
+// RedisSessionPresence (session_presence_redis.go) is what that needs.
 type MemorySessionPresence struct {
 	mu sync.RWMutex
 	// byUser is userID -> sessionID -> session. Two levels rather than a
