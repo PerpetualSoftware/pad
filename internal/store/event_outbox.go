@@ -146,8 +146,8 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// a ref-only deletion payload and the write would be accepted (Codex round
 	// 10). Pairing them here means an event and a payload that were not meant
 	// for each other cannot reach the table at all.
-	want, known := kernelevents.PayloadFamily(ev.EventType)
-	if !known || want == "" {
+	want, known := kernelevents.PayloadFamilies(ev.EventType)
+	if !known || len(want) == 0 {
 		// FAIL CLOSED on an event the taxonomy cannot describe. Discarding the
 		// ok meant an unknown family resolved to "", which a caller declaring
 		// nothing would then MATCH — the check passing precisely when it had
@@ -162,8 +162,8 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 		// stays as the guard for a future table that separates the two again.
 		return fmt.Errorf("outbox: event %s has no declared payload family", ev.EventType)
 	}
-	if ev.PayloadFamily != want {
-		return fmt.Errorf("outbox: event %s carries a %q payload, want %q",
+	if !kernelevents.AllowsPayload(ev.EventType, ev.PayloadFamily) {
+		return fmt.Errorf("outbox: event %s carries a %q payload, want one of %v",
 			ev.EventType, ev.PayloadFamily, want)
 	}
 	if len(ev.Payload) == 0 {
@@ -1202,4 +1202,110 @@ func (s *Store) outboxEventsClaimedBy(token string) ([]OutboxEvent, error) {
 		return nil, fmt.Errorf("iterate claimed outbox events: %w", err)
 	}
 	return out, nil
+}
+
+// bulkHeaderPayload is the handler-path batch HEADER: what the operation was,
+// which items it touched, and the delta they share.
+//
+// The three legacy keys (op / count / item_ids) are the shape today's webhook
+// consumers already receive, kept verbatim so the drain's arrival is not also
+// a payload rename. batch_id and delta are additions: batch_id because
+// multi-instance claiming can in principle split one operation across two wire
+// events and a consumer needs to correlate them (SPEC-3 v1.6 demotes "one wire
+// event per batch" to the normal case for exactly this reason), and delta
+// because SPEC-3's item_batch payload names it and the handler is the only
+// place that knows it.
+//
+// NO SNAPSHOTS HERE. They live on the member rows until the drain folds them
+// in — which is the honest shape, not a gap: at header-write time the loop has
+// already committed each member's own event, and re-reading every row to
+// duplicate them into the header would double the storage for the same facts
+// and give the two copies a chance to disagree.
+type bulkHeaderPayload struct {
+	BatchID   string            `json:"batch_id"`
+	Op        string            `json:"op"`
+	Count     int               `json:"count"`
+	ItemIDs   []string          `json:"item_ids"`
+	Delta     map[string]any    `json:"delta,omitempty"`
+	MemberSet []json.RawMessage `json:"members,omitempty"`
+}
+
+// EmitBulkHeaderEvent writes the batch header for one handler-path bulk
+// operation, in its own transaction after the member loop.
+//
+// WHY THIS IS NOT A TRANSACTIONAL EMIT, said plainly because the rest of this
+// file argues the opposite for everything else: a handler-path bulk mutation
+// has no enclosing transaction to write it in. Each member committed
+// separately, carrying its own canonical event, and that is what keeps
+// per-member binding evaluation free. The header is delivery-side aggregation
+// (SPEC-3 v1.6), and its failure mode is bounded accordingly — if the process
+// dies between the members committing and this landing, the members simply
+// deliver individually. A flood in the crash case, never a loss.
+//
+// Single-workspace by construction: the bulk endpoint is workspace-scoped, so
+// unlike emitBulkItemEventTx there is no member set that could span workspaces
+// and nothing to partition.
+func (s *Store) EmitBulkHeaderEvent(workspaceID, batchID, op string, itemIDs []string, delta map[string]any) error {
+	if batchID == "" {
+		return fmt.Errorf("outbox: bulk header has no batch id")
+	}
+	// A bulk operation that changed nothing is not an event, same rule as the
+	// transactional bulk emitter.
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	payload, err := marshalEventPayload(bulkHeaderPayload{
+		BatchID: batchID,
+		Op:      op,
+		Count:   len(itemIDs),
+		ItemIDs: itemIDs,
+		Delta:   delta,
+	})
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("emit bulk header: %w", err)
+	}
+	defer tx.Rollback()
+	if err := writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID:   workspaceID,
+		EventType:     kernelevents.ItemBulkUpdated,
+		SubjectID:     batchID,
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadItemBatchHeader,
+		BatchID:       batchID,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("emit bulk header: %w", err)
+	}
+	return nil
+}
+
+// FoldBulkHeader returns the wire payload for a folded batch: the stored
+// header enriched with the member snapshots the drain claimed alongside it.
+//
+// The fold lives here, next to the shape it produces, so the drain does not
+// have to know how a header is spelled. It takes the members it was GIVEN
+// rather than reading them back: SPEC-3 v1.6 defines the fold as "header plus
+// whatever member rows of that batch are still undispatched", so the set the
+// drain holds IS the answer — re-reading would quietly re-include members a
+// previous tick already delivered individually.
+//
+// Member payloads are embedded VERBATIM. They are already the exact snapshots
+// the single-item events carry, and re-marshalling them through a Go type here
+// would let the batch and single views of one mutation drift apart.
+func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
+	var h bulkHeaderPayload
+	if err := json.Unmarshal(header, &h); err != nil {
+		return nil, fmt.Errorf("fold bulk header: %w", err)
+	}
+	for _, m := range members {
+		h.MemberSet = append(h.MemberSet, json.RawMessage(m))
+	}
+	return marshalEventPayload(h)
 }

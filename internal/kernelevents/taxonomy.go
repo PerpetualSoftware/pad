@@ -146,7 +146,25 @@ const (
 // unrepresentable rather than tested-for.
 type eventSpec struct {
 	subject string
-	payload string
+
+	// payloads is every payload shape this event may legitimately carry —
+	// almost always exactly one.
+	//
+	// item.bulk_updated carries TWO, and they are genuinely different writes
+	// rather than one shape with optional fields. The store-side
+	// single-transaction producers (a collection option rename, a wiki-title
+	// cascade) know every member at write time and embed the snapshots. The
+	// handler-path producer is a batch HEADER written after a loop: it knows
+	// the operation, the shared delta and the member refs, and the snapshots
+	// live on the members'"'"' own rows until the drain folds them in.
+	//
+	// DECLARED RATHER THAN LOOSENED (SPEC-3 v1.6). The alternatives were
+	// stuffing placeholder snapshots into the header to satisfy a
+	// single-shape check — a lie in the durable record — or dropping the
+	// family gate for this event, which is the one event where two producers
+	// make the gate most useful. Two declared shapes is the honest reading:
+	// the contract says this name admits both.
+	payloads []string
 
 	// sse is the snake_case name this event publishes under on the SSE
 	// surface, or "" when the event has no SSE surface at all.
@@ -187,8 +205,15 @@ const (
 	PayloadItemSnapshot = "item_snapshot"
 
 	// PayloadItemBatch: member refs, the shared delta, and per-member
-	// snapshots.
+	// snapshots — the store-side single-transaction producers, which know
+	// every member at write time.
 	PayloadItemBatch = "item_batch"
+
+	// PayloadItemBatchHeader: the handler-path batch HEADER — operation,
+	// shared delta and member refs, with no snapshots. The members' own rows
+	// carry those until the drain folds them in. See eventSpec.payloads for
+	// why this is a declared second shape rather than a loosened check.
+	PayloadItemBatchHeader = "item_batch_header"
 
 	// PayloadCommentSnapshot / PayloadAttachmentSnapshot: the stored row.
 	PayloadCommentSnapshot    = "comment_snapshot"
@@ -206,33 +231,61 @@ const (
 )
 
 var canonical = map[string]eventSpec{
-	ItemCreated:       {SubjectItem, PayloadItemSnapshot, "item_created"},
-	ItemUpdated:       {SubjectItem, PayloadItemSnapshot, "item_updated"},
-	ItemStatusChanged: {SubjectItem, PayloadItemSnapshot, "item_updated"},
-	ItemMoved:         {SubjectItem, PayloadItemSnapshot, "item_updated"},
-	ItemDeleted:       {SubjectItem, PayloadItemSnapshot, "item_archived"},
-	ItemRestored:      {SubjectItem, PayloadItemSnapshot, "item_restored"},
-	ItemBulkUpdated:   {SubjectItemBatch, PayloadItemBatch, "items_bulk_updated"},
-	CommentCreated:    {SubjectComment, PayloadCommentSnapshot, "comment_created"},
-	CommentUpdated:    {SubjectComment, PayloadCommentSnapshot, "comment_updated"},
-	CommentDeleted:    {SubjectComment, PayloadRefOnly, "comment_deleted"},
-	AttachmentAdded:   {SubjectAttachment, PayloadAttachmentSnapshot, ""},
-	AttachmentRemoved: {SubjectAttachment, PayloadRefOnly, ""},
-	MemberJoined:      {SubjectMember, PayloadMember, ""},
-	PackInstalled:     {SubjectPack, PayloadPack, ""},
-	PackUpgraded:      {SubjectPack, PayloadPack, ""},
-	PackDisabled:      {SubjectPack, PayloadPack, ""},
+	ItemCreated:       {SubjectItem, []string{PayloadItemSnapshot}, "item_created"},
+	ItemUpdated:       {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemStatusChanged: {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemMoved:         {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemDeleted:       {SubjectItem, []string{PayloadItemSnapshot}, "item_archived"},
+	ItemRestored:      {SubjectItem, []string{PayloadItemSnapshot}, "item_restored"},
+	ItemBulkUpdated:   {SubjectItemBatch, []string{PayloadItemBatch, PayloadItemBatchHeader}, "items_bulk_updated"},
+	CommentCreated:    {SubjectComment, []string{PayloadCommentSnapshot}, "comment_created"},
+	CommentUpdated:    {SubjectComment, []string{PayloadCommentSnapshot}, "comment_updated"},
+	CommentDeleted:    {SubjectComment, []string{PayloadRefOnly}, "comment_deleted"},
+	AttachmentAdded:   {SubjectAttachment, []string{PayloadAttachmentSnapshot}, ""},
+	AttachmentRemoved: {SubjectAttachment, []string{PayloadRefOnly}, ""},
+	MemberJoined:      {SubjectMember, []string{PayloadMember}, ""},
+	PackInstalled:     {SubjectPack, []string{PayloadPack}, ""},
+	PackUpgraded:      {SubjectPack, []string{PayloadPack}, ""},
+	PackDisabled:      {SubjectPack, []string{PayloadPack}, ""},
 }
 
-// PayloadFamily returns the payload shape a canonical event carries, and false
-// if the name is not canonical.
+// PayloadFamilies returns every payload shape a canonical event may carry, and
+// false if the name is not canonical.
 //
-// A writer that knows which shape it is about to marshal calls this to confirm
-// the event name agrees, so an event and a payload that were not meant for each
-// other cannot be stored together.
-func PayloadFamily(name string) (string, bool) {
+// The returned slice is freshly built, so a caller cannot edit the contract in
+// place — same reason as Canonical().
+func PayloadFamilies(name string) ([]string, bool) {
 	spec, ok := canonical[name]
-	return spec.payload, ok
+	if !ok {
+		return nil, false
+	}
+	out := make([]string, len(spec.payloads))
+	copy(out, spec.payloads)
+	return out, true
+}
+
+// AllowsPayload reports whether a canonical event admits the given payload
+// shape.
+//
+// A writer that knows which shape it just marshalled calls this to confirm the
+// event name agrees, so an event and a payload that were not meant for each
+// other cannot be stored together. An empty family is never allowed: a caller
+// declaring nothing must not match, which was the fail-open shape Codex round
+// 10 found.
+func AllowsPayload(name, family string) bool {
+	if family == "" {
+		return false
+	}
+	spec, ok := canonical[name]
+	if !ok {
+		return false
+	}
+	for _, p := range spec.payloads {
+		if p == family {
+			return true
+		}
+	}
+	return false
 }
 
 // IsCanonical reports whether name is in the events/1 set.

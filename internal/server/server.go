@@ -213,6 +213,12 @@ type Server struct {
 	// Stop() signals the loop via stopWorkspacePurgeSweeper.
 	workspacePurge workspacePurgeConfig
 
+	// outboxDrain holds the periodic config + lifecycle for the SPEC-3 event
+	// outbox drain (TASK-2714). Mirrors orphanGC. Configured via
+	// SetOutboxDrainConfig + started via StartOutboxDrain; Stop() signals the
+	// loop via stopOutboxDrain.
+	outboxDrain outboxDrainConfig
+
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
@@ -403,6 +409,9 @@ func (s *Server) Stop() {
 	// Soft-deleted-workspace hard-purge sweeper (TASK-1966). Same
 	// lifecycle pattern; signal BEFORE Wait() so the goroutine exits.
 	s.stopWorkspacePurgeSweeper()
+	// SPEC-3 event outbox drain (TASK-2714). Same lifecycle pattern; an
+	// in-flight delivery is tracked on s.bg and awaited below.
+	s.stopOutboxDrain()
 	// MCP audit writer / sweeper run on s.bg too. Signal first so
 	// the workers see the close BEFORE Wait() blocks; without the
 	// signal Wait would hang forever on the writer's blocking

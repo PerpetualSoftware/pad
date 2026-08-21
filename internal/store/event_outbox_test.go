@@ -1375,23 +1375,27 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 	// The events/1 set at SPEC-3 v1.4. Adding, removing or re-homing an entry
 	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
 	// doc comment in the same commit.
-	want := map[string]struct{ subject, family, sse string }{
-		"item.created":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_created"},
-		"item.updated":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_updated"},
-		"item.status_changed": {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_updated"},
-		"item.moved":          {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_updated"},
-		"item.deleted":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_archived"},
-		"item.restored":       {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_restored"},
-		"item.bulk_updated":   {kernelevents.SubjectItemBatch, kernelevents.PayloadItemBatch, "items_bulk_updated"},
-		"comment.created":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot, "comment_created"},
-		"comment.updated":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot, "comment_updated"},
-		"comment.deleted":     {kernelevents.SubjectComment, kernelevents.PayloadRefOnly, "comment_deleted"},
-		"attachment.added":    {kernelevents.SubjectAttachment, kernelevents.PayloadAttachmentSnapshot, ""},
-		"attachment.removed":  {kernelevents.SubjectAttachment, kernelevents.PayloadRefOnly, ""},
-		"member.joined":       {kernelevents.SubjectMember, kernelevents.PayloadMember, ""},
-		"pack.installed":      {kernelevents.SubjectPack, kernelevents.PayloadPack, ""},
-		"pack.upgraded":       {kernelevents.SubjectPack, kernelevents.PayloadPack, ""},
-		"pack.disabled":       {kernelevents.SubjectPack, kernelevents.PayloadPack, ""},
+	want := map[string]struct {
+		subject string
+		family  []string
+		sse     string
+	}{
+		"item.created":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_created"},
+		"item.updated":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.status_changed": {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.moved":          {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.deleted":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_archived"},
+		"item.restored":       {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_restored"},
+		"item.bulk_updated":   {kernelevents.SubjectItemBatch, []string{kernelevents.PayloadItemBatch, kernelevents.PayloadItemBatchHeader}, "items_bulk_updated"},
+		"comment.created":     {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_created"},
+		"comment.updated":     {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_updated"},
+		"comment.deleted":     {kernelevents.SubjectComment, []string{kernelevents.PayloadRefOnly}, "comment_deleted"},
+		"attachment.added":    {kernelevents.SubjectAttachment, []string{kernelevents.PayloadAttachmentSnapshot}, ""},
+		"attachment.removed":  {kernelevents.SubjectAttachment, []string{kernelevents.PayloadRefOnly}, ""},
+		"member.joined":       {kernelevents.SubjectMember, []string{kernelevents.PayloadMember}, ""},
+		"pack.installed":      {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"pack.upgraded":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"pack.disabled":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
 	}
 
 	// The name constants are pinned to their wire strings separately, because
@@ -1437,9 +1441,20 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		if !kindOK || kind != expected.subject {
 			t.Errorf("SubjectKind(%q) = (%q, %v), want (%q, true)", name, kind, kindOK, expected.subject)
 		}
-		family, familyOK := kernelevents.PayloadFamily(name)
-		if !familyOK || family != expected.family {
-			t.Errorf("PayloadFamily(%q) = (%q, %v), want (%q, true)", name, family, familyOK, expected.family)
+		families, familiesOK := kernelevents.PayloadFamilies(name)
+		if !familiesOK || !sameStrings(families, expected.family) {
+			t.Errorf("PayloadFamilies(%q) = (%v, %v), want (%v, true)", name, families, familiesOK, expected.family)
+		}
+		for _, family := range expected.family {
+			if !kernelevents.AllowsPayload(name, family) {
+				t.Errorf("AllowsPayload(%q, %q) = false for a declared shape", name, family)
+			}
+		}
+		if kernelevents.AllowsPayload(name, "") {
+			t.Errorf("AllowsPayload(%q, \"\") = true — a caller declaring nothing must not match", name)
+		}
+		if kernelevents.AllowsPayload(name, "not_a_family") {
+			t.Errorf("AllowsPayload(%q, \"not_a_family\") = true", name)
 		}
 		if !kernelevents.IsCanonical(name) {
 			t.Errorf("IsCanonical(%q) = false for an event Canonical() returned", name)
@@ -1466,8 +1481,11 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 	// caller declaring nothing would match — the fail-open shape Codex round 11
 	// found in the two-map version.
 	for _, name := range []string{"", "item.frobnicated", "comment.deleted.v2"} {
-		if _, ok := kernelevents.PayloadFamily(name); ok {
-			t.Errorf("PayloadFamily(%q) reported ok for a non-canonical name", name)
+		if _, ok := kernelevents.PayloadFamilies(name); ok {
+			t.Errorf("PayloadFamilies(%q) reported ok for a non-canonical name", name)
+		}
+		if kernelevents.AllowsPayload(name, kernelevents.PayloadItemSnapshot) {
+			t.Errorf("AllowsPayload(%q, ...) = true for a non-canonical name", name)
 		}
 		if _, ok := kernelevents.SubjectKind(name); ok {
 			t.Errorf("SubjectKind(%q) reported ok for a non-canonical name", name)
@@ -1882,4 +1900,23 @@ func TestOutbox_ClaimArbitratesTheRaceNotJustTheQuery(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("instance-2 also claimed %v — both instances would deliver the same event", claimedIDs(got))
 	}
+}
+
+// sameStrings compares two payload-family lists order-independently: the
+// taxonomy declares a SET, and pinning its order would make the test fail on a
+// reordering that changes nothing.
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	g := append([]string(nil), got...)
+	w := append([]string(nil), want...)
+	sort.Strings(g)
+	sort.Strings(w)
+	for i := range g {
+		if g[i] != w[i] {
+			return false
+		}
+	}
+	return true
 }

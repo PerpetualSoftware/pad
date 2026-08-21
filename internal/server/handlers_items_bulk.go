@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -356,6 +357,21 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			"count":    len(affectedIDs),
 			"item_ids": affectedIDs,
 		})
+
+		// The batch HEADER for the outbox drain (SPEC-3 v1.6): the operation,
+		// the shared delta and the member refs — the three things the drain
+		// cannot work out from the member rows, which carry post-mutation
+		// snapshots rather than deltas.
+		//
+		// Written AFTER the loop, in its own transaction, because a handler
+		// bulk has no enclosing one. A failure here is logged and swallowed on
+		// purpose: the members' own events are already committed and will
+		// deliver individually, so the operation degrades to a flood rather
+		// than to a loss, and failing the request after every row has
+		// committed would be the worse answer.
+		if err := s.store.EmitBulkHeaderEvent(workspaceID, batchID, req.Op, affectedIDs, bulkEventDelta(&req)); err != nil {
+			slog.Error("failed to emit bulk batch header", "workspace_id", workspaceID, "batch_id", batchID, "error", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -723,4 +739,43 @@ func (s *Server) publishBulkItemsEvent(workspaceID, op, collection string, count
 		Source:      source,
 		Seq:         maxSeq,
 	})
+}
+
+// bulkEventDelta is the SHARED delta of a bulk operation — the change every
+// member received, as opposed to each member's post-mutation snapshot.
+//
+// Only the handler knows this. By the time the drain sees the member rows they
+// carry full snapshots, and a diff of a snapshot against nothing is not a
+// delta. SPEC-3's item_batch payload names the shared delta as a field, which
+// is why it has to be captured here rather than reconstructed later.
+//
+// archive and restore return nil: the operation IS the delta, it is already on
+// the envelope as `op`, and inventing a {"deleted": true} field would put a
+// key on the public wire that no mutation actually wrote.
+func bulkEventDelta(req *bulkItemsRequest) map[string]any {
+	switch req.Op {
+	case "set-priority":
+		return map[string]any{"priority": req.Priority}
+	case "tag", "untag":
+		return map[string]any{"tags": req.Tags}
+	case "move":
+		if req.Collection != "" {
+			return map[string]any{"collection": req.Collection}
+		}
+		return map[string]any{"status": req.Status}
+	case "assign":
+		delta := map[string]any{}
+		if req.ClearAssignedUser {
+			delta["assigned_user_id"] = nil
+		} else if req.AssignedUserID != nil {
+			delta["assigned_user_id"] = *req.AssignedUserID
+		}
+		if req.ClearAgentRole {
+			delta["agent_role_id"] = nil
+		} else if req.AgentRoleID != nil {
+			delta["agent_role_id"] = *req.AgentRoleID
+		}
+		return delta
+	}
+	return nil
 }
