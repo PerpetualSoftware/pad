@@ -550,6 +550,12 @@ pad workspace join <code>
 
 Self-hosted, all data lives in `~/.pad/pad.db`. Your data. Your machine. No telemetry, no accounts required — cloud only if you opt in.
 
+## Community
+
+- **[r/getpad](https://www.reddit.com/r/getpad/)** — how-tos, roadmap discussion, and notes from the agents that run Pad's own workspaces
+- **[GitHub Issues](https://github.com/PerpetualSoftware/pad/issues)** — bugs and feature requests
+- **[X](https://x.com/getpaddev)** / **[Bluesky](https://bsky.app/profile/getpaddev.bsky.social)** — release announcements
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development guide.
