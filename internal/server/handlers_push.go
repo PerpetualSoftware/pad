@@ -1,7 +1,9 @@
 package server
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -253,7 +255,18 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// reason it was originally.
 	deliveredSessions := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
 	if targetSessionID == "" || deliveredSessions > 0 {
-		s.watchEvents.Publish(watchevents.Notification{
+		// The ONE direct Bus.Publish call in this package, and the only
+		// one that acts on the result (BUG-2699 — see
+		// publishWatchNotification's doc comment for the six that
+		// deliberately don't, and publishSitesAreRuled_test.go for the
+		// check that keeps that split true).
+		//
+		// A push has no durable backing whatsoever: no inbox, nothing to
+		// read back, not even a store row carrying the same fact the way
+		// a comment notification has. If the publish is refused, the
+		// instruction is gone, and the caller is the only one who can do
+		// anything about that.
+		if err := s.watchEvents.Publish(watchevents.Notification{
 			WorkspaceID:     workspaceID,
 			ItemID:          item.ID,
 			CollectionID:    item.CollectionID,
@@ -264,7 +277,10 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 			Summary:         message,
 			TargetUserID:    userID,
 			TargetSessionID: targetSessionID,
-		})
+		}); err != nil {
+			writePushPublishError(w, err, item.Ref)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, pushResponse{
@@ -318,4 +334,59 @@ func deliveredSessionCount(presence SessionPresence, userID, targetSessionID str
 		count++
 	}
 	return count
+}
+
+// pushPublishUnconfirmedCode is the error code for a push whose publish
+// failed in a way that does NOT prove the notification went nowhere
+// (BUG-2699).
+//
+// It is deliberately absent from the web client's
+// PUSH_PRE_PUBLISH_ERROR_CODES allow-list (web/src/lib/push/dispatch.ts),
+// and that absence is the entire behaviour: isPrePublishRefusal routes
+// every unrecognised code to the dialog's outcome-unknown branch, whose
+// copy is "we can't tell whether this was sent — pushing twice would
+// deliver it twice", and which does NOT re-arm the send button. That is
+// the honest UI for this case, so the code must stay off that list. Do
+// not "tidy" it on there.
+const pushPublishUnconfirmedCode = "push_unconfirmed"
+
+// writePushPublishError maps a Bus.Publish failure onto the response,
+// keeping the two outcomes Bus.Publish distinguishes distinguishable all
+// the way to the caller (BUG-2699). Collapsing them is the actual hazard
+// here: one of them is safe to resend and the other can duplicate a
+// dispatch into an agent harness.
+//
+//   - ErrBusClosed — the bus was already shut down, so nothing was
+//     published and nothing could have been. 503 `unavailable`, the SAME
+//     code the nil-bus branch at the top of handlePushToItem already
+//     returns, because the caller's situation is identical: push is not
+//     available right now, nothing went out, try again against a live
+//     server. Reusing that code is also what makes the web surface
+//     correct with no change at all — `unavailable` is already on its
+//     pre-publish-refusal allow-list.
+//   - anything else — UNCONFIRMED. go-redis retries a command whose
+//     reply was lost to a network error (the reason RedisBus's publish
+//     script carries a dedupe token at all), so the script may have run
+//     and published while the call still returned non-nil. 502 with
+//     pushPublishUnconfirmedCode, which is deliberately NOT on that
+//     allow-list.
+//
+// Neither branch writes a pushResponse. `Pushed` documents itself as
+// "accepted and processed", which is exactly what did not happen — and a
+// 200 body with pushed:false would let a caller that reads only the
+// status code (the CLI's `pad push` does: cmd_push.go returns on the
+// error and prints nothing otherwise) treat a lost instruction as sent.
+func writePushPublishError(w http.ResponseWriter, err error, itemRef string) {
+	if errors.Is(err, watchevents.ErrBusClosed) {
+		slog.Warn("push refused: notification bus is closed, nothing was published",
+			"item_ref", itemRef, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable",
+			"Push is not available right now — the notification was not sent")
+		return
+	}
+	slog.Error("push publish failed with an unconfirmed outcome — the notification may or may not have been delivered",
+		"item_ref", itemRef, "error", err)
+	writeError(w, http.StatusBadGateway, pushPublishUnconfirmedCode,
+		"The push could not be confirmed — it may or may not have been delivered. "+
+			"Check your agent session before sending it again; pushing twice would deliver it twice.")
 }

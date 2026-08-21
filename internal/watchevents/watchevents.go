@@ -36,10 +36,22 @@
 package watchevents
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 )
+
+// ErrBusClosed is returned by Publish when the bus has already been shut
+// down (BUG-2699). It is the ONE Publish failure that proves the
+// notification was not published: Close has already emptied the
+// subscriber set, so nothing could have received it and nothing can.
+//
+// It exists as a sentinel rather than an ordinary error because callers
+// act on the distinction — see Bus.Publish's doc comment on why every
+// other error means "unconfirmed" instead. Compare with errors.Is; both
+// implementations wrap it with context.
+var ErrBusClosed = errors.New("watchevents: bus is closed")
 
 // Notification kinds, matching DOC-2479's event payload contract
 // (kind ∈ {status-change, assignment, comment, ask}) exactly.
@@ -160,7 +172,31 @@ type Bus interface {
 	// their IDs from separate critical sections could otherwise append
 	// to the replay buffer out of ID order, corrupting since()'s
 	// ordering assumptions.
-	Publish(n Notification)
+	//
+	// REPORTS ACCEPTANCE, NOT DELIVERY (BUG-2699). A nil error means the
+	// bus took ownership of the notification; it says nothing about
+	// whether any subscriber read it, and there is still no ack from the
+	// receiving side. Most producers publish best-effort on top of a
+	// durable store write and should discard the result deliberately —
+	// internal/server's publishWatchNotification helper is where that
+	// ruling lives. The push endpoint is the one caller that acts on it,
+	// because a push has no persistence to recover from.
+	//
+	// A RETURNED ERROR IS TWO DIFFERENT OUTCOMES, and a caller that acts
+	// on one must not collapse them:
+	//
+	//   - ErrBusClosed means nothing was published, provably. The bus was
+	//     already shut down; no subscriber can ever have seen it. Safe to
+	//     report as a clean refusal and safe for the caller to retry
+	//     against a live bus.
+	//   - Any OTHER error means UNCONFIRMED, not "did not happen".
+	//     RedisBus's publish is a Lua script call, and go-redis retries a
+	//     command whose reply was lost to a network error — which is why
+	//     that script carries a dedupe token at all (see redis_bus.go's
+	//     publishScript). The script may have run and published while the
+	//     call still returns an error, so re-publishing risks a DUPLICATE
+	//     dispatch rather than a repeat of nothing.
+	Publish(n Notification) error
 	// Subscribe returns a channel that receives every future
 	// Notification, with NO replay. There is exactly one logical stream
 	// (unlike internal/events.EventBus, which is workspace-scoped) —
@@ -320,13 +356,32 @@ func NewWithReplaySize(size int) *MemoryBus {
 // lock costs nothing (the send is O(1) and non-blocking either way) and
 // closes that window structurally: Unsubscribe/Close can no longer run
 // between "this channel is still a live subscriber" and "send to it".
-func (b *MemoryBus) Publish(n Notification) {
+func (b *MemoryBus) Publish(n Notification) error {
 	if n.Timestamp == 0 {
 		n.Timestamp = time.Now().UnixMilli()
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// BUG-2699: publishing after Close was the SILENT half of this bug,
+	// and the worse half. Close empties b.subscribers, so the loop below
+	// ran over an empty map and returned having done nothing at all — no
+	// error (Publish had no way to say so), and unlike RedisBus not even
+	// a log line, while still burning a sequence id and appending to a
+	// replay buffer nobody will ever read from.
+	//
+	// The window is real for the SINGLE-PROCESS deployment, not only for
+	// Redis: cmd/pad/cmd_server.go closes the watch bus BEFORE
+	// srv.Shutdown drains handlers (deliberately — SSE handlers block on
+	// their channel, so closing late holds shutdown to its full 30s
+	// deadline on any open stream), and that ordering applies to
+	// whichever implementation is wired. A push accepted moments earlier
+	// can reach here post-Close, and used to be lost while the handler
+	// answered 200.
+	if b.closed {
+		return ErrBusClosed
+	}
 
 	b.seq++
 	n.ID = b.seq
@@ -336,9 +391,16 @@ func (b *MemoryBus) Publish(n Notification) {
 		select {
 		case ch <- n:
 		default:
+			// A drop for SLOWNESS is not a Publish failure: the bus
+			// accepted the notification and fanned it out, and one
+			// subscriber's full buffer says nothing about the others.
+			// Reporting it as an error would tell the push endpoint that
+			// a delivery it cannot confirm either way had definitely
+			// failed — exactly the false precision BUG-2699 is about.
 			slog.Warn("watchevents: dropping notification for slow subscriber", "kind", n.Kind, "item_ref", n.ItemRef)
 		}
 	}
+	return nil
 }
 
 func (b *MemoryBus) Subscribe() chan Notification {

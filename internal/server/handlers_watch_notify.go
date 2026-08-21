@@ -66,7 +66,7 @@ func (s *Server) publishWatchNotifications(workspaceID string, updated *models.I
 	sig := updated.LastMutation
 
 	if sig.StatusChanged {
-		s.watchEvents.Publish(watchevents.Notification{
+		s.publishWatchNotification(watchevents.Notification{
 			WorkspaceID:    workspaceID,
 			ItemID:         updated.ID,
 			CollectionID:   updated.CollectionID,
@@ -89,7 +89,7 @@ func (s *Server) publishWatchNotifications(workspaceID string, updated *models.I
 			}
 			summary = fmt.Sprintf("assigned to %s", name)
 		}
-		s.watchEvents.Publish(watchevents.Notification{
+		s.publishWatchNotification(watchevents.Notification{
 			WorkspaceID:    workspaceID,
 			ItemID:         updated.ID,
 			CollectionID:   updated.CollectionID,
@@ -110,4 +110,43 @@ func orNoneLabel(status string) string {
 		return "(none)"
 	}
 	return status
+}
+
+// publishWatchNotification is the BEST-EFFORT publish path, and the one
+// ruling behind every non-push producer (BUG-2699).
+//
+// Bus.Publish reports acceptance since BUG-2699, which raised the
+// question of what each of the seven production call sites should DO
+// with that answer. Six of them — comment created, comment reply, item
+// created-with-assignee, comment-on-update, status change, assignment
+// change — publish a notification LAYERED ON A DURABLE STORE WRITE THAT
+// HAS ALREADY COMMITTED. The item exists, the comment exists, the
+// activity row exists, and the SSE event carrying the same fact went out
+// on a different bus. A watch notification that fails to publish costs a
+// subscriber one line about a fact that is still fully recoverable by
+// reading the item. Failing the caller's request over it would be the
+// wrong trade in the other direction: a 500 on a PATCH that already
+// committed tells the client its write failed when it did not.
+//
+// So these six discard the result — deliberately, and here rather than
+// six times over. Both implementations already log a failed publish with
+// the kind and item ref, so discarding costs no operator visibility.
+//
+// The SEVENTH site, handlePushToItem, does not use this helper and must
+// not: a push has no durable backing at all (no inbox, nothing to read
+// back), so a dropped publish loses the instruction outright and the
+// caller has to hear about it. That asymmetry is enforced structurally —
+// after BUG-2699 the push handler is the ONLY direct s.watchEvents.Publish
+// call in this package besides the one just below, and that split is
+// CHECKED rather than asserted: publish_sites_ruled_test.go enumerates
+// the call sites and fails by name when a new producer publishes
+// directly. A comment saying "don't do X" protects whoever reads it
+// before doing X, which is not the person this needs protecting from.
+//
+// Also absorbs the nil-bus check every one of those sites was repeating.
+func (s *Server) publishWatchNotification(n watchevents.Notification) {
+	if s.watchEvents == nil {
+		return
+	}
+	_ = s.watchEvents.Publish(n)
 }

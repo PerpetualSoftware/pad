@@ -815,12 +815,12 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// created item has no "before" state to diff — LastMutation doesn't
 	// apply here — so this is a direct, unconditional check rather than
 	// a call to publishWatchNotifications.
-	if s.watchEvents != nil && item.AssignedUserID != nil && *item.AssignedUserID != "" {
+	if item.AssignedUserID != nil && *item.AssignedUserID != "" {
 		name := item.AssignedUserName
 		if name == "" {
 			name = *item.AssignedUserID
 		}
-		s.watchEvents.Publish(watchevents.Notification{
+		s.publishWatchNotification(watchevents.Notification{
 			WorkspaceID:    workspaceID,
 			ItemID:         item.ID,
 			CollectionID:   item.CollectionID,
@@ -1738,18 +1738,16 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// directly, not through POST .../comments) — a bypass Rider
 			// 1's producer audit would otherwise miss. Same
 			// kind=comment notification as the standalone endpoint.
-			if s.watchEvents != nil {
-				s.watchEvents.Publish(watchevents.Notification{
-					WorkspaceID:  workspaceID,
-					ItemID:       updated.ID,
-					CollectionID: updated.CollectionID,
-					ItemRef:      updated.Ref,
-					Kind:         watchevents.KindComment,
-					Actor:        actor,
-					ActorName:    actorNameForUpdate,
-					Summary:      truncateForSummary(comment.Body, 120),
-				})
-			}
+			s.publishWatchNotification(watchevents.Notification{
+				WorkspaceID:  workspaceID,
+				ItemID:       updated.ID,
+				CollectionID: updated.CollectionID,
+				ItemRef:      updated.Ref,
+				Kind:         watchevents.KindComment,
+				Actor:        actor,
+				ActorName:    actorNameForUpdate,
+				Summary:      truncateForSummary(comment.Body, 120),
+			})
 		}
 	}
 
