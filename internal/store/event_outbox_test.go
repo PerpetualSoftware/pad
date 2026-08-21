@@ -2255,3 +2255,90 @@ func TestOutbox_ParentOnlyUpdateStillEmits(t *testing.T) {
 		t.Errorf("a no-op update emitted %v, want nothing", got)
 	}
 }
+
+// TestOutbox_ParentDetachEmitsOnEveryRoute closes the loop codex round 6
+// opened: attach was observable on every route while DETACH was silent on two
+// of the three, so a consumer's model kept a parent the user had removed.
+//
+// The routes are enumerated rather than sampled (CONVE-18): ClearParentLink
+// (its own transaction), UpdateItemWithParentLink with an empty parent (the
+// item-update transaction), and DeleteItemLink on the parent link row (the
+// links handler's route).
+func TestOutbox_ParentDetachEmitsOnEveryRoute(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox detach")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	attach := func(t *testing.T, child, parent string) {
+		t.Helper()
+		if _, err := s.SetParentLink(ws.ID, child, parent, "user"); err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+		clearOutbox(t, s)
+	}
+
+	t.Run("ClearParentLink", func(t *testing.T) {
+		parent := createTestItem(t, s, ws.ID, col.ID, "P1", "")
+		child := createTestItem(t, s, ws.ID, col.ID, "C1", "")
+		attach(t, child.ID, parent.ID)
+
+		if err := s.ClearParentLink(child.ID); err != nil {
+			t.Fatalf("ClearParentLink: %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+			t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+		}
+
+		// A SECOND clear removes nothing, so it must emit nothing — the
+		// "provided is not changed" half of round 6.
+		clearOutbox(t, s)
+		if err := s.ClearParentLink(child.ID); err != nil {
+			t.Fatalf("ClearParentLink (already unparented): %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 0 {
+			t.Errorf("clearing an already-unparented item emitted %v — an event for a mutation that did not happen", got)
+		}
+	})
+
+	t.Run("UpdateItemWithParentLink clear", func(t *testing.T) {
+		parent := createTestItem(t, s, ws.ID, col.ID, "P2", "")
+		child := createTestItem(t, s, ws.ID, col.ID, "C2", "")
+		attach(t, child.ID, parent.ID)
+
+		if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+			Provided: true, WorkspaceID: ws.ID, CreatedBy: "user",
+		}); err != nil {
+			t.Fatalf("UpdateItemWithParentLink: %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+			t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+		}
+
+		clearOutbox(t, s)
+		if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+			Provided: true, WorkspaceID: ws.ID, CreatedBy: "user",
+		}); err != nil {
+			t.Fatalf("UpdateItemWithParentLink (already unparented): %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 0 {
+			t.Errorf("a no-op clear through the update path emitted %v", got)
+		}
+	})
+
+	t.Run("DeleteItemLink on the parent row", func(t *testing.T) {
+		parent := createTestItem(t, s, ws.ID, col.ID, "P3", "")
+		child := createTestItem(t, s, ws.ID, col.ID, "C3", "")
+		link, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user")
+		if err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+		clearOutbox(t, s)
+
+		if err := s.DeleteItemLink(link.ID); err != nil {
+			t.Fatalf("DeleteItemLink: %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+			t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+		}
+	})
+}

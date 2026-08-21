@@ -2613,16 +2613,23 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// update committed while the parent link write failed. The new
 	// parent's advisory lock was already folded into the acquisition
 	// above, so setParentLinkTx's re-lock is a no-op.
-	hierarchyChanged := parentLink != nil && parentLink.Provided
-	if hierarchyChanged {
+	// PROVIDED IS NOT CHANGED (codex round 6). Clearing an already-unparented
+	// item deletes zero rows; forcing item.updated for it would describe a
+	// mutation that did not happen. The set branch always writes — it is a
+	// DELETE-then-INSERT that bumps the row either way.
+	var hierarchyChanged bool
+	if parentLink != nil && parentLink.Provided {
 		if parentLink.ParentID != "" {
 			if _, err := s.setParentLinkTx(tx, parentLink.WorkspaceID, id, parentLink.ParentID, parentLink.CreatedBy); err != nil {
 				return nil, err
 			}
+			hierarchyChanged = true
 		} else {
-			if err := s.clearParentLinkTx(tx, id, existing.WorkspaceID); err != nil {
+			removed, err := s.clearParentLinkTx(tx, id, existing.WorkspaceID)
+			if err != nil {
 				return nil, err
 			}
+			hierarchyChanged = removed
 		}
 	}
 
@@ -3269,6 +3276,33 @@ func (s *Store) DeleteItemLink(id string) error {
 			return err
 		}
 	}
+
+	// item.updated for a PARENT detach, on this transaction (codex round 6).
+	//
+	// Same criterion as SetParentLink and the update path (SPEC-3 v1.6): the
+	// parent edge writes the source item's own row. Without this, DELETE
+	// /links/{id} on a parent link was the one detach route that stayed
+	// silent, so a consumer's model kept a parent the user had removed while
+	// every attach route was observable.
+	//
+	// IMPLEMENTS IS DELIBERATELY NOT INCLUDED HERE, and the asymmetry is
+	// flagged rather than resolved: it bumps the same row (so the mechanical
+	// criterion would include it) but it is a relationship-graph link (so
+	// v1.5's silence would exclude it). The contract does not currently
+	// decide that case, and inventing an answer inside a delivery refactor is
+	// how a public wire acquires an event nobody ruled on. Raised with the
+	// lead; tracked separately.
+	if linkType == models.ItemLinkTypeParent {
+		child, err := s.getItemTx(tx, sourceID)
+		if err != nil {
+			return err
+		}
+		if child != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, child, nil, ""); err != nil {
+				return err
+			}
+		}
+	}
 	return tx.Commit()
 }
 
@@ -3552,8 +3586,24 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 		return err
 	}
 
-	if err := s.clearParentLinkTx(tx, itemID, workspaceID); err != nil {
+	removed, err := s.clearParentLinkTx(tx, itemID, workspaceID)
+	if err != nil {
 		return err
+	}
+	// Same criterion as SetParentLink (SPEC-3 v1.6): a parent DETACH writes
+	// the item's own row, so it emits. Removing this half would leave the
+	// attach observable and the detach silent — a consumer's model would keep
+	// a parent the user removed (codex round 6).
+	if removed {
+		child, err := s.getItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		if child != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, child, nil, ""); err != nil {
+				return err
+			}
+		}
 	}
 	return tx.Commit()
 }
@@ -3562,11 +3612,15 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 // transaction. Shared by the public ClearParentLink (own tx) and
 // UpdateItemWithParentLink (item-update tx), so a cleared parent commits
 // atomically with the field write it accompanied (BUG-2013).
-func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) error {
+// Returns whether a link was actually REMOVED. Callers need the distinction:
+// clearing an already-unparented item deletes zero rows and changes nothing, so
+// forcing an item.updated for it would put an event on the wire describing a
+// mutation that did not happen (codex round 6).
+func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) (bool, error) {
 	// Best-effort pre-lock read of the current parent, re-verified under lock.
 	oldParentID, err := s.readParentLinkTarget(tx, itemID)
 	if err != nil {
-		return fmt.Errorf("lookup parent for clear: %w", err)
+		return false, fmt.Errorf("lookup parent for clear: %w", err)
 	}
 
 	// BUG-2073: fold the CHILD's own (itemID) lock into the batch alongside
@@ -3574,7 +3628,7 @@ func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) error 
 	// concurrent parent mutations of this item (SetParentLink/ClearParentLink/
 	// UpdateItemWithParentLink all take it), so a detach can't race a reparent.
 	if err := s.AcquireParentChildrenLocks(tx, itemID, oldParentID); err != nil {
-		return err
+		return false, err
 	}
 
 	// Re-read the parent under the child lock (BUG-2073 race 2): a concurrent
@@ -3585,26 +3639,26 @@ func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) error 
 	// moved key here would risk an out-of-order grab).
 	reOldParentID, err := s.readParentLinkTarget(tx, itemID)
 	if err != nil {
-		return fmt.Errorf("lookup parent for clear: %w", err)
+		return false, fmt.Errorf("lookup parent for clear: %w", err)
 	}
 	if reOldParentID != oldParentID {
-		return errParentSetChanged
+		return false, errParentSetChanged
 	}
 
 	result, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID)
 	if err != nil {
-		return fmt.Errorf("clear parent link: %w", err)
+		return false, fmt.Errorf("clear parent link: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("clear parent link rows affected: %w", err)
+		return false, fmt.Errorf("clear parent link rows affected: %w", err)
 	}
 	if rows > 0 {
 		if err := s.bumpStructuralLinkSourceTx(tx, workspaceID, itemID); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return rows > 0, nil
 }
 
 // bumpStructuralLinkSourceTx advances the source row whenever a parent or
