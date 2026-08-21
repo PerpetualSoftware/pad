@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -68,6 +70,24 @@ func pushCmd() *cobra.Command {
 
 			result, err := client.PushItem(ws, args[0], trimmed)
 			if err != nil {
+				// AMBIGUOUS FAILURES GET SAID OUT LOUD (codex round 9 on
+				// BUG-2699). The handler publishes BEFORE it writes its
+				// response, so an error is not proof the instruction went
+				// nowhere: a response lost in transit, a truncated body, a
+				// gateway envelope, or the server's own push_unconfirmed all
+				// reach here identically to a clean refusal. A user who reads
+				// "error" and re-runs the command delivers the push twice —
+				// there is no idempotency key, and the receiving agent acts
+				// on each copy.
+				//
+				// The web dialog has drawn this distinction since TASK-2588;
+				// the CLI had not, so the same outcome produced a safe
+				// message in a browser and a misleading one in a terminal.
+				if !pushRefusedBeforePublishing(err) {
+					fmt.Fprintln(os.Stderr,
+						"warning: the push may or may not have been delivered — check your agent session before re-running. "+
+							"Re-sending an instruction that already landed delivers it twice.")
+				}
 				return err
 			}
 
@@ -82,4 +102,46 @@ func pushCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&message, "message", "m", "",
 		fmt.Sprintf("instruction text to push (required, max %d characters after whitespace collapse)", maxPushMessageLenForHelp))
 	return cmd
+}
+
+// pushPrePublishRefusalCodes are the error codes the push endpoint can
+// only produce BEFORE it publishes, so the instruction provably did not go
+// out and re-running is safe.
+//
+// Deliberately mirrors web/src/lib/push/dispatch.ts's
+// PUSH_PRE_PUBLISH_ERROR_CODES — the two surfaces answer the same question
+// about the same endpoint, and letting them drift would mean a push that is
+// safe to retry in a browser and unsafe in a terminal, or the reverse.
+// Keep them in step.
+//
+// `unavailable` covers both the no-bus branch and a bus that was already
+// closed; both are refusals with nothing published. Notably ABSENT:
+// push_unconfirmed, which exists precisely to say the outcome is unknown.
+var pushPrePublishRefusalCodes = map[string]bool{
+	"bad_request":         true,
+	"unauthorized":        true,
+	"not_found":           true,
+	"forbidden":           true,
+	"permission_denied":   true,
+	"unavailable":         true,
+	"rate_limited":        true,
+	"plan_limit_exceeded": true,
+	"csrf_error":          true,
+	"email_not_verified":  true,
+}
+
+// pushRefusedBeforePublishing reports whether err is a refusal the server
+// provably wrote before publishing.
+//
+// Defaults to FALSE for anything it cannot identify — a transport error, a
+// non-JSON gateway response, an unrecognised code. That default is the
+// whole point: an unknown outcome must be treated as possibly-delivered,
+// because the cost of being wrong in the other direction is a duplicate
+// dispatch.
+func pushRefusedBeforePublishing(err error) bool {
+	var apiErr *cli.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return pushPrePublishRefusalCodes[apiErr.Code]
 }
