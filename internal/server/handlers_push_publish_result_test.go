@@ -207,7 +207,8 @@ func TestPushToItem_SucceedsWhenPublishAccepted(t *testing.T) {
 func TestBestEffortProducerSucceedsWhenThePublishFails(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
-	srv.SetWatchEventsBus(&stubBus{err: errors.New("redis publish: connection reset")})
+	bus := &stubBus{err: errors.New("redis publish: connection reset")}
+	srv.SetWatchEventsBus(bus)
 	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/comments", tok.Token,
@@ -226,5 +227,14 @@ func TestBestEffortProducerSucceedsWhenThePublishFails(t *testing.T) {
 	}
 	if !strings.Contains(list.Body.String(), "must survive a failed notification") {
 		t.Fatalf("the comment was not persisted: %s", list.Body.String())
+	}
+
+	// THE PREMISE, asserted rather than assumed (codex round 31, and my own
+	// rule about tests asserting their own premise). Without this, the two
+	// checks above pass for a handler that never publishes at all — no bus,
+	// the producer removed, the notification hook deleted — so the test
+	// would be named for a failed publish it never performed.
+	if got := bus.publishAttempts(); got != 1 {
+		t.Fatalf("expected the producer to attempt exactly 1 publish, got %d — this test proves nothing about a FAILED publish if none was attempted", got)
 	}
 }
