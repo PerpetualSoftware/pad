@@ -86,6 +86,22 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Global maximum SSE connections |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum SSE connections |
 
+#### Redis configuration notes
+
+Pad's Redis integration assumes a **single Redis node** — `redis://…`, not a
+cluster. Both event buses and the session-presence registry use flat key names
+and a non-cluster client; pointing Pad at a Redis Cluster is not supported.
+
+**Avoid an evicting `maxmemory-policy` for Pad's Redis.** Under `allkeys-lru`
+(what the bundled `docker-compose.yml` sets, for a 64 MB dev instance) Redis
+may evict live session-presence entries under memory pressure. Nothing can
+distinguish that from a TTL lapsing, so a connected agent session briefly
+disappears from the picker and a push targeted at it reports
+`delivered_sessions: 0`. It self-repairs on the session's next 30-second
+renewal, and Pad's keyspace is small — a few hundred bytes per connected
+session plus two counters — so `noeviction` is the safer choice for a
+production instance.
+
 #### Upgrading a multi-instance deployment
 
 `PAD_REDIS_URL` now also backs the **session-presence registry** — the list of

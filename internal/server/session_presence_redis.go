@@ -74,6 +74,30 @@ import (
 // "two instances disagree about presence" is the exact bug class this type
 // exists to end.
 //
+// EVICTION LOOKS EXACTLY LIKE EXPIRY, and that is survivable by design
+// rather than by luck (codex round 15). Under a maxmemory policy that can
+// evict live keys — `allkeys-lru`, which the repo's own docker-compose
+// configures — Redis may drop a session entry or the index while the
+// session is still connected. Nothing here can tell that from a TTL
+// lapsing, so the session goes briefly unlisted and a targeted push at it
+// is skipped.
+//
+// The repair is already the renewal's job: renewLoop re-SETs the full
+// payload rather than issuing a bare EXPIRE, precisely so a renewal
+// RESTORES a vanished entry instead of no-oping against a missing key. So
+// an eviction costs at most one renewal interval of invisibility, and the
+// same mechanism covers a Redis restart. Operators who want to avoid even
+// that should keep Pad's Redis off an evicting policy — see
+// docs/deployment.md.
+//
+// SINGLE-NODE REDIS ONLY, like the rest of Pad's Redis integration:
+// cmd/pad/cmd_server.go dials with redis.NewClient, not a cluster client,
+// and this type's keys are not hash-tagged, so a user's index and entries
+// would land in different slots. That is the whole integration's
+// constraint rather than this type's, and changing it belongs with the
+// keyspace work in BUG-2724, not here — one keyspace growing hash tags the
+// others lack is the same divergence that note already forbids.
+//
 // STALENESS IS UNCHANGED, and must not be read as improved. A session
 // still disappears from this list only when its stream handler returns
 // (clean disconnect) or the keepalive write fails (up to ~30s after an
