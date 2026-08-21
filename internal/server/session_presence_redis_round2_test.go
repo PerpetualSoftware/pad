@@ -464,3 +464,50 @@ func TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop(t *testing.
 		t.Fatal("Remove never returned against a renewal that will not stop — a disconnecting handler holds http.Server.Shutdown forever")
 	}
 }
+
+// TestWriteScript_IndexesAtomicallyWithTheEntry — codex round 14.
+//
+// The index is the ONLY enumeration of a user's sessions, so a session key
+// written without its index member is a live session ListForUser cannot
+// see — and a targeted push at it is skipped with a clean
+// delivered_sessions:0, which is the bug BUG-2698 exists to remove,
+// reintroduced by a partial write.
+//
+// Asserts the pair, not just the key: a test that checked only the entry
+// would pass for exactly the broken shape.
+func TestWriteScript_IndexesAtomicallyWithTheEntry(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	p := NewRedisSessionPresence(client)
+	t.Cleanup(p.Close)
+	ctx := t.Context()
+
+	if err := p.write(ctx, "user-1", "sess-1", `{"id":"sess-1"}`); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := client.Get(ctx, sessionKey("user-1", "sess-1")).Result(); err != nil {
+		t.Fatalf("session entry missing: %v", err)
+	}
+	members, err := client.SMembers(ctx, sessionIndexKey("user-1")).Result()
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	if len(members) != 1 || members[0] != "sess-1" {
+		t.Fatalf("the index must carry the session the same write created; got %v", members)
+	}
+
+	// BOTH keys carry a TTL. An index that outlives its entries accumulates
+	// dead members for a user who never reconnects; an entry with no TTL
+	// never expires when its instance dies, which is the reaping story this
+	// type owes.
+	entryTTL, err := client.TTL(ctx, sessionKey("user-1", "sess-1")).Result()
+	if err != nil || entryTTL <= 0 {
+		t.Fatalf("session entry must carry a TTL; got %v (err %v)", entryTTL, err)
+	}
+	indexTTL, err := client.TTL(ctx, sessionIndexKey("user-1")).Result()
+	if err != nil || indexTTL <= 0 {
+		t.Fatalf("session index must carry a TTL; got %v (err %v)", indexTTL, err)
+	}
+}

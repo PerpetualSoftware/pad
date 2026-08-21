@@ -62,9 +62,11 @@ import (
 //     the connection's Add..Remove span. A process that dies stops
 //     renewing, and Redis deletes the entries — no sweeper, no instance
 //     ownership records, no startup scan.
-//   - The per-user index is a SET carrying the same TTL. A member whose
-//     session key has already expired is pruned by the next reader
-//     (ListForUser), so the index self-heals without a background job.
+//   - The per-user index is a SET carrying the same TTL, written in the
+//     SAME atomic step as the entry it indexes (see writeScript), so a
+//     live session is never briefly absent from the only enumeration of
+//     it. A member whose session key has since EXPIRED is pruned by the
+//     next reader, so the index still self-heals without a background job.
 //
 // Native expiry is deliberate: the alternative — storing an expiry
 // timestamp per entry and filtering at read time — compares a timestamp
@@ -358,18 +360,37 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 	return id
 }
 
-// write stores the session entry and indexes it, both under the same TTL.
-// Pipelined rather than scripted: the two commands are independent and a
-// partial application is self-correcting — an index member with no session
-// key is pruned by the next ListForUser, and a session key with no index
-// member expires on its own.
+// writeScript stores the session entry and indexes it, ATOMICALLY.
+//
+// Scripted rather than pipelined (codex round 14). A pipeline can apply
+// partially — a dropped connection between commands leaves some sent and
+// some not — and the two halves are not equally harmless, which an earlier
+// version of this comment got wrong. An index member with no session key is
+// pruned by the next reader, fine. But a session KEY with no INDEX MEMBER
+// is a live session that ListForUser cannot see, because the index is the
+// only enumeration: a targeted push at it is skipped and answers a clean
+// delivered_sessions:0. That is precisely the failure BUG-2698 exists to
+// remove, reintroduced by a partial write.
+//
+// It was self-healing — the next renewal re-runs this and re-indexes, so
+// the window was one renewal interval rather than permanent — but a
+// bounded reappearance of the bug is still the bug, and Redis executes a
+// script atomically on its single thread, so there is no reason to accept
+// the window at all.
+var writeScript = redis.NewScript(`
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+redis.call('SADD', KEYS[2], ARGV[3])
+redis.call('EXPIRE', KEYS[2], ARGV[2])
+return 1
+`)
+
+// write stores the session entry and indexes it, both under the same TTL,
+// in one atomic step. See writeScript.
 func (p *RedisSessionPresence) write(ctx context.Context, userID, sessionID, payload string) error {
-	pipe := p.client.Pipeline()
-	pipe.Set(ctx, sessionKey(userID, sessionID), payload, p.sessionKeyTTL)
-	pipe.SAdd(ctx, sessionIndexKey(userID), sessionID)
-	pipe.Expire(ctx, sessionIndexKey(userID), p.sessionKeyTTL)
-	_, err := pipe.Exec(ctx)
-	return err
+	return writeScript.Run(ctx, p.client,
+		[]string{sessionKey(userID, sessionID), sessionIndexKey(userID)},
+		payload, int(p.sessionKeyTTL.Seconds()), sessionID,
+	).Err()
 }
 
 // renewLoop keeps this connection's entry alive for exactly as long as the
