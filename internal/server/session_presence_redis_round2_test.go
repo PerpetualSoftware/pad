@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -595,5 +596,92 @@ func TestRedisSessionPresence_RenewalIsNeverRefusedByTheCap(t *testing.T) {
 	// A renewal is exactly this call, at the cap.
 	if err := p.write(t.Context(), "user-1", first, `{"id":"`+first+`"}`); err != nil {
 		t.Fatalf("a renewal at the cap must not be refused: %v", err)
+	}
+}
+
+// TestRedisSessionPresence_CappedSessionStartsNoRenewal — codex round 18.
+//
+// Round 17's cap bounded the KEYS and not the GOROUTINES: every over-cap
+// stream still got a renewal that re-ran a failing script every 30
+// seconds, which is most of what the cap exists to prevent. Since
+// /events/stream has no connection limit, that left the exhaustion vector
+// open in a different currency.
+//
+// Asserts the registry's own bookkeeping rather than counting goroutines,
+// which is both flaky and indirect: a session with no renewal entry is a
+// session with no goroutine, by construction of Add.
+func TestRedisSessionPresence_CappedSessionStartsNoRenewal(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(p.Close)
+
+	for i := 0; i < maxSessionsPerUser; i++ {
+		p.Add("user-1", SessionIdentity{Armed: true})
+	}
+
+	p.mu.Lock()
+	before := len(p.renewals)
+	p.mu.Unlock()
+	// CONTROL: registered sessions DO get renewals, so the assertion below
+	// is about the cap rather than about renewals never being created.
+	if before != maxSessionsPerUser {
+		t.Fatalf("precondition: expected %d renewals, got %d", maxSessionsPerUser, before)
+	}
+
+	overflow := p.Add("user-1", SessionIdentity{Armed: true})
+	if overflow == "" {
+		t.Fatal("a capped session must still receive an id")
+	}
+
+	p.mu.Lock()
+	after := len(p.renewals)
+	_, tracked := p.renewals[renewalKey("user-1", overflow)]
+	p.mu.Unlock()
+
+	if tracked {
+		t.Fatal("a capped session must not start a renewal — it has nothing registered to renew")
+	}
+	if after != before {
+		t.Fatalf("renewal count changed for a capped session: %d -> %d", before, after)
+	}
+}
+
+// TestRedisSessionPresence_CapPrunesStaleMembersBeforeRefusing — codex
+// round 18.
+//
+// The index outlives the entries it names: any live session's renewal
+// refreshes the SET's TTL, so after a replica crash it can carry ids whose
+// session keys have already expired. Counting those toward the cap refuses
+// new connections on behalf of sessions that no longer exist — and stays
+// wrong until some unrelated read happens to prune, which may never come.
+func TestRedisSessionPresence_CapPrunesStaleMembersBeforeRefusing(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	p := NewRedisSessionPresence(client)
+	t.Cleanup(p.Close)
+	ctx := t.Context()
+
+	// A full index of GHOSTS: members with no session keys, exactly what a
+	// crashed replica leaves behind.
+	ghosts := make([]interface{}, 0, maxSessionsPerUser)
+	for i := 0; i < maxSessionsPerUser; i++ {
+		ghosts = append(ghosts, "ghost-"+strconv.Itoa(i))
+	}
+	if err := client.SAdd(ctx, sessionIndexKey("user-1"), ghosts...).Err(); err != nil {
+		t.Fatalf("seed ghosts: %v", err)
+	}
+
+	id := p.Add("user-1", SessionIdentity{Armed: true})
+
+	sessions, err := p.ListForUser("user-1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	// The wrong behaviour's fingerprint: a real session refused, and
+	// therefore unlisted, because a hundred dead ones filled the count.
+	if len(sessions) != 1 || sessions[0].ID != id {
+		t.Fatalf("a live session must be admitted past an index full of expired members; listed %d", len(sessions))
 	}
 }

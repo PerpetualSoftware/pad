@@ -387,9 +387,40 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 		return id
 	}
 
+	// The registration write happens BEFORE the renewal is registered, so a
+	// session the cap refused never gets a goroutine (codex round 18).
+	// Capping the KEYS while still starting a renewal per stream bounded
+	// the wrong resource: every over-cap connection would keep a goroutine
+	// and re-run a failing script every 30 seconds, which is most of what
+	// the cap exists to prevent.
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), p.timeout())
+	defer writeCancel()
+	writeErr := p.write(writeCtx, userID, id, string(payload))
+	if errors.Is(writeErr, errSessionLimitReached) {
+		slog.Warn("session presence: per-user session limit reached; this stream will receive broadcasts but is not targetable",
+			"user_id", userID, "limit", maxSessionsPerUser)
+		// No entry was written, so there is nothing to renew and nothing to
+		// deregister. The stream still holds this id and still matches a
+		// broadcast — see maxSessionsPerUser on why the connection is not
+		// refused.
+		return id
+	}
+	if writeErr != nil {
+		// A TRANSPORT failure still gets a renewal, deliberately: renewLoop
+		// re-SETs the whole payload rather than issuing a bare EXPIRE, so
+		// the next tick is what recovers a registration that failed on a
+		// blip. Only the cap is permanent enough to skip the goroutine for.
+		slog.Warn("session presence: failed to register session; it will be missing from the picker until the next renewal",
+			"error", writeErr, "user_id", userID)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	rn := &renewal{stop: cancel, done: make(chan struct{})}
 
+	// Registered under the lock AFTER the write, and the closed-check still
+	// makes this safe against a racing Close: either Close sees this entry
+	// and stops it, or this sees closed and never starts a goroutine for
+	// Close to have missed.
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -399,18 +430,6 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 	p.renewals[renewalKey(userID, id)] = rn
 	p.wg.Add(1)
 	p.mu.Unlock()
-
-	writeCtx, writeCancel := context.WithTimeout(context.Background(), p.timeout())
-	defer writeCancel()
-	if err := p.write(writeCtx, userID, id, string(payload)); err != nil {
-		if errors.Is(err, errSessionLimitReached) {
-			slog.Warn("session presence: per-user session limit reached; this stream will receive broadcasts but is not targetable",
-				"user_id", userID, "limit", maxSessionsPerUser)
-		} else {
-			slog.Warn("session presence: failed to register session; it will be missing from the picker",
-				"error", err, "user_id", userID)
-		}
-	}
 
 	go p.renewLoop(ctx, rn, userID, id, string(payload))
 	return id
@@ -437,14 +456,30 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 // It also enforces maxSessionsPerUser, in the same atomic step for the same
 // reason (codex round 17). A cap checked in Go would be a separate round
 // trip that two concurrent connects could both pass.
+// A refusal PRUNES FIRST (codex round 18). The index outlives the entries
+// it names — any live session's renewal refreshes the set's TTL — so after
+// a replica crash it can carry ids whose session keys have already
+// expired. Counting those toward the cap would refuse new connections on
+// behalf of sessions that no longer exist, and stay wrong until some
+// unrelated read happened to prune. The stale sweep runs ONLY on the path
+// that would otherwise refuse, so the common case stays two O(1)
+// commands.
 var writeScript = redis.NewScript(`
-if redis.call('SISMEMBER', KEYS[2], ARGV[3]) == 0
-   and redis.call('SCARD', KEYS[2]) >= tonumber(ARGV[4]) then
-  return 0
+local id, ttl, limit = ARGV[3], ARGV[2], tonumber(ARGV[4])
+if redis.call('SISMEMBER', KEYS[2], id) == 0
+   and redis.call('SCARD', KEYS[2]) >= limit then
+  for _, member in ipairs(redis.call('SMEMBERS', KEYS[2])) do
+    if redis.call('EXISTS', ARGV[5] .. member) == 0 then
+      redis.call('SREM', KEYS[2], member)
+    end
+  end
+  if redis.call('SCARD', KEYS[2]) >= limit then
+    return 0
+  end
 end
-redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-redis.call('SADD', KEYS[2], ARGV[3])
-redis.call('EXPIRE', KEYS[2], ARGV[2])
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl)
+redis.call('SADD', KEYS[2], id)
+redis.call('EXPIRE', KEYS[2], ttl)
 return 1
 `)
 
@@ -482,6 +517,7 @@ func (p *RedisSessionPresence) write(ctx context.Context, userID, sessionID, pay
 	registered, err := writeScript.Run(ctx, p.client,
 		[]string{sessionKey(userID, sessionID), sessionIndexKey(userID)},
 		payload, int(p.sessionKeyTTL.Seconds()), sessionID, maxSessionsPerUser,
+		userIDKeyPrefix(userID),
 	).Int()
 	if err != nil {
 		return err
