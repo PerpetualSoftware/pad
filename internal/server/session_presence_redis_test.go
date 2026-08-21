@@ -140,6 +140,13 @@ func TestRedisSessionPresence_CrashedInstanceEntriesExpire(t *testing.T) {
 		renewInterval: time.Hour,
 		renewals:      make(map[string]*renewal),
 	}
+	// Cleaned up at the END, after the expiry has been observed (codex
+	// round 13). The crash is modelled by the renewal never FIRING — a
+	// one-hour ticker — so joining the goroutine afterwards does not weaken
+	// the scenario, while abandoning it leaks a goroutine and a Redis
+	// client into every subsequent test in the package and into -count
+	// reruns.
+	t.Cleanup(crashed.Close)
 	crashed.Add("user-1", SessionIdentity{Armed: true})
 
 	survivor := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
@@ -173,9 +180,16 @@ func TestRedisSessionPresence_RenewalKeepsALiveSessionListed(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	// MARGIN, deliberately generous (codex round 13). The first version ran
+	// a 2s fake TTL forward by 1s every 50ms of wall time, so a ~100ms
+	// scheduler pause could expire the session before a renewal ran and
+	// report "renewal broken" for a loaded CI machine. A 10s TTL tolerates
+	// a half-second pause while the loop still advances fake time PAST the
+	// TTL in total — so a genuinely broken renewal still expires and still
+	// fails. Margin without losing discrimination.
 	live := &RedisSessionPresence{
 		client:        client,
-		sessionKeyTTL: 2 * time.Second,
+		sessionKeyTTL: 10 * time.Second,
 		renewInterval: 20 * time.Millisecond,
 		renewals:      make(map[string]*renewal),
 	}
@@ -184,8 +198,10 @@ func TestRedisSessionPresence_RenewalKeepsALiveSessionListed(t *testing.T) {
 
 	// Let several renewals run, moving miniredis's clock less far than the
 	// TTL between them, so the session survives only if renewal works.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	// 20 iterations advance fake time by 20s total, comfortably past the
+	// 10s TTL, so an implementation that never renews cannot survive this
+	// loop.
+	for i := 0; i < 20; i++ {
 		time.Sleep(50 * time.Millisecond)
 		mr.FastForward(time.Second)
 	}

@@ -19,12 +19,22 @@ import (
 // and then never answers — the shape a hung Redis presents, which a closed
 // port does not: a closed port fails fast, and failing fast was never the
 // problem.
-func stalledRedis(t *testing.T) string {
+func stalledRedis(t *testing.T) (addr string, accepted <-chan struct{}) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	// Closed on the FIRST accepted connection. Callers synchronise on this
+	// rather than sleeping (codex round 13): a sleep does not establish
+	// that the call under test is in flight, so on a loaded runner the
+	// sequencing can invert and even the BROKEN implementation passes. An
+	// instrument whose discrimination depends on the scheduler is not one.
+	firstAccept := make(chan struct{})
+	var once sync.Once
+
+	var mu sync.Mutex
+	var conns []net.Conn
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -33,15 +43,23 @@ func stalledRedis(t *testing.T) string {
 			if err != nil {
 				return
 			}
+			once.Do(func() { close(firstAccept) })
 			// Held open, never read, never written.
-			t.Cleanup(func() { _ = conn.Close() })
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
 		}
 	}()
 	t.Cleanup(func() {
 		_ = ln.Close()
 		<-done
+		mu.Lock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		mu.Unlock()
 	})
-	return ln.Addr().String()
+	return ln.Addr().String(), firstAccept
 }
 
 // TestRedisSessionPresence_StalledRedisDoesNotHangShutdown — codex round
@@ -75,7 +93,8 @@ func stalledRedis(t *testing.T) string {
 // which is a backstop for a client someone reconfigures without timeouts.
 func TestRedisSessionPresence_StalledRedisDoesNotHangShutdown(t *testing.T) {
 	t.Parallel()
-	client := redis.NewClient(&redis.Options{Addr: stalledRedis(t), MaxRetries: -1})
+	addr, accepted := stalledRedis(t)
+	client := redis.NewClient(&redis.Options{Addr: addr, MaxRetries: -1})
 	p := &RedisSessionPresence{
 		client:        client,
 		sessionKeyTTL: time.Minute,
@@ -91,7 +110,11 @@ func TestRedisSessionPresence_StalledRedisDoesNotHangShutdown(t *testing.T) {
 	// that is the scenario the finding described: the WaitGroup counter is
 	// already incremented while the write is parked, so Close is queued
 	// behind a Redis call that is going nowhere.
-	time.Sleep(100 * time.Millisecond)
+	//
+	// Synchronised on the listener ACCEPTING the connection, not on a
+	// sleep: this is the moment Add is provably inside a Redis call that
+	// will never answer.
+	<-accepted
 
 	closed := make(chan struct{})
 	start := time.Now()
@@ -236,7 +259,16 @@ func TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal(t *testing
 			})
 		},
 	}
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(func() {
+		// JOIN, don't just release (codex round 13). This test
+		// deliberately lets a drain time out, so it finishes with a renewal
+		// goroutine still parked; releasing it without waiting leaves it
+		// unwinding into whatever runs next, contaminating leak checks and
+		// later tests in the package.
+		close(release)
+		p.Close()
+		p.waitForDrain(5 * time.Second)
+	})
 
 	p.Add("user-1", SessionIdentity{Armed: true})
 	<-entered // a renewal is parked and nothing will release it
@@ -406,7 +438,16 @@ func TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop(t *testing.
 			})
 		},
 	}
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(func() {
+		// JOIN, don't just release (codex round 13). This test
+		// deliberately lets a drain time out, so it finishes with a renewal
+		// goroutine still parked; releasing it without waiting leaves it
+		// unwinding into whatever runs next, contaminating leak checks and
+		// later tests in the package.
+		close(release)
+		p.Close()
+		p.waitForDrain(5 * time.Second)
+	})
 
 	id := p.Add("user-1", SessionIdentity{Armed: true})
 	<-entered // parked, and nothing will release it
