@@ -212,11 +212,16 @@ const (
 
 	// closeDrainTimeout bounds how long Close waits for renewal goroutines.
 	//
-	// Close waits on a WaitGroup whose counter includes a goroutine that has
-	// not started yet — Add increments it before the registration write,
-	// deliberately, so a Close racing an Add cannot return before that
-	// session is accounted for. The cost is that a stalled Redis puts Add's
-	// write between Close and its own completion.
+	// Close waits on a WaitGroup covering the renewal goroutines.
+	//
+	// It no longer covers an in-flight Add write, and an earlier version of
+	// this comment still said it did (codex round 19). Add used to
+	// increment the counter before writing; since round 18 it writes first
+	// and registers afterwards, so that the cap can decline to start a
+	// goroutine at all. A Close landing during an Add's write therefore
+	// returns without waiting for it, and the entry that write creates is
+	// left to its TTL — the same dead-instance staleness this type already
+	// documents, rather than a leak.
 	//
 	// WITH THE PRODUCTION CLIENT CONFIG this deadline never fires:
 	// go-redis's own dial/read timeouts release the write first, and a
@@ -393,9 +398,23 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 	// the wrong resource: every over-cap connection would keep a goroutine
 	// and re-run a failing script every 30 seconds, which is most of what
 	// the cap exists to prevent.
+	// Checked BEFORE the write as well as after (codex round 19). Moving
+	// the write ahead of renewal registration means a write that starts
+	// after Close has drained would otherwise leave an entry nobody
+	// renews. This narrows that window rather than closing it — a Close
+	// landing DURING the write still produces one — and what remains is
+	// bounded by the entry's own TTL and is the same dead-instance
+	// staleness the type already documents.
+	p.mu.Lock()
+	alreadyClosed := p.closed
+	p.mu.Unlock()
+	if alreadyClosed {
+		return id
+	}
+
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), p.timeout())
 	defer writeCancel()
-	writeErr := p.write(writeCtx, userID, id, string(payload))
+	writeErr := p.write(writeCtx, userID, id, string(payload), false)
 	if errors.Is(writeErr, errSessionLimitReached) {
 		slog.Warn("session presence: per-user session limit reached; this stream will receive broadcasts but is not targetable",
 			"user_id", userID, "limit", maxSessionsPerUser)
@@ -466,7 +485,9 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 // commands.
 var writeScript = redis.NewScript(`
 local id, ttl, limit = ARGV[3], ARGV[2], tonumber(ARGV[4])
-if redis.call('SISMEMBER', KEYS[2], id) == 0
+local renewing = ARGV[6] == '1'
+if not renewing
+   and redis.call('SISMEMBER', KEYS[2], id) == 0
    and redis.call('SCARD', KEYS[2]) >= limit then
   for _, member in ipairs(redis.call('SMEMBERS', KEYS[2])) do
     if redis.call('EXISTS', ARGV[5] .. member) == 0 then
@@ -507,17 +528,31 @@ return 1
 //
 // 100 is far above any plausible legitimate use — an agent session per
 // checkout, a browser tab or two — while still bounding one user's share of
-// shared state. Re-registration of an id already in the set is always
-// allowed, so a renewal can never be refused by the cap.
+// shared state. Renewals bypass the cap entirely (see write's `renewing`
+// argument), so an already-admitted session can never be refused by it.
+//
+// ONE HONESTY COST, recorded rather than left to be discovered (codex round
+// 19): past the cap, delivered_sessions UNDER-reports a broadcast. Capped
+// sessions still receive one — the stream matches on its own id regardless
+// of the registry — but they are not in the registry the count reads, so
+// 101 armed streams produce a delivered_sessions of 100. That is the mirror
+// of the over-count in BUG-2725 (sessions counted that item-visibility will
+// drop), and it lands the same way: the field is an ESTIMATE, which is what
+// every consumer-facing description of it now says. Both directions are
+// tracked there rather than pretending this one is exact.
 const maxSessionsPerUser = 100
 
 // write stores the session entry and indexes it, both under the same TTL,
 // in one atomic step. See writeScript.
-func (p *RedisSessionPresence) write(ctx context.Context, userID, sessionID, payload string) error {
+func (p *RedisSessionPresence) write(ctx context.Context, userID, sessionID, payload string, renewing bool) error {
+	renewFlag := "0"
+	if renewing {
+		renewFlag = "1"
+	}
 	registered, err := writeScript.Run(ctx, p.client,
 		[]string{sessionKey(userID, sessionID), sessionIndexKey(userID)},
 		payload, int(p.sessionKeyTTL.Seconds()), sessionID, maxSessionsPerUser,
-		userIDKeyPrefix(userID),
+		userIDKeyPrefix(userID), renewFlag,
 	).Int()
 	if err != nil {
 		return err
@@ -551,7 +586,16 @@ func (p *RedisSessionPresence) renewLoop(ctx context.Context, rn *renewal, userI
 			if p.onRenewWrite != nil {
 				p.onRenewWrite()
 			}
-			if err := p.write(ctx, userID, sessionID, payload); err != nil && ctx.Err() == nil {
+			// renewing=true: the cap admits NEW connections, and this one
+			// was already admitted (a capped session never gets a renewal
+			// goroutine at all — see Add). Subjecting a renewal to the cap
+			// meant a live session whose key was evicted and whose index
+			// member was then pruned could be refused FOREVER if another
+			// connection took the freed slot — permanently unlisted and
+			// untargetable while still connected (codex round 19). The
+			// overshoot this allows is bounded by the number of already-
+			// admitted sessions, which is the cap.
+			if err := p.write(ctx, userID, sessionID, payload, true); err != nil && ctx.Err() == nil {
 				slog.Warn("session presence: failed to renew session entry",
 					"error", err, "user_id", userID)
 			}

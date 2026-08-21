@@ -484,7 +484,7 @@ func TestWriteScript_IndexesAtomicallyWithTheEntry(t *testing.T) {
 	t.Cleanup(p.Close)
 	ctx := t.Context()
 
-	if err := p.write(ctx, "user-1", "sess-1", `{"id":"sess-1"}`); err != nil {
+	if err := p.write(ctx, "user-1", "sess-1", `{"id":"sess-1"}`, false); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -582,7 +582,8 @@ func TestRedisSessionPresence_CapsSessionsPerUser(t *testing.T) {
 func TestRedisSessionPresence_RenewalIsNeverRefusedByTheCap(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
-	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	p := NewRedisSessionPresence(client)
 	t.Cleanup(p.Close)
 
 	var first string
@@ -594,8 +595,30 @@ func TestRedisSessionPresence_RenewalIsNeverRefusedByTheCap(t *testing.T) {
 	}
 
 	// A renewal is exactly this call, at the cap.
-	if err := p.write(t.Context(), "user-1", first, `{"id":"`+first+`"}`); err != nil {
+	// renewing=true, which is what renewLoop passes: the cap admits NEW
+	// connections, and this session was already admitted.
+	if err := p.write(t.Context(), "user-1", first, `{"id":"`+first+`"}`, true); err != nil {
 		t.Fatalf("a renewal at the cap must not be refused: %v", err)
+	}
+
+	// THE CASE THAT MADE THIS A BYPASS RATHER THAN AN EXEMPTION (codex
+	// round 19): a live session whose key was evicted AND whose index
+	// member was then pruned looks brand new to the script. Subject to the
+	// cap, its renewal would be refused forever once another connection
+	// took the freed slot, leaving it permanently unlisted while still
+	// connected.
+	if err := client.SRem(t.Context(), sessionIndexKey("user-1"), first).Err(); err != nil {
+		t.Fatalf("evict index member: %v", err)
+	}
+	if err := client.Del(t.Context(), sessionKey("user-1", first)).Err(); err != nil {
+		t.Fatalf("evict entry: %v", err)
+	}
+	// Another connection takes the freed slot.
+	if id := p.Add("user-1", SessionIdentity{Armed: true}); id == "" {
+		t.Fatal("the freed slot should admit a new session")
+	}
+	if err := p.write(t.Context(), "user-1", first, `{"id":"`+first+`"}`, true); err != nil {
+		t.Fatalf("a renewal must be admitted even when its slot was taken: %v", err)
 	}
 }
 
