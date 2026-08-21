@@ -158,8 +158,19 @@ type RedisSessionPresence struct {
 	// is not an instrument.
 	onRenewWrite func()
 
-	mu       sync.Mutex
-	closed   bool
+	mu     sync.Mutex
+	closed bool
+	// renewLog rate-limits the renewal-failure warning. A Redis outage
+	// fails EVERY session's renewal on every tick, so at a thousand
+	// sessions the unthrottled version emitted ~33 warnings a second per
+	// replica — enough to page on volume while saying nothing an operator
+	// could act on, and enough to bury the errors that matter (codex round
+	// 33). One line per interval carries the same information plus how many
+	// it stands for.
+	renewLog struct {
+		last       time.Time
+		suppressed int
+	}
 	renewals map[string]*renewal // userID|sessionID -> its live renewal
 	wg       sync.WaitGroup
 }
@@ -280,6 +291,39 @@ func (p *RedisSessionPresence) timeout() time.Duration {
 		return presenceOpTimeout
 	}
 	return p.opTimeout
+}
+
+// renewLogInterval bounds how often a renewal failure is logged. Long
+// enough that a sustained outage produces a readable trickle, short enough
+// that a recovering one is visible within a minute.
+const renewLogInterval = time.Minute
+
+// warnRenewFailure logs a renewal failure at most once per
+// renewLogInterval, carrying the number of failures it stands for.
+//
+// Deliberately not silent in between: the count is what tells an operator
+// whether this is one flapping session or the whole replica, which is
+// exactly the Redis-problem-vs-Pad-problem question the raw stream could
+// not answer. The session id is included because the un-throttled version
+// omitted it — a warning naming only the user could not be tied to a
+// specific stuck target.
+func (p *RedisSessionPresence) warnRenewFailure(err error, userID, sessionID string) {
+	now := time.Now()
+
+	p.mu.Lock()
+	p.renewLog.suppressed++
+	if !p.renewLog.last.IsZero() && now.Sub(p.renewLog.last) < renewLogInterval {
+		p.mu.Unlock()
+		return
+	}
+	count := p.renewLog.suppressed
+	p.renewLog.suppressed = 0
+	p.renewLog.last = now
+	p.mu.Unlock()
+
+	slog.Warn("session presence: failed to renew session entry; affected sessions are unlisted and untargetable until it recovers",
+		"error", err, "user_id", userID, "session_id", sessionID,
+		"failures_since_last_log", count, "log_interval", renewLogInterval)
 }
 
 // drain is drainTimeout with the production default applied, for the same
@@ -467,8 +511,7 @@ func (p *RedisSessionPresence) renewLoop(ctx context.Context, rn *renewal, userI
 				p.onRenewWrite()
 			}
 			if err := p.write(ctx, userID, sessionID, payload); err != nil && ctx.Err() == nil {
-				slog.Warn("session presence: failed to renew session entry",
-					"error", err, "user_id", userID)
+				p.warnRenewFailure(err, userID, sessionID)
 			}
 		}
 	}

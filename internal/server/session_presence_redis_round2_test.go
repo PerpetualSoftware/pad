@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -604,4 +607,83 @@ func TestRedisSessionPresence_RealRedisReadFailureIsReported(t *testing.T) {
 	if sessions != nil {
 		t.Fatalf("a failed read must not return a list that looks complete; got %d", len(sessions))
 	}
+}
+
+// TestRedisSessionPresence_RenewalFailureLoggingIsRateLimited — codex
+// round 33 (operability).
+//
+// A Redis outage fails EVERY session's renewal on every tick. At a
+// thousand sessions the unthrottled warning emitted roughly 33 lines a
+// second per replica — enough to page on volume while saying nothing
+// actionable, and enough to bury the errors that matter. That flood was
+// introduced by this change, so it is this change's to bound.
+//
+// Asserts the count is CARRIED, not just that lines are dropped:
+// throttling that loses the number would leave an operator unable to tell
+// one flapping session from a whole replica, which is the
+// Redis-problem-vs-Pad-problem question the log exists to answer.
+func TestRedisSessionPresence_RenewalFailureLoggingIsRateLimited(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&lockedWriter{w: &buf, mu: &mu}, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	t.Cleanup(p.Close)
+
+	const failures = 50
+	for i := 0; i < failures; i++ {
+		p.warnRenewFailure(errors.New("connection refused"), "user-1", "sess-"+strconv.Itoa(i))
+	}
+
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+
+	lines := 0
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.Contains(l, "failed to renew session entry") {
+			lines++
+		}
+	}
+	if lines != 1 {
+		t.Fatalf("expected exactly 1 logged warning for %d failures inside the interval, got %d\n%s", failures, lines, out)
+	}
+	if !strings.Contains(out, `"session_id":"sess-0"`) {
+		t.Fatalf("the warning must name a session id — a warning naming only the user cannot be tied to a stuck target:\n%s", out)
+	}
+	// The suppressed count must be present and must not silently be 1: a
+	// throttle that drops the number is worse than one that drops lines.
+	if !strings.Contains(out, `"failures_since_last_log":1`) {
+		t.Fatalf("the first warning should stand for exactly itself:\n%s", out)
+	}
+
+	// The NEXT interval reports how many it stood for. Driven by moving the
+	// throttle's clock back rather than sleeping a minute.
+	p.mu.Lock()
+	p.renewLog.last = time.Now().Add(-2 * renewLogInterval)
+	p.mu.Unlock()
+	p.warnRenewFailure(errors.New("connection refused"), "user-1", "sess-final")
+
+	mu.Lock()
+	out = buf.String()
+	mu.Unlock()
+	if !strings.Contains(out, `"failures_since_last_log":50`) {
+		t.Fatalf("the next warning must carry the suppressed count (49 suppressed + itself = 50):\n%s", out)
+	}
+}
+
+// lockedWriter serialises writes from slog, which a rate-limit test drives
+// from one goroutine but which the race detector still checks.
+type lockedWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
