@@ -21,14 +21,6 @@ func maskWebhookSecret(hook models.Webhook) models.Webhook {
 	return hook
 }
 
-// dispatchWebhook fires a webhook event if a dispatcher is configured.
-func (s *Server) dispatchWebhook(workspaceID, event string, data interface{}) {
-	if s.webhooks == nil {
-		return
-	}
-	s.webhooks.Dispatch(workspaceID, event, data)
-}
-
 // handleCreateWebhook registers a new webhook for a workspace.
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {

@@ -746,6 +746,19 @@ func serveCmd() *cobra.Command {
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
 
+			// SPEC-3 event outbox drain (TASK-2714). Started AFTER the
+			// dispatcher is attached: a drain running without one acks its
+			// rows as having nowhere to go, which for the first few seconds
+			// of a boot would silently discard real events.
+			outboxInterval := parseDurationEnv("PAD_OUTBOX_DRAIN_INTERVAL", 0)
+			outboxLease := parseDurationEnv("PAD_OUTBOX_CLAIM_LEASE", 0)
+			outboxRetention := parseDurationEnv("PAD_OUTBOX_RETENTION", 0)
+			outboxMaxAge := parseDurationEnv("PAD_OUTBOX_MAX_AGE", 0)
+			if outboxInterval != 0 || outboxLease != 0 || outboxRetention != 0 || outboxMaxAge != 0 {
+				srv.SetOutboxDrainConfig(outboxInterval, outboxLease, outboxRetention, outboxMaxAge, 0)
+			}
+			srv.StartOutboxDrain()
+
 			// Attach email sender: env vars first, then platform settings overlay
 			if cfg.MailerooAPIKey != "" {
 				fromAddr := cfg.EmailFrom

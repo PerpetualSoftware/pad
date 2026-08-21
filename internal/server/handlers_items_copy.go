@@ -637,11 +637,14 @@ func (s *Server) afterCopyCommit(r *http.Request, res *store.CrossWorkspaceCopyR
 // the destination's next /items-changes poll surfaces the item regardless,
 // and the endpoint's 500 tells the user to go and look.
 //
-// SYNCHRONOUS, deliberately. logActivity writes a row, the SSE publish can
-// reach Redis, and dispatchWebhook lists and marshals before it spawns its
-// delivery goroutines — so this runs before the 201 and can add latency to
-// it. That is exactly what handleCreateItem, handleDeleteItem and
-// handleMoveItem already do (Codex round 3), and diverging would buy nothing:
+// SYNCHRONOUS, deliberately. logActivity writes a row and the SSE publish can
+// reach Redis — so this runs before the 201 and can add latency to it. That is
+// exactly what handleCreateItem, handleDeleteItem and handleMoveItem already
+// do (Codex round 3), and diverging would buy nothing:
+//
+// The webhook dispatch that used to be part of this list is gone (TASK-2714):
+// webhooks are delivered by the outbox drain now, from the row the copy's own
+// transaction wrote, so nothing webhook-shaped happens on this path at all.
 // moving it to a goroutine would make the emission ordering — which DR-14
 // specifies and these tests assert — unobservable, and would decouple the
 // "copy succeeded" response from the events that describe it for no
@@ -663,7 +666,6 @@ func (s *Server) emitCopyFanout(r *http.Request, res *store.CrossWorkspaceCopyRe
 	s.logActivity(targetWorkspaceID, res.Item.ID, "created", r)
 	s.publishItemEventWithName(sseItemCreated, targetWorkspaceID, res.Item.ID, res.Item.Title,
 		res.TargetCollection.Slug, actor, actorName, actorSource, res.Item.Seq)
-	s.dispatchWebhook(targetWorkspaceID, "item.created", res.Item)
 
 	// --- Source: only on a move, and SourceSeq is the discriminator. It is
 	// non-nil if and only if the archive ran, so this cannot emit an archive
@@ -675,7 +677,6 @@ func (s *Server) emitCopyFanout(r *http.Request, res *store.CrossWorkspaceCopyRe
 	s.logActivity(res.SourceWorkspaceID, res.Source.ID, "archived", r)
 	s.publishItemEventWithName(sseItemArchived, res.SourceWorkspaceID, res.Source.ID, res.Source.Title,
 		res.SourceCollection.Slug, actor, actorName, actorSource, *res.SourceSeq)
-	s.dispatchWebhook(res.SourceWorkspaceID, "item.deleted", res.Source)
 }
 
 // writeCopyError maps the store's typed errors onto the statuses the

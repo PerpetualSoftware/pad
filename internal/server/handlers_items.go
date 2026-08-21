@@ -808,7 +808,6 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	actorNameForCreate := actorNameFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "created", r)
 	s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
-	s.dispatchWebhook(workspaceID, "item.created", item)
 
 	// Assignment-at-creation (TASK-2533): unlike an update, a freshly
 	// created item has no "before" state to diff — LastMutation doesn't
@@ -1695,7 +1694,6 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
 	actorNameForUpdate := actorNameFromRequest(r)
 	s.publishItemEventWithName(sseItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
-	s.dispatchWebhook(workspaceID, "item.updated", updated)
 	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)
 
 	// If a comment was attached to this update (e.g. explaining a status change),
@@ -1795,7 +1793,6 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "archived", r)
 	s.publishItemEventWithName(sseItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
-	s.dispatchWebhook(workspaceID, "item.deleted", item)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -2132,7 +2129,6 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// Publish events for both old and new collections
 	actorNameForMove := actorNameFromRequest(r)
 	s.publishItemEventWithName(sseItemMoved, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
-	s.dispatchWebhook(workspaceID, "item.moved", moved)
 	s.publishWatchNotifications(workspaceID, moved, actor, actorNameForMove)
 
 	moveVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)

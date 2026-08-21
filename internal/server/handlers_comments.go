@@ -137,7 +137,6 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	// Publish SSE event
 	s.publishCommentEvent(sseCommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
-	s.dispatchWebhook(workspaceID, "comment.created", comment)
 
 	if s.watchEvents != nil {
 		s.watchEvents.Publish(watchevents.Notification{
@@ -264,7 +263,6 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 		collSlug = item.CollectionSlug
 	}
 	s.publishCommentEvent(sseCommentUpdated, workspaceID, updated.ItemID, updated.ID, title, collSlug, actor, source)
-	s.dispatchWebhook(workspaceID, "comment.updated", updated)
 
 	writeJSON(w, http.StatusOK, updated)
 }

@@ -349,15 +349,6 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		for collSlug, b := range batches {
 			s.publishBulkItemsEvent(workspaceID, req.Op, collSlug, b.count, actor, actorName, source, b.maxSeq)
 		}
-		// The webhook is a trusted workspace integration (not
-		// visibility-scoped per subscriber), so it keeps the full id
-		// list for the whole batch.
-		s.dispatchWebhook(workspaceID, "item.bulk_updated", map[string]any{
-			"op":       req.Op,
-			"count":    len(affectedIDs),
-			"item_ids": affectedIDs,
-		})
-
 		// The batch HEADER for the outbox drain (SPEC-3 v1.6): the operation,
 		// the shared delta and the member refs — the three things the drain
 		// cannot work out from the member rows, which carry post-mutation
