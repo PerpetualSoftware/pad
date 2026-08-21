@@ -510,7 +510,11 @@ return 1
 // WHY A BOUND EXISTS AT ALL. GET /api/v1/events/stream has no concurrent
 // connection limit — PAD_SSE_MAX_CONNECTIONS / _PER_WORKSPACE gate
 // /api/v1/events, not this endpoint — and the rate limiter caps how fast
-// connections are made, not how many are held. Before this type, an
+// connections are made, not how many are held. That gap is BUG-2726 and
+// this cap does not close it: past the cap a user can still hold unlimited
+// streams, each costing a goroutine and a bus subscription on the
+// answering instance. What this bounds is the SHARED state, which is what
+// this change introduced. Before this type, an
 // authenticated user holding N streams cost N map entries inside ONE
 // process. Now it costs N keys, N index members, N renewal goroutines, and
 // N periodic writes in Redis, which every replica shares. That is a real
