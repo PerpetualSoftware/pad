@@ -538,7 +538,7 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	// A failure here fails the create. That is not incidental — an outbox
 	// write that degrades to best-effort would look durable while
 	// reintroducing exactly the lost-event window the outbox exists to close.
-	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, nil); err != nil {
+	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, nil, ""); err != nil {
 		return nil, err
 	}
 	return item, nil
@@ -1953,8 +1953,8 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	return scanItems(rows)
 }
 
-func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, error) {
-	return s.UpdateItemWithPreCheck(id, input, nil)
+func (s *Store) UpdateItem(id string, input models.ItemUpdate, opts ...MutationOption) (*models.Item, error) {
+	return s.UpdateItemWithPreCheck(id, input, nil, opts...)
 }
 
 // UpdateConflictError is returned by UpdateItem when the caller supplied
@@ -2044,8 +2044,9 @@ func (s *Store) UpdateItemWithPreCheck(
 	id string,
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
+	opts ...MutationOption,
 ) (*models.Item, error) {
-	return s.UpdateItemWithParentLink(id, input, precheck, nil)
+	return s.UpdateItemWithParentLink(id, input, precheck, nil, opts...)
 }
 
 // UpdateItemWithParentLink is UpdateItemWithPreCheck plus an OPTIONAL
@@ -2069,9 +2070,11 @@ func (s *Store) UpdateItemWithParentLink(
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
 	parentLink *ParentLinkUpdate,
+	opts ...MutationOption,
 ) (*models.Item, error) {
+	opt := newMutationOptions(opts)
 	return retryOnParentSetChanged(func() (*models.Item, error) {
-		return s.updateItemWithParentLinkOnce(id, input, precheck, parentLink)
+		return s.updateItemWithParentLinkOnce(id, input, precheck, parentLink, opt)
 	})
 }
 
@@ -2080,6 +2083,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
 	parentLink *ParentLinkUpdate,
+	opt mutationOptions,
 ) (*models.Item, error) {
 	existing, err := s.GetItem(id)
 	if err != nil {
@@ -2667,7 +2671,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// The prior status comes from the same in-tx before/after comparison that
 	// wrote the status_transitions row, so the event and the transition log
 	// cannot disagree about what happened.
-	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey); err != nil {
+	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey, opt.batchID); err != nil {
 		return nil, err
 	}
 
@@ -2683,7 +2687,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 // The seq bump uses the same MAX(seq)+1 subquery the other mutations
 // rely on; the advisory lock keeps concurrent Postgres writes from
 // racing on it.
-func (s *Store) DeleteItem(id string) error {
+func (s *Store) DeleteItem(id string, opts ...MutationOption) error {
+	opt := newMutationOptions(opts)
 	// Look up the workspace before the write so we can key the
 	// advisory lock and the seq subquery. The lookup tolerates
 	// already-deleted items (we still need to short-circuit cleanly
@@ -2752,7 +2757,7 @@ func (s *Store) DeleteItem(id string) error {
 	// live row at all, which must not emit an event for an item that was not
 	// there to archive.
 	if preArchive != nil {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, nil); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, nil, opt.batchID); err != nil {
 			return err
 		}
 	}
@@ -2762,14 +2767,15 @@ func (s *Store) DeleteItem(id string) error {
 // RestoreItem un-archives a soft-deleted item and bumps the
 // workspace-scoped seq so delta-sync clients re-materialize the row.
 // Same lock + subquery shape as DeleteItem.
-func (s *Store) RestoreItem(id string) (*models.Item, error) {
+func (s *Store) RestoreItem(id string, opts ...MutationOption) (*models.Item, error) {
+	opt := newMutationOptions(opts)
 	// BUG-2073: retry if the item's parent set moves during lock acquisition.
 	return retryOnParentSetChanged(func() (*models.Item, error) {
-		return s.restoreItemOnce(id)
+		return s.restoreItemOnce(id, opt)
 	})
 }
 
-func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
+func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, error) {
 	existing, err := s.GetItemIncludeDeleted(id)
 	if err != nil {
 		return nil, err
@@ -2845,7 +2851,7 @@ func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
 		return nil, fmt.Errorf("read post-restore snapshot: %w", err)
 	}
 	if restored != nil {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil, opt.batchID); err != nil {
 			return nil, err
 		}
 	}
@@ -4504,16 +4510,19 @@ func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*mod
 func (s *Store) MoveItemWithPreCheck(
 	itemID, targetCollectionID, newFieldsJSON string,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
+	opts ...MutationOption,
 ) (*models.Item, error) {
+	opt := newMutationOptions(opts)
 	// BUG-2073: retry if the item's parent set moves during lock acquisition.
 	return retryOnParentSetChanged(func() (*models.Item, error) {
-		return s.moveItemWithPreCheckOnce(itemID, targetCollectionID, newFieldsJSON, precheck)
+		return s.moveItemWithPreCheckOnce(itemID, targetCollectionID, newFieldsJSON, precheck, opt)
 	})
 }
 
 func (s *Store) moveItemWithPreCheckOnce(
 	itemID, targetCollectionID, newFieldsJSON string,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
+	opt mutationOptions,
 ) (*models.Item, error) {
 	existing, err := s.GetItem(itemID)
 	if err != nil {
@@ -4664,12 +4673,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 	}
 	if moved != nil {
 		if targetCollectionID != preMove.CollectionID {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, nil); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, nil, opt.batchID); err != nil {
 				return nil, err
 			}
 		}
 		if newStatus != oldStatus {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, moved, &oldStatus); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, moved, &oldStatus, opt.batchID); err != nil {
 				return nil, err
 			}
 		}
@@ -4681,7 +4690,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 			return nil, cerr
 		}
 		if otherChanged {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, nil); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, nil, opt.batchID); err != nil {
 				return nil, err
 			}
 		}

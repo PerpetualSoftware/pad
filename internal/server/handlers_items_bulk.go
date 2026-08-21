@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // maxBulkItems caps how many items a single bulk request may touch.
@@ -221,6 +224,19 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 	}
 	batches := map[string]*collBatch{}
 
+	// One id for the whole bulk OPERATION, stamped onto every canonical event
+	// its members emit (SPEC-3 v1.5, migration 082). Bulk is a handler loop
+	// over per-item store mutations with no enclosing transaction, so each
+	// member writes its own outbox row; without this correlation the drain
+	// would put N single-item events on the webhook wire for one lane action —
+	// the flood TASK-1668's batch event exists to prevent.
+	//
+	// Minted before the loop and unconditionally, including for the runs where
+	// every item fails: an unused batch id costs nothing, while deciding
+	// mid-loop whether this "counts as" a batch would make the correlation
+	// depend on how far the loop got.
+	batchID := uuid.NewString()
+
 	for _, ref := range req.IDs {
 		// `restore` operates on ARCHIVED items, which ResolveItem hides —
 		// resolve include-deleted for that op (used by undo, TASK-1674).
@@ -252,7 +268,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget)
+		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget, batchID)
 		if opErr != nil {
 			resp.Failed = append(resp.Failed, bulkItemFailure{
 				Ref:     itemRefOrSlug(*item),
@@ -350,10 +366,10 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 // item (for seq) on success, or a structured per-row error.
 // resolvedTarget carries the request-level collection resolution for `move`
 // (nil for every other op), so the per-item path never re-resolves.
-func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection) (*models.Item, *bulkOpError) {
+func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection, batchID string) (*models.Item, *bulkOpError) {
 	switch req.Op {
 	case "archive":
-		if err := s.store.DeleteItem(item.ID); err != nil {
+		if err := s.store.DeleteItem(item.ID, store.WithEventBatch(batchID)); err != nil {
 			return nil, &bulkOpError{message: err.Error()}
 		}
 		// DeleteItem bumps seq; re-read so the batch event carries the
@@ -367,7 +383,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 	case "restore":
 		// Undo of a bulk archive (TASK-1674). RestoreItem clears
 		// deleted_at and bumps seq; returns the live row.
-		restored, err := s.store.RestoreItem(item.ID)
+		restored, err := s.store.RestoreItem(item.ID, store.WithEventBatch(batchID))
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, &bulkOpError{message: "item not found or not archived"}
@@ -384,19 +400,19 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 
 	case "move":
 		if req.Collection != "" {
-			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget)
+			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget, batchID)
 		}
 		// Status-only move = a field update on the same collection.
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source, batchID)
 
 	case "set-priority":
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source, batchID)
 
 	case "tag":
-		return s.bulkTagUpdate(item, req.Tags, true, actor, source)
+		return s.bulkTagUpdate(item, req.Tags, true, actor, source, batchID)
 
 	case "untag":
-		return s.bulkTagUpdate(item, req.Tags, false, actor, source)
+		return s.bulkTagUpdate(item, req.Tags, false, actor, source, batchID)
 
 	case "assign":
 		input := models.ItemUpdate{
@@ -407,7 +423,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 			LastModifiedBy:    actor,
 			Source:            source,
 		}
-		updated, err := s.store.UpdateItem(item.ID, input)
+		updated, err := s.store.UpdateItem(item.ID, input, store.WithEventBatch(batchID))
 		if err != nil {
 			return nil, &bulkOpError{message: err.Error()}
 		}
@@ -421,7 +437,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 // validates against the collection schema, runs the open-children guard
 // (unless force), and writes via UpdateItemWithPreCheck — the same path
 // the single PATCH handler uses. Used by status moves and set-priority.
-func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, visibleIDs []string, actor, source string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, visibleIDs []string, actor, source, batchID string) (*models.Item, *bulkOpError) {
 	coll, err := s.store.GetCollection(item.CollectionID)
 	if err != nil || coll == nil {
 		return nil, &bulkOpError{message: "failed to load collection"}
@@ -513,7 +529,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 
 // bulkTagUpdate adds (add=true) or removes (add=false) the given tags
 // from the item's tag set, preserving existing order and de-duplicating.
-func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor, source string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor, source, batchID string) (*models.Item, *bulkOpError) {
 	existing := []string{}
 	if item.Tags != "" && item.Tags != "[]" {
 		_ = json.Unmarshal([]byte(item.Tags), &existing)
@@ -571,7 +587,7 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 // resolves to nothing — deliberately, so that case and an existing-but-hidden
 // target fail identically here rather than at different HTTP statuses (the
 // existence oracle from codex round 4). Hence the nil check below.
-func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection) (*models.Item, *bulkOpError) {
+func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection, batchID string) (*models.Item, *bulkOpError) {
 	if targetColl == nil {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
 	}

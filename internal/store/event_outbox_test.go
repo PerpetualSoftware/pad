@@ -1565,3 +1565,127 @@ func TestOutbox_PruneUndispatchedBoundsTheFrozenPayloadWindow(t *testing.T) {
 		}
 	}
 }
+
+// outboxBatchIDsFor returns the batch_id of every event recorded for an item.
+func outboxBatchIDsFor(t *testing.T, s *Store, itemID string) []string {
+	t.Helper()
+	rows, err := s.db.Query(s.q(`SELECT COALESCE(batch_id, '') FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at, id`), itemID)
+	if err != nil {
+		t.Fatalf("query batch ids: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			t.Fatalf("scan batch_id: %v", err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate batch ids: %v", err)
+	}
+	return out
+}
+
+// TestOutbox_WithEventBatchStampsEveryMutationPath drives ALL FIVE store entry
+// points the bulk handler reaches, because the failure this guards against is
+// per-method: a signature that accepts the option and never threads it to the
+// emit compiles, passes every other test, and silently un-batches one of the
+// six bulk verbs.
+//
+// The population is enumerated rather than sampled (CONVE-18): archive
+// (DeleteItem), restore (RestoreItem), move (MoveItemWithPreCheck), field
+// update (UpdateItemWithPreCheck) and assign (UpdateItem) are the complete set
+// of mutating store calls handlers_items_bulk.go makes. My own escalation said
+// four; it was five, and restore was the one missing.
+//
+// Each leg asserts the unstamped control too. Without it the test would pass
+// for an implementation that stamped every event ever written.
+func TestOutbox_WithEventBatchStampsEveryMutationPath(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox batch")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	other := createTestCollection(t, s, ws.ID, "Done")
+
+	const batch = "batch-42"
+
+	assertBatch := func(t *testing.T, itemID, want string) {
+		t.Helper()
+		got := outboxBatchIDsFor(t, s, itemID)
+		if len(got) == 0 {
+			t.Fatalf("no outbox rows for %s — the mutation emitted nothing, so the batch assertion proves nothing", itemID)
+		}
+		for _, b := range got {
+			if b != want {
+				t.Errorf("batch ids = %v, want every row stamped %q", got, want)
+				return
+			}
+		}
+	}
+
+	t.Run("DeleteItem", func(t *testing.T) {
+		batched := createTestItem(t, s, ws.ID, col.ID, "Archived in a batch", "")
+		clearOutbox(t, s)
+		if err := s.DeleteItem(batched.ID, WithEventBatch(batch)); err != nil {
+			t.Fatalf("DeleteItem: %v", err)
+		}
+		assertBatch(t, batched.ID, batch)
+
+		solo := createTestItem(t, s, ws.ID, col.ID, "Archived alone", "")
+		clearOutbox(t, s)
+		if err := s.DeleteItem(solo.ID); err != nil {
+			t.Fatalf("DeleteItem (control): %v", err)
+		}
+		assertBatch(t, solo.ID, "")
+	})
+
+	t.Run("RestoreItem", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Restored in a batch", "")
+		if err := s.DeleteItem(item.ID); err != nil {
+			t.Fatalf("DeleteItem: %v", err)
+		}
+		clearOutbox(t, s)
+		if _, err := s.RestoreItem(item.ID, WithEventBatch(batch)); err != nil {
+			t.Fatalf("RestoreItem: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+	})
+
+	t.Run("MoveItemWithPreCheck", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Moved in a batch", "")
+		clearOutbox(t, s)
+		if _, err := s.MoveItemWithPreCheck(item.ID, other.ID, "{}", nil, WithEventBatch(batch)); err != nil {
+			t.Fatalf("MoveItemWithPreCheck: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+	})
+
+	t.Run("UpdateItemWithPreCheck", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Field-updated in a batch", "")
+		clearOutbox(t, s)
+		title := "Field-updated in a batch, renamed"
+		if _, err := s.UpdateItemWithPreCheck(item.ID, models.ItemUpdate{Title: &title}, nil, WithEventBatch(batch)); err != nil {
+			t.Fatalf("UpdateItemWithPreCheck: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+	})
+
+	t.Run("UpdateItem", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Assigned in a batch", "")
+		clearOutbox(t, s)
+		title := "Assigned in a batch, renamed"
+		if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &title}, WithEventBatch(batch)); err != nil {
+			t.Fatalf("UpdateItem: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+
+		solo := createTestItem(t, s, ws.ID, col.ID, "Assigned alone", "")
+		clearOutbox(t, s)
+		soloTitle := "Assigned alone, renamed"
+		if _, err := s.UpdateItem(solo.ID, models.ItemUpdate{Title: &soloTitle}); err != nil {
+			t.Fatalf("UpdateItem (control): %v", err)
+		}
+		assertBatch(t, solo.ID, "")
+	})
+}

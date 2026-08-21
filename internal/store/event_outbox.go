@@ -44,6 +44,17 @@ type OutboxEvent struct {
 	Hop         int
 	OccurredAt  string
 
+	// BatchID correlates every event of ONE handler-path bulk operation.
+	// Empty on every single-item mutation, which is almost all of them.
+	//
+	// SPEC-3 v1.5: the drain folds a batch into one wire item.bulk_updated
+	// while the member rows stay individually addressable for bindings. The
+	// correlation is RECORDED here rather than inferred at delivery, because
+	// a wire event saying "these five items changed together" is only true if
+	// something recorded that they did — grouping pending rows by a time
+	// window would fold two unrelated updates into somebody's bulk event.
+	BatchID string
+
 	// PayloadFamily is the shape the caller marshalled into Payload. It is a
 	// WRITE-SIDE assertion, checked against the taxonomy and never stored:
 	// the event name already determines the shape, so persisting it would
@@ -53,6 +64,40 @@ type OutboxEvent struct {
 	// Attempts and LastError are drain bookkeeping, populated on read.
 	Attempts  int
 	LastError string
+}
+
+// MutationOption tunes the event side of a store mutation. Nothing about the
+// mutation itself changes — these options exist so a CALLER that knows
+// something the store cannot (that this write is one member of a bulk
+// operation) can say so.
+//
+// Variadic rather than new required parameters: every existing call site is a
+// single-item mutation that has nothing to declare, and making all of them
+// pass a zero value would bury the one case that matters.
+type MutationOption func(*mutationOptions)
+
+type mutationOptions struct {
+	batchID string
+}
+
+// WithEventBatch marks every canonical event this mutation emits as a member
+// of the named batch.
+//
+// The caller mints the id per bulk OPERATION, not per item — that is the whole
+// content of the correlation. See the batch_id column comment (migration 082)
+// for why the drain cannot work this out for itself.
+func WithEventBatch(batchID string) MutationOption {
+	return func(o *mutationOptions) { o.batchID = batchID }
+}
+
+func newMutationOptions(opts []MutationOption) mutationOptions {
+	var o mutationOptions
+	for _, fn := range opts {
+		if fn != nil {
+			fn(&o)
+		}
+	}
+	return o
 }
 
 // maxOutboxHop is SPEC-3 §L5's synchronous cascade bound: a binding-triggered
@@ -197,9 +242,9 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	ev.SubjectKind = kind
 
 	_, err := tx.Exec(s.q(`
-		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at)
-		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?)
-	`), ev.ID, ev.WorkspaceID, ev.EventType, ev.SubjectKind, ev.SubjectID, string(ev.Payload), ev.Hop, ev.OccurredAt)
+		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at, batch_id)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''))
+	`), ev.ID, ev.WorkspaceID, ev.EventType, ev.SubjectKind, ev.SubjectID, string(ev.Payload), ev.Hop, ev.OccurredAt, ev.BatchID)
 	if err != nil {
 		return fmt.Errorf("outbox: write %s: %w", ev.EventType, err)
 	}
@@ -304,7 +349,7 @@ func scrubItemPII(item *models.Item) *models.Item {
 // priorStatus is a POINTER so a transition from an empty prior status is
 // distinguishable from an event that has none — pass nil for every event other
 // than item.status_changed.
-func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus *string) error {
+func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus *string, batchID string) error {
 	if item == nil {
 		return fmt.Errorf("outbox: %s has no item snapshot", eventType)
 	}
@@ -319,6 +364,7 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 		SubjectID:     item.ID,
 		Payload:       payload,
 		PayloadFamily: kernelevents.PayloadItemSnapshot,
+		BatchID:       batchID,
 	})
 }
 
@@ -767,12 +813,12 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 // branch on "was this a status update" — branching would drop the item.updated
 // half of every mixed update, silently, which is the shape of bug that
 // motivated the rule.
-func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey string) error {
+func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string) error {
 	if statusChanged {
 		// Taken by address unconditionally: an empty prior status is a real
 		// prior status here, not an absent one.
 		prior := priorStatus
-		if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, after, &prior); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, after, &prior, batchID); err != nil {
 			return err
 		}
 	}
@@ -782,7 +828,7 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 		return err
 	}
 	if otherChanged {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, nil); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, nil, batchID); err != nil {
 			return err
 		}
 	}
@@ -815,7 +861,7 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 		limit = 100
 	}
 	rows, err := s.db.Query(s.q(`
-		SELECT id, workspace_id, event_type, subject_kind, COALESCE(subject_id, ''), payload, hop, occurred_at, attempts, COALESCE(last_error, '')
+		SELECT id, workspace_id, event_type, subject_kind, COALESCE(subject_id, ''), payload, hop, occurred_at, attempts, COALESCE(last_error, ''), COALESCE(batch_id, '')
 		FROM event_outbox
 		WHERE dispatched_at IS NULL
 		ORDER BY occurred_at, id
@@ -831,7 +877,7 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 		var ev OutboxEvent
 		var payload string
 		if err := rows.Scan(&ev.ID, &ev.WorkspaceID, &ev.EventType, &ev.SubjectKind, &ev.SubjectID,
-			&payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError); err != nil {
+			&payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError, &ev.BatchID); err != nil {
 			return nil, fmt.Errorf("scan outbox event: %w", err)
 		}
 		ev.Payload = []byte(payload)
