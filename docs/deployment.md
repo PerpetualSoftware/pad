@@ -82,9 +82,39 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub. Without Redis, SSE events are in-process only. |
+| `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Global maximum SSE connections |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum SSE connections |
+
+#### Upgrading a multi-instance deployment
+
+`PAD_REDIS_URL` now also backs the **session-presence registry** — the list of
+which agent sessions are connected, which `pad push` and the web UI's "Push to
+agent" picker read to decide where a push goes. Previously that registry was
+per-process even when Redis was configured, so a push aimed at a session held
+by another replica was silently dropped.
+
+**During a rolling upgrade, old and new replicas disagree about presence.** An
+old replica has only its own connections in view, so a push it answers cannot
+see a session held on a new replica, and `GET /api/v1/sessions` returns a
+different list depending on which replica answers. The push endpoint reports
+this honestly — `delivered_sessions: 0` — but the instruction is not delivered.
+
+This is the same behaviour every replica had *before* this build, so the
+rollout is not a regression; it is a window in which the fix is only partly in
+effect. Two ways to avoid the window:
+
+- **Blue/green** — bring up the new replicas, cut traffic over, retire the old
+  ones. No mixed period.
+- **Drain first** — scale old replicas out of the load balancer and let agent
+  monitors reconnect (`pad watch --stream` reconnects on its own) before
+  serving pushes from the new set.
+
+If neither is practical, a rolling upgrade is still safe: nothing is corrupted
+and no migration is needed. Targeted pushes may report `delivered_sessions: 0`
+and go undelivered until every replica runs the new build, and users can re-send
+once the rollout completes. There is no Redis or database migration; the
+registry's keys are transient and expire on their own TTL.
 
 ### Security
 
