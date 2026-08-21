@@ -511,3 +511,89 @@ func TestWriteScript_IndexesAtomicallyWithTheEntry(t *testing.T) {
 		t.Fatalf("session index must carry a TTL; got %v (err %v)", indexTTL, err)
 	}
 }
+
+// TestRedisSessionPresence_CapsSessionsPerUser — codex round 17.
+//
+// GET /api/v1/events/stream has no concurrent connection limit, and before
+// the shared registry an authenticated user holding N streams cost N map
+// entries in ONE process. They now cost N keys, N index members, and N
+// renewal goroutines in the Redis every replica shares — a blast-radius
+// change this diff introduced, so it is bounded here.
+//
+// Asserts the DEGRADATION, not just the cap: a session past the limit must
+// still get an id (it receives broadcasts) while staying out of the
+// listing (it cannot be targeted). A cap that refused the connection
+// instead would take away delivery the bus can still perform.
+func TestRedisSessionPresence_CapsSessionsPerUser(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(p.Close)
+
+	for i := 0; i < maxSessionsPerUser; i++ {
+		if id := p.Add("user-1", SessionIdentity{Armed: true}); id == "" {
+			t.Fatalf("session %d: Add must always return an id", i)
+		}
+	}
+	sessions, err := p.ListForUser("user-1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(sessions) != maxSessionsPerUser {
+		t.Fatalf("precondition: expected %d registered sessions, got %d", maxSessionsPerUser, len(sessions))
+	}
+
+	overflow := p.Add("user-1", SessionIdentity{Armed: true})
+	if overflow == "" {
+		t.Fatal("a session past the cap must still receive an id — it can still receive broadcasts")
+	}
+
+	sessions, err = p.ListForUser("user-1")
+	if err != nil {
+		t.Fatalf("list after overflow: %v", err)
+	}
+	if len(sessions) != maxSessionsPerUser {
+		t.Fatalf("the cap must bound the registry; listed %d", len(sessions))
+	}
+	for _, sess := range sessions {
+		if sess.ID == overflow {
+			t.Fatal("the over-cap session must not be listed")
+		}
+	}
+
+	// ANOTHER USER IS UNAFFECTED. A per-user cap that behaved globally would
+	// let one user's connections deny presence to everyone else — a worse
+	// version of the problem it exists to bound.
+	if id := p.Add("user-2", SessionIdentity{Armed: true}); id == "" {
+		t.Fatal("user-2 must register normally")
+	}
+	other, err := p.ListForUser("user-2")
+	if err != nil || len(other) != 1 {
+		t.Fatalf("user-2 should have exactly 1 session, got %d (err %v)", len(other), err)
+	}
+}
+
+// TestRedisSessionPresence_RenewalIsNeverRefusedByTheCap: the cap must not
+// evict a session that is already registered. The write script allows a
+// re-SET of an id already in the index, so a renewal at exactly the limit
+// still succeeds — without that, every session past the cap would expire on
+// its TTL and the limit would silently become a churn machine.
+func TestRedisSessionPresence_RenewalIsNeverRefusedByTheCap(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(p.Close)
+
+	var first string
+	for i := 0; i < maxSessionsPerUser; i++ {
+		id := p.Add("user-1", SessionIdentity{Armed: true})
+		if i == 0 {
+			first = id
+		}
+	}
+
+	// A renewal is exactly this call, at the cap.
+	if err := p.write(t.Context(), "user-1", first, `{"id":"`+first+`"}`); err != nil {
+		t.Fatalf("a renewal at the cap must not be refused: %v", err)
+	}
+}

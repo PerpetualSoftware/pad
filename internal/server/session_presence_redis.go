@@ -90,6 +90,27 @@ import (
 // that should keep Pad's Redis off an evicting policy — see
 // docs/deployment.md.
 //
+// A COMPROMISED REPLICA IS NOT IN THIS TYPE'S THREAT MODEL, and saying so
+// is more useful than implying otherwise (codex round 17). Anything holding
+// the shared Redis credentials can enumerate these keys, delete real
+// entries, insert fake armed sessions, or grow a victim's index without
+// bound — none of which this type can prevent, since it has no ownership
+// or integrity mechanism and adding one would not help against an attacker
+// who also holds the credentials.
+//
+// It is worth being precise that this does not WIDEN that exposure. The
+// same credentials already reach internal/watchevents' shared bus, where an
+// attacker can both READ every notification crossing the deployment —
+// including the instruction text of every user's pushes — and PUBLISH
+// arbitrary ones into any user's session. Reading presence metadata and
+// corrupting a picker are strictly smaller capabilities than injecting
+// instructions into someone's agent. The boundary that matters is the
+// Redis credential, and it is the same boundary it was before this type
+// existed.
+//
+// What this type DOES bound is the authenticated-user case, which is a
+// different question and is handled: see maxSessionsPerUser.
+//
 // SINGLE-NODE REDIS ONLY, like the rest of Pad's Redis integration:
 // cmd/pad/cmd_server.go dials with redis.NewClient, not a cluster client,
 // and this type's keys are not hash-tagged, so a user's index and entries
@@ -250,6 +271,12 @@ end
 return removed
 `)
 
+// errSessionLimitReached is returned by write when the user already holds
+// maxSessionsPerUser registered sessions. Distinguished from a transport
+// failure because it is not one: the registry is working exactly as
+// specified, and the caller logs it differently.
+var errSessionLimitReached = errors.New("session presence: per-user session limit reached")
+
 // timeout is opTimeout with the production default applied, so a
 // zero-valued struct (a test that only set the fields it cared about)
 // still bounds its calls instead of blocking forever.
@@ -376,8 +403,13 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), p.timeout())
 	defer writeCancel()
 	if err := p.write(writeCtx, userID, id, string(payload)); err != nil {
-		slog.Warn("session presence: failed to register session; it will be missing from the picker",
-			"error", err, "user_id", userID)
+		if errors.Is(err, errSessionLimitReached) {
+			slog.Warn("session presence: per-user session limit reached; this stream will receive broadcasts but is not targetable",
+				"user_id", userID, "limit", maxSessionsPerUser)
+		} else {
+			slog.Warn("session presence: failed to register session; it will be missing from the picker",
+				"error", err, "user_id", userID)
+		}
 	}
 
 	go p.renewLoop(ctx, rn, userID, id, string(payload))
@@ -401,20 +433,63 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 // bounded reappearance of the bug is still the bug, and Redis executes a
 // script atomically on its single thread, so there is no reason to accept
 // the window at all.
+//
+// It also enforces maxSessionsPerUser, in the same atomic step for the same
+// reason (codex round 17). A cap checked in Go would be a separate round
+// trip that two concurrent connects could both pass.
 var writeScript = redis.NewScript(`
+if redis.call('SISMEMBER', KEYS[2], ARGV[3]) == 0
+   and redis.call('SCARD', KEYS[2]) >= tonumber(ARGV[4]) then
+  return 0
+end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
 redis.call('SADD', KEYS[2], ARGV[3])
 redis.call('EXPIRE', KEYS[2], ARGV[2])
 return 1
 `)
 
+// maxSessionsPerUser bounds how many of one user's connections the shared
+// registry will hold (codex round 17).
+//
+// WHY A BOUND EXISTS AT ALL. GET /api/v1/events/stream has no concurrent
+// connection limit — PAD_SSE_MAX_CONNECTIONS / _PER_WORKSPACE gate
+// /api/v1/events, not this endpoint — and the rate limiter caps how fast
+// connections are made, not how many are held. Before this type, an
+// authenticated user holding N streams cost N map entries inside ONE
+// process. Now it costs N keys, N index members, N renewal goroutines, and
+// N periodic writes in Redis, which every replica shares. That is a real
+// change in blast radius introduced by this change, so it gets a bound
+// here rather than a note asking someone else to add one.
+//
+// WHAT EXCEEDING IT DOES, and does not. The connection is NOT refused —
+// this is a registry, not an admission controller, and refusing a stream
+// because a registry is full would take away delivery the bus can still
+// perform. The session simply is not registered: it still receives
+// BROADCAST pushes (the stream handler holds its own id and matches on it
+// regardless), it just does not appear in the picker and cannot be
+// targeted. Same degradation as a failed registration write, which this
+// type has always tolerated.
+//
+// 100 is far above any plausible legitimate use — an agent session per
+// checkout, a browser tab or two — while still bounding one user's share of
+// shared state. Re-registration of an id already in the set is always
+// allowed, so a renewal can never be refused by the cap.
+const maxSessionsPerUser = 100
+
 // write stores the session entry and indexes it, both under the same TTL,
 // in one atomic step. See writeScript.
 func (p *RedisSessionPresence) write(ctx context.Context, userID, sessionID, payload string) error {
-	return writeScript.Run(ctx, p.client,
+	registered, err := writeScript.Run(ctx, p.client,
 		[]string{sessionKey(userID, sessionID), sessionIndexKey(userID)},
-		payload, int(p.sessionKeyTTL.Seconds()), sessionID,
-	).Err()
+		payload, int(p.sessionKeyTTL.Seconds()), sessionID, maxSessionsPerUser,
+	).Int()
+	if err != nil {
+		return err
+	}
+	if registered == 0 {
+		return errSessionLimitReached
+	}
+	return nil
 }
 
 // renewLoop keeps this connection's entry alive for exactly as long as the
