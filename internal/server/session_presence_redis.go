@@ -92,6 +92,11 @@ type RedisSessionPresence struct {
 	// A field for the same reason the two above are: a test needs to drive
 	// the stalled-Redis path without waiting out the production bound.
 	opTimeout time.Duration
+	// drainTimeout bounds Close's wait for renewal goroutines, defaulting
+	// to closeDrainTimeout. A field so a test can park a renewal and assert
+	// Close still returns — see closeDrainTimeout for why that could not be
+	// asserted while it was a constant.
+	drainTimeout time.Duration
 
 	// onRenewWrite, when non-nil, is called by renewLoop immediately
 	// before each renewal write. Always nil in production — it exists so a
@@ -160,24 +165,27 @@ const (
 
 	// closeDrainTimeout bounds how long Close waits for renewal goroutines.
 	//
-	// A BACKSTOP WITH NO KNOWN REACHABLE FAILING CASE, and labelled as one
-	// rather than dressed up as a fix. Close waits on a WaitGroup whose
-	// counter includes a goroutine that has not started yet — Add
-	// increments it before the registration write, deliberately, so a Close
-	// racing an Add cannot return before that session is accounted for. The
-	// cost is that a stalled Redis puts Add's write between Close and its
-	// own completion. But go-redis's own dial/read timeouts already bound
-	// that write, so the wait is finite with the production client config:
-	// a mutation test that removed this deadline still passed, because
-	// nothing under that config actually blocks past it.
+	// Close waits on a WaitGroup whose counter includes a goroutine that has
+	// not started yet — Add increments it before the registration write,
+	// deliberately, so a Close racing an Add cannot return before that
+	// session is accounted for. The cost is that a stalled Redis puts Add's
+	// write between Close and its own completion.
 	//
-	// Kept anyway, because the alternative to a cheap deadline here is
-	// waiting FOREVER on a client someone reconfigures with a zero
-	// ReadTimeout, and the goroutines own nothing that outlives the
-	// process. What it must NOT be read as is tested behaviour — see
-	// TestRedisSessionPresence_StalledRedisDoesNotHangShutdown, which pins
-	// end-to-end shutdown liveness and explicitly does not discriminate on
-	// this constant.
+	// WITH THE PRODUCTION CLIENT CONFIG this deadline never fires:
+	// go-redis's own dial/read timeouts release the write first, and a
+	// mutation test that stretched the deadline to 24 hours stayed green
+	// for exactly that reason. It is still real behaviour rather than
+	// decoration — a client reconfigured with a zero ReadTimeout has
+	// nothing else to release it, and the goroutines own nothing that
+	// outlives the process, so returning beats waiting forever.
+	//
+	// It is now EXERCISED rather than merely reasoned about:
+	// TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal
+	// parks a renewal inside its write through the onRenewWrite seam and
+	// asserts Close still returns; removing the deadline hangs that test.
+	// The first version of this comment claimed no reachable failing case
+	// existed, which was true only of the failing case I had bothered to
+	// construct.
 	closeDrainTimeout = 10 * time.Second
 )
 
@@ -224,6 +232,15 @@ func (p *RedisSessionPresence) timeout() time.Duration {
 		return presenceOpTimeout
 	}
 	return p.opTimeout
+}
+
+// drain is drainTimeout with the production default applied, for the same
+// zero-value reason as timeout.
+func (p *RedisSessionPresence) drain() time.Duration {
+	if p.drainTimeout <= 0 {
+		return closeDrainTimeout
+	}
+	return p.drainTimeout
 }
 
 // userIDKeyPrefix is sessionKey's prefix for one user — everything before
@@ -283,6 +300,7 @@ func NewRedisSessionPresence(client *redis.Client) *RedisSessionPresence {
 		sessionKeyTTL: sessionKeyTTL,
 		renewInterval: sessionRenewInterval,
 		opTimeout:     presenceOpTimeout,
+		drainTimeout:  closeDrainTimeout,
 		renewals:      make(map[string]*renewal),
 	}
 }
@@ -570,14 +588,14 @@ func (p *RedisSessionPresence) Close() {
 	}()
 	select {
 	case <-drained:
-	case <-time.After(closeDrainTimeout):
+	case <-time.After(p.drain()):
 		// Bounded, not abandoned: every goroutine has already been
 		// cancelled above, so this only fires when one is parked inside a
 		// Redis call that its own client timeouts have not yet released.
 		// Holding shutdown behind that is worse than leaving them to the
 		// process exit — they own no state that outlives it.
 		slog.Warn("session presence: renewal goroutines did not drain before shutdown; leaving them to process exit",
-			"timeout", closeDrainTimeout)
+			"timeout", p.drain())
 	}
 }
 

@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -193,5 +194,57 @@ func TestRedisSessionPresence_UndecodableEntryIsAnError(t *testing.T) {
 	}
 	if sessions != nil {
 		t.Fatalf("a failed read must not return a partial list that looks complete; got %d sessions", len(sessions))
+	}
+}
+
+// TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal —
+// codex round 4, P2, and the instrument the round-2 version of this file
+// admitted it did not have.
+//
+// closeDrainTimeout was untestable while it was a constant: under the
+// production client config go-redis's own timeouts always release the
+// write first, so removing the deadline changed nothing observable. That
+// admission was honest but it left a behaviour with no coverage. Parking a
+// renewal INSIDE its write through the onRenewWrite seam produces the one
+// state the deadline exists for — a goroutine that nothing else will
+// release — and makes the difference between bounded and unbounded
+// observable.
+//
+// Fails by HANGING when the deadline is removed, which is what an
+// unbounded Close does; the timeout below is what turns that into a test
+// failure rather than a stuck suite.
+func TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	p := &RedisSessionPresence{
+		client:        client,
+		sessionKeyTTL: time.Minute,
+		renewInterval: 5 * time.Millisecond,
+		drainTimeout:  200 * time.Millisecond,
+		renewals:      make(map[string]*renewal),
+		onRenewWrite: func() {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		},
+	}
+	t.Cleanup(func() { close(release) })
+
+	p.Add("user-1", SessionIdentity{Armed: true})
+	<-entered // a renewal is parked and nothing will release it
+
+	closed := make(chan struct{})
+	go func() { p.Close(); close(closed) }()
+
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close never returned with a renewal parked inside its write — the drain has no deadline, so shutdown waits forever")
 	}
 }

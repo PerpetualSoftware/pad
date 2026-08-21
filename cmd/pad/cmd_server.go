@@ -691,13 +691,17 @@ func serveCmd() *cobra.Command {
 			// A self-hosted single-process binary keeps the in-memory
 			// registry and never touches Redis, same as the buses.
 			var sessionPresence server.SessionPresence
+			// Declared out here so the shutdown sequence below can close it
+			// at the right point in the order — see there for why that point
+			// is before http.Server.Shutdown rather than after.
+			var redisPresence *server.RedisSessionPresence
 			if watchRedis != nil {
-				redisPresence := server.NewRedisSessionPresence(watchRedis)
-				// Stops the per-session renewal goroutines. Deliberately
-				// does NOT delete this instance's entries — a shutdown
-				// racing a reconnect elsewhere would then delete a session
-				// that had already re-registered — so they clear on their
-				// TTL instead.
+				redisPresence = server.NewRedisSessionPresence(watchRedis)
+				// Backstop for early-return paths that never reach the
+				// shutdown sequence; Close is idempotent. Deliberately does
+				// NOT delete this instance's entries — a shutdown racing a
+				// reconnect elsewhere would then delete a session that had
+				// already re-registered — so they clear on their TTL.
 				defer redisPresence.Close()
 				sessionPresence = redisPresence
 				slog.Info("Session presence registry using Redis (shared across instances)")
@@ -914,8 +918,32 @@ func serveCmd() *cobra.Command {
 				// minute. Making the handler actually LEARN the publish was
 				// dropped needs Bus.Publish to report it, which is an
 				// interface change and a different unit.
+				//
+				// THAT LAST SENTENCE IS NOW OUT OF DATE, and pleasantly so
+				// (BUG-2699): Bus.Publish reports acceptance, so a push that
+				// publishes into a closed bus gets ErrBusClosed and answers 503
+				// instead of 200 with pushed:true. The ordering trade above is
+				// unchanged — the message still is not delivered — but the
+				// caller is no longer told that it was.
 				watchBus.Close()
 				slog.Info("Watch notification bus closed")
+
+				// Presence closes HERE, before Shutdown drains handlers, and the
+				// ordering is load-bearing (codex round 4 on BUG-2698). Remove
+				// waits for a session's renewal goroutine, so an SSE handler
+				// unwinding during Shutdown would otherwise sit in that wait
+				// while the drain backstop — which only runs inside Close — had
+				// not run yet: Shutdown held by the very goroutines Close exists
+				// to stop. Closing first cancels every renewal and empties the
+				// registry, so each handler's deferred Remove finds nothing to
+				// wait for and goes straight to its bounded deregistration write.
+				//
+				// Idempotent, so the deferred Close at the wiring site stays a
+				// harmless backstop for early-return paths that never reach here.
+				if redisPresence != nil {
+					redisPresence.Close()
+					slog.Info("Session presence registry closed")
+				}
 
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
