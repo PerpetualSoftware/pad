@@ -18,6 +18,8 @@
     &nbsp;·&nbsp;
     <a href="https://getpad.dev/changelog">Changelog</a>
     &nbsp;·&nbsp;
+    <a href="https://www.reddit.com/r/getpad/">Reddit</a>
+    &nbsp;·&nbsp;
     <a href="https://x.com/getpaddev">X</a>
     &nbsp;·&nbsp;
     <a href="https://bsky.app/profile/getpaddev.bsky.social">Bluesky</a>
