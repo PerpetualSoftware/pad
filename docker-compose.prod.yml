@@ -56,7 +56,16 @@ services:
     # In production, consider using a managed PostgreSQL service instead.
 
   redis:
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass "${REDIS_PASSWORD:-}"
+    # noeviction, NOT allkeys-lru (BUG-2698). Pad's Redis holds the
+    # session-presence registry as well as pub/sub, and evicting a live
+    # session's entry is indistinguishable from its TTL lapsing: the
+    # session disappears from the "push to agent" picker and a push
+    # targeted at it reports delivered_sessions: 0 while it is still
+    # connected. It self-repairs on the next 30s renewal, but the
+    # keyspace is small — a few hundred bytes per connected session plus
+    # two counters — so there is nothing to gain by evicting it. See
+    # docs/deployment.md's Redis configuration notes.
+    command: redis-server --maxmemory 128mb --maxmemory-policy noeviction --requirepass "${REDIS_PASSWORD:-}"
     healthcheck:
       # Override the base healthcheck to authenticate when REDIS_PASSWORD is set.
       # redis-cli reads REDISCLI_AUTH automatically for authentication.

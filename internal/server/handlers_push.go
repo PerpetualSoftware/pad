@@ -54,9 +54,10 @@ type pushResponse struct {
 	// (S1 presence registry, `target_session_id`-filtered if one was
 	// given) matched — PLAN-2558 S5, TASK-2588. This is a PREDICTION read
 	// from the registry, not a delivery receipt: it carries the exact
-	// same staleness window as GET /api/v1/sessions (session_presence.go's
+	// same staleness windows as GET /api/v1/sessions (session_presence.go's
 	// LiveSession doc comment — up to ~30s behind an ungracefully-dropped
-	// connection) and there is still no ack from the receiving side. A
+	// CLIENT, and on a Redis-backed deployment up to ~90s behind a dead
+	// server INSTANCE) and there is still no ack from the receiving side. A
 	// vanished or cross-user target_session_id is 0, the same as "nothing
 	// connected" — deliberately not a distinct error, so the CLI's pre-S5
 	// behavior is unchanged by construction. Since PLAN-2613 S1, an

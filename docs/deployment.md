@@ -92,15 +92,16 @@ Pad's Redis integration assumes a **single Redis node** — `redis://…`, not a
 cluster. Both event buses and the session-presence registry use flat key names
 and a non-cluster client; pointing Pad at a Redis Cluster is not supported.
 
-**Avoid an evicting `maxmemory-policy` for Pad's Redis.** Under `allkeys-lru`
-(what the bundled `docker-compose.yml` sets, for a 64 MB dev instance) Redis
-may evict live session-presence entries under memory pressure. Nothing can
+**Avoid an evicting `maxmemory-policy` for Pad's Redis.**
+`docker-compose.prod.yml` sets `noeviction` for this reason; the plain
+`docker-compose.yml` keeps `allkeys-lru` on its 64 MB dev instance, where a
+briefly-hidden session costs nothing. Under an evicting policy Redis may drop
+live session-presence entries under memory pressure. Nothing can
 distinguish that from a TTL lapsing, so a connected agent session briefly
 disappears from the picker and a push targeted at it reports
 `delivered_sessions: 0`. It self-repairs on the session's next 30-second
 renewal, and Pad's keyspace is small — a few hundred bytes per connected
-session plus two counters — so `noeviction` is the safer choice for a
-production instance.
+session plus two counters — so there is nothing to gain by evicting it.
 
 #### Upgrading a multi-instance deployment
 

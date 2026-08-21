@@ -85,12 +85,14 @@ const (
 	// right now rather than waiting on assignment/watch semantics. NOT
 	// "publishes exactly one" unconditionally as of PLAN-2558 S5
 	// (TASK-2588): handlePushToItem decides whether to publish at all —
-	// a session-targeted request whose id matches no LOCAL live session
-	// skips the publish entirely. That was a guaranteed no-op under
-	// MemoryBus and is merely a skip under RedisBus, where the session
-	// might be live on another instance; see handlers_push.go's own
-	// comment on that gate, plus TargetSessionID and
-	// pushResponse.DeliveredSessions there.
+	// a session-targeted request whose id matches no live session in the
+	// presence registry skips the publish entirely. That registry is
+	// per-process with MemoryBus and SHARED with RedisBus (BUG-2698), so
+	// the skip means "nothing is listening anywhere" in both shapes — an
+	// earlier version of this sentence said LOCAL, which described the
+	// window between BUG-2651 and BUG-2698 (codex round 24). See
+	// handlers_push.go's own comment on that gate, plus TargetSessionID
+	// and pushResponse.DeliveredSessions there.
 	// KindAsk is push's reserved sibling in the other direction
 	// (harness→human) — see TargetUserID's doc comment for the shared
 	// envelope shape the two are meant to converge on.

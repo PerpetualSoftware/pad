@@ -353,8 +353,11 @@
 			const result = await api.items.push(ws, target, collapsePushMessage(prompt));
 			// The SERVER's count wins over the preflight one (codex round 5).
 			// `knownCount` is whatever the last presence poll saw, which may
-			// be seconds stale; the response's `delivered_sessions` is the
-			// number the server actually matched at publish time. And when it
+			// be many seconds stale; the response's `delivered_sessions` is
+			// read at request time, immediately before the publish. Not a
+			// publish-time measurement and not a receipt — a pre-publish
+			// snapshot of the delivery predicate (codex round 24) — but far
+			// fresher than the poll, which is the whole reason to prefer it. And when it
 			// is NULL — published, but the registry could not be read — the
 			// toast must not fall back to the stale number, because that
 			// would assert a figure the server just said it could not

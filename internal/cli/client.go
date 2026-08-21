@@ -473,8 +473,16 @@ type PushResult struct {
 	// and an ABSENT key means a server predating session targeting. The
 	// second and third are both `nil` here — a CLI consumer that needs to
 	// tell them apart has to read the raw body, which no caller does. What
-	// matters is that neither is reported as 0, because 0 means "reached
-	// nobody" and both of these mean "unknown".
+	// matters is that neither is reported as 0, because 0 and "unknown" are
+	// different answers.
+	//
+	// AND 0 IS NOT "reached nobody" ON THIS PATH (codex round 24). That
+	// guarantee is the TARGETED one: the server skips the publish when a
+	// named target is absent, so nothing was sent. `pad push` only ever
+	// broadcasts — internal/cli never sends target_session_id — and a
+	// broadcast is ALWAYS published, so a 0 here means no session was
+	// registered at the moment the count was taken, not that nobody got it.
+	// A session registering in the interval receives it.
 	//
 	// NO omitempty (codex round 10): it would drop the nil case on the way
 	// back OUT, so `pad push --format json` would print no field at all for
