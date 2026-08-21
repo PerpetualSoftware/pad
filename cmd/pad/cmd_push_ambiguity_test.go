@@ -29,12 +29,22 @@ func TestPushRefusedBeforePublishing(t *testing.T) {
 	t.Run("recognised pre-publish refusals are safe to re-run", func(t *testing.T) {
 		for _, code := range []string{
 			"bad_request", "unauthorized", "not_found", "forbidden",
-			"permission_denied", "unavailable", "rate_limited",
+			"permission_denied", "unavailable", "archived", "rate_limited",
 			"plan_limit_exceeded", "csrf_error", "email_not_verified",
 		} {
 			if !pushRefusedBeforePublishing(&cli.APIError{Code: code, Message: "x"}) {
 				t.Errorf("%s should be recognised as a pre-publish refusal", code)
 			}
+		}
+	})
+
+	t.Run("internal_error is NOT safe, deliberately", func(t *testing.T) {
+		// It is pre-publish today, and left off anyway: that is a property
+		// of where one call currently sits, not of what the code means, so
+		// a writeInternalError added after the publish would silently make
+		// it wrong in the direction that costs a duplicate dispatch.
+		if pushRefusedBeforePublishing(&cli.APIError{Code: "internal_error", Message: "x"}) {
+			t.Fatal("internal_error must stay off the safe list — see pushPrePublishRefusalCodes for why")
 		}
 	})
 
@@ -99,6 +109,13 @@ func TestPushRefusalCodesMatchTheWebAllowList(t *testing.T) {
 	if len(webCodes) == 0 {
 		t.Fatal("parsed no codes out of the web allow-list — the parser is broken, not the lists")
 	}
+	// WHAT THIS TEST CANNOT DO, stated because agreement reads like
+	// completeness (codex round 12): it proves the two lists MATCH, never
+	// that either is complete. `archived` was missing from both for two
+	// rounds and this test was green throughout. Completeness comes from
+	// enumerating the handler's pre-publish error codes — see
+	// pushPrePublishRefusalCodes' doc comment, which records that
+	// enumeration and which codes were deliberately left off.
 }
 
 // readWebPrePublishCodes extracts the string literals from

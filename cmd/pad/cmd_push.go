@@ -115,8 +115,27 @@ func pushCmd() *cobra.Command {
 // Keep them in step.
 //
 // `unavailable` covers both the no-bus branch and a bus that was already
-// closed; both are refusals with nothing published. Notably ABSENT:
-// push_unconfirmed, which exists precisely to say the outcome is unknown.
+// closed; both are refusals with nothing published. `archived` is the 409
+// writeItemResolveError writes when the ref names a soft-deleted item —
+// item resolution happens before anything is published (codex round 12).
+//
+// ENUMERATED from the handler rather than taken one at a time: the codes
+// handlePushToItem and its helpers can write before the publish are
+// bad_request, unauthorized, unavailable, not_found (getWorkspace,
+// requireItemVisible, writeItemResolveError), archived, and internal_error,
+// plus the middleware codes below it. Round 12 named `archived`; the
+// enumeration is what found `internal_error` alongside it.
+//
+// Notably ABSENT, both deliberately:
+//   - push_unconfirmed, which exists precisely to say the outcome is
+//     unknown.
+//   - internal_error. It IS pre-publish today — this handler only reaches
+//     writeInternalError from the item-resolution path — but unlike every
+//     other code here that is a property of where one call sits, not of
+//     what the code means. A future writeInternalError added after the
+//     publish would silently make this entry wrong, and wrong in the
+//     direction that costs a duplicate dispatch. A spurious warning on a
+//     500 costs a sentence.
 var pushPrePublishRefusalCodes = map[string]bool{
 	"bad_request":         true,
 	"unauthorized":        true,
@@ -124,6 +143,7 @@ var pushPrePublishRefusalCodes = map[string]bool{
 	"forbidden":           true,
 	"permission_denied":   true,
 	"unavailable":         true,
+	"archived":            true,
 	"rate_limited":        true,
 	"plan_limit_exceeded": true,
 	"csrf_error":          true,
