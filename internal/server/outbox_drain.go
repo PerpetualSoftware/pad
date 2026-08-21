@@ -230,6 +230,10 @@ type outboxDelivery struct {
 	occurredAt  string
 	payload     []byte
 	rowIDs      []string
+	// claimToken is the claim these rows were taken under. Ack and release are
+	// conditioned on it, so a pass whose lease expired mid-delivery cannot
+	// stamp or free rows another instance now holds.
+	claimToken string
 }
 
 // groupOutboxDeliveries turns claimed rows into wire deliveries, folding each
@@ -294,6 +298,7 @@ func groupOutboxDeliveries(events []store.OutboxEvent) []outboxDelivery {
 			occurredAt:  header.OccurredAt,
 			payload:     folded,
 			rowIDs:      rowIDs,
+			claimToken:  header.ClaimToken,
 		})
 	}
 	return out
@@ -309,6 +314,7 @@ func singleOutboxDelivery(ev store.OutboxEvent) outboxDelivery {
 		// singles, not only on the batch event.
 		batchID:    ev.BatchID,
 		occurredAt: ev.OccurredAt,
+		claimToken: ev.ClaimToken,
 		payload:    ev.Payload,
 		rowIDs:     []string{ev.ID},
 	}
@@ -322,7 +328,7 @@ func (s *Server) deliverOutboxUnit(unit outboxDelivery) {
 		// tests). The event has nowhere to go and is not owed to anyone, so
 		// ack it — leaving it pending would grow the table forever and then
 		// hand the retention bound a queue of events nobody ever wanted.
-		s.ackOutboxRows(unit.rowIDs)
+		s.ackOutboxRows(unit.claimToken, unit.rowIDs)
 		return
 	}
 
@@ -337,26 +343,26 @@ func (s *Server) deliverOutboxUnit(unit outboxDelivery) {
 	if err != nil {
 		// The server's own failure: nothing was attempted, so the event is
 		// still owed in full.
-		s.failOutboxRows(unit.rowIDs, err.Error())
+		s.failOutboxRows(unit.claimToken, unit.rowIDs, err.Error())
 		return
 	}
 	if outcome.Retryable() {
-		s.failOutboxRows(unit.rowIDs, outcome.LastError)
+		s.failOutboxRows(unit.claimToken, unit.rowIDs, outcome.LastError)
 		return
 	}
-	s.ackOutboxRows(unit.rowIDs)
+	s.ackOutboxRows(unit.claimToken, unit.rowIDs)
 }
 
-func (s *Server) ackOutboxRows(ids []string) {
-	if err := s.store.MarkOutboxDispatched(ids); err != nil {
+func (s *Server) ackOutboxRows(claimToken string, ids []string) {
+	if err := s.store.MarkOutboxDispatched(claimToken, ids); err != nil {
 		// Not acking is safe — at-least-once means the next pass re-delivers.
 		slog.Error("outbox drain: ack failed", "error", err)
 	}
 }
 
-func (s *Server) failOutboxRows(ids []string, reason string) {
+func (s *Server) failOutboxRows(claimToken string, ids []string, reason string) {
 	for _, id := range ids {
-		if err := s.store.MarkOutboxAttemptFailed(id, reason); err != nil {
+		if err := s.store.MarkOutboxAttemptFailed(claimToken, id, reason); err != nil {
 			slog.Error("outbox drain: recording a failed attempt failed", "id", id, "error", err)
 		}
 	}

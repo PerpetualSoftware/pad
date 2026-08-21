@@ -656,17 +656,7 @@ func TestBulkItems_EveryVerbStampsOneBatchID(t *testing.T) {
 
 			// Clear everything the setup emitted so the assertion sees only
 			// this operation's rows.
-			seeded, err := srv.store.ListPendingOutboxEvents(1000)
-			if err != nil {
-				t.Fatalf("list seeded outbox: %v", err)
-			}
-			var seededIDs []string
-			for _, ev := range seeded {
-				seededIDs = append(seededIDs, ev.ID)
-			}
-			if err := srv.store.MarkOutboxDispatched(seededIDs); err != nil {
-				t.Fatalf("clear outbox: %v", err)
-			}
+			clearSeededOutbox(t, srv)
 
 			body := map[string]any{"ids": refs}
 			for k, v := range tc.body {
@@ -715,4 +705,29 @@ func wsIDForSlug(t *testing.T, srv *Server, slug string) string {
 		t.Fatalf("resolve workspace %q: %v", slug, err)
 	}
 	return ws.ID
+}
+
+// clearSeededOutbox marks everything currently pending as dispatched, so a
+// test can assert on the rows one later operation produced.
+//
+// It claims first, because acking is conditioned on holding the claim (a stale
+// pass must not be able to stamp rows someone else owns). Claim-then-ack is
+// what the drain itself does.
+func clearSeededOutbox(t *testing.T, srv *Server) {
+	t.Helper()
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	claimed, err := srv.store.ClaimPendingOutboxEvents("test-clear", 1000, future)
+	if err != nil {
+		t.Fatalf("claim seeded outbox: %v", err)
+	}
+	if len(claimed) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(claimed))
+	for _, ev := range claimed {
+		ids = append(ids, ev.ID)
+	}
+	if err := srv.store.MarkOutboxDispatched(claimed[0].ClaimToken, ids); err != nil {
+		t.Fatalf("clear seeded outbox: %v", err)
+	}
 }

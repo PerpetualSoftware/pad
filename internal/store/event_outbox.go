@@ -64,6 +64,11 @@ type OutboxEvent struct {
 	// Attempts and LastError are drain bookkeeping, populated on read.
 	Attempts  int
 	LastError string
+
+	// ClaimToken identifies the claim pass that holds this row, populated by
+	// ClaimPendingOutboxEvents. Ack and release are conditioned on it — see
+	// MarkOutboxDispatched.
+	ClaimToken string
 }
 
 // MutationOption tunes the event side of a store mutation. Nothing about the
@@ -303,7 +308,10 @@ type itemEventPayload struct {
 // user's identity stops being readable while the rows survive — but it reaches
 // only LIVE rows. A frozen payload keeps whatever it captured, so an assignee's
 // NAME AND EMAIL ADDRESS would remain legible in the outbox after the account
-// that owned them was deleted, and today nothing drains or prunes the table.
+// that owned them was deleted. TASK-2714 added the drain and both prunes, so
+// the window is now BOUNDED rather than unbounded — but bounded is not zero,
+// and an undelivered row keeps its payload for the whole max-age window, which
+// is why the scrub is still the thing doing the work here.
 //
 // THE RULE APPLIED, stated as the rule rather than as a proxy for it: remove
 // DIRECTLY IDENTIFYING personal data — a human name, an email address — and
@@ -890,16 +898,30 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 	return out, nil
 }
 
-// MarkOutboxDispatched stamps events as delivered.
+// MarkOutboxDispatched stamps events as delivered, for the claim that holds
+// them.
 //
 // Called AFTER the surfaces have been handed the event, never before. The
 // ordering is what makes the guarantee at-least-once rather than at-most-once:
 // a crash between dispatch and this stamp re-delivers on the next drain, which
 // SPEC-3 §Delivery guarantees explicitly permits and consumers dedupe on the
 // event id.
-func (s *Store) MarkOutboxDispatched(ids []string) error {
+//
+// CONDITIONED ON THE CLAIM TOKEN, not just on the id. Delivery can outrun the
+// lease — a workspace with many slow endpoints is delivered sequentially, and
+// the "well under a minute" estimate behind the lease default is an estimate,
+// not a bound. Once the lease expires another instance may legitimately claim
+// the row; without this condition the first instance's late ack would then
+// stamp a row the second instance is mid-delivery on, and its late RELEASE
+// would clear a live claim, handing the same event to a third pass (codex
+// round 3). A stale ack now matches zero rows, which is exactly right: the
+// event is the new claim's problem.
+func (s *Store) MarkOutboxDispatched(claimToken string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
+	}
+	if claimToken == "" {
+		return fmt.Errorf("mark outbox dispatched: no claim token")
 	}
 	ts := now()
 	tx, err := s.db.Begin()
@@ -910,8 +932,9 @@ func (s *Store) MarkOutboxDispatched(ids []string) error {
 
 	for _, id := range ids {
 		if _, err := tx.Exec(s.q(`
-			UPDATE event_outbox SET dispatched_at = ? WHERE id = ? AND dispatched_at IS NULL
-		`), ts, id); err != nil {
+			UPDATE event_outbox SET dispatched_at = ?
+			WHERE id = ? AND dispatched_at IS NULL AND claimed_by = ?
+		`), ts, id, claimToken); err != nil {
 			return fmt.Errorf("mark outbox dispatched %s: %w", id, err)
 		}
 	}
@@ -929,12 +952,19 @@ func (s *Store) MarkOutboxDispatched(ids []string) error {
 // until the lease times out would idle the row for the whole lease window for
 // no reason, and on a single-instance deployment that is the only reason it
 // would ever wait at all.
-func (s *Store) MarkOutboxAttemptFailed(id, reason string) error {
+//
+// Conditioned on the claim token for the same reason as MarkOutboxDispatched:
+// releasing a claim that is no longer yours would hand a live delivery's row
+// to another pass.
+func (s *Store) MarkOutboxAttemptFailed(claimToken, id, reason string) error {
+	if claimToken == "" {
+		return fmt.Errorf("mark outbox attempt failed: no claim token")
+	}
 	if _, err := s.db.Exec(s.q(`
 		UPDATE event_outbox
 		SET attempts = attempts + 1, last_error = ?, claimed_at = NULL, claimed_by = NULL
-		WHERE id = ? AND dispatched_at IS NULL
-	`), reason, id); err != nil {
+		WHERE id = ? AND dispatched_at IS NULL AND claimed_by = ?
+	`), reason, id, claimToken); err != nil {
 		return fmt.Errorf("mark outbox attempt failed %s: %w", id, err)
 	}
 	return nil
@@ -1202,6 +1232,7 @@ func (s *Store) outboxEventsClaimedBy(token string) ([]OutboxEvent, error) {
 			return nil, fmt.Errorf("scan claimed outbox event: %w", err)
 		}
 		ev.Payload = []byte(payload)
+		ev.ClaimToken = token
 		out = append(out, ev)
 	}
 	if err := rows.Err(); err != nil {
@@ -1302,9 +1333,13 @@ func (s *Store) EmitBulkHeaderEvent(workspaceID, batchID, op string, itemIDs []s
 // drain holds IS the answer — re-reading would quietly re-include members a
 // previous tick already delivered individually.
 //
-// Member payloads are embedded VERBATIM. They are already the exact snapshots
-// the single-item events carry, and re-marshalling them through a Go type here
-// would let the batch and single views of one mutation drift apart.
+// Member payloads are embedded VERBATIM — with ONE exception, named because
+// "verbatim" is the kind of word a reader takes literally: when two rows
+// describe the same item, dedupeMemberSnapshots re-encodes the survivor to
+// carry prior_status across (see mergePriorStatus). Non-duplicate members are
+// untouched bytes. Re-marshalling them all through a Go type would let the
+// batch and single views of one mutation drift apart, which is what the rule
+// is protecting.
 func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
 	var h bulkHeaderPayload
 	if err := json.Unmarshal(header, &h); err != nil {

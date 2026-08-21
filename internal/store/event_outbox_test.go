@@ -1029,8 +1029,9 @@ func TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus(t *testing.T) {
 // Account deletion's de-identify pass nulls user identity on LIVE rows so a
 // departed user stops being legible; it cannot reach a frozen payload. If the
 // payload captured the assignee's name and email, those would stay readable in
-// the outbox after the account was deleted — and today nothing drains or prunes
-// the table.
+// the outbox after the account was deleted for as long as the row survived.
+// TASK-2714 bounded that window with the drain and its two prunes; bounded is
+// not zero, so the scrub is still what does the work.
 func TestOutbox_PayloadsOmitAssigneeIdentity(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox PII")
@@ -1837,7 +1838,7 @@ func TestOutbox_FailedAttemptReleasesTheClaim(t *testing.T) {
 		t.Fatalf("row was claimable while claimed (%v, %v)", claimedIDs(again), err)
 	}
 
-	if err := s.MarkOutboxAttemptFailed("row-a", "endpoint timed out"); err != nil {
+	if err := s.MarkOutboxAttemptFailed(claimed[0].ClaimToken, "row-a", "endpoint timed out"); err != nil {
 		t.Fatalf("MarkOutboxAttemptFailed: %v", err)
 	}
 
@@ -2012,5 +2013,76 @@ func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
 	}
 	if len(oddGot.Members) != 2 {
 		t.Errorf("members = %d, want both kept", len(oddGot.Members))
+	}
+}
+
+// TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass pins the lease's other
+// half. Delivery can outrun the lease — a workspace with many slow endpoints
+// is delivered sequentially — and the estimate behind the default is an
+// estimate, not a bound.
+//
+// So the question is what a LATE pass may still do to rows a newer pass now
+// owns. The answer has to be nothing: a late ack would stamp a row the new
+// holder is mid-delivery on, and a late release would clear a live claim and
+// hand the event to a third pass.
+func TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox stale claim")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	first, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim = %v, %v", claimedIDs(first), err)
+	}
+	staleToken := first[0].ClaimToken
+	if staleToken == "" {
+		t.Fatal("claim returned no token; ack and release have nothing to condition on")
+	}
+
+	// The lease expires and a second instance legitimately takes the row.
+	expired := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	second, err := s.ClaimPendingOutboxEvents("instance-2", 10, expired)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("second claim = %v, %v — the premise of this test is that the row moved on", claimedIDs(second), err)
+	}
+	if second[0].ClaimToken == staleToken {
+		t.Fatal("both passes share a claim token; the tokens do not identify a pass")
+	}
+
+	// Instance 1 finally finishes and acks. It must reach nothing.
+	if err := s.MarkOutboxDispatched(staleToken, []string{"row-a"}); err != nil {
+		t.Fatalf("stale ack: %v", err)
+	}
+	pending, err := s.ListPendingOutboxEvents(10)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("stale ack marked the row dispatched while instance-2 holds it; pending = %d", len(pending))
+	}
+
+	// ...and its release must not free instance-2's claim either.
+	if err := s.MarkOutboxAttemptFailed(staleToken, "row-a", "late failure"); err != nil {
+		t.Fatalf("stale release: %v", err)
+	}
+	third, err := s.ClaimPendingOutboxEvents("instance-3", 10, live)
+	if err != nil {
+		t.Fatalf("third claim: %v", err)
+	}
+	if len(third) != 0 {
+		t.Errorf("a stale release freed a live claim; instance-3 took %v", claimedIDs(third))
+	}
+
+	// Positive control: the CURRENT holder's ack does work, so the assertions
+	// above are about staleness rather than about acking being broken.
+	if err := s.MarkOutboxDispatched(second[0].ClaimToken, []string{"row-a"}); err != nil {
+		t.Fatalf("live ack: %v", err)
+	}
+	if pending, err := s.ListPendingOutboxEvents(10); err != nil || len(pending) != 0 {
+		t.Errorf("live ack left %d pending (err %v)", len(pending), err)
 	}
 }

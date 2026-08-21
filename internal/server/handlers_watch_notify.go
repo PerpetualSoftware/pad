@@ -41,8 +41,9 @@ import (
 //     historical reconciliation, not a live mutation
 //   - workspace restore / purge — administrative, not a live human action
 //
-// Known limitation (flagged, not fixed, in Phase 1): unlike the existing
-// SSE/webhook bulk path (publishBulkItemsEvent), this does NOT collapse
+// Known limitation (flagged, not fixed, in Phase 1): unlike the SSE bulk path
+// (publishBulkItemsEvent) and the outbox drain's batch fold, this does NOT
+// collapse
 // N per-item bulk mutations into one batch notification. A bulk mutation
 // touching 50 watched items still surfaces 50 individual notifications
 // to the plugin monitor in a burst — in tension with PLAN-2469's noise-

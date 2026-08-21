@@ -711,7 +711,9 @@ func (e *itemCreateError) Error() string { return e.message }
 
 // createItemChecked is the shared item-create core: schema-field validation →
 // workspace-unique-field precheck → persist → optional parent link → activity
-// log + SSE event + webhook dispatch. Both handleCreateItem and the
+// log + SSE event. (The webhook dispatch that used to close this list is gone
+// — TASK-2714 moved webhook delivery to the outbox drain, fed by the row the
+// persist step's own transaction writes.) Both handleCreateItem and the
 // artifact-import handler call it so neither path can drop straight to
 // store.CreateItem and skip validation, the uniqueness precheck, or the
 // create side effects.

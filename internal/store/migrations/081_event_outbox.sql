@@ -12,12 +12,16 @@
 -- together, which is what lets SPEC-3's delivery guarantees be stated honestly
 -- rather than hoped for.
 --
--- NOTHING DRAINS THIS TABLE YET. Webhooks and SSE still fire from their
--- existing hand-called sites, unchanged; the drain that reads from here, the
--- canonical-to-surface name mapping, and the retirement of those hand-calls
--- are TASK-2714. The binding engine is later still (phase 2+). Stated in the
--- present tense on purpose — a comment describing the intended end state as if
--- it were the current one is how a reader concludes a feature is broken.
+-- SUPERSEDED BY TASK-2714, amended rather than left standing: this migration
+-- shipped saying nothing drained the table and that webhooks still fired from
+-- hand-called sites. The drain exists now and OWNS the webhook surface; the
+-- hand-calls are gone; the canonical-to-surface name mapping lives in
+-- internal/kernelevents. SSE is still published directly at the mutation site
+-- (SPEC-3 v1.5) and takes only its NAME from the taxonomy. The binding engine
+-- is later still (phase 2+) — nothing evaluates selectors today. Kept in the
+-- present tense on purpose, because a comment describing the intended end
+-- state as if it were the current one is how a reader concludes a feature is
+-- broken.
 --
 -- DELIBERATELY NO FOREIGN KEYS on workspace_id / subject_id, which is the one
 -- surprising thing in this schema. An outbox row must outlive its subject:
