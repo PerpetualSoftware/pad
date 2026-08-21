@@ -800,3 +800,15 @@ func TestBulkEventDelta_TagsAreDeduped(t *testing.T) {
 		t.Errorf("tags = %v, want [foo bar] — trimmed and de-duplicated, as the mutation applies them", tags)
 	}
 }
+
+// TestBulkEventDelta_UntagDedupsWithoutTrimming: untag builds a removal SET
+// from the RAW values, so duplicates collapse but whitespace is significant —
+// the mirror image of tag, and the delta has to match each side's own rule
+// (codex round 9).
+func TestBulkEventDelta_UntagDedupsWithoutTrimming(t *testing.T) {
+	got := bulkEventDelta(&bulkItemsRequest{Op: "untag", Tags: []string{"foo", "foo", " foo "}})
+	tags, _ := got["tags"].([]string)
+	if len(tags) != 2 || tags[0] != "foo" || tags[1] != " foo " {
+		t.Errorf("tags = %q, want [\"foo\" \" foo \"] — deduped, untrimmed", tags)
+	}
+}

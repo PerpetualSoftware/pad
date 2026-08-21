@@ -772,20 +772,26 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 		// carrying "  " changed nothing while a raw delta would announce it.
 		// Untag matches on the raw value — it never trims — so only the add
 		// side normalizes here, exactly as in the mutation.
-		tags := req.Tags
-		if req.Op == "tag" {
-			// Trim AND de-duplicate, because bulkTagUpdate does both: it skips
-			// a tag already in `seen`, so ["foo", " foo "] adds one tag while
-			// a delta echoing the request advertised two (codex round 8).
-			tags = make([]string, 0, len(req.Tags))
-			seen := map[string]bool{}
-			for _, t := range req.Tags {
-				if t = strings.TrimSpace(t); t == "" || seen[t] {
+		// De-duplicate for BOTH verbs, and trim only for `tag` — which is
+		// exactly what the mutation does. bulkTagUpdate skips a tag already in
+		// its `seen` set and trims each ADDED tag, while untag builds a removal
+		// SET from the raw values, so duplicates and untrimmed strings behave
+		// differently on the two sides. A delta echoing the request advertised
+		// two changes where one happened (codex rounds 8-9).
+		tags := make([]string, 0, len(req.Tags))
+		seen := map[string]bool{}
+		for _, t := range req.Tags {
+			if req.Op == "tag" {
+				t = strings.TrimSpace(t)
+				if t == "" {
 					continue
 				}
-				seen[t] = true
-				tags = append(tags, t)
 			}
+			if seen[t] {
+				continue
+			}
+			seen[t] = true
+			tags = append(tags, t)
 		}
 		return map[string]any{"tags": tags}
 	case "move":
