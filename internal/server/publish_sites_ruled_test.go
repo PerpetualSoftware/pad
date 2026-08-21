@@ -26,6 +26,16 @@ import (
 // s.watchEvents.Publish directly fails this test by name and has to make
 // a deliberate choice — use the best-effort helper, or extend
 // allowedDirectPublishFiles with a reason.
+//
+// WHAT IT STILL CANNOT SEE, said plainly rather than left to be
+// discovered (codex round 7): a bus obtained indirectly — returned from a
+// method, passed in as a parameter, reached through an interface value
+// stored elsewhere. Catching those needs type information, not syntax.
+// The structural alternative is stronger and is the right answer if this
+// ever has to grow again: make the field unreachable outside the helper
+// rather than detectable. Until then this covers the forms a producer
+// would plausibly be written in, and it FAILS on them — which is more
+// than the doc comment it replaced could do.
 var allowedDirectPublishFiles = map[string]string{
 	// The one caller that acts on the result: a push has no inbox, no
 	// store row, nothing to read back, so a refused publish loses the
@@ -92,18 +102,28 @@ func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 				return true
 			})
 			// A local alias defeats the structural check above, so the
-			// alias itself is what gets flagged: any assignment reading
+			// alias itself is what gets flagged: any code that reads
 			// s.watchEvents into a variable is treated as a publish site,
-			// because the ruling is about which code may hold the bus, not
+			// because the ruling is about which code may HOLD the bus, not
 			// about how the call is spelled.
+			//
+			// Both binding forms, not just `:=` (codex round 7): a
+			// `var bus = s.watchEvents` is a GenDecl/ValueSpec, not an
+			// AssignStmt, and the first version of this check walked only
+			// the latter.
 			ast.Inspect(file, func(n ast.Node) bool {
-				assign, ok := n.(*ast.AssignStmt)
-				if !ok {
-					return true
-				}
-				for _, rhs := range assign.Rhs {
-					if isWatchEventsFieldSelector(rhs) {
-						found[base]++
+				switch node := n.(type) {
+				case *ast.AssignStmt:
+					for _, rhs := range node.Rhs {
+						if isWatchEventsFieldSelector(rhs) {
+							found[base]++
+						}
+					}
+				case *ast.ValueSpec:
+					for _, v := range node.Values {
+						if isWatchEventsFieldSelector(v) {
+							found[base]++
+						}
 					}
 				}
 				return true
