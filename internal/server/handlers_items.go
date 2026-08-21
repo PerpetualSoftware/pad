@@ -711,7 +711,9 @@ func (e *itemCreateError) Error() string { return e.message }
 
 // createItemChecked is the shared item-create core: schema-field validation →
 // workspace-unique-field precheck → persist → optional parent link → activity
-// log + SSE event + webhook dispatch. Both handleCreateItem and the
+// log + SSE event. (The webhook dispatch that used to close this list is gone
+// — TASK-2714 moved webhook delivery to the outbox drain, fed by the row the
+// persist step's own transaction writes.) Both handleCreateItem and the
 // artifact-import handler call it so neither path can drop straight to
 // store.CreateItem and skip validation, the uniqueness precheck, or the
 // create side effects.
@@ -807,8 +809,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	actor, source := actorFromRequest(r)
 	actorNameForCreate := actorNameFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "created", r)
-	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
-	s.dispatchWebhook(workspaceID, "item.created", item)
+	s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
 
 	// Assignment-at-creation (TASK-2533): unlike an update, a freshly
 	// created item has no "before" state to diff — LastMutation doesn't
@@ -1694,8 +1695,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	actor, source := actorFromRequest(r)
 	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
 	actorNameForUpdate := actorNameFromRequest(r)
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
-	s.dispatchWebhook(workspaceID, "item.updated", updated)
+	s.publishItemEventWithName(sseItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
 	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)
 
 	// If a comment was attached to this update (e.g. explaining a status change),
@@ -1715,12 +1715,24 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("failed to create comment on item update", "item_id", updated.ID, "error", cerr)
 		}
 		if cerr == nil && comment != nil {
-			s.publishCommentEvent(events.CommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
-			s.dispatchWebhook(workspaceID, "item.updated_with_comment", map[string]interface{}{
-				"item":    updated,
-				"comment": comment,
-				"changes": meta,
-			})
+			s.publishCommentEvent(sseCommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
+			// item.updated_with_comment is RETIRED (SPEC-3 v1.2, Dave's
+			// ruling): a hand-rolled composite with no flood argument,
+			// which folds into the item event this update emitted plus
+			// comment.created.
+			//
+			// PRECISELY, because "item.updated + comment.created" would
+			// overstate it twice (codex round 1): the item half is whichever
+			// slice actually moved under the disjoint-delta rule — a
+			// status-only update emits item.status_changed, not item.updated
+			// — and the two events come from two SEPARATE transactions, since
+			// CreateComment runs after the update has committed. What holds
+			// is that each is written transactionally with ITS OWN mutation,
+			// which is all the composite was ever standing in for.
+			//
+			// No deprecation window: webhooks are CLI-registered only today
+			// (no UI surface) and there were no known consumers at ruling
+			// time.
 			// TASK-2533: this comment is created via a DIFFERENT code
 			// path than handleCreateComment (store.CreateComment called
 			// directly, not through POST .../comments) — a bypass Rider
@@ -1791,8 +1803,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "archived", r)
-	s.publishItemEventWithName(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
-	s.dispatchWebhook(workspaceID, "item.deleted", item)
+	s.publishItemEventWithName(sseItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1844,7 +1855,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, restored.ID, "restored", r)
-	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
+	s.publishItemEventWithName(sseItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
 
 	restoreVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	if err := s.enrichItemForResponse(restored, restoreVisIDs); err != nil {
@@ -2128,8 +2139,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Publish events for both old and new collections
 	actorNameForMove := actorNameFromRequest(r)
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
-	s.dispatchWebhook(workspaceID, "item.moved", moved)
+	s.publishItemEventWithName(sseItemMoved, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
 	s.publishWatchNotifications(workspaceID, moved, actor, actorNameForMove)
 
 	moveVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)

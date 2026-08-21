@@ -7,7 +7,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -266,5 +265,33 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 		return
 	}
 	actor, source := actorFromRequest(r)
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, item.Seq)
+	// THE NAME DERIVES, THE EVENT DOES NOT EXIST — two separate facts, and
+	// keeping the first from following the second is the point of the central
+	// table. This publish takes sseItemUpdated like every other SSE site, so a
+	// future rename of the snake_case vocabulary reaches it; what it does NOT
+	// mean is that events/1 emits for this mutation (codex round 8 — the
+	// literal here would have quietly recreated exactly the drift the mapping
+	// exists to prevent).
+	//
+	// THE LINE IS PER-LINK-TYPE, not per-handler (SPEC-3 v1.6): a mutation
+	// that writes the ITEM'S OWN ROW emits item.updated; one that writes only
+	// the links table stays silent. A PARENT link crosses that line — it
+	// advances the child's seq — and emits from the store, inside
+	// setParentLinkOnce, DeleteItemLink, or the item-update transaction.
+	// blocks / blocked-by / supersedes write only the links table, so events/1
+	// says nothing about them.
+	//
+	// `implements` IS THE UNRESOLVED CASE, and this comment previously got it
+	// wrong by listing it with the silent ones (codex round 7). It DOES bump
+	// the source row — bumpStructuralLinkSourceTx treats it exactly like
+	// parent — so the mechanical criterion would have it emit, while v1.5's
+	// relationship-link silence would not. Deciding it inside a delivery
+	// refactor would put an event nobody ruled on onto a public wire, so it is
+	// raised with the lead and left as it was. TASK-2723 carries the
+	// link.created / link.removed shape and this call site with it.
+	//
+	// Consequence worth naming: this handler publishes SSE for BOTH kinds, so
+	// the SSE and events/1 pictures deliberately differ here. That is the
+	// v1.5 silence working, not drift.
+	s.publishItemEventWithName(sseItemUpdated, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, item.Seq)
 }

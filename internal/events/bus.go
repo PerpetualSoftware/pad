@@ -42,8 +42,12 @@ const (
 	ItemStarred   = "item_starred"
 	ItemUnstarred = "item_unstarred"
 
-	// Composite events
-	ItemUpdatedWithComment = "item_updated_with_comment"
+	// Composite events: NONE. item_updated_with_comment was declared here
+	// and never published by anything — its only producer was a hand-called
+	// webhook dispatch using the dot-form name, retired under SPEC-3 v1.2
+	// (Dave's ruling, day-48) because it folds into item.updated +
+	// comment.created. The constant went with it rather than being left as
+	// a name a future publisher could reach for.
 
 	// Batch events. Emitted once for a whole bulk mutation (TASK-1668)
 	// instead of one ItemUpdated/ItemArchived per row — the lane-header

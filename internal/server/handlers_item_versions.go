@@ -382,7 +382,11 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// to a generic /items-changes refetch.
 	if s.events != nil {
 		s.events.Publish(events.Event{
-			Type:        "item_updated",
+			// Derived, not a literal (codex round 9). A raw string here is a
+			// second source of SSE vocabulary — the exact drift the taxonomy's
+			// mapping exists to end, and the harder kind to find because it
+			// does not even reference the events package.
+			Type:        sseItemUpdated,
 			WorkspaceID: workspaceID,
 			Collection:  item.CollectionSlug,
 			ItemID:      item.ID,

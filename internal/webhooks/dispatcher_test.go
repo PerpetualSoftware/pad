@@ -20,6 +20,7 @@ type mockStore struct {
 	hooks    []models.Webhook
 	failures map[string]bool // id -> last failed state
 	updated  chan string     // signals when UpdateWebhookFailure is called
+	listErr  error           // when set, ListWebhooks fails
 }
 
 func newMockStore(hooks []models.Webhook) *mockStore {
@@ -32,6 +33,9 @@ func newMockStore(hooks []models.Webhook) *mockStore {
 func (m *mockStore) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	var result []models.Webhook
 	for _, h := range m.hooks {
 		if h.WorkspaceID == workspaceID {
@@ -507,5 +511,206 @@ func TestDispatcher_RedirectBlockIsPermanent(t *testing.T) {
 	defer store.mu.Unlock()
 	if !store.failures["hook-1"] {
 		t.Error("expected failure recorded for blocked redirect")
+	}
+}
+
+// Tests for DeliverEvent — the synchronous delivery seam the outbox drain acks
+// on (TASK-2714 requirements 1 and 2).
+
+func deliverTestHook(url, events string) *mockStore {
+	return newMockStore([]models.Webhook{{
+		ID:          "hook-1",
+		WorkspaceID: "ws-1",
+		URL:         url,
+		Events:      events,
+		Active:      true,
+	}})
+}
+
+// TestDeliverEvent_EnvelopeCarriesIDAndEventTime pins requirement 1 and the
+// envelope's two easy-to-get-wrong fields.
+//
+// The dedupe key is the point: SPEC-3 tells consumers to dedupe on the event
+// id, and before the drain nothing put one on the wire. The timestamp is the
+// subtle one — it must be the event's OWN occurred_at, because SPEC-3 pins
+// time-relative binding predicates to it, so stamping dispatch time would make
+// every consumer's notion of when a mutation happened depend on how backed up
+// the queue was.
+func TestDeliverEvent_EnvelopeCarriesIDAndEventTime(t *testing.T) {
+	bodies := make(chan []byte, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies <- b
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	d := NewDispatcher(deliverTestHook(ts.URL, `["*"]`))
+	d.SkipSSRF = true
+
+	occurred := "2026-01-02T03:04:05Z"
+	out, err := d.DeliverEvent(Delivery{
+		WorkspaceID: "ws-1",
+		EventID:     "outbox-row-42",
+		Event:       "item.created",
+		OccurredAt:  occurred,
+		Payload:     json.RawMessage(`{"id":"item-9","title":"Embedded verbatim"}`),
+	})
+	if err != nil {
+		t.Fatalf("DeliverEvent: %v", err)
+	}
+	if out.Matched != 1 || out.Succeeded != 1 {
+		t.Fatalf("outcome = %+v, want one matched and one succeeded", out)
+	}
+
+	// The body must already be here: DeliverEvent returning before its HTTP
+	// request completed is the async shape the drain cannot ack on.
+	var raw []byte
+	select {
+	case raw = <-bodies:
+	default:
+		t.Fatal("DeliverEvent returned before the endpoint was called — delivery is not synchronous")
+	}
+
+	var got WebhookPayload
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode delivered body: %v", err)
+	}
+	if got.ID != "outbox-row-42" {
+		t.Errorf("envelope id = %q, want the outbox row id — consumers dedupe on it", got.ID)
+	}
+	if got.Event != "item.created" {
+		t.Errorf("envelope event = %q, want the canonical name", got.Event)
+	}
+	if got.Timestamp != occurred {
+		t.Errorf("envelope timestamp = %q, want the event's occurred_at %q (not dispatch time)", got.Timestamp, occurred)
+	}
+
+	// The payload must be embedded as JSON, not base64'd (what []byte would
+	// do) and not double-encoded into a string.
+	var envelope struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode envelope data: %v", err)
+	}
+	if envelope.Data["title"] != "Embedded verbatim" {
+		t.Errorf("data = %v, want the outbox payload embedded verbatim", envelope.Data)
+	}
+}
+
+// TestDeliverEvent_OutcomeDrivesTheAckDecision is the requirement-2 test: the
+// drain must be able to tell "rejected us" from "did not answer", because they
+// are opposite retry decisions.
+//
+// Each leg asserts Retryable() rather than just the counts, since that is the
+// value the drain actually branches on.
+func TestDeliverEvent_OutcomeDrivesTheAckDecision(t *testing.T) {
+	t.Run("permanent rejection does not hold the event pending", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer ts.Close()
+
+		d := NewDispatcher(deliverTestHook(ts.URL, `["*"]`))
+		d.SkipSSRF = true
+		d.retryBackoff = 0
+
+		out, err := d.DeliverEvent(Delivery{WorkspaceID: "ws-1", Event: "item.created", Payload: json.RawMessage(`{}`)})
+		if err != nil {
+			t.Fatalf("DeliverEvent: %v", err)
+		}
+		if out.Permanent != 1 || out.Transient != 0 {
+			t.Fatalf("outcome = %+v, want one permanent failure and no transient", out)
+		}
+		if out.Retryable() {
+			t.Error("Retryable() = true for a 404 — re-delivering to an endpoint that will reject it again holds up the whole queue")
+		}
+	})
+
+	t.Run("transient failure holds the event pending", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer ts.Close()
+
+		d := NewDispatcher(deliverTestHook(ts.URL, `["*"]`))
+		d.SkipSSRF = true
+		d.retryBackoff = 0
+
+		out, err := d.DeliverEvent(Delivery{WorkspaceID: "ws-1", Event: "item.created", Payload: json.RawMessage(`{}`)})
+		if err != nil {
+			t.Fatalf("DeliverEvent: %v", err)
+		}
+		if out.Transient != 1 || out.Permanent != 0 {
+			t.Fatalf("outcome = %+v, want one transient failure and no permanent", out)
+		}
+		if !out.Retryable() {
+			t.Error("Retryable() = false for a 5xx — the durable retry is the drain's, and it is why the outbox exists")
+		}
+	})
+}
+
+// TestDeliverEvent_NoMatchingHooksIsSuccess pins the case that would otherwise
+// wedge every webhook-less workspace.
+//
+// Zero matched endpoints means nothing is owed, so the event is done. A drain
+// that read "nothing succeeded" as "not delivered" would leave every event in
+// every workspace without webhooks pending until the retention bound deleted
+// it — turning the common case into a permanent backlog.
+func TestDeliverEvent_NoMatchingHooksIsSuccess(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("endpoint was called for an event it does not subscribe to")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	for _, tc := range []struct {
+		name  string
+		store *mockStore
+	}{
+		{"workspace has no webhooks at all", newMockStore(nil)},
+		{"webhook subscribes to other events", deliverTestHook(ts.URL, `["comment.created"]`)},
+		{"webhook is inactive", newMockStore([]models.Webhook{{
+			ID: "hook-1", WorkspaceID: "ws-1", URL: ts.URL, Events: `["*"]`, Active: false,
+		}})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewDispatcher(tc.store)
+			d.SkipSSRF = true
+
+			out, err := d.DeliverEvent(Delivery{WorkspaceID: "ws-1", Event: "item.created", Payload: json.RawMessage(`{}`)})
+			if err != nil {
+				t.Fatalf("DeliverEvent: %v", err)
+			}
+			if out.Matched != 0 {
+				t.Fatalf("Matched = %d, want 0", out.Matched)
+			}
+			if out.Retryable() {
+				t.Error("Retryable() = true with nothing to deliver to — every event in this workspace would back up forever")
+			}
+		})
+	}
+}
+
+// TestDeliverEvent_ServerSideFailureIsAnError separates the failure the drain
+// must NOT ack from the ones it may.
+//
+// Listing webhooks failing means nothing was attempted, so the event is still
+// owed in full. Returning it in the outcome instead of as an error would let a
+// database blip look like "delivered to zero endpoints", which acks.
+func TestDeliverEvent_ServerSideFailureIsAnError(t *testing.T) {
+	store := newMockStore(nil)
+	store.listErr = fmt.Errorf("database unavailable")
+
+	d := NewDispatcher(store)
+	d.SkipSSRF = true
+
+	out, err := d.DeliverEvent(Delivery{WorkspaceID: "ws-1", Event: "item.created", Payload: json.RawMessage(`{}`)})
+	if err == nil {
+		t.Fatalf("DeliverEvent returned nil error on a store failure; outcome %+v would ack an undelivered event", out)
+	}
+	if !strings.Contains(err.Error(), "database unavailable") {
+		t.Errorf("error = %v, want it to carry the store's cause", err)
 	}
 }

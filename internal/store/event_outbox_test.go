@@ -1029,8 +1029,9 @@ func TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus(t *testing.T) {
 // Account deletion's de-identify pass nulls user identity on LIVE rows so a
 // departed user stops being legible; it cannot reach a frozen payload. If the
 // payload captured the assignee's name and email, those would stay readable in
-// the outbox after the account was deleted — and today nothing drains or prunes
-// the table.
+// the outbox after the account was deleted for as long as the row survived.
+// TASK-2714 bounded that window with the drain and its two prunes; bounded is
+// not zero, so the scrub is still what does the work.
 func TestOutbox_PayloadsOmitAssigneeIdentity(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox PII")
@@ -1351,30 +1352,141 @@ func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 	}
 }
 
-// TestCanonicalEventsAreFullyDeclared checks that every canonical event
-// resolves BOTH a subject kind and a payload family, and that non-canonical
-// names resolve neither.
+// TestCanonicalEventsAreFullyDeclared pins the events/1 contract surface as an
+// INDEPENDENT COPY: every canonical name, its subject kind and its payload
+// family, written out here as literals.
 //
-// The single taxonomy table makes a half-declared event unrepresentable, so
-// this is a guard against the table being replaced by something looser rather
-// than against today's literals. The non-canonical leg is the one that matters
-// most: an unknown name must report ok=false, not an empty string that a
-// caller declaring nothing would match.
+// The previous version of this test iterated kernelevents.Canonical() and
+// asserted each entry resolved SOMETHING non-empty. That check cannot fail for
+// any table the compiler accepts — eventSpec requires both fields, so a
+// corrupted table (a name deleted, a name added, item.deleted quietly rebased
+// onto the ref-only payload) passed its own validation. A test that agrees with
+// whatever the table says is not a test of the table.
+//
+// So the literals below must DISAGREE with the table when the table moves. That
+// is the point of the duplication, and the duplication is deliberate: this is a
+// PUBLIC contract (SPEC-3 §Taxonomy) where a rename is as breaking as an HTTP
+// route change, and the cost of restating sixteen triples is one edit per
+// intentional contract change — paid at exactly the moment a version note is
+// owed anyway.
+//
+// TASK-2714 edits this table (the handler-path bulk mapping), which is why the
+// independent copy lands as this unit's first commit.
 func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
-	for _, name := range kernelevents.Canonical() {
-		kind, kindOK := kernelevents.SubjectKind(name)
-		if !kindOK || kind == "" {
-			t.Errorf("canonical event %q has no subject kind", name)
-		}
-		family, familyOK := kernelevents.PayloadFamily(name)
-		if !familyOK || family == "" {
-			t.Errorf("canonical event %q has no payload family", name)
+	// The events/1 set at SPEC-3 v1.4. Adding, removing or re-homing an entry
+	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
+	// doc comment in the same commit.
+	want := map[string]struct {
+		subject string
+		family  []string
+		sse     string
+	}{
+		"item.created":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_created"},
+		"item.updated":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.status_changed": {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.moved":          {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.deleted":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_archived"},
+		"item.restored":       {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_restored"},
+		"item.bulk_updated":   {kernelevents.SubjectItemBatch, []string{kernelevents.PayloadItemBatch, kernelevents.PayloadItemBatchHeader}, "items_bulk_updated"},
+		"comment.created":     {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_created"},
+		"comment.updated":     {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_updated"},
+		"comment.deleted":     {kernelevents.SubjectComment, []string{kernelevents.PayloadRefOnly}, "comment_deleted"},
+		"attachment.added":    {kernelevents.SubjectAttachment, []string{kernelevents.PayloadAttachmentSnapshot}, ""},
+		"attachment.removed":  {kernelevents.SubjectAttachment, []string{kernelevents.PayloadRefOnly}, ""},
+		"member.joined":       {kernelevents.SubjectMember, []string{kernelevents.PayloadMember}, ""},
+		"pack.installed":      {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"pack.upgraded":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"pack.disabled":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+	}
+
+	// The name constants are pinned to their wire strings separately, because
+	// the map above is keyed on literals: a renamed constant would otherwise
+	// slip through as long as the table and the constant moved together.
+	for constant, wire := range map[string]string{
+		kernelevents.ItemCreated:       "item.created",
+		kernelevents.ItemUpdated:       "item.updated",
+		kernelevents.ItemStatusChanged: "item.status_changed",
+		kernelevents.ItemMoved:         "item.moved",
+		kernelevents.ItemDeleted:       "item.deleted",
+		kernelevents.ItemRestored:      "item.restored",
+		kernelevents.ItemBulkUpdated:   "item.bulk_updated",
+		kernelevents.CommentCreated:    "comment.created",
+		kernelevents.CommentUpdated:    "comment.updated",
+		kernelevents.CommentDeleted:    "comment.deleted",
+		kernelevents.AttachmentAdded:   "attachment.added",
+		kernelevents.AttachmentRemoved: "attachment.removed",
+		kernelevents.MemberJoined:      "member.joined",
+		kernelevents.PackInstalled:     "pack.installed",
+		kernelevents.PackUpgraded:      "pack.upgraded",
+		kernelevents.PackDisabled:      "pack.disabled",
+	} {
+		if constant != wire {
+			t.Errorf("event name constant = %q, want %q on the wire", constant, wire)
 		}
 	}
 
+	got := kernelevents.Canonical()
+	if len(got) != len(want) {
+		t.Errorf("Canonical() has %d events, want %d — the contract set changed", len(got), len(want))
+	}
+
+	seen := make(map[string]bool, len(got))
+	for _, name := range got {
+		seen[name] = true
+		expected, ok := want[name]
+		if !ok {
+			t.Errorf("Canonical() carries %q, which the events/1 contract does not declare", name)
+			continue
+		}
+		kind, kindOK := kernelevents.SubjectKind(name)
+		if !kindOK || kind != expected.subject {
+			t.Errorf("SubjectKind(%q) = (%q, %v), want (%q, true)", name, kind, kindOK, expected.subject)
+		}
+		families, familiesOK := kernelevents.PayloadFamilies(name)
+		if !familiesOK || !sameStrings(families, expected.family) {
+			t.Errorf("PayloadFamilies(%q) = (%v, %v), want (%v, true)", name, families, familiesOK, expected.family)
+		}
+		for _, family := range expected.family {
+			if !kernelevents.AllowsPayload(name, family) {
+				t.Errorf("AllowsPayload(%q, %q) = false for a declared shape", name, family)
+			}
+		}
+		if kernelevents.AllowsPayload(name, "") {
+			t.Errorf("AllowsPayload(%q, \"\") = true — a caller declaring nothing must not match", name)
+		}
+		if kernelevents.AllowsPayload(name, "not_a_family") {
+			t.Errorf("AllowsPayload(%q, \"not_a_family\") = true", name)
+		}
+		if !kernelevents.IsCanonical(name) {
+			t.Errorf("IsCanonical(%q) = false for an event Canonical() returned", name)
+		}
+		// The SSE surface name, including the events that deliberately have
+		// none. An empty want.sse asserts SILENCE — SurfaceSSE must report
+		// false rather than handing back a name a caller would publish under.
+		sse, sseOK := kernelevents.SurfaceSSE(name)
+		if expected.sse == "" {
+			if sseOK || sse != "" {
+				t.Errorf("SurfaceSSE(%q) = (%q, %v), want (\"\", false) — this event has no SSE surface", name, sse, sseOK)
+			}
+		} else if !sseOK || sse != expected.sse {
+			t.Errorf("SurfaceSSE(%q) = (%q, %v), want (%q, true)", name, sse, sseOK, expected.sse)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("events/1 declares %q but Canonical() does not return it", name)
+		}
+	}
+
+	// Non-canonical names must report ok=false rather than an empty string a
+	// caller declaring nothing would match — the fail-open shape Codex round 11
+	// found in the two-map version.
 	for _, name := range []string{"", "item.frobnicated", "comment.deleted.v2"} {
-		if _, ok := kernelevents.PayloadFamily(name); ok {
-			t.Errorf("PayloadFamily(%q) reported ok for a non-canonical name", name)
+		if _, ok := kernelevents.PayloadFamilies(name); ok {
+			t.Errorf("PayloadFamilies(%q) reported ok for a non-canonical name", name)
+		}
+		if kernelevents.AllowsPayload(name, kernelevents.PayloadItemSnapshot) {
+			t.Errorf("AllowsPayload(%q, ...) = true for a non-canonical name", name)
 		}
 		if _, ok := kernelevents.SubjectKind(name); ok {
 			t.Errorf("SubjectKind(%q) reported ok for a non-canonical name", name)
@@ -1382,5 +1494,851 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		if kernelevents.IsCanonical(name) {
 			t.Errorf("IsCanonical(%q) = true", name)
 		}
+		if _, ok := kernelevents.SurfaceSSE(name); ok {
+			t.Errorf("SurfaceSSE(%q) reported ok for a non-canonical name", name)
+		}
 	}
+}
+
+// insertOutboxRow writes one outbox row directly, so a retention test can pin
+// occurred_at / dispatched_at to values a real emit would never produce on
+// demand.
+func insertOutboxRow(t *testing.T, s *Store, id, workspaceID, occurredAt string, dispatchedAt *string) {
+	t.Helper()
+	insertOutboxRowBatch(t, s, id, workspaceID, occurredAt, dispatchedAt, "")
+}
+
+func insertOutboxRowBatch(t *testing.T, s *Store, id, workspaceID, occurredAt string, dispatchedAt *string, batchID string) {
+	t.Helper()
+	if _, err := s.db.Exec(s.q(`
+		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at, dispatched_at, batch_id)
+		VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, NULLIF(?, ''))
+	`), id, workspaceID, kernelevents.ItemCreated, kernelevents.SubjectItem, "subj-"+id,
+		`{"id":"subj-`+id+`","title":"frozen"}`, occurredAt, dispatchedAt, batchID); err != nil {
+		t.Fatalf("insert outbox row %s: %v", id, err)
+	}
+}
+
+func outboxRowIDs(t *testing.T, s *Store) []string {
+	t.Helper()
+	rows, err := s.db.Query(s.q(`SELECT id FROM event_outbox ORDER BY id`))
+	if err != nil {
+		t.Fatalf("query outbox ids: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan id: %v", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate outbox ids: %v", err)
+	}
+	return out
+}
+
+// TestOutbox_PruneUndispatchedBoundsTheFrozenPayloadWindow pins the privacy
+// half of retention (TASK-2714 requirement 3).
+//
+// PruneDispatchedOutbox filters on dispatched_at IS NOT NULL, so a row that
+// can NEVER be delivered is unreachable by it and keeps its frozen payload
+// forever. Both legs below discriminate a plausible wrong implementation: a
+// prune that dropped the dispatched_at IS NULL clause would take the dispatched
+// row too (and hand that table's retention two owners with different windows),
+// and one that ignored the cutoff would take the young pending row that a
+// retry is still owed.
+func TestOutbox_PruneUndispatchedBoundsTheFrozenPayloadWindow(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox retention")
+	clearOutbox(t, s)
+
+	old := time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339)
+	recent := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	dispatchedAt := time.Now().UTC().Add(-71 * time.Hour).Format(time.RFC3339)
+
+	insertOutboxRow(t, s, "a-old-pending", ws.ID, old, nil)
+	insertOutboxRow(t, s, "b-old-dispatched", ws.ID, old, &dispatchedAt)
+	insertOutboxRow(t, s, "c-recent-pending", ws.ID, recent, nil)
+
+	// The test asserts its own premise: without all three rows present, the
+	// survivor checks below would pass for a reason unrelated to the prune.
+	if got := outboxRowIDs(t, s); len(got) != 3 {
+		t.Fatalf("seeded rows = %v, want 3", got)
+	}
+
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	liveClaim := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	n, err := s.PruneUndispatchedOutbox(cutoff, liveClaim)
+	if err != nil {
+		t.Fatalf("PruneUndispatchedOutbox: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d rows, want 1 (only the aged pending row)", n)
+	}
+
+	got := outboxRowIDs(t, s)
+	want := []string{"b-old-dispatched", "c-recent-pending"}
+	if len(got) != len(want) {
+		t.Fatalf("survivors = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("survivors = %v, want %v", got, want)
+		}
+	}
+}
+
+// outboxBatchIDsFor returns the batch_id of every event recorded for an item.
+func outboxBatchIDsFor(t *testing.T, s *Store, itemID string) []string {
+	t.Helper()
+	rows, err := s.db.Query(s.q(`SELECT COALESCE(batch_id, '') FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at, id`), itemID)
+	if err != nil {
+		t.Fatalf("query batch ids: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			t.Fatalf("scan batch_id: %v", err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate batch ids: %v", err)
+	}
+	return out
+}
+
+// TestOutbox_WithEventBatchStampsEveryMutationPath drives ALL FIVE store entry
+// points the bulk handler reaches, because the failure this guards against is
+// per-method: a signature that accepts the option and never threads it to the
+// emit compiles, passes every other test, and silently un-batches whichever
+// bulk verbs route through it.
+//
+// THIS TEST IS NOT SUFFICIENT ON ITS OWN, and saying so is the point: it
+// proves the OPTION works, not that the handler passes it. Codex round 1 found
+// three handler call sites that never did.
+// TestBulkItems_EveryVerbStampsOneBatchID covers that layer.
+//
+// The population is enumerated rather than sampled (CONVE-18): archive
+// (DeleteItem), restore (RestoreItem), move (MoveItemWithPreCheck), field
+// update (UpdateItemWithPreCheck) and assign (UpdateItem) are the complete set
+// of mutating store calls handlers_items_bulk.go makes. My own escalation said
+// four; it was five, and restore was the one missing.
+//
+// Each leg asserts the unstamped control too. Without it the test would pass
+// for an implementation that stamped every event ever written.
+func TestOutbox_WithEventBatchStampsEveryMutationPath(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox batch")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	other := createTestCollection(t, s, ws.ID, "Done")
+
+	const batch = "batch-42"
+
+	assertBatch := func(t *testing.T, itemID, want string) {
+		t.Helper()
+		got := outboxBatchIDsFor(t, s, itemID)
+		if len(got) == 0 {
+			t.Fatalf("no outbox rows for %s — the mutation emitted nothing, so the batch assertion proves nothing", itemID)
+		}
+		for _, b := range got {
+			if b != want {
+				t.Errorf("batch ids = %v, want every row stamped %q", got, want)
+				return
+			}
+		}
+	}
+
+	t.Run("DeleteItem", func(t *testing.T) {
+		batched := createTestItem(t, s, ws.ID, col.ID, "Archived in a batch", "")
+		clearOutbox(t, s)
+		if err := s.DeleteItem(batched.ID, WithEventBatch(batch)); err != nil {
+			t.Fatalf("DeleteItem: %v", err)
+		}
+		assertBatch(t, batched.ID, batch)
+
+		solo := createTestItem(t, s, ws.ID, col.ID, "Archived alone", "")
+		clearOutbox(t, s)
+		if err := s.DeleteItem(solo.ID); err != nil {
+			t.Fatalf("DeleteItem (control): %v", err)
+		}
+		assertBatch(t, solo.ID, "")
+	})
+
+	t.Run("RestoreItem", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Restored in a batch", "")
+		if err := s.DeleteItem(item.ID); err != nil {
+			t.Fatalf("DeleteItem: %v", err)
+		}
+		clearOutbox(t, s)
+		if _, err := s.RestoreItem(item.ID, WithEventBatch(batch)); err != nil {
+			t.Fatalf("RestoreItem: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+	})
+
+	t.Run("MoveItemWithPreCheck", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Moved in a batch", "")
+		clearOutbox(t, s)
+		if _, err := s.MoveItemWithPreCheck(item.ID, other.ID, "{}", nil, WithEventBatch(batch)); err != nil {
+			t.Fatalf("MoveItemWithPreCheck: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+	})
+
+	t.Run("UpdateItemWithPreCheck", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Field-updated in a batch", "")
+		clearOutbox(t, s)
+		title := "Field-updated in a batch, renamed"
+		if _, err := s.UpdateItemWithPreCheck(item.ID, models.ItemUpdate{Title: &title}, nil, WithEventBatch(batch)); err != nil {
+			t.Fatalf("UpdateItemWithPreCheck: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+	})
+
+	t.Run("UpdateItem", func(t *testing.T) {
+		item := createTestItem(t, s, ws.ID, col.ID, "Assigned in a batch", "")
+		clearOutbox(t, s)
+		title := "Assigned in a batch, renamed"
+		if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &title}, WithEventBatch(batch)); err != nil {
+			t.Fatalf("UpdateItem: %v", err)
+		}
+		assertBatch(t, item.ID, batch)
+
+		solo := createTestItem(t, s, ws.ID, col.ID, "Assigned alone", "")
+		clearOutbox(t, s)
+		soloTitle := "Assigned alone, renamed"
+		if _, err := s.UpdateItem(solo.ID, models.ItemUpdate{Title: &soloTitle}); err != nil {
+			t.Fatalf("UpdateItem (control): %v", err)
+		}
+		assertBatch(t, solo.ID, "")
+	})
+}
+
+func claimedIDs(evs []OutboxEvent) []string {
+	out := make([]string, 0, len(evs))
+	for _, e := range evs {
+		out = append(out, e.ID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestOutbox_ClaimIsExclusiveUntilTheLeaseExpires is the multi-instance guard.
+// Every instance of a cloud deployment runs the drain, so without the claim
+// each pending row is delivered once PER INSTANCE — by construction, not by
+// accident.
+func TestOutbox_ClaimIsExclusiveUntilTheLeaseExpires(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox claim")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+	insertOutboxRow(t, s, "row-b", ws.ID, occurred, nil)
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+
+	first, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if got := claimedIDs(first); len(got) != 2 {
+		t.Fatalf("instance-1 claimed %v, want both rows", got)
+	}
+
+	second, err := s.ClaimPendingOutboxEvents("instance-2", 10, live)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("instance-2 claimed %v — every event would be delivered once per instance", claimedIDs(second))
+	}
+
+	// A drainer that died holding claims must not strand them: past the lease,
+	// the rows are claimable again. At-least-once is what makes that safe.
+	expired := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	third, err := s.ClaimPendingOutboxEvents("instance-2", 10, expired)
+	if err != nil {
+		t.Fatalf("post-lease claim: %v", err)
+	}
+	if got := claimedIDs(third); len(got) != 2 {
+		t.Fatalf("post-lease claim got %v, want both rows — a dead instance stranded them", got)
+	}
+}
+
+// TestOutbox_ClaimTakesWholeBatchesPastTheLimit pins the rule that keeps a
+// folded wire event true: the limit is a throughput knob, and letting it split
+// a batch would make one bulk operation arrive as two events each reporting a
+// partial member count.
+func TestOutbox_ClaimTakesWholeBatchesPastTheLimit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox batch claim")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRowBatch(t, s, "b-1", ws.ID, occurred, nil, "batch-x")
+	insertOutboxRowBatch(t, s, "b-2", ws.ID, occurred, nil, "batch-x")
+	insertOutboxRowBatch(t, s, "b-3", ws.ID, occurred, nil, "batch-x")
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	claimed, err := s.ClaimPendingOutboxEvents("instance-1", 1, live)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	got := claimedIDs(claimed)
+	if len(got) != 3 {
+		t.Fatalf("claimed %v with limit=1, want all three members of batch-x", got)
+	}
+	for _, ev := range claimed {
+		if ev.BatchID != "batch-x" {
+			t.Errorf("claimed row %s carries batch %q, want batch-x", ev.ID, ev.BatchID)
+		}
+	}
+
+	// Control: an unbatched row is still bounded by the limit, so the
+	// expansion above is batch-specific rather than the limit being ignored.
+	clearOutbox(t, s)
+	insertOutboxRow(t, s, "s-1", ws.ID, occurred, nil)
+	insertOutboxRow(t, s, "s-2", ws.ID, occurred, nil)
+	single, err := s.ClaimPendingOutboxEvents("instance-1", 1, live)
+	if err != nil {
+		t.Fatalf("control claim: %v", err)
+	}
+	if len(single) != 1 {
+		t.Fatalf("control claimed %v with limit=1, want exactly one row", claimedIDs(single))
+	}
+}
+
+// TestOutbox_FailedAttemptReleasesTheClaim: a transient failure means the
+// event is still owed and nothing is in flight, so the next tick must be able
+// to take it. Holding the claim until the lease expired would idle the row for
+// the whole window — and on a single-instance deployment that is the only
+// reason it would ever wait at all.
+func TestOutbox_FailedAttemptReleasesTheClaim(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox claim release")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+
+	claimed, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim = %v, %v; want one row", claimedIDs(claimed), err)
+	}
+	// Premise: it really is unavailable while claimed, so the re-claim below
+	// proves the release rather than the claim never having applied.
+	if again, err := s.ClaimPendingOutboxEvents("instance-2", 10, live); err != nil || len(again) != 0 {
+		t.Fatalf("row was claimable while claimed (%v, %v)", claimedIDs(again), err)
+	}
+
+	if err := s.MarkOutboxAttemptFailed(claimed[0].ClaimToken, "row-a", "endpoint timed out"); err != nil {
+		t.Fatalf("MarkOutboxAttemptFailed: %v", err)
+	}
+
+	retry, err := s.ClaimPendingOutboxEvents("instance-2", 10, live)
+	if err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	if len(retry) != 1 {
+		t.Fatalf("re-claim got %v, want the released row", claimedIDs(retry))
+	}
+	if retry[0].Attempts != 1 {
+		t.Errorf("attempts = %d, want 1 — the failed attempt was not recorded", retry[0].Attempts)
+	}
+	if retry[0].LastError != "endpoint timed out" {
+		t.Errorf("last_error = %q, want the recorded reason", retry[0].LastError)
+	}
+}
+
+// TestOutbox_ClaimArbitratesTheRaceNotJustTheQuery drives the conditional
+// UPDATE with a STALE candidate list — the case the public entry point cannot
+// produce, because its own candidate query has already filtered held rows.
+//
+// Without this, the exclusivity test above passes for an implementation whose
+// UPDATE has no availability predicate at all: the candidate filter alone
+// produces the same end state single-threaded (CONVE-12 — name the other
+// mechanism that produces the end state, then assert against IT). Under real
+// concurrency that implementation double-claims every row two instances select
+// at the same moment, which is precisely the multi-instance bug the claim
+// exists to prevent.
+func TestOutbox_ClaimArbitratesTheRaceNotJustTheQuery(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox claim race")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+
+	// Instance 2 selects candidates FIRST — before instance 1 claims. This is
+	// the window: both instances have the row in their candidate list.
+	stale, err := s.pendingClaimCandidates(10, live)
+	if err != nil {
+		t.Fatalf("candidates: %v", err)
+	}
+	if len(stale) != 1 {
+		t.Fatalf("candidates = %v, want the one pending row", stale)
+	}
+
+	won, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil || len(won) != 1 {
+		t.Fatalf("instance-1 claim = %v, %v; want the row", claimedIDs(won), err)
+	}
+
+	// Instance 2 now runs its UPDATE against the list it selected before the
+	// claim landed. The predicate on each statement is the only thing that can
+	// stop it.
+	const loser = "instance-2:stale-token"
+	if err := s.claimOutboxIDs(loser, stale, live); err != nil {
+		t.Fatalf("loser claim: %v", err)
+	}
+	got, err := s.outboxEventsClaimedBy(loser)
+	if err != nil {
+		t.Fatalf("read loser claims: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("instance-2 also claimed %v — both instances would deliver the same event", claimedIDs(got))
+	}
+}
+
+// sameStrings compares two payload-family lists order-independently: the
+// taxonomy declares a SET, and pinning its order would make the test fail on a
+// reordering that changes nothing.
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	g := append([]string(nil), got...)
+	w := append([]string(nil), want...)
+	sort.Strings(g)
+	sort.Strings(w)
+	for i := range g {
+		if g[i] != w[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestFoldBulkHeader_KeepsOneSnapshotPerItem pins the fold's answer to the
+// disjoint-delta rule: one bulk member can write several rows (a move that
+// also changes status emits item.moved AND item.status_changed), and the
+// folded payload reports `count` in ITEMS.
+//
+// Without dedup the members list disagrees with the count in the same
+// payload — the wire event contradicting itself (codex round 1).
+func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
+	header := []byte(`{"batch_id":"b1","op":"move","count":2,"item_ids":["i1","i2"]}`)
+	members := [][]byte{
+		[]byte(`{"id":"i1","status":"open"}`),
+		[]byte(`{"id":"i2","status":"open"}`),
+		[]byte(`{"id":"i1","status":"done"}`),
+		[]byte(`{"id":"i2","status":"done"}`),
+	}
+
+	folded, err := FoldBulkHeader(header, members)
+	if err != nil {
+		t.Fatalf("FoldBulkHeader: %v", err)
+	}
+	var got struct {
+		Count   int `json:"count"`
+		Members []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(folded, &got); err != nil {
+		t.Fatalf("decode folded: %v", err)
+	}
+	if len(got.Members) != got.Count {
+		t.Fatalf("members = %d but count = %d — the payload contradicts itself", len(got.Members), got.Count)
+	}
+	for _, m := range got.Members {
+		if m.Status != "done" {
+			t.Errorf("member %s carries status %q, want the LAST snapshot (done)", m.ID, m.Status)
+		}
+	}
+
+	// prior_status survives the collapse. A mixed update writes
+	// item.status_changed (which carries it) AND item.updated (which does
+	// not); plain last-wins keeps the later row and drops the transition —
+	// the one field a "nonterminal -> terminal" binding needs, lost exactly
+	// in the case that produces both rows.
+	withPrior, err := FoldBulkHeader(
+		[]byte(`{"batch_id":"b1","op":"move","count":1,"item_ids":["i1"]}`),
+		[][]byte{
+			[]byte(`{"id":"i1","status":"done","prior_status":"open"}`),
+			[]byte(`{"id":"i1","status":"done","title":"later row, no prior_status"}`),
+		})
+	if err != nil {
+		t.Fatalf("FoldBulkHeader (prior_status): %v", err)
+	}
+	var priorGot struct {
+		Members []struct {
+			Title       string `json:"title"`
+			PriorStatus string `json:"prior_status"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(withPrior, &priorGot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(priorGot.Members) != 1 {
+		t.Fatalf("members = %d, want 1", len(priorGot.Members))
+	}
+	if priorGot.Members[0].PriorStatus != "open" {
+		t.Errorf("prior_status = %q, want it carried forward from the status_changed row", priorGot.Members[0].PriorStatus)
+	}
+	if priorGot.Members[0].Title != "later row, no prior_status" {
+		t.Errorf("member = %+v, want the LAST snapshot's fields kept", priorGot.Members[0])
+	}
+
+	// A snapshot the drain cannot read is kept, not dropped: it is real data,
+	// and discarding it silently would be worse than a duplicate.
+	odd, err := FoldBulkHeader(header, [][]byte{[]byte(`"not an object"`), []byte(`{"id":"i1"}`)})
+	if err != nil {
+		t.Fatalf("FoldBulkHeader (unreadable member): %v", err)
+	}
+	var oddGot struct {
+		Members []json.RawMessage `json:"members"`
+	}
+	if err := json.Unmarshal(odd, &oddGot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(oddGot.Members) != 2 {
+		t.Errorf("members = %d, want both kept", len(oddGot.Members))
+	}
+}
+
+// TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass pins the lease's other
+// half. Delivery can outrun the lease — a workspace with many slow endpoints
+// is delivered sequentially — and the estimate behind the default is an
+// estimate, not a bound.
+//
+// So the question is what a LATE pass may still do to rows a newer pass now
+// owns. The answer has to be nothing: a late ack would stamp a row the new
+// holder is mid-delivery on, and a late release would clear a live claim and
+// hand the event to a third pass.
+func TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox stale claim")
+	clearOutbox(t, s)
+
+	occurred := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertOutboxRow(t, s, "row-a", ws.ID, occurred, nil)
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	first, err := s.ClaimPendingOutboxEvents("instance-1", 10, live)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim = %v, %v", claimedIDs(first), err)
+	}
+	staleToken := first[0].ClaimToken
+	if staleToken == "" {
+		t.Fatal("claim returned no token; ack and release have nothing to condition on")
+	}
+
+	// The lease expires and a second instance legitimately takes the row.
+	expired := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	second, err := s.ClaimPendingOutboxEvents("instance-2", 10, expired)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("second claim = %v, %v — the premise of this test is that the row moved on", claimedIDs(second), err)
+	}
+	if second[0].ClaimToken == staleToken {
+		t.Fatal("both passes share a claim token; the tokens do not identify a pass")
+	}
+
+	// Instance 1 finally finishes and acks. It must reach nothing.
+	if err := s.MarkOutboxDispatched(staleToken, []string{"row-a"}); err != nil {
+		t.Fatalf("stale ack: %v", err)
+	}
+	pending, err := s.ListPendingOutboxEvents(10)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("stale ack marked the row dispatched while instance-2 holds it; pending = %d", len(pending))
+	}
+
+	// ...and its release must not free instance-2's claim either.
+	if err := s.MarkOutboxAttemptFailed(staleToken, "row-a", "late failure"); err != nil {
+		t.Fatalf("stale release: %v", err)
+	}
+	third, err := s.ClaimPendingOutboxEvents("instance-3", 10, live)
+	if err != nil {
+		t.Fatalf("third claim: %v", err)
+	}
+	if len(third) != 0 {
+		t.Errorf("a stale release freed a live claim; instance-3 took %v", claimedIDs(third))
+	}
+
+	// Positive control: the CURRENT holder's ack does work, so the assertions
+	// above are about staleness rather than about acking being broken.
+	if err := s.MarkOutboxDispatched(second[0].ClaimToken, []string{"row-a"}); err != nil {
+		t.Fatalf("live ack: %v", err)
+	}
+	if pending, err := s.ListPendingOutboxEvents(10); err != nil || len(pending) != 0 {
+		t.Errorf("live ack left %d pending (err %v)", len(pending), err)
+	}
+}
+
+// TestOutbox_PruneUndispatchedSparesAClaimedRow: every instance runs
+// retention, so without a claim check one instance's prune deletes a row
+// another is mid-delivery on — the delivery then succeeds while the ack
+// matches zero rows, and a crash in that window loses an event the outbox had
+// already committed (codex round 4).
+func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox prune vs claim")
+	clearOutbox(t, s)
+
+	old := time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339)
+	insertOutboxRow(t, s, "a-claimed", ws.ID, old, nil)
+	insertOutboxRow(t, s, "b-unclaimed", ws.ID, old, nil)
+
+	live := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	// Claim only the first row, by asking for exactly one.
+	claimed, err := s.ClaimPendingOutboxEvents("instance-1", 1, live)
+	if err != nil || len(claimed) != 1 || claimed[0].ID != "a-claimed" {
+		t.Fatalf("claim = %v, %v; want exactly a-claimed", claimedIDs(claimed), err)
+	}
+
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	n, err := s.PruneUndispatchedOutbox(cutoff, live)
+	if err != nil {
+		t.Fatalf("PruneUndispatchedOutbox: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d rows, want 1 — the claimed row must survive and the unclaimed one must not", n)
+	}
+	got := outboxRowIDs(t, s)
+	if len(got) != 1 || got[0] != "a-claimed" {
+		t.Fatalf("survivors = %v, want [a-claimed]", got)
+	}
+
+	// An EXPIRED claim is fair game — that is what expiry means — so the
+	// exemption is about live deliveries, not about claimed rows forever.
+	expired := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+	if n, err := s.PruneUndispatchedOutbox(cutoff, expired); err != nil || n != 1 {
+		t.Errorf("prune with an expired lease removed %d rows (err %v), want 1", n, err)
+	}
+}
+
+// TestOutbox_SetParentLinkEmitsItemUpdated pins the fix for the create-with-
+// parent regression (codex round 4).
+//
+// CreateItem commits item.created with a PRE-LINK snapshot, and the parent
+// link lands in a separate transaction afterwards. The hand-called webhook
+// that the drain replaced dispatched the handler's post-link re-read, so a
+// consumer saw the parent; without an event of its own, the frozen created row
+// would be the only thing on the wire.
+//
+// The criterion, per SPEC-3 v1.6: a parent link writes the item's OWN row
+// (seq, the unparented bit), so it emits. A relationship-graph link writes only
+// the links table and stays silent.
+func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox parent link")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+
+	// Premise: the create emitted item.created and nothing else, so the event
+	// asserted below is the LINK's rather than the create's.
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemCreated {
+		t.Fatalf("events after create = %v, want exactly [%s]", got, kernelevents.ItemCreated)
+	}
+	createdSeq := child.Seq
+	clearOutbox(t, s)
+
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	got := outboxEventsFor(t, s, child.ID)
+	if len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("events after linking = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+
+	// The payload must be the POST-link state, which is the whole point: a
+	// snapshot read outside the transaction would carry the pre-link row.
+	payload := outboxPayloadFor(t, s, child.ID, kernelevents.ItemUpdated)
+	seq, ok := payload["seq"].(float64)
+	if !ok {
+		t.Fatalf("payload has no seq: %v", payload["seq"])
+	}
+	if int64(seq) <= createdSeq {
+		t.Errorf("event carries seq %d, want later than the create's %d — this is the pre-link snapshot", int64(seq), createdSeq)
+	}
+	// AND WHAT IT DOES NOT CARRY, asserted rather than left implied. Round 4's
+	// version of this test checked is_unparented and passed vacuously: that
+	// field is populated only by the local-first index queries, so it is
+	// absent from every event payload and "not true" was satisfied by nil.
+	// The parent EDGE is not in an item snapshot on any path — items.parent_id
+	// is legacy and untouched by SetParentLink — and it was not in the
+	// hand-called webhook this replaced either, which dispatched the same
+	// scan. The event's content is the ROW CHANGE; pinning that here stops the
+	// next reader inferring linkage data that has never been on this wire.
+	if _, present := payload["is_unparented"]; present {
+		t.Error("payload carries is_unparented; the assertions here assume item snapshots never do")
+	}
+
+	// The PARENT's row is untouched by this write, so it emits nothing — the
+	// control that keeps the assertion above about the child's row rather than
+	// about "some event fired".
+	if got := outboxEventsFor(t, s, parent.ID); len(got) != 0 {
+		t.Errorf("parent emitted %v; the link does not write the parent's row", got)
+	}
+}
+
+// TestOutbox_ParentOnlyUpdateStillEmits covers the path SetParentLink's fix
+// did NOT reach (codex round 5): UpdateItemWithParentLink writes the hierarchy
+// inside the item-update transaction and emits from a SNAPSHOT DIFF, and a
+// parent write leaves nothing in a snapshot to diff — items.parent_id is
+// legacy and untouched, the link lives in its own table, and seq/updated_at
+// are excluded as metadata.
+//
+// So a fields_patch carrying only `parent` mutated the row and emitted
+// nothing. The same criterion that made SetParentLink emit applies here; the
+// difference is only which transaction does the write.
+func TestOutbox_ParentOnlyUpdateStillEmits(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox parent-only update")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+	clearOutbox(t, s)
+
+	// No field changes at all — only the hierarchy.
+	if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+		Provided:    true,
+		WorkspaceID: ws.ID,
+		ParentID:    parent.ID,
+		CreatedBy:   "user",
+	}); err != nil {
+		t.Fatalf("UpdateItemWithParentLink: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("events after a parent-only update = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+
+	// A CLEAR is the same mutation in the other direction and must also emit.
+	clearOutbox(t, s)
+	if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+		Provided:    true,
+		WorkspaceID: ws.ID,
+		CreatedBy:   "user",
+	}); err != nil {
+		t.Fatalf("UpdateItemWithParentLink (clear): %v", err)
+	}
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("events after a parent CLEAR = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+
+	// CONTROL: an update with no hierarchy write and no field change still
+	// emits nothing. Without this the fix could be "always emit", which would
+	// undo the disjoint-delta rule's whole point.
+	clearOutbox(t, s)
+	if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, nil); err != nil {
+		t.Fatalf("UpdateItemWithParentLink (no-op): %v", err)
+	}
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 0 {
+		t.Errorf("a no-op update emitted %v, want nothing", got)
+	}
+}
+
+// TestOutbox_ParentDetachEmitsOnEveryRoute closes the loop codex round 6
+// opened: attach was observable on every route while DETACH was silent on two
+// of the three, so a consumer's model kept a parent the user had removed.
+//
+// The routes are enumerated rather than sampled (CONVE-18): ClearParentLink
+// (its own transaction), UpdateItemWithParentLink with an empty parent (the
+// item-update transaction), and DeleteItemLink on the parent link row (the
+// links handler's route).
+func TestOutbox_ParentDetachEmitsOnEveryRoute(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox detach")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	attach := func(t *testing.T, child, parent string) {
+		t.Helper()
+		if _, err := s.SetParentLink(ws.ID, child, parent, "user"); err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+		clearOutbox(t, s)
+	}
+
+	t.Run("ClearParentLink", func(t *testing.T) {
+		parent := createTestItem(t, s, ws.ID, col.ID, "P1", "")
+		child := createTestItem(t, s, ws.ID, col.ID, "C1", "")
+		attach(t, child.ID, parent.ID)
+
+		if err := s.ClearParentLink(child.ID); err != nil {
+			t.Fatalf("ClearParentLink: %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+			t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+		}
+
+		// A SECOND clear removes nothing, so it must emit nothing — the
+		// "provided is not changed" half of round 6.
+		clearOutbox(t, s)
+		if err := s.ClearParentLink(child.ID); err != nil {
+			t.Fatalf("ClearParentLink (already unparented): %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 0 {
+			t.Errorf("clearing an already-unparented item emitted %v — an event for a mutation that did not happen", got)
+		}
+	})
+
+	t.Run("UpdateItemWithParentLink clear", func(t *testing.T) {
+		parent := createTestItem(t, s, ws.ID, col.ID, "P2", "")
+		child := createTestItem(t, s, ws.ID, col.ID, "C2", "")
+		attach(t, child.ID, parent.ID)
+
+		if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+			Provided: true, WorkspaceID: ws.ID, CreatedBy: "user",
+		}); err != nil {
+			t.Fatalf("UpdateItemWithParentLink: %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+			t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+		}
+
+		clearOutbox(t, s)
+		if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+			Provided: true, WorkspaceID: ws.ID, CreatedBy: "user",
+		}); err != nil {
+			t.Fatalf("UpdateItemWithParentLink (already unparented): %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 0 {
+			t.Errorf("a no-op clear through the update path emitted %v", got)
+		}
+	})
+
+	t.Run("DeleteItemLink on the parent row", func(t *testing.T) {
+		parent := createTestItem(t, s, ws.ID, col.ID, "P3", "")
+		child := createTestItem(t, s, ws.ID, col.ID, "C3", "")
+		link, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user")
+		if err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+		clearOutbox(t, s)
+
+		if err := s.DeleteItemLink(link.ID); err != nil {
+			t.Fatalf("DeleteItemLink: %v", err)
+		}
+		if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+			t.Fatalf("events = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+		}
+	})
 }

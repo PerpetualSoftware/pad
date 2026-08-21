@@ -538,7 +538,7 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	// A failure here fails the create. That is not incidental — an outbox
 	// write that degrades to best-effort would look durable while
 	// reintroducing exactly the lost-event window the outbox exists to close.
-	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, nil); err != nil {
+	if err := s.emitItemEventTx(tx, kernelevents.ItemCreated, item, nil, ""); err != nil {
 		return nil, err
 	}
 	return item, nil
@@ -1953,8 +1953,8 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	return scanItems(rows)
 }
 
-func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, error) {
-	return s.UpdateItemWithPreCheck(id, input, nil)
+func (s *Store) UpdateItem(id string, input models.ItemUpdate, opts ...MutationOption) (*models.Item, error) {
+	return s.UpdateItemWithPreCheck(id, input, nil, opts...)
 }
 
 // UpdateConflictError is returned by UpdateItem when the caller supplied
@@ -2044,8 +2044,9 @@ func (s *Store) UpdateItemWithPreCheck(
 	id string,
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
+	opts ...MutationOption,
 ) (*models.Item, error) {
-	return s.UpdateItemWithParentLink(id, input, precheck, nil)
+	return s.UpdateItemWithParentLink(id, input, precheck, nil, opts...)
 }
 
 // UpdateItemWithParentLink is UpdateItemWithPreCheck plus an OPTIONAL
@@ -2069,9 +2070,11 @@ func (s *Store) UpdateItemWithParentLink(
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
 	parentLink *ParentLinkUpdate,
+	opts ...MutationOption,
 ) (*models.Item, error) {
+	opt := newMutationOptions(opts)
 	return retryOnParentSetChanged(func() (*models.Item, error) {
-		return s.updateItemWithParentLinkOnce(id, input, precheck, parentLink)
+		return s.updateItemWithParentLinkOnce(id, input, precheck, parentLink, opt)
 	})
 }
 
@@ -2080,6 +2083,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
 	parentLink *ParentLinkUpdate,
+	opt mutationOptions,
 ) (*models.Item, error) {
 	existing, err := s.GetItem(id)
 	if err != nil {
@@ -2609,15 +2613,23 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// update committed while the parent link write failed. The new
 	// parent's advisory lock was already folded into the acquisition
 	// above, so setParentLinkTx's re-lock is a no-op.
+	// PROVIDED IS NOT CHANGED (codex round 6). Clearing an already-unparented
+	// item deletes zero rows; forcing item.updated for it would describe a
+	// mutation that did not happen. The set branch always writes — it is a
+	// DELETE-then-INSERT that bumps the row either way.
+	var hierarchyChanged bool
 	if parentLink != nil && parentLink.Provided {
 		if parentLink.ParentID != "" {
 			if _, err := s.setParentLinkTx(tx, parentLink.WorkspaceID, id, parentLink.ParentID, parentLink.CreatedBy); err != nil {
 				return nil, err
 			}
+			hierarchyChanged = true
 		} else {
-			if err := s.clearParentLinkTx(tx, id, existing.WorkspaceID); err != nil {
+			removed, err := s.clearParentLinkTx(tx, id, existing.WorkspaceID)
+			if err != nil {
 				return nil, err
 			}
+			hierarchyChanged = removed
 		}
 	}
 
@@ -2667,7 +2679,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// The prior status comes from the same in-tx before/after comparison that
 	// wrote the status_transitions row, so the event and the transition log
 	// cannot disagree about what happened.
-	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey); err != nil {
+	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey, opt.batchID, hierarchyChanged); err != nil {
 		return nil, err
 	}
 
@@ -2683,7 +2695,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 // The seq bump uses the same MAX(seq)+1 subquery the other mutations
 // rely on; the advisory lock keeps concurrent Postgres writes from
 // racing on it.
-func (s *Store) DeleteItem(id string) error {
+func (s *Store) DeleteItem(id string, opts ...MutationOption) error {
+	opt := newMutationOptions(opts)
 	// Look up the workspace before the write so we can key the
 	// advisory lock and the seq subquery. The lookup tolerates
 	// already-deleted items (we still need to short-circuit cleanly
@@ -2752,7 +2765,7 @@ func (s *Store) DeleteItem(id string) error {
 	// live row at all, which must not emit an event for an item that was not
 	// there to archive.
 	if preArchive != nil {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, nil); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemDeleted, preArchive, nil, opt.batchID); err != nil {
 			return err
 		}
 	}
@@ -2762,14 +2775,15 @@ func (s *Store) DeleteItem(id string) error {
 // RestoreItem un-archives a soft-deleted item and bumps the
 // workspace-scoped seq so delta-sync clients re-materialize the row.
 // Same lock + subquery shape as DeleteItem.
-func (s *Store) RestoreItem(id string) (*models.Item, error) {
+func (s *Store) RestoreItem(id string, opts ...MutationOption) (*models.Item, error) {
+	opt := newMutationOptions(opts)
 	// BUG-2073: retry if the item's parent set moves during lock acquisition.
 	return retryOnParentSetChanged(func() (*models.Item, error) {
-		return s.restoreItemOnce(id)
+		return s.restoreItemOnce(id, opt)
 	})
 }
 
-func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
+func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, error) {
 	existing, err := s.GetItemIncludeDeleted(id)
 	if err != nil {
 		return nil, err
@@ -2845,7 +2859,7 @@ func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
 		return nil, fmt.Errorf("read post-restore snapshot: %w", err)
 	}
 	if restored != nil {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil, opt.batchID); err != nil {
 			return nil, err
 		}
 	}
@@ -3262,6 +3276,35 @@ func (s *Store) DeleteItemLink(id string) error {
 			return err
 		}
 	}
+
+	// item.updated for a PARENT detach, on this transaction (codex round 6).
+	//
+	// Same criterion as SetParentLink and the update path (SPEC-3 v1.6): the
+	// parent edge writes the source item's own row. Without this, DELETE
+	// /links/{id} on a parent link was the one detach route that stayed
+	// silent, so a consumer's model kept a parent the user had removed while
+	// every attach route was observable.
+	//
+	// IMPLEMENTS IS DELIBERATELY NOT INCLUDED HERE, and the asymmetry is
+	// flagged rather than resolved: it bumps the same row two lines above (so
+	// the mechanical criterion would include it) but it is a
+	// relationship-graph link (so v1.5's silence would exclude it). The
+	// contract does not currently decide that case, and inventing an answer
+	// inside a delivery refactor is how a public wire acquires an event nobody
+	// ruled on. Raised with the lead; tracked separately. The same note is on
+	// handlers_item_links.go, which is where a reader is likely to hit it
+	// first.
+	if linkType == models.ItemLinkTypeParent {
+		child, err := s.getItemTx(tx, sourceID)
+		if err != nil {
+			return err
+		}
+		if child != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, child, nil, ""); err != nil {
+				return err
+			}
+		}
+	}
 	return tx.Commit()
 }
 
@@ -3307,6 +3350,49 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy strin
 	id, err := s.setParentLinkTx(tx, workspaceID, itemID, parentID, createdBy)
 	if err != nil {
 		return nil, err
+	}
+
+	// item.updated for the CHILD, on this transaction (TASK-2714, codex rounds
+	// 4-5; SPEC-3 v1.6 clarification).
+	//
+	// A parent link writes the item's OWN row — it advances seq — and that is
+	// the criterion the contract uses to divide two rulings that look
+	// adjacent: a mutation touching the item's row emits item.updated, while a
+	// relationship-graph link (blocks / blocked-by), which writes only the
+	// links table, stays silent under v1.5.
+	//
+	// WHAT THE PAYLOAD DOES AND DOES NOT CARRY, stated because round 4's
+	// version of this comment claimed more than the code delivers (round 5
+	// caught it): the snapshot is the ITEM ROW, and the parent EDGE is not on
+	// it. items.parent_id is legacy and untouched here, and IsUnparented is
+	// populated only by the local-first index queries. So this event reports
+	// that the row changed — a fresh seq and updated_at — not the linkage
+	// itself. That is not a shortfall against the behaviour it restores: the
+	// hand-called webhook this replaced dispatched the handler's post-link
+	// re-read, which is the SAME scan and carried the same fields. A consumer
+	// wanting the edge reads the item, exactly as before.
+	//
+	// The regression it closes: createItemChecked calls this AFTER CreateItem
+	// has committed item.created with a pre-link snapshot. Without an event
+	// here the frozen created row — with the stale seq — was the only thing on
+	// the wire, and nothing corrected it.
+	//
+	// The snapshot MUST come from getItemTx: a pool read takes a different
+	// connection, cannot see this uncommitted write, and would emit the
+	// pre-link seq under a post-link event.
+	//
+	// EMITTED HERE RATHER THAN IN setParentLinkTx, which is the shared core.
+	// UpdateItemWithParentLink reuses that core inside the item-update
+	// transaction and already emits its own item events from the field diff;
+	// putting the emit in the shared function would double-emit on that path.
+	child, err := s.getItemTx(tx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if child != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, child, nil, ""); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -3502,8 +3588,24 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 		return err
 	}
 
-	if err := s.clearParentLinkTx(tx, itemID, workspaceID); err != nil {
+	removed, err := s.clearParentLinkTx(tx, itemID, workspaceID)
+	if err != nil {
 		return err
+	}
+	// Same criterion as SetParentLink (SPEC-3 v1.6): a parent DETACH writes
+	// the item's own row, so it emits. Removing this half would leave the
+	// attach observable and the detach silent — a consumer's model would keep
+	// a parent the user removed (codex round 6).
+	if removed {
+		child, err := s.getItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		if child != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, child, nil, ""); err != nil {
+				return err
+			}
+		}
 	}
 	return tx.Commit()
 }
@@ -3512,11 +3614,15 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 // transaction. Shared by the public ClearParentLink (own tx) and
 // UpdateItemWithParentLink (item-update tx), so a cleared parent commits
 // atomically with the field write it accompanied (BUG-2013).
-func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) error {
+// Returns whether a link was actually REMOVED. Callers need the distinction:
+// clearing an already-unparented item deletes zero rows and changes nothing, so
+// forcing an item.updated for it would put an event on the wire describing a
+// mutation that did not happen (codex round 6).
+func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) (bool, error) {
 	// Best-effort pre-lock read of the current parent, re-verified under lock.
 	oldParentID, err := s.readParentLinkTarget(tx, itemID)
 	if err != nil {
-		return fmt.Errorf("lookup parent for clear: %w", err)
+		return false, fmt.Errorf("lookup parent for clear: %w", err)
 	}
 
 	// BUG-2073: fold the CHILD's own (itemID) lock into the batch alongside
@@ -3524,7 +3630,7 @@ func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) error 
 	// concurrent parent mutations of this item (SetParentLink/ClearParentLink/
 	// UpdateItemWithParentLink all take it), so a detach can't race a reparent.
 	if err := s.AcquireParentChildrenLocks(tx, itemID, oldParentID); err != nil {
-		return err
+		return false, err
 	}
 
 	// Re-read the parent under the child lock (BUG-2073 race 2): a concurrent
@@ -3535,26 +3641,26 @@ func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) error 
 	// moved key here would risk an out-of-order grab).
 	reOldParentID, err := s.readParentLinkTarget(tx, itemID)
 	if err != nil {
-		return fmt.Errorf("lookup parent for clear: %w", err)
+		return false, fmt.Errorf("lookup parent for clear: %w", err)
 	}
 	if reOldParentID != oldParentID {
-		return errParentSetChanged
+		return false, errParentSetChanged
 	}
 
 	result, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID)
 	if err != nil {
-		return fmt.Errorf("clear parent link: %w", err)
+		return false, fmt.Errorf("clear parent link: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("clear parent link rows affected: %w", err)
+		return false, fmt.Errorf("clear parent link rows affected: %w", err)
 	}
 	if rows > 0 {
 		if err := s.bumpStructuralLinkSourceTx(tx, workspaceID, itemID); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return rows > 0, nil
 }
 
 // bumpStructuralLinkSourceTx advances the source row whenever a parent or
@@ -4504,16 +4610,19 @@ func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*mod
 func (s *Store) MoveItemWithPreCheck(
 	itemID, targetCollectionID, newFieldsJSON string,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
+	opts ...MutationOption,
 ) (*models.Item, error) {
+	opt := newMutationOptions(opts)
 	// BUG-2073: retry if the item's parent set moves during lock acquisition.
 	return retryOnParentSetChanged(func() (*models.Item, error) {
-		return s.moveItemWithPreCheckOnce(itemID, targetCollectionID, newFieldsJSON, precheck)
+		return s.moveItemWithPreCheckOnce(itemID, targetCollectionID, newFieldsJSON, precheck, opt)
 	})
 }
 
 func (s *Store) moveItemWithPreCheckOnce(
 	itemID, targetCollectionID, newFieldsJSON string,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
+	opt mutationOptions,
 ) (*models.Item, error) {
 	existing, err := s.GetItem(itemID)
 	if err != nil {
@@ -4664,12 +4773,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 	}
 	if moved != nil {
 		if targetCollectionID != preMove.CollectionID {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, nil); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemMoved, moved, nil, opt.batchID); err != nil {
 				return nil, err
 			}
 		}
 		if newStatus != oldStatus {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, moved, &oldStatus); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, moved, &oldStatus, opt.batchID); err != nil {
 				return nil, err
 			}
 		}
@@ -4681,7 +4790,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 			return nil, cerr
 		}
 		if otherChanged {
-			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, nil); err != nil {
+			if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, moved, nil, opt.batchID); err != nil {
 				return nil, err
 			}
 		}

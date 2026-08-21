@@ -1003,7 +1003,7 @@ func TestCopyPreflight_NoWebhookDispatch(t *testing.T) {
 
 	// Positive control. Without it the silence above would also be
 	// consistent with a receiver that never works.
-	f.srv.dispatchWebhook(f.wsB.ID, "item.created", map[string]string{"probe": "1"})
+	f.srv.webhooks.Dispatch(f.wsB.ID, "item.created", map[string]string{"probe": "1"})
 	select {
 	case ev := <-received:
 		if ev != "item.created" {

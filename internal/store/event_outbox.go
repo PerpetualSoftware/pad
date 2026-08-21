@@ -44,6 +44,17 @@ type OutboxEvent struct {
 	Hop         int
 	OccurredAt  string
 
+	// BatchID correlates every event of ONE handler-path bulk operation.
+	// Empty on every single-item mutation, which is almost all of them.
+	//
+	// SPEC-3 v1.5: the drain folds a batch into one wire item.bulk_updated
+	// while the member rows stay individually addressable for bindings. The
+	// correlation is RECORDED here rather than inferred at delivery, because
+	// a wire event saying "these five items changed together" is only true if
+	// something recorded that they did — grouping pending rows by a time
+	// window would fold two unrelated updates into somebody's bulk event.
+	BatchID string
+
 	// PayloadFamily is the shape the caller marshalled into Payload. It is a
 	// WRITE-SIDE assertion, checked against the taxonomy and never stored:
 	// the event name already determines the shape, so persisting it would
@@ -53,6 +64,45 @@ type OutboxEvent struct {
 	// Attempts and LastError are drain bookkeeping, populated on read.
 	Attempts  int
 	LastError string
+
+	// ClaimToken identifies the claim pass that holds this row, populated by
+	// ClaimPendingOutboxEvents. Ack and release are conditioned on it — see
+	// MarkOutboxDispatched.
+	ClaimToken string
+}
+
+// MutationOption tunes the event side of a store mutation. Nothing about the
+// mutation itself changes — these options exist so a CALLER that knows
+// something the store cannot (that this write is one member of a bulk
+// operation) can say so.
+//
+// Variadic rather than new required parameters: every existing call site is a
+// single-item mutation that has nothing to declare, and making all of them
+// pass a zero value would bury the one case that matters.
+type MutationOption func(*mutationOptions)
+
+type mutationOptions struct {
+	batchID string
+}
+
+// WithEventBatch marks every canonical event this mutation emits as a member
+// of the named batch.
+//
+// The caller mints the id per bulk OPERATION, not per item — that is the whole
+// content of the correlation. See the batch_id column comment (migration 082)
+// for why the drain cannot work this out for itself.
+func WithEventBatch(batchID string) MutationOption {
+	return func(o *mutationOptions) { o.batchID = batchID }
+}
+
+func newMutationOptions(opts []MutationOption) mutationOptions {
+	var o mutationOptions
+	for _, fn := range opts {
+		if fn != nil {
+			fn(&o)
+		}
+	}
+	return o
 }
 
 // maxOutboxHop is SPEC-3 §L5's synchronous cascade bound: a binding-triggered
@@ -101,8 +151,8 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// a ref-only deletion payload and the write would be accepted (Codex round
 	// 10). Pairing them here means an event and a payload that were not meant
 	// for each other cannot reach the table at all.
-	want, known := kernelevents.PayloadFamily(ev.EventType)
-	if !known || want == "" {
+	want, known := kernelevents.PayloadFamilies(ev.EventType)
+	if !known || len(want) == 0 {
 		// FAIL CLOSED on an event the taxonomy cannot describe. Discarding the
 		// ok meant an unknown family resolved to "", which a caller declaring
 		// nothing would then MATCH — the check passing precisely when it had
@@ -117,8 +167,8 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 		// stays as the guard for a future table that separates the two again.
 		return fmt.Errorf("outbox: event %s has no declared payload family", ev.EventType)
 	}
-	if ev.PayloadFamily != want {
-		return fmt.Errorf("outbox: event %s carries a %q payload, want %q",
+	if !kernelevents.AllowsPayload(ev.EventType, ev.PayloadFamily) {
+		return fmt.Errorf("outbox: event %s carries a %q payload, want one of %v",
 			ev.EventType, ev.PayloadFamily, want)
 	}
 	if len(ev.Payload) == 0 {
@@ -197,9 +247,9 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	ev.SubjectKind = kind
 
 	_, err := tx.Exec(s.q(`
-		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at)
-		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?)
-	`), ev.ID, ev.WorkspaceID, ev.EventType, ev.SubjectKind, ev.SubjectID, string(ev.Payload), ev.Hop, ev.OccurredAt)
+		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at, batch_id)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''))
+	`), ev.ID, ev.WorkspaceID, ev.EventType, ev.SubjectKind, ev.SubjectID, string(ev.Payload), ev.Hop, ev.OccurredAt, ev.BatchID)
 	if err != nil {
 		return fmt.Errorf("outbox: write %s: %w", ev.EventType, err)
 	}
@@ -258,7 +308,10 @@ type itemEventPayload struct {
 // user's identity stops being readable while the rows survive — but it reaches
 // only LIVE rows. A frozen payload keeps whatever it captured, so an assignee's
 // NAME AND EMAIL ADDRESS would remain legible in the outbox after the account
-// that owned them was deleted, and today nothing drains or prunes the table.
+// that owned them was deleted. TASK-2714 added the drain and both prunes, so
+// the window is now BOUNDED rather than unbounded — but bounded is not zero,
+// and an undelivered row keeps its payload for the whole max-age window, which
+// is why the scrub is still the thing doing the work here.
 //
 // THE RULE APPLIED, stated as the rule rather than as a proxy for it: remove
 // DIRECTLY IDENTIFYING personal data — a human name, an email address — and
@@ -304,7 +357,7 @@ func scrubItemPII(item *models.Item) *models.Item {
 // priorStatus is a POINTER so a transition from an empty prior status is
 // distinguishable from an event that has none — pass nil for every event other
 // than item.status_changed.
-func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus *string) error {
+func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus *string, batchID string) error {
 	if item == nil {
 		return fmt.Errorf("outbox: %s has no item snapshot", eventType)
 	}
@@ -319,6 +372,7 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 		SubjectID:     item.ID,
 		Payload:       payload,
 		PayloadFamily: kernelevents.PayloadItemSnapshot,
+		BatchID:       batchID,
 	})
 }
 
@@ -412,11 +466,12 @@ func (s *Store) emitMemberEventTx(tx *sql.Tx, eventType, workspaceID, userID, ro
 // member refs, the shared delta, and PER-MEMBER SNAPSHOTS.
 //
 // The per-member snapshots are not optional decoration. v1.1 makes wire
-// delivery batched but binding evaluation PER-MEMBER — the dispatcher runs
-// item-level selectors against each member snapshot — so a payload without
-// them would silently make bulk mutations invisible to every item.updated and
-// status_changed binding, which is the gap the batch event was admitted to
-// avoid rather than create.
+// delivery batched but binding evaluation PER-MEMBER: a future binding engine
+// (phase 2+; none exists today — nothing evaluates selectors yet, and the
+// webhook dispatcher only filters on event NAME) must be able to see each
+// member, and for a SINGLE-TRANSACTION bulk producer this payload is the only
+// place they exist. The handler-path producer solves the same problem
+// differently, by leaving each member its own canonical row.
 type bulkItemEventPayload struct {
 	// Delta describes what the one mutation did, shared across members
 	// (e.g. {"kind":"field_option_renamed","field":"status","from":"wip","to":"in-progress"}).
@@ -767,12 +822,20 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 // branch on "was this a status update" — branching would drop the item.updated
 // half of every mixed update, silently, which is the shape of bug that
 // motivated the rule.
-func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey string) error {
+//
+// hierarchyChanged forces the item.updated half. The disjoint-delta diff
+// compares two SNAPSHOTS, and a parent-link write leaves nothing in a snapshot
+// to compare: items.parent_id is legacy and untouched, the link lives in its
+// own table, and seq/updated_at are excluded from the diff as metadata. So a
+// fields_patch carrying only `parent` mutated the row and emitted NOTHING
+// (codex round 5). The caller knows it performed a hierarchy write; the diff
+// cannot see it, and it must not have to.
+func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string, hierarchyChanged bool) error {
 	if statusChanged {
 		// Taken by address unconditionally: an empty prior status is a real
 		// prior status here, not an absent one.
 		prior := priorStatus
-		if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, after, &prior); err != nil {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, after, &prior, batchID); err != nil {
 			return err
 		}
 	}
@@ -781,8 +844,8 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 	if err != nil {
 		return err
 	}
-	if otherChanged {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, nil); err != nil {
+	if otherChanged || hierarchyChanged {
+		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, nil, batchID); err != nil {
 			return err
 		}
 	}
@@ -796,6 +859,13 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 // v1 promises at-least-once with duplicates possible, not ordering. The id tie
 // break exists so the drain itself is deterministic when timestamps collide,
 // not so consumers can infer sequence.
+//
+// NOT THE DRAIN'S QUERY. The drain claims (ClaimPendingOutboxEvents) so that
+// multi-instance deployments do not deliver every row once per instance; this
+// unclaimed read survives as the DIAGNOSTIC view — "what is still owed?" — and
+// is what tests assert against. Said plainly because a reader finding two
+// pending-row readers should not have to guess which one production uses
+// (codex round 4).
 //
 // DELIBERATELY CROSS-WORKSPACE AND UNAUTHORIZED, which is safe only because of
 // who may call it. The drain is a single server-internal loop that must serve
@@ -815,7 +885,7 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 		limit = 100
 	}
 	rows, err := s.db.Query(s.q(`
-		SELECT id, workspace_id, event_type, subject_kind, COALESCE(subject_id, ''), payload, hop, occurred_at, attempts, COALESCE(last_error, '')
+		SELECT id, workspace_id, event_type, subject_kind, COALESCE(subject_id, ''), payload, hop, occurred_at, attempts, COALESCE(last_error, ''), COALESCE(batch_id, '')
 		FROM event_outbox
 		WHERE dispatched_at IS NULL
 		ORDER BY occurred_at, id
@@ -831,7 +901,7 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 		var ev OutboxEvent
 		var payload string
 		if err := rows.Scan(&ev.ID, &ev.WorkspaceID, &ev.EventType, &ev.SubjectKind, &ev.SubjectID,
-			&payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError); err != nil {
+			&payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError, &ev.BatchID); err != nil {
 			return nil, fmt.Errorf("scan outbox event: %w", err)
 		}
 		ev.Payload = []byte(payload)
@@ -843,14 +913,32 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 	return out, nil
 }
 
-// MarkOutboxDispatched stamps events as delivered.
+// MarkOutboxDispatched stamps events as delivered, for the claim that holds
+// them.
 //
 // Called AFTER the surfaces have been handed the event, never before. The
 // ordering is what makes the guarantee at-least-once rather than at-most-once:
 // a crash between dispatch and this stamp re-delivers on the next drain, which
 // SPEC-3 §Delivery guarantees explicitly permits and consumers dedupe on the
 // event id.
-func (s *Store) MarkOutboxDispatched(ids []string) error {
+//
+// CONDITIONED ON THE CLAIM TOKEN, not just on the id. Delivery can outrun the
+// lease — a workspace with many slow endpoints is delivered sequentially, and
+// the "well under a minute" estimate behind the lease default is an estimate,
+// not a bound. Once the lease expires another instance may legitimately claim
+// the row; without this condition the first instance's late ack would then
+// stamp a row the second instance is mid-delivery on, and its late RELEASE
+// would clear a live claim, handing the same event to a third pass (codex
+// round 3). A stale ack now matches zero rows, which is exactly right: the
+// event is the new claim's problem.
+func (s *Store) MarkOutboxDispatched(claimToken string, ids []string) error {
+	// TOKEN FIRST, then the empty-id short-circuit. The other order makes the
+	// refusal conditional on there being work to do, so a caller with no token
+	// gets nil for an empty list and an error otherwise — a contract that
+	// depends on the argument it is not about (codex round 4).
+	if claimToken == "" {
+		return fmt.Errorf("mark outbox dispatched: no claim token")
+	}
 	if len(ids) == 0 {
 		return nil
 	}
@@ -863,8 +951,9 @@ func (s *Store) MarkOutboxDispatched(ids []string) error {
 
 	for _, id := range ids {
 		if _, err := tx.Exec(s.q(`
-			UPDATE event_outbox SET dispatched_at = ? WHERE id = ? AND dispatched_at IS NULL
-		`), ts, id); err != nil {
+			UPDATE event_outbox SET dispatched_at = ?
+			WHERE id = ? AND dispatched_at IS NULL AND claimed_by = ?
+		`), ts, id, claimToken); err != nil {
 			return fmt.Errorf("mark outbox dispatched %s: %w", id, err)
 		}
 	}
@@ -876,10 +965,25 @@ func (s *Store) MarkOutboxDispatched(ids []string) error {
 
 // MarkOutboxAttemptFailed records a failed dispatch attempt, leaving the event
 // pending so the next drain retries it.
-func (s *Store) MarkOutboxAttemptFailed(id, reason string) error {
+//
+// The CLAIM IS RELEASED here, not left to expire. A transient failure means
+// the event is still owed and nothing is in flight for it; holding the claim
+// until the lease times out would idle the row for the whole lease window for
+// no reason, and on a single-instance deployment that is the only reason it
+// would ever wait at all.
+//
+// Conditioned on the claim token for the same reason as MarkOutboxDispatched:
+// releasing a claim that is no longer yours would hand a live delivery's row
+// to another pass.
+func (s *Store) MarkOutboxAttemptFailed(claimToken, id, reason string) error {
+	if claimToken == "" {
+		return fmt.Errorf("mark outbox attempt failed: no claim token")
+	}
 	if _, err := s.db.Exec(s.q(`
-		UPDATE event_outbox SET attempts = attempts + 1, last_error = ? WHERE id = ? AND dispatched_at IS NULL
-	`), reason, id); err != nil {
+		UPDATE event_outbox
+		SET attempts = attempts + 1, last_error = ?, claimed_at = NULL, claimed_by = NULL
+		WHERE id = ? AND dispatched_at IS NULL AND claimed_by = ?
+	`), reason, id, claimToken); err != nil {
 		return fmt.Errorf("mark outbox attempt failed %s: %w", id, err)
 	}
 	return nil
@@ -909,4 +1013,462 @@ func (s *Store) PruneDispatchedOutbox(before string) (int64, error) {
 		return 0, nil
 	}
 	return n, nil
+}
+
+// PruneUndispatchedOutbox deletes events that were never dispatched and are
+// older than the given timestamp, returning how many rows went.
+//
+// This one DROPS COMMITTED EVENTS, which is the opposite of everything else in
+// this file, so the reason has to be explicit rather than inferred from the
+// name.
+//
+// SPEC-3 makes payload privacy TEMPORAL: an outbox payload is a frozen
+// snapshot, and account deletion's de-identify posture reaches only live rows,
+// so a payload that never drains keeps whatever it captured for as long as the
+// row survives. PruneDispatchedOutbox cannot reach these — it filters on
+// dispatched_at IS NOT NULL — so without this, a row that can never be
+// delivered (a workspace whose only webhook was deleted, an endpoint that 4xxs
+// forever, an event whose surfaces all reject it) keeps its frozen payload
+// indefinitely. The retention window is what makes the privacy claim finite,
+// and a window only one of its two halves can close is not a window.
+//
+// So the trade is stated plainly: at-least-once delivery holds WITHIN the
+// retention window and not past it. That is why the caller's max-age must be
+// far larger than any retry schedule — the rows this reaches are ones no
+// further attempt would help, and the alternative to dropping them is keeping
+// user content in a table nothing will ever read.
+//
+// Deleting is deliberate rather than stamping them dispatched: a dispatched
+// stamp would be a lie in the durable record, and this table is the only
+// evidence of what the kernel emitted. A row that leaves is honestly absent; a
+// row marked delivered that never was would corrupt every later answer to "did
+// this mutation emit?".
+//
+// LIVE CLAIMS ARE EXEMPT. Every instance runs retention, so without the
+// leaseCutoff condition one instance's prune could delete a row another is
+// mid-delivery on: the delivery would then succeed while the ack matched zero
+// rows, and a crash in that window loses an event the outbox had committed
+// (codex round 4). A row whose claim has expired is fair game — that is what
+// expiry means — so this is the same predicate the claim uses, applied to
+// deletion.
+//
+// Callers log the count — an undispatchable event reaching its max age is a
+// delivery problem that has been failing for the whole window, and the number
+// is the only place it becomes visible.
+func (s *Store) PruneUndispatchedOutbox(before, leaseCutoff string) (int64, error) {
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM event_outbox
+		WHERE dispatched_at IS NULL
+		  AND occurred_at < ?
+		  AND (claimed_at IS NULL OR claimed_at < ?)
+	`), before, leaseCutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune undispatched outbox: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Advisory, exactly as in PruneDispatchedOutbox: the DELETE already
+		// succeeded, and reporting a count failure as a prune failure would
+		// make a caller retry a completed prune.
+		return 0, nil
+	}
+	return n, nil
+}
+
+// ClaimPendingOutboxEvents claims up to limit pending events for one drain
+// pass and returns them, oldest first.
+//
+// WHY A CLAIM AT ALL. Pad Cloud runs N instances against one database and each
+// runs the drain, so an unclaimed pending row is delivered N times BY
+// CONSTRUCTION. SPEC-3 permits duplicates — consumers dedupe on the event id —
+// but "occasionally, after a crash" and "always, once per instance" are
+// different promises, and only the first is one a consumer can budget for.
+//
+// The arbiter is the CONDITIONAL UPDATE, not the SELECT that finds candidates.
+// Two instances reading the same candidate list is expected and harmless: each
+// row's UPDATE carries its own claim-availability predicate, so one instance
+// writes it and the other matches zero rows. This is BUG-2415's orphan-GC
+// protocol, and it is dialect-uniform on purpose — Postgres FOR UPDATE SKIP
+// LOCKED plus a separate SQLite path would be two implementations of one
+// behaviour, only one of which ever runs where it matters.
+//
+// leaseCutoff is the claim expiry: a row claimed before it is claimable again,
+// because an instance that dies between claiming and dispatching must not
+// strand its events. At-least-once is exactly the promise that makes
+// re-claiming safe.
+//
+// BATCHES ARE CLAIMED WHOLE, past the limit if necessary. A batch split across
+// two passes would be folded into two wire events each reporting a partial
+// member count — the limit is a throughput knob, and letting it decide what a
+// bulk operation "was" would make the wire event's truth depend on queue depth.
+// Rows of a batch another instance already holds are simply not ours; the wire
+// payload carries the batch id so a consumer can correlate a split that a
+// concurrent claim did produce.
+func (s *Store) ClaimPendingOutboxEvents(drainer string, limit int, leaseCutoff string) ([]OutboxEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	// The token, not the drainer name, is what identifies THIS pass: a
+	// drainer that claims twice in the same second would otherwise read back
+	// its previous pass's rows as well.
+	token := drainer + ":" + newID()
+
+	ids, err := s.pendingClaimCandidates(limit, leaseCutoff)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	if err := s.claimOutboxIDs(token, ids, leaseCutoff); err != nil {
+		return nil, err
+	}
+	return s.outboxEventsClaimedBy(token)
+}
+
+// claimOutboxIDs is the ARBITER: one conditional UPDATE per candidate, each
+// carrying its own claim-availability predicate.
+//
+// Split out from ClaimPendingOutboxEvents so a test can drive it with a
+// deliberately STALE candidate list — the race this exists for. Called with
+// ids the caller selected earlier, it must claim only those still available,
+// which is not observable through the public entry point (whose candidate
+// query has already filtered them).
+func (s *Store) claimOutboxIDs(token string, ids []string, leaseCutoff string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("claim outbox events: %w", err)
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.Exec(s.q(`
+			UPDATE event_outbox
+			SET claimed_at = ?, claimed_by = ?
+			WHERE id = ?
+			  AND dispatched_at IS NULL
+			  AND (claimed_at IS NULL OR claimed_at < ?)
+		`), now(), token, id, leaseCutoff); err != nil {
+			return fmt.Errorf("claim outbox event %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("claim outbox events: %w", err)
+	}
+	return nil
+}
+
+// pendingClaimCandidates returns the ids a claim pass should attempt: the
+// oldest claimable pending rows, plus every claimable sibling of any batch
+// they belong to.
+func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id, COALESCE(batch_id, '')
+		FROM event_outbox
+		WHERE dispatched_at IS NULL
+		  AND (claimed_at IS NULL OR claimed_at < ?)
+		ORDER BY occurred_at, id
+		LIMIT ?
+	`), leaseCutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list claimable outbox events: %w", err)
+	}
+	defer rows.Close()
+
+	seen := map[string]bool{}
+	var ids []string
+	// Batches are collected as a SET: a 100-row candidate slice drawn from one
+	// large batch would otherwise run the same sibling scan 100 times for the
+	// same answer (codex round 2).
+	seenBatch := map[string]bool{}
+	var batches []string
+	for rows.Next() {
+		var id, batch string
+		if err := rows.Scan(&id, &batch); err != nil {
+			return nil, fmt.Errorf("scan claimable outbox event: %w", err)
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if batch != "" && !seenBatch[batch] {
+			seenBatch[batch] = true
+			batches = append(batches, batch)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimable outbox events: %w", err)
+	}
+
+	for _, batch := range batches {
+		siblings, err := s.claimableBatchSiblings(batch, leaseCutoff)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range siblings {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, nil
+}
+
+func (s *Store) claimableBatchSiblings(batchID, leaseCutoff string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id
+		FROM event_outbox
+		WHERE batch_id = ?
+		  AND dispatched_at IS NULL
+		  AND (claimed_at IS NULL OR claimed_at < ?)
+	`), batchID, leaseCutoff)
+	if err != nil {
+		return nil, fmt.Errorf("list batch siblings: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan batch sibling: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate batch siblings: %w", err)
+	}
+	return ids, nil
+}
+
+func (s *Store) outboxEventsClaimedBy(token string) ([]OutboxEvent, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT id, workspace_id, event_type, subject_kind, COALESCE(subject_id, ''), payload, hop, occurred_at, attempts, COALESCE(last_error, ''), COALESCE(batch_id, '')
+		FROM event_outbox
+		WHERE claimed_by = ? AND dispatched_at IS NULL
+		ORDER BY occurred_at, id
+	`), token)
+	if err != nil {
+		return nil, fmt.Errorf("read claimed outbox events: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OutboxEvent
+	for rows.Next() {
+		var ev OutboxEvent
+		var payload string
+		if err := rows.Scan(&ev.ID, &ev.WorkspaceID, &ev.EventType, &ev.SubjectKind, &ev.SubjectID,
+			&payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError, &ev.BatchID); err != nil {
+			return nil, fmt.Errorf("scan claimed outbox event: %w", err)
+		}
+		ev.Payload = []byte(payload)
+		ev.ClaimToken = token
+		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimed outbox events: %w", err)
+	}
+	return out, nil
+}
+
+// bulkHeaderPayload is the handler-path batch HEADER: what the operation was,
+// which items it touched, and the delta they share.
+//
+// The three legacy keys (op / count / item_ids) are the shape today's webhook
+// consumers already receive, kept verbatim so the drain's arrival is not also
+// a payload rename. batch_id and delta are additions: batch_id because
+// multi-instance claiming can in principle split one operation across two wire
+// events and a consumer needs to correlate them (SPEC-3 v1.6 demotes "one wire
+// event per batch" to the normal case for exactly this reason), and delta
+// because SPEC-3's item_batch payload names it and the handler is the only
+// place that knows it.
+//
+// NO SNAPSHOTS HERE. They live on the member rows until the drain folds them
+// in — which is the honest shape, not a gap: at header-write time the loop has
+// already committed each member's own event, and re-reading every row to
+// duplicate them into the header would double the storage for the same facts
+// and give the two copies a chance to disagree.
+type bulkHeaderPayload struct {
+	BatchID   string            `json:"batch_id"`
+	Op        string            `json:"op"`
+	Count     int               `json:"count"`
+	ItemIDs   []string          `json:"item_ids"`
+	Delta     map[string]any    `json:"delta,omitempty"`
+	MemberSet []json.RawMessage `json:"members,omitempty"`
+}
+
+// EmitBulkHeaderEvent writes the batch header for one handler-path bulk
+// operation, in its own transaction after the member loop.
+//
+// WHY THIS IS NOT A TRANSACTIONAL EMIT, said plainly because the rest of this
+// file argues the opposite for everything else: a handler-path bulk mutation
+// has no enclosing transaction to write it in. Each member committed
+// separately, carrying its own canonical event, and that is what keeps
+// per-member binding evaluation free. The header is delivery-side aggregation
+// (SPEC-3 v1.6), and its failure mode is bounded accordingly — if the process
+// dies between the members committing and this landing, the members simply
+// deliver individually. A flood in the crash case, never a loss.
+//
+// Single-workspace by construction: the bulk endpoint is workspace-scoped, so
+// unlike emitBulkItemEventTx there is no member set that could span workspaces
+// and nothing to partition.
+func (s *Store) EmitBulkHeaderEvent(workspaceID, batchID, op string, itemIDs []string, delta map[string]any) error {
+	if batchID == "" {
+		return fmt.Errorf("outbox: bulk header has no batch id")
+	}
+	// A bulk operation that TOUCHED nothing is not an event. Note the verb:
+	// this is an empty-member-list guard, not a semantic-change guard, and the
+	// difference is visible on the wire (codex rounds 1, 2 and 5 each raised
+	// it). The caller passes every row it mutated without error, which
+	// includes rows where the mutation was a no-op — untagging a tag nobody
+	// has — and the store emits member events only for real changes. So a
+	// header can arrive with a count and no members.
+	//
+	// Left as-is deliberately: the hand-called webhook this replaced fired on
+	// exactly the same condition with exactly the same count (verified against
+	// origin/main), so narrowing it now would be a silent wire change to
+	// `count` and `item_ids` rather than a bug fix. It belongs with a contract
+	// version.
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	payload, err := marshalEventPayload(bulkHeaderPayload{
+		BatchID: batchID,
+		Op:      op,
+		Count:   len(itemIDs),
+		ItemIDs: itemIDs,
+		Delta:   delta,
+	})
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("emit bulk header: %w", err)
+	}
+	defer tx.Rollback()
+	if err := writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID:   workspaceID,
+		EventType:     kernelevents.ItemBulkUpdated,
+		SubjectID:     batchID,
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadItemBatchHeader,
+		BatchID:       batchID,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("emit bulk header: %w", err)
+	}
+	return nil
+}
+
+// FoldBulkHeader returns the wire payload for a folded batch: the stored
+// header enriched with the member snapshots the drain claimed alongside it.
+//
+// The fold lives here, next to the shape it produces, so the drain does not
+// have to know how a header is spelled. It takes the members it was GIVEN
+// rather than reading them back: SPEC-3 v1.6 defines the fold as "header plus
+// whatever member rows of that batch are still undispatched", so the set the
+// drain holds IS the answer — re-reading would quietly re-include members a
+// previous tick already delivered individually.
+//
+// Member payloads are embedded VERBATIM — with ONE exception, named because
+// "verbatim" is the kind of word a reader takes literally: when two rows
+// describe the same item, dedupeMemberSnapshots re-encodes the survivor to
+// carry prior_status across (see mergePriorStatus). Non-duplicate members are
+// untouched bytes. Re-marshalling them all through a Go type would let the
+// batch and single views of one mutation drift apart, which is what the rule
+// is protecting.
+func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
+	var h bulkHeaderPayload
+	if err := json.Unmarshal(header, &h); err != nil {
+		return nil, fmt.Errorf("fold bulk header: %w", err)
+	}
+	for _, m := range dedupeMemberSnapshots(members) {
+		h.MemberSet = append(h.MemberSet, json.RawMessage(m))
+	}
+	return marshalEventPayload(h)
+}
+
+// dedupeMemberSnapshots keeps ONE snapshot per item — the last, which is the
+// latest state — preserving input order otherwise.
+//
+// One bulk member can write several rows: the disjoint-delta rule means a move
+// that also changes status emits item.moved AND item.status_changed, and a
+// mixed update emits status_changed AND item.updated. Appending every row
+// would put the same item in `members` two or three times while `count` and
+// `item_ids` reported the number of ITEMS, so the payload would contradict
+// itself (codex round 1).
+//
+// The member list answers "what do these items look like now", so duplicates
+// are not extra information — they are the same item at two points inside one
+// operation. The per-event view is still available in full: each of those rows
+// is its own canonical event for bindings; only the WIRE aggregate collapses.
+//
+// A snapshot whose id cannot be read is kept rather than dropped: it is real
+// data the drain does not understand, and silently discarding it would be a
+// worse answer than a duplicate.
+//
+// LAST-WINS ON THE SNAPSHOT, BUT prior_status IS CARRIED FORWARD. The rows
+// being collapsed are not interchangeable: item.status_changed carries the
+// envelope pseudo-field prior_status and item.updated does not, so plain
+// last-wins would keep the later row and silently drop the transition — the
+// one piece of information a "nonterminal → terminal" binding needs, lost
+// exactly in the mixed update that produces both (codex round 2, on round 1's
+// own fix).
+func dedupeMemberSnapshots(members [][]byte) [][]byte {
+	lastAt := map[string]int{}
+	out := make([][]byte, 0, len(members))
+	for _, m := range members {
+		var probe struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(m, &probe); err != nil || probe.ID == "" {
+			out = append(out, m)
+			continue
+		}
+		if at, seen := lastAt[probe.ID]; seen {
+			out[at] = mergePriorStatus(out[at], m)
+			continue
+		}
+		lastAt[probe.ID] = len(out)
+		out = append(out, m)
+	}
+	return out
+}
+
+// mergePriorStatus returns next, with prev's prior_status restored when next
+// has none.
+//
+// Deliberately one key. The snapshots describe the same row at two points in
+// one operation, so every FIELD is fresher on next; prior_status is not a
+// field of the row at all — it is envelope metadata that only one of the two
+// events carries, which is why it needs carrying and nothing else does.
+//
+// On any decode failure this returns next unchanged: the merge is an
+// enhancement, and failing the whole fold over it would trade a missing key
+// for a missing event.
+func mergePriorStatus(prev, next []byte) []byte {
+	var prevMap, nextMap map[string]json.RawMessage
+	if err := json.Unmarshal(prev, &prevMap); err != nil {
+		return next
+	}
+	prior, had := prevMap["prior_status"]
+	if !had {
+		return next
+	}
+	if err := json.Unmarshal(next, &nextMap); err != nil {
+		return next
+	}
+	if _, present := nextMap["prior_status"]; present {
+		return next
+	}
+	nextMap["prior_status"] = prior
+	merged, err := json.Marshal(nextMap)
+	if err != nil {
+		return next
+	}
+	return merged
 }

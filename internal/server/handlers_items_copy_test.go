@@ -571,6 +571,15 @@ func newCopyFanoutObserver(t *testing.T, f *copyPreflightFixture) *copyFanoutObs
 	d.SkipSSRF = true // loopback httptest receivers
 	f.srv.SetWebhookDispatcher(d)
 
+	// Clear the outbox backlog the FIXTURE built — member joins, filler items,
+	// the source item itself — before the receivers are registered as
+	// webhooks. Since TASK-2714 webhooks are drained rather than hand-called,
+	// so without this the observer's first pass reports the whole setup as if
+	// the copy had produced it. Drained with no webhook rows yet, the backlog
+	// is acked and delivered nowhere, which is what "baseline" has always
+	// meant here.
+	f.srv.runOutboxDrainTick()
+
 	for _, side := range []struct {
 		label string
 		ws    *models.Workspace
@@ -646,7 +655,16 @@ func drainSSE(ch chan events.Event) []events.Event {
 // drainWebhooks collects deliveries over one quiet window. The window is a
 // wait for something that must NOT arrive in half these assertions, so it is
 // generous rather than tight; it only costs wall-clock time when passing.
+// drainWebhooks runs an outbox drain pass first, then collects what landed.
+//
+// Webhooks stopped being a post-commit hand-call in TASK-2714: the copy's own
+// transaction writes the outbox row and the drain delivers it. The assertions
+// these tests make about the DR-14 emission MATRIX — which workspace hears
+// what — are unchanged by that, but nothing arrives until a pass runs, and in
+// production that pass is the ticker rather than this call.
 func (o *copyFanoutObserver) drainWebhooks() []webhookDelivery {
+	o.f.srv.runOutboxDrainTick()
+
 	var out []webhookDelivery
 	deadline := time.After(fanoutQuietWindow)
 	for {
@@ -919,8 +937,8 @@ func TestCopyEndpoint_FanoutHarnessIsRealPositiveControl(t *testing.T) {
 	f := newCopyPreflightFixture(t)
 	o := newCopyFanoutObserver(t, f)
 
-	f.srv.dispatchWebhook(f.wsA.ID, "item.created", map[string]string{"probe": "A"})
-	f.srv.dispatchWebhook(f.wsB.ID, "item.created", map[string]string{"probe": "B"})
+	f.srv.webhooks.Dispatch(f.wsA.ID, "item.created", map[string]string{"probe": "A"})
+	f.srv.webhooks.Dispatch(f.wsB.ID, "item.created", map[string]string{"probe": "B"})
 
 	got := o.drainWebhooks()
 	if len(webhookEventsFor(got, "A")) == 0 || len(webhookEventsFor(got, "B")) == 0 {

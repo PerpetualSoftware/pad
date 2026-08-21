@@ -15,20 +15,21 @@
 //     IsCanonical exists — a typo'd name must fail loudly at the choke point
 //     rather than travel to a consumer that will never recognize it.
 //
-//   - THE CHOKE POINT WILL OWN THE MAPPING — and does not yet. Today SSE uses
-//     snake_case names published from one set of hand-calls and webhooks use
-//     dot-form string literals passed at a different set of hand-calls; the
-//     two vocabularies drifted because nothing ties them together. SPEC-3 v1.1
-//     rules that both surfaces derive from one canonical name, but THIS
-//     PACKAGE DOES NOT IMPLEMENT THAT MAPPING: it maps a canonical name to a
-//     subject kind and nothing else. The surface mapping, the drain that would
-//     use it, and the retirement of the legacy hand-calls are TASK-2714.
+//   - THE CHOKE POINT OWNS THE MAPPING. SSE's snake_case vocabulary and the
+//     webhook dot-form vocabulary drifted because each was hand-passed at its
+//     own call sites; the eventSpec.sse field is what ties them together now.
+//     What "derive" means is pinned by SPEC-3 v1.5: NAME derivation, not
+//     delivery path.
 //
-// SO, PLAINLY, SO NOBODY READS AN INTENTION AS A DESCRIPTION: as of this
-// package's introduction the outbox FILLS and nothing drains it. Every legacy
-// SSE publish and hand-called webhook dispatch still fires exactly as before.
-// ListPendingOutboxEvents has no production caller. That is the agreed shape
-// of this change, not an unfinished edge.
+// SO, PLAINLY, SO NOBODY READS AN INTENTION AS A DESCRIPTION — current as of
+// TASK-2714: the outbox is DRAINED, and the drain owns the WEBHOOK surface.
+// The hand-called webhook dispatches are gone. SSE is still published directly
+// at the mutation site, because it carries request-scoped attribution
+// (Actor/ActorName/Source) that a frozen payload deliberately does not hold;
+// it takes only its NAME from this package. Moving SSE behind the drain is
+// TASK-2722. The binding engine that SPEC-3 §Bindings describes does not exist
+// yet (phase 2+) — where a comment here says "bindings", it is naming the
+// contract's shape, not running code.
 package kernelevents
 
 // Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.1).
@@ -67,10 +68,19 @@ const (
 	ItemRestored = "item.restored"
 
 	// ItemBulkUpdated is the canonical BATCH event: one wire event for a
-	// whole lane-wide mutation. Binding evaluation is still per-member —
-	// the dispatcher runs item-level selectors against each member snapshot
-	// — so bindings never miss a bulk mutation; only wire delivery is
-	// batched.
+	// whole lane-wide mutation, in the normal case (SPEC-3 v1.6 — a
+	// concurrent claim can split one operation across two events, which the
+	// payload's batch_id lets a consumer correlate).
+	//
+	// Per-member binding evaluation is satisfied two different ways, and the
+	// distinction matters to anyone reading the payloads. The HANDLER path
+	// (bulk endpoint) loops over per-item store mutations, so every member
+	// writes its OWN canonical event and a future binding engine sees them
+	// individually; the header exists only to batch the WIRE delivery. The
+	// STORE-side single-transaction producers (a collection option rename, a
+	// wiki-title cascade) have no such loop — for those, the member snapshots
+	// carried INSIDE this event's payload are the only per-member view there
+	// is. Nothing evaluates selectors today; the binding engine is phase 2+.
 	ItemBulkUpdated = "item.bulk_updated"
 
 	// CommentCreated fires on comment creation. Payload: the stored comment
@@ -146,15 +156,55 @@ const (
 // unrepresentable rather than tested-for.
 type eventSpec struct {
 	subject string
-	payload string
+
+	// payloads is every payload shape this event may legitimately carry —
+	// almost always exactly one.
+	//
+	// item.bulk_updated carries TWO, and they are genuinely different writes
+	// rather than one shape with optional fields. The store-side
+	// single-transaction producers (a collection option rename, a wiki-title
+	// cascade) know every member at write time and embed the snapshots. The
+	// handler-path producer is a batch HEADER written after a loop: it knows
+	// the operation, the shared delta and the member refs, and the snapshots
+	// live on the members'"'"' own rows until the drain folds them in.
+	//
+	// DECLARED RATHER THAN LOOSENED (SPEC-3 v1.6). The alternatives were
+	// stuffing placeholder snapshots into the header to satisfy a
+	// single-shape check — a lie in the durable record — or dropping the
+	// family gate for this event, which is the one event where two producers
+	// make the gate most useful. Two declared shapes is the honest reading:
+	// the contract says this name admits both.
+	payloads []string
+
+	// sse is the snake_case name this event publishes under on the SSE
+	// surface, or "" when the event has no SSE surface at all.
+	//
+	// SPEC-3 §"The choke point owns the canonical→surface name mapping":
+	// SSE (snake_case) and webhooks (dot-form) drifted because nothing tied
+	// their vocabularies together. This field is the tie. SPEC-3 v1.5 pins
+	// what "derive" means — NAME derivation, not delivery path: webhooks
+	// deliver through the drain, SSE stays direct-published at the mutation
+	// site (it carries request-scoped Actor/ActorName/Source that a frozen
+	// payload deliberately does not hold) and takes only its NAME from here.
+	//
+	// The empty string is a real value, not a gap: attachment, member and
+	// pack events have no SSE surface, and SurfaceSSE reports false for them
+	// so a caller cannot mistake silence for a name. Several canonical events
+	// map onto ONE SSE name — status_changed and moved both surface as
+	// item_updated — because the SSE vocabulary is coarser than events/1 and
+	// the UI has never distinguished them. That is a mapping, not a loss:
+	// the fine-grained name is what the webhook wire and bindings receive.
+	sse string
 }
 
 // canonical is the closed events/1 set. Adding an entry here is the ONLY way
-// to add a canonical event, and the compiler requires both fields, so a new
+// to add a canonical event, and the compiler requires every field, so a new
 // event cannot arrive half-declared.
-// Payload families. Every canonical event produces exactly one payload shape,
-// and the family is what lets a writer check that an event and a payload were
-// meant for each other.
+// Payload families. Every canonical event declares the payload shapes it may
+// carry — one for all of them except item.bulk_updated, which has two
+// producers with genuinely different write-time shapes (see eventSpec.payloads)
+// — and the family is what lets a writer check that an event and a payload
+// were meant for each other.
 //
 // Membership in the canonical set says the NAME is real; it says nothing about
 // whether the bytes attached to it are the right shape. Without families, a
@@ -167,8 +217,15 @@ const (
 	PayloadItemSnapshot = "item_snapshot"
 
 	// PayloadItemBatch: member refs, the shared delta, and per-member
-	// snapshots.
+	// snapshots — the store-side single-transaction producers, which know
+	// every member at write time.
 	PayloadItemBatch = "item_batch"
+
+	// PayloadItemBatchHeader: the handler-path batch HEADER — operation,
+	// shared delta and member refs, with no snapshots. The members' own rows
+	// carry those until the drain folds them in. See eventSpec.payloads for
+	// why this is a declared second shape rather than a loosened check.
+	PayloadItemBatchHeader = "item_batch_header"
 
 	// PayloadCommentSnapshot / PayloadAttachmentSnapshot: the stored row.
 	PayloadCommentSnapshot    = "comment_snapshot"
@@ -186,33 +243,61 @@ const (
 )
 
 var canonical = map[string]eventSpec{
-	ItemCreated:       {SubjectItem, PayloadItemSnapshot},
-	ItemUpdated:       {SubjectItem, PayloadItemSnapshot},
-	ItemStatusChanged: {SubjectItem, PayloadItemSnapshot},
-	ItemMoved:         {SubjectItem, PayloadItemSnapshot},
-	ItemDeleted:       {SubjectItem, PayloadItemSnapshot},
-	ItemRestored:      {SubjectItem, PayloadItemSnapshot},
-	ItemBulkUpdated:   {SubjectItemBatch, PayloadItemBatch},
-	CommentCreated:    {SubjectComment, PayloadCommentSnapshot},
-	CommentUpdated:    {SubjectComment, PayloadCommentSnapshot},
-	CommentDeleted:    {SubjectComment, PayloadRefOnly},
-	AttachmentAdded:   {SubjectAttachment, PayloadAttachmentSnapshot},
-	AttachmentRemoved: {SubjectAttachment, PayloadRefOnly},
-	MemberJoined:      {SubjectMember, PayloadMember},
-	PackInstalled:     {SubjectPack, PayloadPack},
-	PackUpgraded:      {SubjectPack, PayloadPack},
-	PackDisabled:      {SubjectPack, PayloadPack},
+	ItemCreated:       {SubjectItem, []string{PayloadItemSnapshot}, "item_created"},
+	ItemUpdated:       {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemStatusChanged: {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemMoved:         {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemDeleted:       {SubjectItem, []string{PayloadItemSnapshot}, "item_archived"},
+	ItemRestored:      {SubjectItem, []string{PayloadItemSnapshot}, "item_restored"},
+	ItemBulkUpdated:   {SubjectItemBatch, []string{PayloadItemBatch, PayloadItemBatchHeader}, "items_bulk_updated"},
+	CommentCreated:    {SubjectComment, []string{PayloadCommentSnapshot}, "comment_created"},
+	CommentUpdated:    {SubjectComment, []string{PayloadCommentSnapshot}, "comment_updated"},
+	CommentDeleted:    {SubjectComment, []string{PayloadRefOnly}, "comment_deleted"},
+	AttachmentAdded:   {SubjectAttachment, []string{PayloadAttachmentSnapshot}, ""},
+	AttachmentRemoved: {SubjectAttachment, []string{PayloadRefOnly}, ""},
+	MemberJoined:      {SubjectMember, []string{PayloadMember}, ""},
+	PackInstalled:     {SubjectPack, []string{PayloadPack}, ""},
+	PackUpgraded:      {SubjectPack, []string{PayloadPack}, ""},
+	PackDisabled:      {SubjectPack, []string{PayloadPack}, ""},
 }
 
-// PayloadFamily returns the payload shape a canonical event carries, and false
-// if the name is not canonical.
+// PayloadFamilies returns every payload shape a canonical event may carry, and
+// false if the name is not canonical.
 //
-// A writer that knows which shape it is about to marshal calls this to confirm
-// the event name agrees, so an event and a payload that were not meant for each
-// other cannot be stored together.
-func PayloadFamily(name string) (string, bool) {
+// The returned slice is freshly built, so a caller cannot edit the contract in
+// place — same reason as Canonical().
+func PayloadFamilies(name string) ([]string, bool) {
 	spec, ok := canonical[name]
-	return spec.payload, ok
+	if !ok {
+		return nil, false
+	}
+	out := make([]string, len(spec.payloads))
+	copy(out, spec.payloads)
+	return out, true
+}
+
+// AllowsPayload reports whether a canonical event admits the given payload
+// shape.
+//
+// A writer that knows which shape it just marshalled calls this to confirm the
+// event name agrees, so an event and a payload that were not meant for each
+// other cannot be stored together. An empty family is never allowed: a caller
+// declaring nothing must not match, which was the fail-open shape Codex round
+// 10 found.
+func AllowsPayload(name, family string) bool {
+	if family == "" {
+		return false
+	}
+	spec, ok := canonical[name]
+	if !ok {
+		return false
+	}
+	for _, p := range spec.payloads {
+		if p == family {
+			return true
+		}
+	}
+	return false
 }
 
 // IsCanonical reports whether name is in the events/1 set.
@@ -246,4 +331,24 @@ func Canonical() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// SurfaceSSE returns the SSE wire name a canonical event publishes under, and
+// false when it has none — either because the name is not canonical, or
+// because the event is deliberately absent from the SSE surface.
+//
+// ONE BOOL FOR BOTH CASES, deliberately. A caller has the same job either way:
+// do not publish. Splitting them would invite a caller to branch on
+// "canonical but unmapped" and invent a name, which is the drift this table
+// exists to end.
+//
+// The webhook wire name needs no accessor: it IS the canonical name. That
+// asymmetry is the point of SPEC-3's mapping sentence — the dot-form vocabulary
+// is the contract, and SSE's snake_case is a surface rendering of it.
+func SurfaceSSE(name string) (string, bool) {
+	spec, ok := canonical[name]
+	if !ok || spec.sse == "" {
+		return "", false
+	}
+	return spec.sse, true
 }
