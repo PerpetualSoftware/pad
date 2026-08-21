@@ -78,12 +78,28 @@ type pushResponse struct {
 	// two received it; with none of its own it reported 0 while a remote
 	// session received it anyway.
 	//
-	// CLOSED BY BUG-2698: with PAD_REDIS_URL set, s.sessionPresence is the
-	// shared RedisSessionPresence, so this count is read from every
-	// instance's sessions rather than one instance's. It is still a
-	// PREDICTION with the staleness above — a shared registry does not make
-	// it a receipt — but it now describes the same population the bus
-	// delivers to, which is what it always claimed to.
+	// CLOSED BY BUG-2698 for the INSTANCE-LOCALITY half: with PAD_REDIS_URL
+	// set, s.sessionPresence is the shared RedisSessionPresence, so this
+	// count is read from every instance's sessions rather than one
+	// instance's. It is still a PREDICTION with the staleness above — a
+	// shared registry does not make it a receipt.
+	//
+	// STILL AN UPPER BOUND, not a match count, and an earlier draft of this
+	// comment claimed otherwise (codex round 6). deliveredSessionCount
+	// filters on user, armed, and target id. Actual delivery ALSO applies
+	// each stream's own visibility — watchNotificationVisible's
+	// vis.allows(CollectionID, ItemID), computed per connection from the
+	// credentials that opened it. Two streams of the SAME user can differ
+	// there: a cookie session and a workspace-scoped API token do not see
+	// the same collections. So a session counted here can still drop the
+	// push, and a targeted one at such a session is published and lost
+	// while this field reports 1.
+	//
+	// Pre-existing and unchanged by BUG-2698 — the in-process count had the
+	// identical blind spot — but tracked now rather than left implied
+	// (BUG-2725). Fixing it means the registry carrying per-session
+	// visibility, which has its own staleness question, since access can be
+	// revoked while the connection is held open.
 	//
 	// Note this was never wrong in the over-reporting direction for a
 	// TARGETED push, for the unhappy reason that the same locality stopped

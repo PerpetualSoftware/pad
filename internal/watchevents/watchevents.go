@@ -18,9 +18,16 @@
 // single-process binary keeps MemoryBus and never grows a Redis
 // dependency.
 //
-// Bus was defined as an interface from Phase 1 precisely so this could
-// slot in without touching any producer or the stream handler, and that
-// held: RedisBus changed neither.
+// Bus was defined as an interface from Phase 1 precisely so a second
+// implementation could slot in without touching any producer or the stream
+// handler, and that held for RedisBus: it changed neither.
+//
+// It did NOT hold for BUG-2699, and the distinction is worth keeping
+// (codex round 6). Making Publish report acceptance changed the INTERFACE,
+// not just the implementations, so every producer had to be revisited —
+// not to change behaviour, but to rule on what each should do with an
+// answer it had never been given. An interface absorbs a new
+// implementation; it does not absorb a new question.
 //
 // PRESENCE IS NO LONGER THE ODD ONE OUT. internal/server's
 // SessionPresence registry used to stay per-process after this bus went

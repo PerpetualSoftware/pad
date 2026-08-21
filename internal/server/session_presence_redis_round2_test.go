@@ -291,3 +291,76 @@ func TestRedisSessionPresence_EmptyListIsNotNil(t *testing.T) {
 		t.Fatal("precondition: MemorySessionPresence was expected to return a non-nil empty slice")
 	}
 }
+
+// TestRedisSessionPresence_RemoveAfterCloseStillWaits — codex round 6, P2.
+//
+// Round 1 made Remove wait for its session's renewal so an in-flight write
+// could not re-create the key after the DEL. Close then removed the
+// entries from the map before draining, which deleted the very lookup
+// Remove uses to find that renewal — so a handler disconnecting
+// concurrently with Close found nothing, skipped the wait, and reopened
+// the same resurrection window by the other door.
+//
+// Drives that exact interleaving: a renewal parked inside its write, Close
+// running (and hitting its drain bound), then a Remove arriving after.
+// Remove must not return while that renewal can still write.
+func TestRedisSessionPresence_RemoveAfterCloseStillWaits(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	p := &RedisSessionPresence{
+		client:        client,
+		sessionKeyTTL: time.Minute,
+		renewInterval: 5 * time.Millisecond,
+		drainTimeout:  100 * time.Millisecond,
+		renewals:      make(map[string]*renewal),
+		onRenewWrite: func() {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		},
+	}
+
+	id := p.Add("user-1", SessionIdentity{Armed: true})
+	<-entered
+
+	p.Close() // drains, times out on the parked renewal, returns
+
+	removed := make(chan struct{})
+	go func() {
+		p.Remove("user-1", id)
+		close(removed)
+	}()
+
+	// THE ASSERTION: Remove must still be waiting. The pre-fix version
+	// found an empty map and went straight to its DEL, which the parked
+	// write would then undo.
+	select {
+	case <-removed:
+		t.Fatal("Remove returned after Close while a renewal was still in flight; that renewal can re-create the entry after the delete")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-removed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Remove never returned after the renewal was released")
+	}
+
+	reader := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(reader.Close)
+	sessions, err := reader.ListForUser("user-1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("a ghost session survived Remove-after-Close (%d listed)", len(sessions))
+	}
+}

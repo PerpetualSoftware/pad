@@ -69,8 +69,15 @@ import (
 // claim about a path you have not read is a claim, not a caveat.)
 //
 // SessionPresence has been an interface since S1 precisely so the
-// shared-state implementation could slot in without touching the stream
-// handler or the endpoint. It did: neither changed.
+// shared-state implementation could slot in without rewriting the stream
+// handler or the endpoint, and that held: the STREAM HANDLER is unchanged.
+//
+// The ENDPOINT is not, and an earlier draft of this note claimed both were
+// (codex round 6). handleListSessions gained a 503 branch, because the
+// out-of-process implementation made "I could not find out" a reachable
+// answer that the in-process one never had — the interface absorbed the
+// implementation swap, not the new failure mode the implementation brought
+// with it. Those are different claims and only the first one was true.
 
 // LiveSession is one currently-connected user-scoped event stream —
 // i.e. one `GET /api/v1/events/stream` connection being held open.

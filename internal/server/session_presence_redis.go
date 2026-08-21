@@ -415,7 +415,17 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 	if ok {
 		delete(p.renewals, renewalKey(userID, sessionID))
 	}
+	closed := p.closed
 	p.mu.Unlock()
+	// After Close, the entry may already have been handed to Close's own
+	// drain rather than found here. Waiting on the WaitGroup is what covers
+	// that case: it does not return until every renewal goroutine has
+	// finished its last write, which is the property the DEL below depends
+	// on (codex round 6). Close bounds its own drain, so this cannot
+	// outlive shutdown.
+	if closed && !ok {
+		p.wg.Wait()
+	}
 	if ok {
 		// Stop AND wait, in that order and outside the lock. Stopping alone
 		// leaves an in-flight renewal free to re-create the entry after the
@@ -583,8 +593,17 @@ func (p *RedisSessionPresence) Close() {
 		return
 	}
 	p.closed = true
-	for key, rn := range p.renewals {
-		delete(p.renewals, key)
+	// STOPPED, NOT DELETED (codex round 6). Deleting here removed the very
+	// lookup Remove uses to decide whether to WAIT: a handler disconnecting
+	// concurrently with Close found no renewal, skipped the wait, and ran
+	// its DEL — leaving an already-cancelled-but-still-in-flight renewal
+	// free to complete afterwards and re-create the key. That is round 1's
+	// resurrection bug arriving by the other door, and the fix there (wait
+	// for the goroutine) only works if Remove can still find it.
+	//
+	// The entries are dropped with the object instead. Close is the
+	// shutdown path, so nothing is accumulating.
+	for _, rn := range p.renewals {
 		rn.stop()
 	}
 	p.mu.Unlock()

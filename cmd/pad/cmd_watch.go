@@ -520,8 +520,20 @@ func runWatchMonitor(ctx context.Context) error {
 		}
 		// The stream ended (server closed it, network blip, padd
 		// restart). Last-Event-ID (captured in streamWatchEvents)
-		// resumes from here — no re-delivery, no gap silently
+		// resumes from here — no re-delivery, and no gap silently
 		// swallowed beyond the replay buffer's own bounds.
+		//
+		// ONE EXCEPTION on a Redis-backed deployment, stated because this
+		// sentence used to promise more than the implementation delivers
+		// (codex round 6 on BUG-2698). RedisBus's resume check compares
+		// against the shared counter, and its own doc says what it cannot
+		// see: a notification published AFTER that read and missed by the
+		// answering instance is invisible to any check made there. That is
+		// a property of at-most-once pub/sub with no per-connection ack,
+		// not a bound this loop can widen. So the honest promise is "no gap
+		// before the resume goes silently unreported"; a message lost in
+		// the instant after it is not detectable here or anywhere else
+		// short of a durable stream.
 		attempt++
 		if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
 			return nil

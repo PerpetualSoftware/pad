@@ -81,6 +81,10 @@ TTL — with per-process presence those entries vanished with the process). So
 an instance that no longer exists, and the outcome-unknown branch below stays
 load-bearing. See LiveSession's doc comment for both bounds.
 
+Nor is the count a match count: it filters on user, armed, and target id, while
+actual delivery ALSO applies each stream's own item visibility. A session it
+counts can still drop the push. Read it as what was ADDRESSED (BUG-2725).
+
 `delivered_sessions` can also arrive NULL: the server published a broadcast but
 could not read the presence registry to count it. Null means unknown, not zero
 — the targeted case is refused with a 503 rather than published, so a null is
