@@ -731,3 +731,61 @@ func clearSeededOutbox(t *testing.T, srv *Server) {
 		t.Fatalf("clear seeded outbox: %v", err)
 	}
 }
+
+// TestBulkEventDelta_MatchesTheMutation pins the batch header's delta to what
+// the mutation actually committed (codex round 7).
+//
+// The delta is the one field of the batch payload the drain cannot derive, so
+// nothing downstream can correct it: whatever this function says is what a
+// webhook consumer believes happened.
+func TestBulkEventDelta_MatchesTheMutation(t *testing.T) {
+	strptr := func(s string) *string { return &s }
+
+	t.Run("tag trims the way bulkTagUpdate does", func(t *testing.T) {
+		got := bulkEventDelta(&bulkItemsRequest{Op: "tag", Tags: []string{" spaced ", "   ", "plain"}})
+		tags, _ := got["tags"].([]string)
+		if len(tags) != 2 || tags[0] != "spaced" || tags[1] != "plain" {
+			t.Errorf("tags = %v, want the trimmed, non-empty set the mutation applies", tags)
+		}
+	})
+
+	t.Run("untag matches raw, because the mutation does", func(t *testing.T) {
+		got := bulkEventDelta(&bulkItemsRequest{Op: "untag", Tags: []string{" spaced "}})
+		tags, _ := got["tags"].([]string)
+		if len(tags) != 1 || tags[0] != " spaced " {
+			t.Errorf("tags = %v, want the raw value — untag removes by exact match", tags)
+		}
+	})
+
+	t.Run("a non-empty id beats the clear flag", func(t *testing.T) {
+		got := bulkEventDelta(&bulkItemsRequest{
+			Op:                "assign",
+			AssignedUserID:    strptr("user-1"),
+			ClearAssignedUser: true,
+		})
+		if got["assigned_user_id"] != "user-1" {
+			t.Errorf("assigned_user_id = %v, want user-1 — the store's SET clause gives the id precedence, so announcing a clear would describe the opposite of the committed row", got["assigned_user_id"])
+		}
+	})
+
+	t.Run("an explicit empty id clears, like the flag", func(t *testing.T) {
+		got := bulkEventDelta(&bulkItemsRequest{Op: "assign", AgentRoleID: strptr("")})
+		v, present := got["agent_role_id"]
+		if !present || v != nil {
+			t.Errorf("agent_role_id = %v (present %v), want an explicit null", v, present)
+		}
+	})
+
+	t.Run("move carries both when both were sent", func(t *testing.T) {
+		got := bulkEventDelta(&bulkItemsRequest{Op: "move", Collection: "done", Status: "closed"})
+		if got["collection"] != "done" || got["status"] != "closed" {
+			t.Errorf("delta = %v, want both halves of a move-with-status", got)
+		}
+	})
+
+	t.Run("archive has no delta", func(t *testing.T) {
+		if got := bulkEventDelta(&bulkItemsRequest{Op: "archive"}); got != nil {
+			t.Errorf("delta = %v, want nil — the operation IS the delta and it is on the envelope as op", got)
+		}
+	})
+}

@@ -273,11 +273,18 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 	// that writes the ITEM'S OWN ROW emits item.updated; one that writes only
 	// the links table stays silent. A PARENT link crosses that line — it
 	// advances the child's seq — and emits from the store, inside
-	// setParentLinkOnce or the item-update transaction. Relationship-graph
-	// links (blocks / blocked-by) and `implements` do not, so events/1 says
-	// nothing about them and this publish stays a pure SSE nudge for the live
-	// UI. TASK-2723 carries the link.created / link.removed shape and this
-	// call site with it.
+	// setParentLinkOnce, DeleteItemLink, or the item-update transaction.
+	// blocks / blocked-by / supersedes write only the links table, so events/1
+	// says nothing about them.
+	//
+	// `implements` IS THE UNRESOLVED CASE, and this comment previously got it
+	// wrong by listing it with the silent ones (codex round 7). It DOES bump
+	// the source row — bumpStructuralLinkSourceTx treats it exactly like
+	// parent — so the mechanical criterion would have it emit, while v1.5's
+	// relationship-link silence would not. Deciding it inside a delivery
+	// refactor would put an event nobody ruled on onto a public wire, so it is
+	// raised with the lead and left as it was. TASK-2723 carries the
+	// link.created / link.removed shape and this call site with it.
 	//
 	// Consequence worth naming: this handler publishes SSE for BOTH kinds, so
 	// the SSE and events/1 pictures deliberately differ here. That is the

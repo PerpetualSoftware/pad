@@ -767,7 +767,21 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 	case "set-priority":
 		return map[string]any{"priority": req.Priority}
 	case "tag", "untag":
-		return map[string]any{"tags": req.Tags}
+		// NORMALIZED THE SAME WAY THE MUTATION DOES (codex round 7). bulkTagUpdate
+		// trims each added tag and skips the ones that go empty, so a request
+		// carrying "  " changed nothing while a raw delta would announce it.
+		// Untag matches on the raw value — it never trims — so only the add
+		// side normalizes here, exactly as in the mutation.
+		tags := req.Tags
+		if req.Op == "tag" {
+			tags = make([]string, 0, len(req.Tags))
+			for _, t := range req.Tags {
+				if t = strings.TrimSpace(t); t != "" {
+					tags = append(tags, t)
+				}
+			}
+		}
+		return map[string]any{"tags": tags}
 	case "move":
 		// BOTH, when both were sent. bulkMoveCollection applies req.Status as
 		// a field override on the migrated set, so a move-with-status changes
@@ -782,16 +796,21 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 		}
 		return delta
 	case "assign":
+		// SAME PRECEDENCE AS THE STORE (codex round 7): a non-empty id WINS
+		// over the clear flag, and an explicit empty string clears exactly as
+		// the flag does (see the assignment SET clauses in items.go — BUG-2566).
+		// The delta had the flag winning, so a request carrying both announced
+		// a clear while the row was assigned.
 		delta := map[string]any{}
-		if req.ClearAssignedUser {
+		if id := req.AssignedUserID; id != nil && *id != "" {
+			delta["assigned_user_id"] = *id
+		} else if req.ClearAssignedUser || (id != nil && *id == "") {
 			delta["assigned_user_id"] = nil
-		} else if req.AssignedUserID != nil {
-			delta["assigned_user_id"] = *req.AssignedUserID
 		}
-		if req.ClearAgentRole {
+		if id := req.AgentRoleID; id != nil && *id != "" {
+			delta["agent_role_id"] = *id
+		} else if req.ClearAgentRole || (id != nil && *id == "") {
 			delta["agent_role_id"] = nil
-		} else if req.AgentRoleID != nil {
-			delta["agent_role_id"] = *req.AgentRoleID
 		}
 		return delta
 	}

@@ -3286,12 +3286,14 @@ func (s *Store) DeleteItemLink(id string) error {
 	// every attach route was observable.
 	//
 	// IMPLEMENTS IS DELIBERATELY NOT INCLUDED HERE, and the asymmetry is
-	// flagged rather than resolved: it bumps the same row (so the mechanical
-	// criterion would include it) but it is a relationship-graph link (so
-	// v1.5's silence would exclude it). The contract does not currently
-	// decide that case, and inventing an answer inside a delivery refactor is
-	// how a public wire acquires an event nobody ruled on. Raised with the
-	// lead; tracked separately.
+	// flagged rather than resolved: it bumps the same row two lines above (so
+	// the mechanical criterion would include it) but it is a
+	// relationship-graph link (so v1.5's silence would exclude it). The
+	// contract does not currently decide that case, and inventing an answer
+	// inside a delivery refactor is how a public wire acquires an event nobody
+	// ruled on. Raised with the lead; tracked separately. The same note is on
+	// handlers_item_links.go, which is where a reader is likely to hit it
+	// first.
 	if linkType == models.ItemLinkTypeParent {
 		child, err := s.getItemTx(tx, sourceID)
 		if err != nil {
