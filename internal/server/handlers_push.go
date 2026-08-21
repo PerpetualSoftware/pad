@@ -70,20 +70,24 @@ type pushResponse struct {
 	// target isn't in that snapshot — see its doc comment — so a 0 here
 	// is never a race, it's a guarantee: nothing was sent.
 	//
-	// THAT GUARANTEE IS PER-PROCESS, and in a Redis-backed deployment
-	// that makes this count wrong in BOTH directions for a BROADCAST push
-	// (BUG-2651, codex round 3). The count comes from the local presence
-	// registry while the bus now delivers everywhere: with one armed
-	// session on each of two replicas, the replica handling the POST
-	// reports 1 and two sessions receive it; with none of its own, it
-	// reports 0 while a remote session receives it anyway.
+	// THAT GUARANTEE USED TO BE PER-PROCESS, which made this count wrong
+	// in BOTH directions for a BROADCAST push once BUG-2651 gave the bus
+	// cross-instance reach: the count came from the answering instance's
+	// presence registry while the bus delivered everywhere. With one armed
+	// session on each of two replicas the answering replica reported 1 and
+	// two received it; with none of its own it reported 0 while a remote
+	// session received it anyway.
 	//
-	// Filed as BUG-2698 alongside the targeted-push half. Not corrected
-	// here, because the fix is not a better count — it is the shared-state
-	// SessionPresence that PLAN-2558 S3 already gates on. Any local arithmetic would just be a more elaborate way of
-	// asking one replica what all of them are doing. Targeted pushes do
-	// not have the over-report half of this problem, for the unhappy
-	// reason that the same locality stops them being published at all.
+	// CLOSED BY BUG-2698: with PAD_REDIS_URL set, s.sessionPresence is the
+	// shared RedisSessionPresence, so this count is read from every
+	// instance's sessions rather than one instance's. It is still a
+	// PREDICTION with the staleness above — a shared registry does not make
+	// it a receipt — but it now describes the same population the bus
+	// delivers to, which is what it always claimed to.
+	//
+	// Note this was never wrong in the over-reporting direction for a
+	// TARGETED push, for the unhappy reason that the same locality stopped
+	// those from being published at all.
 	DeliveredSessions int `json:"delivered_sessions"`
 }
 
@@ -221,8 +225,8 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// round 1, codex — see DeliveredSessions' doc comment for the race a
 	// post-publish count had). For a TARGETED push whose id isn't in this
 	// snapshot, the publish is skipped entirely: session ids are
-	// per-connection and never reused (session_presence.go's
-	// MemorySessionPresence.Add mints a fresh uuid per Add call), so a
+	// per-connection and never reused (both SessionPresence
+	// implementations mint a fresh uuid per Add call), so a
 	// target absent right now can never later be matched by the SAME
 	// connection reconnecting under that id, nor by the bus's replay
 	// buffer (which only serves a resumed connection presenting its own
@@ -236,23 +240,28 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// delivery happens, which is the same staleness every presence
 	// answer on this surface already carries.
 	//
-	// THE "GUARANTEED NO-OP" PREMISE IS NOW MEMORYBUS-ONLY (BUG-2651,
-	// codex round 2). It rested on the bus being in-process: a target
-	// this instance cannot see was, by construction, a target nobody
-	// could deliver to. With watchevents.RedisBus the notification would
-	// reach every instance, so a session held on another one WOULD match
-	// it — and this skip is what stops that, turning a deliverable push
-	// into the no-op the comment describes rather than merely declining
-	// to record one.
+	// THAT PREMISE BROKE ONCE AND IS NOW RESTORED, which is worth spelling
+	// out because the skip below looks like a bug at a glance. It rested
+	// on the bus being in-process: a target THIS instance could not see
+	// was, by construction, a target nobody could deliver to. BUG-2651's
+	// RedisBus made the notification reach every instance, at which point
+	// a session held on another one WOULD have matched it — and this skip
+	// was the only thing stopping it, turning a deliverable push into the
+	// no-op the comment describes (BUG-2698).
 	//
-	// Deliberately NOT changed here. Publishing unconditionally would fix
-	// targeted cross-instance delivery and immediately make the
-	// delivered_sessions=0 in the response a lie in the other direction,
-	// which is a question about what that field promises rather than a
-	// bug in this line. It belongs with the shared-state SessionPresence
-	// that PLAN-2558 S3 already gates on — fixing the registry makes the
-	// snapshot right, and then this skip is correct again for the same
-	// reason it was originally.
+	// BUG-2698 fixed it at the registry rather than here. With
+	// PAD_REDIS_URL set, s.sessionPresence is the shared
+	// RedisSessionPresence, so "absent from this snapshot" means absent
+	// from EVERY instance again, and the skip is correct for exactly the
+	// reason it was originally written. Note that the shortcut — publish
+	// unconditionally for targeted pushes — would have fixed delivery and
+	// immediately made delivered_sessions=0 a lie in the other direction.
+	// The line below is deliberately unchanged by that fix.
+	//
+	// One detail the "never reused" argument now leans on more heavily:
+	// both implementations mint a fresh uuid per Add
+	// (MemorySessionPresence.Add, RedisSessionPresence.Add), so a
+	// reconnecting client never returns under a previous id on either.
 	deliveredSessions := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
 	if targetSessionID == "" || deliveredSessions > 0 {
 		// The ONE direct Bus.Publish call in this package, and the only

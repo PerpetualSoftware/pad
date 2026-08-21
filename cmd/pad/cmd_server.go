@@ -679,20 +679,33 @@ func serveCmd() *cobra.Command {
 			}
 			srv.SetWatchEventsBus(watchBus)
 
-			// Live-session presence registry (PLAN-2558 S1). Wired
-			// unconditionally, and it is now the ONLY in-process piece
-			// of this pair — the watch bus above stopped being one when
-			// PAD_REDIS_URL is set (BUG-2651). So the old "same caveat
-			// as the bus directly above" reading no longer holds: the
-			// bus delivers across instances, while this registry still
-			// reports only the answering instance's connections.
+			// Live-session presence registry (PLAN-2558 S1), on the SAME
+			// PAD_REDIS_URL switch as both buses above (BUG-2698). The
+			// three now cross instance boundaries together, which is the
+			// point: a shared bus with a per-process registry was worse
+			// than either being consistent, because a session-targeted
+			// push was resolved against the answering instance's view and
+			// skipped the publish for a session the bus could have
+			// reached.
 			//
-			// See internal/server/session_presence.go's note for what
-			// that costs (a session picker that under-reports, rather
-			// than a push that lies) before putting the web-UI push
-			// surface (PLAN-2558 S3) in front of a multi-process
-			// deployment.
-			srv.SetSessionPresence(server.NewMemorySessionPresence())
+			// A self-hosted single-process binary keeps the in-memory
+			// registry and never touches Redis, same as the buses.
+			var sessionPresence server.SessionPresence
+			if watchRedis != nil {
+				redisPresence := server.NewRedisSessionPresence(watchRedis)
+				// Stops the per-session renewal goroutines. Deliberately
+				// does NOT delete this instance's entries — a shutdown
+				// racing a reconnect elsewhere would then delete a session
+				// that had already re-registered — so they clear on their
+				// TTL instead.
+				defer redisPresence.Close()
+				sessionPresence = redisPresence
+				slog.Info("Session presence registry using Redis (shared across instances)")
+			} else {
+				sessionPresence = server.NewMemorySessionPresence()
+				slog.Info("Session presence registry using in-memory (single instance)")
+			}
+			srv.SetSessionPresence(sessionPresence)
 
 			// Yjs collab room manager (PLAN-1248). Single-instance only
 			// today; multi-replica fanout via Redis is a deferred IDEA.

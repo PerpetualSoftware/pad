@@ -22,17 +22,21 @@
 // slot in without touching any producer or the stream handler, and that
 // held: RedisBus changed neither.
 //
-// STILL PER-PROCESS, and worth knowing before assuming multi-instance is
-// finished: internal/server's SessionPresence registry. What RedisBus
-// fixes is delivery of what is actually PUBLISHED — a broadcast push, a
-// status change, a comment — which now reaches a stream on any instance.
-// What it does not fix is a SESSION-TARGETED push, because
-// handlers_push.go consults that per-process registry and skips the
-// publish entirely when the named session is not local; the bus would
-// carry it, but it is never put on the bus. The
-// GET /api/v1/sessions listing is per-process for the same reason.
-// See session_presence.go's own note — one shared-state implementation
-// closes both.
+// PRESENCE IS NO LONGER THE ODD ONE OUT. internal/server's
+// SessionPresence registry used to stay per-process after this bus went
+// shared, and the combination was worse than either being consistent: a
+// SESSION-TARGETED push is gated on that registry BEFORE publishing
+// (handlers_push.go), so a push for a session held on another instance
+// was skipped rather than carried, and GET /api/v1/sessions could not
+// offer it as a target at all. BUG-2698 closed that with
+// RedisSessionPresence, on the same PAD_REDIS_URL switch. All three —
+// event bus, watch bus, presence registry — now cross instance
+// boundaries together or none of them do.
+//
+// See internal/server/session_presence.go for that registry's own
+// reaping story, which this package's Redis bus does not need: a
+// notification is transient, while a presence entry outlives the process
+// that wrote it and has to expire on its own.
 package watchevents
 
 import (

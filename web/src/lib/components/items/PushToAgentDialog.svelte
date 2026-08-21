@@ -61,16 +61,21 @@ The bound is enforced client-side (`$lib/push/message`) against the server's
 own rune-after-collapse accounting, so an over-length message is caught in the
 composer rather than coming back as a 400.
 
-DEPLOYMENT CONSTRAINT, inherited not created. Both the presence registry and
-the event bus are per-PROCESS (`internal/server/session_presence.go`'s
-SINGLE-PROCESS LIMITATION note). Behind more than one padd process a load
-balancer can route the presence GET and the push POST to different instances,
-and then every claim on this surface — including "No agent session is
-connected" — can be wrong. That file already states the rule ("Do not put the
-web-UI push surface in front of a multi-process deployment until both exist");
-this dialog is the surface it means. The copy below is written for the
-single-process case ON PURPOSE: hedging every sentence for a deployment the
-server tells you not to run would cost honesty in the case that actually ships.
+DEPLOYMENT CONSTRAINT, LIFTED (BUG-2698) — kept here because the copy below
+was written under it. This dialog used to carry a warning that the presence
+registry and the event bus were both per-PROCESS, so behind more than one padd
+process a load balancer could route the presence GET and the push POST to
+different instances and every claim on this surface — including "No agent
+session is connected" — could be wrong. BUG-2651 made the bus shared and
+BUG-2698 made the registry shared, both on PAD_REDIS_URL, so a session
+connected to any instance is now visible and addressable from any other.
+
+What that changes for this file is nothing structural, which is the point: the
+copy below was deliberately written for the single-process case rather than
+hedged, and it is now correct for both. What it does NOT change is staleness —
+a session that died ungracefully can still be listed for up to ~30s (see
+LiveSession's doc comment), so `delivered_sessions` remains a prediction and
+the outcome-unknown branch below stays load-bearing.
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
