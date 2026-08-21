@@ -231,8 +231,8 @@ func TestPushToItem_TargetedSessionReceivesOnly(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 1 {
-		t.Fatalf("expected delivered_sessions=1 for a session-targeted push, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 1 {
+		t.Fatalf("expected delivered_sessions=1 for a session-targeted push, got %d", deliveredCount(t, resp))
 	}
 
 	ev := waitForWatchEvent(t, chA, 3*time.Second)
@@ -280,8 +280,8 @@ func TestPushToItem_TargetedVanishedSessionMisses(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 0 {
-		t.Fatalf("expected delivered_sessions=0 for a vanished target, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 0 {
+		t.Fatalf("expected delivered_sessions=0 for a vanished target, got %d", deliveredCount(t, resp))
 	}
 	if !resp.Pushed {
 		t.Fatal("expected pushed=true — a targeted miss is still a successfully PROCESSED push (matching broadcast's existing no-listeners semantics), even though nothing was published to the bus")
@@ -337,8 +337,8 @@ func TestPushToItem_TargetedUnarmedSessionTreatedAsMiss(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 0 {
-		t.Fatalf("expected delivered_sessions=0 for a real but unarmed target, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 0 {
+		t.Fatalf("expected delivered_sessions=0 for a real but unarmed target, got %d", deliveredCount(t, resp))
 	}
 	if !resp.Pushed {
 		t.Fatal("expected pushed=true — an unarmed-target miss is still a successfully PROCESSED push, same shape as a vanished target")
@@ -405,8 +405,8 @@ func TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished(t *testing.T) 
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 0 {
-		t.Fatalf("expected delivered_sessions=0 for another user's session id — a cross-user id must be indistinguishable from a vanished one, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 0 {
+		t.Fatalf("expected delivered_sessions=0 for another user's session id — a cross-user id must be indistinguishable from a vanished one, got %d", deliveredCount(t, resp))
 	}
 	if after := len(srv.watchEvents.EventsSince(0)); after != before {
 		t.Fatalf("expected a cross-user target to skip the publish entirely, but the bus grew from %d to %d entries", before, after)
@@ -459,8 +459,8 @@ func TestPushToItem_TargetSessionIDAtCapAccepted(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 0 {
-		t.Fatalf("expected delivered_sessions=0 — an at-cap id still names no live session, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 0 {
+		t.Fatalf("expected delivered_sessions=0 — an at-cap id still names no live session, got %d", deliveredCount(t, resp))
 	}
 }
 
@@ -495,8 +495,8 @@ func TestPushToItem_BroadcastDeliveredSessionsCountsLiveSessions(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 2 {
-		t.Fatalf("expected delivered_sessions=2 for a broadcast with 2 live sessions, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 2 {
+		t.Fatalf("expected delivered_sessions=2 for a broadcast with 2 live sessions, got %d", deliveredCount(t, resp))
 	}
 
 	for _, ch := range []<-chan watchSSEEvent{chA, chB} {
@@ -550,8 +550,8 @@ func TestPushToItem_BroadcastDeliveredSessionsCountsArmedOnly(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 1 {
-		t.Fatalf("expected delivered_sessions=1 (armed sessions only) out of 2 connected, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 1 {
+		t.Fatalf("expected delivered_sessions=1 (armed sessions only) out of 2 connected, got %d", deliveredCount(t, resp))
 	}
 
 	ev := waitForWatchEvent(t, chArmed, 3*time.Second)
@@ -592,7 +592,24 @@ func TestPushToItem_OmittedTargetSessionIDMatchesPreS5RequestShape(t *testing.T)
 	if resp.Ref != item.Ref || resp.Workspace != slug || !resp.Pushed || resp.Message != "triage this" {
 		t.Fatalf("pre-S5 fields must be unchanged for a pre-S5 request body, got %+v", resp)
 	}
-	if resp.DeliveredSessions != 0 {
-		t.Fatalf("expected delivered_sessions=0 with no presence registry wired, got %d", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 0 {
+		t.Fatalf("expected delivered_sessions=0 with no presence registry wired, got %d", deliveredCount(t, resp))
 	}
+}
+
+// deliveredCount reads pushResponse.DeliveredSessions, failing the test if
+// it is NULL.
+//
+// Null is not zero on this field — it means "published, but the presence
+// registry could not be read to count it" (BUG-2698, codex round 1 P1).
+// Asserting through this helper makes every existing test state its own
+// premise: it expected a REAL count, and a null would be a different
+// outcome rather than a 0 that happens to compare equal. The tests that
+// deliberately expect null assert on the raw pointer instead.
+func deliveredCount(t *testing.T, resp pushResponse) int {
+	t.Helper()
+	if resp.DeliveredSessions == nil {
+		t.Fatalf("delivered_sessions was null; this test expects a real count")
+	}
+	return *resp.DeliveredSessions
 }

@@ -1940,13 +1940,26 @@ export interface LiveSessionsResponse {
  * Treat that as UNKNOWN, never as a confirmed miss — `=== 0` must be
  * checked explicitly, never inferred from `!delivered_sessions` or a
  * falsy check that would also match `undefined`.
+ *
+ * NULLABLE, and null is a THIRD state distinct from both a number and the
+ * absent key above (BUG-2698): the server published a BROADCAST but could
+ * not read the presence registry to count it — a Redis outage. It means
+ * "published, count unknown", never "zero". A targeted push in that state
+ * is refused with a 503 rather than published, so a null is always a
+ * broadcast that actually went out, and there is nothing for the caller to
+ * correct or resend.
+ *
+ * Three states, three handlings, and the falsy check that would collapse
+ * them is the reason they are spelled out: `number` — a real count;
+ * `null` — sent, uncountable; `undefined` (key absent) — a server that
+ * predates targeting.
  */
 export interface ItemPushResult {
 	ref: string;
 	workspace: string;
 	pushed: boolean;
 	message: string;
-	delivered_sessions?: number;
+	delivered_sessions?: number | null;
 }
 
 /**

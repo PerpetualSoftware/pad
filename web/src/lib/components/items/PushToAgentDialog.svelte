@@ -72,10 +72,19 @@ connected to any instance is now visible and addressable from any other.
 
 What that changes for this file is nothing structural, which is the point: the
 copy below was deliberately written for the single-process case rather than
-hedged, and it is now correct for both. What it does NOT change is staleness —
-a session that died ungracefully can still be listed for up to ~30s (see
-LiveSession's doc comment), so `delivered_sessions` remains a prediction and
-the outcome-unknown branch below stays load-bearing.
+hedged, and it is now correct for both. What it does NOT change is staleness, and the
+shared registry adds a SECOND window on top of the old one: a session whose
+CLIENT died ungracefully is listed for up to ~30s (the keepalive interval), and
+a session whose SERVER INSTANCE died is listed for up to ~90s (the registry's
+TTL — with per-process presence those entries vanished with the process). So
+`delivered_sessions` remains a prediction, "N connected" can name a session on
+an instance that no longer exists, and the outcome-unknown branch below stays
+load-bearing. See LiveSession's doc comment for both bounds.
+
+`delivered_sessions` can also arrive NULL: the server published a broadcast but
+could not read the presence registry to count it. Null means unknown, not zero
+— the targeted case is refused with a 503 rather than published, so a null is
+always a broadcast that went out.
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -433,6 +442,15 @@ the outcome-unknown branch below stays load-bearing.
 				? await api.items.push(wsSlug, itemSlug, collapsed, target)
 				: await api.items.push(wsSlug, itemSlug, collapsed);
 			sending = false;
+			// STRICT `=== undefined`, never `== undefined`, and both branches
+			// below are guarded by `target` for the same reason: since
+			// BUG-2698 the field can also be NULL, meaning "published, count
+			// unknown". A loose comparison would catch that null and route a
+			// successful broadcast into the mixed-version branch. It cannot
+			// arrive here in practice — a null is only ever emitted for a
+			// broadcast, and a targeted push with an unreadable registry is
+			// refused with a 503 — but the guard is one character wide, so
+			// pin it rather than rely on that.
 			if (target && result.delivered_sessions === undefined) {
 				// Mixed-version hazard (TASK-2588 round 2, codex). The server
 				// ships EMBEDDED in the binary (web/build is baked into the Go

@@ -86,6 +86,24 @@ import (
 // watchEventsKeepaliveInterval is 30s. So this list can name a listener
 // that is already gone, for up to ~30 seconds.
 //
+// A DEAD INSTANCE IS A SECOND, LONGER WINDOW, and it exists only for the
+// shared registry (codex round 1, P2 on BUG-2698). The ~30s above is
+// about a dead CLIENT, detected when the keepalive write fails and the
+// handler's defer deregisters. If the SERVER PROCESS dies instead,
+// MemorySessionPresence loses its entries instantly — they lived in the
+// process that died — while RedisSessionPresence's outlive it and clear
+// only when their TTL lapses, up to ~90s (sessionKeyTTL). During that
+// window a picker can offer a session on an instance that no longer
+// exists, and a push targeted at it will publish and reach nobody while
+// reporting one delivery.
+//
+// Documented rather than shortened, deliberately: a TTL close to the
+// renewal interval would start evicting LIVE sessions on any hiccup — a
+// GC pause, a briefly slow Redis — and an evicted live session is
+// invisible to the picker AND makes the push gate skip a genuinely
+// connected target. Do not fix a staleness window by creating an eviction
+// failure. See sessionKeyTTL for the arithmetic.
+//
 // That bound is acceptable for push, which is fire-and-forget either
 // way: a push to a session that died 5 seconds ago costs a message that
 // would have been lost regardless. It is NOT acceptable as a delivery
@@ -205,7 +223,22 @@ type SessionPresence interface {
 	Remove(userID string, sessionID string)
 	// ListForUser returns userID's live sessions, oldest connection
 	// first. The returned slice is a copy and is safe to retain.
-	ListForUser(userID string) []LiveSession
+	//
+	// THE ERROR IS NOT DECORATION, and an implementation that cannot fail
+	// must still not drop it (codex round 1, P1 on BUG-2698). Without it,
+	// "this user has no sessions" and "I could not find out" are the same
+	// value to every consumer — and they demand OPPOSITE handling: the
+	// first means a push has nothing to deliver to, the second means the
+	// caller must not conclude anything. An out-of-process implementation
+	// makes the difference reachable at runtime (a Redis outage), where
+	// returning an empty list would make handleListSessions answer 200
+	// with no sessions — the precise lie its 503 exists to avoid — and
+	// would make a TARGETED push skip its publish and lose the
+	// instruction while reporting success.
+	//
+	// MemorySessionPresence always returns a nil error; that is a property
+	// of that implementation, not of this contract.
+	ListForUser(userID string) ([]LiveSession, error)
 }
 
 // MemorySessionPresence is the in-process SessionPresence — see this
@@ -275,7 +308,7 @@ func (p *MemorySessionPresence) Remove(userID string, sessionID string) {
 // two connections that opened within the same clock tick (a real case
 // under a coarse monotonic clock, and an unstable list order would make
 // the S5 target picker jump around under the user's cursor).
-func (p *MemorySessionPresence) ListForUser(userID string) []LiveSession {
+func (p *MemorySessionPresence) ListForUser(userID string) ([]LiveSession, error) {
 	p.mu.RLock()
 	sessions := p.byUser[userID]
 	out := make([]LiveSession, 0, len(sessions))
@@ -290,5 +323,7 @@ func (p *MemorySessionPresence) ListForUser(userID string) []LiveSession {
 		}
 		return out[i].ConnectedAt.Before(out[j].ConnectedAt)
 	})
-	return out
+	// Always nil: an in-process map read cannot fail. See the interface's
+	// doc comment for why the error is in the signature anyway.
+	return out, nil
 }

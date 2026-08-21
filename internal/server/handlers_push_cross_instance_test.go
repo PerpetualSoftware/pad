@@ -106,9 +106,9 @@ func TestPushToItem_TargetedAtSessionOnAnotherInstance(t *testing.T) {
 	if got := busA.targetSessionIDs()[0]; got != sessionOnB {
 		t.Fatalf("published notification targeted %q, want %q", got, sessionOnB)
 	}
-	if resp.DeliveredSessions != 1 {
+	if deliveredCount(t, resp) != 1 {
 		t.Fatalf("delivered_sessions = %d, want 1 — the count is what the CLI and the web dialog read",
-			resp.DeliveredSessions)
+			deliveredCount(t, resp))
 	}
 }
 
@@ -181,8 +181,8 @@ func TestPushToItem_BroadcastCountsSessionsOnEveryInstance(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp.DeliveredSessions != 3 {
-		t.Fatalf("delivered_sessions = %d, want 3 (1 local + 2 remote armed, unarmed excluded)", resp.DeliveredSessions)
+	if deliveredCount(t, resp) != 3 {
+		t.Fatalf("delivered_sessions = %d, want 3 (1 local + 2 remote armed, unarmed excluded)", deliveredCount(t, resp))
 	}
 }
 

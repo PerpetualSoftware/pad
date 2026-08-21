@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -87,9 +88,21 @@ type RedisSessionPresence struct {
 	sessionKeyTTL time.Duration
 	renewInterval time.Duration
 
+	// onRenewWrite, when non-nil, is called by renewLoop immediately
+	// before each renewal write. Always nil in production — it exists so a
+	// test can hold a renewal INSIDE its write and prove that Remove waits
+	// for it (codex round 1, P2).
+	//
+	// A seam rather than a timing loop, deliberately: the probabilistic
+	// version of that test — 50µs renewal interval, 200 add/remove
+	// iterations — passed 3/3 against the UNFIXED Remove, so it was
+	// evidence of nothing. An instrument that cannot fail on broken code
+	// is not an instrument.
+	onRenewWrite func()
+
 	mu       sync.Mutex
 	closed   bool
-	renewals map[string]context.CancelFunc // userID|sessionID -> stop its renewal
+	renewals map[string]*renewal // userID|sessionID -> its live renewal
 	wg       sync.WaitGroup
 }
 
@@ -109,8 +122,39 @@ const (
 	// a process must miss three consecutive renewals before its sessions
 	// vanish, while a crashed instance's entries still clear inside 90s
 	// rather than lingering forever.
+	//
+	// THE COST OF THAT CHOICE, stated because it is a real regression
+	// against MemorySessionPresence and codex round 1 was right to raise
+	// it: for up to this long after an instance DIES, its sessions are
+	// still listed, so a picker can offer one that no longer exists and a
+	// push targeted at it publishes and reaches nobody. The in-memory
+	// registry had no such window — its entries died with its process.
+	// The trade is deliberate and it is not close: do not fix a staleness
+	// window by creating an eviction failure. A shorter TTL trades a
+	// bounded window in which a DEAD session looks alive for an unbounded
+	// one in which a LIVE session looks dead, and the second is worse on
+	// both surfaces — the picker hides a working target, and the push gate
+	// skips a genuinely connected one. Documented in LiveSession's
+	// staleness note and in the web dialog's header rather than tuned.
 	sessionKeyTTL = 3 * sessionRenewInterval
 )
+
+// renewal is one session's renewal goroutine, held so Remove can both
+// STOP it and WAIT for it.
+//
+// The wait is the load-bearing half (codex round 1, P2). Cancelling
+// returns immediately, so a renewal already inside its write could
+// complete AFTER Remove's DEL/SREM and re-create the entry — resurrecting
+// a session that has just disconnected and leaving it in every instance's
+// picker until the TTL lapses. A targeted push at that ghost publishes and
+// reaches nobody while reporting delivery. Waiting is bounded: the
+// goroutine's context is already cancelled when the wait begins, so any
+// in-flight Redis command returns promptly rather than running to its own
+// timeout.
+type renewal struct {
+	stop context.CancelFunc
+	done chan struct{}
+}
 
 // sessionKey is the per-session entry: one key, one TTL, one owner.
 func sessionKey(userID, sessionID string) string {
@@ -136,7 +180,7 @@ func NewRedisSessionPresence(client *redis.Client) *RedisSessionPresence {
 		client:        client,
 		sessionKeyTTL: sessionKeyTTL,
 		renewInterval: sessionRenewInterval,
-		renewals:      make(map[string]context.CancelFunc),
+		renewals:      make(map[string]*renewal),
 	}
 }
 
@@ -170,6 +214,7 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	rn := &renewal{stop: cancel, done: make(chan struct{})}
 
 	p.mu.Lock()
 	if p.closed {
@@ -177,7 +222,7 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 		cancel()
 		return id
 	}
-	p.renewals[renewalKey(userID, id)] = cancel
+	p.renewals[renewalKey(userID, id)] = rn
 	p.wg.Add(1)
 	p.mu.Unlock()
 
@@ -186,7 +231,7 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 			"error", err, "user_id", userID)
 	}
 
-	go p.renewLoop(ctx, userID, id, string(payload))
+	go p.renewLoop(ctx, rn, userID, id, string(payload))
 	return id
 }
 
@@ -212,8 +257,11 @@ func (p *RedisSessionPresence) write(ctx context.Context, userID, sessionID, pay
 // pause. A bare EXPIRE against a vanished key is a no-op that returns
 // success, which would leave a live session permanently invisible with
 // nothing in the logs.
-func (p *RedisSessionPresence) renewLoop(ctx context.Context, userID, sessionID, payload string) {
+func (p *RedisSessionPresence) renewLoop(ctx context.Context, rn *renewal, userID, sessionID, payload string) {
 	defer p.wg.Done()
+	// Closed AFTER the last write returns, which is what makes Remove's
+	// wait meaningful — see the renewal type's doc comment.
+	defer close(rn.done)
 	ticker := time.NewTicker(p.renewInterval)
 	defer ticker.Stop()
 	for {
@@ -221,6 +269,9 @@ func (p *RedisSessionPresence) renewLoop(ctx context.Context, userID, sessionID,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if p.onRenewWrite != nil {
+				p.onRenewWrite()
+			}
 			if err := p.write(ctx, userID, sessionID, payload); err != nil && ctx.Err() == nil {
 				slog.Warn("session presence: failed to renew session entry",
 					"error", err, "user_id", userID)
@@ -237,11 +288,18 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 		return
 	}
 	p.mu.Lock()
-	if cancel, ok := p.renewals[renewalKey(userID, sessionID)]; ok {
+	rn, ok := p.renewals[renewalKey(userID, sessionID)]
+	if ok {
 		delete(p.renewals, renewalKey(userID, sessionID))
-		cancel()
 	}
 	p.mu.Unlock()
+	if ok {
+		// Stop AND wait, in that order and outside the lock. Stopping alone
+		// leaves an in-flight renewal free to re-create the entry after the
+		// delete below (codex round 1, P2).
+		rn.stop()
+		<-rn.done
+	}
 
 	// A fresh context, NOT the cancelled renewal one: this is the clean
 	// deregistration a disconnect owes the registry, and it has to run
@@ -265,23 +323,31 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 // MemorySessionPresence produces, because an unstable order would make the
 // web target picker jump around under the user's cursor.
 //
-// Returns what it can rather than failing: a Redis error yields an empty
-// list, matching the nil-registry behaviour every consumer already handles.
-// handleListSessions is the one caller that distinguishes "no sessions"
-// from "couldn't read" — it 503s on a nil registry — and this method does
-// not manufacture that distinction, because a partial read is not an
-// outage.
-func (p *RedisSessionPresence) ListForUser(userID string) []LiveSession {
+// A READ FAILURE IS RETURNED, never flattened into an empty list. An
+// earlier version of this method did flatten it, on the reasoning that "a
+// partial read is not an outage" — which conflated a nil registry (a
+// configuration fact, known at startup) with a failed read (a runtime
+// one), and no consumer can tell those apart from an empty slice anyway.
+// Codex round 1 caught it: the flattened version made handleListSessions
+// answer 200 with no sessions during a Redis outage, and made a targeted
+// push skip its publish and lose the instruction while reporting success.
+func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	ids, err := p.client.SMembers(ctx, sessionIndexKey(userID)).Result()
 	if err != nil {
+		// REPORTED, not swallowed into an empty list (codex round 1, P1).
+		// An empty list means "nobody is listening", which makes a targeted
+		// push skip its publish and lose the instruction; an outage means
+		// "I cannot tell", which must make the caller decline to conclude
+		// anything. Collapsing the two here is the same defect this type
+		// was written to remove, one layer down.
 		slog.Warn("session presence: failed to read session index", "error", err, "user_id", userID)
-		return nil
+		return nil, fmt.Errorf("session presence: read index: %w", err)
 	}
 	if len(ids) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	keys := make([]string, 0, len(ids))
@@ -291,7 +357,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) []LiveSession {
 	values, err := p.client.MGet(ctx, keys...).Result()
 	if err != nil {
 		slog.Warn("session presence: failed to read session entries", "error", err, "user_id", userID)
-		return nil
+		return nil, fmt.Errorf("session presence: read entries: %w", err)
 	}
 
 	out := make([]LiveSession, 0, len(values))
@@ -332,7 +398,11 @@ func (p *RedisSessionPresence) ListForUser(userID string) []LiveSession {
 		}
 		return out[i].ConnectedAt.Before(out[j].ConnectedAt)
 	})
-	return out
+	// A skipped entry above (undecodable JSON) is NOT an error: the other
+	// sessions in the list are real, and one corrupt row should not blind
+	// the picker to them. Only a failure to READ is unknowable, and both
+	// of those return above.
+	return out, nil
 }
 
 // Close stops every renewal goroutine and waits for them. It is NOT part of
@@ -351,9 +421,9 @@ func (p *RedisSessionPresence) Close() {
 		return
 	}
 	p.closed = true
-	for key, cancel := range p.renewals {
+	for key, rn := range p.renewals {
 		delete(p.renewals, key)
-		cancel()
+		rn.stop()
 	}
 	p.mu.Unlock()
 	p.wg.Wait()

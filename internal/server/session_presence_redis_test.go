@@ -1,7 +1,7 @@
 package server
 
 import (
-	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +38,7 @@ func TestRedisSessionPresence_VisibleAcrossInstances(t *testing.T) {
 
 	id := instanceB.Add("user-1", SessionIdentity{Label: "docapp", PID: 4242, Armed: true})
 
-	sessions := instanceA.ListForUser("user-1")
+	sessions := mustList(t, instanceA, "user-1")
 	if len(sessions) != 1 {
 		t.Fatalf("instance A must see the session registered on B; got %d sessions", len(sessions))
 	}
@@ -73,7 +73,7 @@ func TestMemorySessionPresence_NotVisibleAcrossInstances(t *testing.T) {
 
 	instanceB.Add("user-1", SessionIdentity{Label: "docapp", Armed: true})
 
-	if got := len(instanceA.ListForUser("user-1")); got != 0 {
+	if got := len(mustList(t, instanceA, "user-1")); got != 0 {
 		t.Fatalf("in-memory presence is per-process by definition; instance A saw %d sessions", got)
 	}
 }
@@ -88,13 +88,13 @@ func TestRedisSessionPresence_RemoveIsImmediateAndCrossInstance(t *testing.T) {
 	instanceB, instanceA, _ := newRedisPresencePair(t)
 
 	id := instanceB.Add("user-1", SessionIdentity{Armed: true})
-	if got := len(instanceA.ListForUser("user-1")); got != 1 {
+	if got := len(mustList(t, instanceA, "user-1")); got != 1 {
 		t.Fatalf("precondition: A should see 1 session, got %d", got)
 	}
 
 	instanceB.Remove("user-1", id)
 
-	if got := len(instanceA.ListForUser("user-1")); got != 0 {
+	if got := len(mustList(t, instanceA, "user-1")); got != 0 {
 		t.Fatalf("Remove must be visible immediately on other instances; A still sees %d", got)
 	}
 }
@@ -112,7 +112,7 @@ func TestRedisSessionPresence_RemoveIsIdempotentAndSafeForUnknownIDs(t *testing.
 	p.Remove("user-1", id)
 	p.Remove("user-1", id)
 
-	if got := len(p.ListForUser("user-1")); got != 0 {
+	if got := len(mustList(t, p, "user-1")); got != 0 {
 		t.Fatalf("expected no sessions, got %d", got)
 	}
 }
@@ -138,19 +138,19 @@ func TestRedisSessionPresence_CrashedInstanceEntriesExpire(t *testing.T) {
 		client:        client,
 		sessionKeyTTL: 2 * time.Second,
 		renewInterval: time.Hour,
-		renewals:      make(map[string]context.CancelFunc),
+		renewals:      make(map[string]*renewal),
 	}
 	crashed.Add("user-1", SessionIdentity{Armed: true})
 
 	survivor := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(survivor.Close)
-	if got := len(survivor.ListForUser("user-1")); got != 1 {
+	if got := len(mustList(t, survivor, "user-1")); got != 1 {
 		t.Fatalf("precondition: the survivor should see the crashed instance's session, got %d", got)
 	}
 
 	mr.FastForward(3 * time.Second)
 
-	if got := len(survivor.ListForUser("user-1")); got != 0 {
+	if got := len(mustList(t, survivor, "user-1")); got != 0 {
 		t.Fatalf("a crashed instance's entries must expire; still listing %d", got)
 	}
 	// The index must self-heal too, not just the entry. Without the prune,
@@ -177,7 +177,7 @@ func TestRedisSessionPresence_RenewalKeepsALiveSessionListed(t *testing.T) {
 		client:        client,
 		sessionKeyTTL: 2 * time.Second,
 		renewInterval: 20 * time.Millisecond,
-		renewals:      make(map[string]context.CancelFunc),
+		renewals:      make(map[string]*renewal),
 	}
 	t.Cleanup(live.Close)
 	live.Add("user-1", SessionIdentity{Armed: true})
@@ -190,7 +190,7 @@ func TestRedisSessionPresence_RenewalKeepsALiveSessionListed(t *testing.T) {
 		mr.FastForward(time.Second)
 	}
 
-	if got := len(live.ListForUser("user-1")); got != 1 {
+	if got := len(mustList(t, live, "user-1")); got != 1 {
 		t.Fatalf("a renewed session must stay listed; got %d", got)
 	}
 }
@@ -207,7 +207,7 @@ func TestRedisSessionPresence_OrderIsDeterministic(t *testing.T) {
 		p.Add("user-1", SessionIdentity{Armed: true})
 	}
 
-	first := reader.ListForUser("user-1")
+	first := mustList(t, reader, "user-1")
 	if len(first) != 5 {
 		t.Fatalf("expected 5 sessions, got %d", len(first))
 	}
@@ -217,7 +217,7 @@ func TestRedisSessionPresence_OrderIsDeterministic(t *testing.T) {
 		}
 	}
 	for attempt := 0; attempt < 5; attempt++ {
-		again := reader.ListForUser("user-1")
+		again := mustList(t, reader, "user-1")
 		for i := range again {
 			if again[i].ID != first[i].ID {
 				t.Fatalf("listing order changed between reads at index %d", i)
@@ -237,7 +237,92 @@ func TestRedisSessionPresence_ScopedPerUser(t *testing.T) {
 
 	instanceB.Add("user-1", SessionIdentity{Armed: true})
 
-	if got := len(instanceA.ListForUser("user-2")); got != 0 {
+	if got := len(mustList(t, instanceA, "user-2")); got != 0 {
 		t.Fatalf("user-2 must not see user-1's sessions; got %d", got)
+	}
+}
+
+// TestRedisSessionPresence_RemoveWaitsForAnInFlightRenewal — codex round
+// 1, P2.
+//
+// Remove cancels the renewal goroutine and then DELs the entry.
+// Cancelling returns immediately, so an unfixed Remove leaves a renewal
+// already inside its write free to complete AFTERWARDS and re-create the
+// key — resurrecting a session that has just disconnected and leaving it
+// in every instance's picker until the TTL lapses. A targeted push at
+// that ghost publishes, reaches nobody, and reports one delivery.
+//
+// Driven through a seam that holds a renewal INSIDE its write, rather
+// than by racing it. The probabilistic version of this test (50µs renewal
+// interval, 200 add/remove iterations) passed 3/3 against the unfixed
+// Remove and was deleted: an instrument that cannot fail on broken code
+// proves nothing, and keeping it would have made the mutation matrix a
+// liar.
+func TestRedisSessionPresence_RemoveWaitsForAnInFlightRenewal(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	p := &RedisSessionPresence{
+		client:        client,
+		sessionKeyTTL: time.Minute,
+		renewInterval: 5 * time.Millisecond,
+		renewals:      make(map[string]*renewal),
+		onRenewWrite: func() {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		},
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		p.Close()
+	})
+
+	id := p.Add("user-1", SessionIdentity{Armed: true})
+	<-entered // a renewal is now parked immediately before its write
+
+	removed := make(chan struct{})
+	go func() {
+		p.Remove("user-1", id)
+		close(removed)
+	}()
+
+	// THE ASSERTION, and the one the unfixed Remove fails: it must still be
+	// waiting, because the renewal it cancelled has not finished. An
+	// unfixed Remove has already returned by now, having deleted the key
+	// that the parked write is about to re-create.
+	select {
+	case <-removed:
+		t.Fatal("Remove returned while a renewal write was still in flight; that renewal can re-create the entry after the delete")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-removed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Remove never returned after the renewal was released")
+	}
+
+	// And the consequence the wait exists to prevent, asserted from a
+	// DIFFERENT registry object the way another instance would see it.
+	reader := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(reader.Close)
+	sessions, err := reader.ListForUser("user-1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("Remove left a ghost session (%d listed) — a renewal completed after the delete", len(sessions))
 	}
 }

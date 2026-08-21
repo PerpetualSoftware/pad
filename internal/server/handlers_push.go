@@ -88,7 +88,19 @@ type pushResponse struct {
 	// Note this was never wrong in the over-reporting direction for a
 	// TARGETED push, for the unhappy reason that the same locality stopped
 	// those from being published at all.
-	DeliveredSessions int `json:"delivered_sessions"`
+	//
+	// NULL MEANS "PUBLISHED, COUNT UNKNOWN" — never "zero" (codex round 1
+	// P1). It is emitted only when the presence registry could not be READ
+	// (a Redis outage) on a BROADCAST push: the publish still happened,
+	// because presence never gated a broadcast, but there is no honest
+	// number to put here and 0 would claim nobody received it. A TARGETED
+	// push in that state is refused with a 503 instead and never reaches
+	// this struct, so a null is always a broadcast.
+	//
+	// Consumers: treat null as "unknown", not as falsy. Existing clients
+	// are unaffected in practice — internal/cli's PushResult has no such
+	// field, and the web's type has always been optional.
+	DeliveredSessions *int `json:"delivered_sessions"`
 }
 
 // maxPushTargetSessionIDLen bounds target_session_id (dispatcher review
@@ -262,7 +274,36 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// both implementations mint a fresh uuid per Add
 	// (MemorySessionPresence.Add, RedisSessionPresence.Add), so a
 	// reconnecting client never returns under a previous id on either.
-	deliveredSessions := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
+	deliveredSessionsUnknown := false
+	deliveredSessions, presenceErr := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
+	if presenceErr != nil {
+		// PRESENCE GATES A TARGETED PUSH BUT ONLY COUNTS A BROADCAST, and
+		// that asymmetry is exactly why an unreadable registry gets two
+		// different answers rather than one uniform refusal (codex round 1
+		// P1; dispatcher ruling).
+		//
+		// TARGETED: the gate cannot be evaluated at all. Publishing would
+		// deliver but report a count we do not have; skipping silently is
+		// the original bug. So refuse — 503 `unavailable`, nothing
+		// published, which is true and is already the code the web client
+		// treats as safe to resend.
+		if targetSessionID != "" {
+			slog.Warn("push refused: cannot read session presence to evaluate the target",
+				"item_ref", item.Ref, "error", presenceErr)
+			writeError(w, http.StatusServiceUnavailable, "unavailable",
+				"Push is not available right now — the target session could not be resolved, so nothing was sent")
+			return
+		}
+		// BROADCAST: presence never gated this — the publish is
+		// unconditional and always has been. Refusing here would
+		// manufacture an outage for a delivery that would have succeeded,
+		// coupling push availability to presence availability, which is a
+		// dependency that does not otherwise exist. Publish, and report the
+		// count as UNKNOWN rather than as 0.
+		slog.Warn("push: session presence unreadable, broadcasting with an unknown delivery count",
+			"item_ref", item.Ref, "error", presenceErr)
+		deliveredSessionsUnknown = true
+	}
 	if targetSessionID == "" || deliveredSessions > 0 {
 		// The ONE direct Bus.Publish call in this package, and the only
 		// one that acts on the result (BUG-2699 — see
@@ -292,13 +333,16 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, pushResponse{
-		Ref:               item.Ref,
-		Workspace:         ws.Slug,
-		Pushed:            true,
-		Message:           message,
-		DeliveredSessions: deliveredSessions,
-	})
+	resp := pushResponse{
+		Ref:       item.Ref,
+		Workspace: ws.Slug,
+		Pushed:    true,
+		Message:   message,
+	}
+	if !deliveredSessionsUnknown {
+		resp.DeliveredSessions = &deliveredSessions
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // deliveredSessionCount answers "how many of userID's own live sessions
@@ -327,11 +371,23 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // The publish-skip logic below reads this same filtered count, so a
 // targeted push at an unarmed session is skipped for the identical
 // reason a targeted push at a vanished one is: a guaranteed no-op.
-func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string) int {
+//
+// UNREADABLE PRESENCE IS NOT ZERO (codex round 1, P1). The error is
+// returned rather than folded into a 0, because 0 is a load-bearing
+// answer on this path: it makes the caller SKIP the publish for a
+// targeted push. Reporting 0 for a registry that could not be read would
+// therefore drop the instruction and answer success — the same defect
+// BUG-2698 filed, arriving through the fix for it. A nil registry still
+// yields (0, nil): that is a server built without presence, which is a
+// known configuration rather than an unknown state.
+func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string) (int, error) {
 	if presence == nil {
-		return 0
+		return 0, nil
 	}
-	sessions := presence.ListForUser(userID)
+	sessions, err := presence.ListForUser(userID)
+	if err != nil {
+		return 0, err
+	}
 	count := 0
 	for _, sess := range sessions {
 		if !sess.Armed {
@@ -342,7 +398,7 @@ func deliveredSessionCount(presence SessionPresence, userID, targetSessionID str
 		}
 		count++
 	}
-	return count
+	return count, nil
 }
 
 // pushPublishUnconfirmedCode is the error code for a push whose publish
