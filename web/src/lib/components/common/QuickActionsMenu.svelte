@@ -344,8 +344,22 @@
 		try {
 			// NEVER retried automatically, here or anywhere else: the endpoint
 			// carries no idempotency key.
-			await api.items.push(ws, target, collapsePushMessage(prompt));
-			announce({ kind: 'pushed', count: knownCount });
+			const result = await api.items.push(ws, target, collapsePushMessage(prompt));
+			// The SERVER's count wins over the preflight one (codex round 5).
+			// `knownCount` is whatever the last presence poll saw, which may
+			// be seconds stale; the response's `delivered_sessions` is the
+			// number the server actually matched at publish time. And when it
+			// is NULL — published, but the registry could not be read — the
+			// toast must not fall back to the stale number, because that
+			// would assert a figure the server just said it could not
+			// produce. An ABSENT field (a server predating targeting) is the
+			// one case where the preflight count is still the best available
+			// answer.
+			const count =
+				result.delivered_sessions === undefined
+					? knownCount
+					: result.delivered_sessions;
+			announce({ kind: 'pushed', count });
 		} catch (err) {
 			if (isPrePublishRefusal(err)) {
 				// The server refused before publishing, so nothing went out and

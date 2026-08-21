@@ -896,6 +896,27 @@ func serveCmd() *cobra.Command {
 				eventBus.Close()
 				slog.Info("Event bus closed")
 
+				// Presence closes FIRST — before the watch bus, and well before
+				// Shutdown. The ordering is load-bearing twice over (codex
+				// rounds 4 and 5 on BUG-2698).
+				//
+				// Remove waits for a session's renewal goroutine. Closing the bus
+				// is what RELEASES the SSE handlers, so each one immediately runs
+				// its deferred Remove — and any Remove that runs before Close
+				// still finds a live renewal to wait for, bypassing the drain
+				// bound entirely and putting that wait in front of Shutdown.
+				// Closing presence first cancels every renewal and empties the
+				// registry, so the Removes that follow find nothing to wait for
+				// and go straight to their bounded deregistration writes.
+				//
+				// Nothing here depends on the bus, so there is no cost to going
+				// first. Idempotent, so the deferred Close at the wiring site
+				// stays a harmless backstop for early-return paths.
+				if redisPresence != nil {
+					redisPresence.Close()
+					slog.Info("Session presence registry closed")
+				}
+
 				// Same reasoning for the watch bus, and it matters for the
 				// same reason: GET /api/v1/events/stream is a long-lived
 				// handler blocked on this bus's channel, so leaving it open
@@ -927,23 +948,6 @@ func serveCmd() *cobra.Command {
 				// caller is no longer told that it was.
 				watchBus.Close()
 				slog.Info("Watch notification bus closed")
-
-				// Presence closes HERE, before Shutdown drains handlers, and the
-				// ordering is load-bearing (codex round 4 on BUG-2698). Remove
-				// waits for a session's renewal goroutine, so an SSE handler
-				// unwinding during Shutdown would otherwise sit in that wait
-				// while the drain backstop — which only runs inside Close — had
-				// not run yet: Shutdown held by the very goroutines Close exists
-				// to stop. Closing first cancels every renewal and empties the
-				// registry, so each handler's deferred Remove finds nothing to
-				// wait for and goes straight to its bounded deregistration write.
-				//
-				// Idempotent, so the deferred Close at the wiring site stays a
-				// harmless backstop for early-return paths that never reach here.
-				if redisPresence != nil {
-					redisPresence.Close()
-					slog.Info("Session presence registry closed")
-				}
 
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()

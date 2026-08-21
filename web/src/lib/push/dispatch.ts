@@ -133,7 +133,12 @@ export function routePrompt(
 
 /** What actually happened, once the route was taken. */
 export type DispatchOutcome =
-	| { kind: 'pushed'; count: number }
+	/** `count` is NULL when the server published the push but could not
+	 *  read the presence registry to count it (BUG-2698's
+	 *  `delivered_sessions: null`). Null is not zero: the notification went
+	 *  out, so the toast must still say pushed — it just cannot name a
+	 *  number. */
+	| { kind: 'pushed'; count: number | null }
 	| { kind: 'copied'; because: ClipboardReason }
 	| { kind: 'copy-failed'; because: ClipboardReason }
 	/** The server refused before publishing — nothing was sent, and offering
@@ -162,6 +167,15 @@ export interface DispatchMessage {
 export function describeDispatch(outcome: DispatchOutcome): DispatchMessage {
 	switch (outcome.kind) {
 		case 'pushed':
+			if (outcome.count === null) {
+				// Deliberately no number. Falling back to a stale preflight
+				// count here would assert a delivery figure the server just
+				// said it could not produce.
+				return {
+					message: 'Pushed to your agent sessions — delivery isn’t confirmed',
+					tone: 'success'
+				};
+			}
 			return {
 				message:
 					outcome.count === 1

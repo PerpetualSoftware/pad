@@ -470,7 +470,15 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		return nil, fmt.Errorf("session presence: read index: %w", err)
 	}
 	if len(ids) == 0 {
-		return nil, nil
+		// EMPTY, not nil (codex round 5). MemorySessionPresence returns a
+		// non-nil empty slice, and handleListSessions marshals whatever it
+		// gets straight into `sessions` — so a nil here serialises as
+		// `"sessions": null` where the other implementation produces
+		// `"sessions": []`. A consumer that maps over the array gets a
+		// runtime error against one implementation and not the other, which
+		// is precisely the kind of cross-implementation divergence this
+		// registry exists to remove.
+		return []LiveSession{}, nil
 	}
 
 	keys := make([]string, 0, len(ids))

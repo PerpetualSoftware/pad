@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -246,5 +248,46 @@ func TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal(t *testing
 	case <-closed:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close never returned with a renewal parked inside its write — the drain has no deadline, so shutdown waits forever")
+	}
+}
+
+// TestRedisSessionPresence_EmptyListIsNotNil — codex round 5, P2.
+//
+// handleListSessions marshals whatever ListForUser returns straight into
+// the `sessions` field, so a nil slice serialises as `"sessions": null`
+// where MemorySessionPresence produces `"sessions": []`. A consumer that
+// maps over the array breaks against one implementation and not the other.
+//
+// Asserts the WIRE, not just the Go value: a non-nil check would pass for
+// a value that still marshalled to null through some future indirection.
+func TestRedisSessionPresence_EmptyListIsNotNil(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	p := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	t.Cleanup(p.Close)
+
+	sessions, err := p.ListForUser("nobody-here")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if sessions == nil {
+		t.Fatal("an empty listing must be an empty slice, not nil — it serialises as null and breaks array consumers")
+	}
+
+	encoded, err := json.Marshal(sessionsResponse{Sessions: sessions, Count: len(sessions)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"sessions":[]`) {
+		t.Fatalf("expected an empty array on the wire, got %s", encoded)
+	}
+
+	// CONTROL: the in-memory implementation, whose shape this is matching.
+	memSessions, err := NewMemorySessionPresence().ListForUser("nobody-here")
+	if err != nil {
+		t.Fatalf("memory list: %v", err)
+	}
+	if memSessions == nil {
+		t.Fatal("precondition: MemorySessionPresence was expected to return a non-nil empty slice")
 	}
 }
