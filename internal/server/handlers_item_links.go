@@ -267,12 +267,20 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 	}
 	actor, source := actorFromRequest(r)
 	// events.ItemUpdated LITERAL, not derived from the taxonomy, and that is
-	// the decision rather than an oversight. Item-link mutations are SILENT in
-	// events/1 (SPEC-3 v1.5): a link is plausibly its own subject kind, and
-	// faking item.updated would ship a snapshot in which nothing the consumer
-	// caches has changed. There is no canonical event to derive a name from
-	// here, so this publish stays a pure SSE nudge for the live UI. TASK-2723
-	// carries the link.created / link.removed shape and this call site with
-	// it.
+	// the decision rather than an oversight.
+	//
+	// THE LINE IS PER-LINK-TYPE, not per-handler (SPEC-3 v1.6): a mutation
+	// that writes the ITEM'S OWN ROW emits item.updated; one that writes only
+	// the links table stays silent. A PARENT link crosses that line — it
+	// advances the child's seq — and emits from the store, inside
+	// setParentLinkOnce or the item-update transaction. Relationship-graph
+	// links (blocks / blocked-by) and `implements` do not, so events/1 says
+	// nothing about them and this publish stays a pure SSE nudge for the live
+	// UI. TASK-2723 carries the link.created / link.removed shape and this
+	// call site with it.
+	//
+	// Consequence worth naming: this handler publishes SSE for BOTH kinds, so
+	// the SSE and events/1 pictures deliberately differ here. That is the
+	// v1.5 silence working, not drift.
 	s.publishItemEventWithName(events.ItemUpdated, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, item.Seq)
 }

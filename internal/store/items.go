@@ -2613,7 +2613,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// update committed while the parent link write failed. The new
 	// parent's advisory lock was already folded into the acquisition
 	// above, so setParentLinkTx's re-lock is a no-op.
-	if parentLink != nil && parentLink.Provided {
+	hierarchyChanged := parentLink != nil && parentLink.Provided
+	if hierarchyChanged {
 		if parentLink.ParentID != "" {
 			if _, err := s.setParentLinkTx(tx, parentLink.WorkspaceID, id, parentLink.ParentID, parentLink.CreatedBy); err != nil {
 				return nil, err
@@ -2671,7 +2672,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// The prior status comes from the same in-tx before/after comparison that
 	// wrote the status_transitions row, so the event and the transition log
 	// cannot disagree about what happened.
-	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey, opt.batchID); err != nil {
+	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey, opt.batchID, hierarchyChanged); err != nil {
 		return nil, err
 	}
 
@@ -3315,26 +3316,34 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy strin
 		return nil, err
 	}
 
-	// item.updated for the CHILD, on this transaction (TASK-2714, codex round
-	// 4; SPEC-3 v1.6 clarification).
+	// item.updated for the CHILD, on this transaction (TASK-2714, codex rounds
+	// 4-5; SPEC-3 v1.6 clarification).
 	//
-	// A parent link writes the item's OWN row — it advances seq and flips the
-	// is_unparented bit — and that is the criterion the contract uses to
-	// divide these two rulings: a mutation that touches the item's row emits
-	// item.updated, and a relationship-graph link (blocks / blocked-by), which
-	// writes only the links table, stays silent under v1.5.
+	// A parent link writes the item's OWN row — it advances seq — and that is
+	// the criterion the contract uses to divide two rulings that look
+	// adjacent: a mutation touching the item's row emits item.updated, while a
+	// relationship-graph link (blocks / blocked-by), which writes only the
+	// links table, stays silent under v1.5.
 	//
-	// The regression that forced it: createItemChecked calls this AFTER
-	// CreateItem has already committed item.created with a pre-link snapshot,
-	// then re-reads the item for its own response. The hand-called webhook
-	// this replaced dispatched that re-read, so a consumer saw the parent;
-	// under the drain, the frozen created row is all there was. created
-	// (pre-link) then updated (post-link) is a true history — a frozen
-	// pre-link snapshot with no correction is not.
+	// WHAT THE PAYLOAD DOES AND DOES NOT CARRY, stated because round 4's
+	// version of this comment claimed more than the code delivers (round 5
+	// caught it): the snapshot is the ITEM ROW, and the parent EDGE is not on
+	// it. items.parent_id is legacy and untouched here, and IsUnparented is
+	// populated only by the local-first index queries. So this event reports
+	// that the row changed — a fresh seq and updated_at — not the linkage
+	// itself. That is not a shortfall against the behaviour it restores: the
+	// hand-called webhook this replaced dispatched the handler's post-link
+	// re-read, which is the SAME scan and carried the same fields. A consumer
+	// wanting the edge reads the item, exactly as before.
+	//
+	// The regression it closes: createItemChecked calls this AFTER CreateItem
+	// has committed item.created with a pre-link snapshot. Without an event
+	// here the frozen created row — with the stale seq — was the only thing on
+	// the wire, and nothing corrected it.
 	//
 	// The snapshot MUST come from getItemTx: a pool read takes a different
 	// connection, cannot see this uncommitted write, and would emit the
-	// pre-link state under a post-link event.
+	// pre-link seq under a post-link event.
 	//
 	// EMITTED HERE RATHER THAN IN setParentLinkTx, which is the shared core.
 	// UpdateItemWithParentLink reuses that core inside the item-update

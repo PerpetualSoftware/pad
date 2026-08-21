@@ -2177,8 +2177,17 @@ func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
 	if int64(seq) <= createdSeq {
 		t.Errorf("event carries seq %d, want later than the create's %d — this is the pre-link snapshot", int64(seq), createdSeq)
 	}
-	if payload["is_unparented"] == true {
-		t.Error("event says the child is unparented, i.e. it describes the state before the link it is reporting")
+	// AND WHAT IT DOES NOT CARRY, asserted rather than left implied. Round 4's
+	// version of this test checked is_unparented and passed vacuously: that
+	// field is populated only by the local-first index queries, so it is
+	// absent from every event payload and "not true" was satisfied by nil.
+	// The parent EDGE is not in an item snapshot on any path — items.parent_id
+	// is legacy and untouched by SetParentLink — and it was not in the
+	// hand-called webhook this replaced either, which dispatched the same
+	// scan. The event's content is the ROW CHANGE; pinning that here stops the
+	// next reader inferring linkage data that has never been on this wire.
+	if _, present := payload["is_unparented"]; present {
+		t.Error("payload carries is_unparented; the assertions here assume item snapshots never do")
 	}
 
 	// The PARENT's row is untouched by this write, so it emits nothing — the
@@ -2186,5 +2195,63 @@ func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
 	// about "some event fired".
 	if got := outboxEventsFor(t, s, parent.ID); len(got) != 0 {
 		t.Errorf("parent emitted %v; the link does not write the parent's row", got)
+	}
+}
+
+// TestOutbox_ParentOnlyUpdateStillEmits covers the path SetParentLink's fix
+// did NOT reach (codex round 5): UpdateItemWithParentLink writes the hierarchy
+// inside the item-update transaction and emits from a SNAPSHOT DIFF, and a
+// parent write leaves nothing in a snapshot to diff — items.parent_id is
+// legacy and untouched, the link lives in its own table, and seq/updated_at
+// are excluded as metadata.
+//
+// So a fields_patch carrying only `parent` mutated the row and emitted
+// nothing. The same criterion that made SetParentLink emit applies here; the
+// difference is only which transaction does the write.
+func TestOutbox_ParentOnlyUpdateStillEmits(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Outbox parent-only update")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+	clearOutbox(t, s)
+
+	// No field changes at all — only the hierarchy.
+	if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+		Provided:    true,
+		WorkspaceID: ws.ID,
+		ParentID:    parent.ID,
+		CreatedBy:   "user",
+	}); err != nil {
+		t.Fatalf("UpdateItemWithParentLink: %v", err)
+	}
+
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("events after a parent-only update = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+
+	// A CLEAR is the same mutation in the other direction and must also emit.
+	clearOutbox(t, s)
+	if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, &ParentLinkUpdate{
+		Provided:    true,
+		WorkspaceID: ws.ID,
+		CreatedBy:   "user",
+	}); err != nil {
+		t.Fatalf("UpdateItemWithParentLink (clear): %v", err)
+	}
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 1 || got[0] != kernelevents.ItemUpdated {
+		t.Fatalf("events after a parent CLEAR = %v, want exactly [%s]", got, kernelevents.ItemUpdated)
+	}
+
+	// CONTROL: an update with no hierarchy write and no field change still
+	// emits nothing. Without this the fix could be "always emit", which would
+	// undo the disjoint-delta rule's whole point.
+	clearOutbox(t, s)
+	if _, err := s.UpdateItemWithParentLink(child.ID, models.ItemUpdate{}, nil, nil); err != nil {
+		t.Fatalf("UpdateItemWithParentLink (no-op): %v", err)
+	}
+	if got := outboxEventsFor(t, s, child.ID); len(got) != 0 {
+		t.Errorf("a no-op update emitted %v, want nothing", got)
 	}
 }

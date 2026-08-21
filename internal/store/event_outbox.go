@@ -822,7 +822,15 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 // branch on "was this a status update" — branching would drop the item.updated
 // half of every mixed update, silently, which is the shape of bug that
 // motivated the rule.
-func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string) error {
+//
+// hierarchyChanged forces the item.updated half. The disjoint-delta diff
+// compares two SNAPSHOTS, and a parent-link write leaves nothing in a snapshot
+// to compare: items.parent_id is legacy and untouched, the link lives in its
+// own table, and seq/updated_at are excluded from the diff as metadata. So a
+// fields_patch carrying only `parent` mutated the row and emitted NOTHING
+// (codex round 5). The caller knows it performed a hierarchy write; the diff
+// cannot see it, and it must not have to.
+func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string, hierarchyChanged bool) error {
 	if statusChanged {
 		// Taken by address unconditionally: an empty prior status is a real
 		// prior status here, not an absent one.
@@ -836,7 +844,7 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 	if err != nil {
 		return err
 	}
-	if otherChanged {
+	if otherChanged || hierarchyChanged {
 		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, nil, batchID); err != nil {
 			return err
 		}
@@ -1308,8 +1316,19 @@ func (s *Store) EmitBulkHeaderEvent(workspaceID, batchID, op string, itemIDs []s
 	if batchID == "" {
 		return fmt.Errorf("outbox: bulk header has no batch id")
 	}
-	// A bulk operation that changed nothing is not an event, same rule as the
-	// transactional bulk emitter.
+	// A bulk operation that TOUCHED nothing is not an event. Note the verb:
+	// this is an empty-member-list guard, not a semantic-change guard, and the
+	// difference is visible on the wire (codex rounds 1, 2 and 5 each raised
+	// it). The caller passes every row it mutated without error, which
+	// includes rows where the mutation was a no-op — untagging a tag nobody
+	// has — and the store emits member events only for real changes. So a
+	// header can arrive with a count and no members.
+	//
+	// Left as-is deliberately: the hand-called webhook this replaced fired on
+	// exactly the same condition with exactly the same count (verified against
+	// origin/main), so narrowing it now would be a silent wire change to
+	// `count` and `item_ids` rather than a bug fix. It belongs with a contract
+	// version.
 	if len(itemIDs) == 0 {
 		return nil
 	}
