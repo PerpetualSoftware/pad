@@ -147,6 +147,26 @@ const (
 type eventSpec struct {
 	subject string
 	payload string
+
+	// sse is the snake_case name this event publishes under on the SSE
+	// surface, or "" when the event has no SSE surface at all.
+	//
+	// SPEC-3 §"The choke point owns the canonical→surface name mapping":
+	// SSE (snake_case) and webhooks (dot-form) drifted because nothing tied
+	// their vocabularies together. This field is the tie. SPEC-3 v1.5 pins
+	// what "derive" means — NAME derivation, not delivery path: webhooks
+	// deliver through the drain, SSE stays direct-published at the mutation
+	// site (it carries request-scoped Actor/ActorName/Source that a frozen
+	// payload deliberately does not hold) and takes only its NAME from here.
+	//
+	// The empty string is a real value, not a gap: attachment, member and
+	// pack events have no SSE surface, and SurfaceSSE reports false for them
+	// so a caller cannot mistake silence for a name. Several canonical events
+	// map onto ONE SSE name — status_changed and moved both surface as
+	// item_updated — because the SSE vocabulary is coarser than events/1 and
+	// the UI has never distinguished them. That is a mapping, not a loss:
+	// the fine-grained name is what the webhook wire and bindings receive.
+	sse string
 }
 
 // canonical is the closed events/1 set. Adding an entry here is the ONLY way
@@ -186,22 +206,22 @@ const (
 )
 
 var canonical = map[string]eventSpec{
-	ItemCreated:       {SubjectItem, PayloadItemSnapshot},
-	ItemUpdated:       {SubjectItem, PayloadItemSnapshot},
-	ItemStatusChanged: {SubjectItem, PayloadItemSnapshot},
-	ItemMoved:         {SubjectItem, PayloadItemSnapshot},
-	ItemDeleted:       {SubjectItem, PayloadItemSnapshot},
-	ItemRestored:      {SubjectItem, PayloadItemSnapshot},
-	ItemBulkUpdated:   {SubjectItemBatch, PayloadItemBatch},
-	CommentCreated:    {SubjectComment, PayloadCommentSnapshot},
-	CommentUpdated:    {SubjectComment, PayloadCommentSnapshot},
-	CommentDeleted:    {SubjectComment, PayloadRefOnly},
-	AttachmentAdded:   {SubjectAttachment, PayloadAttachmentSnapshot},
-	AttachmentRemoved: {SubjectAttachment, PayloadRefOnly},
-	MemberJoined:      {SubjectMember, PayloadMember},
-	PackInstalled:     {SubjectPack, PayloadPack},
-	PackUpgraded:      {SubjectPack, PayloadPack},
-	PackDisabled:      {SubjectPack, PayloadPack},
+	ItemCreated:       {SubjectItem, PayloadItemSnapshot, "item_created"},
+	ItemUpdated:       {SubjectItem, PayloadItemSnapshot, "item_updated"},
+	ItemStatusChanged: {SubjectItem, PayloadItemSnapshot, "item_updated"},
+	ItemMoved:         {SubjectItem, PayloadItemSnapshot, "item_updated"},
+	ItemDeleted:       {SubjectItem, PayloadItemSnapshot, "item_archived"},
+	ItemRestored:      {SubjectItem, PayloadItemSnapshot, "item_restored"},
+	ItemBulkUpdated:   {SubjectItemBatch, PayloadItemBatch, "items_bulk_updated"},
+	CommentCreated:    {SubjectComment, PayloadCommentSnapshot, "comment_created"},
+	CommentUpdated:    {SubjectComment, PayloadCommentSnapshot, "comment_updated"},
+	CommentDeleted:    {SubjectComment, PayloadRefOnly, "comment_deleted"},
+	AttachmentAdded:   {SubjectAttachment, PayloadAttachmentSnapshot, ""},
+	AttachmentRemoved: {SubjectAttachment, PayloadRefOnly, ""},
+	MemberJoined:      {SubjectMember, PayloadMember, ""},
+	PackInstalled:     {SubjectPack, PayloadPack, ""},
+	PackUpgraded:      {SubjectPack, PayloadPack, ""},
+	PackDisabled:      {SubjectPack, PayloadPack, ""},
 }
 
 // PayloadFamily returns the payload shape a canonical event carries, and false
@@ -246,4 +266,24 @@ func Canonical() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// SurfaceSSE returns the SSE wire name a canonical event publishes under, and
+// false when it has none — either because the name is not canonical, or
+// because the event is deliberately absent from the SSE surface.
+//
+// ONE BOOL FOR BOTH CASES, deliberately. A caller has the same job either way:
+// do not publish. Splitting them would invite a caller to branch on
+// "canonical but unmapped" and invent a name, which is the drift this table
+// exists to end.
+//
+// The webhook wire name needs no accessor: it IS the canonical name. That
+// asymmetry is the point of SPEC-3's mapping sentence — the dot-form vocabulary
+// is the contract, and SSE's snake_case is a surface rendering of it.
+func SurfaceSSE(name string) (string, bool) {
+	spec, ok := canonical[name]
+	if !ok || spec.sse == "" {
+		return "", false
+	}
+	return spec.sse, true
 }

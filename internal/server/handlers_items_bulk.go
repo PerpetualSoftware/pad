@@ -697,7 +697,7 @@ func (s *Server) publishBulkItemsEvent(workspaceID, op, collection string, count
 		return
 	}
 	s.events.Publish(events.Event{
-		Type:        events.ItemsBulkUpdated,
+		Type:        sseItemsBulk,
 		WorkspaceID: workspaceID,
 		Collection:  collection,
 		Op:          op,

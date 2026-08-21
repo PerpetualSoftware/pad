@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"runtime/debug"
 
-	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -662,7 +661,7 @@ func (s *Server) emitCopyFanout(r *http.Request, res *store.CrossWorkspaceCopyRe
 	// --- Destination: always all three. ---
 	targetWorkspaceID := res.Item.WorkspaceID
 	s.logActivity(targetWorkspaceID, res.Item.ID, "created", r)
-	s.publishItemEventWithName(events.ItemCreated, targetWorkspaceID, res.Item.ID, res.Item.Title,
+	s.publishItemEventWithName(sseItemCreated, targetWorkspaceID, res.Item.ID, res.Item.Title,
 		res.TargetCollection.Slug, actor, actorName, actorSource, res.Item.Seq)
 	s.dispatchWebhook(targetWorkspaceID, "item.created", res.Item)
 
@@ -674,7 +673,7 @@ func (s *Server) emitCopyFanout(r *http.Request, res *store.CrossWorkspaceCopyRe
 		return
 	}
 	s.logActivity(res.SourceWorkspaceID, res.Source.ID, "archived", r)
-	s.publishItemEventWithName(events.ItemArchived, res.SourceWorkspaceID, res.Source.ID, res.Source.Title,
+	s.publishItemEventWithName(sseItemArchived, res.SourceWorkspaceID, res.Source.ID, res.Source.Title,
 		res.SourceCollection.Slug, actor, actorName, actorSource, *res.SourceSeq)
 	s.dispatchWebhook(res.SourceWorkspaceID, "item.deleted", res.Source)
 }

@@ -266,5 +266,13 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 		return
 	}
 	actor, source := actorFromRequest(r)
+	// events.ItemUpdated LITERAL, not derived from the taxonomy, and that is
+	// the decision rather than an oversight. Item-link mutations are SILENT in
+	// events/1 (SPEC-3 v1.5): a link is plausibly its own subject kind, and
+	// faking item.updated would ship a snapshot in which nothing the consumer
+	// caches has changed. There is no canonical event to derive a name from
+	// here, so this publish stays a pure SSE nudge for the live UI. TASK-2723
+	// carries the link.created / link.removed shape and this call site with
+	// it.
 	s.publishItemEventWithName(events.ItemUpdated, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, item.Seq)
 }

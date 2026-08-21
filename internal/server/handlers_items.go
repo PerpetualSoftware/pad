@@ -807,7 +807,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	actor, source := actorFromRequest(r)
 	actorNameForCreate := actorNameFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "created", r)
-	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
+	s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
 	// Assignment-at-creation (TASK-2533): unlike an update, a freshly
@@ -1694,7 +1694,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	actor, source := actorFromRequest(r)
 	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
 	actorNameForUpdate := actorNameFromRequest(r)
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
+	s.publishItemEventWithName(sseItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
 	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)
 
@@ -1715,12 +1715,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("failed to create comment on item update", "item_id", updated.ID, "error", cerr)
 		}
 		if cerr == nil && comment != nil {
-			s.publishCommentEvent(events.CommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
-			s.dispatchWebhook(workspaceID, "item.updated_with_comment", map[string]interface{}{
-				"item":    updated,
-				"comment": comment,
-				"changes": meta,
-			})
+			s.publishCommentEvent(sseCommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
+			// item.updated_with_comment is RETIRED (SPEC-3 v1.2, Dave's
+			// ruling): a hand-rolled composite with no flood argument,
+			// which folds into item.updated + comment.created — both of
+			// which this path already emits, transactionally, from the
+			// store. It is never emitted under events/1, with no
+			// deprecation window, because webhooks are CLI-registered
+			// only today (no UI surface) and there were no known
+			// consumers at ruling time.
 			// TASK-2533: this comment is created via a DIFFERENT code
 			// path than handleCreateComment (store.CreateComment called
 			// directly, not through POST .../comments) — a bypass Rider
@@ -1791,7 +1794,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "archived", r)
-	s.publishItemEventWithName(events.ItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
+	s.publishItemEventWithName(sseItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
 	s.dispatchWebhook(workspaceID, "item.deleted", item)
 
 	w.WriteHeader(http.StatusNoContent)
@@ -1844,7 +1847,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, restored.ID, "restored", r)
-	s.publishItemEventWithName(events.ItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
+	s.publishItemEventWithName(sseItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
 
 	restoreVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	if err := s.enrichItemForResponse(restored, restoreVisIDs); err != nil {
@@ -2128,7 +2131,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Publish events for both old and new collections
 	actorNameForMove := actorNameFromRequest(r)
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
+	s.publishItemEventWithName(sseItemMoved, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
 	s.publishWatchNotifications(workspaceID, moved, actor, actorNameForMove)
 

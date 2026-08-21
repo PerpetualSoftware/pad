@@ -136,7 +136,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Publish SSE event
-	s.publishCommentEvent(events.CommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
+	s.publishCommentEvent(sseCommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "comment.created", comment)
 
 	if s.watchEvents != nil {
@@ -263,7 +263,7 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 		title = item.Title
 		collSlug = item.CollectionSlug
 	}
-	s.publishCommentEvent(events.CommentUpdated, workspaceID, updated.ItemID, updated.ID, title, collSlug, actor, source)
+	s.publishCommentEvent(sseCommentUpdated, workspaceID, updated.ItemID, updated.ID, title, collSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "comment.updated", updated)
 
 	writeJSON(w, http.StatusOK, updated)
@@ -365,7 +365,7 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 		replyItemRef = replyItem.Ref
 		replyCollID = replyItem.CollectionID
 	}
-	s.publishCommentEvent(events.CommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, replyCollSlug, actor, source)
+	s.publishCommentEvent(sseCommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, replyCollSlug, actor, source)
 
 	// TASK-2533 (codex round 1, finding 2): a reply is a SEPARATE code
 	// path from handleCreateComment — it calls store.CreateComment

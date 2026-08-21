@@ -1375,23 +1375,23 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 	// The events/1 set at SPEC-3 v1.4. Adding, removing or re-homing an entry
 	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
 	// doc comment in the same commit.
-	want := map[string]struct{ subject, family string }{
-		"item.created":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
-		"item.updated":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
-		"item.status_changed": {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
-		"item.moved":          {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
-		"item.deleted":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
-		"item.restored":       {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot},
-		"item.bulk_updated":   {kernelevents.SubjectItemBatch, kernelevents.PayloadItemBatch},
-		"comment.created":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot},
-		"comment.updated":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot},
-		"comment.deleted":     {kernelevents.SubjectComment, kernelevents.PayloadRefOnly},
-		"attachment.added":    {kernelevents.SubjectAttachment, kernelevents.PayloadAttachmentSnapshot},
-		"attachment.removed":  {kernelevents.SubjectAttachment, kernelevents.PayloadRefOnly},
-		"member.joined":       {kernelevents.SubjectMember, kernelevents.PayloadMember},
-		"pack.installed":      {kernelevents.SubjectPack, kernelevents.PayloadPack},
-		"pack.upgraded":       {kernelevents.SubjectPack, kernelevents.PayloadPack},
-		"pack.disabled":       {kernelevents.SubjectPack, kernelevents.PayloadPack},
+	want := map[string]struct{ subject, family, sse string }{
+		"item.created":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_created"},
+		"item.updated":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_updated"},
+		"item.status_changed": {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_updated"},
+		"item.moved":          {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_updated"},
+		"item.deleted":        {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_archived"},
+		"item.restored":       {kernelevents.SubjectItem, kernelevents.PayloadItemSnapshot, "item_restored"},
+		"item.bulk_updated":   {kernelevents.SubjectItemBatch, kernelevents.PayloadItemBatch, "items_bulk_updated"},
+		"comment.created":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot, "comment_created"},
+		"comment.updated":     {kernelevents.SubjectComment, kernelevents.PayloadCommentSnapshot, "comment_updated"},
+		"comment.deleted":     {kernelevents.SubjectComment, kernelevents.PayloadRefOnly, "comment_deleted"},
+		"attachment.added":    {kernelevents.SubjectAttachment, kernelevents.PayloadAttachmentSnapshot, ""},
+		"attachment.removed":  {kernelevents.SubjectAttachment, kernelevents.PayloadRefOnly, ""},
+		"member.joined":       {kernelevents.SubjectMember, kernelevents.PayloadMember, ""},
+		"pack.installed":      {kernelevents.SubjectPack, kernelevents.PayloadPack, ""},
+		"pack.upgraded":       {kernelevents.SubjectPack, kernelevents.PayloadPack, ""},
+		"pack.disabled":       {kernelevents.SubjectPack, kernelevents.PayloadPack, ""},
 	}
 
 	// The name constants are pinned to their wire strings separately, because
@@ -1444,6 +1444,17 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		if !kernelevents.IsCanonical(name) {
 			t.Errorf("IsCanonical(%q) = false for an event Canonical() returned", name)
 		}
+		// The SSE surface name, including the events that deliberately have
+		// none. An empty want.sse asserts SILENCE — SurfaceSSE must report
+		// false rather than handing back a name a caller would publish under.
+		sse, sseOK := kernelevents.SurfaceSSE(name)
+		if expected.sse == "" {
+			if sseOK || sse != "" {
+				t.Errorf("SurfaceSSE(%q) = (%q, %v), want (\"\", false) — this event has no SSE surface", name, sse, sseOK)
+			}
+		} else if !sseOK || sse != expected.sse {
+			t.Errorf("SurfaceSSE(%q) = (%q, %v), want (%q, true)", name, sse, sseOK, expected.sse)
+		}
 	}
 	for name := range want {
 		if !seen[name] {
@@ -1463,6 +1474,9 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		}
 		if kernelevents.IsCanonical(name) {
 			t.Errorf("IsCanonical(%q) = true", name)
+		}
+		if _, ok := kernelevents.SurfaceSSE(name); ok {
+			t.Errorf("SurfaceSSE(%q) reported ok for a non-canonical name", name)
 		}
 	}
 }
