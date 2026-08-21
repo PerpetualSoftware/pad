@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -87,6 +88,10 @@ type RedisSessionPresence struct {
 	// NewRedisSessionPresence, which sets the production pair.
 	sessionKeyTTL time.Duration
 	renewInterval time.Duration
+	// opTimeout bounds every Redis call, defaulting to presenceOpTimeout.
+	// A field for the same reason the two above are: a test needs to drive
+	// the stalled-Redis path without waiting out the production bound.
+	opTimeout time.Duration
 
 	// onRenewWrite, when non-nil, is called by renewLoop immediately
 	// before each renewal write. Always nil in production — it exists so a
@@ -137,6 +142,43 @@ const (
 	// skips a genuinely connected one. Documented in LiveSession's
 	// staleness note and in the web dialog's header rather than tuned.
 	sessionKeyTTL = 3 * sessionRenewInterval
+
+	// presenceOpTimeout bounds every Redis call this type makes, including
+	// ADD's registration write, which used to run on context.Background()
+	// (codex round 2, P1).
+	//
+	// WHAT IT DOES NOT BOUND, measured rather than assumed: go-redis does
+	// not apply a command context to CONNECTION ESTABLISHMENT. Against a
+	// listener that accepts and then never answers, a first command with a
+	// 150ms context took 5.0s to return `i/o timeout` — the client's own
+	// DialTimeout, not the context. So this deadline governs commands on an
+	// already-established connection; the first call after a stall is
+	// bounded by the client's dial/read timeouts instead. Both are finite,
+	// which is what shutdown needs, but do not read this constant as the
+	// worst case.
+	presenceOpTimeout = 5 * time.Second
+
+	// closeDrainTimeout bounds how long Close waits for renewal goroutines.
+	//
+	// A BACKSTOP WITH NO KNOWN REACHABLE FAILING CASE, and labelled as one
+	// rather than dressed up as a fix. Close waits on a WaitGroup whose
+	// counter includes a goroutine that has not started yet — Add
+	// increments it before the registration write, deliberately, so a Close
+	// racing an Add cannot return before that session is accounted for. The
+	// cost is that a stalled Redis puts Add's write between Close and its
+	// own completion. But go-redis's own dial/read timeouts already bound
+	// that write, so the wait is finite with the production client config:
+	// a mutation test that removed this deadline still passed, because
+	// nothing under that config actually blocks past it.
+	//
+	// Kept anyway, because the alternative to a cheap deadline here is
+	// waiting FOREVER on a client someone reconfigures with a zero
+	// ReadTimeout, and the goroutines own nothing that outlives the
+	// process. What it must NOT be read as is tested behaviour — see
+	// TestRedisSessionPresence_StalledRedisDoesNotHangShutdown, which pins
+	// end-to-end shutdown liveness and explicitly does not discriminate on
+	// this constant.
+	closeDrainTimeout = 10 * time.Second
 )
 
 // renewal is one session's renewal goroutine, held so Remove can both
@@ -156,9 +198,43 @@ type renewal struct {
 	done chan struct{}
 }
 
+// pruneIndexScript removes index members whose session key is GONE,
+// re-checking existence atomically inside Redis.
+//
+// ARGV[1] is the session-key prefix for this user, so the script can
+// rebuild each candidate's key name; ARGV[2..] are the candidate session
+// ids. Written this way rather than passing the full key names as KEYS
+// because the member id is what SREM needs and the key name is derivable
+// from it — passing both would let the two drift.
+var pruneIndexScript = redis.NewScript(`
+local removed = 0
+for i = 2, #ARGV do
+  if redis.call('EXISTS', ARGV[1] .. ARGV[i]) == 0 then
+    removed = removed + redis.call('SREM', KEYS[1], ARGV[i])
+  end
+end
+return removed
+`)
+
+// timeout is opTimeout with the production default applied, so a
+// zero-valued struct (a test that only set the fields it cared about)
+// still bounds its calls instead of blocking forever.
+func (p *RedisSessionPresence) timeout() time.Duration {
+	if p.opTimeout <= 0 {
+		return presenceOpTimeout
+	}
+	return p.opTimeout
+}
+
+// userIDKeyPrefix is sessionKey's prefix for one user — everything before
+// the session id. Kept next to sessionKey so the two cannot drift.
+func userIDKeyPrefix(userID string) string {
+	return "pad:session:" + userID + ":"
+}
+
 // sessionKey is the per-session entry: one key, one TTL, one owner.
 func sessionKey(userID, sessionID string) string {
-	return "pad:session:" + userID + ":" + sessionID
+	return userIDKeyPrefix(userID) + sessionID
 }
 
 // sessionIndexKey is the per-user SET of that user's session ids. Scoped
@@ -180,6 +256,7 @@ func NewRedisSessionPresence(client *redis.Client) *RedisSessionPresence {
 		client:        client,
 		sessionKeyTTL: sessionKeyTTL,
 		renewInterval: sessionRenewInterval,
+		opTimeout:     presenceOpTimeout,
 		renewals:      make(map[string]*renewal),
 	}
 }
@@ -226,7 +303,9 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 	p.wg.Add(1)
 	p.mu.Unlock()
 
-	if err := p.write(context.Background(), userID, id, string(payload)); err != nil {
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), p.timeout())
+	defer writeCancel()
+	if err := p.write(writeCtx, userID, id, string(payload)); err != nil {
 		slog.Warn("session presence: failed to register session; it will be missing from the picker",
 			"error", err, "user_id", userID)
 	}
@@ -307,7 +386,7 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 	// fail every command and leave the entry to expire on its TTL instead —
 	// turning an immediate disconnect into a 90-second ghost in every other
 	// instance's session picker.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
 	defer cancel()
 	pipe := p.client.Pipeline()
 	pipe.Del(ctx, sessionKey(userID, sessionID))
@@ -332,7 +411,7 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 // answer 200 with no sessions during a Redis outage, and made a targeted
 // push skip its publish and lose the instruction while reporting success.
 func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
 	defer cancel()
 
 	ids, err := p.client.SMembers(ctx, sessionIndexKey(userID)).Result()
@@ -372,21 +451,52 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		}
 		raw, ok := v.(string)
 		if !ok {
-			continue
+			// Same ruling as the decode failure below: a value we cannot
+			// interpret is an UNKNOWN registry state, not an absent session.
+			return nil, fmt.Errorf("session presence: session entry for %s is not a string", ids[i])
 		}
 		var sess LiveSession
 		if err := json.Unmarshal([]byte(raw), &sess); err != nil {
-			slog.Warn("session presence: undecodable session entry, skipping",
-				"error", err, "user_id", userID)
-			continue
+			// REPORTED, not skipped (codex round 2, P2). An earlier version
+			// dropped the row and returned a nil error, arguing that the
+			// other sessions in the list were still real. That contradicted
+			// the P1 ruling one round earlier, and in the same direction: a
+			// silently-omitted session makes deliveredSessionCount report a
+			// number that looks complete, so a targeted push at the omitted
+			// session returns delivered_sessions:0 and is SKIPPED — the
+			// instruction dropped while the caller is told nothing was
+			// listening.
+			//
+			// The trade is deliberate: one corrupt entry now blinds this
+			// user's whole listing (503 on the picker, null count on a
+			// broadcast) until the row expires, at most one TTL. That is the
+			// honest answer — we cannot say who is connected — and it
+			// self-heals, where the silent version stayed wrong and looked
+			// right.
+			slog.Warn("session presence: undecodable session entry",
+				"error", err, "user_id", userID, "session_id", ids[i])
+			return nil, fmt.Errorf("session presence: decode entry %s: %w", ids[i], err)
 		}
 		out = append(out, sess)
 	}
 	if len(expired) > 0 {
-		// Opportunistic and best-effort: a failure here costs nothing but a
-		// retry on the next read, and the members are already invisible to
-		// this listing either way.
-		if err := p.client.SRem(ctx, sessionIndexKey(userID), toAny(expired)...).Err(); err != nil {
+		// CONDITIONAL, not a plain SREM (codex round 2, P2). Between the
+		// MGet above and this call, a renewal can restore the very key we
+		// observed missing — which happens exactly when it is most harmful:
+		// a Redis outage long enough to expire entries, followed by
+		// recovery, has every surviving instance rewriting its sessions at
+		// once. An unconditional SREM would then evict a LIVE session from
+		// the index, hiding it from the picker and making targeted pushes to
+		// it skip, for up to a renewal interval. The script re-checks
+		// existence inside Redis, where the check and the removal cannot be
+		// interleaved.
+		//
+		// Still best-effort: a failure costs a retry on the next read, and
+		// the members are already invisible to this listing either way.
+		if err := pruneIndexScript.Run(ctx, p.client,
+			[]string{sessionIndexKey(userID)},
+			append([]interface{}{userIDKeyPrefix(userID)}, toAny(expired)...)...,
+		).Err(); err != nil && !errors.Is(err, redis.Nil) {
 			slog.Debug("session presence: failed to prune expired index members",
 				"error", err, "user_id", userID)
 		}
@@ -426,7 +536,23 @@ func (p *RedisSessionPresence) Close() {
 		rn.stop()
 	}
 	p.mu.Unlock()
-	p.wg.Wait()
+
+	drained := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(closeDrainTimeout):
+		// Bounded, not abandoned: every goroutine has already been
+		// cancelled above, so this only fires when one is parked inside a
+		// Redis call that its own client timeouts have not yet released.
+		// Holding shutdown behind that is worse than leaving them to the
+		// process exit — they own no state that outlives it.
+		slog.Warn("session presence: renewal goroutines did not drain before shutdown; leaving them to process exit",
+			"timeout", closeDrainTimeout)
+	}
 }
 
 func renewalKey(userID, sessionID string) string { return userID + "|" + sessionID }

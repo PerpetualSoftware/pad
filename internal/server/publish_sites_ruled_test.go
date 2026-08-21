@@ -1,6 +1,9 @@
 package server
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,47 +39,88 @@ var allowedDirectPublishFiles = map[string]string{
 func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 	t.Parallel()
 
+	// AST, not a line grep (codex round 2, P2). The first version matched
+	// the literal string `s.watchEvents.Publish(` on a single line, which a
+	// producer could evade without trying: a local alias (`bus :=
+	// s.watchEvents`), a selector split across lines by gofmt, a receiver
+	// named anything else. A scanner that only catches the spelling it
+	// expects reports a clean package while the invariant is broken — the
+	// same class of false green this whole unit is about.
+	//
+	// Parsing resolves calls structurally: any call whose function is a
+	// selector `.Publish` on an expression that mentions the watchEvents
+	// field, however it is spelled or wrapped.
+	// Files enumerated and parsed individually rather than with
+	// parser.ParseDir, which is deprecated as of Go 1.25 (it ignores build
+	// tags). Per-file parsing needs no extra dependency, and this package
+	// has no build-tagged files for the tags to matter to.
+	fset := token.NewFileSet()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
 
 	found := map[string]int{}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		src, err := os.ReadFile(filepath.Clean(name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		for _, line := range strings.Split(string(src), "\n") {
-			code := strings.TrimSpace(line)
-			// Skip comments — several files DISCUSS this call in prose
-			// (including the doc comment this test enforces), and counting
-			// those as call sites is the classic way a source scan turns
-			// into a liar. See the dead-component sweep lesson: a basename
-			// grep counts commentary as liveness.
-			if strings.HasPrefix(code, "//") {
-				continue
+		{
+			base := filepath.Base(name)
+			file, err := parser.ParseFile(fset, name, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", name, err)
 			}
-			if strings.Contains(code, "s.watchEvents.Publish(") {
-				found[name]++
-			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Publish" {
+					return true
+				}
+				// The receiver expression mentions the watchEvents field —
+				// `s.watchEvents`, `srv.watchEvents`, or anything that
+				// selects it. An ALIAS assigned to a local variable is the
+				// one shape this still cannot see; aliasDeclarations below
+				// covers that separately.
+				if mentionsWatchEventsField(sel.X) {
+					found[base]++
+				}
+				return true
+			})
+			// A local alias defeats the structural check above, so the
+			// alias itself is what gets flagged: any assignment reading
+			// s.watchEvents into a variable is treated as a publish site,
+			// because the ruling is about which code may hold the bus, not
+			// about how the call is spelled.
+			ast.Inspect(file, func(n ast.Node) bool {
+				assign, ok := n.(*ast.AssignStmt)
+				if !ok {
+					return true
+				}
+				for _, rhs := range assign.Rhs {
+					if isWatchEventsFieldSelector(rhs) {
+						found[base]++
+					}
+				}
+				return true
+			})
 		}
 	}
 
-	// POSITIVE CONTROL. Without it, a scanner that matched nothing —
-	// wrong directory, renamed method, a typo in the needle — would report
-	// a clean bill of health for a package it never actually read.
+	// POSITIVE CONTROL. Without it, a scanner that matched nothing — wrong
+	// directory, renamed method, a parse that quietly returned no files —
+	// would report a clean bill of health for a package it never read.
 	if found["handlers_push.go"] == 0 {
 		t.Fatal("scanner found no direct Publish call in handlers_push.go — the scan itself is broken, not the invariant")
 	}
 
 	for file, count := range found {
 		if _, ok := allowedDirectPublishFiles[file]; !ok {
-			t.Errorf("%s calls s.watchEvents.Publish directly (%d site(s)).\n"+
+			t.Errorf("%s reaches watchEvents.Publish directly (%d site(s)).\n"+
 				"Producers layered on a committed store write must use s.publishWatchNotification, "+
 				"which rules the best-effort discard in one place (BUG-2699).\n"+
 				"If this site genuinely needs to act on the result, add it to allowedDirectPublishFiles with a reason.",
@@ -89,4 +133,24 @@ func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 				"stale allow-list entry, remove it", file, reason)
 		}
 	}
+}
+
+// mentionsWatchEventsField reports whether expr reads the Server's
+// watchEvents field anywhere inside it, so a wrapped or parenthesised
+// receiver is still recognised.
+func mentionsWatchEventsField(expr ast.Expr) bool {
+	seen := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if isWatchEventsFieldSelector(n) {
+			seen = true
+			return false
+		}
+		return true
+	})
+	return seen
+}
+
+func isWatchEventsFieldSelector(n ast.Node) bool {
+	sel, ok := n.(*ast.SelectorExpr)
+	return ok && sel.Sel != nil && sel.Sel.Name == "watchEvents"
 }
