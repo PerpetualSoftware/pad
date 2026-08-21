@@ -24,7 +24,7 @@ Pad is a single Go binary with an embedded web UI. It supports SQLite (default) 
 
 - **Pad** serves the REST API and embedded SvelteKit web UI on a single port (default: 7777)
 - **PostgreSQL** stores all data (workspaces, items, users, activity). SQLite works for single-node.
-- **Redis** enables real-time SSE events across multiple Pad instances. Optional for single-node.
+- **Redis** carries real-time events, watch/push notifications, and the shared session-presence registry across multiple Pad instances. Optional for single-node.
 
 ## Quick Start with Docker Compose
 
@@ -114,8 +114,9 @@ by another replica was silently dropped.
 **During a rolling upgrade, old and new replicas disagree about presence.** An
 old replica has only its own connections in view, so a push it answers cannot
 see a session held on a new replica, and `GET /api/v1/sessions` returns a
-different list depending on which replica answers. The push endpoint reports
-this honestly — `delivered_sessions: 0` — but the instruction is not delivered.
+different list depending on which replica answers. A TARGETED push reports this
+honestly — `delivered_sessions: 0`, and the publish is skipped, so nothing was
+sent — but the instruction is not delivered.
 
 This is the same behaviour every replica had *before* this build, so the
 rollout is not a regression; it is a window in which the fix is only partly in
@@ -129,8 +130,16 @@ effect. Two ways to avoid the window:
 
 If neither is practical, a rolling upgrade is still safe: nothing is corrupted
 and no migration is needed. Targeted pushes may report `delivered_sessions: 0`
-and go undelivered until every replica runs the new build, and users can re-send
-once the rollout completes. There is no Redis or database migration; the
+and go undelivered until every replica runs the new build; those are safe to
+re-send once the rollout completes, because a targeted miss skips the publish
+entirely.
+
+**That safety does not extend to broadcasts.** A broadcast push is always
+published, on old and new replicas alike, and the shared notification bus
+carries it across instances regardless of which registry the answering replica
+used — so a broadcast reporting `0` during the rollout may well have been
+delivered. Re-sending one is a second instruction the receiving agent will act
+on twice. Only re-send a push the server told you it skipped. There is no Redis or database migration; the
 registry's keys are transient and expire on their own TTL.
 
 ### Security
@@ -365,7 +374,7 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 ## Production Checklist
 
 - [ ] **Database:** PostgreSQL configured with `PAD_DB_DRIVER=postgres`
-- [ ] **Redis:** Connected for multi-instance SSE (`PAD_REDIS_URL`)
+- [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`
 - [ ] **TLS:** Reverse proxy with valid certificates
 - [ ] **Secure cookies:** `PAD_SECURE_COOKIES=true` (requires TLS)
 - [ ] **Public URL:** `PAD_URL` set to your public-facing domain

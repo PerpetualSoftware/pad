@@ -3,7 +3,8 @@
 #   1. cp .env.example .env            # generates a POSTGRES_PASSWORD if missing
 #   2. docker compose up -d
 #
-# Starts Pad with PostgreSQL for storage and Redis for real-time events.
+# Starts Pad with PostgreSQL for storage and Redis for real-time events,
+# notifications, and the shared session-presence registry.
 # The web UI binds to 127.0.0.1:7777 on the host by default — LAN/internet
 # access requires explicit opt-in (see PAD_BIND_ADDR below or the prod override).
 # First-time setup: visit the UI or run `pad auth setup` from a local CLI.
