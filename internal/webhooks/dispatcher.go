@@ -64,11 +64,76 @@ type WebhookStore interface {
 
 // WebhookPayload is the JSON body sent to each webhook endpoint.
 type WebhookPayload struct {
+	// ID is the outbox row id — the CONSUMER DEDUPE KEY. SPEC-3 §Delivery
+	// guarantees promises webhooks at-least-once with duplicates possible by
+	// design, and tells consumers to dedupe on the event id; before the drain
+	// existed, no id reached the wire at all, so that instruction named a
+	// field nobody could see.
+	//
+	// omitempty because one caller legitimately has no event: the
+	// "webhook.test" ping a user fires from the CLI is not a kernel event,
+	// has no outbox row, and must not invent an id a consumer would dedupe
+	// against.
+	ID        string      `json:"id,omitempty"`
 	Event     string      `json:"event"`
 	Workspace string      `json:"workspace"`
 	Timestamp string      `json:"timestamp"`
 	Data      interface{} `json:"data"`
 }
+
+// Delivery is one canonical event to put on the wire.
+//
+// A struct rather than four positional strings because three of them are
+// strings that would silently transpose, and the one that matters most
+// (OccurredAt vs dispatch time) is the one a reader would least suspect.
+type Delivery struct {
+	WorkspaceID string
+	// EventID is the outbox row id, reaching the consumer as the dedupe key.
+	EventID string
+	// Event is the canonical events/1 name. The webhook wire name IS the
+	// canonical name — no mapping, unlike SSE's snake_case surface.
+	Event string
+	// OccurredAt is the EVENT'S OWN timestamp, not dispatch time. SPEC-3
+	// §Bindings pins time-relative predicates to it precisely so a delayed
+	// drain cannot change how a predicate evaluates; stamping time.Now() here
+	// would make every consumer's notion of when the mutation happened depend
+	// on how backed up the queue was.
+	OccurredAt string
+	// Payload is the stored outbox payload, embedded VERBATIM under "data".
+	// json.RawMessage rather than []byte: []byte would base64-encode the
+	// snapshot into a string, which is valid JSON and completely unusable.
+	Payload json.RawMessage
+}
+
+// DeliveryOutcome is what the drain acks on.
+//
+// Counts rather than a single status because one event fans out to N
+// endpoints, and the answers can differ: an endpoint that 404s permanently and
+// one that times out transiently are the same "not delivered" to a boolean and
+// opposite decisions to a retry loop.
+type DeliveryOutcome struct {
+	// Matched is how many active webhooks selected this event. ZERO IS A
+	// SUCCESS, not a failure — a workspace with no webhooks has nothing owed
+	// to it, and treating it as undelivered would leave every event in every
+	// webhook-less workspace pending until the retention bound deleted it.
+	Matched   int
+	Succeeded int
+	// Permanent counts endpoints that rejected the delivery in a way no retry
+	// fixes (4xx, SSRF block, malformed URL). They do NOT hold the event
+	// pending: re-delivering to an endpoint that will reject it again buys
+	// nothing and costs the whole workspace's queue its progress.
+	Permanent int
+	// Transient counts endpoints whose retries were exhausted (network error,
+	// timeout, 5xx). These DO hold the event pending — the durable retry is
+	// the drain's, and it is the reason the outbox exists.
+	Transient int
+	LastError string
+}
+
+// Retryable reports whether any endpoint's failure is worth another drain
+// pass. It is the ack decision, stated once here rather than re-derived by
+// every caller from the counts.
+func (o DeliveryOutcome) Retryable() bool { return o.Transient > 0 }
 
 // Dispatcher sends webhook HTTP POST notifications for workspace events.
 type Dispatcher struct {
@@ -175,8 +240,16 @@ func screenDialAddr(address string) error {
 	return nil
 }
 
-// Dispatch sends the event payload to all matching active webhooks for the workspace.
-// Each delivery runs in its own goroutine so the caller is never blocked.
+// Dispatch sends the event payload to all matching active webhooks for the
+// workspace. Each delivery runs in its own goroutine so the caller is never
+// blocked, and NOTHING IS REPORTED BACK — by design, for the one caller that
+// remains: the "webhook.test" ping, which is a user pressing a button and
+// reading the result on the webhook row, not a kernel event with an outbox
+// row to ack.
+//
+// Canonical events do not come through here. They go through DeliverEvent,
+// because a drain cannot mark a row dispatched on the strength of having
+// SPAWNED some goroutines.
 func (d *Dispatcher) Dispatch(workspaceID, event string, data interface{}) {
 	hooks, err := d.store.ListWebhooks(workspaceID)
 	if err != nil {
@@ -184,14 +257,12 @@ func (d *Dispatcher) Dispatch(workspaceID, event string, data interface{}) {
 		return
 	}
 
-	payload := WebhookPayload{
+	body, err := json.Marshal(WebhookPayload{
 		Event:     event,
 		Workspace: workspaceID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Data:      data,
-	}
-
-	body, err := json.Marshal(payload)
+	})
 	if err != nil {
 		slog.Error("failed to marshal webhook payload", "error", err)
 		return
@@ -208,11 +279,68 @@ func (d *Dispatcher) Dispatch(workspaceID, event string, data interface{}) {
 	}
 }
 
+// DeliverEvent puts one canonical event on the wire SYNCHRONOUSLY and reports
+// what happened to each matching endpoint.
+//
+// This exists because acking is only honest if the ack follows the delivery.
+// Dispatch returns once its goroutines are spawned, so a drain built on it
+// would stamp rows dispatched while the HTTP requests were still in flight —
+// and a crash in that window loses exactly the events the outbox was built to
+// make unlosable. Blocking is the point, and the caller is a background drain
+// that has nothing better to do.
+//
+// The returned error is reserved for failures that are the SERVER's, not an
+// endpoint's — listing webhooks, marshalling the envelope. Those must not ack:
+// nothing was attempted, so the event is still owed. Per-endpoint failures
+// come back in the outcome instead, where the retry decision can see the
+// difference between "rejected us" and "did not answer".
+func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
+	var out DeliveryOutcome
+
+	hooks, err := d.store.ListWebhooks(dv.WorkspaceID)
+	if err != nil {
+		return out, fmt.Errorf("list webhooks: %w", err)
+	}
+
+	body, err := json.Marshal(WebhookPayload{
+		ID:        dv.EventID,
+		Event:     dv.Event,
+		Workspace: dv.WorkspaceID,
+		Timestamp: dv.OccurredAt,
+		Data:      dv.Payload,
+	})
+	if err != nil {
+		return out, fmt.Errorf("marshal webhook payload: %w", err)
+	}
+
+	for _, hook := range hooks {
+		if !hook.Active {
+			continue
+		}
+		if !matchesEvent(hook.Events, dv.Event) {
+			continue
+		}
+		out.Matched++
+		switch d.deliver(hook, body) {
+		case deliverySuccess:
+			out.Succeeded++
+		case deliveryPermanent:
+			out.Permanent++
+			out.LastError = "permanent delivery failure to " + hook.ID
+		default:
+			out.Transient++
+			out.LastError = "transient delivery failure to " + hook.ID
+		}
+	}
+	return out, nil
+}
+
 // deliver sends a webhook, retrying transient failures up to
-// maxDeliveryAttempts with linear backoff, and records the final outcome
-// once via the store. Permanent failures (4xx, SSRF block, malformed URL)
+// maxDeliveryAttempts with linear backoff, records the final outcome once via
+// the store, and RETURNS that outcome. The async Dispatch path discards the
+// return; DeliverEvent tallies it, which is the whole of requirement 2. Permanent failures (4xx, SSRF block, malformed URL)
 // stop immediately without consuming retries.
-func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
+func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 	result := deliveryPermanent
 	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
 		result = d.attemptDeliver(hook, body)
@@ -226,6 +354,7 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
 		}
 	}
 	d.store.UpdateWebhookFailure(hook.ID, result != deliverySuccess)
+	return result
 }
 
 // attemptDeliver performs a single HTTP POST to the webhook URL and
