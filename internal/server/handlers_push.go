@@ -16,7 +16,8 @@ import (
 type pushRequest struct {
 	Message string `json:"message"`
 	// TargetSessionID optionally narrows delivery to one of the caller's
-	// OWN live sessions from the S1 presence registry (PLAN-2558 S5,
+	// OWN live sessions from the S1 presence registry — narrows, within a
+	// set already limited to ARMED sessions that can see the item (PLAN-2558 S5,
 	// TASK-2588; GET /api/v1/sessions is where a caller learns the id).
 	// Omitted (the pre-S5 shape) means broadcast to every one of the
 	// caller's connected sessions, unchanged. API + TS client + web
@@ -161,7 +162,9 @@ const maxPushMessageLen = 4096
 // handlePushToItem publishes a self-addressed watchevents.KindPush
 // notification (IDEA-2544 Phase 1) — the "push this to my agent" verb:
 // an explicit, user-authored instruction bound to an item, delivered to
-// every one of the pushing user's OWN connected monitor sessions via
+// each of the pushing user's OWN monitor sessions that is ACCEPTING pushes
+// and can see the item — a connected session that hasn't opted in, or that
+// lacks access, does not receive it — via
 // GET /api/v1/events/stream, or to exactly one of them when the request
 // names a target_session_id (PLAN-2558 S5, TASK-2588). Unlike watch/
 // assignment notifications, this has no durable backing (Dave's product

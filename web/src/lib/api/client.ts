@@ -1422,9 +1422,11 @@ export const api = {
 			request<Item[]>(`/workspaces/${ws}/starred${qs(params)}`),
 
 		/**
-		 * Push an instruction about this item to the caller's OWN connected
-		 * agent sessions (IDEA-2544 Phase 1 / PLAN-2558 S3), or to exactly
-		 * one of them when `targetSessionId` is given (PLAN-2558 S5,
+		 * Push an instruction about this item to the caller's OWN agent
+		 * sessions that are ACCEPTING pushes and can see the item — a
+		 * connected session that has not opted in, or that lacks access to
+		 * the item, does not receive it (IDEA-2544 Phase 1 / PLAN-2558 S3) —
+		 * or to exactly one of them when `targetSessionId` is given (PLAN-2558 S5,
 		 * TASK-2588 — an id from `api.sessions.list()`).
 		 *
 		 * Fire-and-forget: there is no durable inbox and no ack, so a

@@ -1865,7 +1865,10 @@ export interface ServerCapabilities {
  * means "connected as of the last time the server could tell", not
  * "connected now". A clean disconnect deregisters immediately; an ungraceful
  * one (closed laptop, dropped network) is invisible until the next keepalive
- * write fails, up to ~30s later. Fine for a fire-and-forget push; NOT a
+ * write fails, up to ~30s later. On a Redis-backed deployment there is a
+ * SECOND, longer window: if the server INSTANCE holding the session dies, its
+ * entry survives in the shared registry until that entry's ~90s TTL lapses
+ * (BUG-2698). Fine for a fire-and-forget push; NOT a
  * delivery guarantee, and consumers must not word it as one — "one session
  * connected" is honest, "this will be delivered" is not.
  *
