@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -186,5 +187,44 @@ func TestPushToItem_SucceedsWhenPublishAccepted(t *testing.T) {
 	}
 	if got := bus.publishAttempts(); got != 1 {
 		t.Fatalf("expected exactly 1 publish attempt, got %d", got)
+	}
+}
+
+// TestBestEffortProducerSucceedsWhenThePublishFails — codex round 30
+// (coverage-gap sweep).
+//
+// publishWatchNotification's whole ruling is that a producer layered on a
+// committed store write DISCARDS a publish failure: the item exists, the
+// comment exists, and failing the caller's request over a lost
+// notification would tell the client its write failed when it did not.
+// Every test covered the SUCCESS path, so an implementation that
+// propagated the error and 500'd a perfectly good comment would have
+// passed.
+//
+// Asserts what the wrong behaviour would DO — a 5xx on the write, and a
+// comment missing afterwards — rather than that a notification was
+// absent, which is equally true of both behaviours.
+func TestBestEffortProducerSucceedsWhenThePublishFails(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	srv.SetWatchEventsBus(&stubBus{err: errors.New("redis publish: connection reset")})
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/comments", tok.Token,
+		map[string]interface{}{"body": "this comment must survive a failed notification"})
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("a failed watch notification must not fail the write it rides on; got %d (body: %s)",
+			rr.Code, rr.Body.String())
+	}
+
+	// And the write really committed — a 201 with nothing behind it would
+	// satisfy the check above.
+	list := bearerCall(t, srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/comments", tok.Token, nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list comments: %d %s", list.Code, list.Body.String())
+	}
+	if !strings.Contains(list.Body.String(), "must survive a failed notification") {
+		t.Fatalf("the comment was not persisted: %s", list.Body.String())
 	}
 }

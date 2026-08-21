@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -143,4 +145,58 @@ func readWebPrePublishCodes(t *testing.T) map[string]bool {
 		out[m[1]] = true
 	}
 	return out
+}
+
+// TestPushCmd_WarnsOnlyWhenTheOutcomeIsAmbiguous — codex round 30
+// (coverage-gap sweep).
+//
+// The classification helper is tested directly; nothing executed the
+// command and checked what a user actually sees. Both directions matter
+// and they fail differently: a missing warning on an ambiguous failure
+// invites a duplicate dispatch, and a spurious warning on a clean refusal
+// trains people to ignore it.
+func TestPushCmd_WarnsOnlyWhenTheOutcomeIsAmbiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		code     string
+		wantWarn bool
+	}{
+		{"ambiguous 502 warns", http.StatusBadGateway, "push_unconfirmed", true},
+		{"unrecognised code warns", http.StatusBadGateway, "bad_gateway", true},
+		// The CONTROLS. A fix that simply always warned would pass the two
+		// cases above and be useless.
+		{"clean refusal does not warn", http.StatusServiceUnavailable, "unavailable", false},
+		{"validation refusal does not warn", http.StatusBadRequest, "bad_request", false},
+		{"archived refusal does not warn", http.StatusConflict, "archived", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{"code": tc.code, "message": "nope"},
+				})
+			}))
+
+			cmd := pushCmd()
+			cmd.SetArgs([]string{"TASK-5", "-m", "triage this"})
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+
+			var execErr error
+			stderr := captureStderr(t, func() { execErr = cmd.Execute() })
+			if execErr == nil {
+				t.Fatal("a failed push must still return an error")
+			}
+
+			warned := strings.Contains(stderr, "may or may not have been delivered")
+			if warned != tc.wantWarn {
+				t.Fatalf("warning presence = %v, want %v (stderr: %q)", warned, tc.wantWarn, stderr)
+			}
+			if tc.wantWarn && !strings.Contains(stderr, "twice") {
+				t.Fatalf("the warning must say what re-running costs; got %q", stderr)
+			}
+		})
+	}
 }

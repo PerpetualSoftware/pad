@@ -511,3 +511,97 @@ func TestWriteScript_IndexesAtomicallyWithTheEntry(t *testing.T) {
 		t.Fatalf("session index must carry a TTL; got %v (err %v)", indexTTL, err)
 	}
 }
+
+// TestRedisSessionPresence_RenewalRestoresAVanishedEntry — codex round 30
+// (coverage-gap sweep).
+//
+// renewLoop re-SETs the full payload rather than issuing a bare EXPIRE, and
+// that choice is load-bearing: it is what makes an EVICTED or
+// outage-vanished entry come back, which is the entire reason this type
+// tolerates an evicting maxmemory-policy and a Redis restart. Nothing
+// tested it. The crash-expiry test would still pass with a bare EXPIRE
+// (nothing renews there), and the keepalive test would too (its key never
+// vanishes), so the exact regression that matters was invisible.
+//
+// Asserts BOTH halves come back — a renewal that restored the entry but
+// not the index member would leave a live session missing from the only
+// enumeration of it.
+func TestRedisSessionPresence_RenewalRestoresAVanishedEntry(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	p := &RedisSessionPresence{
+		client:        client,
+		sessionKeyTTL: time.Minute,
+		renewInterval: 10 * time.Millisecond,
+		renewals:      make(map[string]*renewal),
+	}
+	t.Cleanup(p.Close)
+	ctx := t.Context()
+
+	id := p.Add("user-1", SessionIdentity{Label: "docapp", Armed: true})
+
+	// Evict it the way Redis would under memory pressure: entry and index
+	// member both gone, with the session still connected.
+	if err := client.Del(ctx, sessionKey("user-1", id)).Err(); err != nil {
+		t.Fatalf("evict entry: %v", err)
+	}
+	if err := client.SRem(ctx, sessionIndexKey("user-1"), id).Err(); err != nil {
+		t.Fatalf("evict index member: %v", err)
+	}
+	if sessions, err := p.ListForUser("user-1"); err != nil || len(sessions) != 0 {
+		t.Fatalf("precondition: the session should be gone, got %d (err %v)", len(sessions), err)
+	}
+
+	var restored []LiveSession
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		got, err := p.ListForUser("user-1")
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(got) == 1 {
+			restored = got
+			break
+		}
+	}
+	if len(restored) != 1 {
+		t.Fatal("a renewal must RESTORE a vanished entry, not merely refresh a TTL — a bare EXPIRE against a missing key is a silent no-op and the session stays invisible")
+	}
+	if restored[0].ID != id {
+		t.Fatalf("restored the wrong session: %q", restored[0].ID)
+	}
+	// The full payload, not a placeholder: a renewal that re-SET an empty
+	// or default value would satisfy a count-only assertion.
+	if restored[0].Label != "docapp" || !restored[0].Armed {
+		t.Fatalf("the restored entry lost its identity: %+v", restored[0])
+	}
+}
+
+// TestRedisSessionPresence_RealRedisReadFailureIsReported — codex round 30.
+//
+// The unreadable-presence tests use a fake SessionPresence, so they prove
+// the HANDLER's behaviour and say nothing about whether the real
+// implementation reports a read failure or flattens it into an empty list.
+// That flattening is the round-1 P1 defect, and until now nothing would
+// have caught its return.
+func TestRedisSessionPresence_RealRedisReadFailureIsReported(t *testing.T) {
+	t.Parallel()
+	// A closed port: every command fails for real rather than by stubbing.
+	client := redis.NewClient(&redis.Options{
+		Addr:        "127.0.0.1:1",
+		DialTimeout: 200 * time.Millisecond,
+		MaxRetries:  -1,
+	})
+	p := NewRedisSessionPresence(client)
+	t.Cleanup(p.Close)
+
+	sessions, err := p.ListForUser("user-1")
+	if err == nil {
+		t.Fatal("an unreachable Redis must be reported, not returned as zero sessions — an empty list makes a targeted push skip and lose the instruction")
+	}
+	if sessions != nil {
+		t.Fatalf("a failed read must not return a list that looks complete; got %d", len(sessions))
+	}
+}
