@@ -934,24 +934,22 @@ func serveCmd() *cobra.Command {
 				// call inside srv.Stop() is a no-op.
 				//
 				// THE TRADE, which is the same one eventBus above already
-				// makes and is worth naming (codex round 10): closing BEFORE
-				// Shutdown drains handlers means a push already in flight can
-				// Publish into a closed bus, be dropped, and still return
-				// HTTP 200 with pushed:true. Closing AFTER instead would hold
-				// Shutdown for its full 30s deadline on any open stream,
+				// makes and is worth naming: closing BEFORE Shutdown drains
+				// handlers means a push already in flight publishes into a
+				// closed bus and is not delivered. Closing AFTER instead would
+				// hold Shutdown for its full 30s deadline on any open stream,
 				// every time. Neither is free; this side loses a message in a
-				// window measured in milliseconds during a deliberate
-				// shutdown, the other side delays every shutdown by half a
-				// minute. Making the handler actually LEARN the publish was
-				// dropped needs Bus.Publish to report it, which is an
-				// interface change and a different unit.
+				// window measured in milliseconds during a deliberate shutdown,
+				// the other side delays every shutdown by half a minute.
 				//
-				// THAT LAST SENTENCE IS NOW OUT OF DATE, and pleasantly so
-				// (BUG-2699): Bus.Publish reports acceptance, so a push that
-				// publishes into a closed bus gets ErrBusClosed and answers 503
-				// instead of 200 with pushed:true. The ordering trade above is
-				// unchanged — the message still is not delivered — but the
-				// caller is no longer told that it was.
+				// WHAT IT NO LONGER COSTS is the caller's understanding of it
+				// (BUG-2699). This comment used to end "...and still return HTTP
+				// 200 with pushed:true", and then note that fixing it needed an
+				// interface change and a different unit. That unit landed:
+				// Bus.Publish reports acceptance, so a push publishing into a
+				// closed bus gets ErrBusClosed and answers 503. The message is
+				// still lost; the caller is no longer told it was sent, and can
+				// safely re-send once the server is back.
 				watchBus.Close()
 				slog.Info("Watch notification bus closed")
 

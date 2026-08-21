@@ -94,11 +94,14 @@ and a non-cluster client; pointing Pad at a Redis Cluster is not supported.
 
 **Avoid an evicting `maxmemory-policy` for Pad's Redis.**
 `docker-compose.prod.yml` sets `noeviction` for this reason; the plain
-`docker-compose.yml` keeps `allkeys-lru` on its 64 MB dev instance, where a
-briefly-hidden session costs nothing. Under an evicting policy Redis may drop
-live session-presence entries under memory pressure. Nothing can
-distinguish that from a TTL lapsing, so a connected agent session briefly
-disappears from the picker and a push targeted at it reports
+`docker-compose.yml` keeps `allkeys-lru` on its 64 MB dev instance, where the
+consequence below is a momentary annoyance rather than a lost instruction —
+change it too if you run that file in anger.
+
+Under an evicting policy Redis may drop live session-presence entries under
+memory pressure. Nothing can distinguish that from a TTL lapsing, so a
+connected agent session briefly disappears from the picker and a push targeted
+at it reports
 `delivered_sessions: 0`. It self-repairs on the session's next 30-second
 renewal, and Pad's keyspace is small — a few hundred bytes per connected
 session plus two counters — so there is nothing to gain by evicting it.
