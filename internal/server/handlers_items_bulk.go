@@ -354,6 +354,17 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		// cannot work out from the member rows, which carry post-mutation
 		// snapshots rather than deltas.
 		//
+		// affectedIDs counts rows the handler TOUCHED, not rows that
+		// semantically changed, so an operation whose members were all no-ops
+		// (untagging a tag nobody had) produces a header with a count and no
+		// members. That asymmetry is inherited, not introduced: the webhook
+		// this replaces fired on exactly the same condition with exactly the
+		// same count, and the store's "a mutation that changed nothing emits
+		// nothing" rule is the other half of it. Recorded rather than fixed
+		// here — narrowing the count to semantically-changed rows is a wire
+		// change to `count`/`item_ids` and belongs with a contract version,
+		// not inside a delivery refactor (codex round 1).
+		//
 		// Written AFTER the loop, in its own transaction, because a handler
 		// bulk has no enclosing one. A failure here is logged and swallowed on
 		// purpose: the members' own events are already committed and will
@@ -516,7 +527,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		Source:         source,
 	}
 
-	updated, err := s.store.UpdateItemWithPreCheck(item.ID, input, precheck)
+	updated, err := s.store.UpdateItemWithPreCheck(item.ID, input, precheck, store.WithEventBatch(batchID))
 	if err != nil {
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			raw, _ := json.Marshal(details)
@@ -577,7 +588,7 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 		Tags:           &tagsStr,
 		LastModifiedBy: actor,
 		Source:         source,
-	})
+	}, store.WithEventBatch(batchID))
 	if err != nil {
 		return nil, &bulkOpError{message: err.Error()}
 	}
@@ -694,7 +705,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		}
 	}
 
-	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), precheck)
+	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), precheck, store.WithEventBatch(batchID))
 	if err != nil {
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			raw, _ := json.Marshal(details)
@@ -750,10 +761,18 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 	case "tag", "untag":
 		return map[string]any{"tags": req.Tags}
 	case "move":
+		// BOTH, when both were sent. bulkMoveCollection applies req.Status as
+		// a field override on the migrated set, so a move-with-status changes
+		// two things and a delta naming only the collection under-reports it
+		// (codex round 1).
+		delta := map[string]any{}
 		if req.Collection != "" {
-			return map[string]any{"collection": req.Collection}
+			delta["collection"] = req.Collection
 		}
-		return map[string]any{"status": req.Status}
+		if req.Status != "" {
+			delta["status"] = req.Status
+		}
+		return delta
 	case "assign":
 		delta := map[string]any{}
 		if req.ClearAssignedUser {

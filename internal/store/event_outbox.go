@@ -458,11 +458,12 @@ func (s *Store) emitMemberEventTx(tx *sql.Tx, eventType, workspaceID, userID, ro
 // member refs, the shared delta, and PER-MEMBER SNAPSHOTS.
 //
 // The per-member snapshots are not optional decoration. v1.1 makes wire
-// delivery batched but binding evaluation PER-MEMBER — the dispatcher runs
-// item-level selectors against each member snapshot — so a payload without
-// them would silently make bulk mutations invisible to every item.updated and
-// status_changed binding, which is the gap the batch event was admitted to
-// avoid rather than create.
+// delivery batched but binding evaluation PER-MEMBER: a future binding engine
+// (phase 2+; none exists today — nothing evaluates selectors yet, and the
+// webhook dispatcher only filters on event NAME) must be able to see each
+// member, and for a SINGLE-TRANSACTION bulk producer this payload is the only
+// place they exist. The handler-path producer solves the same problem
+// differently, by leaving each member its own canonical row.
 type bulkItemEventPayload struct {
 	// Delta describes what the one mutation did, shared across members
 	// (e.g. {"kind":"field_option_renamed","field":"status","from":"wip","to":"in-progress"}).
@@ -1304,8 +1305,47 @@ func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
 	if err := json.Unmarshal(header, &h); err != nil {
 		return nil, fmt.Errorf("fold bulk header: %w", err)
 	}
-	for _, m := range members {
+	for _, m := range dedupeMemberSnapshots(members) {
 		h.MemberSet = append(h.MemberSet, json.RawMessage(m))
 	}
 	return marshalEventPayload(h)
+}
+
+// dedupeMemberSnapshots keeps ONE snapshot per item — the last, which is the
+// latest state — preserving input order otherwise.
+//
+// One bulk member can write several rows: the disjoint-delta rule means a move
+// that also changes status emits item.moved AND item.status_changed, and a
+// mixed update emits status_changed AND item.updated. Appending every row
+// would put the same item in `members` two or three times while `count` and
+// `item_ids` reported the number of ITEMS, so the payload would contradict
+// itself (codex round 1).
+//
+// The member list answers "what do these items look like now", so duplicates
+// are not extra information — they are the same item at two points inside one
+// operation. The per-event view is still available in full: each of those rows
+// is its own canonical event for bindings; only the WIRE aggregate collapses.
+//
+// A snapshot whose id cannot be read is kept rather than dropped: it is real
+// data the drain does not understand, and silently discarding it would be a
+// worse answer than a duplicate.
+func dedupeMemberSnapshots(members [][]byte) [][]byte {
+	lastAt := map[string]int{}
+	out := make([][]byte, 0, len(members))
+	for _, m := range members {
+		var probe struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(m, &probe); err != nil || probe.ID == "" {
+			out = append(out, m)
+			continue
+		}
+		if at, seen := lastAt[probe.ID]; seen {
+			out[at] = m
+			continue
+		}
+		lastAt[probe.ID] = len(out)
+		out = append(out, m)
+	}
+	return out
 }

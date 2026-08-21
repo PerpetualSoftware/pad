@@ -1920,3 +1920,59 @@ func sameStrings(got, want []string) bool {
 	}
 	return true
 }
+
+// TestFoldBulkHeader_KeepsOneSnapshotPerItem pins the fold's answer to the
+// disjoint-delta rule: one bulk member can write several rows (a move that
+// also changes status emits item.moved AND item.status_changed), and the
+// folded payload reports `count` in ITEMS.
+//
+// Without dedup the members list disagrees with the count in the same
+// payload — the wire event contradicting itself (codex round 1).
+func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
+	header := []byte(`{"batch_id":"b1","op":"move","count":2,"item_ids":["i1","i2"]}`)
+	members := [][]byte{
+		[]byte(`{"id":"i1","status":"open"}`),
+		[]byte(`{"id":"i2","status":"open"}`),
+		[]byte(`{"id":"i1","status":"done"}`),
+		[]byte(`{"id":"i2","status":"done"}`),
+	}
+
+	folded, err := FoldBulkHeader(header, members)
+	if err != nil {
+		t.Fatalf("FoldBulkHeader: %v", err)
+	}
+	var got struct {
+		Count   int `json:"count"`
+		Members []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(folded, &got); err != nil {
+		t.Fatalf("decode folded: %v", err)
+	}
+	if len(got.Members) != got.Count {
+		t.Fatalf("members = %d but count = %d — the payload contradicts itself", len(got.Members), got.Count)
+	}
+	for _, m := range got.Members {
+		if m.Status != "done" {
+			t.Errorf("member %s carries status %q, want the LAST snapshot (done)", m.ID, m.Status)
+		}
+	}
+
+	// A snapshot the drain cannot read is kept, not dropped: it is real data,
+	// and discarding it silently would be worse than a duplicate.
+	odd, err := FoldBulkHeader(header, [][]byte{[]byte(`"not an object"`), []byte(`{"id":"i1"}`)})
+	if err != nil {
+		t.Fatalf("FoldBulkHeader (unreadable member): %v", err)
+	}
+	var oddGot struct {
+		Members []json.RawMessage `json:"members"`
+	}
+	if err := json.Unmarshal(odd, &oddGot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(oddGot.Members) != 2 {
+		t.Errorf("members = %d, want both kept", len(oddGot.Members))
+	}
+}

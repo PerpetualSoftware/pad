@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -572,4 +573,143 @@ func TestBulkItems_RouteRegistered(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("bulk route: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
+}
+
+// TestBulkItems_EveryVerbStampsOneBatchID drives ALL SIX bulk verbs through
+// the HTTP handler and asserts every event the operation produced shares one
+// batch id.
+//
+// This exists because the store-level test could not catch the bug codex round
+// 1 found. That test called the five store methods directly with the option,
+// so it proved the option WORKS; it said nothing about whether the handler
+// passes it. Three of the six verbs (set-priority, tag, untag, move) reached
+// their store calls without it, so their member rows stayed unbatched while
+// the header was still written — N individual wire deliveries plus a header
+// claiming they were a batch.
+//
+// The lesson underneath, for the third time in this unit: threading a
+// parameter into helper SIGNATURES is not the same work as passing it at every
+// CALL. Only a test at the layer that owns the call sites can tell them apart.
+func TestBulkItems_EveryVerbStampsOneBatchID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+		// prep runs before the bulk request (e.g. archiving, so restore has
+		// something to restore).
+		prep func(t *testing.T, srv *Server, ws string, refs []string)
+	}{
+		{name: "set-priority", body: map[string]any{"op": "set-priority", "priority": "high"}},
+		{name: "tag", body: map[string]any{"op": "tag", "tags": []string{"batched"}}},
+		{
+			name: "untag",
+			body: map[string]any{"op": "untag", "tags": []string{"seed"}},
+			prep: func(t *testing.T, srv *Server, ws string, refs []string) {
+				// The tag has to EXIST for untag to change anything. Without
+				// this the operation is a no-op, no member events are written,
+				// and the leg asserts nothing about batching — which is how
+				// the first version of this test "passed" for two verbs.
+				rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+					"ids": refs, "op": "tag", "tags": []string{"seed"},
+				})
+				if rr.Code != http.StatusOK {
+					t.Fatalf("prep tag: %d: %s", rr.Code, rr.Body.String())
+				}
+			},
+		},
+		{name: "move-status", body: map[string]any{"op": "move", "status": "done"}},
+		{name: "assign", body: map[string]any{"op": "assign"}},
+		{name: "archive", body: map[string]any{"op": "archive"}},
+		{
+			name: "restore",
+			body: map[string]any{"op": "restore"},
+			prep: func(t *testing.T, srv *Server, ws string, refs []string) {
+				rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+					"ids": refs, "op": "archive",
+				})
+				if rr.Code != http.StatusOK {
+					t.Fatalf("prep archive: %d: %s", rr.Code, rr.Body.String())
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			ws := createWSWithCollections(t, srv)
+
+			if tc.name == "assign" {
+				role, err := srv.store.CreateAgentRole(wsIDForSlug(t, srv, ws), models.AgentRoleCreate{Name: "Reviewer"})
+				if err != nil {
+					t.Fatalf("create role: %v", err)
+				}
+				tc.body["agent_role_id"] = role.ID
+			}
+
+			a := createBulkTestItem(t, srv, ws, "A", `{"status":"open","priority":"low"}`)
+			b := createBulkTestItem(t, srv, ws, "B", `{"status":"open","priority":"low"}`)
+			refs := []string{a.Ref, b.Ref}
+			if tc.prep != nil {
+				tc.prep(t, srv, ws, refs)
+			}
+
+			// Clear everything the setup emitted so the assertion sees only
+			// this operation's rows.
+			seeded, err := srv.store.ListPendingOutboxEvents(1000)
+			if err != nil {
+				t.Fatalf("list seeded outbox: %v", err)
+			}
+			var seededIDs []string
+			for _, ev := range seeded {
+				seededIDs = append(seededIDs, ev.ID)
+			}
+			if err := srv.store.MarkOutboxDispatched(seededIDs); err != nil {
+				t.Fatalf("clear outbox: %v", err)
+			}
+
+			body := map[string]any{"ids": refs}
+			for k, v := range tc.body {
+				body[k] = v
+			}
+			rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("bulk %s: %d: %s", tc.name, rr.Code, rr.Body.String())
+			}
+
+			pending, err := srv.store.ListPendingOutboxEvents(100)
+			if err != nil {
+				t.Fatalf("list pending: %v", err)
+			}
+			if len(pending) < 2 {
+				t.Fatalf("%s produced %d outbox rows; the batch assertion needs the members AND the header to prove anything", tc.name, len(pending))
+			}
+
+			var header int
+			batches := map[string]int{}
+			for _, ev := range pending {
+				batches[ev.BatchID]++
+				if ev.EventType == kernelevents.ItemBulkUpdated {
+					header++
+				}
+			}
+			if n := batches[""]; n != 0 {
+				t.Errorf("%s left %d event(s) unbatched — they would be delivered individually alongside a header claiming they were a batch", tc.name, n)
+			}
+			if len(batches) != 1 {
+				t.Errorf("%s produced %d distinct batch ids, want exactly 1: %v", tc.name, len(batches), batches)
+			}
+			if header != 1 {
+				t.Errorf("%s produced %d batch headers, want exactly 1", tc.name, header)
+			}
+		})
+	}
+}
+
+// wsIDForSlug resolves a workspace slug to its id for the store-level calls a
+// few fixtures need.
+func wsIDForSlug(t *testing.T, srv *Server, slug string) string {
+	t.Helper()
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("resolve workspace %q: %v", slug, err)
+	}
+	return ws.ID
 }

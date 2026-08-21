@@ -8,9 +8,12 @@
 -- consumer can budget for.
 --
 -- The claim is a conditional UPDATE (see ClaimPendingOutboxEvents), the same
--- protocol BUG-2415 established for orphan GC: one statement that both selects
--- and marks, so two instances racing on the same row produce one winner and
--- one no-op rather than two winners. Dialect-uniform on purpose — the
+-- protocol BUG-2415 established for orphan GC. Candidate rows are SELECTed
+-- first and then claimed one conditional UPDATE at a time; the select is only
+-- discovery, and the predicate ON THE UPDATE is the arbiter, so two instances
+-- racing on the same row produce one winner and one no-op rather than two
+-- winners. (Codex round 1 flagged an earlier version of this comment for
+-- describing it as a single statement doing both.) Dialect-uniform on purpose — the
 -- alternative, Postgres FOR UPDATE SKIP LOCKED with a separate SQLite path,
 -- is two implementations of one behaviour and only one of them ever runs in
 -- the environment where it matters.

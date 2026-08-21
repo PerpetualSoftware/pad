@@ -15,20 +15,21 @@
 //     IsCanonical exists — a typo'd name must fail loudly at the choke point
 //     rather than travel to a consumer that will never recognize it.
 //
-//   - THE CHOKE POINT WILL OWN THE MAPPING — and does not yet. Today SSE uses
-//     snake_case names published from one set of hand-calls and webhooks use
-//     dot-form string literals passed at a different set of hand-calls; the
-//     two vocabularies drifted because nothing ties them together. SPEC-3 v1.1
-//     rules that both surfaces derive from one canonical name, but THIS
-//     PACKAGE DOES NOT IMPLEMENT THAT MAPPING: it maps a canonical name to a
-//     subject kind and nothing else. The surface mapping, the drain that would
-//     use it, and the retirement of the legacy hand-calls are TASK-2714.
+//   - THE CHOKE POINT OWNS THE MAPPING. SSE's snake_case vocabulary and the
+//     webhook dot-form vocabulary drifted because each was hand-passed at its
+//     own call sites; the eventSpec.sse field is what ties them together now.
+//     What "derive" means is pinned by SPEC-3 v1.5: NAME derivation, not
+//     delivery path.
 //
-// SO, PLAINLY, SO NOBODY READS AN INTENTION AS A DESCRIPTION: as of this
-// package's introduction the outbox FILLS and nothing drains it. Every legacy
-// SSE publish and hand-called webhook dispatch still fires exactly as before.
-// ListPendingOutboxEvents has no production caller. That is the agreed shape
-// of this change, not an unfinished edge.
+// SO, PLAINLY, SO NOBODY READS AN INTENTION AS A DESCRIPTION — current as of
+// TASK-2714: the outbox is DRAINED, and the drain owns the WEBHOOK surface.
+// The hand-called webhook dispatches are gone. SSE is still published directly
+// at the mutation site, because it carries request-scoped attribution
+// (Actor/ActorName/Source) that a frozen payload deliberately does not hold;
+// it takes only its NAME from this package. Moving SSE behind the drain is
+// TASK-2722. The binding engine that SPEC-3 §Bindings describes does not exist
+// yet (phase 2+) — where a comment here says "bindings", it is naming the
+// contract's shape, not running code.
 package kernelevents
 
 // Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.1).
@@ -67,10 +68,14 @@ const (
 	ItemRestored = "item.restored"
 
 	// ItemBulkUpdated is the canonical BATCH event: one wire event for a
-	// whole lane-wide mutation. Binding evaluation is still per-member —
-	// the dispatcher runs item-level selectors against each member snapshot
-	// — so bindings never miss a bulk mutation; only wire delivery is
-	// batched.
+	// whole lane-wide mutation, in the normal case (SPEC-3 v1.6 — a
+	// concurrent claim can split one operation across two events, which the
+	// payload's batch_id lets a consumer correlate).
+	//
+	// Per-member binding evaluation comes for free rather than from special
+	// handling: every member of a bulk mutation writes its OWN canonical
+	// event, so whatever binding engine arrives (phase 2+; none exists today)
+	// sees each member individually. Only wire delivery is batched.
 	ItemBulkUpdated = "item.bulk_updated"
 
 	// CommentCreated fires on comment creation. Payload: the stored comment
@@ -188,11 +193,13 @@ type eventSpec struct {
 }
 
 // canonical is the closed events/1 set. Adding an entry here is the ONLY way
-// to add a canonical event, and the compiler requires both fields, so a new
+// to add a canonical event, and the compiler requires every field, so a new
 // event cannot arrive half-declared.
-// Payload families. Every canonical event produces exactly one payload shape,
-// and the family is what lets a writer check that an event and a payload were
-// meant for each other.
+// Payload families. Every canonical event declares the payload shapes it may
+// carry — one for all of them except item.bulk_updated, which has two
+// producers with genuinely different write-time shapes (see eventSpec.payloads)
+// — and the family is what lets a writer check that an event and a payload
+// were meant for each other.
 //
 // Membership in the canonical set says the NAME is real; it says nothing about
 // whether the bytes attached to it are the right shape. Without families, a

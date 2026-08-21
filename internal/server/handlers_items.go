@@ -1716,12 +1716,21 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			s.publishCommentEvent(sseCommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
 			// item.updated_with_comment is RETIRED (SPEC-3 v1.2, Dave's
 			// ruling): a hand-rolled composite with no flood argument,
-			// which folds into item.updated + comment.created — both of
-			// which this path already emits, transactionally, from the
-			// store. It is never emitted under events/1, with no
-			// deprecation window, because webhooks are CLI-registered
-			// only today (no UI surface) and there were no known
-			// consumers at ruling time.
+			// which folds into the item event this update emitted plus
+			// comment.created.
+			//
+			// PRECISELY, because "item.updated + comment.created" would
+			// overstate it twice (codex round 1): the item half is whichever
+			// slice actually moved under the disjoint-delta rule — a
+			// status-only update emits item.status_changed, not item.updated
+			// — and the two events come from two SEPARATE transactions, since
+			// CreateComment runs after the update has committed. What holds
+			// is that each is written transactionally with ITS OWN mutation,
+			// which is all the composite was ever standing in for.
+			//
+			// No deprecation window: webhooks are CLI-registered only today
+			// (no UI surface) and there were no known consumers at ruling
+			// time.
 			// TASK-2533: this comment is created via a DIFFERENT code
 			// path than handleCreateComment (store.CreateComment called
 			// directly, not through POST .../comments) — a bypass Rider
