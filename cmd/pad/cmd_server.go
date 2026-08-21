@@ -905,9 +905,15 @@ func serveCmd() *cobra.Command {
 				// its deferred Remove — and any Remove that runs before Close
 				// still finds a live renewal to wait for, bypassing the drain
 				// bound entirely and putting that wait in front of Shutdown.
-				// Closing presence first cancels every renewal and empties the
-				// registry, so the Removes that follow find nothing to wait for
-				// and go straight to their bounded deregistration writes.
+				// Closing presence first cancels every renewal and drains them,
+				// so the Removes that follow have nothing left to wait on.
+				//
+				// Note it does NOT empty the registry — an earlier version of
+				// this comment said so, and Close deliberately retains the
+				// entries precisely so a concurrent Remove can still find and
+				// await a renewal (codex rounds 6 and 10). Remove's own wait is
+				// bounded by the same drain deadline, so a renewal Close could
+				// not drain cannot hold Shutdown either.
 				//
 				// Nothing here depends on the bus, so there is no cost to going
 				// first. Idempotent, so the deferred Close at the wiring site

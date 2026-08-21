@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
@@ -129,8 +130,16 @@ func orNoneLabel(status string) string {
 // committed tells the client its write failed when it did not.
 //
 // So these six discard the result — deliberately, and here rather than
-// six times over. Both implementations already log a failed publish with
-// the kind and item ref, so discarding costs no operator visibility.
+// six times over.
+//
+// DISCARDED, BUT NOT UNOBSERVED, and this helper is what makes that true
+// (codex round 10). An earlier version of this comment claimed both bus
+// implementations already log a failed publish, so discarding cost no
+// visibility. That is right for a transport failure and WRONG for the one
+// case most likely to matter: ErrBusClosed returns without logging in
+// either implementation, so a producer publishing into a bus closed during
+// shutdown vanished in silence. The helper logs it here instead — once,
+// at the layer that decided to ignore it.
 //
 // The SEVENTH site, handlePushToItem, does not use this helper and must
 // not: a push has no durable backing at all (no inbox, nothing to read
@@ -148,5 +157,12 @@ func (s *Server) publishWatchNotification(n watchevents.Notification) {
 	if s.watchEvents == nil {
 		return
 	}
-	_ = s.watchEvents.Publish(n)
+	if err := s.watchEvents.Publish(n); err != nil {
+		// Warn, not Error: the durable write this notification sits on top
+		// of already committed, so nothing is lost that a reader cannot
+		// recover from the item itself. An operator still wants to see it,
+		// because a run of these means the bus is unhealthy.
+		slog.Warn("watch notification not published; the underlying write still committed",
+			"error", err, "kind", n.Kind, "item_ref", n.ItemRef)
+	}
 }

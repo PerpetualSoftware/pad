@@ -36,14 +36,27 @@ import (
 // rather than detectable. Until then this covers the forms a producer
 // would plausibly be written in, and it FAILS on them — which is more
 // than the doc comment it replaced could do.
-var allowedDirectPublishFiles = map[string]string{
+//
+// COUNTS, not just filenames (codex round 10). A filename allow-list lets
+// a future unsafe producer be added to an already-allowed file and pass —
+// while this test's own message claims new producers fail. Pinning the
+// expected number means a new direct publish in handlers_push.go fails
+// here too, and whoever adds it has to say why the count moved.
+type allowedPublishSite struct {
+	count  int
+	reason string
+}
+
+var allowedDirectPublishFiles = map[string]allowedPublishSite{
 	// The one caller that acts on the result: a push has no inbox, no
 	// store row, nothing to read back, so a refused publish loses the
 	// instruction outright and the caller has to be told.
-	"handlers_push.go": "push has no durable backing; it maps the error onto the response",
+	// One call, in handlePushToItem.
+	"handlers_push.go": {1, "push has no durable backing; it maps the error onto the response"},
 	// The helper itself — where the best-effort discard is ruled, once,
 	// for every other producer.
-	"handlers_watch_notify.go": "publishWatchNotification: the single best-effort discard",
+	// One call, inside publishWatchNotification itself.
+	"handlers_watch_notify.go": {1, "publishWatchNotification: the single best-effort discard"},
 }
 
 func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
@@ -139,7 +152,15 @@ func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 	}
 
 	for file, count := range found {
-		if _, ok := allowedDirectPublishFiles[file]; !ok {
+		allowed, ok := allowedDirectPublishFiles[file]
+		if ok && count != allowed.count {
+			t.Errorf("%s has %d direct watchEvents.Publish site(s), expected %d (%q).\n"+
+				"A new producer in an already-allowed file is still a new producer: route it through "+
+				"s.publishWatchNotification, or update the expected count here with a reason.",
+				file, count, allowed.count, allowed.reason)
+			continue
+		}
+		if !ok {
 			t.Errorf("%s reaches watchEvents.Publish directly (%d site(s)).\n"+
 				"Producers layered on a committed store write must use s.publishWatchNotification, "+
 				"which rules the best-effort discard in one place (BUG-2699).\n"+
@@ -147,10 +168,10 @@ func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 				file, count)
 		}
 	}
-	for file, reason := range allowedDirectPublishFiles {
+	for file, allowed := range allowedDirectPublishFiles {
 		if found[file] == 0 {
 			t.Errorf("%s is listed as an allowed direct Publish caller (%q) but has none — "+
-				"stale allow-list entry, remove it", file, reason)
+				"stale allow-list entry, remove it", file, allowed.reason)
 		}
 	}
 }

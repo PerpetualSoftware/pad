@@ -475,7 +475,13 @@ type PushResult struct {
 	// tell them apart has to read the raw body, which no caller does. What
 	// matters is that neither is reported as 0, because 0 means "reached
 	// nobody" and both of these mean "unknown".
-	DeliveredSessions *int `json:"delivered_sessions,omitempty"`
+	//
+	// NO omitempty (codex round 10): it would drop the nil case on the way
+	// back OUT, so `pad push --format json` would print no field at all for
+	// "published, count unknown" — silently re-collapsing the distinction
+	// this pointer exists to carry. The field is always present in the
+	// CLI's own JSON, as a number or as null.
+	DeliveredSessions *int `json:"delivered_sessions"`
 }
 
 // PushItem publishes a self-addressed push notification (IDEA-2544

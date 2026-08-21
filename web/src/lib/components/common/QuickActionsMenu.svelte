@@ -142,10 +142,16 @@
 	 * the menu goes on offering a push into a session that may be long gone.
 	 * That is the losing direction, so a known answer expires.
 	 *
-	 * 30s is not arbitrary: it is the server's own worst-case presence staleness
-	 * (`watchEventsKeepaliveInterval` — an ungraceful disconnect is invisible
-	 * until the next keepalive write fails). Past it an un-refreshed count is no
-	 * more informative than no count. Three poll intervals must fail in a row to
+	 * 30s is not arbitrary: it is the server's worst-case staleness for a dead
+	 * CLIENT (`watchEventsKeepaliveInterval` — an ungraceful disconnect is
+	 * invisible until the next keepalive write fails). Past it an un-refreshed
+	 * count is no more informative than no count.
+	 *
+	 * It is NOT the only bound on a Redis-backed deployment (BUG-2698): a dead
+	 * SERVER INSTANCE leaves its sessions listed until the shared registry's
+	 * ~90s TTL. Expiring the local answer at 30s does not shorten that and is
+	 * not trying to — a re-poll would return the same stale entry. Both windows
+	 * are why nothing on this surface claims delivery. Three poll intervals must fail in a row to
 	 * reach it. Same bound and same reasoning as PushToAgentDialog.
 	 */
 	const PRESENCE_MAX_AGE_MS = 30_000;

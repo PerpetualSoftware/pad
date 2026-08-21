@@ -424,7 +424,19 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 	// on (codex round 6). Close bounds its own drain, so this cannot
 	// outlive shutdown.
 	if closed && !ok {
-		p.wg.Wait()
+		// BOUNDED, like Close's own drain (codex round 10). An unbounded
+		// wait here reintroduces exactly what the drain deadline exists to
+		// prevent: if Close timed out on a parked renewal, that renewal is
+		// still running, so waiting on it without a deadline would hold
+		// this handler — and therefore http.Server.Shutdown — for as long
+		// as the parked write lasts.
+		//
+		// Timing out means proceeding to the DEL below with a renewal
+		// potentially still in flight, i.e. accepting the ghost this wait
+		// exists to prevent. That is the right trade at this point: the
+		// ghost expires on its TTL, while a hung shutdown does not resolve
+		// at all.
+		p.waitForDrain(p.drain())
 	}
 	if ok {
 		// Stop AND wait, in that order and outside the lock. Stopping alone
@@ -570,10 +582,12 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		}
 		return out[i].ConnectedAt.Before(out[j].ConnectedAt)
 	})
-	// A skipped entry above (undecodable JSON) is NOT an error: the other
-	// sessions in the list are real, and one corrupt row should not blind
-	// the picker to them. Only a failure to READ is unknowable, and both
-	// of those return above.
+	// Everything that could not be interpreted has already RETURNED an
+	// error above — an undecodable entry included (codex round 2 changed
+	// that, and an earlier version of this comment still described the
+	// behaviour it replaced). Reaching here means every indexed session
+	// either decoded or was pruned as expired, so this list is complete
+	// as of the read.
 	return out, nil
 }
 
@@ -608,14 +622,7 @@ func (p *RedisSessionPresence) Close() {
 	}
 	p.mu.Unlock()
 
-	drained := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(drained)
-	}()
-	select {
-	case <-drained:
-	case <-time.After(p.drain()):
+	if !p.waitForDrain(p.drain()) {
 		// Bounded, not abandoned: every goroutine has already been
 		// cancelled above, so this only fires when one is parked inside a
 		// Redis call that its own client timeouts have not yet released.
@@ -623,6 +630,23 @@ func (p *RedisSessionPresence) Close() {
 		// process exit — they own no state that outlives it.
 		slog.Warn("session presence: renewal goroutines did not drain before shutdown; leaving them to process exit",
 			"timeout", p.drain())
+	}
+}
+
+// waitForDrain waits for every renewal goroutine to finish, up to timeout.
+// Reports whether they all finished; false means at least one is still
+// running and the caller is proceeding anyway.
+func (p *RedisSessionPresence) waitForDrain(timeout time.Duration) bool {
+	drained := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 

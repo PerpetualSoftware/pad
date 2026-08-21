@@ -1921,9 +1921,10 @@ export interface LiveSessionsResponse {
  * `target_session_id` if the request set one) matched. It is a PREDICTION
  * snapshotted from the same registry the picker itself reads, taken BEFORE
  * the notification is published — not a delivery receipt: it carries the
- * registry's own staleness window (up to ~30s behind an ungracefully-
- * dropped connection — see `LiveSession`) and there is still no ack from
- * the receiving side. Callers must not present a nonzero count as
+ * registry's own staleness windows (up to ~30s behind an ungracefully-
+ * dropped CLIENT, and on a Redis-backed deployment up to ~90s behind a dead
+ * SERVER INSTANCE, whose entries expire on the shared registry's TTL — see
+ * `LiveSession`) and there is still no ack from the receiving side. Callers must not present a nonzero count as
  * confirmed delivery; the 0-vs-nonzero distinction is what's load-bearing
  * — a targeted push with `delivered_sessions === 0` is a GUARANTEE it
  * reached nobody (the server skips the publish entirely in that case, so
