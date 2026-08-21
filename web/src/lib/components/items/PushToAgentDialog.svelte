@@ -35,10 +35,10 @@ line shows the split honestly rather than hiding the difference:
 
   - accepting > 0 → "M sessions accepting pushes" (and "of N connected" when
                    some are connected-but-unarmed). NOT "this will be
-                   delivered": the registry can name a session that died up to
-                   ~30s ago (an ungraceful disconnect is invisible until the
-                   next keepalive write fails), and even a live armed session
-                   gets no delivery receipt. Send is enabled; the caveat is
+                   delivered": the registry can name a session that is already
+                   gone (two bounds — see this file's DEPLOYMENT CONSTRAINT
+                   note), and even a live armed session gets no delivery
+                   receipt. Send is enabled; the caveat is
                    stated, not implied.
   - accepting == 0 → send is DISABLED, because a push to no armed session is
                    definitively lost (no inbox), and a push to a connected-but-
@@ -141,9 +141,14 @@ always a broadcast that went out.
 	 * 10s is affordable: GET /api/v1/sessions falls through to the general API
 	 * limiter (600 req/min per user, burst 60) and is in no strict per-path
 	 * bucket, so a poll open for an hour costs 360 of a 36,000-request budget.
-	 * It is also the right ORDER of magnitude for the underlying signal — the
-	 * registry's own worst-case staleness is ~30s (keepalive interval), so
+	 * It is also the right ORDER of magnitude for the underlying signal — a
+	 * dropped CLIENT takes up to the ~30s keepalive interval to disappear, so
 	 * polling much faster would buy precision the data doesn't have.
+	 *
+	 * Deliberately reasoned against the ~30s client bound and not the ~90s
+	 * dead-INSTANCE one (see the header): re-polling does not shorten the
+	 * second, since every instance reads the same shared entry and returns
+	 * the same stale answer. A faster poll would buy nothing there either.
 	 */
 	const PRESENCE_POLL_MS = 10_000;
 
@@ -167,8 +172,9 @@ always a broadcast that went out.
 	/**
 	 * What we know about who is listening.
 	 *  - 'checking': first read of this opening is in flight, no answer yet.
-	 *  - 'known':    a 200 answered; `count` is authoritative (modulo the ~30s
-	 *                staleness every consumer of this data carries).
+	 *  - 'known':    a 200 answered; `count` is authoritative (modulo the
+	 *                staleness every consumer of this data carries — see the
+	 *                header for both bounds).
 	 *  - 'unknown':  the server could not answer (503 / 401) or the request
 	 *                failed. NOT zero — see this component's header.
 	 */
@@ -609,12 +615,22 @@ always a broadcast that went out.
 						{acceptingCount === 1 ? 'session' : 'sessions'} accepting pushes</strong
 					>{#if connectedCount > acceptingCount}
 						<span class="muted"> (of {connectedCount} connected)</span>{/if}
-					<!-- Two separate hedges, both load-bearing. The registry can name a
-					     session that dropped ungracefully up to ~30s ago, so even
-					     "was listening" is past tense; and nothing acknowledges a
-					     push, so delivery is never confirmable. -->
+					<!-- Two separate hedges, both load-bearing. The registry can name
+					     a session that is already gone — up to ~30s for a dropped
+					     CLIENT, and on a Redis-backed deployment up to ~90s for a
+					     dead SERVER instance, whose entries clear on the shared
+					     registry's TTL (BUG-2698, codex round 23). So even "was
+					     listening" is past tense. And nothing acknowledges a push,
+					     so delivery is never confirmable.
+
+					     The copy says "recently" rather than naming either number:
+					     which one applies depends on a deployment shape the user
+					     cannot see, and a specific figure that is wrong in the other
+					     shape is worse than an honest vague one. The precise bounds
+					     live in LiveSession's doc comment for the people who can act
+					     on them. -->
 					— as of the last check. Pad can’t confirm delivery, and a session
-					that dropped in the last ~30 seconds can still be listed here.
+					that stopped listening recently can still be listed here.
 				</p>
 				<ul class="session-list">
 					{#each acceptingSessions as session (session.id)}
