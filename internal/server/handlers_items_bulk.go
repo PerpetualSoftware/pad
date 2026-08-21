@@ -774,11 +774,17 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 		// side normalizes here, exactly as in the mutation.
 		tags := req.Tags
 		if req.Op == "tag" {
+			// Trim AND de-duplicate, because bulkTagUpdate does both: it skips
+			// a tag already in `seen`, so ["foo", " foo "] adds one tag while
+			// a delta echoing the request advertised two (codex round 8).
 			tags = make([]string, 0, len(req.Tags))
+			seen := map[string]bool{}
 			for _, t := range req.Tags {
-				if t = strings.TrimSpace(t); t != "" {
-					tags = append(tags, t)
+				if t = strings.TrimSpace(t); t == "" || seen[t] {
+					continue
 				}
+				seen[t] = true
+				tags = append(tags, t)
 			}
 		}
 		return map[string]any{"tags": tags}

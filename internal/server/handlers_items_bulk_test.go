@@ -789,3 +789,14 @@ func TestBulkEventDelta_MatchesTheMutation(t *testing.T) {
 		}
 	})
 }
+
+// TestBulkEventDelta_TagsAreDeduped: bulkTagUpdate skips a tag already in its
+// `seen` set, so ["foo", " foo "] adds ONE tag. A delta echoing both would
+// advertise a change the mutation did not make (codex round 8).
+func TestBulkEventDelta_TagsAreDeduped(t *testing.T) {
+	got := bulkEventDelta(&bulkItemsRequest{Op: "tag", Tags: []string{"foo", " foo ", "bar"}})
+	tags, _ := got["tags"].([]string)
+	if len(tags) != 2 || tags[0] != "foo" || tags[1] != "bar" {
+		t.Errorf("tags = %v, want [foo bar] — trimmed and de-duplicated, as the mutation applies them", tags)
+	}
+}
