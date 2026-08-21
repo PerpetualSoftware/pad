@@ -226,6 +226,7 @@ type outboxDelivery struct {
 	workspaceID string
 	eventType   string
 	eventID     string
+	batchID     string
 	occurredAt  string
 	payload     []byte
 	rowIDs      []string
@@ -289,6 +290,7 @@ func groupOutboxDeliveries(events []store.OutboxEvent) []outboxDelivery {
 			workspaceID: header.WorkspaceID,
 			eventType:   header.EventType,
 			eventID:     header.ID,
+			batchID:     header.BatchID,
 			occurredAt:  header.OccurredAt,
 			payload:     folded,
 			rowIDs:      rowIDs,
@@ -302,9 +304,13 @@ func singleOutboxDelivery(ev store.OutboxEvent) outboxDelivery {
 		workspaceID: ev.WorkspaceID,
 		eventType:   ev.EventType,
 		eventID:     ev.ID,
-		occurredAt:  ev.OccurredAt,
-		payload:     ev.Payload,
-		rowIDs:      []string{ev.ID},
+		// Carried even when this member is delivered ALONE: a consumer that
+		// receives members before their header needs the correlation on the
+		// singles, not only on the batch event.
+		batchID:    ev.BatchID,
+		occurredAt: ev.OccurredAt,
+		payload:    ev.Payload,
+		rowIDs:     []string{ev.ID},
 	}
 }
 
@@ -323,6 +329,7 @@ func (s *Server) deliverOutboxUnit(unit outboxDelivery) {
 	outcome, err := s.webhooks.DeliverEvent(webhooks.Delivery{
 		WorkspaceID: unit.workspaceID,
 		EventID:     unit.eventID,
+		BatchID:     unit.batchID,
 		Event:       unit.eventType,
 		OccurredAt:  unit.occurredAt,
 		Payload:     json.RawMessage(unit.payload),

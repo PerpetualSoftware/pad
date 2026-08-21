@@ -1117,6 +1117,10 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 
 	seen := map[string]bool{}
 	var ids []string
+	// Batches are collected as a SET: a 100-row candidate slice drawn from one
+	// large batch would otherwise run the same sibling scan 100 times for the
+	// same answer (codex round 2).
+	seenBatch := map[string]bool{}
 	var batches []string
 	for rows.Next() {
 		var id, batch string
@@ -1127,7 +1131,8 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 			seen[id] = true
 			ids = append(ids, id)
 		}
-		if batch != "" {
+		if batch != "" && !seenBatch[batch] {
+			seenBatch[batch] = true
 			batches = append(batches, batch)
 		}
 	}
@@ -1329,6 +1334,14 @@ func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
 // A snapshot whose id cannot be read is kept rather than dropped: it is real
 // data the drain does not understand, and silently discarding it would be a
 // worse answer than a duplicate.
+//
+// LAST-WINS ON THE SNAPSHOT, BUT prior_status IS CARRIED FORWARD. The rows
+// being collapsed are not interchangeable: item.status_changed carries the
+// envelope pseudo-field prior_status and item.updated does not, so plain
+// last-wins would keep the later row and silently drop the transition — the
+// one piece of information a "nonterminal → terminal" binding needs, lost
+// exactly in the mixed update that produces both (codex round 2, on round 1's
+// own fix).
 func dedupeMemberSnapshots(members [][]byte) [][]byte {
 	lastAt := map[string]int{}
 	out := make([][]byte, 0, len(members))
@@ -1341,11 +1354,45 @@ func dedupeMemberSnapshots(members [][]byte) [][]byte {
 			continue
 		}
 		if at, seen := lastAt[probe.ID]; seen {
-			out[at] = m
+			out[at] = mergePriorStatus(out[at], m)
 			continue
 		}
 		lastAt[probe.ID] = len(out)
 		out = append(out, m)
 	}
 	return out
+}
+
+// mergePriorStatus returns next, with prev's prior_status restored when next
+// has none.
+//
+// Deliberately one key. The snapshots describe the same row at two points in
+// one operation, so every FIELD is fresher on next; prior_status is not a
+// field of the row at all — it is envelope metadata that only one of the two
+// events carries, which is why it needs carrying and nothing else does.
+//
+// On any decode failure this returns next unchanged: the merge is an
+// enhancement, and failing the whole fold over it would trade a missing key
+// for a missing event.
+func mergePriorStatus(prev, next []byte) []byte {
+	var prevMap, nextMap map[string]json.RawMessage
+	if err := json.Unmarshal(prev, &prevMap); err != nil {
+		return next
+	}
+	prior, had := prevMap["prior_status"]
+	if !had {
+		return next
+	}
+	if err := json.Unmarshal(next, &nextMap); err != nil {
+		return next
+	}
+	if _, present := nextMap["prior_status"]; present {
+		return next
+	}
+	nextMap["prior_status"] = prior
+	merged, err := json.Marshal(nextMap)
+	if err != nil {
+		return next
+	}
+	return merged
 }

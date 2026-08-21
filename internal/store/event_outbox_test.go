@@ -1614,8 +1614,13 @@ func outboxBatchIDsFor(t *testing.T, s *Store, itemID string) []string {
 // TestOutbox_WithEventBatchStampsEveryMutationPath drives ALL FIVE store entry
 // points the bulk handler reaches, because the failure this guards against is
 // per-method: a signature that accepts the option and never threads it to the
-// emit compiles, passes every other test, and silently un-batches one of the
-// six bulk verbs.
+// emit compiles, passes every other test, and silently un-batches whichever
+// bulk verbs route through it.
+//
+// THIS TEST IS NOT SUFFICIENT ON ITS OWN, and saying so is the point: it
+// proves the OPTION works, not that the handler passes it. Codex round 1 found
+// three handler call sites that never did.
+// TestBulkItems_EveryVerbStampsOneBatchID covers that layer.
 //
 // The population is enumerated rather than sampled (CONVE-18): archive
 // (DeleteItem), restore (RestoreItem), move (MoveItemWithPreCheck), field
@@ -1958,6 +1963,39 @@ func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
 		if m.Status != "done" {
 			t.Errorf("member %s carries status %q, want the LAST snapshot (done)", m.ID, m.Status)
 		}
+	}
+
+	// prior_status survives the collapse. A mixed update writes
+	// item.status_changed (which carries it) AND item.updated (which does
+	// not); plain last-wins keeps the later row and drops the transition —
+	// the one field a "nonterminal -> terminal" binding needs, lost exactly
+	// in the case that produces both rows.
+	withPrior, err := FoldBulkHeader(
+		[]byte(`{"batch_id":"b1","op":"move","count":1,"item_ids":["i1"]}`),
+		[][]byte{
+			[]byte(`{"id":"i1","status":"done","prior_status":"open"}`),
+			[]byte(`{"id":"i1","status":"done","title":"later row, no prior_status"}`),
+		})
+	if err != nil {
+		t.Fatalf("FoldBulkHeader (prior_status): %v", err)
+	}
+	var priorGot struct {
+		Members []struct {
+			Title       string `json:"title"`
+			PriorStatus string `json:"prior_status"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(withPrior, &priorGot); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(priorGot.Members) != 1 {
+		t.Fatalf("members = %d, want 1", len(priorGot.Members))
+	}
+	if priorGot.Members[0].PriorStatus != "open" {
+		t.Errorf("prior_status = %q, want it carried forward from the status_changed row", priorGot.Members[0].PriorStatus)
+	}
+	if priorGot.Members[0].Title != "later row, no prior_status" {
+		t.Errorf("member = %+v, want the LAST snapshot's fields kept", priorGot.Members[0])
 	}
 
 	// A snapshot the drain cannot read is kept, not dropped: it is real data,

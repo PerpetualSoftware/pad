@@ -21,9 +21,10 @@ import (
 // assertion here a timing question.
 
 type capturedDelivery struct {
-	Event string          `json:"event"`
-	ID    string          `json:"id"`
-	Data  json.RawMessage `json:"data"`
+	Event   string          `json:"event"`
+	ID      string          `json:"id"`
+	BatchID string          `json:"batch_id"`
+	Data    json.RawMessage `json:"data"`
 }
 
 type webhookSink struct {
@@ -311,6 +312,16 @@ func TestOutboxDrain_MembersWithoutTheirHeaderDeliverIndividually(t *testing.T) 
 		if d.Event != kernelevents.ItemDeleted {
 			t.Errorf("event = %q, want %q — members deliver as their own canonical events", d.Event, kernelevents.ItemDeleted)
 		}
+		// THE ENVELOPE, not the payload: these are ordinary item.deleted
+		// events whose payload is an item snapshot with no batch anywhere in
+		// it. If the correlation is not on the envelope, a consumer receiving
+		// singles-then-partial-batch cannot tell they were one operation —
+		// which is the only reason batch_id is on the wire (codex round 2
+		// found this claimed in comments and reachable only from the folded
+		// half).
+		if d.BatchID != batch {
+			t.Errorf("member delivery carries batch_id %q, want %q", d.BatchID, batch)
+		}
 	}
 
 	// The header arrives and folds what is left, which is nothing: the members
@@ -332,7 +343,10 @@ func TestOutboxDrain_MembersWithoutTheirHeaderDeliverIndividually(t *testing.T) 
 		t.Fatalf("decode header payload: %v", err)
 	}
 	if payload.BatchID != batch {
-		t.Errorf("batch_id = %q, want %q — without it a consumer cannot tie the singles to this event", payload.BatchID, batch)
+		t.Errorf("payload batch_id = %q, want %q", payload.BatchID, batch)
+	}
+	if after[0].BatchID != batch {
+		t.Errorf("header envelope batch_id = %q, want %q — the singles carry it on the envelope, so the batch must too or they cannot be matched", after[0].BatchID, batch)
 	}
 	if len(payload.Members) != 0 {
 		t.Errorf("members = %d, want 0 — a fold must not re-include members a previous tick already delivered", len(payload.Members))

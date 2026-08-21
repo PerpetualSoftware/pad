@@ -74,7 +74,19 @@ type WebhookPayload struct {
 	// "webhook.test" ping a user fires from the CLI is not a kernel event,
 	// has no outbox row, and must not invent an id a consumer would dedupe
 	// against.
-	ID        string      `json:"id,omitempty"`
+	ID string `json:"id,omitempty"`
+
+	// BatchID correlates deliveries that belong to ONE bulk operation.
+	//
+	// Present on the folded item.bulk_updated event AND on any member
+	// delivered individually — which happens when a drain pass claims members
+	// before their header lands (SPEC-3 v1.6 makes "one wire event per batch"
+	// the normal case rather than an invariant). Without it on BOTH, a
+	// consumer receiving singles-then-partial-batch has no way to tell they
+	// were one operation, which is the entire reason the field exists (codex
+	// round 2 — the correlation was claimed in comments and reachable only
+	// from the folded half).
+	BatchID   string      `json:"batch_id,omitempty"`
 	Event     string      `json:"event"`
 	Workspace string      `json:"workspace"`
 	Timestamp string      `json:"timestamp"`
@@ -90,6 +102,9 @@ type Delivery struct {
 	WorkspaceID string
 	// EventID is the outbox row id, reaching the consumer as the dedupe key.
 	EventID string
+	// BatchID is the bulk operation this event belongs to, empty for the
+	// single-item mutations that are almost all of them.
+	BatchID string
 	// Event is the canonical events/1 name. The webhook wire name IS the
 	// canonical name — no mapping, unlike SSE's snake_case surface.
 	Event string
@@ -304,6 +319,7 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 
 	body, err := json.Marshal(WebhookPayload{
 		ID:        dv.EventID,
+		BatchID:   dv.BatchID,
 		Event:     dv.Event,
 		Workspace: dv.WorkspaceID,
 		Timestamp: dv.OccurredAt,

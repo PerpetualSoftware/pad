@@ -575,17 +575,20 @@ func TestBulkItems_RouteRegistered(t *testing.T) {
 	}
 }
 
-// TestBulkItems_EveryVerbStampsOneBatchID drives ALL SIX bulk verbs through
-// the HTTP handler and asserts every event the operation produced shares one
-// batch id.
+// TestBulkItems_EveryVerbStampsOneBatchID drives all SEVEN bulk legs through
+// the HTTP handler — set-priority, tag, untag, move-status, assign, archive,
+// restore — and asserts every event the operation produced shares one batch
+// id. (Six OPS; move appears once as a status-only move, which is the field
+// path, and cross-collection move goes through the same helper.)
 //
 // This exists because the store-level test could not catch the bug codex round
 // 1 found. That test called the five store methods directly with the option,
 // so it proved the option WORKS; it said nothing about whether the handler
-// passes it. Three of the six verbs (set-priority, tag, untag, move) reached
-// their store calls without it, so their member rows stayed unbatched while
-// the header was still written — N individual wire deliveries plus a header
-// claiming they were a batch.
+// passes it. THREE CALL SITES were missing it, affecting FOUR verbs —
+// set-priority and move-status (bulkFieldUpdate), tag and untag
+// (bulkTagUpdate), and cross-collection move (bulkMoveCollection) — so those
+// member rows stayed unbatched while the header was still written: N
+// individual wire deliveries plus a header claiming they were a batch.
 //
 // The lesson underneath, for the third time in this unit: threading a
 // parameter into helper SIGNATURES is not the same work as passing it at every

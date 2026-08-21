@@ -340,11 +340,19 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 
 	resp.Total = len(resp.Updated) + len(resp.Failed)
 
-	// One SSE batch event per affected collection + ONE webhook for the
-	// whole batch (only when something actually changed). The core of
-	// the task: a whole-lane bulk action must not emit N per-item events.
-	// Per-collection (not fully per-item) keeps SSE visibility routing
-	// correct while still collapsing a lane action to a single event.
+	// One SSE batch event per affected collection + ONE batch header for the
+	// drain. The core of the original task: a whole-lane bulk action must not
+	// emit N per-item events. Per-collection (not fully per-item) keeps SSE
+	// visibility routing correct while still collapsing a lane action to a
+	// single event.
+	//
+	// "when something actually changed" USED TO SAY MORE THAN IT MEANT, and is
+	// corrected here rather than left to be re-derived (codex rounds 1-2): the
+	// condition is that at least one row was TOUCHED without erroring, which
+	// is not the same as a semantic change. Untagging a tag nobody has
+	// succeeds on every row and changes nothing, so this fires with a count
+	// and the store — which emits only for real changes — writes no member
+	// events at all.
 	if len(affectedIDs) > 0 {
 		for collSlug, b := range batches {
 			s.publishBulkItemsEvent(workspaceID, req.Op, collSlug, b.count, actor, actorName, source, b.maxSeq)
