@@ -108,6 +108,21 @@ func NewRedisHealth(client *redis.Client, onProbe func(ok bool)) *RedisHealth {
 // before returning, so a server that has finished starting has a real
 // answer rather than a Probed=false window that only closes an interval
 // later — the boot case is exactly when an operator is watching.
+//
+// That is one PING more than strictly needed at boot: cmd/pad/cmd_server.go
+// already pings when it dials, and treats a failure there as FATAL
+// (codex round 8). Two consequences worth stating rather than leaving to
+// be rediscovered:
+//
+//   - The redundancy is deliberate. Reusing the dial-time result would
+//     couple this type to its caller's startup sequence for the sake of
+//     one round trip on a path that runs once per process.
+//   - Because that earlier ping is fatal, the "unreachable at startup"
+//     branch in probe() cannot fire in the shipped binary — the process
+//     exits first. It is kept because it is reachable for any embedder
+//     that makes the dial-time check non-fatal, and because the
+//     alternative is a prober whose first-probe behaviour depends on a
+//     policy decision made somewhere else.
 func (h *RedisHealth) Start() {
 	if h == nil || h.client == nil {
 		return

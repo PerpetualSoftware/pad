@@ -65,6 +65,14 @@ type Observer interface {
 	// receives nothing — including its own publishes, which are delivered
 	// through Redis like everyone else's.
 	//
+	// EXPECTED TO STAY AT ZERO, and that is the point rather than an
+	// argument against it (codex round 8 asked). This is a should-never-
+	// fire alarm on a state that is otherwise undetectable from outside
+	// the process: an instance that publishes fine, answers health checks,
+	// and receives nothing. BUG-2727 filed the silent return as the
+	// defect; a log line nobody greps and a counter nobody alerts on are
+	// not the same thing, and the counter costs one series at zero.
+	//
 	// Reachability, verified against go-redis v9.22.0 rather than assumed:
 	// PubSub.Channel's message channel is closed ONLY on pool.ErrClosed,
 	// i.e. the client or the PubSub was closed. Every other receive error

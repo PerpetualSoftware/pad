@@ -748,7 +748,9 @@ func serveCmd() *cobra.Command {
 				// signal beyond a push that quietly reaches fewer
 				// sessions. The counter is the only alertable trace
 				// (BUG-2727).
-				redisPresence.SetObserver(server.NewMetricsPresenceObserver(m))
+				redisPresence.SetFailureObserver(func(op string) {
+					m.SessionPresenceFailuresTotal.WithLabelValues(op).Inc()
+				})
 				// Backstop for early-return paths that never reach the
 				// shutdown sequence; Close is idempotent. Deliberately does
 				// NOT delete this instance's entries — a shutdown racing a

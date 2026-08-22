@@ -9,6 +9,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// recordingPresenceObserver counts failure callbacks. Kept as a type
+// rather than a bare closure so a test can read per-op counts and the
+// total, which is what distinguishes "reported the right op" from
+// "reported something".
 type recordingPresenceObserver struct {
 	mu     sync.Mutex
 	failed map[string]int
@@ -19,7 +23,7 @@ func newRecordingPresenceObserver() *recordingPresenceObserver {
 	return &recordingPresenceObserver{failed: map[string]int{}}
 }
 
-func (o *recordingPresenceObserver) PresenceOpFailed(op string) {
+func (o *recordingPresenceObserver) record(op string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.failed[op]++
@@ -56,7 +60,7 @@ func TestPresenceReportsFailedOps(t *testing.T) {
 	t.Cleanup(p.Close)
 
 	obs := newRecordingPresenceObserver()
-	p.SetObserver(obs)
+	p.SetFailureObserver(obs.record)
 
 	// PREMISE: healthy operations report nothing.
 	id := p.Add("user-1", SessionIdentity{Label: "docapp"})
@@ -162,7 +166,7 @@ func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
 		t.Cleanup(p.Close)
 
 		obs := newRecordingPresenceObserver()
-		p.SetObserver(obs)
+		p.SetFailureObserver(obs.record)
 
 		if id := p.Add("user-1", SessionIdentity{Label: "docapp"}); id == "" {
 			t.Fatal("premise failed: Add returned an empty session id")
@@ -199,7 +203,7 @@ func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
 		t.Cleanup(p.Close)
 
 		obs := newRecordingPresenceObserver()
-		p.SetObserver(obs)
+		p.SetFailureObserver(obs.record)
 
 		id := p.Add("user-1", SessionIdentity{Label: "docapp"})
 		if id == "" {
@@ -234,6 +238,6 @@ func corruptEntryFixture(t *testing.T) (*RedisSessionPresence, *miniredis.Minire
 	t.Cleanup(p.Close)
 
 	obs := newRecordingPresenceObserver()
-	p.SetObserver(obs)
+	p.SetFailureObserver(obs.record)
 	return p, mr, client, obs
 }

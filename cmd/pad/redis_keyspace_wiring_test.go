@@ -22,6 +22,17 @@ import (
 // internal/watchevents' DEPLOYMENT SCOPING note states the rule as
 // "every keyspace at once, from shared config". This is that rule's
 // enforcement step rather than another sentence asserting it.
+//
+// THE TRADE, since a source-parsing test is an unusual thing to ship
+// (codex round 8 flagged it): it protects a future EDIT rather than
+// runtime behaviour, and it breaks on a rename or a reformat of the
+// constructor calls. Kept because the alternative on offer — a single
+// construction API returning all three — cannot exist without collapsing
+// three packages' constructors into one, and because this guard's
+// failure mode is loud and its message says exactly what to do. A test
+// that needs a one-line update after a deliberate rename is a better
+// deal than an invariant with no enforcement at all, which is what the
+// package comment alone amounts to.
 func TestAllRedisKeyspacesShareOneNamespace(t *testing.T) {
 	t.Parallel()
 
