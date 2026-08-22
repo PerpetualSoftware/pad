@@ -106,6 +106,34 @@ at it reports
 renewal, and Pad's keyspace is small — a few hundred bytes per connected
 session plus two counters — so there is nothing to gain by evicting it.
 
+#### If push stops finding a session (on-call)
+
+The most likely Redis-related symptom is a **transient write failure while
+registering a session**. The agent's event stream stays up — the connection is
+never refused over a registry problem — but the session is absent from the
+shared registry, so:
+
+- it does not appear in `GET /api/v1/sessions` or the web picker, and
+- a push **targeted** at it returns `200 pushed:true` with
+  `delivered_sessions: 0` and skips publication, so the instruction is not
+  delivered.
+
+**What you'll see:** `session presence: failed to register session` or `failed
+to renew session entry` warnings (rate-limited to one per minute, carrying
+`failures_since_last_log` — a large count means the replica, a small one means
+a single session), and the session missing from the listing.
+
+**What to do:** restore Redis connectivity, capacity, or ACLs. Registration
+self-heals — each session's renewal re-writes its full entry, so an affected
+session reappears within ~30 seconds without reconnecting. Confirm it is listed
+again before re-sending anything.
+
+**What NOT to do:** do not blindly re-send. A *targeted* push reporting
+`delivered_sessions: 0` is safe to resend, because the server skipped the
+publish. A **broadcast** is always published, and a `502 push_unconfirmed` means
+the outcome is unknown — re-sending either can deliver a second instruction the
+agent acts on twice. Only re-send what the server told you it skipped.
+
 #### Upgrading a multi-instance deployment
 
 `PAD_REDIS_URL` now also backs the **session-presence registry** — the list of
