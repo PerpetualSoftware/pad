@@ -196,65 +196,6 @@ cross-tenant leak.
 > Session-presence entries are transient — 90s TTL — and cost nothing either
 > way.
 
-**Upgrading ACROSS the BUG-2731 fix partitions the activity stream for the
-duration of the roll.** The activity channel's payload gained an
-`<epoch>|<id>|` prefix so the ID can be assigned atomically with the publish;
-receivers on the new build understand both the prefixed and the old bare-JSON
-form, so **new instances handle old publishers fine**. The reverse does not
-hold: an instance still running the old build cannot parse a prefixed payload
-and **drops that event for its own connected clients**, logging
-`failed to unmarshal Redis event` each time.
-
-What that means in practice:
-
-- The asymmetry lasts only as long as mixed versions are running. Roll all
-  replicas promptly rather than parking a partial rollout.
-- Clients connected to old-build replicas miss activity events published by
-  new-build replicas during the window. **They heal when they reconnect to a
-  NEW-build replica**, which answers the resume with `sync_required` — or,
-  if that replica happens to hold coverage spanning the client's cursor,
-  replays the missed events directly.
-  A reconnect that lands on another old-build replica is served by the old code
-  and can still be told it is caught up, so the stale window lasts until the
-  client's connection happens to land on an upgraded replica — which is the
-  practical reason to roll promptly rather than park a half-finished rollout.
-
-  **One case does not self-heal on the stream at all**, and it is worth
-  understanding before deciding how much the window matters: if a client's
-  cursor is advanced PAST a dropped event by a later one it did receive, no
-  replica will ever replay the dropped event, because from every replica's
-  point of view that client is up to date. Nothing on the stream is wrong
-  after that — it is a specific missing row in a live view. It is corrected by
-  any full reconciliation (a page load, a navigation that refetches the
-  collection), not by reconnecting. Data at rest is never affected; the store
-  is the source of truth and the stream is a notification channel.
-- The error log is a signal that the window is OPEN; it going quiet is **not**
-  proof the roll finished. On an idle workspace there is nothing to publish and
-  nothing to fail to parse. Confirm from the rollout itself — every replica on
-  the new build — not from the absence of errors.
-- **An old build restarting the counter mid-roll produces a visible resume-gap
-  loop.** If the Redis sequence key is lost while old-build replicas are still
-  publishing, cursors at or below the dead sequence's high-water mark are
-  refused until the new sequence climbs past it, so affected clients resync
-  repeatedly. It is loud by design — `pad_event_resume_gaps_total` climbs and
-  every drop logs a warning — and it ends when the roll does, because on the
-  new build a counter restart rotates the epoch instead, which clears the
-  floor. The remedy is to finish the roll, not to wait it out.
-- **ID ordering is also mixed during the window**, and it is handled rather
-  than merely tolerated. An old-build publisher still assigns its ID and
-  publishes as two separate steps, so a new-build instance can receive a
-  higher ID before a lower one. It reads that as the sequence having been
-  reset, drops its replay buffers, and — the part that matters — refuses
-  resumes from the cursors whose successors it just discarded, so an affected
-  client resyncs instead of being told it is current. Expect
-  `pad_event_sequence_resets_total{reason="counter_backwards"}` to move during
-  a roll for this reason; it should stop once every replica is on the new
-  build.
-
-The alternative — wrapping the epoch in a JSON envelope — was rejected because
-an old instance would unmarshal it into an empty event with **no error at
-all**, turning a loud, self-announcing window into a silent one.
-
 Pad's Redis integration assumes a **single Redis node** — `redis://…`, not a
 cluster. Key names carry no hash tags and Pad dials a non-cluster client, so a
 user's presence index and their session entries would hash to different slots
@@ -286,7 +227,7 @@ Alert on these instead:
 | `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch counter above. **Expect a step around a deploy that settles back to baseline** — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
-| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. **Read the label.** `epoch_change` / `counter_backwards` mean the shared ID space changed under a RUNNING instance and every buffer was dropped — no benign baseline: a flushed counter key or two installations on one endpoint. `subscription_resumed` means a pub/sub connection dropped and resubscribed, dropping one workspace's buffer — expect it during a Redis failover and expect it to stop afterwards. Note a `PAD_REDIS_NAMESPACE` change does **not** show up here, because it takes a restart, and a freshly started instance has no coverage to lose |
+| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. Today one reason: `subscription_resumed`, a pub/sub connection that dropped and resubscribed, dropping that workspace's buffer — expect it during a Redis failover and expect it to stop afterwards |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
 
@@ -651,7 +592,7 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 - [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`, single node (not a cluster)
 - [ ] **Redis namespace:** `PAD_REDIS_NAMESPACE` set if this endpoint is shared with another Pad installation
 - [ ] **Streaming limits:** `PAD_SSE_MAX_CONNECTIONS` / `PAD_SSE_MAX_PER_USER` sized for your fleet (both cover *both* SSE endpoints)
-- [ ] **Redis alerting:** `pad_redis_up`, `pad_watchevents_sequence_gaps_total` and `pad_event_sequence_resets_total` wired to alerts
+- [ ] **Redis alerting:** `pad_redis_up` and `pad_watchevents_sequence_gaps_total` wired to alerts
 - [ ] **Stream-honesty alerting:** `pad_event_resume_gaps_total` alerting on a rate that does NOT settle after a deploy (a step around one is expected — cold replay buffers), and `pad_event_receive_loop_exits_total` read as a rate against a stable subscriber count. See the metrics table above for what each label means
 - [ ] **TLS:** Reverse proxy with valid certificates
 - [ ] **Secure cookies:** `PAD_SECURE_COOKIES=true` (requires TLS)
