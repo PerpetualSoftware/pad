@@ -59,6 +59,26 @@ func newStreamAdmission(maxTotal, maxUser int) *streamAdmission {
 	}
 }
 
+// setLimits updates the bounds in place.
+//
+// In place rather than by replacing the gate, because a replacement
+// silently OVER-GRANTS capacity: the new gate starts at zero while the
+// old one still holds every open connection's slot, so those connections
+// stop counting against the limit and the process admits that many extra.
+//
+// The gauge, notably, does NOT expose it — verified rather than assumed,
+// by mutation-testing a version of this that asserted the gauge and
+// watching it pass. The discarded gate keeps its observer, so its
+// releases keep driving the gauge and the number stays plausible while
+// the budget is wrong. That is the failure worth avoiding structurally:
+// the visible signal stays right and the invisible one goes wrong.
+func (a *streamAdmission) setLimits(maxTotal, maxUser int) {
+	a.mu.Lock()
+	a.maxTotal = maxTotal
+	a.maxUser = maxUser
+	a.mu.Unlock()
+}
+
 // setTotalObserver attaches the gauge callback. Config-time only, like
 // the limits themselves.
 func (a *streamAdmission) setTotalObserver(fn func(total int)) {

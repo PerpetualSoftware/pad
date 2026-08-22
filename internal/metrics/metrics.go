@@ -182,7 +182,7 @@ func New() *Metrics {
 
 	eventBusPublishTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_eventbus_publish_total",
-		Help: "Total number of events published to the event bus.",
+		Help: "Events HANDED to the event bus. On a Redis-backed bus this counts attempts, not confirmed publishes — Publish returns nothing, so a failed Redis publish is logged and still counted here. See pad_redis_up.",
 	})
 
 	eventBusSubscribers := prometheus.NewGauge(prometheus.GaugeOpts{

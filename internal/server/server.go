@@ -1039,7 +1039,10 @@ func (s *Server) SetSSELimits(global, perWorkspace, perUser int) {
 	s.sseMaxConnections = global
 	s.sseMaxPerWorkspace = perWorkspace
 	s.sseMaxPerUser = perUser
-	s.streamAdmit = newStreamAdmission(global, perUser)
+	// Updates the EXISTING gate rather than replacing it — see setLimits
+	// for why replacing strands held slots and drifts the gauge.
+	// admission() builds one on first use with the values just stored.
+	s.admission().setLimits(global, perUser)
 	s.wireStreamGauge()
 }
 
@@ -1062,10 +1065,9 @@ func (s *Server) wireStreamGauge() {
 // test that does not care about limits) still has a working gate rather
 // than a nil check at each call site.
 //
-// SetSSELimits REPLACES the gate rather than reconfiguring it, which would
-// strand slots held by the old one. That is safe because limits are
-// configured before the listener starts; calling SetSSELimits on a server
-// already serving streams is not supported.
+// SetSSELimits reconfigures this gate in place rather than replacing it,
+// so calling it on a server that is already serving streams neither
+// strands their slots nor drifts the gauge.
 func (s *Server) admission() *streamAdmission {
 	s.admitOnce.Do(func() {
 		if s.streamAdmit == nil {
@@ -1305,7 +1307,7 @@ func (s *Server) setupRouter() {
 		r.Route("/api/v1", func(r chi.Router) {
 			r.Get("/health", s.handleHealth)
 			r.Get("/health/live", s.handleHealthLive)
-			r.Get("/api/v1/health/ready", s.handleHealthReady)
+			r.Get("/health/ready", s.handleHealthReady)
 			r.Get("/plan-limits", s.handleGetPlanLimits) // Public: billing page reads plan limits
 			r.Get("/unsubscribe", s.handleUnsubscribe)   // Public: email opt-out (HMAC-signed)
 

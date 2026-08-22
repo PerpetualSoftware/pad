@@ -107,6 +107,38 @@ func waitForStatus(t *testing.T, h *RedisHealth, cond func(RedisHealthStatus) bo
 	t.Fatalf("timed out waiting for %s (last status: %+v)", what, h.Status())
 }
 
+// TestHealthEndpointsAreMountedWhereDocumented pins the three health
+// URLs. docs/deployment.md, deploy/k8s/deployment.yaml and every
+// operator runbook name these paths; a route that moves silently turns
+// every one of them into a 404, and nothing else in the suite would
+// notice.
+func TestHealthEndpointsAreMountedWhereDocumented(t *testing.T) {
+	t.Parallel()
+
+	srv := testServer(t)
+	for _, path := range []string{
+		"/api/v1/health",
+		"/api/v1/health/live",
+		"/api/v1/health/ready",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code == http.StatusNotFound {
+			t.Errorf("%s is not mounted (404) — operator docs and k8s probes point at it", path)
+		}
+	}
+
+	// The negative control: a path that must NOT exist, so a router that
+	// answered everything could not pass the loop above.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/api/v1/health/ready", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("/api/v1/api/v1/health/ready answered %d — the route is double-prefixed", rec.Code)
+	}
+}
+
 // TestHealthReadyReportsRedisWithoutGatingOnIt is the ruling made
 // executable: an unreachable Redis must be VISIBLE in the payload and
 // must NOT change the status code. A test that only checked the payload
@@ -178,11 +210,24 @@ func TestHealthReadyReportsRedisWithoutGatingOnIt(t *testing.T) {
 	}
 }
 
+// readyBody drives readiness THROUGH THE ROUTER, not by calling the
+// handler directly.
+//
+// The direct call was the original shape and it could not see the path.
+// A scripted comment edit later rewrote the route registration itself to
+// "/api/v1/health/ready" INSIDE the /api/v1 group — so the real endpoint
+// became /api/v1/api/v1/health/ready and readiness 404'd at the
+// documented path — and this suite stayed green throughout, because a
+// handler invoked by hand has no route to be wrong. Codex found it; the
+// test could not.
+//
+// Going through srv.ServeHTTP costs nothing and makes the URL part of
+// what is asserted.
 func readyBody(t *testing.T, srv *Server, wantCode int) map[string]interface{} {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health/ready", nil)
 	rec := httptest.NewRecorder()
-	srv.handleHealthReady(rec, req)
+	srv.ServeHTTP(rec, req)
 	if rec.Code != wantCode {
 		t.Fatalf("health/ready status = %d, want %d (body: %s)", rec.Code, wantCode, rec.Body.String())
 	}

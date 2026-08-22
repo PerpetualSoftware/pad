@@ -845,6 +845,16 @@ func (p *RedisSessionPresence) Close() {
 // waitForDrain waits for every renewal goroutine to finish, up to timeout.
 // Reports whether they all finished; false means at least one is still
 // running and the caller is proceeding anyway.
+// waitForDrain waits for renewal goroutines, bounded.
+//
+// The waiter goroutine LEAKS when the timeout fires with a renewal still
+// blocked: nothing can cancel a wg.Wait, so it lives until the process
+// exits. Accepted rather than fixed, and stated rather than left for the
+// next reader to rediscover — this runs only from Close, so "until the
+// process exits" is seconds away, and it is one goroutine per shutdown,
+// not per session. The alternative (a cancellable wait) would mean
+// tracking every renewal individually for a benefit that expires with
+// the process.
 func (p *RedisSessionPresence) waitForDrain(timeout time.Duration) bool {
 	drained := make(chan struct{})
 	go func() {

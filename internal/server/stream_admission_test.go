@@ -455,3 +455,56 @@ func rawSSEStatus(t *testing.T, baseURL, slug string) int {
 	defer resp.Body.Close()
 	return resp.StatusCode
 }
+
+// TestSetSSELimitsDoesNotStrandHeldSlots covers reconfiguration while
+// connections are held. Replacing the gate would leave the old one
+// holding the count and the new one starting at zero, so every connection
+// already open stops counting against the limit — the process silently
+// over-grants capacity by however many streams were held at the moment
+// limits were set.
+//
+// The assertion is that a HELD slot still counts after reconfiguration,
+// which is what a replacement breaks. An earlier version of this test
+// asserted the gauge instead and SURVIVED the mutation: the discarded
+// gate keeps its observer, so its releases keep driving the gauge and
+// the numbers look right while the budget is wrong. Worth recording —
+// the wrong end state is the one nothing is watching.
+func TestSetSSELimitsDoesNotStrandHeldSlots(t *testing.T) {
+	t.Parallel()
+
+	srv := testServer(t)
+	m := metrics.New()
+	srv.SetMetrics(m)
+	srv.SetSSELimits(1, 0, 0) // one streaming connection process-wide
+
+	release, refusal := srv.admission().acquire("u1")
+	if refusal != admissionRefusalNone {
+		t.Fatalf("premise failed: acquire refused by %q", refusal)
+	}
+	if _, refusal := srv.admission().acquire("u2"); refusal != admissionRefusalGlobal {
+		t.Fatalf("premise failed: the budget was not spent — second acquire refused by %q, want global", refusal)
+	}
+
+	// Reconfigure to the SAME bound while the connection is still held.
+	srv.SetSSELimits(1, 0, 0)
+
+	if _, refusal := srv.admission().acquire("u3"); refusal != admissionRefusalGlobal {
+		t.Fatalf("after reconfiguring, a second connection was admitted (refusal %q) under a limit of 1 — "+
+			"the held slot stopped counting, so the process over-grants capacity", refusal)
+	}
+
+	// The gauge still tracks the one real connection, in both directions.
+	if got := gaugeValue(t, m); got != 1 {
+		t.Fatalf("gauge = %v with one connection held, want 1", got)
+	}
+	release()
+	if got := gaugeValue(t, m); got != 0 {
+		t.Fatalf("gauge = %v after release, want 0", got)
+	}
+
+	// And the NEW limits land on the same gate.
+	srv.SetSSELimits(500, 100, 25)
+	if a := srv.admission(); a.maxUser != 25 || a.maxTotal != 500 {
+		t.Fatalf("gate holds maxTotal=%d maxUser=%d, want 500/25 — the update did not land", a.maxTotal, a.maxUser)
+	}
+}
