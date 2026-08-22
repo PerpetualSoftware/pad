@@ -130,6 +130,46 @@ func (s *Server) handleHealthReady(w http.ResponseWriter, r *http.Request) {
 		"driver":           string(s.store.D().Driver()),
 	}
 
+	// Redis reachability, INFORMATIONAL — it never changes the 200/503
+	// (BUG-2727). Readiness stays database-only because every item-write path,
+	// the REST API and the web UI work with Redis down; gating on it would
+	// pull healthy replicas out of the load balancer over a degraded
+	// feature. What Redis being down actually costs is named on the
+	// `degrades` field so a reader does not have to know the architecture
+	// to interpret the flag.
+	//
+	// Absent when no prober is wired, which means no Redis is configured.
+	// A `false` there would say "Redis is down" about a deployment that
+	// has none.
+	if s.redisHealth != nil {
+		status := s.redisHealth.Status()
+		redisResp := map[string]interface{}{
+			"reachable": status.Reachable,
+			"probed":    status.Probed,
+		}
+		if status.Error != "" {
+			redisResp["error"] = status.Error
+		}
+		if !status.LastCheck.IsZero() {
+			redisResp["last_check"] = status.LastCheck.UTC().Format(time.RFC3339)
+		}
+		if status.Probed && !status.Reachable {
+			redisResp["degrades"] = []string{
+				// NOT "cross-instance" — the activity bus does not fall
+				// back to a local fan-out when its Redis publish fails
+				// (internal/events/redis_bus.go: Publish logs and
+				// returns), so subscribers on THIS instance stop
+				// receiving too. An operator told only about
+				// cross-instance delivery would conclude local streams
+				// were healthy and look elsewhere.
+				"all activity events, including to clients on this instance",
+				"watch notifications",
+				"session presence and session-targeted push",
+			}
+		}
+		resp["redis"] = redisResp
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 

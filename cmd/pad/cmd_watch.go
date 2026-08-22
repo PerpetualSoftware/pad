@@ -176,8 +176,13 @@ pad watch remove <ref>
 pad watch --stream --for-session
     The plugin monitor command (see monitors/monitors.json). Prints one
     line per matching event to stdout in a fixed, machine-readable
-    format. Silent on startup when no workspace is linked or padd is
-    unreachable — see the DOC-2479 behavior contract in this command's
+    format.
+
+    Silent on startup in three cases, and silence does not distinguish
+    them: no workspace linked (retries hourly), padd unreachable
+    (backoff from 5s, capped at 5min), and the server refusing the
+    stream at its connection limit — a 429, which folds into that same
+    backoff. See the DOC-2479 behavior contract in this command's
     source. Not meant to be run by hand; the pad plugin's monitor entry
     invokes it.`,
 		Args: cobra.MaximumNArgs(1),

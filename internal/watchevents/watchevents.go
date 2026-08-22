@@ -328,6 +328,16 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 // (codex round 2 finding 3 — see Publish's doc comment for why an
 // earlier "send after releasing the lock" version could panic).
 type MemoryBus struct {
+	// observable carries the optional operational-event seam (BUG-2727).
+	//
+	// cmd/pad/cmd_server.go wires one HERE TOO, not just on the Redis
+	// bus, and that is deliberate: this bus has the same slow-subscriber
+	// drop, so pad_watchevents_notifications_dropped_total means what it
+	// says on a single-process deployment. The sequence-related reports
+	// stay at zero here by construction — MemoryBus assigns its own
+	// contiguous ids and has no subscription to lose.
+	observable
+
 	mu          sync.Mutex
 	subscribers map[chan Notification]struct{}
 	seq         int64
@@ -375,6 +385,12 @@ func (b *MemoryBus) Publish(n Notification) error {
 		n.Timestamp = time.Now().UnixMilli()
 	}
 
+	// Registered FIRST so it runs LAST — after the Unlock below. See
+	// Observer: reports fire with no bus lock held, so an observer may
+	// call back into the bus without deadlocking it.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -412,6 +428,7 @@ func (b *MemoryBus) Publish(n Notification) error {
 			// a delivery it cannot confirm either way had definitely
 			// failed — exactly the false precision BUG-2699 is about.
 			slog.Warn("watchevents: dropping notification for slow subscriber", "kind", n.Kind, "item_ref", n.ItemRef)
+			pending.drop(DropReasonSlowSubscriber)
 		}
 	}
 	return nil

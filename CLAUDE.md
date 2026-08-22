@@ -85,7 +85,10 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET /workspaces/{ws}/items/{slug}/progress` — child item completion progress
 - `GET/POST /workspaces/{ws}/items/{slug}/links` — item relationships (blocks/blocked-by, parent/child)
 - `GET /search?q=query&workspace=slug` — full-text search
-- `GET /api/v1/events?workspace=slug` — SSE real-time events
+- `GET /api/v1/events?workspace=slug` — SSE real-time events (workspace-scoped)
+- `GET /api/v1/events/stream` — SSE watch/push notifications (USER-scoped, spans every workspace the caller belongs to; backs `pad watch --stream`)
+
+Both SSE endpoints share one admission budget, enforced **per instance**: `PAD_SSE_MAX_CONNECTIONS` (default 1000) and `PAD_SSE_MAX_PER_USER` (default 50) cover both; `PAD_SSE_MAX_PER_WORKSPACE` (default 100) covers `/api/v1/events` only. Over the limit is `429` with code `sse_limit_exceeded` and a `Retry-After` header — clients must back off, not retry immediately (BUG-2726). The CLI does; browsers cannot, since `EventSource` exposes neither the status nor the header to the page (BUG-2733). On `/api/v1/events` only, callers with no resolved user (a legacy workspace token, or the fresh-install window before the first admin exists) are bounded per *workspace* instead of per user; `/api/v1/events/stream` has no such case — it requires a resolved user and answers `401` otherwise.
 - `GET /api/v1/collab/{itemID}?schema_version=N` — WebSocket upgrade for real-time collaborative editing (Yjs binary protocol; client must announce schema version)
 - `GET /workspaces/{ws}/members` — list members + pending invitations
 - `POST /workspaces/{ws}/members/invite` — invite user to workspace

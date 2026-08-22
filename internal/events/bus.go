@@ -130,11 +130,23 @@ type EventBus interface {
 	// Returns a buffered channel that will receive events for that workspace.
 	Subscribe(workspaceID string) chan Event
 
-	// SubscribeIfAllowed atomically checks the global and per-workspace
-	// subscriber limits and, only if both are satisfied, subscribes in the
-	// same critical section.  Returns (ch, true) on success or (nil, false)
-	// when a limit would be exceeded.  Pass 0 for either limit to disable it.
-	SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan Event, bool)
+	// SubscribeIfAllowed atomically checks the per-workspace subscriber
+	// limit and, only if it is satisfied, subscribes in the same critical
+	// section.  Returns (ch, true) on success or (nil, false) when the
+	// limit would be exceeded.  Pass 0 to disable it.
+	//
+	// There is deliberately NO global limit here any more (BUG-2726). Pad
+	// serves two SSE endpoints backed by two different buses, and a held
+	// connection costs the same process resources whichever opened it, so
+	// a global bound is a property of the PROCESS and cannot be enforced
+	// by either bus alone — one bus counting its own subscribers would let
+	// a caller exhaust the machine through the other while every
+	// configured limit still read as satisfied. That bound now lives in
+	// internal/server's streamAdmission, which both endpoints acquire from
+	// before subscribing. The per-workspace bound stays here because it is
+	// genuinely workspace-scoped and the other endpoint has no workspace
+	// to count against.
+	SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, bool)
 
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Event)
@@ -281,13 +293,10 @@ func (b *MemoryBus) Subscribe(workspaceID string) chan Event {
 }
 
 // SubscribeIfAllowed atomically checks limits and subscribes.
-func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan Event, bool) {
+func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if maxGlobal > 0 && len(b.subscribers) >= maxGlobal {
-		return nil, false
-	}
 	if maxPerWorkspace > 0 {
 		count := 0
 		for _, sub := range b.subscribers {

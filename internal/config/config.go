@@ -84,6 +84,30 @@ type Config struct {
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
 	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
+	SSEMaxPerUser      int `toml:"sse_max_per_user"`      // Per-user max streaming connections across BOTH SSE endpoints (0 = unlimited, BUG-2726)
+
+	// RedisNamespace scopes every Redis key and channel Pad uses to one
+	// installation (BUG-2724). Empty — the default — reproduces the
+	// historical flat names byte for byte, so an upgrade keeps addressing
+	// the same replay buffers, counters and presence entries.
+	//
+	// Set it when two Pad installations share a Redis endpoint. The
+	// hazard it removes is real but narrow: delivery is filtered per
+	// caller on user id, and user ids are per-installation UUIDs, so
+	// cross-feed needs the same id to exist in both — i.e. a CLONED
+	// database, such as a staging environment restored from a production
+	// dump. For that case it is a genuine cross-tenant leak.
+	//
+	// Changing it on a running deployment is a cutover, not a tweak, and
+	// the two streams behave DIFFERENTLY across it. The watch stream
+	// detects the changed id space through its epoch key and answers
+	// resumes with sync_required. The workspace activity stream does not:
+	// a client resuming against a fresh replay buffer is treated as
+	// caught up and silently misses the cutover window (BUG-2731,
+	// pre-existing — a replica restart does the same). Presence entries
+	// are transient and cost nothing either way. It also partitions a
+	// rolling upgrade in both directions; see docs/deployment.md.
+	RedisNamespace string `toml:"redis_namespace"`
 
 	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
 	// pointer so an absent `[push]` table stays nil and Save() (via the
@@ -179,6 +203,12 @@ func DefaultConfig() *Config {
 		ConfigPath:         filepath.Join(dataDir, "config.toml"),
 		SSEMaxConnections:  1000,
 		SSEMaxPerWorkspace: 100,
+		// A generous default. The bound exists so one user cannot exhaust
+		// the global budget for everyone — the failure the per-workspace
+		// limit alone could not prevent, since the watch stream has no
+		// workspace to count against. It is not meant to constrain a
+		// normal user, who holds one browser tab and one agent monitor.
+		SSEMaxPerUser: 50,
 	}
 }
 
@@ -323,6 +353,14 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_SSE_MAX_PER_WORKSPACE"); v != "" {
 		if max, err := strconv.Atoi(v); err == nil {
 			cfg.SSEMaxPerWorkspace = max
+		}
+	}
+	if v := os.Getenv("PAD_REDIS_NAMESPACE"); v != "" {
+		cfg.RedisNamespace = v
+	}
+	if v := os.Getenv("PAD_SSE_MAX_PER_USER"); v != "" {
+		if max, err := strconv.Atoi(v); err == nil {
+			cfg.SSEMaxPerUser = max
 		}
 	}
 

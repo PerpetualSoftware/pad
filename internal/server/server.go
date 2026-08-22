@@ -43,11 +43,14 @@ type Server struct {
 	store                 *store.Store
 	router                *chi.Mux
 	routerOnce            sync.Once            // ensures setupRouter runs once, after all config
+	admitOnce             sync.Once            // lazily builds streamAdmit for servers that never call SetSSELimits
+	streamGaugeFor        *metrics.Metrics     // the metrics instance pad_stream_connections_active is registered on (BUG-2726)
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
 	watchEvents           watchevents.Bus      // watch/nudge notification bus (optional, TASK-2533)
 	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
+	redisHealth           *RedisHealth         // cached Redis reachability, reported by /api/v1/health/ready and pad_redis_up (optional, BUG-2727)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
 	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
 	email                 *email.Sender        // transactional email sender (optional)
@@ -63,6 +66,8 @@ type Server struct {
 	ipChangeEnforceStrict bool                 // when true, revoke+reject sessions whose client IP OR User-Agent hash differs from the one recorded at session creation
 	sseMaxConnections     int                  // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace    int                  // per-workspace SSE connection limit (0 = unlimited)
+	sseMaxPerUser         int                  // per-user SSE connection limit across BOTH stream endpoints (0 = unlimited, BUG-2726)
+	streamAdmit           *streamAdmission     // shared admission gate for both stream endpoints (BUG-2726)
 	cloudMode             bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
 	cloudSecrets          []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
 	cloudSidecar          CloudSidecar         // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
@@ -795,6 +800,18 @@ func (s *Server) SetSessionPresence(p SessionPresence) {
 	s.sessionPresence = p
 }
 
+// SetRedisHealth attaches the Redis reachability prober (BUG-2727). Nil
+// on a deployment with no Redis, in which case /api/v1/health/ready reports no
+// redis block at all — the honest shape, since "no Redis configured" and
+// "Redis configured and down" are different states and a `false` would
+// merge them.
+//
+// It does NOT make readiness depend on Redis; see RedisHealth's doc
+// comment for why that is deliberate.
+func (s *Server) SetRedisHealth(h *RedisHealth) {
+	s.redisHealth = h
+}
+
 // SetCollabRoomManager attaches a Yjs collab RoomManager (PLAN-1248).
 // When set, the /api/v1/collab/{itemID} WebSocket endpoint hands new
 // connections to the manager for op-log replay + fan-out. When nil,
@@ -934,6 +951,7 @@ func (s *Server) SetSecureCookies(secure bool) {
 func (s *Server) SetMetrics(m *metrics.Metrics) {
 	s.metrics = m
 	s.wireOAuthMetricsObserver()
+	s.wireStreamGauge()
 }
 
 // wireOAuthMetricsObserver attaches the OAuth metrics that need both
@@ -1010,11 +1028,75 @@ func (s *Server) metricsAuth(next http.Handler) http.Handler {
 	})
 }
 
-// SetSSELimits configures global and per-workspace SSE connection limits.
-// A value of 0 means unlimited.
-func (s *Server) SetSSELimits(global, perWorkspace int) {
+// SetSSELimits configures the streaming connection limits. A value of 0
+// means unlimited for any of them.
+//
+// `global` and `perUser` bound BOTH stream endpoints together —
+// /api/v1/events and /api/v1/events/stream — through one admission gate,
+// because a held connection costs the same process resources whichever
+// one opened it (BUG-2726). `perWorkspace` bounds only /api/v1/events,
+// which is the only workspace-scoped one.
+func (s *Server) SetSSELimits(global, perWorkspace, perUser int) {
 	s.sseMaxConnections = global
 	s.sseMaxPerWorkspace = perWorkspace
+	s.sseMaxPerUser = perUser
+	// Updates the EXISTING gate rather than replacing it — see setLimits
+	// for why replacing strands held slots and drifts the gauge.
+	// admission() builds one on first use with the values just stored.
+	s.admission().setLimits(global, perUser)
+	s.wireStreamGauge()
+}
+
+// wireStreamGauge registers pad_stream_connections_active as a
+// scrape-time collector over the admission gate's total. Called from both
+// SetSSELimits and SetMetrics because either can land first.
+//
+// Registered ONCE PER METRICS INSTANCE. MustRegister panics on a
+// duplicate and both callers can fire, so it cannot register every time;
+// a once-per-SERVER guard would be wrong in the other direction, since
+// SetMetrics can install a different registry and would leave it
+// silently missing the series.
+//
+// The closure reads s.admission() at scrape time rather than capturing
+// the gate, so it stays correct if the gate is ever rebuilt.
+func (s *Server) wireStreamGauge() {
+	if s.metrics == nil || s.streamGaugeFor == s.metrics {
+		return
+	}
+	s.streamGaugeFor = s.metrics
+	s.metrics.RegisterStreamConnectionsCollector(func() int {
+		return s.admission().heldTotal()
+	})
+}
+
+// admission returns the shared stream admission gate, constructing an
+// unbounded one on first use so a Server built without SetSSELimits (every
+// test that does not care about limits) still has a working gate rather
+// than a nil check at each call site.
+//
+// SetSSELimits reconfigures this gate in place rather than replacing it,
+// so a late call neither strands held slots nor over-grants capacity.
+//
+// That is damage limitation, NOT a live-reconfiguration feature (codex
+// round 9). SetSSELimits also writes plain Server fields that request
+// handlers read — sseMaxPerWorkspace among them — so calling it while
+// requests are in flight is a data race regardless of how careful this
+// gate is. It is config-time: call it before ListenAndServe. The in-place
+// update exists so that a test, or an embedder that does call it late,
+// does not silently blow past its own limit.
+func (s *Server) admission() *streamAdmission {
+	s.admitOnce.Do(func() {
+		if s.streamAdmit == nil {
+			s.streamAdmit = newStreamAdmission(s.sseMaxConnections, s.sseMaxPerUser)
+			// The lazily-built gate needs the gauge too, or a server
+			// wired with metrics but never given explicit limits would
+			// export a permanently-zero pad_stream_connections_active
+			// while serving streams — the same shape of lie as an
+			// unregistered metric reporting 0.
+			s.wireStreamGauge()
+		}
+	})
+	return s.streamAdmit
 }
 
 // SetTrustedProxies configures which direct TCP peers are allowed to set

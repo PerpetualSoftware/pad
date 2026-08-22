@@ -11,12 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 const (
-	// redisWatchChannel is the single Redis pub/sub channel every instance
+	// redisWatchChannelSuffix is the single Redis pub/sub channel every instance
 	// publishes to and subscribes to.
 	//
 	// SINGLE, not per-workspace, unlike internal/events' pad:events:<wsID>.
@@ -26,18 +27,18 @@ const (
 	// wildcard subscriptions"). Subscribe() takes no workspace precisely
 	// because a subscriber is not scoped to one, so there is nothing to key a
 	// channel by.
-	redisWatchChannel = "pad:watchevents"
+	redisWatchChannelSuffix = "watchevents"
 
-	// redisWatchSeqKey is the shared counter behind Notification.ID.
+	// redisWatchSeqSuffix is the shared counter behind Notification.ID.
 	//
 	// Deliberately distinct from internal/events' pad:event_seq: the two
 	// buses carry different streams with independent Last-Event-ID spaces,
 	// and sharing a counter would make each one's ids jump unpredictably
 	// whenever the other published — harmless for ordering, but it would
 	// turn every replay-gap diagnosis into a question about the other bus.
-	redisWatchSeqKey = "pad:watchevents_seq"
+	redisWatchSeqSuffix = "watchevents_seq"
 
-	// redisWatchEpochKey identifies the CURRENT id space, and exists because
+	// redisWatchEpochSuffix identifies the CURRENT id space, and exists because
 	// numeric detection alone cannot see a reset that has caught back up
 	// (codex round 13).
 	//
@@ -53,21 +54,32 @@ const (
 	// question is not "is this number bigger" but "is this the same
 	// sequence". Minted once per id space by the publish script and carried
 	// on every message.
-	redisWatchEpochKey = "pad:watchevents_epoch"
+	redisWatchEpochSuffix = "watchevents_epoch"
 
-	// DEPLOYMENT SCOPING, or rather the lack of it (codex round 3). Both
-	// names above are fixed, so two Pad installations pointed at the SAME
-	// Redis endpoint cross-feed each other's notifications and share one id
-	// counter — and selecting different logical DBs does not help, because
-	// Redis pub/sub is not namespaced by DB at all.
+	// DEPLOYMENT SCOPING (BUG-2724). These names carry the installation's
+	// PAD_REDIS_NAMESPACE when one is set — see internal/redisns — so two
+	// Pad installations can share a Redis endpoint without cross-feeding
+	// notifications or sharing an id counter. With none configured they
+	// are byte-identical to the historical flat names, so an existing
+	// deployment upgrades without losing its counter, epoch or replay
+	// position.
 	//
-	// Left unscoped deliberately: internal/events has used flat `pad:events:`
-	// / `pad:event_seq` names since it shipped, and giving one of the two
-	// buses a prefix the other lacks would make the operational rule harder
-	// to state, not easier. The rule for now is the simple one — one Redis
-	// endpoint per Pad installation — and if that ever needs relaxing it
-	// should be relaxed for both buses at once, from shared config, rather
-	// than growing here first.
+	// The rule: scoping belongs to EVERY keyspace at once, from shared
+	// config, never to one file growing a prefix the others lack — an
+	// operator rule covering two of three keyspaces is harder to state
+	// than the flat one it replaces.
+	//
+	// STILL UNSCOPED, deliberately: Redis CLUSTER. No hash tags, and
+	// publishScript below spans FOUR keys in one EVAL — seq, channel,
+	// dedupe, epoch — which hash to different slots and fail CROSSSLOT.
+	// Tagging this keyspace alone buys nothing with no cluster client to
+	// exercise it against; deferred as one unit on BUG-2724's trail.
+	//
+	// NOTE FOR A NAMESPACE CUTOVER: the seq and epoch keys carry
+	// Last-Event-ID meaning, so renaming them mid-flight makes connected
+	// clients resync — honest rather than silent, since the epoch
+	// mechanism detects it, but plan it. Presence keys are transient and
+	// free to rename.
 )
 
 // publishScript assigns the next id and publishes, ATOMICALLY.
@@ -94,7 +106,7 @@ const (
 //
 // The epoch is not decoration: it is what distinguishes a reset id space from a
 // continuing one when the new space has already climbed past an instance's
-// high-water mark. See redisWatchEpochKey before considering it removable.
+// high-water mark. See redisWatchEpochSuffix before considering it removable.
 // The dedupe key makes the script IDEMPOTENT UNDER RETRY, which it needs to be
 // because go-redis retries a command when the reply is lost to a network error
 // (codex round 5). Without it, a script that ran and whose reply never came
@@ -119,8 +131,8 @@ return id
 `)
 
 const (
-	// redisWatchDedupePrefix namespaces the per-publish idempotency tokens.
-	redisWatchDedupePrefix = "pad:watchevents:pub:"
+	// redisWatchDedupeSuffix namespaces the per-publish idempotency tokens.
+	redisWatchDedupeSuffix = "watchevents:pub:"
 
 	// redisWatchDedupeTTLSeconds bounds how long a token is remembered. It
 	// only has to cover a client-side retry burst — go-redis gives up after
@@ -138,7 +150,7 @@ const (
 // template. Each is deliberate, and each would look like a mistake to someone
 // diffing the two:
 //
-//  1. One channel and one replay buffer (see redisWatchChannel).
+//  1. One channel and one replay buffer (see redisWatchChannelSuffix).
 //
 //  2. The Redis subscription is opened EAGERLY in NewRedisBus and lives for
 //     the bus's lifetime, rather than being started on the first local
@@ -172,7 +184,16 @@ const (
 // is bounded: DefaultReplayBufferSize entries, after which a resume answers
 // "gap too large" and the consumer resyncs.
 type RedisBus struct {
+	// observable carries the optional operational-event seam (BUG-2727).
+	// Embedded first so SetObserver is part of the type's own surface
+	// rather than something a caller reaches through a field.
+	observable
+
 	client *redis.Client
+
+	// keys builds this installation's Redis names (BUG-2724). The zero
+	// value is the historical un-namespaced keyspace.
+	keys redisns.Keys
 
 	// mu guards subscribers AND replay together — see the type comment (3)
 	// and SubscribeAndReplaySince.
@@ -237,7 +258,7 @@ type RedisBus struct {
 
 	// epoch identifies the id space these ids belong to. A change means the
 	// counter was reset and the buffer describes a sequence that no longer
-	// exists — see redisWatchEpochKey and fanOutFromRedis.
+	// exists — see redisWatchEpochSuffix and fanOutFromRedis.
 	epoch string
 	// epochJustChanged makes the next cold start refuse the
 	// contiguous-with-our-view cursor, because across an epoch boundary that
@@ -261,6 +282,21 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // NewRedisBusWithReplaySize is NewRedisBus with a custom replay capacity
 // (tests use a small one, exactly like NewWithReplaySize).
 func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
+	return NewRedisBusWithKeys(client, size, redisns.Default)
+}
+
+// NewRedisBusWithKeys is NewRedisBusWithReplaySize with an explicit key
+// namespace (BUG-2724). cmd/pad/cmd_server.go uses this one, passing the
+// value shared with the event bus and the presence registry.
+//
+// NOTE for anyone introducing a namespace on a RUNNING deployment: the
+// seq and epoch keys carry Last-Event-ID meaning, so renaming them is a
+// resume-gap event — connected clients' cursors belong to the old id
+// space and will be answered with sync_required. The epoch mechanism
+// makes that safe rather than silent, but plan the cutover; it is not a
+// free config change. Presence keys, by contrast, are transient (90s TTL)
+// and cost nothing to rename.
+func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *RedisBus {
 	if size <= 0 {
 		// newReplayBuffer(0) returns a buffer whose first append panics on a
 		// zero-length backing slice. That was reachable here in a way it is
@@ -274,6 +310,7 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &RedisBus{
 		client:      client,
+		keys:        keys,
 		subscribers: make(map[chan Notification]struct{}),
 		replay:      newReplayBuffer(size),
 		replaySize:  size,
@@ -281,7 +318,7 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 		cancel:      cancel,
 	}
 	// Eager subscription — see the type comment (2).
-	b.pubsub = client.Subscribe(ctx, redisWatchChannel)
+	b.pubsub = client.Subscribe(ctx, keys.Name(redisWatchChannelSuffix))
 
 	// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
 	// establishes the subscription asynchronously, so without this the
@@ -303,7 +340,7 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 	if _, err := b.pubsub.Receive(subCtx); err != nil {
 		slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
 			"notifications published before it establishes will be missed by this instance",
-			"error", err, "channel", redisWatchChannel)
+			"error", err, "channel", keys.Name(redisWatchChannelSuffix))
 	}
 
 	b.wg.Add(1)
@@ -360,12 +397,12 @@ func (b *RedisBus) Publish(n Notification) error {
 	// A fresh token per logical publish — NOT per attempt, which is the
 	// point: go-redis reuses the same arguments on its own retries, so the
 	// second run of the script sees the same token and declines.
-	dedupeKey := redisWatchDedupePrefix + uuid.NewString()
+	dedupeKey := b.keys.Name(redisWatchDedupeSuffix) + uuid.NewString()
 
 	// The candidate epoch is only adopted when none exists (SET NX inside the
 	// script), so every publisher can offer one and exactly the first wins.
 	if err := publishScript.Run(b.ctx, b.client,
-		[]string{redisWatchSeqKey, redisWatchChannel, dedupeKey, redisWatchEpochKey},
+		[]string{b.keys.Name(redisWatchSeqSuffix), b.keys.Name(redisWatchChannelSuffix), dedupeKey, b.keys.Name(redisWatchEpochSuffix)},
 		string(data), redisWatchDedupeTTLSeconds, uuid.NewString()).Err(); err != nil {
 		// WORDED AS UNCONFIRMED, not as a drop (codex round 3). The earlier
 		// text said "dropping notification ... no globally ordered ID was
@@ -429,6 +466,11 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 	// subscribe-and-replay guarantee.
 	forceGap := b.resumeOutrunsLocalView(sinceID)
 
+	// Registered FIRST so it runs LAST, after the Unlock — reports fire
+	// with no bus lock held. See Observer.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan Notification, 64)
@@ -441,9 +483,26 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		b.afterSubscribeRegister()
 	}
 	if forceGap {
+		// Already counted by resumeOutrunsLocalView, which is where that
+		// decision is made.
 		return ch, nil
 	}
-	return ch, b.replaySince(sinceID)
+
+	missed := b.replaySince(sinceID)
+	if missed == nil {
+		// The LOCAL half of an unservable resume: replaySince answers
+		// nil when the cursor falls below what this instance can vouch
+		// for — a cold start, or a hole it recorded — and the handler
+		// turns that into sync_required exactly as for the
+		// shared-counter case. One client resyncing is one unit of the
+		// metric's population either way.
+		//
+		// Counted HERE rather than inside replaySince, which stays a
+		// pure read of local state, and on the deferred path so it fires
+		// with the lock released.
+		pending.resumeGap()
+	}
+	return ch, missed
 }
 
 // settleWindow is how long resumeOutrunsLocalView waits before deciding that
@@ -554,6 +613,7 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 	// this instance's replay untrustworthy for this cursor.
 	slog.Warn("watchevents: resume cannot be served from this instance's view; reporting a gap",
 		"since_id", sinceID, "highest_seen", held, "shared_counter", remote)
+	b.reportResumeGap()
 	return true
 }
 
@@ -561,7 +621,7 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 // it could not be read, which callers treat as "answer from local knowledge" —
 // see resumeOutrunsLocalView for why failing closed here would be worse.
 func (b *RedisBus) sharedCounter() (int64, bool) {
-	v, err := b.client.Get(b.ctx, redisWatchSeqKey).Int64()
+	v, err := b.client.Get(b.ctx, b.keys.Name(redisWatchSeqSuffix)).Int64()
 	switch {
 	case err == nil:
 		return v, true
@@ -695,6 +755,39 @@ func (b *RedisBus) receiveMessages() {
 			return
 		case msg, ok := <-ch:
 			if !ok {
+				// The subscription's message channel closed. go-redis
+				// (v9.22.0) closes it ONLY on pool.ErrClosed — the client
+				// or the PubSub was closed — and retries every other
+				// receive error indefinitely while a health-check
+				// goroutine reconnects on ping failure. So the ordinary
+				// cause is our own shutdown, which cancels b.ctx and is
+				// caught by the case above; arriving HERE instead means
+				// the client went away underneath a bus that is still
+				// running, and from this point the instance publishes
+				// fine and receives nothing at all — including its own
+				// publishes, which come back through Redis like everyone
+				// else's. Silence was the original behaviour and made
+				// that state indistinguishable from a quiet workspace.
+				//
+				// UNLESS WE ARE SHUTTING DOWN. Close cancels b.ctx AND
+				// closes the pubsub, so both cases of this select can be
+				// ready at once and Go picks between ready cases at
+				// RANDOM — an ordinary shutdown could then log an ERROR
+				// and bump a counter documented to mean "non-zero
+				// outside shutdown".
+				//
+				// DEFENCE, not a fix for observed behaviour, and NO TEST
+				// FAILS IF IT IS DELETED: measured, 200 Close cycles
+				// under traffic without it produced zero false exits,
+				// with Close's ordering reversed as well. Kept because
+				// select's randomness is real and this makes the outcome
+				// independent of that ordering.
+				if b.ctx.Err() != nil {
+					return
+				}
+				slog.Error("watchevents: Redis subscription closed; this instance will receive no further notifications " +
+					"(publishes still succeed, so nothing else will report this)")
+				b.reportReceiveLoopExited()
 				return
 			}
 			epoch, n, err := decodePayload(msg.Payload)
@@ -756,6 +849,11 @@ func decodePayload(payload string) (string, Notification, error) {
 // already climbed past our high-water mark (codex round 13), which is exactly
 // the case the epoch exists for.
 func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
+	// Registered FIRST so it runs LAST — after the Unlock below — because
+	// observer callbacks must not run under the bus mutex (codex round 9).
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	if b.epoch == "" {
 		b.epoch = epoch
@@ -768,6 +866,7 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 		b.lastAppendedID = 0
 		b.knownFrom = 0
 		b.epochJustChanged = true
+		pending.reset(ResetReasonEpochChange)
 	}
 	b.mu.Unlock()
 
@@ -775,6 +874,12 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 }
 
 func (b *RedisBus) fanOutLocally(n Notification) {
+	// Registered FIRST so it runs LAST — after the Unlock below. See
+	// Observer: reports fire with no bus lock held, so an observer may
+	// call back into the bus without deadlocking it.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -837,11 +942,14 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			"previous", b.lastAppendedID, "got", n.ID)
 		b.replay = newReplayBuffer(b.replaySize)
 		b.knownFrom = n.ID
+		pending.reset(ResetReasonCounterBackward)
 
 	case n.ID != b.lastAppendedID+1:
 		slog.Warn("watchevents: gap in the received notification sequence; resumes across it will report sync_required",
-			"expected", b.lastAppendedID+1, "got", n.ID)
+			"expected", b.lastAppendedID+1, "got", n.ID,
+			"missed", n.ID-b.lastAppendedID-1)
 		b.knownFrom = n.ID
+		pending.gap(n.ID - b.lastAppendedID - 1)
 	}
 	b.lastAppendedID = n.ID
 
@@ -853,6 +961,7 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		default:
 			slog.Warn("watchevents: dropping notification for slow subscriber",
 				"kind", n.Kind, "item_ref", n.ItemRef)
+			pending.drop(DropReasonSlowSubscriber)
 		}
 	}
 }

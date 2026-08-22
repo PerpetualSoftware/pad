@@ -33,6 +33,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	oauthpkg "github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
@@ -212,7 +213,19 @@ func serveCmd() *cobra.Command {
 			srv.SetTrustedProxies(cfg.TrustedProxies)
 			srv.SetMetricsToken(cfg.MetricsToken)
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
-			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
+			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace, cfg.SSEMaxPerUser)
+			// Logged at startup so the BUG-2726 re-point is visible in an
+			// operator's own logs: PAD_SSE_MAX_CONNECTIONS now bounds
+			// /api/v1/events and /api/v1/events/stream TOGETHER, where it
+			// used to bound only the first. Someone who tuned it for one
+			// endpoint should see the effective numbers without having to
+			// read release notes to find out anything changed.
+			slog.Info("Stream connection limits (PER INSTANCE — not deployment-wide; there is no shared counter)",
+				"per_instance", cfg.SSEMaxConnections,
+				"per_workspace", cfg.SSEMaxPerWorkspace,
+				"per_principal", cfg.SSEMaxPerUser,
+				"per_instance_and_per_principal_cover", "/api/v1/events + /api/v1/events/stream",
+				"per_workspace_covers", "/api/v1/events")
 
 			// MCP tool-surface descriptor endpoint (PLAN-1888 / TASK-1891).
 			// Inject the cycle-free catalog→JSON serializer so the authed
@@ -637,6 +650,22 @@ func serveCmd() *cobra.Command {
 			// Attach event bus for real-time SSE. The client built here is
 			// shared with the watch bus below (BUG-2651) — nil when this is
 			// a single-instance deployment.
+			// ONE namespace value for all three Redis keyspaces (BUG-2724).
+			// Built here, before any of them, and passed into each
+			// constructor. THIS IS THE CONVENTION, NOT A GUARANTEE — each
+			// constructor takes its own Keys and nothing in the type
+			// system stops a future edit passing a different one;
+			// redis_keyspace_wiring_test.go enforces it by reading this
+			// file, which is a weaker instrument than a compiler.
+			//
+			// Validated eagerly: a namespace that cannot be used is a
+			// startup error, not a set of oddly-named keys discovered
+			// later.
+			redisKeys, err := redisns.Parse(cfg.RedisNamespace)
+			if err != nil {
+				return fmt.Errorf("invalid PAD_REDIS_NAMESPACE: %w", err)
+			}
+
 			var eventBus events.EventBus
 			var watchRedis *redis.Client
 			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
@@ -648,9 +677,20 @@ func serveCmd() *cobra.Command {
 				if err := rc.Ping(context.Background()).Err(); err != nil {
 					return fmt.Errorf("redis connection failed: %w", err)
 				}
-				eventBus = events.NewRedisBus(rc)
+				// Route go-redis's own diagnostics into slog (BUG-2727).
+				// Its default logger writes to the standard log package,
+				// so its messages bypass the structured pipeline entirely
+				// — including the one that matters most here: "channel is
+				// full ... message is dropped", emitted when a
+				// subscription's 100-deep buffer stays full past the 60s
+				// send timeout. That is a silent notification loss whose
+				// only trace was a line nobody's log aggregator was
+				// shaped to catch.
+				redis.SetLogger(redisSlogLogger{})
+				eventBus = events.NewRedisBusWithKeys(rc, redisKeys)
 				watchRedis = rc
-				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB)
+				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB,
+					"namespace", redisKeys.Namespace())
 			} else {
 				eventBus = events.New()
 				slog.Info("Event bus using in-memory (single instance)")
@@ -671,10 +711,20 @@ func serveCmd() *cobra.Command {
 			// doc for what each implementation does and does not fix.
 			var watchBus watchevents.Bus
 			if watchRedis != nil {
-				watchBus = watchevents.NewRedisBus(watchRedis)
+				redisWatchBus := watchevents.NewRedisBusWithKeys(watchRedis, watchevents.DefaultReplayBufferSize, redisKeys)
+				// Operational instrumentation (BUG-2727). Attached to the
+				// concrete type because the conditions it reports —
+				// dropped notifications, sequence gaps, id-space resets,
+				// the receive loop stopping — are detected inside the bus
+				// and are not visible at the Bus interface, so a wrapper
+				// of the events.EventBus kind cannot see them.
+				redisWatchBus.SetObserver(metrics.NewWatchEventsObserver(m))
+				watchBus = redisWatchBus
 				slog.Info("Watch notification bus using Redis pub/sub")
 			} else {
-				watchBus = watchevents.New()
+				memWatchBus := watchevents.New()
+				memWatchBus.SetObserver(metrics.NewWatchEventsObserver(m))
+				watchBus = memWatchBus
 				slog.Info("Watch notification bus using in-memory (single instance)")
 			}
 			srv.SetWatchEventsBus(watchBus)
@@ -696,7 +746,16 @@ func serveCmd() *cobra.Command {
 			// is before http.Server.Shutdown rather than after.
 			var redisPresence *server.RedisSessionPresence
 			if watchRedis != nil {
-				redisPresence = server.NewRedisSessionPresence(watchRedis)
+				redisPresence = server.NewRedisSessionPresenceWithKeys(watchRedis, redisKeys)
+				// Presence is fail-soft by design — a failed write risks
+				// leaving a live session unlisted rather than dropping
+				// its connection — so its failures have no user-visible
+				// signal beyond a push that quietly reaches fewer
+				// sessions. The counter is the only alertable trace
+				// (BUG-2727).
+				redisPresence.SetFailureObserver(func(op string) {
+					m.SessionPresenceFailuresTotal.WithLabelValues(op).Inc()
+				})
 				// Backstop for early-return paths that never reach the
 				// shutdown sequence; Close is idempotent. Deliberately does
 				// NOT delete this instance's entries — a shutdown racing a
@@ -710,6 +769,28 @@ func serveCmd() *cobra.Command {
 				slog.Info("Session presence registry using in-memory (single instance)")
 			}
 			srv.SetSessionPresence(sessionPresence)
+
+			// Redis reachability prober (BUG-2727). Reports into
+			// /health/ready's payload and pad_redis_up; deliberately does
+			// NOT gate readiness — see server.RedisHealth's doc comment.
+			// Only wired when there IS a Redis, so a single-process
+			// deployment reports no redis block rather than a false one.
+			if watchRedis != nil {
+				// Registered here rather than in metrics.New so a
+				// Redis-less deployment exports no pad_redis_up series at
+				// all — a permanent 0 would read as an outage.
+				m.RegisterRedisUp()
+				redisHealth := server.NewRedisHealth(watchRedis, func(ok bool) {
+					if ok {
+						m.RedisUp.Set(1)
+					} else {
+						m.RedisUp.Set(0)
+					}
+				})
+				redisHealth.Start()
+				defer redisHealth.Stop()
+				srv.SetRedisHealth(redisHealth)
+			}
 
 			// Yjs collab room manager (PLAN-1248). Single-instance only
 			// today; multi-replica fanout via Redis is a deferred IDEA.

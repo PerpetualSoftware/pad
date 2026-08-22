@@ -10,8 +10,14 @@ data:
   PAD_DATA_DIR: "/data"
   PAD_LOG_LEVEL: "info"
   PAD_SECURE_COOKIES: "true"
+  # Covers BOTH /api/v1/events and /api/v1/events/stream (BUG-2726).
   PAD_SSE_MAX_CONNECTIONS: "1000"
   PAD_SSE_MAX_PER_WORKSPACE: "100"
+  PAD_SSE_MAX_PER_USER: "50"
+  # Set when this Redis endpoint is shared with another Pad installation.
+  # Empty/unset keeps the historical key names. Changing it on a running
+  # deployment makes connected clients resync — see docs/deployment.md.
+  # PAD_REDIS_NAMESPACE: "prod"
   # Set your public URL:
   # PAD_URL: "https://pad.example.com"
   # CORS origins:

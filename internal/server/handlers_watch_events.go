@@ -98,6 +98,34 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// ADMISSION (BUG-2726). This endpoint had no connection bound at all:
+	// PAD_SSE_MAX_* gated only /api/v1/events, and the API rate limiter
+	// caps how FAST connections are opened, not how many are HELD. So one
+	// authenticated user could hold arbitrarily many, each costing a
+	// goroutine, a bus subscription and — since BUG-2698 — a presence
+	// registration in shared Redis.
+	//
+	// Taken BEFORE the subscription and released by defer, so the slot's
+	// lifetime is the connection's. See streamAdmission for why the budget
+	// is shared with the workspace-scoped stream rather than being a
+	// second, differently-shaped knob.
+	//
+	// Refusal is 429 with the same code the other endpoint uses. The CLI
+	// monitor (cmd/pad/cmd_watch.go) folds any non-200 into its
+	// backoff ladder — linear, 5s base, 5min cap, reset only on a
+	// successful connect — so a refused stream backs off rather than
+	// spinning.
+	release, refusal := s.admission().acquire(user.ID)
+	if refusal != admissionRefusalNone {
+		total, perUser := s.admission().counts(user.ID)
+		slog.Warn("watch stream connection limit reached", "user_id", user.ID, "refused_by", string(refusal),
+			"instance_current", total, "instance_max", s.sseMaxConnections,
+			"principal_current", perUser, "principal_max", s.sseMaxPerUser)
+		writeStreamLimitExceeded(w)
+		return
+	}
+	defer release()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -163,6 +191,20 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		sessionID = s.sessionPresence.Add(user.ID, ident)
 		defer s.sessionPresence.Remove(user.ID, sessionID)
 	}
+
+	// Release the admission slot BEFORE the Redis cleanup above it.
+	// Defers run LIFO, so this later registration runs FIRST — ahead of
+	// Remove, which does a Redis round trip bounded by presenceOpTimeout
+	// (5s) and can wait on a renewal goroutine. Otherwise a disconnecting
+	// client holds its slot for that whole window and a reconnect
+	// arriving inside it is refused by a bound the connection has stopped
+	// consuming — widest during a Redis outage, which is when clients
+	// reconnect most.
+	//
+	// The acquire-site defer STAYS as the safety net for any early return
+	// between there and here; release is idempotent, so deferring it
+	// twice releases once.
+	defer release()
 
 	watches, werr := s.loadWatchPredicates(r, user.ID)
 	if werr != nil {

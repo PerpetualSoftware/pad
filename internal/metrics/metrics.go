@@ -27,6 +27,91 @@ type Metrics struct {
 	EventBusPublishTotal *prometheus.Counter
 	EventBusSubscribers  *prometheus.Gauge
 
+	// Redis operability metrics (BUG-2727). Wired from
+	// cmd/pad/cmd_server.go. Which of them are live depends on the
+	// deployment shape, and the distinction is what alerts are built on
+	// (asserted in TestMemoryBusDropCounterIsMeaningfulWithoutRedis):
+	//
+	//   - pad_watchevents_notifications_dropped_total moves on a
+	//     single-process binary too — MemoryBus has the same
+	//     slow-subscriber drop and the same observer.
+	//   - Everything sequence-related (gaps, resets, resume gaps, receive
+	//     loop exits) is Redis-only by construction: MemoryBus assigns
+	//     contiguous ids and has no subscription to lose.
+	//   - pad_redis_up is not registered at all without Redis; a zero on
+	//     a gauge named "up" asserts something false.
+	//
+	// RedisUp is written by internal/server's health prober, NOT sampled
+	// on scrape: a collector that dials on every scrape turns a monitoring
+	// system into a load generator and makes the metric's value depend on
+	// who is asking. It is 1 when the last probe succeeded and 0 when it
+	// failed.
+	//
+	// REGISTERED SEPARATELY, via RegisterRedisUp, so a deployment with no
+	// Redis omits the series entirely rather than exporting a permanent 0
+	// (codex round 1 P2). A 0 means "Redis is down" to anything scraping
+	// it, so registering unconditionally would have every single-process
+	// binary alerting on an outage of a dependency it does not have.
+	// Absence is the honest signal for "not applicable", and it matches
+	// /api/v1/health/ready, which omits its redis block on the same condition.
+	RedisUp prometheus.Gauge
+
+	// WatchNotificationsDroppedTotal counts notifications this instance
+	// RECEIVED and could not hand to one of its own subscribers. It does
+	// not count go-redis discarding messages before we see them — that
+	// shows up as a sequence gap instead; see watchevents.Observer for why
+	// the distinction matters when reading these two together.
+	WatchNotificationsDroppedTotal *prometheus.CounterVec
+
+	// WatchSequenceGapsTotal counts gap EVENTS;
+	// WatchNotificationsMissedTotal counts the notifications those gaps
+	// span. Both, because one gap of 500 and 500 gaps of one are very
+	// different incidents and a single counter cannot tell them apart.
+	WatchSequenceGapsTotal        prometheus.Counter
+	WatchNotificationsMissedTotal prometheus.Counter
+
+	// WatchResumeGapsTotal counts resumes this instance could not serve,
+	// each of which sends a client sync_required. Distinct from
+	// WatchSequenceGapsTotal: that one is a delivery fault, this one is
+	// the user-visible consequence of any cursor this instance cannot
+	// vouch for — a hole, a cold start, an epoch change, or a
+	// disagreeing shared counter.
+	WatchResumeGapsTotal prometheus.Counter
+
+	// WatchSequenceResetsTotal counts id-space changes (epoch change or
+	// the shared counter going backwards) — each one drops this
+	// instance's replay buffer, so resumes across it answer
+	// sync_required.
+	WatchSequenceResetsTotal *prometheus.CounterVec
+
+	// WatchReceiveLoopExitsTotal counts the receive loop stopping. Any
+	// non-zero value outside a shutdown means an instance that publishes
+	// fine and receives nothing.
+	WatchReceiveLoopExitsTotal prometheus.Counter
+
+	// SessionPresenceFailuresTotal counts failed presence operations by
+	// op. READ THE LABEL — the consequences differ, and in opposite
+	// directions, so a generic alert on the total leads a responder to
+	// the wrong conclusion:
+	//
+	// A failure means the operation REPORTED an error, which is not quite
+	// the same as the operation not happening: Redis can fail a pipeline
+	// or a script after it applied, so the write may have landed anyway.
+	// The consequences below are what a failure RISKS, not what it
+	// guarantees — which is the right reading for an alert either way.
+	//
+	//   register / renew  — the session may be MISSING from
+	//                       GET /api/v1/sessions and untargetable by a
+	//                       session-directed push. Under-reporting.
+	//   deregister        — a DEAD session may stay listed until its TTL,
+	//                       so the picker over-reports and a push aimed
+	//                       at it is accepted and reaches nobody.
+	//   list              — the read failed and the caller got a 503; no
+	//                       wrong answer was given, just no answer.
+	//   prune             — a stale index member survives; the next read
+	//                       skips it and the next prune retries. Benign.
+	SessionPresenceFailuresTotal *prometheus.CounterVec
+
 	// MCP traffic metrics (PLAN-943 TASK-961). Wired from
 	// internal/server/middleware_mcp_audit.go (per-request seam) and
 	// internal/server/middleware_mcp_auth.go + middleware_auth.go
@@ -83,12 +168,12 @@ func New() *Metrics {
 
 	sseConnectionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pad_sse_connections_active",
-		Help: "Total number of active SSE connections.",
+		Help: "Active connections on the workspace activity stream (/api/v1/events) only. See pad_stream_connections_active for all streaming connections.",
 	})
 
 	eventBusPublishTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_eventbus_publish_total",
-		Help: "Total number of events published to the event bus.",
+		Help: "Events HANDED to the event bus. On a Redis-backed bus this counts attempts, not confirmed publishes — Publish returns nothing, so a failed Redis publish is logged and still counted here. See pad_redis_up.",
 	})
 
 	eventBusSubscribers := prometheus.NewGauge(prometheus.GaugeOpts{
@@ -190,7 +275,54 @@ func New() *Metrics {
 		Buckets: []float64{10, 60, 300, 900, 3600, 21600, 86400, 7 * 86400, 30 * 86400, 60 * 86400},
 	})
 
+	redisUp := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pad_redis_up",
+		Help: "1 if the last Redis health probe succeeded, 0 if it failed. Not exported when the deployment has no Redis.",
+	})
+
+	watchNotificationsDroppedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_watchevents_notifications_dropped_total",
+		Help: "Notifications received by this instance but not delivered to a local subscriber, by reason.",
+	}, []string{"reason"})
+
+	watchSequenceGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_sequence_gaps_total",
+		Help: "Times this instance detected a forward jump in the notification id sequence, i.e. it missed at least one notification.",
+	})
+
+	watchNotificationsMissedTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_notifications_missed_total",
+		Help: "Notifications spanned by detected sequence gaps — how many were missed, where pad_watchevents_sequence_gaps_total counts how often.",
+	})
+
+	watchResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_resume_gaps_total",
+		Help: "Resumes this instance could not serve, each sending a client sync_required.",
+	})
+
+	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_watchevents_sequence_resets_total",
+		Help: "Times the notification id space changed under this instance, dropping its replay buffer, by reason.",
+	}, []string{"reason"})
+
+	watchReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_receive_loop_exits_total",
+		Help: "Times the Redis subscription receive loop stopped. Non-zero outside shutdown means this instance receives no notifications at all.",
+	})
+
+	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_session_presence_failures_total",
+		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew RISK a live session being unlisted and untargetable, deregister risks a DEAD one staying listed, list returns 503, prune is benign. A failure means an error was reported; Redis can fail after applying.",
+	}, []string{"op"})
+
 	reg.MustRegister(
+		watchNotificationsDroppedTotal,
+		watchSequenceGapsTotal,
+		watchNotificationsMissedTotal,
+		watchResumeGapsTotal,
+		watchSequenceResetsTotal,
+		watchReceiveLoopExitsTotal,
+		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
 		httpResponseSize,
@@ -208,7 +340,17 @@ func New() *Metrics {
 	)
 
 	return &Metrics{
-		Registry:                   reg,
+		Registry: reg,
+
+		RedisUp:                        redisUp,
+		WatchNotificationsDroppedTotal: watchNotificationsDroppedTotal,
+		WatchSequenceGapsTotal:         watchSequenceGapsTotal,
+		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,
+		WatchResumeGapsTotal:           watchResumeGapsTotal,
+		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
+		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,
+		SessionPresenceFailuresTotal:   sessionPresenceFailuresTotal,
+
 		HTTPRequestsTotal:          httpRequestsTotal,
 		HTTPRequestDuration:        httpRequestDuration,
 		HTTPResponseSize:           httpResponseSize,
@@ -224,6 +366,42 @@ func New() *Metrics {
 		OAuthTokenRevocationsTotal: oauthTokenRevocationsTotal,
 		OAuthTokenTTLSeconds:       oauthTokenTTLSeconds,
 	}
+}
+
+// RegisterRedisUp registers the pad_redis_up gauge. Called only by a
+// deployment that actually has Redis (cmd/pad/cmd_server.go, inside the
+// PAD_REDIS_URL branch) so that a binary without it exports no series at
+// all rather than a permanent 0 — see the RedisUp field comment.
+//
+// Setting m.RedisUp before this is called is harmless: an unregistered
+// Prometheus gauge accepts writes and is simply never gathered.
+func (m *Metrics) RegisterRedisUp() {
+	m.Registry.MustRegister(m.RedisUp)
+}
+
+// RegisterStreamConnectionsCollector exposes pad_stream_connections_active
+// as a CALLBACK collector, sampled on scrape (BUG-2726).
+//
+// A collector rather than a gauge somebody pushes to, for the same
+// reason RegisterDBCollector is one: zero overhead between scrapes,
+// always fresh, and no ordering problem. A per-admit callback has two
+// failure modes this does not — running under the gate's lock (a
+// deadlock for any callback touching the gate) and landing out of order
+// (a stale value last, leaving the gauge permanently BELOW the real
+// total, which reads as spare capacity that is not there).
+//
+// Sampling on scrape is safe HERE in a way a Redis PING would not be: no
+// I/O, no side effects, and the value cannot depend on who is asking.
+// That distinction is why pad_redis_up is a probed gauge and this is
+// not.
+//
+// total must be safe for concurrent use; it is called from the scrape
+// goroutine.
+func (m *Metrics) RegisterStreamConnectionsCollector(total func() int) {
+	m.Registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "pad_stream_connections_active",
+		Help: "Active streaming connections on THIS INSTANCE across both SSE endpoints — the population PAD_SSE_MAX_CONNECTIONS bounds. Limits are per instance; sum across replicas for the deployment total.",
+	}, func() float64 { return float64(total()) }))
 }
 
 // RegisterDBCollector registers a callback-based collector that exposes

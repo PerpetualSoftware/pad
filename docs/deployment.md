@@ -83,14 +83,135 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
-| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Global maximum SSE connections |
-| `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum SSE connections |
+| `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Unset means the historical names; a whitespace-only value is rejected at startup rather than treated as unset. |
+| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across both `/api/v1/events` and `/api/v1/events/stream` |
+| `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
+| `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
+
+#### Streaming connection limits
+
+Pad has two SSE endpoints and they share one budget. `/api/v1/events` is
+workspace-scoped (the web UI's activity stream); `/api/v1/events/stream` is
+user-scoped (agent watch notifications, `pad watch --stream`). A held
+connection costs a goroutine and a bus subscription whichever one opened it —
+and, on the watch stream only, a session-presence registration in shared Redis —
+so `PAD_SSE_MAX_CONNECTIONS` and `PAD_SSE_MAX_PER_USER` bound them together. Only `PAD_SSE_MAX_PER_WORKSPACE`
+is endpoint-specific, because the watch stream has no workspace to count
+against.
+
+> **Upgrading:** `PAD_SSE_MAX_CONNECTIONS` previously bounded `/api/v1/events`
+> alone. It now covers both, so a tuned value may be reached sooner than
+> before. The server logs the effective limits at startup
+> (`Stream connection limits`). `/api/v1/events/stream` had no limit at all
+> before this change; if you run many agent sessions per user, check
+> `PAD_SSE_MAX_PER_USER` against your fleet size.
+
+A refused connection is `429` with code `sse_limit_exceeded` and a `Retry-After`
+header. The CLI monitor (`pad watch --stream`) treats it like any other non-200
+and backs off (5s, growing linearly, capped at 5 minutes), so refusal does not
+produce a reconnect storm. `pad project watch` is interactive and exits with an
+actionable message instead.
+
+> **Browsers do not back off.** The web UI's activity stream uses `EventSource`,
+> which retries on its own fixed schedule and cannot see the status code or the
+> `Retry-After` header — so a refused browser tab reconnects roughly every few
+> seconds until capacity frees up. Size `PAD_SSE_MAX_CONNECTIONS` with that in
+> mind: reaching it does not shed load from browser clients the way it does from
+> the CLI. Tracked as BUG-2733.
+
+The per-user limit applies to every caller. On `/api/v1/events`, callers with no
+resolved user — a legacy workspace-scoped token, or the fresh-install window
+before the first admin exists — are bounded per *workspace* instead, at the same
+number, so two legacy tokens for one workspace share a bucket.
+`/api/v1/events/stream` has no equivalent case: it requires a resolved user and
+answers `401` without one.
+
+**All three limits are PER INSTANCE, not deployment-wide.** They are enforced
+in-process; there is no shared counter. A three-replica deployment with
+`PAD_SSE_MAX_CONNECTIONS=1000` admits up to 3000 connections in total, and a
+single user can hold `PAD_SSE_MAX_PER_USER` connections *on each replica*. Size
+them per pod and multiply by replica count for the deployment ceiling. Watch
+`pad_stream_connections_active` (per instance) rather than inferring the total
+from the configured number.
 
 #### Redis configuration notes
 
+**One namespace per installation, or one endpoint per installation.** Every
+Redis key and channel Pad uses carries `PAD_REDIS_NAMESPACE` when it is set:
+`pad:<namespace>:events:…`, `pad:<namespace>:watchevents…`,
+`pad:<namespace>:session:…`. When it is unset the names are the historical flat
+ones, so upgrading changes nothing.
+
+Two installations sharing one Redis endpoint **without** distinct namespaces
+cross-feed notifications and merge their session-presence registries. Selecting
+different logical DB numbers only half helps: ordinary keys are DB-scoped, so
+the presence registries stay separate — but Redis pub/sub is not namespaced by
+DB at all, so both buses cross-feed regardless. The practical exposure is a **cloned database** (a staging
+environment restored from a production dump), because delivery is filtered on
+user id and user ids are per-installation UUIDs; for that case it is a genuine
+cross-tenant leak.
+
+> **Changing the namespace on a running deployment is a cutover, not a tweak.**
+> Set it before going multi-installation rather than after, and take a brief
+> maintenance window if you can. Three things to know:
+>
+> 1. **It partitions a rolling upgrade.** Replicas with the namespace set and
+>    replicas without it do not share pub/sub channels, counters, or the
+>    presence registry — they behave as two separate installations for as long
+>    as the rollout takes. `GET /api/v1/sessions` answers differently depending
+>    on which replica handles it, and a session-targeted push aimed across the
+>    partition is skipped (reported honestly as `delivered_sessions: 0`, but not
+>    delivered). Roll all replicas together, or accept a split for the duration.
+> 2. **Rolling BACK re-creates the split** unless the namespace is unset at the
+>    same time. The env var and the binary version have to move together in both
+>    directions.
+> 3. **Client resync is honest on the watch stream and silent on the activity
+>    stream.** The notification stream answers resumes with `sync_required` —
+>    by way of its cold replay-buffer coverage check rather than the epoch
+>    comparison, since a freshly namespaced bus has no old epoch to compare
+>    against. The workspace
+>    activity stream (`/api/v1/events`) has no equivalent: a client reconnecting
+>    with a `Last-Event-ID` from the old keyspace against a fresh replay buffer
+>    is treated as caught up, so it silently misses whatever happened during the
+>    cutover until its next full page load. That is a pre-existing property of
+>    any cold replay buffer (a replica restart does the same), not something the
+>    namespace introduced — it is called out here because a namespace change is
+>    the one case an operator triggers deliberately.
+>
+> Session-presence entries are transient — 90s TTL — and cost nothing either
+> way.
+
 Pad's Redis integration assumes a **single Redis node** — `redis://…`, not a
-cluster. Both event buses and the session-presence registry use flat key names
-and a non-cluster client; pointing Pad at a Redis Cluster is not supported.
+cluster. Key names carry no hash tags and Pad dials a non-cluster client, so a
+user's presence index and their session entries would hash to different slots
+and the Lua scripts would fail `CROSSSLOT`. Pointing Pad at a Redis Cluster is
+not supported.
+
+#### Redis health and metrics
+
+`/api/v1/health/ready` reports Redis in its payload but **does not gate readiness on
+it** — the REST API, the web UI and every item-writing path work with Redis down, so
+failing readiness over a Redis blip would pull healthy replicas out of the load
+balancer and turn a degraded feature into an outage. When Redis is unreachable
+the payload carries `redis.reachable: false`, the probe error, and a `degrades`
+list naming what is lost. Note what that list says about activity events: they
+stop for **all** clients, not only across instances — the activity bus does not
+fall back to a local fan-out when its publish fails. The block is absent entirely when no Redis is
+configured.
+
+Alert on these instead:
+
+| Metric | Meaning |
+|--------|---------|
+| `pad_redis_up` | `0` when the last probe (every 15s) failed. Exported only when Redis is configured — absence means "no Redis", not "down" |
+| `pad_stream_connections_active` | Held streaming connections on this instance, across both SSE endpoints — the population the limits bound |
+| `pad_watchevents_sequence_gaps_total` | This instance missed notifications — a delivery fault |
+| `pad_watchevents_resume_gaps_total` | Resumes this instance could not serve — from a hole, a cold start, an epoch change, or a shared-counter disagreement. Each sends a client `sync_required`, so this is the user-visible one |
+| `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
+| `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber |
+| `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
+| `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
+| `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
 
 **Avoid an evicting `maxmemory-policy` for Pad's Redis.**
 `docker-compose.prod.yml` sets `noeviction` for this reason; the plain
@@ -336,17 +457,62 @@ Pad exposes Prometheus metrics at `/metrics` (unauthenticated). Key metrics:
 | `pad_http_requests_total` | counter | Total HTTP requests by method, path, status |
 | `pad_http_request_duration_seconds` | histogram | Request latency |
 | `pad_http_response_size_bytes` | histogram | Response body sizes |
-| `pad_sse_connections_active` | gauge | Current SSE connections |
-| `pad_eventbus_publish_total` | counter | Events published |
+| `pad_sse_connections_active` | gauge | Connections on the workspace activity stream (`/api/v1/events`) only |
+| `pad_stream_connections_active` | gauge | Held connections across **both** SSE endpoints — the population the limits bound |
+| `pad_eventbus_publish_total` | counter | Events HANDED to the bus — attempts, not confirmed publishes. A failed Redis publish is logged and still counted (BUG-2732) |
 | `pad_eventbus_subscribers` | gauge | Active event subscribers |
 | `pad_db_open_connections` | gauge | Database connection pool stats |
 
+Redis-specific metrics are listed under [Redis health and metrics](#redis-health-and-metrics).
+
 ### Health Check
 
+Three endpoints, and they answer different questions:
+
 ```bash
-curl http://localhost:7777/api/v1/health
+# Liveness — is the process up? Kubernetes restarts the pod when this fails.
+curl http://localhost:7777/api/v1/health/live
 # {"status":"ok"}
+
+# Readiness — can it serve traffic? Gated on the DATABASE only.
+# Kubernetes should point its readinessProbe here.
+curl -s http://localhost:7777/api/v1/health/ready
+# {
+#   "status": "ready",
+#   "db": {"open_connections": 2, "in_use": 0, "idle": 2, "driver": "sqlite"},
+#   "redis": {"reachable": true, "probed": true, "last_check": "2026-08-22T01:00:00Z"}
+# }
+
+# Build info.
+curl http://localhost:7777/api/v1/health
+# {"status":"ok","version":"...","commit":"..."}
 ```
+
+With Redis configured but unreachable, readiness stays **200** and the `redis`
+block carries the failure. Readiness deliberately does not fail: Pad still
+serves the API, the web UI and every item write. What it cannot do is
+cross-instance delivery, and the paths whose job that is say so —
+`POST .../push` answers `503` for a session-targeted push it cannot resolve
+and `502 push_unconfirmed` when the publish fails:
+
+```json
+{
+  "status": "ready",
+  "redis": {
+    "reachable": false,
+    "probed": true,
+    "error": "dial tcp ...: connect: connection refused",
+    "degrades": [
+      "all activity events, including to clients on this instance",
+      "watch notifications",
+      "session presence and session-targeted push"
+    ]
+  }
+}
+```
+
+The `redis` block is absent entirely when no Redis is configured — "not
+applicable" rather than "down".
 
 ## Upgrading
 
@@ -405,7 +571,10 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 ## Production Checklist
 
 - [ ] **Database:** PostgreSQL configured with `PAD_DB_DRIVER=postgres`
-- [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`
+- [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`, single node (not a cluster)
+- [ ] **Redis namespace:** `PAD_REDIS_NAMESPACE` set if this endpoint is shared with another Pad installation
+- [ ] **Streaming limits:** `PAD_SSE_MAX_CONNECTIONS` / `PAD_SSE_MAX_PER_USER` sized for your fleet (both cover *both* SSE endpoints)
+- [ ] **Redis alerting:** `pad_redis_up` and `pad_watchevents_sequence_gaps_total` wired to alerts
 - [ ] **TLS:** Reverse proxy with valid certificates
 - [ ] **Secure cookies:** `PAD_SECURE_COOKIES=true` (requires TLS)
 - [ ] **Public URL:** `PAD_URL` set to your public-facing domain

@@ -8,24 +8,51 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/redis/go-redis/v9"
 )
 
 const (
-	// redisChannelPrefix is prepended to workspace IDs for Redis pub/sub channels.
-	redisChannelPrefix = "pad:events:"
+	// redisChannelSuffix is prepended to workspace IDs for Redis pub/sub
+	// channels, under whatever namespace the installation configured —
+	// "pad:events:" by default. See internal/redisns.
+	redisChannelSuffix = "events:"
 
-	// redisSeqKey is the Redis key used for the global event sequence counter.
-	// All instances share this counter so SSE event IDs are globally ordered
-	// and Last-Event-ID is valid across any instance on reconnect.
-	redisSeqKey = "pad:event_seq"
+	// redisSeqSuffix names the global event sequence counter ("pad:event_seq"
+	// by default). All instances share this counter so SSE event IDs are
+	// globally ordered and Last-Event-ID is valid across any instance on
+	// reconnect — which is also why RENAMING it (by introducing a namespace
+	// on a running deployment) is a cutover rather than a config tweak:
+	// the new counter starts from zero and connected clients' Last-Event-ID
+	// values belong to the old space.
+	redisSeqSuffix = "event_seq"
 )
+
+// DEPLOYMENT SCOPING (BUG-2724). Both names above carry the installation's
+// PAD_REDIS_NAMESPACE when one is set — see internal/redisns — and are
+// byte-identical to the historical flat names when it is not.
+//
+// The rule, stated the same way in internal/watchevents and
+// internal/server's presence registry because it belongs to all three at
+// once: scoping comes from ONE shared config value built in
+// cmd/pad/cmd_server.go, never from one package growing a prefix the
+// others lack. Two installations sharing a Redis endpoint without distinct
+// namespaces cross-feed; different logical DBs do not help, since pub/sub
+// is not namespaced by DB at all.
+//
+// Redis CLUSTER remains unsupported across all three keyspaces: no hash
+// tags, and a non-cluster client. Deferred as one unit on BUG-2724.
 
 // RedisBus distributes events across multiple Pad instances via Redis pub/sub.
 // Each instance subscribes to Redis channels for its locally-connected SSE clients,
 // and publishes events to Redis so all instances see them.
 type RedisBus struct {
 	client *redis.Client
+
+	// keys builds this installation's Redis names (BUG-2724). The zero
+	// value is the historical un-namespaced keyspace, so a bus constructed
+	// without one behaves exactly as it always did.
+	keys redisns.Keys
 
 	mu          sync.RWMutex
 	subscribers map[chan Event]*subscriber
@@ -57,9 +84,18 @@ type redisSub struct {
 // NewRedisBus creates a new Redis-backed EventBus.
 // The provided redis.Client should already be configured and connected.
 func NewRedisBus(client *redis.Client) *RedisBus {
+	return NewRedisBusWithKeys(client, redisns.Default)
+}
+
+// NewRedisBusWithKeys is NewRedisBus with an explicit key namespace
+// (BUG-2724). cmd/pad/cmd_server.go uses this one, passing the value
+// shared with the watch bus and the presence registry so all three
+// keyspaces carry the same namespace or none.
+func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &RedisBus{
 		client:        client,
+		keys:          keys,
 		subscribers:   make(map[chan Event]*subscriber),
 		wsCounts:      make(map[string]int),
 		wsSubs:        make(map[string]*redisSub),
@@ -91,17 +127,17 @@ func (b *RedisBus) Subscribe(workspaceID string) chan Event {
 	return ch
 }
 
-// SubscribeIfAllowed atomically checks limits and subscribes.
-// NOTE: Limits are enforced against local (per-pod) subscriber counts only.
-// In multi-replica deployments the effective cap is multiplied by the number
-// of replicas.  For truly global caps, use a Redis-backed counter.
-func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan Event, bool) {
+// SubscribeIfAllowed atomically checks the per-workspace limit and
+// subscribes. See the EventBus interface for why there is no global limit
+// here (BUG-2726).
+//
+// NOTE: the limit is enforced against local (per-pod) subscriber counts
+// only. In multi-replica deployments the effective cap is multiplied by
+// the number of replicas — as is every other streaming limit Pad has.
+func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if maxGlobal > 0 && len(b.subscribers) >= maxGlobal {
-		return nil, false
-	}
 	if maxPerWorkspace > 0 && b.wsCounts[workspaceID] >= maxPerWorkspace {
 		return nil, false
 	}
@@ -153,7 +189,7 @@ func (b *RedisBus) Publish(event Event) {
 	// Assign a globally ordered sequence ID via Redis atomic counter.
 	// This ensures all instances share the same ID space, so Last-Event-ID
 	// from one instance is meaningful on any other instance.
-	id, err := b.client.Incr(b.ctx, redisSeqKey).Result()
+	id, err := b.client.Incr(b.ctx, b.keys.Name(redisSeqSuffix)).Result()
 	if err != nil {
 		// Fall back to local counter if Redis INCR fails (degraded mode).
 		slog.Warn("failed to get global event ID from Redis, falling back to local", "error", err)
@@ -167,7 +203,7 @@ func (b *RedisBus) Publish(event Event) {
 		return
 	}
 
-	channel := redisChannelPrefix + event.WorkspaceID
+	channel := b.keys.Name(redisChannelSuffix) + event.WorkspaceID
 	if err := b.client.Publish(b.ctx, channel, data).Err(); err != nil {
 		slog.Error("failed to publish event to Redis", "channel", channel, "error", err)
 	}
@@ -222,7 +258,7 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 // startRedisSubscription begins listening on a Redis channel for a workspace.
 // Must be called with b.mu held.
 func (b *RedisBus) startRedisSubscription(workspaceID string) {
-	channel := redisChannelPrefix + workspaceID
+	channel := b.keys.Name(redisChannelSuffix) + workspaceID
 	pubsub := b.client.Subscribe(b.ctx, channel)
 
 	subCtx, subCancel := context.WithCancel(b.ctx)

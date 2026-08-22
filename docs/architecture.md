@@ -80,6 +80,33 @@ multi-node production use.
    handler publishes an event to `internal/events` which fans out to
    connected SSE clients at `/api/v1/events`.
 
+### Two SSE streams, one connection budget
+
+Pad serves two Server-Sent Events endpoints over two separate buses, and
+the distinction matters for anything touching either:
+
+| | `/api/v1/events` | `/api/v1/events/stream` |
+|---|---|---|
+| Scope | one workspace | the caller's user, across every workspace |
+| Bus | `internal/events` | `internal/watchevents` |
+| Carries | activity events (item changed, comment added) | watch notifications and pushes addressed to the caller |
+| Consumers | the web UI | `pad watch --stream`, the agent monitor |
+| Auth | a resolved user, a legacy workspace token, or the fresh-install window | a resolved user, always |
+
+They cost the same process resources — a goroutine and a bus subscription
+each, plus (with Redis) a session-presence registration for the watch
+stream, which is the only one that registers — so they share ONE
+admission budget, enforced per instance by
+`internal/server/stream_admission.go` before either subscribes:
+`PAD_SSE_MAX_CONNECTIONS` and `PAD_SSE_MAX_PER_USER` cover both,
+`PAD_SSE_MAX_PER_WORKSPACE` covers only the workspace-scoped one. A
+refusal is `429 sse_limit_exceeded` with `Retry-After`.
+
+With `PAD_REDIS_URL` set, both buses and the presence registry cross
+instance boundaries together, under one key namespace
+(`internal/redisns`). Without it, all three are in-process and a
+multi-replica deployment would not work.
+
 ## Frontend (SvelteKit + Svelte 5)
 
 - **`web/src/routes/`** — page routes. File-based: a folder corresponds

@@ -151,30 +151,62 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set SSE headers
+	// EVERY REFUSAL PATH BEFORE THE SSE HEADERS, so a 429 is an ordinary
+	// JSON error response. Setting Content-Type: text/event-stream first
+	// makes a refusal carry the JSON error envelope under an SSE content
+	// type — a different contract from the sibling endpoint's for the
+	// same refusal. The headers go out only once nothing can refuse.
+	//
+	// The bounds here are the PER-INSTANCE and PER-PRINCIPAL ones, from
+	// the process-wide gate that also covers /api/v1/events/stream
+	// (BUG-2726). Both endpoints hold the same kind of connection, so one
+	// budget covers them; see streamAdmission for why this cannot live on
+	// either bus.
+	principal := streamPrincipal(r, ws.ID)
+	release, refusal := s.admission().acquire(principal)
+	if refusal != admissionRefusalNone {
+		total, perUser := s.admission().counts(principal)
+		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", string(refusal),
+			"instance_current", total, "instance_max", s.sseMaxConnections,
+			"principal_current", perUser, "principal_max", s.sseMaxPerUser)
+		writeStreamLimitExceeded(w)
+		return
+	}
+	defer release()
+
+	// Then the per-WORKSPACE bound, still atomic with the subscribe so two
+	// concurrent requests cannot both pass a check for the last slot. The
+	// bus no longer takes a global limit at all — the gate above owns that
+	// bound (BUG-2726), and leaving a second one here would mean two
+	// counters enforcing one configured number and refusing at different
+	// points.
+	//
+	// Note for anyone reading the SSE limit tests in this package: since
+	// that change they exercise the ADMISSION GATE, not the bus, even
+	// though their names have not changed.
+	ch, ok := s.events.SubscribeIfAllowed(ws.ID, s.sseMaxPerWorkspace)
+	if !ok {
+		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", "per_workspace",
+			"ws_current", s.events.WorkspaceSubscriberCount(ws.ID), "ws_max", s.sseMaxPerWorkspace)
+		writeStreamLimitExceeded(w)
+		return
+	}
+	defer s.events.Unsubscribe(ch)
+
+	// Set SSE headers. Nothing below this line refuses the connection.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
-	// Atomically check SSE connection limits and subscribe in one step.
-	// This prevents TOCTOU races where two concurrent requests both pass the
-	// limit check before either subscribes.
-	ch, ok := s.events.SubscribeIfAllowed(ws.ID, s.sseMaxConnections, s.sseMaxPerWorkspace)
-	if !ok {
-		slog.Warn("SSE connection limit reached", "workspace", ws.Slug,
-			"global_current", s.events.SubscriberCount(), "global_max", s.sseMaxConnections,
-			"ws_current", s.events.WorkspaceSubscriberCount(ws.ID), "ws_max", s.sseMaxPerWorkspace)
-		writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "SSE connection limit reached")
-		return
-	}
-	defer s.events.Unsubscribe(ch)
-
-	// Log warning at 80% global capacity
+	// Log warning at 80% global capacity. Reads the ADMISSION gate's total
+	// rather than this bus's subscriber count, which since BUG-2726 is only
+	// part of the budget — reporting one endpoint's share against a
+	// two-endpoint limit would keep the warning quiet right up to a refusal.
 	if s.sseMaxConnections > 0 {
-		total := s.events.SubscriberCount()
+		total, _ := s.admission().counts("")
 		if total >= s.sseMaxConnections*80/100 {
-			slog.Warn("SSE connections approaching global limit", "current", total, "max", s.sseMaxConnections)
+			slog.Warn("SSE connections approaching this instance's limit", "current", total, "max", s.sseMaxConnections)
 		}
 	}
 
