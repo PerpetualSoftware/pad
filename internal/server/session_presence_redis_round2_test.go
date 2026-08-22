@@ -687,3 +687,62 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	defer l.mu.Unlock()
 	return l.w.Write(p)
 }
+
+// TestRedisSessionPresence_RenewLoopUsesTheRateLimitedWarning — codex
+// round 34, and the SECOND time in this review I tested a knob and not the
+// wiring.
+//
+// TestRedisSessionPresence_RenewalFailureLoggingIsRateLimited calls
+// warnRenewFailure directly. It proves the throttle and says nothing about
+// whether renewLoop USES it — restoring the original unbounded slog.Warn
+// at the call site leaves that test green while the flood returns. Round
+// 20 caught the identical shape on the cap's admission flag, and I wrote
+// the lesson down before writing this test.
+//
+// So this drives the real goroutine against an unreachable Redis and
+// counts what reaches the log.
+func TestRedisSessionPresence_RenewLoopUsesTheRateLimitedWarning(t *testing.T) {
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&lockedWriter{w: &buf, mu: &mu}, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	// Registration succeeds against miniredis, then the client is pointed at
+	// a closed port so every RENEWAL fails — which is the outage shape, and
+	// the only one where the flood happens.
+	mr := miniredis.RunT(t)
+	p := &RedisSessionPresence{
+		// MaxRetries -1 so a failing renewal returns promptly; with
+		// go-redis's default backoff each failure takes long enough that a
+		// short window sees no attempts at all, which cost this test one
+		// false failure before it was measured rather than assumed.
+		client:        redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1, DialTimeout: 50 * time.Millisecond}),
+		sessionKeyTTL: time.Minute,
+		renewInterval: 5 * time.Millisecond,
+		opTimeout:     50 * time.Millisecond,
+		renewals:      make(map[string]*renewal),
+	}
+	t.Cleanup(p.Close)
+	p.Add("user-1", SessionIdentity{Armed: true})
+
+	// Kill Redis out from under the renewal loop.
+	mr.Close()
+
+	// Long enough for many failing ticks — far more than one interval's
+	// worth of allowed lines.
+	time.Sleep(2 * time.Second)
+
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+
+	lines := strings.Count(out, "failed to renew session entry")
+	if lines == 0 {
+		t.Fatalf("expected the renewal loop to report its failures at least once:\n%s", out)
+	}
+	// ~80 ticks in that window; unthrottled the loop would log every one.
+	if lines > 2 {
+		t.Fatalf("renewLoop is not going through the rate-limited warning — %d lines for one interval's worth of failures:\n%s", lines, out)
+	}
+}
