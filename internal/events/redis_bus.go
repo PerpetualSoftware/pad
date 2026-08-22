@@ -202,7 +202,10 @@ elseif redis.call('EXISTS', KEYS[3]) == 0 then
   local g = redis.call('INCR', KEYS[5])
   redis.call('SET', KEYS[3], tostring(g))
 end
-local epoch = redis.call('GET', KEYS[3])
+local epoch = false
+if redis.call('TYPE', KEYS[3])['ok'] == 'string' then
+  epoch = redis.call('GET', KEYS[3])
+end
 if not epoch or not string.match(epoch, '^[1-9][0-9]*$') or #epoch > 18 then
   -- The epoch key holds something that is not a positive generation --
   -- corrupted, hand-edited, or written by another installation sharing this
@@ -210,6 +213,14 @@ if not epoch or not string.match(epoch, '^[1-9][0-9]*$') or #epoch > 18 then
   -- drop the event, forever and for every publisher. Rotating instead makes
   -- the state self-healing: one generation change, one round of resyncs, and
   -- the space is identifiable again.
+  --
+  -- The TYPE CHECK is part of the same guard for the same reason (codex round
+  -- 20): a bare GET on a key holding a list or a hash raises WRONGTYPE, which
+  -- aborts the script before this branch can run — so the recovery written to
+  -- handle a corrupted epoch was unreachable for one of the ways an epoch gets
+  -- corrupted. No DEL is needed to clear it: SET replaces a key of any type,
+  -- which the mutation matrix established by finding that a DEL here could be
+  -- removed without any test noticing.
   --
   -- The LENGTH cap is part of the same guard, not a separate nicety: the
   -- receiver parses this with Go's strconv.ParseInt, so a value that is all
@@ -885,9 +896,9 @@ func (b *RedisBus) newBuffer() *replayBuffer {
 // changed, or an ID arrived at or below the high-water mark. Callers must hold
 // mu.
 //
-// raiseFloor says whether the replacements should additionally refuse every
-// cursor at or below what the discarded buffers held, and the two reset
-// reasons answer it differently ON PURPOSE. Getting this backwards produces a
+// floor says what the replacements should do with the standing floor — refuse
+// every cursor at or below what the discarded buffers held, clear it, or leave
+// it alone — and the reset reasons answer it differently ON PURPOSE. Getting this backwards produces a
 // RESYNC LOOP, which is worse than the bug the floor exists to fix.
 //
 //   - COUNTER BACKWARDS, no epoch change: we CANNOT TELL which of two things
@@ -922,19 +933,48 @@ func (b *RedisBus) newBuffer() *replayBuffer {
 // itself is gone those numbers mean nothing, and leaving the floor standing
 // produces the very loop the paragraph above rules out — just reached from a
 // bus that took a counter-backwards reset earlier in its life.
-func (b *RedisBus) dropAllBuffers(raiseFloor bool) {
-	if raiseFloor {
+func (b *RedisBus) dropAllBuffers(floor floorAction) {
+	switch floor {
+	case floorRaise:
 		for _, rb := range b.replayBuffers {
 			if rb.lastAppendedID > b.discardedHighWater {
 				b.discardedHighWater = rb.lastAppendedID
 			}
 		}
-	} else {
+	case floorClear:
 		b.discardedHighWater = 0
+	case floorKeep:
+		// Deliberately nothing.
 	}
 	b.hadReset = true
 	b.replayBuffers = make(map[string]*replayBuffer)
 }
+
+// floorAction says what a buffer drop should do with the standing
+// counter-backwards floor. Three intents rather than a boolean, because a
+// boolean gave the third one no way to spell itself and it silently took the
+// wrong branch (codex round 20).
+type floorAction int
+
+const (
+	// floorClear: the ID space itself changed, so the numbers the floor names
+	// belong to a sequence that no longer exists. Leaving it standing refuses
+	// every cursor until the new counter climbs past a dead high-water mark,
+	// and each refusal hands the client a fresh low cursor — a resync loop.
+	floorClear floorAction = iota
+
+	// floorRaise: same numeric space, and we just discarded events a cursor
+	// can legitimately ask about, so every cursor at or below them is refused.
+	floorRaise
+
+	// floorKeep: WE DO NOT KNOW WHICH SPACE THIS IS. A lower generation inside
+	// the straggler window is not proof of a new space — that is precisely the
+	// question the window exists to defer — so it must not clear a floor an
+	// earlier counter-backwards reset raised. Clearing it there let bare
+	// traffic repopulate the buffers below the mark and serve a cursor above
+	// them as though coverage were continuous.
+	floorKeep
+)
 
 // decodePayload parses the "<epoch>|<id>|<json>" wire form publishScript emits,
 // and ALSO accepts a bare JSON body with no prefix.
@@ -1152,7 +1192,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		slog.Warn("events: discarding a message from an abandoned ID space and ending replay coverage",
 			"message_epoch", epoch, "current_epoch", b.epoch, "id", event.ID, "workspace", event.WorkspaceID)
 		if b.buffersHoldEvents() {
-			b.dropAllBuffers(false)
+			b.dropAllBuffers(floorKeep)
 			reset = ResetReasonEpochRegressed
 		}
 		return
@@ -1179,7 +1219,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// long costs a few seconds of discards before recovery.
 		slog.Warn("events: the ID space generation went backwards and stayed there; treating it as a new space and dropping replay buffers",
 			"previous_epoch", b.epoch, "new_epoch", epoch, "id", event.ID, "workspace", event.WorkspaceID)
-		b.dropAllBuffers(false)
+		b.dropAllBuffers(floorClear)
 		b.epoch = epoch
 		b.epochAdoptedAt = time.Now()
 		reset = ResetReasonEpochRegressed
@@ -1232,7 +1272,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		if b.epoch != 0 || b.buffersHoldEvents() {
 			slog.Warn("event ID space changed; dropping replay buffers, resumes spanning the change will report sync_required",
 				"previous_epoch", b.epoch, "new_epoch", epoch, "id", event.ID)
-			b.dropAllBuffers(false)
+			b.dropAllBuffers(floorClear)
 			reset = ResetReasonEpochChange
 		}
 		b.epoch = epoch
@@ -1297,7 +1337,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// CLEARS the floor (see dropAllBuffers).
 		slog.Warn("event sequence went backwards; dropping replay buffers, resumes below the discarded high-water mark will report sync_required",
 			"high_water_mark", rb.lastAppendedID, "id", event.ID, "workspace", event.WorkspaceID)
-		b.dropAllBuffers(true)
+		b.dropAllBuffers(floorRaise)
 		rb = b.newBuffer()
 		b.replayBuffers[event.WorkspaceID] = rb
 		reset = ResetReasonCounterBackward

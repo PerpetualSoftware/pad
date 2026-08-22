@@ -1176,3 +1176,96 @@ func TestAStragglerFromBeforeAResetIsBoundedByTheNextNewSpaceEvent(t *testing.T)
 		t.Fatalf("a cursor inside the window must be refused once it closes, got %d events", len(got))
 	}
 }
+
+func TestAStragglerDoesNotEraseTheCounterBackwardsFloor(t *testing.T) {
+	// codex round 20, an INTERACTION between two fixes that were each correct
+	// alone. A lower generation inside the straggler window drops the buffers
+	// — and it used to do so with the same argument an epoch change uses,
+	// which CLEARS the floor. But a straggler is not proof of a new space;
+	// that is the question the window exists to defer.
+	//
+	// The sequence it produced: a counter-backwards reset raises the floor to
+	// 100, a straggler clears it, bare traffic repopulates from 51, and a
+	// client resuming from 99 is served later ids as though coverage were
+	// continuous — silently skipping 51..99.
+	b := newTestRedisBus(t)
+	_, gen := liveGen(t, b, "ws-1")
+
+	b.fanOutFromRedis(gen, 5, Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 5, Event{ID: 60, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if b.discardedHighWater != 100 {
+		t.Fatalf("fixture: the counter-backwards reset should have raised the floor to 100, got %d", b.discardedHighWater)
+	}
+
+	// The straggler, inside the window.
+	b.fanOutFromRedis(gen, 4, Event{ID: 900, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	if b.discardedHighWater != 100 {
+		t.Fatalf("a straggler must not clear a floor it cannot know is obsolete; it became %d", b.discardedHighWater)
+	}
+
+	// The consequence, asserted rather than inferred: traffic below the mark
+	// repopulates the buffer, and a cursor below the mark is still refused.
+	b.fanOutFromRedis(gen, 5, Event{ID: 51, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if got := b.EventsSince("ws-1", 99); got != nil {
+		t.Fatalf("a cursor below the discarded high-water mark must still be a gap, got %d events", len(got))
+	}
+	// Control: a genuine epoch change DOES clear it, or the floor becomes
+	// permanent and every cursor is refused until a dead counter is passed.
+	b.fanOutFromRedis(gen, 6, Event{ID: 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if b.discardedHighWater != 0 {
+		t.Fatalf("an epoch change must clear the floor, got %d", b.discardedHighWater)
+	}
+}
+
+func TestAWrongTypedEpochKeyIsRecoveredToo(t *testing.T) {
+	// codex round 20. The corrupted-epoch recovery ran on the VALUE, after a
+	// bare GET — and a GET on a key holding a list raises WRONGTYPE, aborting
+	// the script before the recovery could run. The guard written to handle a
+	// corrupted epoch was unreachable for one of the ways an epoch gets
+	// corrupted, and every phase-2 publish failed until someone deleted the
+	// key by hand.
+	b, mr := newFlippedRedisBus(t)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+	next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
+
+	// PUBLISH ONCE FIRST, and this is load-bearing rather than setup. The
+	// script's id == 1 branch SETs the epoch unconditionally, and SET replaces
+	// a key of any type — so on a fresh counter the wrong-typed key is
+	// overwritten before the GET is ever reached, and the branch under test is
+	// never entered. Found by the mutation matrix: without this publish the
+	// test passed with the TYPE check deleted.
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if _, _, err := decodePayload(next()); err != nil {
+		t.Fatalf("fixture: the first publish must succeed, got %v", err)
+	}
+
+	// The key now holds a string, so it has to be removed before a list can
+	// take its place — which is exactly the state an operator or a colliding
+	// installation would leave behind.
+	if err := b.client.Del(context.Background(), epochKey).Err(); err != nil {
+		t.Fatalf("clear the epoch key: %v", err)
+	}
+	if _, err := b.client.RPush(context.Background(), epochKey, "not", "a", "string").Result(); err != nil {
+		t.Fatalf("seed a list at the epoch key: %v", err)
+	}
+	if got := mr.Type(epochKey); got != "list" {
+		t.Fatalf("fixture: the epoch key should hold a list, it holds %q", got)
+	}
+
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})
+
+	epoch, ev, err := decodePayload(next())
+	if err != nil {
+		t.Fatalf("the publish must survive a wrong-typed epoch key: %v", err)
+	}
+	if epoch <= 0 {
+		t.Fatalf("want a positive generation after recovery, got %d", epoch)
+	}
+	if ev.ItemID != "item-7" {
+		t.Fatalf("the event must still carry its body, got %+v", ev)
+	}
+	if got := mr.Type(epochKey); got != "string" {
+		t.Fatalf("the key must be recovered to a string, it holds %q", got)
+	}
+}
