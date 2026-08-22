@@ -309,6 +309,19 @@ func TestAdoptingAnEpochOntoBufferedEventsIsAReset(t *testing.T) {
 	if got := b.EventsSince("ws-1", 6); got == nil {
 		t.Fatal("a cursor at the new space's first id must be served")
 	}
+
+	// ONE DROP PER INSTANCE PER ROLL, asserted rather than claimed in prose.
+	// The adoption comment says the cost is bounded at one; further messages
+	// in the same generation must leave the buffers alone, or the "bounded"
+	// in that sentence is doing no work.
+	b.fanOutFromRedis(gen, 1, Event{ID: 7, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 1, Event{ID: 8, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if _, resets := obs.snapshot(); len(resets) != 1 {
+		t.Fatalf("later messages in the same generation must not drop again; resets are now %v", resets)
+	}
+	if got := b.EventsSince("ws-1", 6); got == nil || len(got) != 2 {
+		t.Fatalf("coverage must extend across the rest of the generation, got %v", got)
+	}
 }
 
 func TestAnEpochChangeDropsEveryWorkspaceAndClearsTheFloor(t *testing.T) {

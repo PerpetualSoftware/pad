@@ -367,10 +367,8 @@ type MemoryBus struct {
 	subscribers map[chan Notification]struct{}
 	// seq counts up from base, which identifies THIS incarnation of the
 	// counter (BUG-2736). The asymmetry with this package's RedisBus — a
-	// numeric base here, an opaque epoch key there — is deliberate and is
-	// explained on RedisBus's epoch field; the short version is that this bus
-	// is the sole publisher into its space and can compute an identity, while
-	// a shared counter cannot be identified by any single process. Before it, seq restarted at 1 on every process
+	// numeric base here, an opaque epoch key there — is deliberate; see
+	// internal/idspace's package comment. Before it, seq restarted at 1 on every process
 	// start and a client resuming with a cursor from a previous incarnation
 	// was replayed the NEW space's notifications as though they followed the
 	// OLD space's — the same defect internal/events carried, for the same

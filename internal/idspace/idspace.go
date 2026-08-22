@@ -8,11 +8,27 @@
 // helper in each package, which is how a CAS invariant ends up correct in one
 // place and quietly wrong in the other.
 //
-// It deliberately does NOT cover the Redis-backed buses. Those share a counter
-// ACROSS processes, so their id space is identified by a shared epoch key
-// rather than by anything a single process can compute — see
-// internal/events/redis_bus.go, which explains why the two mechanisms differ
-// and must not be symmetrized into one.
+// IT DELIBERATELY DOES NOT COVER THE REDIS-BACKED BUSES, and this is the
+// canonical statement of that asymmetry — the four sites that live with it
+// point here rather than restating it.
+//
+// An in-memory bus is the SOLE publisher into its space, so it can compute an
+// identity at startup and put it in the ID's VALUE, which makes a
+// cross-incarnation cursor numerically refusable for free. A Redis-backed bus
+// shares its counter ACROSS processes: no instance can compute an identity the
+// others would agree with, so the identity has to travel WITH each message
+// instead — an epoch. They are not two spellings of one idea and must not be
+// symmetrized into one.
+//
+// A numeric base for the Redis counter would close MORE than its epoch can
+// (it would refuse cross-incarnation cursors, which an epoch cannot: a cursor
+// carries no epoch). It was weighed and deferred rather than rejected. At
+// BUG-2736's phase-2 flip, IDs would jump from small to ~1.8e18 in one step,
+// so every publish from an un-flipped instance would read as a massive
+// backwards jump and drop every buffer — a resync storm spanning the whole
+// roll. It is a candidate follow-on once the flip has shipped and soaked, when
+// no un-flipped publisher remains to misread the jump. BUG-2736's trail
+// carries the reasoning.
 package idspace
 
 import (

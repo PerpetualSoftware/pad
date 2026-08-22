@@ -412,22 +412,10 @@ type MemoryBus struct {
 	// A zero base is the pre-BUG-2736 behaviour (IDs from 1) and is
 	// deliberately unreachable through any constructor.
 	//
-	// WHY THIS BUS USES A NUMERIC BASE AND RedisBus USES AN OPAQUE EPOCH.
-	// They are not two spellings of one idea and must not be symmetrized into
-	// one (BUG-2736). This bus is the SOLE publisher into its space, so it can
-	// compute an identity at startup and put it in the ID's value, which makes
-	// a cross-incarnation cursor numerically refusable for free. RedisBus's
-	// counter is shared across processes: no instance can compute an identity
-	// the others would agree with, so the identity travels WITH each message.
-	//
-	// A numeric base for the Redis counter would close more (it would refuse
-	// cross-incarnation cursors there too, which the epoch cannot), and it was
-	// weighed and deferred: at the phase-2 flip, IDs would jump from small to
-	// ~1.8e18 in one step, so every publish from an un-flipped instance would
-	// read as a massive backwards jump and drop every buffer — a resync storm
-	// spanning the whole roll. It is a candidate follow-on once the flip has
-	// shipped and soaked, when no un-flipped publisher remains to misread the
-	// jump. BUG-2736's trail carries the reasoning.
+	// A NUMERIC BASE HERE, A TRAVELLING EPOCH ON RedisBus. They are not two
+	// spellings of one idea and must not be symmetrized into one; the reason,
+	// and why a numeric base for Redis is a deferred follow-on rather than an
+	// oversight, is stated once in internal/idspace's package comment.
 	base int64
 
 	// Per-workspace replay buffers for Last-Event-ID support.

@@ -302,15 +302,11 @@ type RedisBus struct {
 	// not do.
 	//
 	// A TRAVELLING GENERATION, NOT A NUMERIC ID BASE, and the asymmetry with
-	// MemoryBus is deliberate rather than drift — see the `base` field on
-	// MemoryBus for the full reasoning. In one sentence: this counter is
-	// SHARED across processes, so no instance can compute an identity the
-	// others would agree with, and the identity has to travel with the message
-	// instead. The cost of that choice is that a CURSOR still carries no space
-	// of its own, so an old and a new ID of the same value remain
-	// indistinguishable to a resume even though this bus's buffers can no
-	// longer mix them; BUG-2736's trail names the numeric ID base that would
-	// close it and why it is a follow-on unit.
+	// MemoryBus is deliberate rather than drift — stated once in
+	// internal/idspace's package comment. Its cost, which belongs here: a
+	// CURSOR still carries no space of its own, so an old and a new ID of the
+	// same value remain indistinguishable to a resume even though this bus's
+	// buffers can no longer mix them.
 	//
 	// LEARNED, NOT FETCHED, deliberately: reading the key at construction
 	// would make an instance believe it belongs to a space whose events it has
