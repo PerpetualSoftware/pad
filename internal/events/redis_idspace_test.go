@@ -385,3 +385,63 @@ func TestABarePayloadAfterAdoptionLeavesTheEpochAlone(t *testing.T) {
 		t.Fatalf("the adopted epoch must survive a bare message, got %q", b.epoch)
 	}
 }
+
+func TestAPhaseOneRestartClearsAStaleEpoch(t *testing.T) {
+	// codex round 2. The sequence of events that made this reachable:
+	// phase 2 mints an epoch and the counter climbs; the deployment rolls
+	// back to phase 1; the seq key is lost; phase-1 publishers climb from 1
+	// again; phase 2 is re-enabled and finds the OLD epoch still there, so
+	// nothing reports a change and two spaces can merge in one buffer.
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+	seqKey := redisns.Default.Name(redisSeqSuffix)
+
+	// Phase 2 first: it is what writes an epoch at all.
+	flipped := NewRedisBusWithKeys(client, redisns.Default, true)
+	t.Cleanup(flipped.Close)
+	flipped.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	stale, err := mr.Get(epochKey)
+	if err != nil || stale == "" {
+		t.Fatalf("fixture: phase 2 must have written an epoch, got %q (%v)", stale, err)
+	}
+
+	// Roll back to phase 1, then lose the counter.
+	phase1 := NewRedisBusWithKeys(client, redisns.Default, false)
+	t.Cleanup(phase1.Close)
+	mr.Del(seqKey)
+
+	phase1.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	// PREMISE: the counter really did restart, or the branch under test was
+	// never entered and the assertion below would be about nothing.
+	if got, err := mr.Get(seqKey); err != nil || got != "1" {
+		t.Fatalf("fixture: the counter should have restarted at 1, reads %q (%v)", got, err)
+	}
+	if mr.Exists(epochKey) {
+		t.Fatal("a restarted counter must clear the stale epoch, or a later phase-2 publish reuses it for a space that no longer exists")
+	}
+
+	// Control: an ordinary phase-1 publish, with the counter simply climbing,
+	// must NOT touch the epoch — otherwise every publish rotates it and the
+	// mechanism is worthless.
+	flipped.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	fresh, err := mr.Get(epochKey)
+	if err != nil || fresh == "" {
+		t.Fatalf("fixture: the re-flipped publish must mint a new epoch, got %q (%v)", fresh, err)
+	}
+	if fresh == stale {
+		t.Fatal("the new epoch must differ from the one the dead space used")
+	}
+	phase1.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	after, err := mr.Get(epochKey)
+	if err != nil {
+		t.Fatalf("read epoch: %v", err)
+	}
+	if after != fresh {
+		t.Fatalf("a phase-1 publish on a climbing counter must leave the epoch alone; %q became %q", fresh, after)
+	}
+}

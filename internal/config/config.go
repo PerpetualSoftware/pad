@@ -132,8 +132,13 @@ type Config struct {
 	// 2 also moves ID assignment into a single atomic Redis script, so publish
 	// order equals ID order globally.
 	//
-	// Rolling BACK is safe in the same way and for the same reason: set it
-	// false and roll: peers accept the bare form throughout. See
+	// Rolling BACK TO PHASE 1 is safe for the same reason: set the EFFECTIVE
+	// value false and roll — peers accept the bare form throughout. Two
+	// wrinkles, both easy to get wrong: unsetting the environment variable is
+	// not the same as setting it false, because this field can also come from
+	// config.toml and the file's value stands when the variable is absent; and
+	// downgrading PAST phase 1 is a second step in the reverse order, because
+	// a pre-phase-1 binary still cannot parse the prefix. See
 	// docs/deployment.md for the full procedure in both directions.
 	EventsPublishEpoch bool `toml:"events_publish_epoch"`
 

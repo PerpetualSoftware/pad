@@ -386,6 +386,37 @@ func (b *RedisBus) Publish(event Event) {
 	// the JSON therefore cannot be marshalled until the ID is known — which is
 	// the whole reason the atomic script and the prefix arrive together.
 	id, err := b.client.Incr(b.ctx, b.keys.Name(redisSeqSuffix)).Result()
+	if err == nil && id == 1 {
+		// THE COUNTER RESTARTED WHILE WE WERE PUBLISHING THE BARE FORM, so
+		// any epoch left over from a previous phase-2 period now names a
+		// space that no longer exists — and phase 2's rotation cannot fix it,
+		// because that rotation is keyed on the script's own INCR returning 1
+		// and by then the counter has already climbed past 1 under this path.
+		//
+		// The shape it closes (codex round 2): phase 2 mints epoch E and the
+		// sequence reaches 500; the deployment rolls back to phase 1; the seq
+		// key is then evicted or deleted; phase-1 publishers climb from 1
+		// again; phase 2 is re-enabled and its SET NX finds E still there. A
+		// receiver that had adopted E sees no change, and if its high-water
+		// mark is below the new sequence — a replica that just started, or one
+		// whose buffers were empty — the numeric check does not see the reset
+		// either. Two ID spaces merge in one buffer silently, which is the one
+		// outcome this whole unit exists to prevent.
+		//
+		// Deleting rather than rotating: this path has no epoch to propose
+		// (it publishes no epoch at all), and an absent key is exactly what
+		// phase 2's SET NX expects to find when it mints a new one.
+		//
+		// The cost, stated so it is not rediscovered as a bug: during the
+		// phase-2 roll a phase-1 publisher could delete an epoch a flipped
+		// publisher had just minted, costing ONE extra buffer drop when the
+		// next epoch is minted. That is a loud, bounded resync, not a silent
+		// merge — the direction this family always chooses.
+		if delErr := b.client.Del(b.ctx, b.keys.Name(redisEpochSuffix)).Err(); delErr != nil {
+			slog.Warn("events: the sequence restarted but the stale ID-space epoch could not be cleared; a later phase-2 publish may reuse it",
+				"error", delErr)
+		}
+	}
 	if err != nil {
 		// NO LOCAL-COUNTER FALLBACK, and its removal is a fix rather than a
 		// regression (BUG-2731). The previous version answered a failed INCR

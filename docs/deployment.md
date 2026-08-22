@@ -355,10 +355,28 @@ Both rolls are zero-loss in the other direction, because accept-both is on
 from phase 1: during the phase-2 roll, flipped and un-flipped instances are
 publishing different forms at the same time and every instance reads both.
 
-**Rolling back** is symmetric: unset the variable and roll. Peers accept the
-bare form throughout, so there is no window where a rollback loses events.
-There is no Redis or database migration in either direction; the epoch key is
-created by the first flipped publisher and is transient state.
+**Rolling back to phase 1** is safe: make the effective value **false** and
+roll. Peers accept the bare form throughout, so there is no window where this
+direction loses events.
+
+Two things about rolling back that are easy to get wrong:
+
+- **Setting the value to false is not the same as unsetting the environment
+  variable.** `events_publish_epoch` can also be set in `~/.pad/config.toml`,
+  and the config file's value stands when the environment variable is absent.
+  Clear both, or set the environment variable explicitly to `false`.
+- **Downgrading past phase 1 is a SECOND step, and the order is the reverse of
+  the upgrade.** A pre-phase-1 binary cannot parse the prefixed form. So:
+  first roll every instance to phase 1 (new binary, flip off) and let the roll
+  finish, *then* downgrade the binary. Introducing an old binary while any
+  flipped instance is still publishing drops events on the old one — the same
+  asymmetry that makes the upgrade two phases, in reverse.
+
+There is no Redis or database migration in either direction. The epoch key is
+created by the first flipped publisher; a phase-1 instance deletes it if it
+ever sees the sequence counter restart, so a counter that is reset while the
+deployment sits on phase 1 does not leave a stale epoch for a later phase 2 to
+adopt.
 
 **What you should see when phase 2 lands.** The first flipped message reaches
 each replica and, if that replica had already buffered un-prefixed events, it
@@ -371,14 +389,24 @@ sequence key repeatedly; check `maxmemory-policy` against the events keyspace
 
 `pad_event_sequence_resets_total{reason="counter_backward"}` is the other
 counter to watch. It fires when an ID arrives at or below what a buffer had
-already seen, which is expected in small numbers during **any** mixed-version
-roll — an older binary assigns and publishes an ID in two separate calls, so
-two instances can interleave and deliver them out of order. Phase 2 moves ID
-assignment into a single atomic Redis script, which removes the interleave for
-flipped publishers. It does **not** remove it for the roll itself: as long as
-a deployment can run two publisher versions at once, out-of-order delivery is
-possible, so this counter is expected to be non-zero during upgrades and near
-zero between them.
+already seen.
+
+**On phase 1 it can be non-zero at any time, not only during a roll.** Phase 1
+keeps the historical two-call publish — `INCR`, then `PUBLISH` — so two
+instances can interleave (INCR 5, INCR 6, PUBLISH 6, PUBLISH 5) and a receiver
+sees 5 arrive after 6. That window is older than this migration; phase 2 is
+what closes it, by moving ID assignment into a single atomic script so publish
+order equals ID order globally.
+
+So the expectation depends on where you are:
+
+- **Phase 1, steady state** — a low background rate on a busy multi-instance
+  deployment is normal and always was.
+- **Any roll with two publisher versions running** — expect it to rise, in both
+  directions, for the length of the roll.
+- **Phase 2, every publisher flipped** — expect it at or near zero. A
+  persistent rate here is an anomaly worth investigating rather than tuning
+  away.
 
 **What this migration does not fix.** A client's `Last-Event-ID` is still a
 bare integer with no epoch in it, and that is deliberate — every deployed
