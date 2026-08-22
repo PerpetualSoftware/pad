@@ -155,6 +155,14 @@ return id
 // SET NX on a caller-generated token turns the retry into a no-op: the retry
 // carries the same KEYS[4], the SET fails, and the script returns 0 without
 // publishing.
+//
+// WHAT IT DOES NOT COVER, so nobody reads it as a guarantee (codex round 6): a
+// retry that lands on a DIFFERENT Redis. If the original primary executed the
+// script and then failed over before the token replicated, the promoted
+// replica has no such key and the retry publishes a second copy under a second
+// ID. Nothing downstream can tell the two apart — both are valid and ascending
+// — and the client is not told. The token is as durable as Redis replication
+// and no more; this narrows the window rather than closing it.
 var publishScript = redis.NewScript(`
 if redis.call('SET', KEYS[4], '1', 'NX', 'EX', ARGV[2]) == false then
   return 0
@@ -282,6 +290,12 @@ type RedisBus struct {
 	// differently on purpose. Guarded by mu.
 	hadReset           bool
 	discardedHighWater int64
+
+	// epochAdoptedAt is when this instance last moved to a new generation.
+	// It bounds how long a LOWER generation is read as an in-flight straggler
+	// rather than as the world moving backwards — see the regression branch in
+	// fanOut. Zero before any generation is adopted. Guarded by mu.
+	epochAdoptedAt time.Time
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -918,6 +932,14 @@ func (b *RedisBus) fanOutLocally(event Event) {
 	b.fanOut(anySubscription, 0, event)
 }
 
+// stragglerWindow bounds how long after adopting a generation a LOWER one is
+// read as a message that was in flight at the rotation rather than as the
+// generation counter having genuinely regressed. Generous by two orders of
+// magnitude against pub/sub delivery latency, because the cost of being too
+// long is a bounded delay before a loud recovery, while being too short costs
+// an extra buffer drop — both loud, neither silent.
+const stragglerWindow = 30 * time.Second
+
 // anySubscription opts out of the generation check for callers that are not a
 // receive loop — tests driving the fan-out directly. A real message always
 // carries the generation of the subscription it arrived on.
@@ -976,7 +998,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 	//
 	// Every buffer is dropped, not just this workspace's: the counter is
 	// global, so a reset invalidates all of them at once.
-	if epoch != 0 && epoch < b.epoch {
+	if epoch != 0 && epoch < b.epoch && time.Since(b.epochAdoptedAt) < stragglerWindow {
 		// A STRAGGLER FROM A SPACE WE HAVE LEFT (codex round 3). Each
 		// workspace has its own subscription and its own receive goroutine,
 		// and Redis orders messages within a channel but not across them — so
@@ -998,7 +1020,33 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 			"message_epoch", epoch, "current_epoch", b.epoch, "id", event.ID, "workspace", event.WorkspaceID)
 		return
 	}
-	if epoch > b.epoch {
+	if epoch != 0 && epoch < b.epoch {
+		// THE GENERATION WENT BACKWARDS AND STAYED THERE, so this is not a
+		// straggler — it is the world moving backwards. The realistic cause is
+		// a Redis failover to a replica whose copy of the generation counter
+		// predates the rotation, after which every publisher mints from the
+		// lower number.
+		//
+		// WITHOUT THIS BRANCH the discard above would run forever: every
+		// post-failover message dropped, no events delivered, no buffers
+		// filled, and the only trace a log line per message. Silent and
+		// unbounded is the one outcome this family refuses — so a persistent
+		// regression is ACCEPTED as a new space, which drops every buffer and
+		// makes the next resume answer sync_required. Loud and recoverable.
+		//
+		// THE WINDOW IS A PHYSICAL QUANTITY, not a guess about intent: a
+		// straggler is a message that was in flight at the instant of the
+		// rotation, so it is bounded by pub/sub delivery latency. Anything
+		// arriving a long time after the adoption cannot be one. Both ways of
+		// being wrong are loud — too short costs an extra buffer drop, too
+		// long costs a few seconds of discards before recovery.
+		slog.Warn("events: the ID space generation went backwards and stayed there; treating it as a new space and dropping replay buffers",
+			"previous_epoch", b.epoch, "new_epoch", epoch, "id", event.ID, "workspace", event.WorkspaceID)
+		b.dropAllBuffers(false)
+		b.epoch = epoch
+		b.epochAdoptedAt = time.Now()
+		reset = ResetReasonEpochRegressed
+	} else if epoch > b.epoch {
 		// ADOPTING AN EPOCH ONTO A NON-EMPTY BUFFER IS ALSO A RESET. Learning
 		// an epoch for the first time normally means the first message of this
 		// bus's life, and dropping empty buffers would be pointless. But
@@ -1035,6 +1083,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 			reset = ResetReasonEpochChange
 		}
 		b.epoch = epoch
+		b.epochAdoptedAt = time.Now()
 	}
 
 	// Store in replay buffer for reconnect replay.

@@ -142,6 +142,11 @@ type Metrics struct {
 	//   mark with no generation change. Expected on phase 1 and during any
 	//   mixed-version roll; at or near zero once every publisher is flipped.
 	//
+	//   epoch_regressed — the shared generation counter went BACKWARDS and
+	//   stayed there, which realistically means a Redis failover to a replica
+	//   that lost writes. Expect zero; one per failover is the mechanism
+	//   recovering, and a repeating count means the counter is not durable.
+	//
 	// LABELLED FROM THE START rather than shipped as a bare counter, which
 	// BUG-2736 immediately vindicated by adding two more values. An operator
 	// acts on the difference: a Redis connection FLAP is expected during a
@@ -385,7 +390,7 @@ func New() *Metrics {
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
-		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change).",
+		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there, i.e. Redis lost writes).",
 	}, []string{"reason"})
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{

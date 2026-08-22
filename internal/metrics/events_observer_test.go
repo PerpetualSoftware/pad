@@ -24,6 +24,16 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SequenceReset(events.ResetReasonSubscriptionResumed)
 	obs.SequenceReset(events.ResetReasonSubscriptionResumed)
 	obs.SequenceReset(events.ResetReasonSubscriptionResumed)
+	// Every reason this bus can emit, so an adapter that collapsed them onto
+	// one series would fail here rather than in production. The counts differ
+	// on purpose: identical counts would pass on an adapter that ignored the
+	// label entirely and let one series absorb them all.
+	obs.SequenceReset(events.ResetReasonEpochChange)
+	obs.SequenceReset(events.ResetReasonEpochChange)
+	obs.SequenceReset(events.ResetReasonEpochChange)
+	obs.SequenceReset(events.ResetReasonCounterBackward)
+	obs.SequenceReset(events.ResetReasonCounterBackward)
+	obs.SequenceReset(events.ResetReasonEpochRegressed)
 
 	obs.ReceiveLoopExited()
 	obs.ReceiveLoopExited()
@@ -34,9 +44,15 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 2)
 	// The reason must land on a LABELLED series, not on the bare counter: an
 	// adapter that dropped the label would satisfy a total-only assertion and
-	// silently merge reasons BUG-2736 will add.
+	// silently merge the reasons BUG-2736 added.
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonSubscriptionResumed}, 4)
+	assertCounter(t, m, "pad_event_sequence_resets_total",
+		map[string]string{"reason": events.ResetReasonEpochChange}, 3)
+	assertCounter(t, m, "pad_event_sequence_resets_total",
+		map[string]string{"reason": events.ResetReasonCounterBackward}, 2)
+	assertCounter(t, m, "pad_event_sequence_resets_total",
+		map[string]string{"reason": events.ResetReasonEpochRegressed}, 1)
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)
 }
 

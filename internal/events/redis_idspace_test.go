@@ -654,3 +654,51 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 		t.Fatalf("the last id should be %d after %d publishes, got %d", n, n, prev)
 	}
 }
+
+func TestAPersistentlyRegressedGenerationIsAcceptedAsANewSpace(t *testing.T) {
+	// codex round 6, scenario (b). A Redis failover to a replica whose copy of
+	// the generation counter predates the last rotation makes every publisher
+	// mint from a LOWER number — and the straggler rule would then discard
+	// every message forever: nothing delivered, nothing buffered, and the only
+	// trace a log line per message. Silent and unbounded is the one outcome
+	// this family refuses.
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	_, gen := liveGen(t, b, "ws-1")
+
+	b.fanOutFromRedis(gen, 5, Event{ID: 900, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if b.epoch != 5 {
+		t.Fatalf("fixture: generation 5 should have been adopted, got %d", b.epoch)
+	}
+
+	// PREMISE: inside the straggler window a lower generation is DISCARDED.
+	// Asserting it here is what makes the second half meaningful — otherwise
+	// this test would pass on a bus with no straggler rule at all.
+	b.fanOutFromRedis(gen, 4, Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if b.epoch != 5 {
+		t.Fatalf("inside the window a lower generation must be discarded; the epoch became %d", b.epoch)
+	}
+
+	// Now the same generation arrives long after the adoption, which no
+	// in-flight message can do.
+	b.mu.Lock()
+	b.epochAdoptedAt = time.Now().Add(-2 * stragglerWindow)
+	b.mu.Unlock()
+
+	b.fanOutFromRedis(gen, 4, Event{ID: 11, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	if b.epoch != 4 {
+		t.Fatalf("a persistent regression must be accepted as a new space; the epoch is %d", b.epoch)
+	}
+	_, resets := obs.snapshot()
+	if len(resets) == 0 || resets[len(resets)-1] != ResetReasonEpochRegressed {
+		t.Fatalf("the regression must be reported as %s, got %v", ResetReasonEpochRegressed, resets)
+	}
+	// And delivery RESUMES: the regressed space's next message is buffered, so
+	// clients are served again rather than starved.
+	b.fanOutFromRedis(gen, 4, Event{ID: 12, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if got := b.EventsSince("ws-1", 12); got == nil {
+		t.Fatal("after accepting the regression the bus must serve the new space again")
+	}
+}

@@ -101,6 +101,16 @@ const (
 	// zero — a persistent rate there is an anomaly worth investigating rather
 	// than tuning away. See the comment at the branch that reports it.
 	ResetReasonCounterBackward = "counter_backward"
+
+	// ResetReasonEpochRegressed means the shared generation counter went
+	// BACKWARDS and stayed there — realistically a Redis failover to a replica
+	// whose copy of that counter predates the last rotation.
+	//
+	// It is rare and it is serious: unlike a rotation, it means Redis lost
+	// writes. Expect zero. One occurrence per failover is the mechanism
+	// recovering; a repeating count means the counter is not durable, and
+	// every ID space boundary this bus reports is suspect until it is.
+	ResetReasonEpochRegressed = "epoch_regressed"
 )
 
 // observable is the shared, nil-safe Observer holder both bus implementations
