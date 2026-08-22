@@ -54,8 +54,8 @@ const prefix = "pad:"
 // reservedNames are Pad's own first path segments. A namespace equal to
 // one of them nests this installation inside the DEFAULT installation's
 // keyspace — "events" being the sharp case, since pad:events:* is the
-// activity channel space — which is the collision the namespace exists to
-// prevent, reached through the namespace itself.
+// activity channel space. Nesting rather than an exact collision; see
+// Parse for why it is refused regardless.
 //
 // Kept in sync by hand with the suffixes the three packages pass to Name.
 // A drift here is not silent: it costs a namespace that should have been
@@ -110,11 +110,19 @@ var Default = Keys{}
 // rule is right; the reasoning was not, and a false example is worse than
 // none because the next reader trusts it.
 //
-// A REAL collision exists and needs no colon at all: reservedNames below
-// rejects namespaces equal to Pad's own first path segments. Namespace
-// "events" would put every key of this installation inside
-// pad:events:*, which is the default installation's activity CHANNEL
-// space.
+// A second hazard needs no colon at all, and reservedNames below rejects
+// it: a namespace equal to one of Pad's own first path segments NESTS
+// this installation inside the default one's keyspace. Namespace "events"
+// puts every key of this installation under pad:events:*, which is the
+// default installation's activity channel space.
+//
+// Precisely — because an earlier version of this comment called it a
+// collision — that is prefix NESTING, not an exact key collision: the
+// default installation's channels are pad:events:<workspace-uuid>, so a
+// namespaced key would have to match one of those UUIDs to collide
+// outright. It is refused anyway, because a keyspace where one
+// installation's keys live inside another's prefix cannot be reasoned
+// about with KEYS, cleaned up, or told apart in a dump.
 func Parse(ns string) (Keys, error) {
 	if ns == "" {
 		return Default, nil

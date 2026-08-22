@@ -37,9 +37,13 @@ const (
 // callback would be unreadable; one condition does not earn one.
 //
 // The registry is deliberately FAIL-SOFT everywhere — a failed write
-// leaves a live session unlisted rather than tearing down the SSE
+// risks leaving a live session unlisted rather than tearing down the SSE
 // connection it belongs to — which is exactly why the failures need a
 // counter: nothing else surfaces them to anyone.
+//
+// RISKS, not guarantees: a failure means the operation reported an
+// error, and Redis can fail a pipeline or a script after it applied. The
+// per-op consequences in internal/metrics are written the same way.
 type presenceObservable struct {
 	mu       sync.RWMutex
 	onFailed func(op string)

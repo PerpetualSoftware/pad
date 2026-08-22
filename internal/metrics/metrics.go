@@ -315,7 +315,7 @@ func New() *Metrics {
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
-		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew leave a live session unlisted and untargetable, deregister leaves a DEAD one listed, list returns 503, prune is benign.",
+		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew RISK a live session being unlisted and untargetable, deregister risks a DEAD one staying listed, list returns 503, prune is benign. A failure means an error was reported; Redis can fail after applying.",
 	}, []string{"op"})
 
 	reg.MustRegister(

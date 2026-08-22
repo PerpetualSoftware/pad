@@ -747,9 +747,9 @@ func serveCmd() *cobra.Command {
 			var redisPresence *server.RedisSessionPresence
 			if watchRedis != nil {
 				redisPresence = server.NewRedisSessionPresenceWithKeys(watchRedis, redisKeys)
-				// Presence is fail-soft by design — a failed write leaves
-				// a live session unlisted rather than dropping its
-				// connection — so its failures have no user-visible
+				// Presence is fail-soft by design — a failed write risks
+				// leaving a live session unlisted rather than dropping
+				// its connection — so its failures have no user-visible
 				// signal beyond a push that quietly reaches fewer
 				// sessions. The counter is the only alertable trace
 				// (BUG-2727).

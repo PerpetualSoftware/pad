@@ -137,10 +137,13 @@ type pendingReports struct {
 	drops      []string
 	resets     []string
 	gapMissing []int64
+	resumeGaps int
 }
 
 func (p *pendingReports) drop(reason string)  { p.drops = append(p.drops, reason) }
 func (p *pendingReports) reset(reason string) { p.resets = append(p.resets, reason) }
+func (p *pendingReports) resumeGap()          { p.resumeGaps++ }
+
 func (p *pendingReports) gap(missing int64) {
 	p.gapMissing = append(p.gapMissing, missing)
 }
@@ -155,6 +158,9 @@ func (o *observable) flush(p *pendingReports) {
 	}
 	for _, m := range p.gapMissing {
 		o.reportGap(m)
+	}
+	for i := 0; i < p.resumeGaps; i++ {
+		o.reportResumeGap()
 	}
 }
 

@@ -333,7 +333,7 @@ func (p *RedisSessionPresence) warnRenewFailure(err error, userID, sessionID str
 	p.renewLog.last = now
 	p.mu.Unlock()
 
-	slog.Warn("session presence: failed to renew session entry; affected sessions are unlisted and untargetable until it recovers",
+	slog.Warn("session presence: failed to renew session entry; affected sessions may be unlisted and untargetable until it recovers",
 		"error", err, "user_id", userID, "session_id", sessionID,
 		"failures_since_last_log", count, "log_interval", renewLogInterval)
 }
@@ -433,8 +433,11 @@ func NewRedisSessionPresence(client *redis.Client) *RedisSessionPresence {
 // passing the value shared with both buses.
 //
 // Renaming presence keys is CHEAP, unlike the buses': entries are
-// transient and expire on a 90s TTL, so a namespace cutover strands
-// nothing — worst case, one renewal interval of stale-looking presence.
+// transient and expire on their TTL, so a namespace cutover strands
+// nothing permanently. The orphaned entries under the OLD names live out
+// that TTL — 90s, three renewal intervals, not the one an earlier version
+// of this comment claimed — during which an old-keyspace replica still
+// lists them.
 func NewRedisSessionPresenceWithKeys(client *redis.Client, keys redisns.Keys) *RedisSessionPresence {
 	return &RedisSessionPresence{
 		client:        client,

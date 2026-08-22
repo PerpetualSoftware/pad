@@ -53,6 +53,14 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	// The CHANNEL is the half a key listing cannot see, and it is the one
 	// pub/sub cross-feed actually travels on. A publish to the default
 	// channel must reach nobody.
+	//
+	// Checked directly rather than polled, unlike the equivalent in
+	// internal/events, because THIS bus's constructor waits for its
+	// SUBSCRIBE to be confirmed before returning (see
+	// NewRedisBusWithKeys) while the activity bus subscribes
+	// asynchronously. That asymmetry is easy to assume away — the
+	// activity-bus version of this test flaked on it — so it is named
+	// here rather than left to be rediscovered.
 	if n := mr.Publish("pad:watchevents", "probe"); n != 0 {
 		t.Errorf("the namespaced bus is subscribed to the DEFAULT channel pad:watchevents (%d subscribers)", n)
 	}

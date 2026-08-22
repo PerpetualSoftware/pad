@@ -187,7 +187,7 @@ not supported.
 #### Redis health and metrics
 
 `/api/v1/health/ready` reports Redis in its payload but **does not gate readiness on
-it** — the REST API, the web UI and every write path work with Redis down, so
+it** — the REST API, the web UI and every item-writing path work with Redis down, so
 failing readiness over a Redis blip would pull healthy replicas out of the load
 balancer and turn a degraded feature into an outage. When Redis is unreachable
 the payload carries `redis.reachable: false`, the probe error, and a `degrades`
@@ -203,12 +203,12 @@ Alert on these instead:
 | `pad_redis_up` | `0` when the last probe (every 15s) failed. Exported only when Redis is configured — absence means "no Redis", not "down" |
 | `pad_stream_connections_active` | Held streaming connections on this instance, across both SSE endpoints — the population the limits bound |
 | `pad_watchevents_sequence_gaps_total` | This instance missed notifications — a delivery fault |
-| `pad_watchevents_resume_gaps_total` | Resumes this instance could not serve; each sends a client `sync_required`. The user-visible one |
+| `pad_watchevents_resume_gaps_total` | Resumes this instance could not serve — from a hole, a cold start, an epoch change, or a shared-counter disagreement. Each sends a client `sync_required`, so this is the user-visible one |
 | `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber |
 | `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
-| `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the consequences differ: `register`/`renew` under-report (a live session is unlisted and untargetable), `deregister` over-reports (a dead session stays listed and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign |
+| `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
 
 **Avoid an evicting `maxmemory-policy` for Pad's Redis.**
 `docker-compose.prod.yml` sets `noeviction` for this reason; the plain
@@ -456,7 +456,7 @@ Pad exposes Prometheus metrics at `/metrics` (unauthenticated). Key metrics:
 | `pad_http_response_size_bytes` | histogram | Response body sizes |
 | `pad_sse_connections_active` | gauge | Connections on the workspace activity stream (`/api/v1/events`) only |
 | `pad_stream_connections_active` | gauge | Held connections across **both** SSE endpoints — the population the limits bound |
-| `pad_eventbus_publish_total` | counter | Events published |
+| `pad_eventbus_publish_total` | counter | Events HANDED to the bus — attempts, not confirmed publishes. A failed Redis publish is logged and still counted (BUG-2732) |
 | `pad_eventbus_subscribers` | gauge | Active event subscribers |
 | `pad_db_open_connections` | gauge | Database connection pool stats |
 
@@ -486,8 +486,11 @@ curl http://localhost:7777/api/v1/health
 ```
 
 With Redis configured but unreachable, readiness stays **200** and the `redis`
-block carries the failure — Pad serves everything except cross-instance
-delivery without it, so readiness deliberately does not fail:
+block carries the failure. Readiness deliberately does not fail: Pad still
+serves the API, the web UI and every item write. What it cannot do is
+cross-instance delivery, and the paths whose job that is say so —
+`POST .../push` answers `503` for a session-targeted push it cannot resolve
+and `502 push_unconfirmed` when the publish fails:
 
 ```json
 {

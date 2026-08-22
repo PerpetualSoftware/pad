@@ -49,12 +49,8 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 		t.Errorf("the namespaced bus also wrote the DEFAULT counter pad:event_seq")
 	}
 
-	if n := mr.Publish("pad:events:ws-1", "probe"); n != 0 {
-		t.Errorf("the namespaced bus is subscribed to the DEFAULT channel pad:events:ws-1 (%d subscribers)", n)
-	}
-	if n := mr.Publish("pad:inst-b:events:ws-1", "probe"); n == 0 {
-		t.Error("the namespaced bus is not subscribed to pad:inst-b:events:ws-1")
-	}
+	waitForSubscribers(t, mr, "pad:inst-b:events:ws-1", true)
+	waitForSubscribers(t, mr, "pad:events:ws-1", false)
 
 	// WHERE THE BUS PUBLISHES, which is a separate claim from where it
 	// subscribes and the one cross-feed actually travels on. Caught by
@@ -122,7 +118,36 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 	if !mr.Exists("pad:event_seq") {
 		t.Errorf("default bus did not write pad:event_seq; keys present: %v", mr.Keys())
 	}
-	if n := mr.Publish("pad:events:ws-1", "probe"); n == 0 {
-		t.Error("default bus is not subscribed to pad:events:ws-1")
+	waitForSubscribers(t, mr, "pad:events:ws-1", true)
+}
+
+// waitForSubscribers polls until the channel has (or provably lacks)
+// subscribers.
+//
+// POLLING, not a single check, because go-redis establishes a
+// subscription ASYNCHRONOUSLY: Subscribe returns before the SUBSCRIBE
+// reaches the server, so an immediate assertion races the connection.
+// That race made TestRedisBusDefaultKeepsHistoricalKeys fail once in a
+// full-suite run — a flake in the test, not the code, and the kind that
+// would have been blamed on the next unrelated change.
+//
+// The "probe" payload is not valid JSON, so a bus that IS subscribed logs
+// an unmarshal error when it arrives. That noise is the confirmation the
+// assertion wants; it is deliberately not an event any consumer sees.
+func waitForSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		n := mr.Publish(channel, "probe")
+		if (n > 0) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			if want {
+				t.Fatalf("nothing subscribed to %s within the deadline", channel)
+			}
+			t.Fatalf("%s has %d subscribers, want none", channel, n)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

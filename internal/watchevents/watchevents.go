@@ -329,10 +329,13 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 // earlier "send after releasing the lock" version could panic).
 type MemoryBus struct {
 	// observable carries the optional operational-event seam (BUG-2727).
-	// A single-process deployment never wires one, so every report below
-	// is a nil check; it is here so the drop condition is reported by the
-	// SAME name on both implementations rather than existing only on the
-	// one that happens to have Redis behind it.
+	//
+	// cmd/pad/cmd_server.go wires one HERE TOO, not just on the Redis
+	// bus, and that is deliberate: this bus has the same slow-subscriber
+	// drop, so pad_watchevents_notifications_dropped_total means what it
+	// says on a single-process deployment. The sequence-related reports
+	// stay at zero here by construction — MemoryBus assigns its own
+	// contiguous ids and has no subscription to lose.
 	observable
 
 	mu          sync.Mutex

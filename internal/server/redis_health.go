@@ -43,11 +43,17 @@ const (
 // is the same for everyone.
 //
 // WHAT IT DOES NOT DO. It does not gate readiness. /api/v1/health/ready stays
-// database-only, deliberately: the REST API, the web UI and every write
-// path work with Redis down, so failing readiness on a Redis blip would
-// pull healthy replicas out of the load balancer and convert a degraded
-// feature into an outage. This type exists to make the degradation
-// VISIBLE, not to act on it.
+// database-only, deliberately: the REST API, the web UI and every
+// ITEM-writing path work with Redis down, so failing readiness on a blip
+// would pull healthy replicas out of the load balancer and convert a
+// degraded feature into an outage.
+//
+// "Every write path" would be too strong, and this comment said it:
+// POST push answers 503 for a session-targeted push it cannot resolve,
+// and 502 push_unconfirmed when the publish itself fails. Those are the
+// paths whose whole job IS cross-instance delivery — the thing that is
+// actually down. This type exists to make that VISIBLE, not to act on
+// it.
 //
 // TIMEOUT NOTE, measured on BUG-2698's day-50 run rather than assumed:
 // go-redis does NOT apply a command context to connection ESTABLISHMENT.

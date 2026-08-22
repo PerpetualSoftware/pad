@@ -471,6 +471,11 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 	// subscribe-and-replay guarantee.
 	forceGap := b.resumeOutrunsLocalView(sinceID)
 
+	// Registered FIRST so it runs LAST, after the Unlock — reports fire
+	// with no bus lock held. See Observer.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan Notification, 64)
@@ -483,9 +488,26 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		b.afterSubscribeRegister()
 	}
 	if forceGap {
+		// Already counted by resumeOutrunsLocalView, which is where that
+		// decision is made.
 		return ch, nil
 	}
-	return ch, b.replaySince(sinceID)
+
+	missed := b.replaySince(sinceID)
+	if missed == nil {
+		// The LOCAL half of an unservable resume, and it was uncounted
+		// until codex round 17: replaySince answers nil when the cursor
+		// falls below what this instance can vouch for — a cold start, or
+		// a hole it recorded — and the handler turns that into
+		// sync_required exactly as it does for the shared-counter case.
+		// One is a client resyncing, so one is the metric's population.
+		//
+		// Counting it HERE rather than inside replaySince keeps that
+		// function a pure read of local state, and keeps the report on
+		// the deferred path so it fires with the lock released.
+		pending.resumeGap()
+	}
+	return ch, missed
 }
 
 // settleWindow is how long resumeOutrunsLocalView waits before deciding that

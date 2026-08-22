@@ -438,6 +438,48 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		}
 	})
 
+	t.Run("a resume below what this instance can vouch for", func(t *testing.T) {
+		t.Parallel()
+		// The LOCAL half, uncounted until codex round 17: the shared
+		// counter agrees, so resumeOutrunsLocalView says nothing, and the
+		// gap comes from this instance's own coverage window instead.
+		b, mr := newMiniredisBus(t, 64)
+		obs := newRecordingObserver()
+		b.SetObserver(obs)
+
+		ch := b.Subscribe()
+		if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+			t.Fatalf("premise publish: %v", err)
+		}
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatal("premise failed: the first notification never arrived")
+		}
+		b.Unsubscribe(ch)
+
+		// A HOLE moves knownFrom up past the cursor...
+		b.fanOutLocally(Notification{ID: 9, Kind: KindComment, ItemRef: "TASK-9"})
+		// ...and the shared counter is set to AGREE with what this
+		// instance has seen, so resumeOutrunsLocalView finds no
+		// disagreement and does NOT report. Without this the gap comes
+		// from that path instead and the test proves nothing about this
+		// one — which is exactly what the first version of it did, caught
+		// by mutation testing.
+		if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "9"); err != nil {
+			t.Fatalf("set counter: %v", err)
+		}
+		before := obs.snapshot().resumeGaps
+
+		_, missed := b.SubscribeAndReplaySince(1)
+		if missed != nil {
+			t.Fatalf("premise failed: the resume was served rather than reported as a gap; got %+v", missed)
+		}
+		if got := obs.snapshot().resumeGaps; got != before+1 {
+			t.Fatalf("resumeGaps = %d, want %d — the local half of an unservable resume was not counted", got, before+1)
+		}
+	})
+
 	t.Run("a resume this instance can serve", func(t *testing.T) {
 		t.Parallel()
 		b, _ := newMiniredisBus(t, 64)

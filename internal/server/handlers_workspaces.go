@@ -131,7 +131,7 @@ func (s *Server) handleHealthReady(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redis reachability, INFORMATIONAL — it never changes the 200/503
-	// (BUG-2727). Readiness stays database-only because every write path,
+	// (BUG-2727). Readiness stays database-only because every item-write path,
 	// the REST API and the web UI work with Redis down; gating on it would
 	// pull healthy replicas out of the load balancer over a degraded
 	// feature. What Redis being down actually costs is named on the
