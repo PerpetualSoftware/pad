@@ -458,9 +458,13 @@ reset between that publisher assigning its ID and publishing it. An ID from the
 dead space can then land in a buffer describing the new one. There is no way to
 tell the two apart from the message alone, and the alternatives are worse: a
 replica that refused un-flipped messages would resync its clients on every one
-of them for the length of the roll. The exposure is one event wide and ends
-loudly — the next event from the new space is lower, which trips
-`counter_backward`, drops the buffers and is reported.
+of them for the length of the roll. It usually ends loudly and quickly: the next
+event that workspace receives is lower than the straggler's ID, which trips
+`counter_backward`, drops the buffers and is reported. It is not guaranteed to
+— the sequence counter is shared across workspaces while that check is per
+workspace, so if other workspaces carry the counter past the straggler's value
+first, nothing fires and the dead-space ID stays in that workspace's buffer.
+Closing that needs the same thing the residual below needs.
 
 **What this migration does not fix.** A client's `Last-Event-ID` is still a
 bare integer with no epoch in it, and that is deliberate — every deployed

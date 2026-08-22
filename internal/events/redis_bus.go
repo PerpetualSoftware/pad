@@ -1076,11 +1076,25 @@ func requirePositiveID(id int64) error {
 // id from the dead space and an id from an un-flipped publisher are both
 // "above what we hold" and are otherwise identical.
 //
-// What bounds it: the very next event from the new space is LOWER than the
-// straggler's id, so the counter-backwards branch fires, drops the buffers and
-// reports a reset. The exposure is one event wide and ends loudly — a resume
-// landing inside that window can be answered wrongly, and the window closes on
-// the next publish.
+// WHAT BOUNDS IT, stated with the limit that took a second look to see (codex
+// rounds 17 and 21). The counter-backwards branch closes the window when this
+// WORKSPACE next receives an id below the straggler's — which is the common
+// case, because the straggler's id comes from a dead space that had climbed
+// higher than the new one has.
+//
+// It is not guaranteed. The counter is global and the check is per workspace,
+// so if OTHER workspaces consume ids past the straggler's value before this
+// one publishes again, this workspace's next id is higher and nothing fires.
+// The dead-space id then sits in the buffer, and a client resuming from just
+// below it is served it as though it followed.
+//
+// A global high-water mark would close that, and would cost a storm: the check
+// is armed during the phase-2 roll, when un-flipped publishers interleave
+// routinely, and a global comparison fires on interleaves across ANY pair of
+// workspaces rather than within one. That trade is the same one round 9
+// settled when it armed this check on an adopted epoch at all. The residual
+// belongs with the others that the client cursor's missing epoch would close —
+// see BUG-2736.
 func (b *RedisBus) fanOutFromRedis(gen, epoch int64, event Event) {
 	b.fanOut(gen, epoch, event)
 }

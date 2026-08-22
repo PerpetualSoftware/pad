@@ -1144,9 +1144,12 @@ func TestAStragglerFromBeforeAResetIsBoundedByTheNextNewSpaceEvent(t *testing.T)
 	// and it does — unless the counter reset between that publisher's
 	// assignment and its publish.
 	//
-	// The comment at that branch says the exposure is one event wide and ends
-	// loudly. That is a mechanical claim, so it is asserted here rather than
-	// only written down.
+	// The comment at that branch says the window closes when this WORKSPACE
+	// next receives a lower id. That is a mechanical claim, so it is asserted
+	// here rather than only written down — and the boundary is asserted with
+	// it: the closure is per workspace, and the second case below shows it
+	// does NOT fire when other workspaces have carried the shared counter past
+	// the straggler's value first.
 	b := newTestRedisBus(t)
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
@@ -1174,6 +1177,41 @@ func TestAStragglerFromBeforeAResetIsBoundedByTheNextNewSpaceEvent(t *testing.T)
 	// across the boundary after this point.
 	if got := b.EventsSince("ws-1", 1); got != nil {
 		t.Fatalf("a cursor inside the window must be refused once it closes, got %d events", len(got))
+	}
+}
+
+func TestTheStragglerWindowDoesNotCloseWhenOtherWorkspacesCarryTheCounter(t *testing.T) {
+	// THE BOUNDARY of the test above, and a residual rather than a defect to
+	// fix here (codex round 21). The counter is global and the
+	// counter-backwards check is per workspace, so if OTHER workspaces consume
+	// ids past the straggler's value before this one publishes again, this
+	// workspace's next id is HIGHER and nothing fires. The dead-space id stays
+	// in the buffer.
+	//
+	// Closing it needs a global high-water mark, which fires on interleaves
+	// across any pair of workspaces during the phase-2 roll — the storm that
+	// round 9 armed the check against. Asserted so the residual is executable
+	// and so a future global check announces itself here rather than in a
+	// deployment.
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	_, genA := liveGen(t, b, "ws-a")
+	_, genB := liveGen(t, b, "ws-b")
+
+	b.fanOutFromRedis(genA, 4, Event{ID: 1, Type: ItemUpdated, WorkspaceID: "ws-a"})
+	// The straggler, from the dead space, on ws-a.
+	b.fanOutFromRedis(genA, 0, Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-a"})
+	// Another workspace carries the shared counter past it.
+	b.fanOutFromRedis(genB, 4, Event{ID: 150, Type: ItemUpdated, WorkspaceID: "ws-b"})
+	// ws-a's next event is therefore HIGHER than the straggler.
+	b.fanOutFromRedis(genA, 4, Event{ID: 151, Type: ItemUpdated, WorkspaceID: "ws-a"})
+
+	if _, resets := obs.snapshot(); len(resets) != 0 {
+		t.Fatalf("today nothing detects this; a reset here means a global check was added — see this test's comment, got %v", resets)
+	}
+	if got := b.EventsSince("ws-a", 99); got == nil {
+		t.Fatal("today the dead-space id is served; a gap here means a global check was added")
 	}
 }
 
