@@ -536,3 +536,40 @@ func TestObserverMayReenterTheBus(t *testing.T) {
 		t.Fatal("premise failed: no observer callback fired, so re-entrancy was never exercised")
 	}
 }
+
+// TestMemoryBusDropCounterIsMeaningfulWithoutRedis pins the claim the
+// metrics comment now makes: the slow-subscriber drop counter moves on a
+// single-process deployment, because MemoryBus has the same drop and is
+// wired to the same observer.
+//
+// It exists because the comment SAID the opposite for two rounds — "these
+// stay at zero without Redis" — and a claim about which metrics are live
+// on which deployment shape is exactly the kind an operator builds an
+// alert on.
+func TestMemoryBusDropCounterIsMeaningfulWithoutRedis(t *testing.T) {
+	t.Parallel()
+
+	b := New()
+	defer b.Close()
+	obs := newRecordingObserver()
+	b.SetObserver(obs)
+
+	ch := b.Subscribe()
+	for i := 0; i < 65; i++ { // 64-deep buffer, then one more
+		if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	_ = ch // deliberately undrained
+
+	got := obs.snapshot()
+	if got.dropped[DropReasonSlowSubscriber] == 0 {
+		t.Fatalf("the in-memory bus reported no drop, so the counter would be dead on a single-process deployment (%+v)", got)
+	}
+	// And nothing SEQUENCE-related fires here, which is the other half of
+	// the claim: MemoryBus assigns contiguous ids and has no subscription
+	// to lose.
+	if got.gaps != 0 || got.resumeGaps != 0 || got.loopExits != 0 || len(got.resets) != 0 {
+		t.Fatalf("the in-memory bus reported a sequence event it structurally cannot have (%+v)", got)
+	}
+}

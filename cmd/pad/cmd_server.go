@@ -652,10 +652,15 @@ func serveCmd() *cobra.Command {
 			// a single-instance deployment.
 			// ONE namespace value for all three Redis keyspaces (BUG-2724).
 			// Built here, before any of them, and passed into each
-			// constructor — the three cannot drift because there is
-			// nothing to drift from. Validated eagerly: a namespace that
-			// cannot be used is a startup error, not a set of oddly-named
-			// keys discovered later.
+			// constructor. THIS IS THE CONVENTION, NOT A GUARANTEE — each
+			// constructor takes its own Keys and nothing in the type
+			// system stops a future edit passing a different one;
+			// redis_keyspace_wiring_test.go enforces it by reading this
+			// file, which is a weaker instrument than a compiler.
+			//
+			// Validated eagerly: a namespace that cannot be used is a
+			// startup error, not a set of oddly-named keys discovered
+			// later.
 			redisKeys, err := redisns.Parse(cfg.RedisNamespace)
 			if err != nil {
 				return fmt.Errorf("invalid PAD_REDIS_NAMESPACE: %w", err)

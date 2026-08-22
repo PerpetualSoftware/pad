@@ -28,12 +28,21 @@ type Metrics struct {
 	EventBusSubscribers  *prometheus.Gauge
 
 	// Redis operability metrics (BUG-2727). Wired from
-	// cmd/pad/cmd_server.go and only meaningful on a deployment with
-	// PAD_REDIS_URL set. On a single-process binary the COUNTERS below
-	// stay at zero, which is the honest reading — nothing was dropped,
-	// nothing was missed. pad_redis_up is the exception and is not
-	// registered at all there, because a zero on a GAUGE named "up"
-	// asserts something false; see its own comment.
+	// cmd/pad/cmd_server.go. MOST are only meaningful on a deployment
+	// with PAD_REDIS_URL set, but not all of them, and an earlier version
+	// of this comment got that wrong in both directions:
+	//
+	//   - pad_watchevents_notifications_dropped_total DOES move on a
+	//     single-process binary. The in-memory watch bus has the same
+	//     slow-subscriber drop and is wired to the same observer, so the
+	//     counter means what it says whether or not Redis exists.
+	//   - Everything sequence-related (gaps, resets, resume gaps, receive
+	//     loop exits) is Redis-only by construction — MemoryBus assigns
+	//     its own contiguous ids and has no subscription to lose — so
+	//     zero there is the honest reading rather than an absence.
+	//   - pad_redis_up is not registered at all without Redis, because a
+	//     zero on a gauge named "up" asserts something false. See its own
+	//     comment.
 	//
 	// RedisUp is written by internal/server's health prober, NOT sampled
 	// on scrape: a collector that dials on every scrape turns a monitoring
@@ -88,12 +97,18 @@ type Metrics struct {
 	// directions, so a generic alert on the total leads a responder to
 	// the wrong conclusion:
 	//
-	//   register / renew  — the session is MISSING from
+	// A failure means the operation REPORTED an error, which is not quite
+	// the same as the operation not happening: Redis can fail a pipeline
+	// or a script after it applied, so the write may have landed anyway.
+	// The consequences below are what a failure RISKS, not what it
+	// guarantees — which is the right reading for an alert either way.
+	//
+	//   register / renew  — the session may be MISSING from
 	//                       GET /api/v1/sessions and untargetable by a
 	//                       session-directed push. Under-reporting.
-	//   deregister        — a DEAD session stays listed until its TTL, so
-	//                       the picker over-reports and a push aimed at
-	//                       it is accepted and reaches nobody.
+	//   deregister        — a DEAD session may stay listed until its TTL,
+	//                       so the picker over-reports and a push aimed
+	//                       at it is accepted and reaches nobody.
 	//   list              — the read failed and the caller got a 503; no
 	//                       wrong answer was given, just no answer.
 	//   prune             — a stale index member survives; the next read
