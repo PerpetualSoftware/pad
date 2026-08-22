@@ -8,11 +8,23 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// codex round 9 #1. Publish lost its local-counter fallback when the script
-// fails, and the removal is the fix — the fallback minted an ID from a
-// different space and published it. Nothing tested the resulting branch, so
-// nothing would notice a future "helpful" restoration of it.
-func TestAFailedPublishDeliversNothing(t *testing.T) {
+// codex round 9 #1, ARRANGEMENT CORRECTED after the split. Publish lost its
+// local-counter fallback when the ID assignment fails, and the removal is the
+// fix — the fallback minted an ID from a process-local space and published it,
+// which every receiving instance reads as the counter having been reset.
+//
+// The first version of this test killed Redis outright, and after the split it
+// no longer DISCRIMINATED: with Redis down the fallback's publish fails too, so
+// "returns early" and "continues and fails at PUBLISH" look identical from the
+// outside. Found by re-running the mutation battery on the split tree, which is
+// the point of re-running it — a subtraction hides its defects as absences.
+//
+// The arrangement now reproduces the PARTIAL failure the branch actually
+// exists for: the sequence key holds a non-integer, so INCR fails while PUBLISH
+// keeps working. That is a realistic shape (a key-type collision with another
+// tenant of the same Redis), and it is the only one where a fallback ID would
+// actually reach subscribers.
+func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
@@ -23,34 +35,28 @@ func TestAFailedPublishDeliversNothing(t *testing.T) {
 	defer b.Unsubscribe(ch)
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
-	// Positive control: the same call succeeds while Redis is reachable, so a
-	// failure below cannot be confused with the bus never publishing at all.
+	// Positive control: publishing works before the key is poisoned, so a
+	// silent test below cannot be the bus never publishing at all.
 	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
 	drain(t, ch, 1)
 
-	// Redis goes away. The script cannot run.
-	mr.Close()
+	// INCR now fails; PUBLISH still works.
+	mr.Set("pad:event_seq", "not-a-number")
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	select {
 	case e := <-ch:
-		t.Fatalf("a failed publish must deliver nothing; got an event with id %d "+
-			"(a fallback id from a local counter is exactly the defect the script removed)", e.ID)
+		t.Fatalf("a publish whose ID assignment failed must deliver nothing; got an event with id %d "+
+			"(an ID from a process-local counter is exactly the defect the fallback's removal fixed)", e.ID)
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	// NOT asserting anything about the replay buffer here, and the reason is
-	// worth writing down: killing Redis also kills the subscription, so the
-	// receive loop's error path legitimately drops this workspace's coverage
-	// (BUG-2731's reconnect handling). An empty buffer at this point is that
-	// mechanism working, not evidence about the publish — an assertion on it
-	// would pass or fail for the wrong reason.
-	//
-	// A resume is a gap now, for that same reason, which is correct: we
-	// genuinely cannot vouch for anything across a dead connection.
-	if got := b.EventsSince("ws-1", 1); got != nil {
-		t.Fatalf("with the connection dead, a resume must be a gap, got %d events", len(got))
+	// The replay buffer must not have grown from it either — here the buffer
+	// IS valid evidence, because the subscription is healthy throughout.
+	held := b.EventsSince("ws-1", 0)
+	if len(held) != 1 {
+		t.Fatalf("the failed publish must not reach the replay buffer; buffer holds %d events", len(held))
 	}
 }
 

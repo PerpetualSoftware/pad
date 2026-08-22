@@ -127,11 +127,13 @@ type Metrics struct {
 	//   outage answer sync_required. This tracks Redis connection health:
 	//   expect it during a failover and expect it to stop afterwards.
 	//
-	// Labelled from the start rather than shipped as a bare counter, because
-	// BUG-2736's ID-space work adds reasons here that an operator diagnoses
-	// completely differently — a changed keyspace is a configuration mistake,
-	// a connection flap is not — and an alert built on an unlabelled total
-	// would have to be rewritten when they arrive.
+	// LABELLED FROM THE START rather than shipped as a bare counter, with one
+	// value today. BUG-2736's ID-space work adds reasons here, and an
+	// operator acts on the difference: a Redis connection FLAP is expected
+	// during a failover and self-resolves, while a changed KEYSPACE is a
+	// configuration mistake that does not. An alert built on an unlabelled
+	// total cannot separate them and would have to be rewritten the moment
+	// the second reason arrives.
 	EventSequenceResetsTotal *prometheus.CounterVec
 
 	// EventReceiveLoopExitsTotal counts a workspace's Redis subscription loop
