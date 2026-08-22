@@ -28,21 +28,18 @@ type Metrics struct {
 	EventBusSubscribers  *prometheus.Gauge
 
 	// Redis operability metrics (BUG-2727). Wired from
-	// cmd/pad/cmd_server.go. MOST are only meaningful on a deployment
-	// with PAD_REDIS_URL set, but not all of them, and an earlier version
-	// of this comment got that wrong in both directions:
+	// cmd/pad/cmd_server.go. Which of them are live depends on the
+	// deployment shape, and the distinction is what alerts are built on
+	// (asserted in TestMemoryBusDropCounterIsMeaningfulWithoutRedis):
 	//
-	//   - pad_watchevents_notifications_dropped_total DOES move on a
-	//     single-process binary. The in-memory watch bus has the same
-	//     slow-subscriber drop and is wired to the same observer, so the
-	//     counter means what it says whether or not Redis exists.
+	//   - pad_watchevents_notifications_dropped_total moves on a
+	//     single-process binary too — MemoryBus has the same
+	//     slow-subscriber drop and the same observer.
 	//   - Everything sequence-related (gaps, resets, resume gaps, receive
-	//     loop exits) is Redis-only by construction — MemoryBus assigns
-	//     its own contiguous ids and has no subscription to lose — so
-	//     zero there is the honest reading rather than an absence.
-	//   - pad_redis_up is not registered at all without Redis, because a
-	//     zero on a gauge named "up" asserts something false. See its own
-	//     comment.
+	//     loop exits) is Redis-only by construction: MemoryBus assigns
+	//     contiguous ids and has no subscription to lose.
+	//   - pad_redis_up is not registered at all without Redis; a zero on
+	//     a gauge named "up" asserts something false.
 	//
 	// RedisUp is written by internal/server's health prober, NOT sampled
 	// on scrape: a collector that dials on every scrape turns a monitoring
@@ -385,21 +382,18 @@ func (m *Metrics) RegisterRedisUp() {
 // RegisterStreamConnectionsCollector exposes pad_stream_connections_active
 // as a CALLBACK collector, sampled on scrape (BUG-2726).
 //
-// A collector rather than a gauge somebody pushes to, for the same reason
-// RegisterDBCollector is one: zero overhead between scrapes, always
-// fresh, and — the part learned the hard way here — no ordering problem.
-// The push version fired a callback per admit and release, and took two
-// review rounds to get right: round 9 found it running under the gate's
-// lock, a deadlock hazard for any callback that touched the gate, and
-// round 10 found the FIX reorderable, so a stale value could land last
-// and leave the gauge permanently BELOW the real total — which reads to
-// an operator as spare capacity that is not there. Reading the number
-// when someone asks for it has neither failure mode, and deletes both
-// mechanisms.
+// A collector rather than a gauge somebody pushes to, for the same
+// reason RegisterDBCollector is one: zero overhead between scrapes,
+// always fresh, and no ordering problem. A per-admit callback has two
+// failure modes this does not — running under the gate's lock (a
+// deadlock for any callback touching the gate) and landing out of order
+// (a stale value last, leaving the gauge permanently BELOW the real
+// total, which reads as spare capacity that is not there).
 //
 // Sampling on scrape is safe HERE in a way a Redis PING would not be: no
 // I/O, no side effects, and the value cannot depend on who is asking.
-// That distinction is why pad_redis_up is a probed gauge and this is not.
+// That distinction is why pad_redis_up is a probed gauge and this is
+// not.
 //
 // total must be safe for concurrent use; it is called from the scrape
 // goroutine.

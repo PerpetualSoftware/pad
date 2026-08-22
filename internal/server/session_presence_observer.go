@@ -28,13 +28,10 @@ const (
 // presenceObservable is the nil-safe holder RedisSessionPresence embeds
 // for its failure callback (BUG-2727).
 //
-// A CALLBACK, not an interface. An earlier version of this file declared
-// a one-method PresenceObserver interface plus an adapter type plus a
-// constructor, for a single production consumer — and did so in the same
-// diff where RedisHealth and the stream gauge both take plain callbacks
-// for exactly the same job (codex round 8). internal/watchevents keeps an
-// interface because it reports five distinct conditions and a five-arg
-// callback would be unreadable; one condition does not earn one.
+// A CALLBACK, not an interface: one condition, one consumer, and
+// RedisHealth takes a plain callback for the same job.
+// internal/watchevents keeps an interface because it reports five
+// distinct conditions.
 //
 // The registry is deliberately FAIL-SOFT everywhere — a failed write
 // risks leaving a live session unlisted rather than tearing down the SSE

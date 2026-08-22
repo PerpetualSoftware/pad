@@ -37,19 +37,16 @@ import "sync"
 //
 // Implementations must be safe for concurrent use and must not block.
 //
-// They MAY call back into the bus. Every report is fired AFTER the bus
-// releases its mutex, not while it is held (codex round 9), so an
-// observer that publishes or subscribes cannot deadlock the receive
-// loop. That is a property of the bus rather than a rule for
-// implementers, deliberately: an exported seam whose safety depends on
-// callers reading a comment is a deadlock waiting for the first observer
-// nobody reviewed.
+// They MAY call back into the bus. Every report fires AFTER the bus
+// releases its mutex, so an observer that publishes or subscribes cannot
+// deadlock the receive loop — a property of the bus rather than a rule
+// for implementers, because an exported seam whose safety depends on
+// callers reading a comment fails the first time somebody does not.
 //
 // The ONE thing an observer must not do is call a bus method that
 // REPORTS — SubscribeAndReplaySince can raise a resume gap — because
-// that is unbounded mutual recursion, and no amount of lock discipline
-// here can prevent it. Found by the re-entrancy test hanging when it
-// tried exactly that.
+// that is unbounded mutual recursion, which no lock discipline here can
+// prevent.
 type Observer interface {
 	// NotificationDropped reports a notification this instance received but
 	// could not deliver to one of its own subscribers. reason is a bounded
@@ -88,13 +85,10 @@ type Observer interface {
 	// receives nothing — including its own publishes, which are delivered
 	// through Redis like everyone else's.
 	//
-	// EXPECTED TO STAY AT ZERO, and that is the point rather than an
-	// argument against it (codex round 8 asked). This is a should-never-
-	// fire alarm on a state that is otherwise undetectable from outside
-	// the process: an instance that publishes fine, answers health checks,
-	// and receives nothing. BUG-2727 filed the silent return as the
-	// defect; a log line nobody greps and a counter nobody alerts on are
-	// not the same thing, and the counter costs one series at zero.
+	// EXPECTED TO STAY AT ZERO, and that is the point: a should-never-
+	// fire alarm on a state otherwise undetectable from outside the
+	// process — an instance that publishes fine, answers health checks,
+	// and receives nothing.
 	//
 	// Reachability, verified against go-redis v9.22.0 rather than assumed:
 	// PubSub.Channel's message channel is closed ONLY on pool.ErrClosed,

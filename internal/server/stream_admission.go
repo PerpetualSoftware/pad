@@ -25,14 +25,11 @@ import (
 // because it is genuinely workspace-scoped and the watch stream has no
 // coherent workspace to count against.
 //
-// COMPATIBILITY, ruled rather than assumed: PAD_SSE_MAX_CONNECTIONS now
-// covers both endpoints, so an operator who tuned it for one is now
-// bounding both and may reach the limit sooner. That re-point is
-// deliberate — a knob that silently bounded half the connections it named
-// is worse than one that bounds more than you expected, because the first
-// failure mode is invisible and the second announces itself and is
-// tunable. The startup log line reports the effective limits so the change
-// is visible without reading release notes.
+// COMPATIBILITY: PAD_SSE_MAX_CONNECTIONS now covers both endpoints, so
+// an operator who tuned it for one is bounding both and may reach the
+// limit sooner. Deliberate — a knob that silently bounded half the
+// connections it named fails invisibly, where this one announces itself
+// and is tunable. The startup log reports the effective limits.
 //
 // TOCTOU: acquire takes the lock, checks and RESERVES in one critical
 // section, exactly as events.EventBus.SubscribeIfAllowed does. Two
@@ -58,14 +55,12 @@ func newStreamAdmission(maxTotal, maxUser int) *streamAdmission {
 // In place rather than by replacing the gate, because a replacement
 // silently OVER-GRANTS capacity: the new gate starts at zero while the
 // old one still holds every open connection's slot, so those connections
-// stop counting against the limit and the process admits that many extra.
+// stop counting against the limit.
 //
-// The GAUGE would not expose it either, which is why the test for this
-// asserts admission behaviour rather than the metric: a replaced gate is
-// still reachable through Server.admission(), so the scrape reads the new
-// gate's total and the number looks plausible while the budget is wrong.
-// The visible signal stays right and the invisible one goes wrong —
-// worth avoiding structurally rather than watching for.
+// The GAUGE would not expose that — a replaced gate is still reachable
+// through Server.admission(), so the scrape reads the new gate and looks
+// plausible while the budget is wrong. Which is why the test asserts
+// admission behaviour instead.
 func (a *streamAdmission) setLimits(maxTotal, maxUser int) {
 	a.mu.Lock()
 	a.maxTotal = maxTotal
@@ -90,15 +85,11 @@ const (
 // The principal is a user id where there is one. Where there is not —
 // legacy workspace-scoped tokens and the fresh-install no-auth window,
 // both of which /api/v1/events accepts — the caller supplies a
-// workspace-derived key instead (see streamPrincipal). An earlier version
-// skipped the per-user bound entirely for those callers, on the grounds
-// that bucketing them all under one empty string would make unrelated
-// anonymous callers evict each other. That reasoning was right about the
-// empty-string bucket and wrong about the conclusion (codex round 3):
-// skipping the bound means ONE legacy-token holder can fill the global
-// budget and 429 everyone else, which is a denial of service by a
-// deprecated auth path. Bucketing by workspace keeps distinct principals
-// apart at the finest granularity actually available.
+// workspace-derived key instead (see streamPrincipal). Skipping the bound
+// for those callers would let ONE legacy-token holder fill the budget and
+// 429 everyone else; bucketing them under a single empty string would
+// make unrelated anonymous callers evict each other. Per workspace is the
+// finest granularity actually available.
 //
 // The residual trade, stated rather than hidden: two legacy tokens for
 // the SAME workspace share a bucket and can evict each other at the

@@ -65,9 +65,7 @@ func TestParseRejectsNamesThatCouldForgeAKeyPath(t *testing.T) {
 	t.Parallel()
 
 	// A colon is Pad's own separator, so a namespace containing one spans
-	// segments and makes the keyspace ambiguous to read back. (An earlier
-	// version of this comment justified the rule with a collision example
-	// that was wrong — see Parse.)
+	// segments and makes the keyspace ambiguous to read back.
 	for _, bad := range []string{"a:events", "Staging", "with space", "emoji-🐦", "tab\there", "sub/path", "quote'"} {
 		if _, err := Parse(bad); err == nil {
 			t.Errorf("Parse(%q) accepted an invalid namespace", bad)

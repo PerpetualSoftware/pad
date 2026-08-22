@@ -55,15 +55,14 @@ const (
 // actually down. This type exists to make that VISIBLE, not to act on
 // it.
 //
-// TIMEOUT NOTE, measured on BUG-2698's day-50 run rather than assumed:
-// go-redis does NOT apply a command context to connection ESTABLISHMENT.
-// A call with a 150ms context against a server that accepts connections
-// and never answers took 5.0s — the client's DialTimeout. So the probe's
-// context bounds the PING once a connection exists and nothing else; the
-// dial is bounded by the client's own DialTimeout (go-redis v9 default
-// 5s, and cmd/pad/cmd_server.go takes the default). That is why the probe
-// interval is set well above the dial bound rather than just above the
-// probe timeout.
+// TIMEOUT NOTE, measured: go-redis does NOT apply a command context to
+// connection ESTABLISHMENT. A call with a 150ms context against a server
+// that accepts connections and never answers took 5.0s — the client's
+// DialTimeout. So the probe's context bounds the PING once a connection
+// exists and nothing else; the dial is bounded by the client's own
+// DialTimeout (go-redis v9 default 5s, which cmd/pad takes). That is why
+// the probe interval sits well above the dial bound rather than just
+// above the probe timeout.
 type RedisHealth struct {
 	client   *redis.Client
 	interval time.Duration
@@ -85,15 +84,10 @@ type RedisHealth struct {
 	lastCheck time.Time
 
 	// lifecycleMu serializes Start and Stop ENTIRELY — including Stop's
-	// cancel and wait (codex round 10).
-	//
-	// Guarding only the field access, as the first version of this fix
-	// did, is not enough: Stop cleared started, unlocked, and only THEN
-	// cancelled and waited, so a Start racing into that window installed
-	// a fresh loop the in-flight Stop neither cancelled nor accounted
-	// for — and both share one WaitGroup, so the Stop could wait on a
-	// goroutine it had no way to end. The two operations are the unit
-	// that has to be atomic, not the fields they touch.
+	// cancel and wait. Guarding only the fields is not enough: a Start
+	// racing into the window between Stop's unlock and its wait installs
+	// a loop that Stop neither cancels nor can end, and both share one
+	// WaitGroup. The two operations are the unit that must be atomic.
 	//
 	// Deliberately NOT mu: probe() takes mu on the goroutine Stop waits
 	// for, so holding mu across wg.Wait would deadlock. Lock order where
@@ -135,29 +129,24 @@ func NewRedisHealth(client *redis.Client, onProbe func(ok bool)) *RedisHealth {
 // answer rather than a Probed=false window that only closes an interval
 // later — the boot case is exactly when an operator is watching.
 //
-// That is one PING more than strictly needed at boot: cmd/pad/cmd_server.go
-// already pings when it dials, and treats a failure there as FATAL
-// (codex round 8). Two consequences worth stating rather than leaving to
-// be rediscovered:
+// That is one PING more than strictly needed at boot, since
+// cmd/pad/cmd_server.go already pings when it dials and treats a failure
+// there as FATAL. Two consequences:
 //
 //   - The redundancy is deliberate. Reusing the dial-time result would
-//     couple this type to its caller's startup sequence for the sake of
-//     one round trip on a path that runs once per process.
-//   - Because that earlier ping is fatal, the "unreachable at startup"
-//     branch in probe() cannot fire in the shipped binary — the process
-//     exits first. It is kept because it is reachable for any embedder
-//     that makes the dial-time check non-fatal, and because the
-//     alternative is a prober whose first-probe behaviour depends on a
-//     policy decision made somewhere else.
+//     couple this type to its caller's startup sequence for one round
+//     trip on a path that runs once per process.
+//   - Because that earlier ping is fatal, probe()'s "unreachable at
+//     startup" branch cannot fire in the shipped binary. It is kept for
+//     an embedder that makes the dial-time check non-fatal.
 func (h *RedisHealth) Start() {
 	if h == nil || h.client == nil {
 		return
 	}
 
-	// IDEMPOTENT, and serialized against Stop for the whole operation. A
-	// second Start used to leak the first loop and leave Stop cancelling
-	// only the second, so the first probed forever and wg.Wait never
-	// returned.
+	// IDEMPOTENT, and serialized against Stop for the whole operation:
+	// without this a second Start leaks the first loop and Stop cancels
+	// only the second, so wg.Wait never returns.
 	h.lifecycleMu.Lock()
 	defer h.lifecycleMu.Unlock()
 	if h.started {

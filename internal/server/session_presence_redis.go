@@ -388,27 +388,20 @@ func (p *RedisSessionPresence) sessionKey(userID, sessionID string) string {
 // TargetUserID. It is a real hazard for a cloned install and not one for a
 // coincidental collision.
 //
-// FIXED, for the namespace half, in BUG-2724 — and fixed the way the note
-// above demanded: not by growing a prefix here, but through
-// internal/redisns, one value built in cmd/pad/cmd_server.go and passed
-// into all three constructors at once. The operational rule is now
-// stateable in one sentence for every keyspace: names carry
-// PAD_REDIS_NAMESPACE when it is set, and are byte-identical to the
-// historical ones when it is not.
+// FIXED, for the namespace half, in BUG-2724 — through internal/redisns
+// rather than by growing a prefix here: one value built in
+// cmd/pad/cmd_server.go and passed into all three constructors.
 //
-// STILL TRUE, and the reason the interim rule below has not been retired:
-// Redis CLUSTER remains unsupported. Pad dials redis.NewClient, and these
-// names carry no hash tags — a user's index and their session entries
-// would hash to different slots, so ListForUser's MGET and the Lua
-// scripts that reach session keys through ARGV would fail CROSSSLOT
-// rather than degrade. The watch bus's publish script has the same
-// problem across four keys, so tagging this keyspace alone would buy
-// nothing. Deferred as one future unit (cluster client + hash tags
-// everywhere + publish-script restructuring) on BUG-2724's trail.
+// STILL TRUE, and why the interim rule below survives: Redis CLUSTER is
+// unsupported. These names carry no hash tags, so a user's index and
+// their session entries hash to different slots and ListForUser's MGET
+// and the ARGV-reaching Lua scripts fail CROSSSLOT rather than degrade.
+// The watch bus's publish script has the same problem across four keys.
+// Deferred as one unit on BUG-2724's trail.
 //
-// So the interim rule stands, minus the sharing half: ONE SINGLE-NODE
-// REDIS ENDPOINT PER PAD INSTALLATION — or one shared endpoint with a
-// distinct PAD_REDIS_NAMESPACE per installation. Not a cluster.
+// The interim rule, minus the sharing half: ONE SINGLE-NODE REDIS
+// ENDPOINT PER PAD INSTALLATION — or one shared endpoint with a distinct
+// PAD_REDIS_NAMESPACE per installation. Not a cluster.
 //
 // sessionIndexKey is the per-user SET of that user's session ids. Scoped
 // per user because every read is user-scoped — there is no "list all
@@ -732,14 +725,12 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 			// Same ruling as the decode failure below: a value we cannot
 			// interpret is an UNKNOWN registry state, not an absent session.
 			//
-			// Counted as a list failure for consistency with the decode
-			// branch below (codex round 1 P2), though this arm is
-			// DEFENSIVE and not reachable through MGET: Redis answers nil
-			// for a key holding a non-string value, so a wrong-typed entry
-			// arrives as nil and is handled by the expired branch above.
-			// Verified rather than assumed — a wrong-typed key returns
-			// [nil] with no error. No test drives this line, and the
-			// observer test says so rather than pretending otherwise.
+			// Counted for consistency with the decode branch below,
+			// though this arm is DEFENSIVE and not reachable through
+			// MGET: Redis answers nil for a key holding a non-string
+			// value (verified), so a wrong-typed entry arrives as nil and
+			// the expired branch above handles it. No test drives this
+			// line.
 			p.reportOpFailed(PresenceOpList)
 			return nil, fmt.Errorf("session presence: session entry for %s is not a string", ids[i])
 		}
@@ -763,13 +754,10 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 			// right.
 			slog.Warn("session presence: undecodable session entry",
 				"error", err, "user_id", userID, "session_id", ids[i])
-			// Counted as a list failure (codex round 1 P2). This path
-			// returns the same 503-producing error as a transport failure
-			// and blinds the same picker; leaving it uncounted would make
-			// pad_session_presence_failures_total under-report exactly the
-			// corrupt-data case, which is the one an operator is least
-			// likely to find any other way — a dead Redis is obvious, a
-			// corrupt row is not.
+			// Counted: this returns the same 503-producing error as a
+			// transport failure and blinds the same picker, and a corrupt
+			// row is the case an operator is least likely to find any
+			// other way — a dead Redis is obvious.
 			p.reportOpFailed(PresenceOpList)
 			return nil, fmt.Errorf("session presence: decode entry %s: %w", ids[i], err)
 		}

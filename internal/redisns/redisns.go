@@ -20,9 +20,8 @@
 //
 // That is a CONVENTION, not a guarantee — each constructor takes its own
 // Keys and nothing in the type system stops a future caller passing a
-// different one. cmd/pad/redis_keyspace_wiring_test.go is what enforces
-// it, and it does so by reading the wiring source, which is a weaker
-// instrument than a compiler and is named as such where it lives.
+// different one. cmd/pad/redis_keyspace_wiring_test.go enforces it by
+// reading the wiring source, which is weaker than a compiler.
 //
 // HAZARD FOR ANYONE SWEEPING THE PREFIX. The string "pad:" also begins
 // Pad's OAuth SCOPE values — pad:read, pad:write, pad:admin — in
@@ -57,9 +56,8 @@ const prefix = "pad:"
 // activity channel space. Nesting rather than an exact collision; see
 // Parse for why it is refused regardless.
 //
-// Kept in sync by hand with the suffixes the three packages pass to Name.
-// A drift here is not silent: it costs a namespace that should have been
-// rejected, which is exactly the case the reserved list is for.
+// Kept in sync by hand with the suffixes the three packages pass to
+// Name.
 var reservedNames = map[string]bool{
 	"events":            true,
 	"event_seq":         true,
@@ -103,26 +101,18 @@ var Default = Keys{}
 // spans segments and makes the keyspace ambiguous to anyone (or anything)
 // reading KEYS output back.
 //
-// An earlier version of this comment justified that with a collision
-// example that was simply WRONG — it claimed ns "a:events" would produce
-// pad:a:events:<ws> and collide with installation "a"'s channel, when the
-// suffix is appended too and the result is pad:a:events:events:<ws>. The
-// rule is right; the reasoning was not, and a false example is worse than
-// none because the next reader trusts it.
+// A second hazard needs no colon, and reservedNames below rejects it: a
+// namespace equal to one of Pad's own first path segments NESTS this
+// installation inside the default one's keyspace. Namespace "events"
+// puts every key of this installation under pad:events:*, the default
+// installation's activity channel space.
 //
-// A second hazard needs no colon at all, and reservedNames below rejects
-// it: a namespace equal to one of Pad's own first path segments NESTS
-// this installation inside the default one's keyspace. Namespace "events"
-// puts every key of this installation under pad:events:*, which is the
-// default installation's activity channel space.
-//
-// Precisely — because an earlier version of this comment called it a
-// collision — that is prefix NESTING, not an exact key collision: the
-// default installation's channels are pad:events:<workspace-uuid>, so a
-// namespaced key would have to match one of those UUIDs to collide
-// outright. It is refused anyway, because a keyspace where one
-// installation's keys live inside another's prefix cannot be reasoned
-// about with KEYS, cleaned up, or told apart in a dump.
+// That is prefix nesting, not an exact key collision — the default
+// channels are pad:events:<workspace-uuid>, so a namespaced key would
+// have to match one of those UUIDs to collide outright. Refused anyway,
+// because a keyspace where one installation's keys live inside another's
+// prefix cannot be reasoned about with KEYS, cleaned up, or told apart
+// in a dump.
 func Parse(ns string) (Keys, error) {
 	if ns == "" {
 		return Default, nil

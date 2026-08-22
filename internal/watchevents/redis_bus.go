@@ -56,35 +56,30 @@ const (
 	// on every message.
 	redisWatchEpochSuffix = "watchevents_epoch"
 
-	// DEPLOYMENT SCOPING (codex round 3; resolved for the namespace half in
-	// BUG-2724). These names carry the installation's PAD_REDIS_NAMESPACE
-	// when one is set — see internal/redisns — so two Pad installations can
-	// share a Redis endpoint without cross-feeding each other's
-	// notifications or sharing an id counter. With no namespace configured
-	// they are byte-identical to the historical flat names, which is what
-	// lets an existing deployment upgrade without losing its counter,
-	// epoch or replay position.
+	// DEPLOYMENT SCOPING (BUG-2724). These names carry the installation's
+	// PAD_REDIS_NAMESPACE when one is set — see internal/redisns — so two
+	// Pad installations can share a Redis endpoint without cross-feeding
+	// notifications or sharing an id counter. With none configured they
+	// are byte-identical to the historical flat names, so an existing
+	// deployment upgrades without losing its counter, epoch or replay
+	// position.
 	//
-	// The rule that produced this shape still holds and is worth keeping:
-	// scoping belongs to EVERY keyspace at once, from shared config, never
-	// to one file growing a prefix the others lack — an operator rule that
-	// covers two of three keyspaces is harder to state than the flat one it
-	// replaces. The namespace is therefore built once in
-	// cmd/pad/cmd_server.go and passed into all three constructors.
+	// The rule: scoping belongs to EVERY keyspace at once, from shared
+	// config, never to one file growing a prefix the others lack — an
+	// operator rule covering two of three keyspaces is harder to state
+	// than the flat one it replaces.
 	//
-	// STILL UNSCOPED, deliberately: Redis CLUSTER. These names carry no
-	// hash tags and Pad dials redis.NewClient, and publishScript below
-	// spans FOUR keys in one EVAL — seq, channel, dedupe, epoch — which on
-	// a cluster hash to different slots and fail CROSSSLOT. Tagging this
-	// keyspace alone would buy nothing while there is no cluster client to
-	// exercise it against. Deferred as one unit (cluster client + hash tags
-	// everywhere + restructuring this script) on BUG-2724's trail.
+	// STILL UNSCOPED, deliberately: Redis CLUSTER. No hash tags, and
+	// publishScript below spans FOUR keys in one EVAL — seq, channel,
+	// dedupe, epoch — which hash to different slots and fail CROSSSLOT.
+	// Tagging this keyspace alone buys nothing with no cluster client to
+	// exercise it against; deferred as one unit on BUG-2724's trail.
 	//
 	// NOTE FOR A NAMESPACE CUTOVER: the seq and epoch keys carry
 	// Last-Event-ID meaning, so renaming them mid-flight makes connected
-	// clients resync. That is honest rather than silent — the epoch
-	// mechanism detects it — but plan it. Presence keys, by contrast, are
-	// transient and free to rename.
+	// clients resync — honest rather than silent, since the epoch
+	// mechanism detects it, but plan it. Presence keys are transient and
+	// free to rename.
 )
 
 // publishScript assigns the next id and publishes, ATOMICALLY.
@@ -495,16 +490,16 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 
 	missed := b.replaySince(sinceID)
 	if missed == nil {
-		// The LOCAL half of an unservable resume, and it was uncounted
-		// until codex round 17: replaySince answers nil when the cursor
-		// falls below what this instance can vouch for — a cold start, or
-		// a hole it recorded — and the handler turns that into
-		// sync_required exactly as it does for the shared-counter case.
-		// One is a client resyncing, so one is the metric's population.
+		// The LOCAL half of an unservable resume: replaySince answers
+		// nil when the cursor falls below what this instance can vouch
+		// for — a cold start, or a hole it recorded — and the handler
+		// turns that into sync_required exactly as for the
+		// shared-counter case. One client resyncing is one unit of the
+		// metric's population either way.
 		//
-		// Counting it HERE rather than inside replaySince keeps that
-		// function a pure read of local state, and keeps the report on
-		// the deferred path so it fires with the lock released.
+		// Counted HERE rather than inside replaySince, which stays a
+		// pure read of local state, and on the deferred path so it fires
+		// with the lock released.
 		pending.resumeGap()
 	}
 	return ch, missed
@@ -774,33 +769,19 @@ func (b *RedisBus) receiveMessages() {
 				// else's. Silence was the original behaviour and made
 				// that state indistinguishable from a quiet workspace.
 				//
-				// UNLESS WE ARE SHUTTING DOWN (codex round 1 P2). Close
-				// cancels b.ctx AND closes the pubsub, so both cases of
-				// this select can be ready at once, and Go picks between
-				// ready cases at RANDOM — an ordinary shutdown could then
-				// log an ERROR and bump a counter documented to mean
-				// "non-zero outside shutdown". Re-checking the context
-				// disambiguates what the select cannot.
+				// UNLESS WE ARE SHUTTING DOWN. Close cancels b.ctx AND
+				// closes the pubsub, so both cases of this select can be
+				// ready at once and Go picks between ready cases at
+				// RANDOM — an ordinary shutdown could then log an ERROR
+				// and bump a counter documented to mean "non-zero
+				// outside shutdown".
 				//
-				// MEASURED, and the honest scope is narrower than the
-				// paragraph above implies. With this guard removed, 200
-				// Close cycles under publish traffic reported ZERO false
-				// exits — and removing it AND reversing Close's ordering
-				// (pubsub first, then cancel) still produced none. Close
-				// waits on the receive goroutine, which observes the
-				// cancelled context either way, so the ambiguous state is
-				// not reachable through Close today.
-				//
-				// So this is DEFENCE, not a fix for observed behaviour,
-				// and NO TEST FAILS IF IT IS DELETED. It is kept because
-				// select's randomness is real and the guard makes the
-				// outcome independent of an ordering that a future edit
-				// could change without anyone noticing the coupling. Do
-				// not read the test named below as pinning it:
-				// TestRedisBusCloseDoesNotReportAReceiveLoopExit asserts
-				// that a normal Close is silent, and it catches the
-				// removal of this select's ctx case (verified by
-				// mutation) — not the removal of these three lines.
+				// DEFENCE, not a fix for observed behaviour, and NO TEST
+				// FAILS IF IT IS DELETED: measured, 200 Close cycles
+				// under traffic without it produced zero false exits,
+				// with Close's ordering reversed as well. Kept because
+				// select's randomness is real and this makes the outcome
+				// independent of that ordering.
 				if b.ctx.Err() != nil {
 					return
 				}

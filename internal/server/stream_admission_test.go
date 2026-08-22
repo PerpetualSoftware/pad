@@ -207,11 +207,11 @@ func TestStreamAdmissionUnitSemantics(t *testing.T) {
 	})
 
 	t.Run("workspace-derived principals are bounded like users", func(t *testing.T) {
-		// Codex round 3 P2. A caller with no user — a legacy
-		// workspace-scoped token, or the fresh-install no-auth window —
-		// is bucketed by workspace rather than skipping the per-user
-		// bound. Skipping it let one legacy-token holder fill the global
-		// budget and 429 everyone else.
+		// A caller with no user — a legacy workspace-scoped token, or
+		// the fresh-install no-auth window — is bucketed by workspace
+		// rather than skipping the per-user bound. Skipping it would let
+		// one legacy-token holder fill the budget and 429 everyone
+		// else.
 		a := newStreamAdmission(10, 1)
 		if _, refusal := a.acquire("ws:workspace-a"); refusal != admissionRefusalNone {
 			t.Fatalf("first workspace-principal acquire refused by %q", refusal)
@@ -276,14 +276,9 @@ func TestStreamAdmissionUnitSemantics(t *testing.T) {
 	})
 }
 
-// TestStreamAdmissionTracksItsTotal pins the number the gauge reads.
-//
-// This used to assert a push callback's argument sequence. The callback
-// is gone — pad_stream_connections_active is a scrape-time collector now,
-// because the pushed version cost two review rounds (a deadlock hazard,
-// then a reordering that left the gauge below the truth) and reading the
-// number on demand has neither failure mode. What is left to assert is
-// that the number itself is right in both directions.
+// TestStreamAdmissionTracksItsTotal pins the number
+// pad_stream_connections_active reads, in both directions — including
+// that an idempotent double release does not drive it negative.
 func TestStreamAdmissionTracksItsTotal(t *testing.T) {
 	t.Parallel()
 
@@ -417,11 +412,9 @@ func TestStreamPrincipalFallsBackToWorkspace(t *testing.T) {
 }
 
 // TestWorkspaceStreamBoundsAnonymousCallersPerWorkspace is the WIRING
-// test for the principal fix, and it exists because the unit test above
-// could not catch a handler that ignored streamPrincipal and passed
-// currentUserID directly — mutation testing survived exactly that.
-// Testing the helper proves the helper; the handler passing it is a
-// separate claim and needs an instrument at the layer that owns the call.
+// test: streamPrincipal's own unit test proves the helper, and the
+// handler passing it is a separate claim that needs an instrument at the
+// layer owning the call (team CONVE-19).
 //
 // Drives the fresh-install no-auth window (no users exist, so
 // currentUser is nil), which is the reachable no-user case in tests and
@@ -484,12 +477,11 @@ func rawSSEStatus(t *testing.T, baseURL, slug string) int {
 // over-grants capacity by however many streams were held at the moment
 // limits were set.
 //
-// The assertion is that a HELD slot still counts after reconfiguration,
-// which is what a replacement breaks. An earlier version asserted the
-// GAUGE instead and survived the mutation, because the metric reads
-// whichever gate Server.admission() returns and so looks plausible while
-// the budget is wrong. Worth recording — the wrong end state is the one
-// nothing is watching.
+// Asserts that a HELD slot still counts after reconfiguration, which is
+// what a replacement breaks. Deliberately NOT the gauge: it reads
+// whichever gate Server.admission() returns, so it stays plausible while
+// the budget is wrong (CONVE-12 — assert what the wrong behaviour would
+// DO).
 func TestSetSSELimitsDoesNotStrandHeldSlots(t *testing.T) {
 	t.Parallel()
 
@@ -533,11 +525,9 @@ func TestSetSSELimitsDoesNotStrandHeldSlots(t *testing.T) {
 // TestStreamGaugeIsCorrectUnderConcurrency drives the gate hard from many
 // goroutines and asserts the SCRAPED value matches the gate's own total.
 //
-// The pushed-callback version of this metric needed a deliberately
-// widened race window to be testable at all, and even then the first
-// attempt survived five runs against a broken build. A collector has no
-// window to widen: the scrape reads the same lock the mutations take, so
-// this asserts the property directly.
+// A collector has no reordering window to reproduce: the scrape takes
+// the same lock the mutations do, so this asserts the property directly
+// rather than trying to provoke a race.
 func TestStreamGaugeIsCorrectUnderConcurrency(t *testing.T) {
 	t.Parallel()
 
@@ -643,12 +633,11 @@ func TestRedisHealthConcurrentStartStop(t *testing.T) {
 	}
 }
 
-// TestStreamGaugeFollowsAReplacedMetricsInstance covers codex round 11's
-// P2: registration is once per METRICS INSTANCE, not once per Server. A
-// plain sync.Once left a second registry silently without the series,
-// which is a metric that is absent rather than wrong — the failure mode
-// nobody notices, because a dashboard with no data looks like a
-// deployment with no traffic.
+// TestStreamGaugeFollowsAReplacedMetricsInstance: registration is once
+// per METRICS INSTANCE, not once per Server. A once-per-Server guard
+// leaves a replacement registry without the series — a metric that is
+// ABSENT rather than wrong, which nobody notices, because a dashboard
+// with no data looks like a deployment with no traffic.
 func TestStreamGaugeFollowsAReplacedMetricsInstance(t *testing.T) {
 	t.Parallel()
 
@@ -697,12 +686,9 @@ func TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints(t *testing.T) {
 	closeSSE := holdAuthedSSE(ctx, t, ts.URL, slug, tok.Token)
 	defer closeSSE()
 
-	// EVERY refusal path, not one per endpoint. Codex round 12 named the
-	// admission refusal; round 13 found that the workspace stream has a
-	// SECOND one — the per-workspace bound — which was still answering
-	// after the SSE headers went out. A reviewer naming one instance is
-	// naming a sample (team CONVE-18), and this table is the enumeration
-	// that the first version of this test skipped.
+	// EVERY refusal path, not one per endpoint: the workspace stream has
+	// three (per-instance, per-workspace, per-user) and the watch stream
+	// two. Enumerated rather than sampled — team CONVE-18.
 	perWorkspaceSrv := testServer(t)
 	perWorkspaceSrv.SetEventBus(events.New())
 	perWorkspaceSrv.SetSSELimits(0, 1, 0) // per-workspace only
@@ -712,9 +698,7 @@ func TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints(t *testing.T) {
 	closePW := holdAuthedSSE(ctx, t, pwTS.URL, pwSlug, pwTok.Token)
 	defer closePW()
 
-	// And the PER-USER bound, which the first two servers disable — round
-	// 15 caught the "every refusal path" claim omitting it, which is the
-	// same undercount as round 13's, one round later.
+	// And the PER-USER bound, which the first two servers disable.
 	perUserSrv := testServerWithWatchEvents(t)
 	perUserSrv.SetEventBus(events.New())
 	perUserSrv.SetSSELimits(0, 0, 1) // per-user only

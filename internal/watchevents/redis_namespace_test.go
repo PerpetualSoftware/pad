@@ -94,3 +94,28 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 		t.Error("default bus is not subscribed to pad:watchevents")
 	}
 }
+
+// TestConstructorWaitsForItsSubscription pins the guarantee two test
+// comments in this package rely on: NewRedisBusWithKeys does not return
+// until its SUBSCRIBE is confirmed.
+//
+// It was prose, and prose was not enough — the equivalent test in
+// internal/events assumed the same of THAT bus, which subscribes
+// asynchronously, and flaked. A claim about when a constructor's side
+// effect is visible is checkable, so it is checked: no polling, no
+// sleep, just a publish immediately after construction.
+func TestConstructorWaitsForItsSubscription(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBusWithReplaySize(client, 8)
+	t.Cleanup(b.Close)
+
+	// No wait of any kind between the constructor and this.
+	if n := mr.Publish(redisns.Default.Name(redisWatchChannelSuffix), "probe"); n == 0 {
+		t.Fatal("the constructor returned before its subscription was live — anything published in that window is lost to this instance, silently")
+	}
+}

@@ -1089,10 +1089,8 @@ func watchCmd() *cobra.Command {
 					wait += "s"
 				}
 				// All THREE knobs named, because all three can refuse
-				// this endpoint (codex round 13 — the first version
-				// listed only the two that also cover the watch stream,
-				// which is a true statement that omits the one most
-				// likely to be the cause for a busy workspace).
+				// this endpoint — including the per-workspace one, which
+				// is the likeliest cause on a busy workspace.
 				return fmt.Errorf("the server is at its streaming-connection limit; retry in %s, "+
 					"or raise PAD_SSE_MAX_PER_WORKSPACE (this stream only), "+
 					"PAD_SSE_MAX_CONNECTIONS or PAD_SSE_MAX_PER_USER "+

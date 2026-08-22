@@ -160,11 +160,8 @@ func TestMemoryBusReportsSlowSubscriberDrop(t *testing.T) {
 }
 
 // TestRedisBusReportsSlowSubscriberDrop is the REDIS bus's own drop
-// site. The memory-bus test above covers a different function in a
-// different file (codex round 5): the two implementations each have
-// their own fan-out loop, so one being instrumented says nothing about
-// the other, and the Redis one is the only one a multi-instance
-// deployment ever runs.
+// site. The two implementations have separate fan-out loops in separate
+// files, so one being instrumented says nothing about the other.
 func TestRedisBusReportsSlowSubscriberDrop(t *testing.T) {
 	t.Parallel()
 
@@ -339,28 +336,17 @@ func TestRedisBusReportsReceiveLoopExit(t *testing.T) {
 	t.Fatalf("receive loop exit was never reported (%+v)", obs.snapshot())
 }
 
-// TestRedisBusCloseDoesNotReportAReceiveLoopExit is the counterweight to
-// the test above: a NORMAL shutdown must be silent, or
-// pad_watchevents_receive_loop_exits_total ticks on every deploy and the
-// meaning it is documented to carry ("non-zero outside shutdown") is
+// TestRedisBusCloseDoesNotReportAReceiveLoopExit: a NORMAL shutdown must
+// be silent, or pad_watchevents_receive_loop_exits_total ticks on every
+// deploy and the meaning it carries ("non-zero outside shutdown") is
 // worthless.
 //
-// WHAT IT ACTUALLY DISCRIMINATES, measured rather than claimed. Removing
-// the receive loop's ctx case — so the loop can only ever exit through
-// the closed channel — makes this test fail. That is the regression it
-// guards.
+// WHAT IT DISCRIMINATES, measured: removing the receive loop's ctx case
+// makes it fail. It does NOT discriminate the ctx re-check inside the
+// closed-channel branch — see that guard's own comment, which says so.
 //
-// It does NOT discriminate the ctx re-check inside the closed-channel
-// branch: with that guard removed the test still passes, and so does a
-// 200-iteration probe under publish traffic, with Close's ordering
-// reversed as well. Close waits on the receive goroutine and the
-// goroutine observes the cancelled context either way, so the ambiguous
-// state codex round 1 identified is not reachable through Close today.
-// The guard is kept as defence against a future reordering; this test is
-// not evidence for it, and the code comment there says so.
-//
-// The loop over iterations is what would surface a nondeterministic
-// version of the failure rather than a one-in-two flake.
+// The iteration loop would surface a nondeterministic version of the
+// failure rather than a one-in-two flake.
 func TestRedisBusCloseDoesNotReportAReceiveLoopExit(t *testing.T) {
 	t.Parallel()
 
@@ -396,14 +382,11 @@ func TestRedisBusCloseDoesNotReportAReceiveLoopExit(t *testing.T) {
 	}
 }
 
-// TestRedisBusReportsResumeGaps covers the path codex round 4 found
-// uncounted: a resume this instance cannot serve sends the client
-// sync_required — the only gap shape that is always USER-VISIBLE — and
-// reported nothing, so an incident reading
-// pad_watchevents_sequence_gaps_total would have missed it entirely.
-//
-// Both legs, because "always resync" would pass the positive one alone
-// and is a different bug with the same counter reading.
+// TestRedisBusReportsResumeGaps covers both routes to an unservable
+// resume — the shared counter disagreeing, and the local coverage window
+// — plus the control leg, because "always resync" would pass either
+// positive case alone and is a different bug with the same counter
+// reading.
 func TestRedisBusReportsResumeGaps(t *testing.T) {
 	t.Parallel()
 
@@ -440,9 +423,9 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 
 	t.Run("a resume below what this instance can vouch for", func(t *testing.T) {
 		t.Parallel()
-		// The LOCAL half, uncounted until codex round 17: the shared
-		// counter agrees, so resumeOutrunsLocalView says nothing, and the
-		// gap comes from this instance's own coverage window instead.
+		// The LOCAL half: the shared counter agrees, so
+		// resumeOutrunsLocalView says nothing and the gap comes from
+		// this instance's own coverage window instead.
 		b, mr := newMiniredisBus(t, 64)
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
@@ -464,8 +447,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		// instance has seen, so resumeOutrunsLocalView finds no
 		// disagreement and does NOT report. Without this the gap comes
 		// from that path instead and the test proves nothing about this
-		// one — which is exactly what the first version of it did, caught
-		// by mutation testing.
+		// one.
 		if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "9"); err != nil {
 			t.Fatalf("set counter: %v", err)
 		}
@@ -520,10 +502,8 @@ func (o *reentrantObserver) reenter(name string) {
 	//
 	// Deliberately NOT SubscribeAndReplaySince: it can itself report a
 	// resume gap, so calling it from an observer is unbounded mutual
-	// recursion — which this test found by hanging when it did. That is a
-	// real hazard for implementers and a different one from deadlock, so
-	// Observer's contract names it; it is not something the bus can fix
-	// on the caller's behalf.
+	// recursion. Observer's contract names that hazard; the bus cannot
+	// fix it on the caller's behalf.
 	ch := o.b.Subscribe()
 	o.b.Unsubscribe(ch)
 	select {
@@ -538,15 +518,13 @@ func (o *reentrantObserver) SequenceReset(string)       { o.reenter("reset") }
 func (o *reentrantObserver) ResumeGap()                 { o.reenter("resume") }
 func (o *reentrantObserver) ReceiveLoopExited()         { o.reenter("exit") }
 
-// TestObserverMayReenterTheBus pins the contract Observer's doc states:
-// reports fire with no bus lock held, so an observer that calls back into
-// the bus cannot deadlock it.
+// TestObserverMayReenterTheBus pins Observer's contract: reports fire
+// with no bus lock held, so an observer that calls back into the bus
+// cannot deadlock it.
 //
-// Written as a property of the BUS rather than a rule for implementers,
-// because an exported seam whose safety depends on callers reading a
-// comment fails the first time somebody does not. A deadlock hangs rather
-// than failing, so the test bounds itself and reports the hang as a
-// failure instead of letting the suite sit until the go test timeout.
+// A deadlock hangs rather than failing, so the test bounds itself and
+// reports the hang instead of letting the suite sit until go test's
+// timeout.
 func TestObserverMayReenterTheBus(t *testing.T) {
 	t.Parallel()
 
@@ -579,15 +557,11 @@ func TestObserverMayReenterTheBus(t *testing.T) {
 	}
 }
 
-// TestMemoryBusDropCounterIsMeaningfulWithoutRedis pins the claim the
-// metrics comment now makes: the slow-subscriber drop counter moves on a
-// single-process deployment, because MemoryBus has the same drop and is
-// wired to the same observer.
-//
-// It exists because the comment SAID the opposite for two rounds — "these
-// stay at zero without Redis" — and a claim about which metrics are live
-// on which deployment shape is exactly the kind an operator builds an
-// alert on.
+// TestMemoryBusDropCounterIsMeaningfulWithoutRedis pins which counters
+// are live on a single-process deployment: the slow-subscriber drop
+// moves (MemoryBus has the same drop and the same observer), and
+// everything sequence-related cannot. An operator builds alerts on
+// exactly that distinction, so it is asserted rather than described.
 func TestMemoryBusDropCounterIsMeaningfulWithoutRedis(t *testing.T) {
 	t.Parallel()
 

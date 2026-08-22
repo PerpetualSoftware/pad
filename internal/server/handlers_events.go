@@ -152,16 +152,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// EVERY REFUSAL PATH BEFORE THE SSE HEADERS, so a 429 is an ordinary
-	// JSON error response (codex rounds 12 and 13). Setting Content-Type:
-	// text/event-stream first meant a refusal carried the JSON error
-	// envelope under an SSE content type — a different contract from the
-	// sibling endpoint's for the same refusal.
-	//
-	// Round 12 moved the ADMISSION check up and left the per-workspace
-	// one below the headers, so half the refusals still had the wrong
-	// content type; round 13 found the half I did not move. Both are up
-	// here now, which is the point: the headers go out only once nothing
-	// can refuse.
+	// JSON error response. Setting Content-Type: text/event-stream first
+	// makes a refusal carry the JSON error envelope under an SSE content
+	// type — a different contract from the sibling endpoint's for the
+	// same refusal. The headers go out only once nothing can refuse.
 	//
 	// The bounds here are the PER-INSTANCE and PER-PRINCIPAL ones, from
 	// the process-wide gate that also covers /api/v1/events/stream

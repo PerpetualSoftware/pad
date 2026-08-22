@@ -1052,11 +1052,10 @@ func (s *Server) SetSSELimits(global, perWorkspace, perUser int) {
 // SetSSELimits and SetMetrics because either can land first.
 //
 // Registered ONCE PER METRICS INSTANCE. MustRegister panics on a
-// duplicate and both callers can fire, so this cannot simply register
-// every time — but a plain sync.Once was wrong in the other direction
-// (codex round 11): SetMetrics can install a DIFFERENT registry, and a
-// once-per-Server guard would leave that one silently missing the
-// series. Tracking which instance was wired covers both.
+// duplicate and both callers can fire, so it cannot register every time;
+// a once-per-SERVER guard would be wrong in the other direction, since
+// SetMetrics can install a different registry and would leave it
+// silently missing the series.
 //
 // The closure reads s.admission() at scrape time rather than capturing
 // the gate, so it stays correct if the gate is ever rebuilt.
