@@ -33,7 +33,7 @@ const (
 
 // RedisHealth periodically probes Redis and caches the result (BUG-2727).
 //
-// WHY A PROBER AND NOT A SCRAPE-TIME COLLECTOR. Both /health/ready and
+// WHY A PROBER AND NOT A SCRAPE-TIME COLLECTOR. Both /api/v1/health/ready and
 // /metrics need to answer "is Redis reachable", and both are called by
 // automated systems on their own schedules. Dialling from inside either
 // one makes Pad's Redis load a function of how many monitors are pointed
@@ -42,7 +42,7 @@ const (
 // fixed interval, two readers of its cached result, and the reported value
 // is the same for everyone.
 //
-// WHAT IT DOES NOT DO. It does not gate readiness. /health/ready stays
+// WHAT IT DOES NOT DO. It does not gate readiness. /api/v1/health/ready stays
 // database-only, deliberately: the REST API, the web UI and every write
 // path work with Redis down, so failing readiness on a Redis blip would
 // pull healthy replicas out of the load balancer and convert a degraded
@@ -79,7 +79,7 @@ type RedisHealth struct {
 }
 
 // RedisHealthStatus is the cached probe result, as reported by
-// /health/ready.
+// /api/v1/health/ready.
 type RedisHealthStatus struct {
 	// Reachable is the last probe's verdict. Meaningless until Probed.
 	Reachable bool `json:"reachable"`

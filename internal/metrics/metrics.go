@@ -45,7 +45,7 @@ type Metrics struct {
 	// it, so registering unconditionally would have every single-process
 	// binary alerting on an outage of a dependency it does not have.
 	// Absence is the honest signal for "not applicable", and it matches
-	// /health/ready, which omits its redis block on the same condition.
+	// /api/v1/health/ready, which omits its redis block on the same condition.
 	RedisUp prometheus.Gauge
 
 	// WatchNotificationsDroppedTotal counts notifications this instance

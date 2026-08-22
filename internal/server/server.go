@@ -49,7 +49,7 @@ type Server struct {
 	events                events.EventBus      // real-time event bus (optional)
 	watchEvents           watchevents.Bus      // watch/nudge notification bus (optional, TASK-2533)
 	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
-	redisHealth           *RedisHealth         // cached Redis reachability, reported by /health/ready and pad_redis_up (optional, BUG-2727)
+	redisHealth           *RedisHealth         // cached Redis reachability, reported by /api/v1/health/ready and pad_redis_up (optional, BUG-2727)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
 	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
 	email                 *email.Sender        // transactional email sender (optional)
@@ -800,7 +800,7 @@ func (s *Server) SetSessionPresence(p SessionPresence) {
 }
 
 // SetRedisHealth attaches the Redis reachability prober (BUG-2727). Nil
-// on a deployment with no Redis, in which case /health/ready reports no
+// on a deployment with no Redis, in which case /api/v1/health/ready reports no
 // redis block at all — the honest shape, since "no Redis configured" and
 // "Redis configured and down" are different states and a `false` would
 // merge them.
@@ -1305,7 +1305,7 @@ func (s *Server) setupRouter() {
 		r.Route("/api/v1", func(r chi.Router) {
 			r.Get("/health", s.handleHealth)
 			r.Get("/health/live", s.handleHealthLive)
-			r.Get("/health/ready", s.handleHealthReady)
+			r.Get("/api/v1/health/ready", s.handleHealthReady)
 			r.Get("/plan-limits", s.handleGetPlanLimits) // Public: billing page reads plan limits
 			r.Get("/unsubscribe", s.handleUnsubscribe)   // Public: email opt-out (HMAC-signed)
 

@@ -175,7 +175,7 @@ not supported.
 
 #### Redis health and metrics
 
-`/health/ready` reports Redis in its payload but **does not gate readiness on
+`/api/v1/health/ready` reports Redis in its payload but **does not gate readiness on
 it** — the REST API, the web UI and every write path work with Redis down, so
 failing readiness over a Redis blip would pull healthy replicas out of the load
 balancer and turn a degraded feature into an outage. When Redis is unreachable
@@ -453,10 +453,49 @@ Redis-specific metrics are listed under [Redis health and metrics](#redis-health
 
 ### Health Check
 
+Three endpoints, and they answer different questions:
+
 ```bash
-curl http://localhost:7777/api/v1/health
+# Liveness — is the process up? Kubernetes restarts the pod when this fails.
+curl http://localhost:7777/api/v1/health/live
 # {"status":"ok"}
+
+# Readiness — can it serve traffic? Gated on the DATABASE only.
+# Kubernetes should point its readinessProbe here.
+curl -s http://localhost:7777/api/v1/health/ready
+# {
+#   "status": "ready",
+#   "db": {"open_connections": 2, "in_use": 0, "idle": 2, "driver": "sqlite"},
+#   "redis": {"reachable": true, "probed": true, "last_check": "2026-08-22T01:00:00Z"}
+# }
+
+# Build info.
+curl http://localhost:7777/api/v1/health
+# {"status":"ok","version":"...","commit":"..."}
 ```
+
+With Redis configured but unreachable, readiness stays **200** and the `redis`
+block carries the failure — Pad serves everything except cross-instance
+delivery without it, so readiness deliberately does not fail:
+
+```json
+{
+  "status": "ready",
+  "redis": {
+    "reachable": false,
+    "probed": true,
+    "error": "dial tcp ...: connect: connection refused",
+    "degrades": [
+      "all activity events, including to clients on this instance",
+      "watch notifications",
+      "session presence and session-targeted push"
+    ]
+  }
+}
+```
+
+The `redis` block is absent entirely when no Redis is configured — "not
+applicable" rather than "down".
 
 ## Upgrading
 

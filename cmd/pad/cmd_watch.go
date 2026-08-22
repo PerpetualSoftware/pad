@@ -176,10 +176,12 @@ pad watch remove <ref>
 pad watch --stream --for-session
     The plugin monitor command (see monitors/monitors.json). Prints one
     line per matching event to stdout in a fixed, machine-readable
-    format. Silent on startup when no workspace is linked or padd is
-    unreachable — see the DOC-2479 behavior contract in this command's
-    source. Not meant to be run by hand; the pad plugin's monitor entry
-    invokes it.`,
+    format. Silent on startup when no workspace is linked, when padd is
+    unreachable, and when the server refuses the stream at its
+    connection limit (429 sse_limit_exceeded) — all three fold into the
+    same backoff-and-retry, so silence does not distinguish them. See
+    the DOC-2479 behavior contract in this command's source. Not meant to
+    be run by hand; the pad plugin's monitor entry invokes it.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if stream || forSession {
