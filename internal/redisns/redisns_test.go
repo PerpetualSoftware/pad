@@ -74,19 +74,28 @@ func TestParseRejectsNamesThatCouldForgeAKeyPath(t *testing.T) {
 		}
 	}
 
-	for _, good := range []string{"", "  ", "staging", "prod-2", "eu_west", "a", "0"} {
+	// Whitespace-only is an ERROR, not a synonym for unset: a broken
+	// template substitution produces " ", and trimming it to Default
+	// would silently share the default keyspace with the very
+	// installation the namespace was set to separate from.
+	for _, blank := range []string{" ", "   ", "\t", "\n", " \t "} {
+		if _, err := Parse(blank); err == nil {
+			t.Errorf("Parse(%q) accepted a whitespace-only namespace — it would silently fall back to the shared default keyspace", blank)
+		}
+	}
+
+	for _, good := range []string{"", "staging", "prod-2", "eu_west", "a", "0"} {
 		if _, err := Parse(good); err != nil {
 			t.Errorf("Parse(%q) rejected a valid namespace: %v", good, err)
 		}
 	}
 
-	// Whitespace-only trims to empty, which is Default rather than an
-	// error — an env var set to spaces is "unset", not a misconfiguration.
-	k, err := Parse("   ")
+	// Only a genuinely UNSET value yields Default.
+	k, err := Parse("")
 	if err != nil {
-		t.Fatalf("Parse(whitespace): %v", err)
+		t.Fatalf("Parse(empty): %v", err)
 	}
 	if k.Namespace() != "" {
-		t.Fatalf("whitespace namespace = %q, want empty", k.Namespace())
+		t.Fatalf("empty namespace = %q, want empty", k.Namespace())
 	}
 }

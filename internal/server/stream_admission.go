@@ -1,6 +1,9 @@
 package server
 
-import "sync"
+import (
+	"net/http"
+	"sync"
+)
 
 // streamAdmission bounds how many long-held streaming connections this
 // process serves, globally and per user (BUG-2726).
@@ -84,29 +87,46 @@ const (
 	admissionRefusalUser   admissionRefusal = "per_user"
 )
 
-// acquire reserves one stream slot. The returned release MUST be called
-// when the connection ends; it is idempotent so a handler can defer it
-// unconditionally.
+// acquire reserves one stream slot for a PRINCIPAL. The returned release
+// MUST be called when the connection ends; it is idempotent so a handler
+// can defer it unconditionally.
 //
-// userID may be empty — the workspace-scoped stream admits legacy
-// workspace-token and fresh-install callers with no resolved user. Those
-// count toward the global bound but not toward any per-user one, since
-// attributing them all to a single empty-string bucket would make
-// unrelated anonymous callers evict each other.
-func (a *streamAdmission) acquire(userID string) (release func(), refusal admissionRefusal) {
+// The principal is a user id where there is one. Where there is not —
+// legacy workspace-scoped tokens and the fresh-install no-auth window,
+// both of which /api/v1/events accepts — the caller supplies a
+// workspace-derived key instead (see streamPrincipal). An earlier version
+// skipped the per-user bound entirely for those callers, on the grounds
+// that bucketing them all under one empty string would make unrelated
+// anonymous callers evict each other. That reasoning was right about the
+// empty-string bucket and wrong about the conclusion (codex round 3):
+// skipping the bound means ONE legacy-token holder can fill the global
+// budget and 429 everyone else, which is a denial of service by a
+// deprecated auth path. Bucketing by workspace keeps distinct principals
+// apart at the finest granularity actually available.
+//
+// The residual trade, stated rather than hidden: two legacy tokens for
+// the SAME workspace share a bucket and can evict each other at the
+// per-user limit. That is strictly better than unbounded, and the
+// per-workspace bound already treats them as one population anyway.
+//
+// An empty principal still skips the per-user bound. It should not occur
+// — both call sites supply one — and the guard is there so a future
+// caller that forgets cannot accidentally collapse every connection into
+// a single bucket.
+func (a *streamAdmission) acquire(principal string) (release func(), refusal admissionRefusal) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.maxTotal > 0 && a.total >= a.maxTotal {
 		return nil, admissionRefusalGlobal
 	}
-	if a.maxUser > 0 && userID != "" && a.perUser[userID] >= a.maxUser {
+	if a.maxUser > 0 && principal != "" && a.perUser[principal] >= a.maxUser {
 		return nil, admissionRefusalUser
 	}
 
 	a.total++
-	if userID != "" {
-		a.perUser[userID]++
+	if principal != "" {
+		a.perUser[principal]++
 	}
 	a.notifyTotal()
 
@@ -116,14 +136,14 @@ func (a *streamAdmission) acquire(userID string) (release func(), refusal admiss
 			a.mu.Lock()
 			defer a.mu.Unlock()
 			a.total--
-			if userID != "" {
-				a.perUser[userID]--
+			if principal != "" {
+				a.perUser[principal]--
 				// Delete at zero so the map does not grow without bound
 				// on a deployment where many users connect once. Leaving
 				// zero entries behind would make this a slow leak keyed
 				// by user id.
-				if a.perUser[userID] <= 0 {
-					delete(a.perUser, userID)
+				if a.perUser[principal] <= 0 {
+					delete(a.perUser, principal)
 				}
 			}
 			a.notifyTotal()
@@ -134,8 +154,30 @@ func (a *streamAdmission) acquire(userID string) (release func(), refusal admiss
 // counts returns the current global total and this user's count, for log
 // lines. Snapshot only — never use it to decide admission, which is
 // acquire's job under one lock.
-func (a *streamAdmission) counts(userID string) (total, user int) {
+func (a *streamAdmission) counts(principal string) (total, user int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.total, a.perUser[userID]
+	return a.total, a.perUser[principal]
+}
+
+// streamPrincipal is the key a request is bounded under: its user id when
+// one resolved, otherwise a workspace-derived key for the callers that
+// have no user — legacy workspace-scoped tokens (whose token carries a
+// workspace id) and the fresh-install no-auth window (which does not, so
+// the resolved workspace stands in).
+//
+// The "ws:" prefix keeps the two namespaces from ever colliding: user ids
+// are UUIDs, so an unprefixed workspace id could in principle be read as
+// one.
+func streamPrincipal(r *http.Request, workspaceID string) string {
+	if uid := currentUserID(r); uid != "" {
+		return uid
+	}
+	if tokenWS := tokenWorkspaceID(r); tokenWS != "" {
+		return "ws:" + tokenWS
+	}
+	if workspaceID != "" {
+		return "ws:" + workspaceID
+	}
+	return ""
 }

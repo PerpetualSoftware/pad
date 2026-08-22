@@ -83,7 +83,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
-| `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Empty means the historical names. |
+| `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Unset means the historical names; a whitespace-only value is rejected at startup rather than treated as unset. |
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across both `/api/v1/events` and `/api/v1/events/stream` |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
@@ -109,6 +109,11 @@ against.
 A refused connection is `429` with code `sse_limit_exceeded`. The CLI monitor
 treats it like any other non-200 and backs off (5s, growing linearly, capped at
 5 minutes), so refusal does not produce a reconnect storm.
+
+The per-user limit applies to every caller, including ones with no user
+account: a legacy workspace-scoped token or the fresh-install no-auth window is
+bounded per *workspace* instead, at the same number. Two legacy tokens for the
+same workspace therefore share a bucket.
 
 **All three limits are PER INSTANCE, not deployment-wide.** They are enforced
 in-process; there is no shared counter. A three-replica deployment with

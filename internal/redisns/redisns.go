@@ -57,8 +57,18 @@ type Keys struct {
 // zero Keys; named so a call site can say which it means.
 var Default = Keys{}
 
-// Parse validates a namespace and returns the Keys for it. An empty
-// namespace is valid and yields Default.
+// Parse validates a namespace and returns the Keys for it. An UNSET
+// namespace — the empty string — is valid and yields Default.
+//
+// A value that is present but whitespace-only is an ERROR, not a
+// synonym for unset (codex round 3). Trimming it to Default would mean
+// PAD_REDIS_NAMESPACE=" " — which is what a broken template substitution
+// produces — silently restores the historical keyspace and collides with
+// the un-namespaced installation it was set to separate from. That is
+// precisely the leak this package exists to prevent, arriving through
+// the mechanism meant to prevent it. Nobody sets spaces on purpose, so
+// there is no legitimate case to preserve, and a startup error is
+// something an operator fixes in one minute.
 //
 // The character set is deliberately narrow — lowercase letters, digits,
 // hyphen, underscore — because a namespace ends up inside key names, in
@@ -67,9 +77,11 @@ var Default = Keys{}
 // namespace forge a key path (ns "a:events" would make pad:a:events:<ws>
 // collide with installation "a"'s channel).
 func Parse(ns string) (Keys, error) {
-	ns = strings.TrimSpace(ns)
 	if ns == "" {
 		return Default, nil
+	}
+	if strings.TrimSpace(ns) == "" {
+		return Keys{}, fmt.Errorf("redis namespace %q is whitespace only: leave it unset for the default keyspace, or give it a real name — a blank value would silently share the default keyspace with another installation", ns)
 	}
 	for _, r := range ns {
 		switch {

@@ -161,9 +161,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// also covers /api/v1/events/stream (BUG-2726). Both endpoints hold the
 	// same kind of connection, so one budget covers them; see
 	// streamAdmission for why this cannot live on either bus.
-	release, refusal := s.admission().acquire(currentUserID(r))
+	principal := streamPrincipal(r, ws.ID)
+	release, refusal := s.admission().acquire(principal)
 	if refusal != admissionRefusalNone {
-		total, perUser := s.admission().counts(currentUserID(r))
+		total, perUser := s.admission().counts(principal)
 		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", string(refusal),
 			"global_current", total, "global_max", s.sseMaxConnections,
 			"user_current", perUser, "user_max", s.sseMaxPerUser)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // rawWatchStreamStatus opens the watch stream and returns only the status
@@ -197,18 +198,40 @@ func TestStreamAdmissionUnitSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("anonymous callers count globally but not per user", func(t *testing.T) {
+	t.Run("workspace-derived principals are bounded like users", func(t *testing.T) {
+		// Codex round 3 P2. A caller with no user — a legacy
+		// workspace-scoped token, or the fresh-install no-auth window —
+		// is bucketed by workspace rather than skipping the per-user
+		// bound. Skipping it let one legacy-token holder fill the global
+		// budget and 429 everyone else.
+		a := newStreamAdmission(10, 1)
+		if _, refusal := a.acquire("ws:workspace-a"); refusal != admissionRefusalNone {
+			t.Fatalf("first workspace-principal acquire refused by %q", refusal)
+		}
+		if _, refusal := a.acquire("ws:workspace-a"); refusal != admissionRefusalUser {
+			t.Fatalf("second acquire for the same workspace principal refused by %q, want the per-user bound", refusal)
+		}
+		// A DIFFERENT workspace is a different principal and unaffected —
+		// the property that made the empty-string bucket wrong.
+		if _, refusal := a.acquire("ws:workspace-b"); refusal != admissionRefusalNone {
+			t.Fatalf("a different workspace principal was refused by %q", refusal)
+		}
+	})
+
+	t.Run("an empty principal still skips the per-user bound", func(t *testing.T) {
+		// Defensive: both call sites supply a principal, and this guard
+		// exists so a future one that forgets cannot collapse every
+		// connection into a single bucket and start evicting unrelated
+		// callers. Asserted so the behaviour is deliberate rather than
+		// incidental.
 		a := newStreamAdmission(3, 1)
-		// An empty user id is the legacy workspace-token and fresh-install
-		// case on /api/v1/events. Bucketing them together under "" would
-		// make unrelated anonymous callers evict each other at maxUser=1.
 		for i := 0; i < 3; i++ {
 			if _, refusal := a.acquire(""); refusal != admissionRefusalNone {
-				t.Fatalf("anonymous acquire %d refused by %q, want admitted up to the global bound", i, refusal)
+				t.Fatalf("empty-principal acquire %d refused by %q", i, refusal)
 			}
 		}
 		if _, refusal := a.acquire(""); refusal != admissionRefusalGlobal {
-			t.Fatalf("fourth anonymous acquire refused by %q, want the global bound", refusal)
+			t.Fatalf("fourth empty-principal acquire refused by %q, want the global bound", refusal)
 		}
 	})
 
@@ -344,4 +367,91 @@ func gaugeValue(t *testing.T, m *metrics.Metrics) float64 {
 	}
 	t.Fatal("pad_stream_connections_active is not exported")
 	return 0
+}
+
+// TestStreamPrincipalFallsBackToWorkspace covers the resolution order
+// itself, which is where the codex round 3 fix actually lives: a request
+// with no user must still produce a bucket key, or the per-user bound is
+// unreachable for exactly the principal class that could abuse it.
+func TestStreamPrincipalFallsBackToWorkspace(t *testing.T) {
+	t.Parallel()
+
+	// No user, no token workspace — the fresh-install no-auth window.
+	// The resolved workspace stands in.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace=w", nil)
+	if got, want := streamPrincipal(req, "workspace-id"), "ws:workspace-id"; got != want {
+		t.Errorf("streamPrincipal with no user = %q, want %q", got, want)
+	}
+
+	// Nothing at all to key on: empty, and the gate's guard handles it.
+	if got := streamPrincipal(req, ""); got != "" {
+		t.Errorf("streamPrincipal with no user and no workspace = %q, want empty", got)
+	}
+
+	// A user id wins over the workspace fallback — otherwise every
+	// authenticated caller in a workspace would share one bucket, which
+	// is a denial of service dressed as a limit.
+	withUser := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace=w", nil)
+	withUser = withUser.WithContext(WithCurrentUser(withUser.Context(), &models.User{ID: "user-1"}))
+	if got, want := streamPrincipal(withUser, "workspace-id"), "user-1"; got != want {
+		t.Errorf("streamPrincipal with a user = %q, want %q", got, want)
+	}
+}
+
+// TestWorkspaceStreamBoundsAnonymousCallersPerWorkspace is the WIRING
+// test for the principal fix, and it exists because the unit test above
+// could not catch a handler that ignored streamPrincipal and passed
+// currentUserID directly — mutation testing survived exactly that.
+// Testing the helper proves the helper; the handler passing it is a
+// separate claim and needs an instrument at the layer that owns the call.
+//
+// Drives the fresh-install no-auth window (no users exist, so
+// currentUser is nil), which is the reachable no-user case in tests and
+// takes the same code path a legacy workspace token does.
+func TestWorkspaceStreamBoundsAnonymousCallersPerWorkspace(t *testing.T) {
+	t.Parallel()
+
+	srv := testServerWithEvents(t)
+	srv.SetSSELimits(0, 0, 1) // no global bound, one per principal
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug1 := createTestWorkspace(t, ts.URL, "WS One")
+	slug2 := createTestWorkspace(t, ts.URL, "WS Two")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// PREMISE: the first anonymous connection is admitted, so the refusal
+	// below is the bound rather than a broken endpoint.
+	ch := connectSSE(ctx, t, ts.URL, slug1)
+	waitForEvent(t, ch, 3*time.Second)
+
+	// With the bound skipped for no-user callers, this second one would be
+	// admitted and one legacy-token holder could fill the whole budget.
+	if code := rawSSEStatus(t, ts.URL, slug1); code != http.StatusTooManyRequests {
+		t.Fatalf("second anonymous connection to the same workspace got %d, want 429", code)
+	}
+
+	// A DIFFERENT workspace is a different principal and must still be
+	// admitted — otherwise the fix is a global bound wearing a per-user
+	// label.
+	ch2 := connectSSE(ctx, t, ts.URL, slug2)
+	if ev := waitForEvent(t, ch2, 3*time.Second); ev.Type != "connected" {
+		t.Fatalf("connection to a second workspace got %q, want connected", ev.Type)
+	}
+}
+
+func rawSSEStatus(t *testing.T, baseURL, slug string) int {
+	t.Helper()
+	req, err := http.NewRequest("GET", baseURL+"/api/v1/events?workspace="+slug, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }
