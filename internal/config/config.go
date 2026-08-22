@@ -86,6 +86,23 @@ type Config struct {
 	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
 	SSEMaxPerUser      int `toml:"sse_max_per_user"`      // Per-user max streaming connections across BOTH SSE endpoints (0 = unlimited, BUG-2726)
 
+	// RedisNamespace scopes every Redis key and channel Pad uses to one
+	// installation (BUG-2724). Empty — the default — reproduces the
+	// historical flat names byte for byte, so an upgrade keeps addressing
+	// the same replay buffers, counters and presence entries.
+	//
+	// Set it when two Pad installations share a Redis endpoint. The
+	// hazard it removes is real but narrow: delivery is filtered per
+	// caller on user id, and user ids are per-installation UUIDs, so
+	// cross-feed needs the same id to exist in both — i.e. a CLONED
+	// database, such as a staging environment restored from a production
+	// dump. For that case it is a genuine cross-tenant leak.
+	//
+	// Changing it on a running deployment is a cutover, not a tweak: the
+	// bus counters carry Last-Event-ID meaning, so connected clients
+	// resync. Presence entries are transient and cost nothing.
+	RedisNamespace string `toml:"redis_namespace"`
+
 	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
 	// pointer so an absent `[push]` table stays nil and Save() (via the
 	// omitempty tag) never writes an empty table into everyone's
@@ -331,6 +348,9 @@ func Load() (*Config, error) {
 		if max, err := strconv.Atoi(v); err == nil {
 			cfg.SSEMaxPerWorkspace = max
 		}
+	}
+	if v := os.Getenv("PAD_REDIS_NAMESPACE"); v != "" {
+		cfg.RedisNamespace = v
 	}
 	if v := os.Getenv("PAD_SSE_MAX_PER_USER"); v != "" {
 		if max, err := strconv.Atoi(v); err == nil {

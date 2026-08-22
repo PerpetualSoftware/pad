@@ -33,6 +33,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	oauthpkg "github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
@@ -649,6 +650,17 @@ func serveCmd() *cobra.Command {
 			// Attach event bus for real-time SSE. The client built here is
 			// shared with the watch bus below (BUG-2651) — nil when this is
 			// a single-instance deployment.
+			// ONE namespace value for all three Redis keyspaces (BUG-2724).
+			// Built here, before any of them, and passed into each
+			// constructor — the three cannot drift because there is
+			// nothing to drift from. Validated eagerly: a namespace that
+			// cannot be used is a startup error, not a set of oddly-named
+			// keys discovered later.
+			redisKeys, err := redisns.Parse(cfg.RedisNamespace)
+			if err != nil {
+				return fmt.Errorf("invalid PAD_REDIS_NAMESPACE: %w", err)
+			}
+
 			var eventBus events.EventBus
 			var watchRedis *redis.Client
 			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
@@ -670,9 +682,10 @@ func serveCmd() *cobra.Command {
 				// only trace was a line nobody's log aggregator was
 				// shaped to catch.
 				redis.SetLogger(redisSlogLogger{})
-				eventBus = events.NewRedisBus(rc)
+				eventBus = events.NewRedisBusWithKeys(rc, redisKeys)
 				watchRedis = rc
-				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB)
+				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB,
+					"namespace", redisKeys.Namespace())
 			} else {
 				eventBus = events.New()
 				slog.Info("Event bus using in-memory (single instance)")
@@ -693,7 +706,7 @@ func serveCmd() *cobra.Command {
 			// doc for what each implementation does and does not fix.
 			var watchBus watchevents.Bus
 			if watchRedis != nil {
-				redisWatchBus := watchevents.NewRedisBus(watchRedis)
+				redisWatchBus := watchevents.NewRedisBusWithKeys(watchRedis, watchevents.DefaultReplayBufferSize, redisKeys)
 				// Operational instrumentation (BUG-2727). Attached to the
 				// concrete type because the conditions it reports —
 				// dropped notifications, sequence gaps, id-space resets,
@@ -728,7 +741,7 @@ func serveCmd() *cobra.Command {
 			// is before http.Server.Shutdown rather than after.
 			var redisPresence *server.RedisSessionPresence
 			if watchRedis != nil {
-				redisPresence = server.NewRedisSessionPresence(watchRedis)
+				redisPresence = server.NewRedisSessionPresenceWithKeys(watchRedis, redisKeys)
 				// Presence is fail-soft by design — a failed write leaves
 				// a live session unlisted rather than dropping its
 				// connection — so its failures have no user-visible

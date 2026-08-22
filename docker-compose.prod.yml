@@ -25,8 +25,12 @@ services:
       # PAD_EMAIL_FROM: "noreply@example.com"
       # PAD_EMAIL_FROM_NAME: "Pad"
       # SSE limits:
+      # PAD_SSE_MAX_CONNECTIONS covers BOTH SSE endpoints (BUG-2726).
       # PAD_SSE_MAX_CONNECTIONS: "1000"
       # PAD_SSE_MAX_PER_WORKSPACE: "100"
+      # PAD_SSE_MAX_PER_USER: "50"
+      # Set only when this Redis is shared with another Pad installation.
+      # PAD_REDIS_NAMESPACE: "prod"
     deploy:
       resources:
         limits:

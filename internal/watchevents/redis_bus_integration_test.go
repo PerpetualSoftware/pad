@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -147,8 +148,8 @@ func TestRedisBusPublishIsIdempotentUnderRetry(t *testing.T) {
 	b, _ := newMiniredisBus(t, 64)
 	ch := b.Subscribe()
 
-	const token = redisWatchDedupePrefix + "fixed-token-for-this-test"
-	keys := []string{redisWatchSeqKey, redisWatchChannel, token, redisWatchEpochKey}
+	token := redisns.Default.Name(redisWatchDedupeSuffix) + "fixed-token-for-this-test"
+	keys := []string{redisns.Default.Name(redisWatchSeqSuffix), redisns.Default.Name(redisWatchChannelSuffix), token, redisns.Default.Name(redisWatchEpochSuffix)}
 	payload := `{"ItemRef":"TASK-1","Kind":"comment"}`
 	const epochCandidate = "epoch-for-this-test"
 
@@ -199,13 +200,13 @@ func TestRedisBusCloseStopsReceiving(t *testing.T) {
 	// build that leaked the subscription and the goroutine behind it.
 	waitFor(t, "Redis to report no subscribers on the channel", func() bool {
 		for _, c := range mr.PubSubChannels("") {
-			if c == redisWatchChannel {
+			if c == redisns.Default.Name(redisWatchChannelSuffix) {
 				return false
 			}
 		}
 		return true
 	})
-	if n := mr.Publish(redisWatchChannel, "probe"); n != 0 {
+	if n := mr.Publish(redisns.Default.Name(redisWatchChannelSuffix), "probe"); n != 0 {
 		t.Fatalf("Redis still reports %d subscriber(s) after Close", n)
 	}
 }

@@ -83,14 +83,83 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
-| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Global maximum SSE connections |
-| `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum SSE connections |
+| `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Empty means the historical names. |
+| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Global maximum streaming connections, across **both** `/api/v1/events` and `/api/v1/events/stream` |
+| `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events` |
+| `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections, across **both** endpoints |
+
+#### Streaming connection limits
+
+Pad has two SSE endpoints and they share one budget. `/api/v1/events` is
+workspace-scoped (the web UI's activity stream); `/api/v1/events/stream` is
+user-scoped (agent watch notifications, `pad watch --stream`). A held
+connection costs the same goroutine, subscription and — with Redis — presence
+registration whichever one opened it, so `PAD_SSE_MAX_CONNECTIONS` and
+`PAD_SSE_MAX_PER_USER` bound them together. Only `PAD_SSE_MAX_PER_WORKSPACE`
+is endpoint-specific, because the watch stream has no workspace to count
+against.
+
+> **Upgrading:** `PAD_SSE_MAX_CONNECTIONS` previously bounded `/api/v1/events`
+> alone. It now covers both, so a tuned value may be reached sooner than
+> before. The server logs the effective limits at startup
+> (`Stream connection limits`). `/api/v1/events/stream` had no limit at all
+> before this change; if you run many agent sessions per user, check
+> `PAD_SSE_MAX_PER_USER` against your fleet size.
+
+A refused connection is `429` with code `sse_limit_exceeded`. The CLI monitor
+treats it like any other non-200 and backs off (5s, growing linearly, capped at
+5 minutes), so refusal does not produce a reconnect storm.
 
 #### Redis configuration notes
 
+**One namespace per installation, or one endpoint per installation.** Every
+Redis key and channel Pad uses carries `PAD_REDIS_NAMESPACE` when it is set:
+`pad:<namespace>:events:…`, `pad:<namespace>:watchevents…`,
+`pad:<namespace>:session:…`. When it is unset the names are the historical flat
+ones, so upgrading changes nothing.
+
+Two installations sharing one Redis endpoint **without** distinct namespaces
+cross-feed notifications and merge their session-presence registries. Selecting
+different logical DB numbers does *not* help — Redis pub/sub is not namespaced
+by DB at all. The practical exposure is a **cloned database** (a staging
+environment restored from a production dump), because delivery is filtered on
+user id and user ids are per-installation UUIDs; for that case it is a genuine
+cross-tenant leak.
+
+> **Changing the namespace on a running deployment is a cutover, not a tweak.**
+> `pad:*event_seq` and `pad:watchevents_epoch` carry `Last-Event-ID` meaning, so
+> renaming them makes connected clients resync (they receive `sync_required`
+> and re-fetch; no data is lost). Session-presence entries are transient — 90s
+> TTL — and cost nothing. Set the namespace before going multi-installation
+> rather than after.
+
 Pad's Redis integration assumes a **single Redis node** — `redis://…`, not a
-cluster. Both event buses and the session-presence registry use flat key names
-and a non-cluster client; pointing Pad at a Redis Cluster is not supported.
+cluster. Key names carry no hash tags and Pad dials a non-cluster client, so a
+user's presence index and their session entries would hash to different slots
+and the Lua scripts would fail `CROSSSLOT`. Pointing Pad at a Redis Cluster is
+not supported.
+
+#### Redis health and metrics
+
+`/health/ready` reports Redis in its payload but **does not gate readiness on
+it** — the REST API, the web UI and every write path work with Redis down, so
+failing readiness over a Redis blip would pull healthy replicas out of the load
+balancer and turn a degraded feature into an outage. When Redis is unreachable
+the payload carries `redis.reachable: false`, the probe error, and a `degrades`
+list naming what is lost. The block is absent entirely when no Redis is
+configured.
+
+Alert on these instead:
+
+| Metric | Meaning |
+|--------|---------|
+| `pad_redis_up` | `0` when the last probe (every 15s) failed |
+| `pad_watchevents_sequence_gaps_total` | This instance missed notifications — a gap event |
+| `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
+| `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber |
+| `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
+| `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
+| `pad_session_presence_failures_total` | Sessions unlisted and untargetable by a directed push |
 
 **Avoid an evicting `maxmemory-policy` for Pad's Redis.**
 `docker-compose.prod.yml` sets `noeviction` for this reason; the plain
@@ -405,7 +474,10 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 ## Production Checklist
 
 - [ ] **Database:** PostgreSQL configured with `PAD_DB_DRIVER=postgres`
-- [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`
+- [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`, single node (not a cluster)
+- [ ] **Redis namespace:** `PAD_REDIS_NAMESPACE` set if this endpoint is shared with another Pad installation
+- [ ] **Streaming limits:** `PAD_SSE_MAX_CONNECTIONS` / `PAD_SSE_MAX_PER_USER` sized for your fleet (both cover *both* SSE endpoints)
+- [ ] **Redis alerting:** `pad_redis_up` and `pad_watchevents_sequence_gaps_total` wired to alerts
 - [ ] **TLS:** Reverse proxy with valid certificates
 - [ ] **Secure cookies:** `PAD_SECURE_COOKIES=true` (requires TLS)
 - [ ] **Public URL:** `PAD_URL` set to your public-facing domain

@@ -11,12 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
 const (
-	// redisWatchChannel is the single Redis pub/sub channel every instance
+	// redisWatchChannelSuffix is the single Redis pub/sub channel every instance
 	// publishes to and subscribes to.
 	//
 	// SINGLE, not per-workspace, unlike internal/events' pad:events:<wsID>.
@@ -26,18 +27,18 @@ const (
 	// wildcard subscriptions"). Subscribe() takes no workspace precisely
 	// because a subscriber is not scoped to one, so there is nothing to key a
 	// channel by.
-	redisWatchChannel = "pad:watchevents"
+	redisWatchChannelSuffix = "watchevents"
 
-	// redisWatchSeqKey is the shared counter behind Notification.ID.
+	// redisWatchSeqSuffix is the shared counter behind Notification.ID.
 	//
 	// Deliberately distinct from internal/events' pad:event_seq: the two
 	// buses carry different streams with independent Last-Event-ID spaces,
 	// and sharing a counter would make each one's ids jump unpredictably
 	// whenever the other published — harmless for ordering, but it would
 	// turn every replay-gap diagnosis into a question about the other bus.
-	redisWatchSeqKey = "pad:watchevents_seq"
+	redisWatchSeqSuffix = "watchevents_seq"
 
-	// redisWatchEpochKey identifies the CURRENT id space, and exists because
+	// redisWatchEpochSuffix identifies the CURRENT id space, and exists because
 	// numeric detection alone cannot see a reset that has caught back up
 	// (codex round 13).
 	//
@@ -53,21 +54,37 @@ const (
 	// question is not "is this number bigger" but "is this the same
 	// sequence". Minted once per id space by the publish script and carried
 	// on every message.
-	redisWatchEpochKey = "pad:watchevents_epoch"
+	redisWatchEpochSuffix = "watchevents_epoch"
 
-	// DEPLOYMENT SCOPING, or rather the lack of it (codex round 3). Both
-	// names above are fixed, so two Pad installations pointed at the SAME
-	// Redis endpoint cross-feed each other's notifications and share one id
-	// counter — and selecting different logical DBs does not help, because
-	// Redis pub/sub is not namespaced by DB at all.
+	// DEPLOYMENT SCOPING (codex round 3; resolved for the namespace half in
+	// BUG-2724). These names carry the installation's PAD_REDIS_NAMESPACE
+	// when one is set — see internal/redisns — so two Pad installations can
+	// share a Redis endpoint without cross-feeding each other's
+	// notifications or sharing an id counter. With no namespace configured
+	// they are byte-identical to the historical flat names, which is what
+	// lets an existing deployment upgrade without losing its counter,
+	// epoch or replay position.
 	//
-	// Left unscoped deliberately: internal/events has used flat `pad:events:`
-	// / `pad:event_seq` names since it shipped, and giving one of the two
-	// buses a prefix the other lacks would make the operational rule harder
-	// to state, not easier. The rule for now is the simple one — one Redis
-	// endpoint per Pad installation — and if that ever needs relaxing it
-	// should be relaxed for both buses at once, from shared config, rather
-	// than growing here first.
+	// The rule that produced this shape still holds and is worth keeping:
+	// scoping belongs to EVERY keyspace at once, from shared config, never
+	// to one file growing a prefix the others lack — an operator rule that
+	// covers two of three keyspaces is harder to state than the flat one it
+	// replaces. The namespace is therefore built once in
+	// cmd/pad/cmd_server.go and passed into all three constructors.
+	//
+	// STILL UNSCOPED, deliberately: Redis CLUSTER. These names carry no
+	// hash tags and Pad dials redis.NewClient, and publishScript below
+	// spans FOUR keys in one EVAL — seq, channel, dedupe, epoch — which on
+	// a cluster hash to different slots and fail CROSSSLOT. Tagging this
+	// keyspace alone would buy nothing while there is no cluster client to
+	// exercise it against. Deferred as one unit (cluster client + hash tags
+	// everywhere + restructuring this script) on BUG-2724's trail.
+	//
+	// NOTE FOR A NAMESPACE CUTOVER: the seq and epoch keys carry
+	// Last-Event-ID meaning, so renaming them mid-flight makes connected
+	// clients resync. That is honest rather than silent — the epoch
+	// mechanism detects it — but plan it. Presence keys, by contrast, are
+	// transient and free to rename.
 )
 
 // publishScript assigns the next id and publishes, ATOMICALLY.
@@ -94,7 +111,7 @@ const (
 //
 // The epoch is not decoration: it is what distinguishes a reset id space from a
 // continuing one when the new space has already climbed past an instance's
-// high-water mark. See redisWatchEpochKey before considering it removable.
+// high-water mark. See redisWatchEpochSuffix before considering it removable.
 // The dedupe key makes the script IDEMPOTENT UNDER RETRY, which it needs to be
 // because go-redis retries a command when the reply is lost to a network error
 // (codex round 5). Without it, a script that ran and whose reply never came
@@ -119,8 +136,8 @@ return id
 `)
 
 const (
-	// redisWatchDedupePrefix namespaces the per-publish idempotency tokens.
-	redisWatchDedupePrefix = "pad:watchevents:pub:"
+	// redisWatchDedupeSuffix namespaces the per-publish idempotency tokens.
+	redisWatchDedupeSuffix = "watchevents:pub:"
 
 	// redisWatchDedupeTTLSeconds bounds how long a token is remembered. It
 	// only has to cover a client-side retry burst — go-redis gives up after
@@ -138,7 +155,7 @@ const (
 // template. Each is deliberate, and each would look like a mistake to someone
 // diffing the two:
 //
-//  1. One channel and one replay buffer (see redisWatchChannel).
+//  1. One channel and one replay buffer (see redisWatchChannelSuffix).
 //
 //  2. The Redis subscription is opened EAGERLY in NewRedisBus and lives for
 //     the bus's lifetime, rather than being started on the first local
@@ -178,6 +195,10 @@ type RedisBus struct {
 	observable
 
 	client *redis.Client
+
+	// keys builds this installation's Redis names (BUG-2724). The zero
+	// value is the historical un-namespaced keyspace.
+	keys redisns.Keys
 
 	// mu guards subscribers AND replay together — see the type comment (3)
 	// and SubscribeAndReplaySince.
@@ -242,7 +263,7 @@ type RedisBus struct {
 
 	// epoch identifies the id space these ids belong to. A change means the
 	// counter was reset and the buffer describes a sequence that no longer
-	// exists — see redisWatchEpochKey and fanOutFromRedis.
+	// exists — see redisWatchEpochSuffix and fanOutFromRedis.
 	epoch string
 	// epochJustChanged makes the next cold start refuse the
 	// contiguous-with-our-view cursor, because across an epoch boundary that
@@ -266,6 +287,21 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // NewRedisBusWithReplaySize is NewRedisBus with a custom replay capacity
 // (tests use a small one, exactly like NewWithReplaySize).
 func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
+	return NewRedisBusWithKeys(client, size, redisns.Default)
+}
+
+// NewRedisBusWithKeys is NewRedisBusWithReplaySize with an explicit key
+// namespace (BUG-2724). cmd/pad/cmd_server.go uses this one, passing the
+// value shared with the event bus and the presence registry.
+//
+// NOTE for anyone introducing a namespace on a RUNNING deployment: the
+// seq and epoch keys carry Last-Event-ID meaning, so renaming them is a
+// resume-gap event — connected clients' cursors belong to the old id
+// space and will be answered with sync_required. The epoch mechanism
+// makes that safe rather than silent, but plan the cutover; it is not a
+// free config change. Presence keys, by contrast, are transient (90s TTL)
+// and cost nothing to rename.
+func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *RedisBus {
 	if size <= 0 {
 		// newReplayBuffer(0) returns a buffer whose first append panics on a
 		// zero-length backing slice. That was reachable here in a way it is
@@ -279,6 +315,7 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &RedisBus{
 		client:      client,
+		keys:        keys,
 		subscribers: make(map[chan Notification]struct{}),
 		replay:      newReplayBuffer(size),
 		replaySize:  size,
@@ -286,7 +323,7 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 		cancel:      cancel,
 	}
 	// Eager subscription — see the type comment (2).
-	b.pubsub = client.Subscribe(ctx, redisWatchChannel)
+	b.pubsub = client.Subscribe(ctx, keys.Name(redisWatchChannelSuffix))
 
 	// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
 	// establishes the subscription asynchronously, so without this the
@@ -308,7 +345,7 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 	if _, err := b.pubsub.Receive(subCtx); err != nil {
 		slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
 			"notifications published before it establishes will be missed by this instance",
-			"error", err, "channel", redisWatchChannel)
+			"error", err, "channel", keys.Name(redisWatchChannelSuffix))
 	}
 
 	b.wg.Add(1)
@@ -365,12 +402,12 @@ func (b *RedisBus) Publish(n Notification) error {
 	// A fresh token per logical publish — NOT per attempt, which is the
 	// point: go-redis reuses the same arguments on its own retries, so the
 	// second run of the script sees the same token and declines.
-	dedupeKey := redisWatchDedupePrefix + uuid.NewString()
+	dedupeKey := b.keys.Name(redisWatchDedupeSuffix) + uuid.NewString()
 
 	// The candidate epoch is only adopted when none exists (SET NX inside the
 	// script), so every publisher can offer one and exactly the first wins.
 	if err := publishScript.Run(b.ctx, b.client,
-		[]string{redisWatchSeqKey, redisWatchChannel, dedupeKey, redisWatchEpochKey},
+		[]string{b.keys.Name(redisWatchSeqSuffix), b.keys.Name(redisWatchChannelSuffix), dedupeKey, b.keys.Name(redisWatchEpochSuffix)},
 		string(data), redisWatchDedupeTTLSeconds, uuid.NewString()).Err(); err != nil {
 		// WORDED AS UNCONFIRMED, not as a drop (codex round 3). The earlier
 		// text said "dropping notification ... no globally ordered ID was
@@ -566,7 +603,7 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 // it could not be read, which callers treat as "answer from local knowledge" —
 // see resumeOutrunsLocalView for why failing closed here would be worse.
 func (b *RedisBus) sharedCounter() (int64, bool) {
-	v, err := b.client.Get(b.ctx, redisWatchSeqKey).Int64()
+	v, err := b.client.Get(b.ctx, b.keys.Name(redisWatchSeqSuffix)).Int64()
 	switch {
 	case err == nil:
 		return v, true

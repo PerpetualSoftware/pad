@@ -37,7 +37,7 @@ func TestResumeReportsAGapWhenThisInstanceMissedTheTail(t *testing.T) {
 	b.Unsubscribe(ch)
 
 	// Id 2 exists as far as Redis is concerned, and never reached us.
-	if err := mr.Set(redisWatchSeqKey, "2"); err != nil {
+	if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "2"); err != nil {
 		t.Fatalf("set counter: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestResumeToleratesAnInFlightCounter(t *testing.T) {
 	b.Unsubscribe(ch)
 
 	// Counter says 2 exists; the message is "in flight" and lands mid-settle.
-	if err := mr.Set(redisWatchSeqKey, "2"); err != nil {
+	if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "2"); err != nil {
 		t.Fatalf("set counter: %v", err)
 	}
 	go func() {
@@ -129,7 +129,7 @@ func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.
 	}
 	b.Unsubscribe(ch)
 
-	if err := mr.Set(redisWatchSeqKey, "2"); err != nil {
+	if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "2"); err != nil {
 		t.Fatalf("set counter: %v", err)
 	}
 	go func() {
@@ -137,7 +137,7 @@ func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.
 		// The id the first read was waiting for lands...
 		b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-2"})
 		// ...while a THIRD is published elsewhere and never reaches us.
-		_ = mr.Set(redisWatchSeqKey, "3")
+		_ = mr.Set(b.keys.Name(redisWatchSeqSuffix), "3")
 	}()
 
 	_, missed := b.SubscribeAndReplaySince(1)
@@ -169,12 +169,12 @@ func TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish(t *testing.T) {
 
 	// The counter reads BEHIND what we hold — the shape a read racing a
 	// publish produces. It catches up during the settle window.
-	if err := mr.Set(redisWatchSeqKey, "1"); err != nil {
+	if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "1"); err != nil {
 		t.Fatalf("set counter: %v", err)
 	}
 	go func() {
 		time.Sleep(settleWindow / 4)
-		_ = mr.Set(redisWatchSeqKey, "2")
+		_ = mr.Set(b.keys.Name(redisWatchSeqSuffix), "2")
 	}()
 
 	_, missed := b.SubscribeAndReplaySince(1)
@@ -209,8 +209,8 @@ func TestResumeFallsBackToLocalKnowledgeWhenTheCounterIsUnreadable(t *testing.T)
 	// The counter becomes unreadable — a WRONGTYPE error rather than a
 	// connection failure, so the rest of the bus keeps working and only the
 	// validating read fails.
-	mr.Del(redisWatchSeqKey)
-	if _, err := mr.Lpush(redisWatchSeqKey, "not-an-integer"); err != nil {
+	mr.Del(b.keys.Name(redisWatchSeqSuffix))
+	if _, err := mr.Lpush(b.keys.Name(redisWatchSeqSuffix), "not-an-integer"); err != nil {
 		t.Fatalf("seed a wrong-typed key: %v", err)
 	}
 
@@ -245,7 +245,7 @@ func TestResumeReportsAGapWhenTheCounterKeyDisappears(t *testing.T) {
 	}
 	b.Unsubscribe(ch)
 
-	mr.Del(redisWatchSeqKey)
+	mr.Del(b.keys.Name(redisWatchSeqSuffix))
 
 	_, missed := b.SubscribeAndReplaySince(1)
 	if missed != nil {
@@ -276,7 +276,7 @@ func TestResumeIsUnaffectedForAFreshSubscriber(t *testing.T) {
 	waitFor(t, "the notification to be buffered", func() bool { return len(b.EventsSince(0)) == 1 })
 
 	// Counter deliberately ahead, which would trip the check for a resume.
-	if err := mr.Set(redisWatchSeqKey, "99"); err != nil {
+	if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "99"); err != nil {
 		t.Fatalf("set counter: %v", err)
 	}
 

@@ -1,0 +1,92 @@
+package redisns
+
+import "testing"
+
+// TestDefaultPreservesHistoricalNames is the compatibility promise made
+// executable: an upgrade with no namespace configured must address the
+// SAME keys as before, or every existing deployment silently loses its
+// replay buffers, counters and presence entries.
+//
+// The expected strings are written out literally rather than derived from
+// Name, so a change to Name's construction cannot make this test agree
+// with itself.
+func TestDefaultPreservesHistoricalNames(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"events:":           "pad:events:",
+		"event_seq":         "pad:event_seq",
+		"watchevents":       "pad:watchevents",
+		"watchevents_seq":   "pad:watchevents_seq",
+		"watchevents_epoch": "pad:watchevents_epoch",
+		"watchevents:pub:":  "pad:watchevents:pub:",
+		"session:u1:s1":     "pad:session:u1:s1",
+		"sessions:u1":       "pad:sessions:u1",
+	}
+	for suffix, want := range cases {
+		if got := Default.Name(suffix); got != want {
+			t.Errorf("Default.Name(%q) = %q, want %q", suffix, got, want)
+		}
+	}
+
+	// The zero value must behave identically — a struct field added later
+	// with a non-zero meaning would break this.
+	var zero Keys
+	if got, want := zero.Name("event_seq"), "pad:event_seq"; got != want {
+		t.Errorf("zero Keys.Name = %q, want %q", got, want)
+	}
+}
+
+func TestNamespacedNames(t *testing.T) {
+	t.Parallel()
+
+	k, err := Parse("staging")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got, want := k.Name("event_seq"), "pad:staging:event_seq"; got != want {
+		t.Errorf("Name = %q, want %q", got, want)
+	}
+	if got, want := k.Name("events:"), "pad:staging:events:"; got != want {
+		t.Errorf("Name = %q, want %q", got, want)
+	}
+	if got := k.Namespace(); got != "staging" {
+		t.Errorf("Namespace = %q, want %q", got, "staging")
+	}
+
+	// A namespaced name must not collide with the default keyspace, which
+	// is the entire point of the change.
+	if k.Name("event_seq") == Default.Name("event_seq") {
+		t.Fatal("a namespaced key collides with the default keyspace")
+	}
+}
+
+func TestParseRejectsNamesThatCouldForgeAKeyPath(t *testing.T) {
+	t.Parallel()
+
+	// The colon case is the load-bearing one: Pad's own separator. Without
+	// it, namespace "a:events" would build pad:a:events:<ws> and collide
+	// with installation "a"'s channel — reintroducing the cross-feed this
+	// package exists to prevent, through the mechanism meant to fix it.
+	for _, bad := range []string{"a:events", "Staging", "with space", "emoji-🐦", "tab\there", "sub/path", "quote'"} {
+		if _, err := Parse(bad); err == nil {
+			t.Errorf("Parse(%q) accepted an invalid namespace", bad)
+		}
+	}
+
+	for _, good := range []string{"", "  ", "staging", "prod-2", "eu_west", "a", "0"} {
+		if _, err := Parse(good); err != nil {
+			t.Errorf("Parse(%q) rejected a valid namespace: %v", good, err)
+		}
+	}
+
+	// Whitespace-only trims to empty, which is Default rather than an
+	// error — an env var set to spaces is "unset", not a misconfiguration.
+	k, err := Parse("   ")
+	if err != nil {
+		t.Fatalf("Parse(whitespace): %v", err)
+	}
+	if k.Namespace() != "" {
+		t.Fatalf("whitespace namespace = %q, want empty", k.Namespace())
+	}
+}

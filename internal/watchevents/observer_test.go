@@ -60,10 +60,24 @@ func (o *recordingObserver) ReceiveLoopExited() {
 	o.totalEvents++
 }
 
-func (o *recordingObserver) snapshot() recordingObserver {
+// observerCounts is the lock-free snapshot type. Separate from
+// recordingObserver so returning one does not copy a sync.Mutex — which
+// `go vet`'s copylocks check rejects, and which `go test`'s reduced vet
+// subset does NOT run, so the suite was green while `make lint` would
+// have failed.
+type observerCounts struct {
+	dropped     map[string]int
+	resets      map[string]int
+	gaps        int
+	missed      int64
+	loopExits   int
+	totalEvents int
+}
+
+func (o *recordingObserver) snapshot() observerCounts {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	cp := recordingObserver{
+	cp := observerCounts{
 		dropped:     map[string]int{},
 		resets:      map[string]int{},
 		gaps:        o.gaps,

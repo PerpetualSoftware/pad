@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -109,8 +110,11 @@ import (
 // existed.
 //
 // The authenticated-user case — one user holding unbounded streams — is a
-// different question, and this type does NOT answer it: see BUG-2726 for
-// the stream admission limit that would.
+// different question, and this type still does not answer it. It is
+// answered UPSTREAM, by the admission gate in stream_admission.go
+// (BUG-2726): both SSE endpoints acquire a slot before subscribing, so a
+// refusal costs one connection rather than making a live session
+// untargetable, which is why a registry-side cap was rejected.
 //
 // SINGLE-NODE REDIS ONLY, like the rest of Pad's Redis integration:
 // cmd/pad/cmd_server.go dials with redis.NewClient, not a cluster client,
@@ -134,6 +138,10 @@ type RedisSessionPresence struct {
 	presenceObservable
 
 	client *redis.Client
+
+	// keys builds this installation's Redis names (BUG-2724). The zero
+	// value is the historical un-namespaced keyspace.
+	keys redisns.Keys
 
 	// sessionKeyTTL and renewInterval are fields rather than constants so
 	// tests can drive the expiry path without sleeping through it. Prefer
@@ -341,25 +349,35 @@ func (p *RedisSessionPresence) drain() time.Duration {
 
 // userIDKeyPrefix is sessionKey's prefix for one user — everything before
 // the session id. Kept next to sessionKey so the two cannot drift.
-func userIDKeyPrefix(userID string) string {
-	return "pad:session:" + userID + ":"
+//
+// A METHOD, not a package function, since BUG-2724: the name depends on
+// the installation's namespace, which is per-registry config. A package
+// function would have had to read a global to do that, and a global is
+// exactly how the three keyspaces would drift apart again.
+func (p *RedisSessionPresence) userIDKeyPrefix(userID string) string {
+	return p.keys.Name("session:" + userID + ":")
 }
 
 // sessionKey is the per-session entry: one key, one TTL, one owner.
-func sessionKey(userID, sessionID string) string {
-	return userIDKeyPrefix(userID) + sessionID
+func (p *RedisSessionPresence) sessionKey(userID, sessionID string) string {
+	return p.userIDKeyPrefix(userID) + sessionID
 }
 
 // DEPLOYMENT SCOPING, inherited from internal/watchevents/redis_bus.go's
 // note of the same name and restated here because this is a THIRD
 // keyspace living under the same rule (codex round 3).
 //
-// These names are fixed, like `pad:events:` / `pad:event_seq` /
-// `pad:watchevents` before them, so the operational rule is unchanged and
-// unconditional: ONE REDIS ENDPOINT PER PAD INSTALLATION. Selecting
-// different logical DBs does not rescue it — pub/sub is not namespaced by
-// DB at all, so the buses cross-feed regardless, and two installations
-// sharing one DB would merge these session registries too.
+// These names carry the installation's PAD_REDIS_NAMESPACE when one is
+// set, exactly as `pad:events:` / `pad:event_seq` / `pad:watchevents` do
+// since BUG-2724, and are byte-identical to the historical flat names
+// when it is not. So the rule is no longer unconditional: one Redis
+// endpoint per installation, OR one endpoint with a distinct namespace
+// per installation.
+//
+// Selecting different logical DBs is still not an alternative — pub/sub
+// is not namespaced by DB at all, so the buses cross-feed regardless, and
+// two installations sharing one DB would merge these session registries
+// too. The namespace is the only mechanism that separates them.
 //
 // What that would cost HERE, stated precisely rather than alarmingly:
 // both keys are scoped by user id, and user ids are UUIDs minted per
@@ -370,18 +388,34 @@ func sessionKey(userID, sessionID string) string {
 // TargetUserID. It is a real hazard for a cloned install and not one for a
 // coincidental collision.
 //
-// Deliberately NOT fixed by growing a prefix here: redis_bus.go's own note
-// rules that if the flat names ever need scoping it should happen for
-// every keyspace at once, from shared config, rather than one file growing
-// a prefix the others lack. Adding one here would make the operational
-// rule harder to state, not easier. Tracked as BUG-2724.
+// FIXED, for the namespace half, in BUG-2724 — and fixed the way the note
+// above demanded: not by growing a prefix here, but through
+// internal/redisns, one value built in cmd/pad/cmd_server.go and passed
+// into all three constructors at once. The operational rule is now
+// stateable in one sentence for every keyspace: names carry
+// PAD_REDIS_NAMESPACE when it is set, and are byte-identical to the
+// historical ones when it is not.
+//
+// STILL TRUE, and the reason the interim rule below has not been retired:
+// Redis CLUSTER remains unsupported. Pad dials redis.NewClient, and these
+// names carry no hash tags — a user's index and their session entries
+// would hash to different slots, so ListForUser's MGET and the Lua
+// scripts that reach session keys through ARGV would fail CROSSSLOT
+// rather than degrade. The watch bus's publish script has the same
+// problem across four keys, so tagging this keyspace alone would buy
+// nothing. Deferred as one future unit (cluster client + hash tags
+// everywhere + publish-script restructuring) on BUG-2724's trail.
+//
+// So the interim rule stands, minus the sharing half: ONE SINGLE-NODE
+// REDIS ENDPOINT PER PAD INSTALLATION — or one shared endpoint with a
+// distinct PAD_REDIS_NAMESPACE per installation. Not a cluster.
 //
 // sessionIndexKey is the per-user SET of that user's session ids. Scoped
 // per user because every read is user-scoped — there is no "list all
 // sessions on this server" consumer and there should not be one (see
 // handleListSessions' doc comment).
-func sessionIndexKey(userID string) string {
-	return "pad:sessions:" + userID
+func (p *RedisSessionPresence) sessionIndexKey(userID string) string {
+	return p.keys.Name("sessions:" + userID)
 }
 
 // NewRedisSessionPresence returns a shared registry backed by client.
@@ -391,8 +425,20 @@ func sessionIndexKey(userID string) string {
 // connection pool serving two logical concerns is the shape internal/events
 // already assumes.
 func NewRedisSessionPresence(client *redis.Client) *RedisSessionPresence {
+	return NewRedisSessionPresenceWithKeys(client, redisns.Default)
+}
+
+// NewRedisSessionPresenceWithKeys is NewRedisSessionPresence with an
+// explicit key namespace (BUG-2724). cmd/pad/cmd_server.go uses this one,
+// passing the value shared with both buses.
+//
+// Renaming presence keys is CHEAP, unlike the buses': entries are
+// transient and expire on a 90s TTL, so a namespace cutover strands
+// nothing — worst case, one renewal interval of stale-looking presence.
+func NewRedisSessionPresenceWithKeys(client *redis.Client, keys redisns.Keys) *RedisSessionPresence {
 	return &RedisSessionPresence{
 		client:        client,
+		keys:          keys,
 		sessionKeyTTL: sessionKeyTTL,
 		renewInterval: sessionRenewInterval,
 		opTimeout:     presenceOpTimeout,
@@ -487,7 +533,7 @@ return 1
 // in one atomic step. See writeScript.
 func (p *RedisSessionPresence) write(ctx context.Context, userID, sessionID, payload string) error {
 	return writeScript.Run(ctx, p.client,
-		[]string{sessionKey(userID, sessionID), sessionIndexKey(userID)},
+		[]string{p.sessionKey(userID, sessionID), p.sessionIndexKey(userID)},
 		payload, int(p.sessionKeyTTL.Seconds()), sessionID,
 	).Err()
 }
@@ -596,8 +642,8 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
 	defer cancel()
 	pipe := p.client.Pipeline()
-	pipe.Del(ctx, sessionKey(userID, sessionID))
-	pipe.SRem(ctx, sessionIndexKey(userID), sessionID)
+	pipe.Del(ctx, p.sessionKey(userID, sessionID))
+	pipe.SRem(ctx, p.sessionIndexKey(userID), sessionID)
 	if _, err := pipe.Exec(ctx); err != nil {
 		slog.Warn("session presence: failed to deregister session; it will expire on its TTL",
 			"error", err, "user_id", userID)
@@ -622,7 +668,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
 	defer cancel()
 
-	ids, err := p.client.SMembers(ctx, sessionIndexKey(userID)).Result()
+	ids, err := p.client.SMembers(ctx, p.sessionIndexKey(userID)).Result()
 	if err != nil {
 		// REPORTED, not swallowed into an empty list (codex round 1, P1).
 		// An empty list means "nobody is listening", which makes a targeted
@@ -648,7 +694,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 
 	keys := make([]string, 0, len(ids))
 	for _, id := range ids {
-		keys = append(keys, sessionKey(userID, id))
+		keys = append(keys, p.sessionKey(userID, id))
 	}
 	values, err := p.client.MGet(ctx, keys...).Result()
 	if err != nil {
@@ -712,8 +758,8 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		// Still best-effort: a failure costs a retry on the next read, and
 		// the members are already invisible to this listing either way.
 		if err := pruneIndexScript.Run(ctx, p.client,
-			[]string{sessionIndexKey(userID)},
-			append([]interface{}{userIDKeyPrefix(userID)}, toAny(expired)...)...,
+			[]string{p.sessionIndexKey(userID)},
+			append([]interface{}{p.userIDKeyPrefix(userID)}, toAny(expired)...)...,
 		).Err(); err != nil && !errors.Is(err, redis.Nil) {
 			slog.Debug("session presence: failed to prune expired index members",
 				"error", err, "user_id", userID)
