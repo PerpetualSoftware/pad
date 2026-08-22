@@ -212,7 +212,19 @@ func serveCmd() *cobra.Command {
 			srv.SetTrustedProxies(cfg.TrustedProxies)
 			srv.SetMetricsToken(cfg.MetricsToken)
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
-			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
+			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace, cfg.SSEMaxPerUser)
+			// Logged at startup so the BUG-2726 re-point is visible in an
+			// operator's own logs: PAD_SSE_MAX_CONNECTIONS now bounds
+			// /api/v1/events and /api/v1/events/stream TOGETHER, where it
+			// used to bound only the first. Someone who tuned it for one
+			// endpoint should see the effective numbers without having to
+			// read release notes to find out anything changed.
+			slog.Info("Stream connection limits",
+				"global", cfg.SSEMaxConnections,
+				"per_workspace", cfg.SSEMaxPerWorkspace,
+				"per_user", cfg.SSEMaxPerUser,
+				"global_and_per_user_cover", "/api/v1/events + /api/v1/events/stream",
+				"per_workspace_covers", "/api/v1/events")
 
 			// MCP tool-surface descriptor endpoint (PLAN-1888 / TASK-1891).
 			// Inject the cycle-free catalog→JSON serializer so the authed

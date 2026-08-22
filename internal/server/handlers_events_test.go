@@ -363,7 +363,7 @@ func TestSSENoEventBus(t *testing.T) {
 
 func TestSSEGlobalConnectionLimit(t *testing.T) {
 	srv := testServerWithEvents(t)
-	srv.SetSSELimits(1, 0) // global limit of 1, no per-workspace limit
+	srv.SetSSELimits(1, 0, 0) // global limit of 1, no per-workspace or per-user limit
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -393,7 +393,7 @@ func TestSSEGlobalConnectionLimit(t *testing.T) {
 
 func TestSSEPerWorkspaceLimit(t *testing.T) {
 	srv := testServerWithEvents(t)
-	srv.SetSSELimits(0, 1) // no global limit, per-workspace limit of 1
+	srv.SetSSELimits(0, 1, 0) // no global limit, per-workspace limit of 1
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -431,7 +431,7 @@ func TestSSEPerWorkspaceLimit(t *testing.T) {
 
 func TestSSELimitsExistingConnectionsUnaffected(t *testing.T) {
 	srv := testServerWithEvents(t)
-	srv.SetSSELimits(1, 0) // global limit of 1
+	srv.SetSSELimits(1, 0, 0) // global limit of 1
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 

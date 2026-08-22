@@ -84,6 +84,7 @@ type Config struct {
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
 	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
+	SSEMaxPerUser      int `toml:"sse_max_per_user"`      // Per-user max streaming connections across BOTH SSE endpoints (0 = unlimited, BUG-2726)
 
 	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
 	// pointer so an absent `[push]` table stays nil and Save() (via the
@@ -179,6 +180,12 @@ func DefaultConfig() *Config {
 		ConfigPath:         filepath.Join(dataDir, "config.toml"),
 		SSEMaxConnections:  1000,
 		SSEMaxPerWorkspace: 100,
+		// A generous default. The bound exists so one user cannot exhaust
+		// the global budget for everyone — the failure the per-workspace
+		// limit alone could not prevent, since the watch stream has no
+		// workspace to count against. It is not meant to constrain a
+		// normal user, who holds one browser tab and one agent monitor.
+		SSEMaxPerUser: 50,
 	}
 }
 
@@ -323,6 +330,11 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_SSE_MAX_PER_WORKSPACE"); v != "" {
 		if max, err := strconv.Atoi(v); err == nil {
 			cfg.SSEMaxPerWorkspace = max
+		}
+	}
+	if v := os.Getenv("PAD_SSE_MAX_PER_USER"); v != "" {
+		if max, err := strconv.Atoi(v); err == nil {
+			cfg.SSEMaxPerUser = max
 		}
 	}
 

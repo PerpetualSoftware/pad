@@ -43,6 +43,7 @@ type Server struct {
 	store                 *store.Store
 	router                *chi.Mux
 	routerOnce            sync.Once            // ensures setupRouter runs once, after all config
+	admitOnce             sync.Once            // lazily builds streamAdmit for servers that never call SetSSELimits
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
@@ -64,6 +65,8 @@ type Server struct {
 	ipChangeEnforceStrict bool                 // when true, revoke+reject sessions whose client IP OR User-Agent hash differs from the one recorded at session creation
 	sseMaxConnections     int                  // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace    int                  // per-workspace SSE connection limit (0 = unlimited)
+	sseMaxPerUser         int                  // per-user SSE connection limit across BOTH stream endpoints (0 = unlimited, BUG-2726)
+	streamAdmit           *streamAdmission     // shared admission gate for both stream endpoints (BUG-2726)
 	cloudMode             bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
 	cloudSecrets          []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
 	cloudSidecar          CloudSidecar         // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
@@ -1023,11 +1026,37 @@ func (s *Server) metricsAuth(next http.Handler) http.Handler {
 	})
 }
 
-// SetSSELimits configures global and per-workspace SSE connection limits.
-// A value of 0 means unlimited.
-func (s *Server) SetSSELimits(global, perWorkspace int) {
+// SetSSELimits configures the streaming connection limits. A value of 0
+// means unlimited for any of them.
+//
+// `global` and `perUser` bound BOTH stream endpoints together —
+// /api/v1/events and /api/v1/events/stream — through one admission gate,
+// because a held connection costs the same process resources whichever
+// one opened it (BUG-2726). `perWorkspace` bounds only /api/v1/events,
+// which is the only workspace-scoped one.
+func (s *Server) SetSSELimits(global, perWorkspace, perUser int) {
 	s.sseMaxConnections = global
 	s.sseMaxPerWorkspace = perWorkspace
+	s.sseMaxPerUser = perUser
+	s.streamAdmit = newStreamAdmission(global, perUser)
+}
+
+// admission returns the shared stream admission gate, constructing an
+// unbounded one on first use so a Server built without SetSSELimits (every
+// test that does not care about limits) still has a working gate rather
+// than a nil check at each call site.
+//
+// SetSSELimits REPLACES the gate rather than reconfiguring it, which would
+// strand slots held by the old one. That is safe because limits are
+// configured before the listener starts; calling SetSSELimits on a server
+// already serving streams is not supported.
+func (s *Server) admission() *streamAdmission {
+	s.admitOnce.Do(func() {
+		if s.streamAdmit == nil {
+			s.streamAdmit = newStreamAdmission(s.sseMaxConnections, s.sseMaxPerUser)
+		}
+	})
+	return s.streamAdmit
 }
 
 // SetTrustedProxies configures which direct TCP peers are allowed to set
