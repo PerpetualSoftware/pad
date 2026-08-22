@@ -220,11 +220,11 @@ func serveCmd() *cobra.Command {
 			// used to bound only the first. Someone who tuned it for one
 			// endpoint should see the effective numbers without having to
 			// read release notes to find out anything changed.
-			slog.Info("Stream connection limits",
-				"global", cfg.SSEMaxConnections,
+			slog.Info("Stream connection limits (PER INSTANCE — not deployment-wide; there is no shared counter)",
+				"per_instance", cfg.SSEMaxConnections,
 				"per_workspace", cfg.SSEMaxPerWorkspace,
-				"per_user", cfg.SSEMaxPerUser,
-				"global_and_per_user_cover", "/api/v1/events + /api/v1/events/stream",
+				"per_principal", cfg.SSEMaxPerUser,
+				"per_instance_and_per_principal_cover", "/api/v1/events + /api/v1/events/stream",
 				"per_workspace_covers", "/api/v1/events")
 
 			// MCP tool-surface descriptor endpoint (PLAN-1888 / TASK-1891).

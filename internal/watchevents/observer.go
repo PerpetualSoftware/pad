@@ -41,6 +41,19 @@ type Observer interface {
 	// and not this seam's job to fix.
 	SequenceGap(missing int64)
 
+	// ResumeGap reports that a RESUME could not be served from this
+	// instance's view — the client is told sync_required and re-fetches.
+	//
+	// Separate from SequenceGap rather than folded into it, because an
+	// operator diagnoses them differently and one counter would conflate
+	// them. SequenceGap means "ids arrived here with a hole in them", a
+	// delivery fault. This one means "a client's cursor is outside what
+	// this instance can vouch for" — which happens for a hole, but also
+	// on a cold start, after an epoch change, and when the shared counter
+	// disagrees. It is the only one of the two that is always
+	// USER-VISIBLE, since it produces a resync.
+	ResumeGap()
+
 	// SequenceReset reports that the id space itself changed under this
 	// instance and the replay buffer was dropped. reason is bounded:
 	// "epoch_change" (the shared epoch key changed) or "counter_backwards"
@@ -102,6 +115,12 @@ func (o *observable) reportGap(missing int64) {
 func (o *observable) reportReset(reason string) {
 	if obs := o.observer(); obs != nil {
 		obs.SequenceReset(reason)
+	}
+}
+
+func (o *observable) reportResumeGap() {
+	if obs := o.observer(); obs != nil {
+		obs.ResumeGap()
 	}
 }
 

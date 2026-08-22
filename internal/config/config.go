@@ -98,9 +98,15 @@ type Config struct {
 	// database, such as a staging environment restored from a production
 	// dump. For that case it is a genuine cross-tenant leak.
 	//
-	// Changing it on a running deployment is a cutover, not a tweak: the
-	// bus counters carry Last-Event-ID meaning, so connected clients
-	// resync. Presence entries are transient and cost nothing.
+	// Changing it on a running deployment is a cutover, not a tweak, and
+	// the two streams behave DIFFERENTLY across it. The watch stream
+	// detects the changed id space through its epoch key and answers
+	// resumes with sync_required. The workspace activity stream does not:
+	// a client resuming against a fresh replay buffer is treated as
+	// caught up and silently misses the cutover window (BUG-2731,
+	// pre-existing — a replica restart does the same). Presence entries
+	// are transient and cost nothing either way. It also partitions a
+	// rolling upgrade in both directions; see docs/deployment.md.
 	RedisNamespace string `toml:"redis_namespace"`
 
 	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A

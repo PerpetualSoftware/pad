@@ -18,6 +18,7 @@ type recordingObserver struct {
 
 	dropped     map[string]int
 	gaps        int
+	resumeGaps  int
 	missed      int64
 	resets      map[string]int
 	loopExits   int
@@ -46,6 +47,13 @@ func (o *recordingObserver) SequenceGap(missing int64) {
 	o.totalEvents++
 }
 
+func (o *recordingObserver) ResumeGap() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.resumeGaps++
+	o.totalEvents++
+}
+
 func (o *recordingObserver) SequenceReset(reason string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -69,6 +77,7 @@ type observerCounts struct {
 	dropped     map[string]int
 	resets      map[string]int
 	gaps        int
+	resumeGaps  int
 	missed      int64
 	loopExits   int
 	totalEvents int
@@ -81,6 +90,7 @@ func (o *recordingObserver) snapshot() observerCounts {
 		dropped:     map[string]int{},
 		resets:      map[string]int{},
 		gaps:        o.gaps,
+		resumeGaps:  o.resumeGaps,
 		missed:      o.missed,
 		loopExits:   o.loopExits,
 		totalEvents: o.totalEvents,
@@ -335,4 +345,72 @@ func TestRedisBusCloseDoesNotReportAReceiveLoopExit(t *testing.T) {
 			t.Fatalf("iteration %d: a normal Close reported %d receive-loop exits, want 0 (%+v)", i, got.loopExits, got)
 		}
 	}
+}
+
+// TestRedisBusReportsResumeGaps covers the path codex round 4 found
+// uncounted: a resume this instance cannot serve sends the client
+// sync_required — the only gap shape that is always USER-VISIBLE — and
+// reported nothing, so an incident reading
+// pad_watchevents_sequence_gaps_total would have missed it entirely.
+//
+// Both legs, because "always resync" would pass the positive one alone
+// and is a different bug with the same counter reading.
+func TestRedisBusReportsResumeGaps(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a resume this instance cannot serve", func(t *testing.T) {
+		t.Parallel()
+		b, mr := newMiniredisBus(t, 64)
+		obs := newRecordingObserver()
+		b.SetObserver(obs)
+
+		ch := b.Subscribe()
+		if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+			t.Fatalf("premise publish: %v", err)
+		}
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatal("premise failed: the first notification never arrived")
+		}
+		b.Unsubscribe(ch)
+
+		// Id 2 exists as far as Redis is concerned and never reached us.
+		if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "2"); err != nil {
+			t.Fatalf("set counter: %v", err)
+		}
+
+		_, missed := b.SubscribeAndReplaySince(1)
+		if missed != nil {
+			t.Fatalf("premise failed: the resume was served rather than reported as a gap; got %+v", missed)
+		}
+		if got := obs.snapshot(); got.resumeGaps != 1 {
+			t.Fatalf("resumeGaps = %d, want 1 (%+v)", got.resumeGaps, got)
+		}
+	})
+
+	t.Run("a resume this instance can serve", func(t *testing.T) {
+		t.Parallel()
+		b, _ := newMiniredisBus(t, 64)
+		obs := newRecordingObserver()
+		b.SetObserver(obs)
+
+		ch := b.Subscribe()
+		if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+			t.Fatalf("premise publish: %v", err)
+		}
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatal("premise failed: the first notification never arrived")
+		}
+		b.Unsubscribe(ch)
+
+		if _, missed := b.SubscribeAndReplaySince(1); missed == nil {
+			t.Fatal("premise failed: a current instance reported a gap")
+		}
+		if got := obs.snapshot(); got.resumeGaps != 0 {
+			t.Fatalf("resumeGaps = %d on a servable resume, want 0 (%+v)", got.resumeGaps, got)
+		}
+	})
 }

@@ -166,8 +166,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if refusal != admissionRefusalNone {
 		total, perUser := s.admission().counts(principal)
 		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", string(refusal),
-			"global_current", total, "global_max", s.sseMaxConnections,
-			"user_current", perUser, "user_max", s.sseMaxPerUser)
+			"instance_current", total, "instance_max", s.sseMaxConnections,
+			"principal_current", perUser, "principal_max", s.sseMaxPerUser)
 		writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "SSE connection limit reached")
 		return
 	}
@@ -194,7 +194,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if s.sseMaxConnections > 0 {
 		total, _ := s.admission().counts("")
 		if total >= s.sseMaxConnections*80/100 {
-			slog.Warn("SSE connections approaching global limit", "current", total, "max", s.sseMaxConnections)
+			slog.Warn("SSE connections approaching this instance's limit", "current", total, "max", s.sseMaxConnections)
 		}
 	}
 

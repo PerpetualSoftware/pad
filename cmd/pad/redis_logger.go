@@ -20,11 +20,25 @@ import (
 //     here.
 //   - "unknown message type" — a protocol-level surprise on the subscription.
 //
-// Logged at WARN rather than ERROR: none of them is actionable on its own,
-// and go-redis also logs benign reconnect chatter through the same call.
-// The metrics are what to alert on; this is what to read afterwards.
+// ONE LEVEL FOR A MIXED STREAM, deliberately. go-redis routes a wide mix
+// through this single call — genuine failures (connection close failed,
+// re-authentication failed, a handler that could not register), state
+// changes, and informational fallbacks — with no severity attached and no
+// structure to key on. Enumerated rather than assumed: an earlier version
+// of this comment claimed the stream was mostly "benign reconnect
+// chatter", which was a guess.
+//
+// So everything lands at WARN, and the alternative was worse in both
+// directions: INFO would bury the dropped-message line this bridge exists
+// for, and classifying by matching the message TEXT would make Pad's log
+// levels depend on go-redis's prose — a dependency that breaks silently
+// on any upstream rewording.
+//
+// The `component` field is how an operator makes this routable: filter or
+// route on component=go-redis rather than alerting on all WARNs. The
+// METRICS are what to alert on; this is what to read afterwards.
 type redisSlogLogger struct{}
 
 func (redisSlogLogger) Printf(_ context.Context, format string, v ...interface{}) {
-	slog.Warn("redis: " + fmt.Sprintf(format, v...))
+	slog.Warn("redis: "+fmt.Sprintf(format, v...), "component", "go-redis")
 }

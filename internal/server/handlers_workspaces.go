@@ -155,7 +155,14 @@ func (s *Server) handleHealthReady(w http.ResponseWriter, r *http.Request) {
 		}
 		if status.Probed && !status.Reachable {
 			redisResp["degrades"] = []string{
-				"cross-instance activity events",
+				// NOT "cross-instance" — the activity bus does not fall
+				// back to a local fan-out when its Redis publish fails
+				// (internal/events/redis_bus.go: Publish logs and
+				// returns), so subscribers on THIS instance stop
+				// receiving too. An operator told only about
+				// cross-instance delivery would conclude local streams
+				// were healthy and look elsewhere.
+				"all activity events, including to clients on this instance",
 				"watch notifications",
 				"session presence and session-targeted push",
 			}

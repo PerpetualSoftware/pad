@@ -175,9 +175,9 @@ func (h *RedisHealth) probe(ctx context.Context) {
 	// warning had to be throttled for.
 	switch {
 	case !wasProbed && !ok:
-		slog.Error("redis: unreachable at startup; watch notifications, cross-instance events and session presence are degraded", "error", err)
+		slog.Error("redis: unreachable at startup; activity events stop for ALL clients (no local fan-out fallback), watch notifications and session presence are degraded", "error", err)
 	case wasProbed && was && !ok:
-		slog.Error("redis: became unreachable; watch notifications, cross-instance events and session presence are degraded", "error", err)
+		slog.Error("redis: became unreachable; activity events stop for ALL clients (no local fan-out fallback), watch notifications and session presence are degraded", "error", err)
 	case wasProbed && !was && ok:
 		slog.Info("redis: reachable again")
 	}

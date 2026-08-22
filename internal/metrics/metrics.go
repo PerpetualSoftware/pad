@@ -62,6 +62,14 @@ type Metrics struct {
 	WatchSequenceGapsTotal        prometheus.Counter
 	WatchNotificationsMissedTotal prometheus.Counter
 
+	// WatchResumeGapsTotal counts resumes this instance could not serve,
+	// each of which sends a client sync_required. Distinct from
+	// WatchSequenceGapsTotal: that one is a delivery fault, this one is
+	// the user-visible consequence of any cursor this instance cannot
+	// vouch for — a hole, a cold start, an epoch change, or a
+	// disagreeing shared counter.
+	WatchResumeGapsTotal prometheus.Counter
+
 	// WatchSequenceResetsTotal counts id-space changes (epoch change or
 	// the shared counter going backwards) — each one drops this
 	// instance's replay buffer, so resumes across it answer
@@ -73,10 +81,18 @@ type Metrics struct {
 	// fine and receives nothing.
 	WatchReceiveLoopExitsTotal prometheus.Counter
 
-	// StreamConnectionsActive counts every held streaming connection —
-	// BOTH /api/v1/events and /api/v1/events/stream — which is the
-	// population PAD_SSE_MAX_CONNECTIONS and PAD_SSE_MAX_PER_USER
-	// actually bound (BUG-2726).
+	// StreamConnectionsActive counts every held streaming connection on
+	// THIS INSTANCE — BOTH /api/v1/events and /api/v1/events/stream —
+	// which is the population PAD_SSE_MAX_CONNECTIONS and
+	// PAD_SSE_MAX_PER_USER actually bound (BUG-2726).
+	//
+	// Per instance, because the limits are: they are enforced in-process
+	// with no shared counter, so a three-replica deployment admits three
+	// times the configured number. Said here as well as in the Help
+	// string because "global" is what the config name suggests and a
+	// responder reading one replica's gauge against the configured
+	// number would conclude there was headroom the deployment does not
+	// have.
 	//
 	// SSEConnectionsActive above is NOT that number and never was: it is
 	// written by the events.EventBus wrapper, so it has only ever counted
@@ -89,10 +105,20 @@ type Metrics struct {
 	StreamConnectionsActive prometheus.Gauge
 
 	// SessionPresenceFailuresTotal counts failed presence operations by
-	// op. A sustained non-zero rate means sessions are missing from
-	// GET /api/v1/sessions and untargetable by a session-directed push,
-	// which is invisible to the user beyond a push that quietly reaches
-	// nobody.
+	// op. READ THE LABEL — the consequences differ, and in opposite
+	// directions, so a generic alert on the total leads a responder to
+	// the wrong conclusion:
+	//
+	//   register / renew  — the session is MISSING from
+	//                       GET /api/v1/sessions and untargetable by a
+	//                       session-directed push. Under-reporting.
+	//   deregister        — a DEAD session stays listed until its TTL, so
+	//                       the picker over-reports and a push aimed at
+	//                       it is accepted and reaches nobody.
+	//   list              — the read failed and the caller got a 503; no
+	//                       wrong answer was given, just no answer.
+	//   prune             — a stale index member survives; the next read
+	//                       skips it and the next prune retries. Benign.
 	SessionPresenceFailuresTotal *prometheus.CounterVec
 
 	// MCP traffic metrics (PLAN-943 TASK-961). Wired from
@@ -278,6 +304,11 @@ func New() *Metrics {
 		Help: "Notifications spanned by detected sequence gaps — how many were missed, where pad_watchevents_sequence_gaps_total counts how often.",
 	})
 
+	watchResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_resume_gaps_total",
+		Help: "Resumes this instance could not serve, each sending a client sync_required.",
+	})
+
 	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_watchevents_sequence_resets_total",
 		Help: "Times the notification id space changed under this instance, dropping its replay buffer, by reason.",
@@ -290,7 +321,7 @@ func New() *Metrics {
 
 	streamConnectionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pad_stream_connections_active",
-		Help: "Active streaming connections across both SSE endpoints — the population bounded by PAD_SSE_MAX_CONNECTIONS.",
+		Help: "Active streaming connections on THIS INSTANCE across both SSE endpoints — the population PAD_SSE_MAX_CONNECTIONS bounds. Limits are per instance; sum across replicas for the deployment total.",
 	})
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -303,6 +334,7 @@ func New() *Metrics {
 		watchNotificationsDroppedTotal,
 		watchSequenceGapsTotal,
 		watchNotificationsMissedTotal,
+		watchResumeGapsTotal,
 		watchSequenceResetsTotal,
 		watchReceiveLoopExitsTotal,
 		sessionPresenceFailuresTotal,
@@ -330,6 +362,7 @@ func New() *Metrics {
 		WatchNotificationsDroppedTotal: watchNotificationsDroppedTotal,
 		WatchSequenceGapsTotal:         watchSequenceGapsTotal,
 		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,
+		WatchResumeGapsTotal:           watchResumeGapsTotal,
 		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
 		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,
 		SessionPresenceFailuresTotal:   sessionPresenceFailuresTotal,

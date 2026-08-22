@@ -41,6 +41,10 @@ func (o *WatchEventsObserver) SequenceGap(missing int64) {
 	}
 }
 
+func (o *WatchEventsObserver) ResumeGap() {
+	o.m.WatchResumeGapsTotal.Inc()
+}
+
 func (o *WatchEventsObserver) SequenceReset(reason string) {
 	o.m.WatchSequenceResetsTotal.WithLabelValues(reason).Inc()
 }

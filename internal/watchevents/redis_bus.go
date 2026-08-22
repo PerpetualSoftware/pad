@@ -596,6 +596,7 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 	// this instance's replay untrustworthy for this cursor.
 	slog.Warn("watchevents: resume cannot be served from this instance's view; reporting a gap",
 		"since_id", sinceID, "highest_seen", held, "shared_counter", remote)
+	b.reportResumeGap()
 	return true
 }
 

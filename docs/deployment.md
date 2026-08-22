@@ -180,7 +180,9 @@ it** — the REST API, the web UI and every write path work with Redis down, so
 failing readiness over a Redis blip would pull healthy replicas out of the load
 balancer and turn a degraded feature into an outage. When Redis is unreachable
 the payload carries `redis.reachable: false`, the probe error, and a `degrades`
-list naming what is lost. The block is absent entirely when no Redis is
+list naming what is lost. Note what that list says about activity events: they
+stop for **all** clients, not only across instances — the activity bus does not
+fall back to a local fan-out when its publish fails. The block is absent entirely when no Redis is
 configured.
 
 Alert on these instead:
@@ -189,12 +191,13 @@ Alert on these instead:
 |--------|---------|
 | `pad_redis_up` | `0` when the last probe (every 15s) failed. Exported only when Redis is configured — absence means "no Redis", not "down" |
 | `pad_stream_connections_active` | Held streaming connections on this instance, across both SSE endpoints — the population the limits bound |
-| `pad_watchevents_sequence_gaps_total` | This instance missed notifications — a gap event |
+| `pad_watchevents_sequence_gaps_total` | This instance missed notifications — a delivery fault |
+| `pad_watchevents_resume_gaps_total` | Resumes this instance could not serve; each sends a client `sync_required`. The user-visible one |
 | `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber |
 | `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
-| `pad_session_presence_failures_total` | Sessions unlisted and untargetable by a directed push |
+| `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the consequences differ: `register`/`renew` under-report (a live session is unlisted and untargetable), `deregister` over-reports (a dead session stays listed and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign |
 
 **Avoid an evicting `maxmemory-policy` for Pad's Redis.**
 `docker-compose.prod.yml` sets `noeviction` for this reason; the plain

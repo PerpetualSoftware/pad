@@ -119,8 +119,8 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	if refusal != admissionRefusalNone {
 		total, perUser := s.admission().counts(user.ID)
 		slog.Warn("watch stream connection limit reached", "user_id", user.ID, "refused_by", string(refusal),
-			"global_current", total, "global_max", s.sseMaxConnections,
-			"user_current", perUser, "user_max", s.sseMaxPerUser)
+			"instance_current", total, "instance_max", s.sseMaxConnections,
+			"principal_current", perUser, "principal_max", s.sseMaxPerUser)
 		writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "SSE connection limit reached")
 		return
 	}
