@@ -121,7 +121,7 @@ func TestAStragglerFromAnEndedSubscriptionCannotVouchForTheNewOne(t *testing.T) 
 
 	ch := b.Subscribe("ws-1")
 	oldGen := b.currentSubGen("ws-1")
-	b.fanOutFromRedis(oldGen, "", Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(oldGen, 0, Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	// Everyone leaves; ids 101..500 are published elsewhere, unseen.
 	b.Unsubscribe(ch)
@@ -135,14 +135,14 @@ func TestAStragglerFromAnEndedSubscriptionCannotVouchForTheNewOne(t *testing.T) 
 	}
 
 	// NOW the old receive goroutine's in-flight message lands.
-	b.fanOutFromRedis(oldGen, "", Event{ID: 101, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(oldGen, 0, Event{ID: 101, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	if got := b.EventsSince("ws-1", 101); got != nil {
 		t.Fatalf("a message from an ended subscription must not establish coverage for the new one; got %d events", len(got))
 	}
 
 	// Control: a message on the CURRENT subscription does establish coverage.
-	b.fanOutFromRedis(newGen, "", Event{ID: 600, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(newGen, 0, Event{ID: 600, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	got := b.EventsSince("ws-1", 600)
 	if got == nil {
 		t.Fatal("a message on the live subscription must establish coverage")

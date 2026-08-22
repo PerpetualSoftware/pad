@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,12 +67,12 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 
 	t.Run("prefixed", func(t *testing.T) {
 		body, _ := json.Marshal(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-		epoch, ev, err := decodePayload("e-1|77|" + string(body))
+		epoch, ev, err := decodePayload("7|77|" + string(body))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if epoch != "e-1" {
-			t.Fatalf("epoch: want e-1, got %q", epoch)
+		if epoch != 7 {
+			t.Fatalf("epoch: want 7, got %d", epoch)
 		}
 		// The ID comes from the PREFIX, not the body — the body was
 		// marshalled before the ID existed.
@@ -88,8 +89,8 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if epoch != "" {
-			t.Fatalf("a bare payload carries no id-space information; got epoch %q", epoch)
+		if epoch != 0 {
+			t.Fatalf("a bare payload carries no id-space information; got epoch %d", epoch)
 		}
 		if ev.ID != 42 {
 			t.Fatalf("id: want 42 from the body, got %d", ev.ID)
@@ -107,19 +108,22 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if epoch != "" || ev.ID != 9 || ev.Title != "a|b|c" {
-			t.Fatalf("want bare decode with title intact, got epoch=%q id=%d title=%q", epoch, ev.ID, ev.Title)
+		if epoch != 0 || ev.ID != 9 || ev.Title != "a|b|c" {
+			t.Fatalf("want bare decode with title intact, got epoch=%d id=%d title=%q", epoch, ev.ID, ev.Title)
 		}
 	})
 
 	t.Run("rejections", func(t *testing.T) {
 		body, _ := json.Marshal(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 		for name, payload := range map[string]string{
-			"empty epoch":       "|77|" + string(body),
-			"non-integer id":    "e-1|seventy|" + string(body),
-			"body is not JSON":  "e-1|77|not json",
-			"neither form":      "not json at all",
-			"prefix without id": "e-1|" + string(body),
+			"empty epoch":         "|77|" + string(body),
+			"non-integer epoch":   "e-1|77|" + string(body),
+			"zero epoch sentinel": "0|77|" + string(body),
+			"negative epoch":      "-3|77|" + string(body),
+			"non-integer id":      "7|seventy|" + string(body),
+			"body is not JSON":    "7|77|not json",
+			"neither form":        "not json at all",
+			"prefix without id":   "7|" + string(body),
 		} {
 			if _, _, err := decodePayload(payload); err == nil {
 				t.Errorf("%s: want an error, got none", name)
@@ -141,8 +145,8 @@ func TestPhaseTwoPublishesThePrefixedFormAndPhaseOneDoesNot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a flipped instance must emit a decodable payload: %v", err)
 		}
-		if epoch == "" {
-			t.Fatal("a flipped instance must emit an epoch")
+		if epoch <= 0 {
+			t.Fatalf("a flipped instance must emit a positive epoch generation, got %d", epoch)
 		}
 		if ev.ID != 1 {
 			t.Fatalf("first id from a fresh counter must be 1, got %d", ev.ID)
@@ -195,9 +199,10 @@ func TestTheDedupeTokenMakesARetriedPublishANoOp(t *testing.T) {
 		channel,
 		redisns.Default.Name(redisEpochSuffix),
 		redisns.Default.Name(redisDedupeSuffix) + "fixed-token",
+		redisns.Default.Name(redisEpochGenSuffix),
 	}
 
-	first, err := publishScript.Run(b.ctx, b.client, keys, string(body), "epoch-candidate", redisDedupeTTLSeconds).Int64()
+	first, err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Int64()
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -205,7 +210,7 @@ func TestTheDedupeTokenMakesARetriedPublishANoOp(t *testing.T) {
 		t.Fatalf("first run must assign id 1, got %d", first)
 	}
 
-	second, err := publishScript.Run(b.ctx, b.client, keys, string(body), "epoch-candidate", redisDedupeTTLSeconds).Int64()
+	second, err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Int64()
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -254,7 +259,7 @@ func TestAdoptingAnEpochOntoEmptyBuffersIsNotAReset(t *testing.T) {
 	b.SetObserver(obs)
 
 	_, gen := liveGen(t, b, "ws-1")
-	b.fanOutFromRedis(gen, "epoch-a", Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 1, Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	if _, resets := obs.snapshot(); len(resets) != 0 {
 		t.Fatalf("learning an epoch on an empty bus must not report a reset, got %v", resets)
@@ -276,12 +281,12 @@ func TestAdoptingAnEpochOntoBufferedEventsIsAReset(t *testing.T) {
 	b.SetObserver(obs)
 
 	_, gen := liveGen(t, b, "ws-1")
-	b.fanOutFromRedis(gen, "", Event{ID: 5, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 0, Event{ID: 5, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	if got := b.EventsSince("ws-1", 5); got == nil {
 		t.Fatal("fixture: the bare event must establish coverage first")
 	}
 
-	b.fanOutFromRedis(gen, "epoch-a", Event{ID: 6, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 1, Event{ID: 6, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	_, resets := obs.snapshot()
 	if len(resets) != 1 || resets[0] != ResetReasonEpochChange {
@@ -305,17 +310,17 @@ func TestAnEpochChangeDropsEveryWorkspaceAndClearsTheFloor(t *testing.T) {
 	_, gen1 := liveGen(t, b, "ws-1")
 	_, gen2 := liveGen(t, b, "ws-2")
 
-	b.fanOutFromRedis(gen1, "epoch-a", Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
-	b.fanOutFromRedis(gen2, "epoch-a", Event{ID: 101, Type: ItemUpdated, WorkspaceID: "ws-2"})
+	b.fanOutFromRedis(gen1, 1, Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen2, 1, Event{ID: 101, Type: ItemUpdated, WorkspaceID: "ws-2"})
 
 	// A backwards id inside epoch-a raises the floor to 101.
-	b.fanOutFromRedis(gen1, "epoch-a", Event{ID: 50, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen1, 1, Event{ID: 50, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	if b.discardedHighWater != 101 {
 		t.Fatalf("fixture: floor should stand at 101, got %d", b.discardedHighWater)
 	}
 
 	// Now the space itself changes.
-	b.fanOutFromRedis(gen1, "epoch-b", Event{ID: 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen1, 2, Event{ID: 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	if b.discardedHighWater != 0 {
 		t.Fatalf("an epoch change must clear the floor, got %d", b.discardedHighWater)
@@ -341,8 +346,8 @@ func TestACounterGoingBackwardsRaisesTheFloor(t *testing.T) {
 	b.SetObserver(obs)
 	_, gen := liveGen(t, b, "ws-1")
 
-	b.fanOutFromRedis(gen, "", Event{ID: 200, Type: ItemUpdated, WorkspaceID: "ws-1"})
-	b.fanOutFromRedis(gen, "", Event{ID: 150, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 0, Event{ID: 200, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 0, Event{ID: 150, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	_, resets := obs.snapshot()
 	if len(resets) != 1 || resets[0] != ResetReasonCounterBackward {
@@ -355,7 +360,7 @@ func TestACounterGoingBackwardsRaisesTheFloor(t *testing.T) {
 	}
 	// Control: once the sequence climbs past the discarded mark, resumes work
 	// again — the refusal is bounded, not permanent.
-	b.fanOutFromRedis(gen, "", Event{ID: 201, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 0, Event{ID: 201, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	if got := b.EventsSince("ws-1", 201); got == nil {
 		t.Fatal("a cursor above the discarded high-water mark must be served")
 	}
@@ -371,9 +376,9 @@ func TestABarePayloadAfterAdoptionLeavesTheEpochAlone(t *testing.T) {
 	b.SetObserver(obs)
 	_, gen := liveGen(t, b, "ws-1")
 
-	b.fanOutFromRedis(gen, "epoch-a", Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1"})
-	b.fanOutFromRedis(gen, "", Event{ID: 11, Type: ItemUpdated, WorkspaceID: "ws-1"})
-	b.fanOutFromRedis(gen, "epoch-a", Event{ID: 12, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 1, Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 0, Event{ID: 11, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 1, Event{ID: 12, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	if _, resets := obs.snapshot(); len(resets) != 0 {
 		t.Fatalf("a mixed-format stream inside one epoch must report no resets, got %v", resets)
@@ -381,8 +386,8 @@ func TestABarePayloadAfterAdoptionLeavesTheEpochAlone(t *testing.T) {
 	if got := b.EventsSince("ws-1", 10); got == nil || len(got) != 2 {
 		t.Fatalf("coverage must span the mixed-format run, got %v", got)
 	}
-	if b.epoch != "epoch-a" {
-		t.Fatalf("the adopted epoch must survive a bare message, got %q", b.epoch)
+	if b.epoch != 1 {
+		t.Fatalf("the adopted epoch must survive a bare message, got %d", b.epoch)
 	}
 }
 
@@ -444,4 +449,103 @@ func TestAPhaseOneRestartClearsAStaleEpoch(t *testing.T) {
 	if after != fresh {
 		t.Fatalf("a phase-1 publish on a climbing counter must leave the epoch alone; %q became %q", fresh, after)
 	}
+}
+
+func TestAStragglerFromAnAbandonedIDSpaceIsDiscarded(t *testing.T) {
+	// codex round 3. Each workspace has its own subscription and its own
+	// receive goroutine, and Redis orders messages within a channel but not
+	// ACROSS them — so a message published before a rotation, on workspace A's
+	// channel, can arrive after the rotation was learned from workspace B's.
+	//
+	// With an unordered epoch this was indistinguishable from a genuine
+	// rotation: the bus flipped BACK to the dead generation, dropped every
+	// buffer a second time, and would have appended a dead-space id into the
+	// fresh buffer.
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	_, genA := liveGen(t, b, "ws-a")
+	_, genB := liveGen(t, b, "ws-b")
+
+	// Generation 1 is learned and buffered.
+	b.fanOutFromRedis(genA, 1, Event{ID: 500, Type: ItemUpdated, WorkspaceID: "ws-a"})
+	// Generation 2 arrives on the other workspace: a genuine rotation.
+	b.fanOutFromRedis(genB, 2, Event{ID: 1, Type: ItemUpdated, WorkspaceID: "ws-b"})
+
+	_, resets := obs.snapshot()
+	if len(resets) != 1 || resets[0] != ResetReasonEpochChange {
+		t.Fatalf("fixture: the rotation must report exactly one %s, got %v", ResetReasonEpochChange, resets)
+	}
+	if b.epoch != 2 {
+		t.Fatalf("fixture: the bus should have adopted generation 2, got %d", b.epoch)
+	}
+
+	// NOW the straggler: published under generation 1, delivered late.
+	b.fanOutFromRedis(genA, 1, Event{ID: 501, Type: ItemUpdated, WorkspaceID: "ws-a"})
+
+	if b.epoch != 2 {
+		t.Fatalf("a straggler from an abandoned generation must not move the epoch; it became %d", b.epoch)
+	}
+	if _, resets := obs.snapshot(); len(resets) != 1 {
+		t.Fatalf("a straggler must not cause a second reset, got %v", resets)
+	}
+	// And it must not be BUFFERED, or the dead space's id sits in a live
+	// buffer and a resume can be answered across the boundary.
+	if rb, ok := b.replayBuffers["ws-a"]; ok && rb.count != 0 {
+		t.Fatalf("the straggler must not be appended; ws-a's buffer holds %d events", rb.count)
+	}
+
+	// Control: the live generation still buffers normally, so the discard is
+	// scoped to the abandoned space rather than to the workspace.
+	b.fanOutFromRedis(genA, 2, Event{ID: 2, Type: ItemUpdated, WorkspaceID: "ws-a"})
+	if got := b.EventsSince("ws-a", 2); got == nil {
+		t.Fatal("a message in the live generation must establish coverage")
+	}
+}
+
+func TestEpochGenerationsAreMintedByRedisAndIncrease(t *testing.T) {
+	// The property the whole ordering rule rests on: a rotation's generation
+	// is always higher than the one it replaces, and it comes from Redis
+	// rather than from any instance's clock or uuid. Driven through two real
+	// resets rather than by poking the key.
+	b, mr := newFlippedRedisBus(t)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+	seqKey := redisns.Default.Name(redisSeqSuffix)
+
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	first, err := mr.Get(epochKey)
+	if err != nil {
+		t.Fatalf("read epoch: %v", err)
+	}
+
+	mr.Del(seqKey)
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	second, err := mr.Get(epochKey)
+	if err != nil {
+		t.Fatalf("read epoch: %v", err)
+	}
+
+	mr.Del(seqKey)
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	third, err := mr.Get(epochKey)
+	if err != nil {
+		t.Fatalf("read epoch: %v", err)
+	}
+
+	g1, g2, g3 := mustParseGeneration(t, first), mustParseGeneration(t, second), mustParseGeneration(t, third)
+	if !(g1 < g2 && g2 < g3) {
+		t.Fatalf("generations must strictly increase across resets, got %d, %d, %d", g1, g2, g3)
+	}
+	if g1 <= 0 {
+		t.Fatalf("a generation must be positive (zero is the no-information sentinel), got %d", g1)
+	}
+}
+
+func mustParseGeneration(t *testing.T, s string) int64 {
+	t.Helper()
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatalf("epoch %q is not an integer generation: %v", s, err)
+	}
+	return n
 }

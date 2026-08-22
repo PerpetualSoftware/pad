@@ -276,7 +276,7 @@ func TestAStaleGoroutineCannotDropTheReplacementBuffer(t *testing.T) {
 	if newGen == oldGen {
 		t.Fatal("fixture drifted: resubscribing must produce a new generation")
 	}
-	b.fanOutFromRedis(newGen, "", Event{ID: 500, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(newGen, 0, Event{ID: 500, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	// NOW the old goroutine finally notices its connection died.
 	b.dropWorkspaceCoverage("ws-1", ResetReasonSubscriptionResumed, oldGen)

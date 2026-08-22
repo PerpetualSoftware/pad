@@ -332,11 +332,19 @@ though nothing was missed. Numeric detection alone cannot see it: by the time
 the new sequence passes the replica's high-water mark, it looks like ordinary
 progress.
 
-The fix gives each ID space an **epoch** — an opaque token minted with the
-space and carried on every published message, as a `<epoch>|<id>|<json>`
-prefix. A replica that sees the epoch change drops its replay buffers and
-answers resumes across the change with `sync_required`, which is honest rather
-than silent.
+The fix gives each ID space an **epoch** — a monotonic generation number,
+minted by Redis when the space is created and carried on every published
+message as a `<epoch>|<id>|<json>` prefix. A replica that sees a HIGHER
+generation drops its replay buffers and answers resumes across the change with
+`sync_required`, which is honest rather than silent. A message carrying a
+LOWER generation is a straggler from a space that has been abandoned, and is
+discarded rather than delivered.
+
+The generation is a number rather than an opaque token so the two spaces can
+be ORDERED. Workspaces have independent subscriptions and Redis does not order
+messages across channels, so a pre-rotation message on one channel can arrive
+after a post-rotation message on another; with an unordered token that is
+indistinguishable from a second rotation.
 
 **It rolls out in two phases, and the order is not optional.**
 
@@ -372,8 +380,8 @@ Two things about rolling back that are easy to get wrong:
   flipped instance is still publishing drops events on the old one — the same
   asymmetry that makes the upgrade two phases, in reverse.
 
-There is no Redis or database migration in either direction. The epoch key is
-created by the first flipped publisher; a phase-1 instance deletes it if it
+There is no Redis or database migration in either direction. The epoch key and
+its generation counter are created by the first flipped publisher; a phase-1 instance deletes it if it
 ever sees the sequence counter restart, so a counter that is reset while the
 deployment sits on phase 1 does not leave a stale epoch for a later phase 2 to
 adopt.
@@ -381,7 +389,10 @@ adopt.
 **What you should see when phase 2 lands.** The first flipped message reaches
 each replica and, if that replica had already buffered un-prefixed events, it
 drops its buffers once and records
-`pad_event_sequence_resets_total{reason="epoch_change"}`. Clients resuming
+`pad_event_sequence_resets_total{reason="epoch_change"}`. Do not delete the
+generation counter (`<namespace>event_epoch_gen`) by hand: it is what makes
+one ID space orderable against the next, and resetting it can make a genuine
+rotation look like a straggler and be ignored. Clients resuming
 across that moment get `sync_required` and re-fetch. **One drop per replica
 per roll** — if the counter keeps climbing, something is deleting the epoch or
 sequence key repeatedly; check `maxmemory-policy` against the events keyspace

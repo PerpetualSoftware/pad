@@ -70,6 +70,12 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	if mr.Exists("pad:event_epoch") {
 		t.Errorf("the namespaced bus also wrote the DEFAULT epoch pad:event_epoch")
 	}
+	if !mr.Exists("pad:inst-b:event_epoch_gen") {
+		t.Errorf("namespaced epoch generation pad:inst-b:event_epoch_gen does not exist; keys present: %v", mr.Keys())
+	}
+	if mr.Exists("pad:event_epoch_gen") {
+		t.Errorf("the namespaced bus also wrote the DEFAULT generation counter pad:event_epoch_gen")
+	}
 	// The dedupe token carries a random suffix, so it is matched by prefix.
 	var namespacedDedupe, defaultDedupe int
 	for _, k := range mr.Keys() {
