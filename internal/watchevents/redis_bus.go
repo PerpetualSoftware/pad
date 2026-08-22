@@ -750,6 +750,37 @@ func (b *RedisBus) receiveMessages() {
 				// publishes, which come back through Redis like everyone
 				// else's. Silence was the original behaviour and made
 				// that state indistinguishable from a quiet workspace.
+				//
+				// UNLESS WE ARE SHUTTING DOWN (codex round 1 P2). Close
+				// cancels b.ctx AND closes the pubsub, so both cases of
+				// this select can be ready at once, and Go picks between
+				// ready cases at RANDOM — an ordinary shutdown could then
+				// log an ERROR and bump a counter documented to mean
+				// "non-zero outside shutdown". Re-checking the context
+				// disambiguates what the select cannot.
+				//
+				// MEASURED, and the honest scope is narrower than the
+				// paragraph above implies. With this guard removed, 200
+				// Close cycles under publish traffic reported ZERO false
+				// exits — and removing it AND reversing Close's ordering
+				// (pubsub first, then cancel) still produced none. Close
+				// waits on the receive goroutine, which observes the
+				// cancelled context either way, so the ambiguous state is
+				// not reachable through Close today.
+				//
+				// So this is DEFENCE, not a fix for observed behaviour,
+				// and NO TEST FAILS IF IT IS DELETED. It is kept because
+				// select's randomness is real and the guard makes the
+				// outcome independent of an ordering that a future edit
+				// could change without anyone noticing the coupling. Do
+				// not read the test named below as pinning it:
+				// TestRedisBusCloseDoesNotReportAReceiveLoopExit asserts
+				// that a normal Close is silent, and it catches the
+				// removal of this select's ctx case (verified by
+				// mutation) — not the removal of these three lines.
+				if b.ctx.Err() != nil {
+					return
+				}
 				slog.Error("watchevents: Redis subscription closed; this instance will receive no further notifications " +
 					"(publishes still succeed, so nothing else will report this)")
 				b.reportReceiveLoopExited()

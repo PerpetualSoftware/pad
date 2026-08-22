@@ -36,8 +36,16 @@ type Metrics struct {
 	// RedisUp is written by internal/server's health prober, NOT sampled
 	// on scrape: a collector that dials on every scrape turns a monitoring
 	// system into a load generator and makes the metric's value depend on
-	// who is asking. It is 1 when the last probe succeeded, 0 when it
-	// failed, and absent entirely when the deployment has no Redis.
+	// who is asking. It is 1 when the last probe succeeded and 0 when it
+	// failed.
+	//
+	// REGISTERED SEPARATELY, via RegisterRedisUp, so a deployment with no
+	// Redis omits the series entirely rather than exporting a permanent 0
+	// (codex round 1 P2). A 0 means "Redis is down" to anything scraping
+	// it, so registering unconditionally would have every single-process
+	// binary alerting on an outage of a dependency it does not have.
+	// Absence is the honest signal for "not applicable", and it matches
+	// /health/ready, which omits its redis block on the same condition.
 	RedisUp prometheus.Gauge
 
 	// WatchNotificationsDroppedTotal counts notifications this instance
@@ -271,7 +279,6 @@ func New() *Metrics {
 	}, []string{"op"})
 
 	reg.MustRegister(
-		redisUp,
 		watchNotificationsDroppedTotal,
 		watchSequenceGapsTotal,
 		watchNotificationsMissedTotal,
@@ -320,6 +327,17 @@ func New() *Metrics {
 		OAuthTokenRevocationsTotal: oauthTokenRevocationsTotal,
 		OAuthTokenTTLSeconds:       oauthTokenTTLSeconds,
 	}
+}
+
+// RegisterRedisUp registers the pad_redis_up gauge. Called only by a
+// deployment that actually has Redis (cmd/pad/cmd_server.go, inside the
+// PAD_REDIS_URL branch) so that a binary without it exports no series at
+// all rather than a permanent 0 — see the RedisUp field comment.
+//
+// Setting m.RedisUp before this is called is harmless: an unregistered
+// Prometheus gauge accepts writes and is simply never gathered.
+func (m *Metrics) RegisterRedisUp() {
+	m.Registry.MustRegister(m.RedisUp)
 }
 
 // RegisterDBCollector registers a callback-based collector that exposes

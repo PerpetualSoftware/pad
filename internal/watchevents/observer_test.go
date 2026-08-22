@@ -279,3 +279,60 @@ func TestRedisBusReportsReceiveLoopExit(t *testing.T) {
 	}
 	t.Fatalf("receive loop exit was never reported (%+v)", obs.snapshot())
 }
+
+// TestRedisBusCloseDoesNotReportAReceiveLoopExit is the counterweight to
+// the test above: a NORMAL shutdown must be silent, or
+// pad_watchevents_receive_loop_exits_total ticks on every deploy and the
+// meaning it is documented to carry ("non-zero outside shutdown") is
+// worthless.
+//
+// WHAT IT ACTUALLY DISCRIMINATES, measured rather than claimed. Removing
+// the receive loop's ctx case — so the loop can only ever exit through
+// the closed channel — makes this test fail. That is the regression it
+// guards.
+//
+// It does NOT discriminate the ctx re-check inside the closed-channel
+// branch: with that guard removed the test still passes, and so does a
+// 200-iteration probe under publish traffic, with Close's ordering
+// reversed as well. Close waits on the receive goroutine and the
+// goroutine observes the cancelled context either way, so the ambiguous
+// state codex round 1 identified is not reachable through Close today.
+// The guard is kept as defence against a future reordering; this test is
+// not evidence for it, and the code comment there says so.
+//
+// The loop over iterations is what would surface a nondeterministic
+// version of the failure rather than a one-in-two flake.
+func TestRedisBusCloseDoesNotReportAReceiveLoopExit(t *testing.T) {
+	t.Parallel()
+
+	const iterations = 40
+	for i := 0; i < iterations; i++ {
+		mr := miniredis.RunT(t)
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		b := NewRedisBusWithReplaySize(client, 8)
+		obs := newRecordingObserver()
+		b.SetObserver(obs)
+
+		// PREMISE: the loop is genuinely running, so a clean shutdown is
+		// what is being measured rather than a bus that never started.
+		ch := b.Subscribe()
+		if err := b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1"}); err != nil {
+			t.Fatalf("iteration %d premise publish: %v", i, err)
+		}
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("iteration %d premise failed: no round-trip delivery", i)
+		}
+
+		b.Close()
+		_ = client.Close()
+
+		// Close waits for the receive goroutine, so by here the loop has
+		// taken whichever branch it was going to take.
+		if got := obs.snapshot(); got.loopExits != 0 {
+			t.Fatalf("iteration %d: a normal Close reported %d receive-loop exits, want 0 (%+v)", i, got.loopExits, got)
+		}
+	}
+}

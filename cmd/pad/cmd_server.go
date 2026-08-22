@@ -769,6 +769,10 @@ func serveCmd() *cobra.Command {
 			// Only wired when there IS a Redis, so a single-process
 			// deployment reports no redis block rather than a false one.
 			if watchRedis != nil {
+				// Registered here rather than in metrics.New so a
+				// Redis-less deployment exports no pad_redis_up series at
+				// all — a permanent 0 would read as an outage.
+				m.RegisterRedisUp()
 				redisHealth := server.NewRedisHealth(watchRedis, func(ok bool) {
 					if ok {
 						m.RedisUp.Set(1)

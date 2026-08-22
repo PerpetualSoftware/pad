@@ -717,6 +717,16 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		if !ok {
 			// Same ruling as the decode failure below: a value we cannot
 			// interpret is an UNKNOWN registry state, not an absent session.
+			//
+			// Counted as a list failure for consistency with the decode
+			// branch below (codex round 1 P2), though this arm is
+			// DEFENSIVE and not reachable through MGET: Redis answers nil
+			// for a key holding a non-string value, so a wrong-typed entry
+			// arrives as nil and is handled by the expired branch above.
+			// Verified rather than assumed — a wrong-typed key returns
+			// [nil] with no error. No test drives this line, and the
+			// observer test says so rather than pretending otherwise.
+			p.reportOpFailed(PresenceOpList)
 			return nil, fmt.Errorf("session presence: session entry for %s is not a string", ids[i])
 		}
 		var sess LiveSession
@@ -739,6 +749,14 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 			// right.
 			slog.Warn("session presence: undecodable session entry",
 				"error", err, "user_id", userID, "session_id", ids[i])
+			// Counted as a list failure (codex round 1 P2). This path
+			// returns the same 503-producing error as a transport failure
+			// and blinds the same picker; leaving it uncounted would make
+			// pad_session_presence_failures_total under-report exactly the
+			// corrupt-data case, which is the one an operator is least
+			// likely to find any other way — a dead Redis is obvious, a
+			// corrupt row is not.
+			p.reportOpFailed(PresenceOpList)
 			return nil, fmt.Errorf("session presence: decode entry %s: %w", ids[i], err)
 		}
 		out = append(out, sess)
