@@ -1045,3 +1045,70 @@ func TestAColdJoinAcceptsTheAdjacentCursor(t *testing.T) {
 		t.Fatalf("a cursor with room for a missed event must be a gap, got %d events", len(got))
 	}
 }
+
+func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
+	// codex round 15. Two payloads decode without error and are not a usable
+	// event: one that is valid JSON and empty, and one naming a different
+	// workspace from the channel it arrived on. Both used to be skipped
+	// silently — the first fell out of fan-out because a zero Event has no
+	// workspace to match a subscription, the second would have been appended
+	// to the OTHER workspace's buffer.
+	for _, tc := range []struct {
+		name    string
+		payload func(epoch int64) string
+	}{
+		{name: "valid JSON, empty event", payload: func(e int64) string {
+			return strconv.FormatInt(e, 10) + "|4242|null"
+		}},
+		{name: "body names a different workspace", payload: func(e int64) string {
+			body, _ := json.Marshal(Event{ID: 0, Type: ItemUpdated, WorkspaceID: "ws-elsewhere"})
+			return strconv.FormatInt(e, 10) + "|4243|" + string(body)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := newFlippedRedisBus(t)
+			obs := &recordingObserver{}
+			b.SetObserver(obs)
+
+			ch := b.Subscribe("ws-1")
+			defer b.Unsubscribe(ch)
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+			var first Event
+			select {
+			case first = <-ch:
+			case <-time.After(3 * time.Second):
+				t.Fatal("the first event never arrived")
+			}
+			b.mu.Lock()
+			epoch := b.epoch
+			b.mu.Unlock()
+			// PREMISE: coverage exists, and we know the live generation, so
+			// the payload below is refused for its SHAPE rather than for
+			// carrying a stale epoch.
+			if got := b.EventsSince("ws-1", first.ID); got == nil {
+				t.Fatal("fixture: coverage must be established first")
+			}
+			if epoch <= 0 {
+				t.Fatalf("fixture: expected an adopted generation, got %d", epoch)
+			}
+
+			if err := b.client.Publish(context.Background(),
+				redisns.Default.Name(redisChannelSuffix)+"ws-1", tc.payload(epoch)).Err(); err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) && b.EventsSince("ws-1", first.ID) != nil {
+				time.Sleep(2 * time.Millisecond)
+			}
+			if got := b.EventsSince("ws-1", first.ID); got != nil {
+				t.Fatalf("a payload we cannot use is a hole; the resume must be a gap, got %d events", len(got))
+			}
+			_, resets := obs.snapshot()
+			if len(resets) == 0 || resets[len(resets)-1] != ResetReasonUndecodableMessage {
+				t.Fatalf("want %s, got %v", ResetReasonUndecodableMessage, resets)
+			}
+		})
+	}
+}

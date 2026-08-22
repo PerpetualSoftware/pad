@@ -770,6 +770,33 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 					b.dropWorkspaceCoverage(workspaceID, ResetReasonUndecodableMessage, gen)
 					continue
 				}
+				if event.WorkspaceID != workspaceID {
+					// THE CHANNEL IS THE AUTHORITY ON WHOSE EVENT THIS IS, not
+					// the body (codex round 15). Two things arrive here that
+					// decode without error and are not a usable event:
+					//
+					//   - a payload that is valid JSON and empty — "null" or
+					//     "{}" both unmarshal into a zero Event, whose
+					//     workspace is "". Fan-out then finds no subscription
+					//     for "" and returned early WITHOUT ending coverage,
+					//     so the buffer went on looking continuous across an
+					//     event it had skipped.
+					//
+					//   - a body naming a DIFFERENT workspace from the channel
+					//     it arrived on. Fan-out indexes by the body's
+					//     workspace, so such a message would have been
+					//     appended to that OTHER workspace's buffer, with an
+					//     id from a stream that workspace's subscribers are
+					//     not reading.
+					//
+					// Both are the same failure as an unparseable payload —
+					// something reached this channel that this installation
+					// did not publish — so they take the same route.
+					slog.Error("Redis event names a different workspace than the channel it arrived on; ending this workspace's replay coverage",
+						"channel", msg.Channel, "channel_workspace", workspaceID, "event_workspace", event.WorkspaceID, "id", event.ID)
+					b.dropWorkspaceCoverage(workspaceID, ResetReasonUndecodableMessage, gen)
+					continue
+				}
 				b.fanOutFromRedis(gen, epoch, event)
 			}
 		}
