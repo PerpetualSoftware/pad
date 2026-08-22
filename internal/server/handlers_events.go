@@ -49,8 +49,12 @@ func init() {
 // than the historical evicted-buffer case: a buffer whose coverage starts
 // above the cursor, no buffer at all (a cold start, a restart, a scale-up, or
 // simply the first connection to this workspace on this instance), a workspace
-// whose subscription was stopped, and an ID-space reset. pad_event_resume_gaps_total
-// counts them; the bus decides which, and from here they are one answer.
+// whose subscription was stopped or reconnected, and a cursor this handler
+// could not parse. pad_event_resume_gaps_total counts them; the bus decides
+// most, and from here they are one answer.
+//
+// NOT an ID-space reset: detecting a restarted Redis counter needs identity
+// the replay buffer does not carry, so that case is still silent. BUG-2736.
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// SSE requires the event bus
 	if s.events == nil {

@@ -217,8 +217,14 @@ type replayBuffer struct {
 	// rollout, which is a migration rather than a bug fix.
 	//
 	// Invalidated only by lifecycle facts this instance can actually
-	// observe — losing the workspace's subscription, or the ID space
-	// resetting underneath it — never by a gap between IDs.
+	// observe — today, losing the workspace's subscription (it stopping, or
+	// a pub/sub reconnect) — never by a gap between IDs.
+	//
+	// AN ID-SPACE RESET IS NOT ON THAT LIST, deliberately. Detecting one
+	// needs the identity this buffer does not carry, so a reset Redis counter
+	// can still leave two incarnations' IDs in one buffer. That is BUG-2736's
+	// unit, and this comment names the omission rather than letting a reader
+	// assume the coverage rule covers more than it does.
 	//
 	// IT BOUNDS THE START OF COVERAGE, NOT ITS CONTINUITY, and that limit is
 	// structural rather than an omission: a message lost mid-subscription

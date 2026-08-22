@@ -542,8 +542,8 @@ func (b *RedisBus) fanOut(gen int64, event Event) {
 	}()
 
 	// Events received via Redis pub/sub already carry a global ID assigned by
-	// publishScript. We use that ID directly so all instances share the same
-	// ID space for Last-Event-ID replay.
+	// the publishing instance via Redis INCR. We use that ID directly so all
+	// instances share the same ID space for Last-Event-ID replay.
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
