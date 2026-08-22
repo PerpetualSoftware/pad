@@ -87,6 +87,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across both `/api/v1/events` and `/api/v1/events/stream` |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
+| `PAD_EVENTS_PUBLISH_EPOCH` | `false` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. **Only set this once every instance runs a binary that accepts it** — see *Event ID-space migration* below. Ignored without Redis. |
 
 #### Streaming connection limits
 
@@ -314,6 +315,84 @@ used — so a broadcast reporting `0` during the rollout may well have been
 delivered. Re-sending one is a second instruction the receiving agent will act
 on twice. Only re-send a push the server told you it skipped. There is no Redis or database migration; the
 registry's keys are transient and expire on their own TTL.
+
+#### Event ID-space migration (`PAD_EVENTS_PUBLISH_EPOCH`)
+
+Events on the workspace activity stream (`GET /api/v1/events`) carry a
+`Last-Event-ID` so a reconnecting client can be replayed what it missed. With
+Redis, every instance shares one counter, so those IDs are meaningful across
+replicas.
+
+**The problem this migration fixes.** If that shared counter is ever reset —
+the key evicted under `maxmemory`, deleted by hand, a fresh Redis after a
+restore — IDs start again from 1. A replica that was buffering the old
+sequence cannot tell the new 101 from the old 101, so it can merge two ID
+spaces into one replay buffer and answer a resume across the boundary as
+though nothing was missed. Numeric detection alone cannot see it: by the time
+the new sequence passes the replica's high-water mark, it looks like ordinary
+progress.
+
+The fix gives each ID space an **epoch** — an opaque token minted with the
+space and carried on every published message, as a `<epoch>|<id>|<json>`
+prefix. A replica that sees the epoch change drops its replay buffers and
+answers resumes across the change with `sync_required`, which is honest rather
+than silent.
+
+**It rolls out in two phases, and the order is not optional.**
+
+| Phase | What you do | What instances publish | What they accept |
+|-------|-------------|------------------------|------------------|
+| 1 | Roll the new binary everywhere. Leave `PAD_EVENTS_PUBLISH_EPOCH` unset. | The historical bare JSON | Both forms |
+| 2 | Set `PAD_EVENTS_PUBLISH_EPOCH=true` and roll again. | `<epoch>\|<id>\|<json>` | Both forms |
+
+The asymmetry that makes two phases necessary: an instance running a
+**pre-phase-1** binary cannot parse a prefixed payload at all. It fails to
+unmarshal the message and drops the event for its own clients. So flipping
+before every instance is upgraded loses events on the ones that are not — not
+a resync, a silent loss.
+
+Both rolls are zero-loss in the other direction, because accept-both is on
+from phase 1: during the phase-2 roll, flipped and un-flipped instances are
+publishing different forms at the same time and every instance reads both.
+
+**Rolling back** is symmetric: unset the variable and roll. Peers accept the
+bare form throughout, so there is no window where a rollback loses events.
+There is no Redis or database migration in either direction; the epoch key is
+created by the first flipped publisher and is transient state.
+
+**What you should see when phase 2 lands.** The first flipped message reaches
+each replica and, if that replica had already buffered un-prefixed events, it
+drops its buffers once and records
+`pad_event_sequence_resets_total{reason="epoch_change"}`. Clients resuming
+across that moment get `sync_required` and re-fetch. **One drop per replica
+per roll** — if the counter keeps climbing, something is deleting the epoch or
+sequence key repeatedly; check `maxmemory-policy` against the events keyspace
+(see *Redis configuration notes*).
+
+`pad_event_sequence_resets_total{reason="counter_backward"}` is the other
+counter to watch. It fires when an ID arrives at or below what a buffer had
+already seen, which is expected in small numbers during **any** mixed-version
+roll — an older binary assigns and publishes an ID in two separate calls, so
+two instances can interleave and deliver them out of order. Phase 2 moves ID
+assignment into a single atomic Redis script, which removes the interleave for
+flipped publishers. It does **not** remove it for the roll itself: as long as
+a deployment can run two publisher versions at once, out-of-order delivery is
+possible, so this counter is expected to be non-zero during upgrades and near
+zero between them.
+
+**What this migration does not fix.** A client's `Last-Event-ID` is still a
+bare integer with no epoch in it, and that is deliberate — every deployed
+browser speaks that format, and `EventSource` echoes the header with no
+application code in the path to translate it. So an old ID and a new ID of the
+same numeric value remain indistinguishable **to a resume**, even though the
+replica's buffers can no longer mix them. The exposure is a client that
+reconnects with a cursor whose number the new sequence has already reached.
+Tracked on BUG-2736.
+
+Single-process deployments (no `PAD_REDIS_URL`) need none of this and ignore
+the variable: that bus owns its counter, so it identifies its own ID space
+from its start time and a restart's IDs cannot collide with the previous
+run's.
 
 ### Security
 

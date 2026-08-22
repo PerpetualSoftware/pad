@@ -77,6 +77,28 @@ const (
 	// ResetReasonSubscriptionResumed is scoped to ONE workspace: a dropped
 	// subscription says nothing about any other channel. See Observer.
 	ResetReasonSubscriptionResumed = "subscription_resumed"
+
+	// ResetReasonEpochChange means the shared Redis counter's ID SPACE
+	// changed: the epoch travelling with an arriving message is not the one
+	// this instance had adopted (BUG-2736). Every buffer is dropped, not just
+	// the arriving event's workspace, because the counter is global.
+	//
+	// What an operator does with it: a handful at once, correlated with a
+	// deploy or a Redis restart, is the mechanism working. A steady trickle
+	// means the counter key is being evicted or deleted repeatedly — check
+	// maxmemory policy against the events keyspace.
+	ResetReasonEpochChange = "epoch_change"
+
+	// ResetReasonCounterBackward means an ID arrived at or below a buffer's
+	// high-water mark WITHOUT an epoch change: the same numeric space
+	// delivered something out of order, or restarted inside its own epoch.
+	//
+	// EXPECTED DURING A MIXED-VERSION OR MIXED-FORMAT ROLL and not otherwise:
+	// an older publisher assigns and publishes in two calls, so two instances
+	// can interleave. Seeing it in steady state, with every instance on the
+	// atomic script, is an anomaly worth investigating rather than tuning
+	// away — see the comment at the branch that reports it.
+	ResetReasonCounterBackward = "counter_backward"
 )
 
 // observable is the shared, nil-safe Observer holder both bus implementations

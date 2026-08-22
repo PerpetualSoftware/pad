@@ -1,6 +1,7 @@
 package events
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	b := NewRedisBusWithKeys(client, keys)
+	b := NewRedisBusWithKeys(client, keys, false)
 	t.Cleanup(b.Close)
 
 	// A local subscriber is what starts the Redis-side subscription for
@@ -47,6 +48,43 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	}
 	if mr.Exists("pad:event_seq") {
 		t.Errorf("the namespaced bus also wrote the DEFAULT counter pad:event_seq")
+	}
+
+	// BUG-2736 added two more keys to this keyspace, and a key that misses the
+	// namespace is exactly the cross-feed BUG-2724 exists to stop — the epoch
+	// especially, since two installations sharing one epoch key would each
+	// read the other's ID-space changes as their own and drop their buffers.
+	// Driven through the flipped publish path, because that is the only path
+	// that writes them.
+	flipped := NewRedisBusWithKeys(client, keys, true)
+	t.Cleanup(flipped.Close)
+	flipped.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !mr.Exists("pad:inst-b:event_epoch") {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !mr.Exists("pad:inst-b:event_epoch") {
+		t.Errorf("namespaced epoch pad:inst-b:event_epoch does not exist; keys present: %v", mr.Keys())
+	}
+	if mr.Exists("pad:event_epoch") {
+		t.Errorf("the namespaced bus also wrote the DEFAULT epoch pad:event_epoch")
+	}
+	// The dedupe token carries a random suffix, so it is matched by prefix.
+	var namespacedDedupe, defaultDedupe int
+	for _, k := range mr.Keys() {
+		switch {
+		case strings.HasPrefix(k, "pad:inst-b:events:pub:"):
+			namespacedDedupe++
+		case strings.HasPrefix(k, "pad:events:pub:"):
+			defaultDedupe++
+		}
+	}
+	if namespacedDedupe == 0 {
+		t.Errorf("no namespaced dedupe token was written; keys present: %v", mr.Keys())
+	}
+	if defaultDedupe != 0 {
+		t.Errorf("the namespaced bus wrote %d dedupe tokens under the DEFAULT prefix", defaultDedupe)
 	}
 
 	waitForSubscribers(t, mr, "pad:inst-b:events:ws-1", true)

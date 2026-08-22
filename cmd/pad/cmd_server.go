@@ -687,12 +687,12 @@ func serveCmd() *cobra.Command {
 				// only trace was a line nobody's log aggregator was
 				// shaped to catch.
 				redis.SetLogger(redisSlogLogger{})
-				eventBus = newObservedEventBus(rc, redisKeys, m)
+				eventBus = newObservedEventBus(cfg, rc, redisKeys, m)
 				watchRedis = rc
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB,
 					"namespace", redisKeys.Namespace())
 			} else {
-				eventBus = newObservedEventBus(nil, redisKeys, m)
+				eventBus = newObservedEventBus(cfg, nil, redisKeys, m)
 				slog.Info("Event bus using in-memory (single instance)")
 			}
 			// Wrap event bus with Prometheus instrumentation
@@ -1320,9 +1320,22 @@ func humanBytes(n int64) string {
 // restarts, and the cold-buffer resume gap is exactly as real there. Its reset
 // counter stays at zero by construction — MemoryBus owns its own IDs and has
 // no shared counter to lose.
-func newObservedEventBus(rc *redis.Client, redisKeys redisns.Keys, m *metrics.Metrics) events.EventBus {
+//
+// IT TAKES THE WHOLE CONFIG rather than the one field it needs, and that is
+// the same CONVE-19 argument one level along (BUG-2736). The phase-2 flip
+// began as a hand-picked `cfg.EventsPublishEpoch` argument at the two call
+// sites in RunE; replacing it with `false` there compiled, passed every test
+// in the tree, and left the deployment silently stuck on phase 1 —
+// indistinguishable from a correct phase-1 deployment, since phase 1 is the
+// default. Reading the field HERE puts the link inside a function a test can
+// call, and a caller that drops the config does not compile.
+//
+// The flip reaches the Redis bus only. The in-process bus has no wire and
+// identifies its ID space by its own incarnation base instead (see
+// internal/idspace), so it ignores the field.
+func newObservedEventBus(cfg *config.Config, rc *redis.Client, redisKeys redisns.Keys, m *metrics.Metrics) events.EventBus {
 	if rc != nil {
-		bus := events.NewRedisBusWithKeys(rc, redisKeys)
+		bus := events.NewRedisBusWithKeys(rc, redisKeys, cfg.EventsPublishEpoch)
 		bus.SetObserver(metrics.NewEventsObserver(m))
 		return bus
 	}

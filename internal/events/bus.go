@@ -239,6 +239,38 @@ type replayBuffer struct {
 	// ruled out on load. Do not try to recover it with a cleverer local
 	// check; there isn't one.
 	knownFrom int64
+
+	// lastAppendedID is this buffer's high-water mark. IDs reaching a given
+	// workspace's buffer ascend once every publisher is on the atomic script
+	// — the shared counter only climbs, and the script makes publish order
+	// equal ID order — but NOT during a mixed-version or mixed-FORMAT rollout,
+	// where an older build assigns and publishes as two separate calls and can
+	// deliver a LOWER ID after a higher one.
+	//
+	// So an arriving ID at or below this one means the sequence went
+	// BACKWARDS: the counter was reset, or an out-of-order delivery landed.
+	// RedisBus acts on either; MemoryBus assigns its own IDs and can never see
+	// one, which is why this field is written there and never read.
+	lastAppendedID int64
+
+	// minKnownFrom is the lowest coverage start this buffer is ALLOWED to
+	// claim, for a buffer replacing one whose sequence was discarded. Zero on
+	// an ordinary buffer. See append and newReplayBufferAfterReset.
+	minKnownFrom int64
+}
+
+// newReplayBufferAfterReset builds a buffer replacing one whose sequence was
+// discarded. It refuses every cursor BELOW discarded+1 — that is, everything
+// at or below the highest ID the discarded buffers held, EXCEPT that a cursor
+// exactly equal to `discarded` is still served, since nothing above it was
+// buffered for such a client to be missing. Pass 0 when nothing was held.
+//
+// Use newReplayBuffer for a genuinely new buffer; the two differ in what they
+// may vouch for, and that difference is the whole point of having two.
+func newReplayBufferAfterReset(size int, discarded int64) *replayBuffer {
+	rb := newReplayBuffer(size)
+	rb.minKnownFrom = discarded + 1
+	return rb
 }
 
 func newReplayBuffer(size int) *replayBuffer {
@@ -259,7 +291,34 @@ func (rb *replayBuffer) append(e Event) {
 		// First append since this buffer started (or restarted) covering
 		// the workspace. From this ID forward we can answer honestly.
 		rb.knownFrom = e.ID
+
+		// ...EXCEPT on a buffer that REPLACED one whose ID space died, where
+		// two separate assumptions behind the ordinary rule fail. Both are
+		// corrected here because both produce the same silent skip.
+		//
+		// FIRST: since() serves sinceID+1 == knownFrom on the reasoning that
+		// no ID lies strictly between the cursor and our first event — true
+		// only when both are in the SAME ID space. Across a reset they are
+		// not, so a client holding OLD 149 would be handed NEW 150 as though
+		// it followed. Hence e.ID+1: the adjacent cursor is not adjacent here.
+		//
+		// SECOND: the reset DISCARDED buffered events, and a cursor at or
+		// below the highest of them must not be told it is current — its
+		// successor is exactly what we threw away. Hence the floor.
+		//
+		// The higher of the two wins, because each is a lower bound on what
+		// this buffer can honestly claim and neither subsumes the other: the
+		// floor is based on what we HELD, e.ID+1 on what we now SEE, and a
+		// reset can move either one further out.
+		if rb.minKnownFrom > 0 {
+			rb.knownFrom = e.ID + 1
+			if rb.minKnownFrom > rb.knownFrom {
+				rb.knownFrom = rb.minKnownFrom
+			}
+			rb.minKnownFrom = 0
+		}
 	}
+	rb.lastAppendedID = e.ID
 }
 
 // since returns all buffered events with ID > sinceID, in chronological order.
@@ -354,6 +413,23 @@ type MemoryBus struct {
 	// construction; see internal/idspace for what it buys and what it costs.
 	// A zero base is the pre-BUG-2736 behaviour (IDs from 1) and is
 	// deliberately unreachable through any constructor.
+	//
+	// WHY THIS BUS USES A NUMERIC BASE AND RedisBus USES AN OPAQUE EPOCH.
+	// They are not two spellings of one idea and must not be symmetrized into
+	// one (BUG-2736). This bus is the SOLE publisher into its space, so it can
+	// compute an identity at startup and put it in the ID's value, which makes
+	// a cross-incarnation cursor numerically refusable for free. RedisBus's
+	// counter is shared across processes: no instance can compute an identity
+	// the others would agree with, so the identity travels WITH each message.
+	//
+	// A numeric base for the Redis counter would close more (it would refuse
+	// cross-incarnation cursors there too, which the epoch cannot), and it was
+	// weighed and deferred: at the phase-2 flip, IDs would jump from small to
+	// ~1.8e18 in one step, so every publish from an un-flipped instance would
+	// read as a massive backwards jump and drop every buffer — a resync storm
+	// spanning the whole roll. It is a candidate follow-on once the flip has
+	// shipped and soaked, when no un-flipped publisher remains to misread the
+	// jump. BUG-2736's trail carries the reasoning.
 	base int64
 
 	// Per-workspace replay buffers for Last-Event-ID support.

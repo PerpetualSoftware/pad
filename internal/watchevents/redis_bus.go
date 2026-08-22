@@ -54,6 +54,15 @@ const (
 	// question is not "is this number bigger" but "is this the same
 	// sequence". Minted once per id space by the publish script and carried
 	// on every message.
+	//
+	// AN OPAQUE TOKEN HERE, A NUMERIC BASE ON MemoryBus (BUG-2736), and the
+	// two are NOT interchangeable spellings of one idea. This counter is
+	// shared across processes, so no instance can compute an identity the
+	// others would agree with and the identity must travel with the message.
+	// MemoryBus is the sole publisher into its own space, so it can put the
+	// identity in the id's VALUE — which additionally makes a
+	// cross-incarnation cursor numerically refusable, something this epoch
+	// cannot do. See internal/idspace and MemoryBus's base field.
 	redisWatchEpochSuffix = "watchevents_epoch"
 
 	// DEPLOYMENT SCOPING (BUG-2724). These names carry the installation's

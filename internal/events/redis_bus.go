@@ -3,11 +3,15 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/redisns"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -25,7 +29,114 @@ const (
 	// the new counter starts from zero and connected clients' Last-Event-ID
 	// values belong to the old space.
 	redisSeqSuffix = "event_seq"
+
+	// redisEpochSuffix identifies the CURRENT ID space ("pad:event_epoch" by
+	// default), and exists because numeric detection alone cannot see a reset
+	// that has already caught back up.
+	//
+	// A counter reset is detectable when an ID arrives at or below our
+	// high-water mark. It is INVISIBLE when the new space has already climbed
+	// past it: hold 100, lose the subscription, the counter resets and IDs
+	// 1-101 are published, and the only one that reaches us is 101 — which
+	// looks exactly like the contiguous successor of 100. The buffer then
+	// mixes two ID spaces and a client resuming from OLD 100 is handed NEW 101,
+	// having silently missed everything the old space had above 100.
+	//
+	// Same mechanism, same reasoning, and the same key shape as
+	// internal/watchevents' watchevents_epoch. Deliberately a DISTINCT key
+	// from that one for the same reason the counters are distinct: the two
+	// buses carry independent Last-Event-ID spaces.
+	redisEpochSuffix = "event_epoch"
+
+	// redisDedupeSuffix namespaces the per-publish idempotency tokens.
+	redisDedupeSuffix = "events:pub:"
+
+	// redisDedupeTTLSeconds bounds how long a token is remembered. It only has
+	// to cover a client-side retry burst — go-redis gives up after MaxRetries
+	// with backoff measured in milliseconds — so a minute is generous, and the
+	// keys are small and expire on their own.
+	redisDedupeTTLSeconds = 60
 )
+
+// DEPLOYMENT SCOPING (BUG-2724). Every name above carries the installation's
+// PAD_REDIS_NAMESPACE when one is set — see internal/redisns — and is
+// byte-identical to the historical flat names when it is not. The rule, stated
+// the same way in internal/watchevents and internal/server's presence registry
+// because it belongs to all three at once: scoping comes from ONE shared
+// config value built in cmd/pad/cmd_server.go, never from one package growing
+// a prefix the others lack.
+//
+// STILL UNSCOPED, deliberately: Redis CLUSTER. No hash tags, and a non-cluster
+// client. BUG-2736 adds a SECOND multi-key EVAL to the codebase — publishScript
+// here spans four keys (sequence, channel, epoch, dedupe), matching the one in
+// internal/watchevents — so a cluster port now has two call sites that would
+// fail CROSSSLOT rather than one. Same deferral, one more site; BUG-2724 holds
+// the reasoning for shipping tags only alongside a cluster client that can
+// test them.
+
+// publishScript assigns the ID and publishes in ONE atomic Redis call. It is
+// PHASE 2 ONLY: an instance that has not been flipped still publishes through
+// the two-call path in Publish, because the bare wire form carries the ID
+// INSIDE the JSON and the JSON must therefore be marshalled after the ID is
+// known. See config.EventsPublishEpoch for the rollout order.
+//
+// WHY ATOMIC. The two-call version does INCR and PUBLISH as separate
+// round-trips, which lets two instances interleave — INCR 5, INCR 6, PUBLISH
+// 6, PUBLISH 5 — so a receiving instance can append 6 before 5 and corrupt the
+// ordering replayBuffer.since() assumes when it computes oldest and newest.
+// That window is older than this fix and was already wrong; it becomes
+// load-bearing here, because counter-backwards detection reads a descending ID
+// as a RESET, and under the two-call version every interleave would look like
+// one. Redis runs a script atomically on its single thread, so publish order
+// equals ID order globally with no coordination on our side.
+//
+// THE EPOCH AND ID ARE PREPENDED as "<epoch>|<id>|<json>" rather than injected
+// into the JSON. Two reasons, and the second is the one a future refactor to
+// "cleaner JSON" would regress: string-editing JSON inside Lua is fragile, and
+// an envelope object would be UNMARSHALLED SILENTLY by an older instance
+// during a mixed roll — no matching keys, no error, a zero-valued Event
+// delivered to that instance's clients. The prefix fails loudly instead. See
+// decodePayload for the receiving side, which accepts both forms.
+//
+// The epoch is offered SET NX in steady state, so every publisher can propose
+// a candidate and exactly the first one wins. The id == 1 branch is the
+// deliberate exception and overwrites it — see that branch.
+//
+// A DEDUPE TOKEN, matching internal/watchevents' script. The mechanism it
+// closes: go-redis retries a command whose reply was lost to a network error —
+// a Redis failover being the obvious trigger — so the script can run, publish,
+// and still return an error to its caller. Retried, it would publish the same
+// event again under a second ID, and both copies look perfectly valid
+// (ascending IDs, correct ordering), so nothing downstream can tell them
+// apart. It is not merely a duplicate row: the web layout raises a toast for
+// any externally-sourced item_created, so a duplicate is a duplicate toast
+// plus a redundant fetch.
+//
+// SET NX on a caller-generated token turns the retry into a no-op: the retry
+// carries the same KEYS[4], the SET fails, and the script returns 0 without
+// publishing.
+var publishScript = redis.NewScript(`
+if redis.call('SET', KEYS[4], '1', 'NX', 'EX', ARGV[3]) == false then
+  return 0
+end
+local id = redis.call('INCR', KEYS[1])
+if id == 1 then
+  -- The counter is starting from scratch: this installation's first publish
+  -- ever, or the seq key was deleted or evicted under us. Both are a NEW id
+  -- space, so the epoch is ROTATED rather than merely offered. Without this, a
+  -- deleted seq key restarts the ids inside the SAME epoch and the epoch check
+  -- reports nothing -- and the numeric check misses it too whenever a
+  -- receiver's high-water mark is low enough that the restarted counter climbs
+  -- past it before that receiver sees anything.
+  redis.call('SET', KEYS[3], ARGV[2])
+else
+  -- Steady state: offer a candidate, and let the first publisher win.
+  redis.call('SET', KEYS[3], ARGV[2], 'NX')
+end
+local epoch = redis.call('GET', KEYS[3])
+redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id .. '|' .. ARGV[1])
+return id
+`)
 
 // RedisBus distributes events across multiple Pad instances via Redis pub/sub.
 // Each instance subscribes to Redis channels for its locally-connected SSE clients,
@@ -89,6 +200,41 @@ type RedisBus struct {
 	replayBuffers map[string]*replayBuffer
 	replaySize    int
 
+	// publishEpoch selects the wire form this instance EMITS: the phase-2
+	// "<epoch>|<id>|<json>" prefix when true, the historical bare JSON body
+	// when false. Receiving accepts both regardless — see decodePayload and
+	// config.EventsPublishEpoch for why emission is the half that is gated.
+	publishEpoch bool
+
+	// epoch is the ID space this instance has adopted, learned from arriving
+	// messages rather than read at startup.
+	//
+	// AN OPAQUE TOKEN, NOT A NUMERIC BASE, and the asymmetry with MemoryBus is
+	// deliberate rather than drift — see the `base` field on MemoryBus for the
+	// full reasoning. In one sentence: this counter is SHARED across
+	// processes, so no instance can compute an identity the others would
+	// agree with, and the identity has to travel with the message instead. The
+	// cost of that choice is that a cursor still carries no space of its own,
+	// so an old and a new ID of the same value remain indistinguishable to a
+	// resume; BUG-2736's trail names the numeric base that would close it and
+	// why it is a follow-on unit. Empty until a prefixed message
+	// arrives, which on a phase-1 deployment is never. Guarded by mu.
+	//
+	// LEARNED, NOT FETCHED, deliberately: reading the key at construction
+	// would make an instance believe it belongs to a space whose events it has
+	// not received, which is precisely the claim BUG-2731 spent a unit
+	// removing. The epoch matters only in relation to buffered events, so it
+	// arrives with them.
+	epoch string
+
+	// hadReset and discardedHighWater record that this bus has thrown a
+	// sequence away, and how high the discarded buffers had climbed. Every
+	// buffer built afterwards refuses cursors at or below that mark — see
+	// newBuffer and dropAllBuffers, where the two reset reasons set them
+	// differently on purpose. Guarded by mu.
+	hadReset           bool
+	discardedHighWater int64
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -106,18 +252,25 @@ type redisSub struct {
 // NewRedisBus creates a new Redis-backed EventBus.
 // The provided redis.Client should already be configured and connected.
 func NewRedisBus(client *redis.Client) *RedisBus {
-	return NewRedisBusWithKeys(client, redisns.Default)
+	return NewRedisBusWithKeys(client, redisns.Default, false)
 }
 
 // NewRedisBusWithKeys is NewRedisBus with an explicit key namespace
 // (BUG-2724). cmd/pad/cmd_server.go uses this one, passing the value
 // shared with the watch bus and the presence registry so all three
 // keyspaces carry the same namespace or none.
-func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys) *RedisBus {
+//
+// publishEpoch selects the wire form this instance EMITS (BUG-2736). It is a
+// constructor parameter with no default rather than a setter, so every call
+// site states which phase of the rollout it is in and none can flip a bus that
+// is already publishing. See config.EventsPublishEpoch for the order the two
+// phases must be rolled in.
+func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch bool) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &RedisBus{
 		client:        client,
 		keys:          keys,
+		publishEpoch:  publishEpoch,
 		subscribers:   make(map[string]map[chan Event]*subscriber),
 		workspaceOf:   make(map[chan Event]string),
 		wsCounts:      make(map[string]int),
@@ -217,9 +370,21 @@ func (b *RedisBus) Publish(event Event) {
 	}
 
 	channel := b.keys.Name(redisChannelSuffix) + event.WorkspaceID
-	// Assign a globally ordered sequence ID via Redis atomic counter, so all
-	// instances share one ID space and Last-Event-ID from one instance is
-	// meaningful on any other.
+	if b.publishEpoch {
+		b.publishWithEpoch(channel, event)
+		return
+	}
+
+	// PHASE 1: the historical two-call path, unchanged. Assign a globally
+	// ordered sequence ID via Redis atomic counter, so all instances share one
+	// ID space and Last-Event-ID from one instance is meaningful on any other.
+	//
+	// It keeps the pre-existing interleave window (INCR and PUBLISH are two
+	// round-trips, so two instances can publish out of ID order) and the
+	// pre-existing retry-duplication window. Both are closed by phase 2 rather
+	// than here, because the bare wire form carries the ID INSIDE the JSON and
+	// the JSON therefore cannot be marshalled until the ID is known — which is
+	// the whole reason the atomic script and the prefix arrive together.
 	id, err := b.client.Incr(b.ctx, b.keys.Name(redisSeqSuffix)).Result()
 	if err != nil {
 		// NO LOCAL-COUNTER FALLBACK, and its removal is a fix rather than a
@@ -242,6 +407,44 @@ func (b *RedisBus) Publish(event Event) {
 	}
 
 	if err := b.client.Publish(b.ctx, channel, data).Err(); err != nil {
+		slog.Error("failed to publish event to Redis", "channel", channel, "error", err)
+	}
+}
+
+// publishWithEpoch is the PHASE 2 path: one atomic script assigns the ID,
+// maintains the epoch, and publishes "<epoch>|<id>|<json>".
+//
+// The event is marshalled with ID still zero, because the ID travels in the
+// prefix and decodePayload writes it back onto the decoded Event. A receiver
+// running phase 1 or phase 2 reads the same value either way; a receiver
+// running a PRE-phase-1 binary cannot parse this at all, which is the reason
+// the flip is a second roll rather than a config change (see
+// config.EventsPublishEpoch).
+func (b *RedisBus) publishWithEpoch(channel string, event Event) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		slog.Error("failed to marshal event for Redis", "error", err)
+		return
+	}
+
+	// A fresh token per logical publish — NOT per attempt, which is the point:
+	// go-redis reuses the same arguments on its own retries, so the second run
+	// of the script sees the same token and declines.
+	dedupeKey := b.keys.Name(redisDedupeSuffix) + uuid.NewString()
+	if err := publishScript.Run(b.ctx, b.client,
+		[]string{b.keys.Name(redisSeqSuffix), channel, b.keys.Name(redisEpochSuffix), dedupeKey},
+		string(data), uuid.NewString(), redisDedupeTTLSeconds).Err(); err != nil {
+		// NO LOCAL-COUNTER FALLBACK, for the same reason the phase-1 path has
+		// none (BUG-2731): an ID minted locally belongs to a different space,
+		// which every receiving instance reads as a counter reset, and this
+		// bus has no local fan-out path so the event reaches nobody here
+		// either way.
+		//
+		// Note what this error does and does not mean: the script is atomic,
+		// so it never half-executes — but go-redis retries a command whose
+		// REPLY was lost, so an error here can accompany a publish that
+		// actually happened. That is what the dedupe token is for, and why
+		// this logs rather than re-publishing.
 		slog.Error("failed to publish event to Redis", "channel", channel, "error", err)
 	}
 }
@@ -429,12 +632,12 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 				b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
 
 			case *redis.Message:
-				var event Event
-				if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
-					slog.Error("failed to unmarshal Redis event", "channel", msg.Channel, "error", err)
+				epoch, event, err := decodePayload(msg.Payload)
+				if err != nil {
+					slog.Error("failed to decode Redis event", "channel", msg.Channel, "error", err)
 					continue
 				}
-				b.fanOutFromRedis(gen, event)
+				b.fanOutFromRedis(gen, epoch, event)
 			}
 		}
 	}
@@ -495,16 +698,135 @@ func (b *RedisBus) currentSubGen(workspaceID string) int64 {
 	return 0
 }
 
+// buffersHoldEvents reports whether any replay buffer has been written to.
+// Callers must hold mu.
+func (b *RedisBus) buffersHoldEvents() bool {
+	for _, rb := range b.replayBuffers {
+		if rb.count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// newBuffer builds a replay buffer of the right flavour for this bus's
+// history: once a sequence has been discarded under us, every buffer we build
+// afterwards must refuse the cursor immediately below its first event, because
+// that cursor may belong to the sequence we threw away. Callers must hold mu.
+func (b *RedisBus) newBuffer() *replayBuffer {
+	if b.hadReset {
+		return newReplayBufferAfterReset(b.replaySize, b.discardedHighWater)
+	}
+	return newReplayBuffer(b.replaySize)
+}
+
+// dropAllBuffers throws away every replay buffer because this instance can no
+// longer vouch for the sequence they describe — either the ID space itself
+// changed, or an ID arrived at or below the high-water mark. Callers must hold
+// mu.
+//
+// raiseFloor says whether the replacements should additionally refuse every
+// cursor at or below what the discarded buffers held, and the two reset
+// reasons answer it differently ON PURPOSE. Getting this backwards produces a
+// RESYNC LOOP, which is worse than the bug the floor exists to fix.
+//
+//   - COUNTER BACKWARDS, no epoch change: the arriving ID is in the SAME
+//     numeric space we were already tracking (whoever published it INCRed the
+//     same key). We just discarded events a cursor can legitimately ask about,
+//     and the successor of such a cursor is exactly what we threw away — so
+//     the floor is raised. The case this really covers is a mixed-version or
+//     mixed-FORMAT roll, where a phase-1 publisher's non-atomic INCR/PUBLISH
+//     delivers a LOWER ID after a newer one.
+//
+//   - EPOCH CHANGE: a genuinely NEW space, typically restarting from 1 while
+//     the dead space had climbed high. Raising the floor there would refuse
+//     every cursor until the new counter passed the old high-water mark — and
+//     since each refusal hands the client a FRESH low cursor that is refused
+//     again, that is a loop, not one resync. The ambiguity between an old and
+//     a new ID of the same value is accepted instead, exactly as
+//     internal/watchevents accepts it; see BUG-2736's trail for the numeric
+//     base that would close it and why it is not this unit.
+//
+// An epoch change also CLEARS any standing floor, which is not the same as
+// declining to raise one. The floor is a same-space device: it names IDs whose
+// successors we discarded FROM THE SPACE WE WERE TRACKING. Once the space
+// itself is gone those numbers mean nothing, and leaving the floor standing
+// produces the very loop the paragraph above rules out — just reached from a
+// bus that took a counter-backwards reset earlier in its life.
+func (b *RedisBus) dropAllBuffers(raiseFloor bool) {
+	if raiseFloor {
+		for _, rb := range b.replayBuffers {
+			if rb.lastAppendedID > b.discardedHighWater {
+				b.discardedHighWater = rb.lastAppendedID
+			}
+		}
+	} else {
+		b.discardedHighWater = 0
+	}
+	b.hadReset = true
+	b.replayBuffers = make(map[string]*replayBuffer)
+}
+
+// decodePayload parses the "<epoch>|<id>|<json>" wire form publishScript emits,
+// and ALSO accepts a bare JSON body with no prefix.
+//
+// THE BARE FORM IS NOT LEGACY-ONLY. It is what every phase-1 instance
+// publishes — which, until an operator flips config.EventsPublishEpoch, is
+// every instance — as well as what a pre-BUG-2736 binary publishes. Accepting
+// it is what makes both rolls zero-loss in the new-receiving-old direction. It
+// returns an empty epoch, which the receive path reads as "no ID-space
+// information" and leaves the epoch bookkeeping untouched rather than treating
+// it as a change.
+//
+// The reverse direction is not recoverable from this side: an instance running
+// a PRE-phase-1 binary fails to unmarshal a prefixed payload and drops the
+// event for its own clients, loudly. That asymmetry is the entire reason the
+// flip is a second roll. See docs/deployment.md.
+//
+// Splitting on the FIRST two separators keeps a '|' inside the JSON body
+// harmless: the epoch is a uuid and the ID is digits, so neither can contain
+// one. The leading '{' check is what stops a JSON body that happens to contain
+// two '|' characters from being mistaken for a prefixed payload — an epoch is
+// never a JSON object.
+func decodePayload(payload string) (string, Event, error) {
+	if parts := strings.SplitN(payload, "|", 3); len(parts) == 3 && !strings.HasPrefix(parts[0], "{") {
+		epoch, idPart, body := parts[0], parts[1], parts[2]
+		if epoch == "" {
+			return "", Event{}, fmt.Errorf("payload has an empty epoch prefix")
+		}
+		id, err := strconv.ParseInt(idPart, 10, 64)
+		if err != nil {
+			return "", Event{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
+		}
+		var event Event
+		if err := json.Unmarshal([]byte(body), &event); err != nil {
+			return "", Event{}, fmt.Errorf("payload body is not an Event: %w", err)
+		}
+		event.ID = id
+		return epoch, event, nil
+	}
+
+	var event Event
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return "", Event{}, fmt.Errorf("payload is neither <epoch>|<id>|<json> nor a bare Event: %w", err)
+	}
+	return "", event, nil
+}
+
 // fanOutFromRedis is the receive path: a message that arrived on the
-// subscription identified by gen.
-func (b *RedisBus) fanOutFromRedis(gen int64, event Event) {
-	b.fanOut(gen, event)
+// subscription identified by gen, carrying the ID space it belongs to.
+//
+// An empty epoch means the payload carried no ID-space information (a phase-1
+// or pre-BUG-2736 publisher, or a direct test call) and the bookkeeping is left
+// alone — silence is not evidence of a change.
+func (b *RedisBus) fanOutFromRedis(gen int64, epoch string, event Event) {
+	b.fanOut(gen, epoch, event)
 }
 
 // fanOutLocally distributes an event to all local subscribers for the event's
 // workspace and stores it in the replay buffer, with no id-space information.
 func (b *RedisBus) fanOutLocally(event Event) {
-	b.fanOut(anySubscription, event)
+	b.fanOut(anySubscription, "", event)
 }
 
 // anySubscription opts out of the generation check for callers that are not a
@@ -512,7 +834,7 @@ func (b *RedisBus) fanOutLocally(event Event) {
 // carries the generation of the subscription it arrived on.
 const anySubscription int64 = 0
 
-func (b *RedisBus) fanOut(gen int64, event Event) {
+func (b *RedisBus) fanOut(gen int64, epoch string, event Event) {
 	// Registered FIRST so it runs LAST — after the Unlock below, so an
 	// observer may call back into the bus without deadlocking the receive
 	// loop.
@@ -555,11 +877,101 @@ func (b *RedisBus) fanOut(gen int64, event Event) {
 		return
 	}
 
+	// ID-SPACE RECONCILIATION (BUG-2736). Both checks answer the same question
+	// — do the events already buffered belong to the same sequence as this
+	// one? — and both are needed, because neither sees the other's case. The
+	// epoch catches a reset that has already climbed past our high-water mark,
+	// which is numerically invisible; the high-water check catches a reset on
+	// an instance that never learned the previous epoch, including one
+	// publishing from a phase-1 or pre-BUG-2736 binary.
+	//
+	// Every buffer is dropped, not just this workspace's: the counter is
+	// global, so a reset invalidates all of them at once.
+	if epoch != "" && b.epoch != epoch {
+		// ADOPTING AN EPOCH ONTO A NON-EMPTY BUFFER IS ALSO A RESET. Learning
+		// an epoch for the first time normally means the first message of this
+		// bus's life, and dropping empty buffers would be pointless. But
+		// during the phase-2 roll the buffers can already hold events from a
+		// phase-1 publisher, whose payloads carry no epoch at all — and those
+		// events' ID space is exactly what we have no way to compare against
+		// the one we are now being told about.
+		//
+		// The dangerous shape: bare events up to 5, the counter is then
+		// deleted, a flipped publisher rotates the epoch and climbs to 6
+		// before this instance receives anything. 6 exceeds our high-water
+		// mark, so the numeric check sees an ordinary successor, and without
+		// this branch the two spaces merge in one buffer.
+		//
+		// Costs at most ONE drop per instance per roll: once adopted, later
+		// bare messages leave the epoch alone and later prefixed ones match.
+		//
+		// WHAT THIS DELIBERATELY DOES NOT COVER: a bus whose buffers are
+		// EMPTY adopts without dropping, so its first buffer starts at exactly
+		// the first ID it sees. A client holding the ID one below that — from
+		// a space this process never saw, because it started through a
+		// cutover — is then served. Closing it locally means every bus
+		// refusing the adjacent cursor forever, which trades a RARE silent
+		// skip for a COMMON extra resync: on a multi-instance deployment a
+		// client legitimately holds ID 149 from replica A and reconnects to
+		// replica B whose first ID for that workspace is 150, and consecutive
+		// global IDs land in the same busy workspace routinely. BUG-2736's
+		// trail names the numeric-base design that closes it with neither
+		// cost, and why it is a follow-on rather than this unit.
+		if b.epoch != "" || b.buffersHoldEvents() {
+			slog.Warn("event ID space changed; dropping replay buffers, resumes spanning the change will report sync_required",
+				"previous_epoch", b.epoch, "new_epoch", epoch, "id", event.ID)
+			b.dropAllBuffers(false)
+			reset = ResetReasonEpochChange
+		}
+		b.epoch = epoch
+	}
+
 	// Store in replay buffer for reconnect replay.
 	rb, ok := b.replayBuffers[event.WorkspaceID]
 	if !ok {
-		rb = newReplayBuffer(b.replaySize)
+		rb = b.newBuffer()
 		b.replayBuffers[event.WorkspaceID] = rb
+	}
+	if rb.lastAppendedID != 0 && event.ID <= rb.lastAppendedID {
+		// THIS WHOLE MECHANISM IS TRANSITIONAL. READ THIS BEFORE TUNING IT.
+		//
+		// Once every publisher is flipped to phase 2, publish order equals ID
+		// order globally, and a genuine counter restart rotates the epoch (see
+		// publishScript's id == 1 branch), which is a different code path
+		// entirely. So a backwards ID in steady state is an ANOMALY, not a
+		// case needing clever classification. Its real job is the ROLL WINDOW,
+		// where a phase-1 publisher's non-atomic INCR/PUBLISH can deliver a
+		// lower ID after a higher one.
+		//
+		// IT DOES NOT GO AWAY WHEN THE FORMAT FLIP COMPLETES, which the
+		// original scoping hoped it would. The trigger is mixed-VERSION
+		// ORDERING — older binaries assign and publish in two calls — not
+		// mixed-format payloads, so publish-old-until-flip removes the
+		// mixed-FORMAT window only. The floor lives for as long as any
+		// deployment can run two publisher versions at once, which is every
+		// rolling upgrade.
+		//
+		// It has already been tuned four times, each round finding a defect
+		// inside the previous round's cleverness. So the floor is raised
+		// UNCONDITIONALLY: every cursor at or below what the discarded buffers
+		// held is refused. The alternative was a discriminator on "a restart
+		// always begins at 1", which an out-of-order ID 1 during a roll
+		// defeats — silently. Refusing too much is loud: it shows up in
+		// pad_event_resume_gaps_total and in the warning below. Refusing too
+		// little loses events with nothing to show for it.
+		//
+		// THE COST, stated so nobody rediscovers it as a bug: if a phase-1
+		// publisher restarts the counter mid-roll, cursors are refused until
+		// the sequence climbs past the dead high-water mark, so affected
+		// clients resync repeatedly. Bounded by the roll — once every
+		// publisher is flipped, restarts rotate the epoch, and an epoch change
+		// CLEARS the floor (see dropAllBuffers).
+		slog.Warn("event sequence went backwards; dropping replay buffers, resumes below the discarded high-water mark will report sync_required",
+			"high_water_mark", rb.lastAppendedID, "id", event.ID, "workspace", event.WorkspaceID)
+		b.dropAllBuffers(true)
+		rb = b.newBuffer()
+		b.replayBuffers[event.WorkspaceID] = rb
+		reset = ResetReasonCounterBackward
 	}
 	rb.append(event)
 
