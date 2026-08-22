@@ -823,6 +823,15 @@ func writeSSEResetCursorEvent(w http.ResponseWriter, eventType string, data inte
 // writeSSEEvent writes a single SSE event to the response writer.
 // If eventID > 0, an "id:" field is included for Last-Event-ID support.
 //
+// THE "id:" FIELD IS THE ONE A CLIENT MAY USE. The event's JSON body also
+// carries the id, as a JSON NUMBER, and since BUG-2736 that number is around
+// 1.8e18 — past JavaScript's MAX_SAFE_INTEGER, so a browser that read it out
+// of the body would silently get a rounded value. It cannot be removed from
+// the body: the Redis bus's phase-1 wire form carries the id there and nowhere
+// else. EventSource captures the "id:" field itself and echoes it back as an
+// opaque string, so no client needs the body's copy — web's ItemEvent type
+// deliberately does not declare one.
+//
 // Returns nil for both the happy path AND the JSON-marshal failure
 // path: a marshal error is local to this event and shouldn't tear
 // down a healthy stream. Returns the underlying Fprintf error only

@@ -1,6 +1,9 @@
 package events
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 // BUG-2736: a restarted process used to reuse its ID space, so a cursor issued
 // by a PREVIOUS incarnation could be answered from the CURRENT one's buffer as
@@ -154,4 +157,41 @@ func idsOf(events []Event) []int64 {
 		ids = append(ids, e.ID)
 	}
 	return ids
+}
+
+func TestConcurrentPublishesLeaveTheBufferInIDOrder(t *testing.T) {
+	// codex round 18. The id used to be assigned BEFORE the replay lock, so
+	// two concurrent publishes could take N and N+1 and append in the other
+	// order. replayBuffer.since computes oldest and newest by POSITION, so a
+	// buffer holding [N+1, N] reports N as its newest and answers a resume
+	// from N+1 with sync_required — a client told to resync at the moment it
+	// was exactly current.
+	bus := New()
+	const n = 300
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+		}()
+	}
+	wg.Wait()
+
+	buffered := bus.EventsSince("ws-1", 0)
+	if len(buffered) != n {
+		t.Fatalf("expected %d buffered events, got %d", n, len(buffered))
+	}
+	for i := 1; i < len(buffered); i++ {
+		if buffered[i].ID <= buffered[i-1].ID {
+			t.Fatalf("buffer out of id order at index %d: %d after %d", i, buffered[i].ID, buffered[i-1].ID)
+		}
+	}
+	// The consequence, asserted rather than inferred: every id in the buffer
+	// must be servable as a cursor. Under the race the newest ones were not.
+	for _, e := range buffered {
+		if got := bus.EventsSince("ws-1", e.ID); got == nil {
+			t.Fatalf("cursor %d is inside the buffer and must be servable", e.ID)
+		}
+	}
 }

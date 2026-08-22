@@ -500,13 +500,25 @@ func (b *MemoryBus) Publish(event Event) {
 		event.Timestamp = time.Now().UnixMilli()
 	}
 
-	// Assign a monotonic sequence ID within THIS incarnation's ID space.
-	// The base is what makes a restarted process's IDs distinguishable from
+	// Store in replay buffer for reconnect replay.
+	b.replayMu.Lock()
+
+	// THE ID IS ASSIGNED UNDER THIS LOCK, and that is the whole reason the
+	// assignment sits here rather than before it. Assigned outside, two
+	// concurrent publishes could take ids N and N+1 and then append in the
+	// other order — and replayBuffer.since computes oldest and newest by
+	// POSITION, so a buffer holding [N+1, N] reports N as its newest and
+	// answers a resume from N+1 with sync_required. Under the lock, buffer
+	// order equals id order by construction.
+	//
+	// It is the same invariant RedisBus buys with an atomic publish script
+	// (see publishScript): publish order equals id order, because the
+	// alternative is a buffer whose own ordering assumptions are false.
+	//
+	// The base is what makes a restarted process's ids distinguishable from
 	// the dead space's — see internal/idspace.
 	event.ID = b.base + b.seq.Add(1)
 
-	// Store in replay buffer for reconnect replay.
-	b.replayMu.Lock()
 	rb, ok := b.replayBuffers[event.WorkspaceID]
 	if !ok {
 		rb = newReplayBuffer(b.replaySize)
