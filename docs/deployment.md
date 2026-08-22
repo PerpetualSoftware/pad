@@ -447,9 +447,10 @@ Tracked on BUG-2736.
 Single-process deployments (no `PAD_REDIS_URL`) need none of this and ignore
 the variable: that bus owns its counter, so it identifies its own ID space
 from its start time. Two runs' IDs can only collide if the earlier process
-published more than 2^20 events per millisecond of its own lifetime — a
-deterministic bound rather than a probability, and one no real deployment
-approaches. A clock stepped **backwards** across a restart degrades the other
+published more than 2^20 events per millisecond of its own lifetime, or if a
+restart completed inside a single millisecond — both deterministic bounds
+rather than probabilities, and neither reachable by a process that has to bind
+a listener and open a database before it can publish anything. A clock stepped **backwards** across a restart degrades the other
 way, into extra `sync_required` responses rather than wrong replays.
 
 ### Security

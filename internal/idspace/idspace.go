@@ -43,6 +43,23 @@ import (
 // That is a deterministic bound, not a probability — which is why this is not
 // the "start from a random high number" BUG-2736's body rejects.
 //
+// IT RESTS ON ONE UNSTATED ASSUMPTION, so here it is stated (codex round 8):
+// that a RESTART TAKES AT LEAST ONE MILLISECOND. The bases are separated by
+// the clock, at millisecond resolution, and the CAS below separates only buses
+// built inside ONE process — a second process starting inside the same
+// millisecond as the first would take the same base and reissue its IDs, and a
+// cursor from the dead run would then be accepted as live.
+//
+// The assumption is not a hope either: reaching the constructor means the OS
+// reaped the old process and the new one bound its listener, opened its
+// database and ran migrations. That is milliseconds at minimum, and is
+// observable — a deployment where it were not true would have to be restarting
+// faster than it can open a file. Closing the gap for real would need
+// persistence, which BUG-2736's body rules out for a separate and stronger
+// reason (durable event-bus state in single-process Pad, still lost on any
+// data loss). So it is accepted, and named here rather than left for the next
+// reader to discover in an incident.
+//
 // THE BACKWARDS-CLOCK CASE degrades in the SAFE direction, and that is why a
 // wall clock is acceptable as the only available monotonic-across-restart
 // source. A clock step backwards yields a LOWER base, so a previous
