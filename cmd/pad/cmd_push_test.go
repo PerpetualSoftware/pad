@@ -107,6 +107,87 @@ type PushResultForTest struct {
 	Workspace string `json:"workspace"`
 	Pushed    bool   `json:"pushed"`
 	Message   string `json:"message"`
+	// A POINTER, mirroring cli.PushResult, because the field is tri-state
+	// and 0 is not the same answer as "unknown" (BUG-2698).
+	DeliveredSessions *int `json:"delivered_sessions"`
+}
+
+// TestPushCmd_FormatJSONCarriesDeliveredSessions — codex round 25.
+//
+// The field was added to cli.PushResult in review round 3 and nothing
+// covered its serialization, so a regression in either direction — the tag
+// renamed, `omitempty` reintroduced — would have passed unnoticed. Both
+// values are driven, because they are DIFFERENT answers: a number is a
+// count, null means the server published but could not count it.
+func TestPushCmd_FormatJSONCarriesDeliveredSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server any
+		want   func(t *testing.T, got *int)
+	}{
+		{
+			name:   "a real count round-trips",
+			server: 3,
+			want: func(t *testing.T, got *int) {
+				if got == nil {
+					t.Fatal("delivered_sessions was dropped; `pad push --format json` cannot see the count")
+				}
+				if *got != 3 {
+					t.Fatalf("delivered_sessions = %d, want 3", *got)
+				}
+			},
+		},
+		{
+			name:   "null survives as null, not as zero",
+			server: nil,
+			want: func(t *testing.T, got *int) {
+				// The wrong behaviour's fingerprint: a 0, which claims
+				// nobody received a broadcast that was in fact published.
+				if got != nil {
+					t.Fatalf("null must not decode to a number, got %d", *got)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"ref": "TASK-5", "workspace": "demo", "pushed": true,
+				"message": "triage this", "delivered_sessions": tc.server,
+			}
+			setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(body)
+			}))
+			prevFormat := formatFlag
+			formatFlag = "json"
+			defer func() { formatFlag = prevFormat }()
+
+			cmd := pushCmd()
+			cmd.SetArgs([]string{"TASK-5", "-m", "triage this"})
+			var execErr error
+			out := captureStdout(t, func() { execErr = cmd.Execute() })
+			if execErr != nil {
+				t.Fatalf("execute push: %v", execErr)
+			}
+
+			// The KEY must be present either way — an absent key is a third
+			// signal (a server predating session targeting), so emitting
+			// nothing would collapse two answers into one.
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(out), &raw); err != nil {
+				t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out)
+			}
+			if _, present := raw["delivered_sessions"]; !present {
+				t.Fatalf("delivered_sessions must be present in the CLI's JSON, got: %s", out)
+			}
+
+			var result PushResultForTest
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatalf("decode: %v\noutput: %s", err, out)
+			}
+			tc.want(t, result.DeliveredSessions)
+		})
+	}
 }
 
 // TestPushCmd_RequiresNonBlankMessage covers the client-side guard: an

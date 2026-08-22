@@ -10,7 +10,7 @@ func TestMemorySessionPresence_AddListRemove(t *testing.T) {
 	t.Parallel()
 	p := NewMemorySessionPresence()
 
-	if got := p.ListForUser("u1"); len(got) != 0 {
+	if got := mustList(t, p, "u1"); len(got) != 0 {
 		t.Fatalf("expected no sessions for an unknown user, got %d", len(got))
 	}
 
@@ -22,7 +22,7 @@ func TestMemorySessionPresence_AddListRemove(t *testing.T) {
 		t.Fatal("two connections for the same user must get distinct ids")
 	}
 
-	got := p.ListForUser("u1")
+	got := mustList(t, p, "u1")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 sessions for u1, got %d", len(got))
 	}
@@ -38,11 +38,11 @@ func TestMemorySessionPresence_AddListRemove(t *testing.T) {
 	}
 
 	p.Remove("u1", a)
-	got = p.ListForUser("u1")
+	got = mustList(t, p, "u1")
 	if len(got) != 1 || got[0].ID != b {
 		t.Fatalf("expected only session %s to remain, got %+v", b, got)
 	}
-	if len(p.ListForUser("u2")) != 1 {
+	if len(mustList(t, p, "u2")) != 1 {
 		t.Fatal("removing u1's session disturbed u2's list")
 	}
 }
@@ -61,7 +61,7 @@ func TestMemorySessionPresence_RemoveIsForgiving(t *testing.T) {
 	p.Remove("u1", id)
 	p.Remove("u1", id) // double-remove: idempotent, not a panic
 
-	if got := p.ListForUser("u1"); len(got) != 0 {
+	if got := mustList(t, p, "u1"); len(got) != 0 {
 		t.Fatalf("expected u1 to have no sessions, got %d", len(got))
 	}
 }
@@ -87,7 +87,7 @@ func TestMemorySessionPresence_ListIsOldestFirstAndStable(t *testing.T) {
 	// Same input, repeated reads: the order must not depend on Go's
 	// randomized map iteration.
 	for i := 0; i < 20; i++ {
-		got := p.ListForUser("u1")
+		got := mustList(t, p, "u1")
 		if len(got) != 3 {
 			t.Fatalf("expected 3 sessions, got %d", len(got))
 		}
@@ -108,10 +108,10 @@ func TestMemorySessionPresence_ListReturnsACopy(t *testing.T) {
 	p := NewMemorySessionPresence()
 	id := p.Add("u1", SessionIdentity{Label: "docapp"})
 
-	got := p.ListForUser("u1")
+	got := mustList(t, p, "u1")
 	got[0].Label = "tampered"
 
-	fresh := p.ListForUser("u1")
+	fresh := mustList(t, p, "u1")
 	if fresh[0].Label != "docapp" {
 		t.Fatalf("mutating the returned slice changed the registry: label is now %q", fresh[0].Label)
 	}
@@ -131,7 +131,7 @@ func TestMemorySessionPresence_ArmedRoundTrips(t *testing.T) {
 	armedID := p.Add("u1", SessionIdentity{Label: "docapp", Armed: true})
 	unarmedID := p.Add("u1", SessionIdentity{Label: "voiapp"}) // Armed left at its zero value
 
-	got := p.ListForUser("u1")
+	got := mustList(t, p, "u1")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 sessions, got %d", len(got))
 	}
@@ -161,14 +161,14 @@ func TestMemorySessionPresence_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				id := p.Add("u1", SessionIdentity{})
-				p.ListForUser("u1")
+				mustList(t, p, "u1")
 				p.Remove("u1", id)
 			}
 		}()
 	}
 	wg.Wait()
 
-	if got := p.ListForUser("u1"); len(got) != 0 {
+	if got := mustList(t, p, "u1"); len(got) != 0 {
 		t.Fatalf("every Add was paired with a Remove, expected 0 sessions, got %d", len(got))
 	}
 	// The user's bucket should be reclaimed too, not left as an empty map.
@@ -178,4 +178,22 @@ func TestMemorySessionPresence_ConcurrentAccess(t *testing.T) {
 	if stillThere {
 		t.Fatal("expected the empty user bucket to be reclaimed")
 	}
+}
+
+// mustList reads a registry's session list, failing the test if the read
+// itself failed.
+//
+// ListForUser gained an error when an out-of-process implementation made
+// "I could not find out" a reachable state distinct from "there are none"
+// (BUG-2698, codex round 1 P1). Going through this helper makes every
+// existing test assert its own premise — that the read SUCCEEDED — rather
+// than comparing lengths against a nil slice that an error would also
+// produce.
+func mustList(t *testing.T, p SessionPresence, userID string) []LiveSession {
+	t.Helper()
+	sessions, err := p.ListForUser(userID)
+	if err != nil {
+		t.Fatalf("ListForUser(%q): %v", userID, err)
+	}
+	return sessions
 }

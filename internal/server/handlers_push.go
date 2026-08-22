@@ -1,7 +1,9 @@
 package server
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -14,13 +16,19 @@ import (
 type pushRequest struct {
 	Message string `json:"message"`
 	// TargetSessionID optionally narrows delivery to one of the caller's
-	// OWN live sessions from the S1 presence registry (PLAN-2558 S5,
+	// OWN live sessions from the S1 presence registry — narrows, within a
+	// set already limited to ARMED sessions that can see the item (PLAN-2558 S5,
 	// TASK-2588; GET /api/v1/sessions is where a caller learns the id).
-	// Omitted (the pre-S5 shape) means broadcast to every one of the
-	// caller's connected sessions, unchanged. API + TS client + web
-	// picker only in this slice, per CONVE-1741 — no CLI flag, no MCP
-	// surface; internal/cli's PushResult mirror simply never sends or
-	// reads this field.
+	// Omitted (the pre-S5 shape) means broadcast to every session in that
+	// same set — armed, item-visible, the caller's own — unchanged. API + TS client + web
+	// picker only in this slice, per CONVE-1741 — no CLI flag and no MCP
+	// surface for SETTING it.
+	//
+	// The read side is no longer true and was corrected in place rather
+	// than left as archaeology (codex round 10): internal/cli's PushResult
+	// now mirrors delivered_sessions, because `pad push --format json` was
+	// silently dropping a field this response documents at length. It
+	// still never SENDS target_session_id.
 	TargetSessionID string `json:"target_session_id,omitempty"`
 }
 
@@ -47,9 +55,10 @@ type pushResponse struct {
 	// (S1 presence registry, `target_session_id`-filtered if one was
 	// given) matched — PLAN-2558 S5, TASK-2588. This is a PREDICTION read
 	// from the registry, not a delivery receipt: it carries the exact
-	// same staleness window as GET /api/v1/sessions (session_presence.go's
+	// same staleness windows as GET /api/v1/sessions (session_presence.go's
 	// LiveSession doc comment — up to ~30s behind an ungracefully-dropped
-	// connection) and there is still no ack from the receiving side. A
+	// CLIENT, and on a Redis-backed deployment up to ~90s behind a dead
+	// server INSTANCE) and there is still no ack from the receiving side. A
 	// vanished or cross-user target_session_id is 0, the same as "nothing
 	// connected" — deliberately not a distinct error, so the CLI's pre-S5
 	// behavior is unchanged by construction. Since PLAN-2613 S1, an
@@ -68,21 +77,56 @@ type pushResponse struct {
 	// target isn't in that snapshot — see its doc comment — so a 0 here
 	// is never a race, it's a guarantee: nothing was sent.
 	//
-	// THAT GUARANTEE IS PER-PROCESS, and in a Redis-backed deployment
-	// that makes this count wrong in BOTH directions for a BROADCAST push
-	// (BUG-2651, codex round 3). The count comes from the local presence
-	// registry while the bus now delivers everywhere: with one armed
-	// session on each of two replicas, the replica handling the POST
-	// reports 1 and two sessions receive it; with none of its own, it
-	// reports 0 while a remote session receives it anyway.
+	// THAT GUARANTEE USED TO BE PER-PROCESS, which made this count wrong
+	// in BOTH directions for a BROADCAST push once BUG-2651 gave the bus
+	// cross-instance reach: the count came from the answering instance's
+	// presence registry while the bus delivered everywhere. With one armed
+	// session on each of two replicas the answering replica reported 1 and
+	// two received it; with none of its own it reported 0 while a remote
+	// session received it anyway.
 	//
-	// Filed as BUG-2698 alongside the targeted-push half. Not corrected
-	// here, because the fix is not a better count — it is the shared-state
-	// SessionPresence that PLAN-2558 S3 already gates on. Any local arithmetic would just be a more elaborate way of
-	// asking one replica what all of them are doing. Targeted pushes do
-	// not have the over-report half of this problem, for the unhappy
-	// reason that the same locality stops them being published at all.
-	DeliveredSessions int `json:"delivered_sessions"`
+	// CLOSED BY BUG-2698 for the INSTANCE-LOCALITY half: with PAD_REDIS_URL
+	// set, s.sessionPresence is the shared RedisSessionPresence, so this
+	// count is read from every instance's sessions rather than one
+	// instance's. It is still a PREDICTION with the staleness above — a
+	// shared registry does not make it a receipt.
+	//
+	// STILL AN UPPER BOUND, not a match count, and an earlier draft of this
+	// comment claimed otherwise (codex round 6). deliveredSessionCount
+	// filters on user, armed, and target id. Actual delivery ALSO applies
+	// each stream's own visibility — watchNotificationVisible's
+	// vis.allows(CollectionID, ItemID), computed per connection from the
+	// credentials that opened it. Two streams of the SAME user can differ
+	// there: a cookie session and a workspace-scoped API token do not see
+	// the same collections. So a session counted here can still drop the
+	// push, and a targeted one at such a session is published and lost
+	// while this field reports 1.
+	//
+	// Pre-existing and unchanged by BUG-2698 — the in-process count had the
+	// identical blind spot — but tracked now rather than left implied
+	// (BUG-2725). Fixing it means the registry carrying per-session
+	// visibility, which has its own staleness question, since access can be
+	// revoked while the connection is held open.
+	//
+	// Note this was never wrong in the over-reporting direction for a
+	// TARGETED push, for the unhappy reason that the same locality stopped
+	// those from being published at all.
+	//
+	// NULL MEANS "PUBLISHED, COUNT UNKNOWN" — never "zero" (codex round 1
+	// P1). It is emitted only when the presence registry could not be READ
+	// (a Redis outage) on a BROADCAST push: the publish still happened,
+	// because presence never gated a broadcast, but there is no honest
+	// number to put here and 0 would claim nobody received it. A TARGETED
+	// push in that state is refused with a 503 instead and never reaches
+	// this struct, so a null is always a broadcast.
+	//
+	// Consumers: treat null as "unknown", not as falsy. Both clients carry
+	// it — internal/cli's PushResult mirrors it as a *int (untagged, so
+	// `pad push --format json` prints an explicit null rather than
+	// omitting the key), and the web's type is `number | null | undefined`
+	// with all three states documented there. An ABSENT key is a third
+	// thing again: a server predating session targeting.
+	DeliveredSessions *int `json:"delivered_sessions"`
 }
 
 // maxPushTargetSessionIDLen bounds target_session_id (dispatcher review
@@ -118,7 +162,9 @@ const maxPushMessageLen = 4096
 // handlePushToItem publishes a self-addressed watchevents.KindPush
 // notification (IDEA-2544 Phase 1) — the "push this to my agent" verb:
 // an explicit, user-authored instruction bound to an item, delivered to
-// every one of the pushing user's OWN connected monitor sessions via
+// each of the pushing user's OWN monitor sessions that is ACCEPTING pushes
+// and can see the item — a connected session that hasn't opted in, or that
+// lacks access, does not receive it — via
 // GET /api/v1/events/stream, or to exactly one of them when the request
 // names a target_session_id (PLAN-2558 S5, TASK-2588). Unlike watch/
 // assignment notifications, this has no durable backing (Dave's product
@@ -219,8 +265,8 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// round 1, codex — see DeliveredSessions' doc comment for the race a
 	// post-publish count had). For a TARGETED push whose id isn't in this
 	// snapshot, the publish is skipped entirely: session ids are
-	// per-connection and never reused (session_presence.go's
-	// MemorySessionPresence.Add mints a fresh uuid per Add call), so a
+	// per-connection and never reused (both SessionPresence
+	// implementations mint a fresh uuid per Add call), so a
 	// target absent right now can never later be matched by the SAME
 	// connection reconnecting under that id, nor by the bus's replay
 	// buffer (which only serves a resumed connection presenting its own
@@ -234,26 +280,71 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// delivery happens, which is the same staleness every presence
 	// answer on this surface already carries.
 	//
-	// THE "GUARANTEED NO-OP" PREMISE IS NOW MEMORYBUS-ONLY (BUG-2651,
-	// codex round 2). It rested on the bus being in-process: a target
-	// this instance cannot see was, by construction, a target nobody
-	// could deliver to. With watchevents.RedisBus the notification would
-	// reach every instance, so a session held on another one WOULD match
-	// it — and this skip is what stops that, turning a deliverable push
-	// into the no-op the comment describes rather than merely declining
-	// to record one.
+	// THAT PREMISE BROKE ONCE AND IS NOW RESTORED, which is worth spelling
+	// out because the skip below looks like a bug at a glance. It rested
+	// on the bus being in-process: a target THIS instance could not see
+	// was, by construction, a target nobody could deliver to. BUG-2651's
+	// RedisBus made the notification reach every instance, at which point
+	// a session held on another one WOULD have matched it — and this skip
+	// was the only thing stopping it, turning a deliverable push into the
+	// no-op the comment describes (BUG-2698).
 	//
-	// Deliberately NOT changed here. Publishing unconditionally would fix
-	// targeted cross-instance delivery and immediately make the
-	// delivered_sessions=0 in the response a lie in the other direction,
-	// which is a question about what that field promises rather than a
-	// bug in this line. It belongs with the shared-state SessionPresence
-	// that PLAN-2558 S3 already gates on — fixing the registry makes the
-	// snapshot right, and then this skip is correct again for the same
-	// reason it was originally.
-	deliveredSessions := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
+	// BUG-2698 fixed it at the registry rather than here. With
+	// PAD_REDIS_URL set, s.sessionPresence is the shared
+	// RedisSessionPresence, so "absent from this snapshot" means absent
+	// from EVERY instance again, and the skip is correct for exactly the
+	// reason it was originally written. Note that the shortcut — publish
+	// unconditionally for targeted pushes — would have fixed delivery and
+	// immediately made delivered_sessions=0 a lie in the other direction.
+	// The line below is deliberately unchanged by that fix.
+	//
+	// One detail the "never reused" argument now leans on more heavily:
+	// both implementations mint a fresh uuid per Add
+	// (MemorySessionPresence.Add, RedisSessionPresence.Add), so a
+	// reconnecting client never returns under a previous id on either.
+	deliveredSessionsUnknown := false
+	deliveredSessions, presenceErr := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
+	if presenceErr != nil {
+		// PRESENCE GATES A TARGETED PUSH BUT ONLY COUNTS A BROADCAST, and
+		// that asymmetry is exactly why an unreadable registry gets two
+		// different answers rather than one uniform refusal (codex round 1
+		// P1; dispatcher ruling).
+		//
+		// TARGETED: the gate cannot be evaluated at all. Publishing would
+		// deliver but report a count we do not have; skipping silently is
+		// the original bug. So refuse — 503 `unavailable`, nothing
+		// published, which is true and is already the code the web client
+		// treats as safe to resend.
+		if targetSessionID != "" {
+			slog.Warn("push refused: cannot read session presence to evaluate the target",
+				"item_ref", item.Ref, "error", presenceErr)
+			writeError(w, http.StatusServiceUnavailable, "unavailable",
+				"Push is not available right now — the target session could not be resolved, so nothing was sent")
+			return
+		}
+		// BROADCAST: presence never gated this — the publish is
+		// unconditional and always has been. Refusing here would
+		// manufacture an outage for a delivery that would have succeeded,
+		// coupling push availability to presence availability, which is a
+		// dependency that does not otherwise exist. Publish, and report the
+		// count as UNKNOWN rather than as 0.
+		slog.Warn("push: session presence unreadable, broadcasting with an unknown delivery count",
+			"item_ref", item.Ref, "error", presenceErr)
+		deliveredSessionsUnknown = true
+	}
 	if targetSessionID == "" || deliveredSessions > 0 {
-		s.watchEvents.Publish(watchevents.Notification{
+		// The ONE direct Bus.Publish call in this package, and the only
+		// one that acts on the result (BUG-2699 — see
+		// publishWatchNotification's doc comment for the six that
+		// deliberately don't, and publishSitesAreRuled_test.go for the
+		// check that keeps that split true).
+		//
+		// A push has no durable backing whatsoever: no inbox, nothing to
+		// read back, not even a store row carrying the same fact the way
+		// a comment notification has. If the publish is refused, the
+		// instruction is gone, and the caller is the only one who can do
+		// anything about that.
+		if err := s.watchEvents.Publish(watchevents.Notification{
 			WorkspaceID:     workspaceID,
 			ItemID:          item.ID,
 			CollectionID:    item.CollectionID,
@@ -264,16 +355,22 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 			Summary:         message,
 			TargetUserID:    userID,
 			TargetSessionID: targetSessionID,
-		})
+		}); err != nil {
+			writePushPublishError(w, err, item.Ref)
+			return
+		}
 	}
 
-	writeJSON(w, http.StatusOK, pushResponse{
-		Ref:               item.Ref,
-		Workspace:         ws.Slug,
-		Pushed:            true,
-		Message:           message,
-		DeliveredSessions: deliveredSessions,
-	})
+	resp := pushResponse{
+		Ref:       item.Ref,
+		Workspace: ws.Slug,
+		Pushed:    true,
+		Message:   message,
+	}
+	if !deliveredSessionsUnknown {
+		resp.DeliveredSessions = &deliveredSessions
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // deliveredSessionCount answers "how many of userID's own live sessions
@@ -302,11 +399,23 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // The publish-skip logic below reads this same filtered count, so a
 // targeted push at an unarmed session is skipped for the identical
 // reason a targeted push at a vanished one is: a guaranteed no-op.
-func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string) int {
+//
+// UNREADABLE PRESENCE IS NOT ZERO (codex round 1, P1). The error is
+// returned rather than folded into a 0, because 0 is a load-bearing
+// answer on this path: it makes the caller SKIP the publish for a
+// targeted push. Reporting 0 for a registry that could not be read would
+// therefore drop the instruction and answer success — the same defect
+// BUG-2698 filed, arriving through the fix for it. A nil registry still
+// yields (0, nil): that is a server built without presence, which is a
+// known configuration rather than an unknown state.
+func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string) (int, error) {
 	if presence == nil {
-		return 0
+		return 0, nil
 	}
-	sessions := presence.ListForUser(userID)
+	sessions, err := presence.ListForUser(userID)
+	if err != nil {
+		return 0, err
+	}
 	count := 0
 	for _, sess := range sessions {
 		if !sess.Armed {
@@ -317,5 +426,60 @@ func deliveredSessionCount(presence SessionPresence, userID, targetSessionID str
 		}
 		count++
 	}
-	return count
+	return count, nil
+}
+
+// pushPublishUnconfirmedCode is the error code for a push whose publish
+// failed in a way that does NOT prove the notification went nowhere
+// (BUG-2699).
+//
+// It is deliberately absent from the web client's
+// PUSH_PRE_PUBLISH_ERROR_CODES allow-list (web/src/lib/push/dispatch.ts),
+// and that absence is the entire behaviour: isPrePublishRefusal routes
+// every unrecognised code to the dialog's outcome-unknown branch, whose
+// copy is "we can't tell whether this was sent — pushing twice would
+// deliver it twice", and which does NOT re-arm the send button. That is
+// the honest UI for this case, so the code must stay off that list. Do
+// not "tidy" it on there.
+const pushPublishUnconfirmedCode = "push_unconfirmed"
+
+// writePushPublishError maps a Bus.Publish failure onto the response,
+// keeping the two outcomes Bus.Publish distinguishes distinguishable all
+// the way to the caller (BUG-2699). Collapsing them is the actual hazard
+// here: one of them is safe to resend and the other can duplicate a
+// dispatch into an agent harness.
+//
+//   - ErrBusClosed — the bus was already shut down, so nothing was
+//     published and nothing could have been. 503 `unavailable`, the SAME
+//     code the nil-bus branch at the top of handlePushToItem already
+//     returns, because the caller's situation is identical: push is not
+//     available right now, nothing went out, try again against a live
+//     server. Reusing that code is also what makes the web surface
+//     correct with no change at all — `unavailable` is already on its
+//     pre-publish-refusal allow-list.
+//   - anything else — UNCONFIRMED. go-redis retries a command whose
+//     reply was lost to a network error (the reason RedisBus's publish
+//     script carries a dedupe token at all), so the script may have run
+//     and published while the call still returned non-nil. 502 with
+//     pushPublishUnconfirmedCode, which is deliberately NOT on that
+//     allow-list.
+//
+// Neither branch writes a pushResponse. `Pushed` documents itself as
+// "accepted and processed", which is exactly what did not happen — and a
+// 200 body with pushed:false would let a caller that reads only the
+// status code (the CLI's `pad push` does: cmd_push.go returns on the
+// error and prints nothing otherwise) treat a lost instruction as sent.
+func writePushPublishError(w http.ResponseWriter, err error, itemRef string) {
+	if errors.Is(err, watchevents.ErrBusClosed) {
+		slog.Warn("push refused: notification bus is closed, nothing was published",
+			"item_ref", itemRef, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable",
+			"Push is not available right now — the notification was not sent")
+		return
+	}
+	slog.Error("push publish failed with an unconfirmed outcome — the notification may or may not have been delivered",
+		"item_ref", itemRef, "error", err)
+	writeError(w, http.StatusBadGateway, pushPublishUnconfirmedCode,
+		"The push could not be confirmed — it may or may not have been delivered. "+
+			"Check your agent session before sending it again; pushing twice would deliver it twice.")
 }

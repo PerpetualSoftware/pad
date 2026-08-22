@@ -1865,7 +1865,10 @@ export interface ServerCapabilities {
  * means "connected as of the last time the server could tell", not
  * "connected now". A clean disconnect deregisters immediately; an ungraceful
  * one (closed laptop, dropped network) is invisible until the next keepalive
- * write fails, up to ~30s later. Fine for a fire-and-forget push; NOT a
+ * write fails, up to ~30s later. On a Redis-backed deployment there is a
+ * SECOND, longer window: if the server INSTANCE holding the session dies, its
+ * entry survives in the shared registry until that entry's ~90s TTL lapses
+ * (BUG-2698). Fine for a fire-and-forget push; NOT a
  * delivery guarantee, and consumers must not word it as one — "one session
  * connected" is honest, "this will be delivered" is not.
  *
@@ -1921,9 +1924,10 @@ export interface LiveSessionsResponse {
  * `target_session_id` if the request set one) matched. It is a PREDICTION
  * snapshotted from the same registry the picker itself reads, taken BEFORE
  * the notification is published — not a delivery receipt: it carries the
- * registry's own staleness window (up to ~30s behind an ungracefully-
- * dropped connection — see `LiveSession`) and there is still no ack from
- * the receiving side. Callers must not present a nonzero count as
+ * registry's own staleness windows (up to ~30s behind an ungracefully-
+ * dropped CLIENT, and on a Redis-backed deployment up to ~90s behind a dead
+ * SERVER INSTANCE, whose entries expire on the shared registry's TTL — see
+ * `LiveSession`) and there is still no ack from the receiving side. Callers must not present a nonzero count as
  * confirmed delivery; the 0-vs-nonzero distinction is what's load-bearing
  * — a targeted push with `delivered_sessions === 0` is a GUARANTEE it
  * reached nobody (the server skips the publish entirely in that case, so
@@ -1940,13 +1944,26 @@ export interface LiveSessionsResponse {
  * Treat that as UNKNOWN, never as a confirmed miss — `=== 0` must be
  * checked explicitly, never inferred from `!delivered_sessions` or a
  * falsy check that would also match `undefined`.
+ *
+ * NULLABLE, and null is a THIRD state distinct from both a number and the
+ * absent key above (BUG-2698): the server published a BROADCAST but could
+ * not read the presence registry to count it — a Redis outage. It means
+ * "published, count unknown", never "zero". A targeted push in that state
+ * is refused with a 503 rather than published, so a null is always a
+ * broadcast that actually went out, and there is nothing for the caller to
+ * correct or resend.
+ *
+ * Three states, three handlings, and the falsy check that would collapse
+ * them is the reason they are spelled out: `number` — a real count;
+ * `null` — sent, uncountable; `undefined` (key absent) — a server that
+ * predates targeting.
  */
 export interface ItemPushResult {
 	ref: string;
 	workspace: string;
 	pushed: boolean;
 	message: string;
-	delivered_sessions?: number;
+	delivered_sessions?: number | null;
 }
 
 /**

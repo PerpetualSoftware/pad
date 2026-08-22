@@ -18,28 +18,51 @@
 // single-process binary keeps MemoryBus and never grows a Redis
 // dependency.
 //
-// Bus was defined as an interface from Phase 1 precisely so this could
-// slot in without touching any producer or the stream handler, and that
-// held: RedisBus changed neither.
+// Bus was defined as an interface from Phase 1 precisely so a second
+// implementation could slot in without touching any producer or the stream
+// handler, and that held for RedisBus: it changed neither.
 //
-// STILL PER-PROCESS, and worth knowing before assuming multi-instance is
-// finished: internal/server's SessionPresence registry. What RedisBus
-// fixes is delivery of what is actually PUBLISHED — a broadcast push, a
-// status change, a comment — which now reaches a stream on any instance.
-// What it does not fix is a SESSION-TARGETED push, because
-// handlers_push.go consults that per-process registry and skips the
-// publish entirely when the named session is not local; the bus would
-// carry it, but it is never put on the bus. The
-// GET /api/v1/sessions listing is per-process for the same reason.
-// See session_presence.go's own note — one shared-state implementation
-// closes both.
+// It did NOT hold for BUG-2699, and the distinction is worth keeping
+// (codex round 6). Making Publish report acceptance changed the INTERFACE,
+// not just the implementations, so every producer had to be revisited —
+// not to change behaviour, but to rule on what each should do with an
+// answer it had never been given. An interface absorbs a new
+// implementation; it does not absorb a new question.
+//
+// PRESENCE IS NO LONGER THE ODD ONE OUT. internal/server's
+// SessionPresence registry used to stay per-process after this bus went
+// shared, and the combination was worse than either being consistent: a
+// SESSION-TARGETED push is gated on that registry BEFORE publishing
+// (handlers_push.go), so a push for a session held on another instance
+// was skipped rather than carried, and GET /api/v1/sessions could not
+// offer it as a target at all. BUG-2698 closed that with
+// RedisSessionPresence, on the same PAD_REDIS_URL switch. All three —
+// event bus, watch bus, presence registry — now cross instance
+// boundaries together or none of them do.
+//
+// See internal/server/session_presence.go for that registry's own
+// reaping story, which this package's Redis bus does not need: a
+// notification is transient, while a presence entry outlives the process
+// that wrote it and has to expire on its own.
 package watchevents
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 )
+
+// ErrBusClosed is returned by Publish when the bus has already been shut
+// down (BUG-2699). It is the ONE Publish failure that proves the
+// notification was not published: Close has already emptied the
+// subscriber set, so nothing could have received it and nothing can.
+//
+// It exists as a sentinel rather than an ordinary error because callers
+// act on the distinction — see Bus.Publish's doc comment on why every
+// other error means "unconfirmed" instead. Compare with errors.Is; both
+// implementations wrap it with context.
+var ErrBusClosed = errors.New("watchevents: bus is closed")
 
 // Notification kinds, matching DOC-2479's event payload contract
 // (kind ∈ {status-change, assignment, comment, ask}) exactly.
@@ -62,12 +85,14 @@ const (
 	// right now rather than waiting on assignment/watch semantics. NOT
 	// "publishes exactly one" unconditionally as of PLAN-2558 S5
 	// (TASK-2588): handlePushToItem decides whether to publish at all —
-	// a session-targeted request whose id matches no LOCAL live session
-	// skips the publish entirely. That was a guaranteed no-op under
-	// MemoryBus and is merely a skip under RedisBus, where the session
-	// might be live on another instance; see handlers_push.go's own
-	// comment on that gate, plus TargetSessionID and
-	// pushResponse.DeliveredSessions there.
+	// a session-targeted request whose id matches no live session in the
+	// presence registry skips the publish entirely. That registry is
+	// per-process with MemoryBus and SHARED with RedisBus (BUG-2698), so
+	// the skip means "nothing is listening anywhere" in both shapes — an
+	// earlier version of this sentence said LOCAL, which described the
+	// window between BUG-2651 and BUG-2698 (codex round 24). See
+	// handlers_push.go's own comment on that gate, plus TargetSessionID
+	// and pushResponse.DeliveredSessions there.
 	// KindAsk is push's reserved sibling in the other direction
 	// (harness→human) — see TargetUserID's doc comment for the shared
 	// envelope shape the two are meant to converge on.
@@ -129,9 +154,10 @@ type Notification struct {
 	// event-stream connections (PLAN-2558 S5, TASK-2588). Populated only
 	// on Kind == KindPush, and only when the pusher named a specific
 	// session id from the S1 presence registry (GET /api/v1/sessions);
-	// empty means "every one of TargetUserID's connected sessions" —
-	// broadcast is targeted-with-an-empty-predicate, not a separate
-	// code path. watchNotificationVisible checks this against the
+	// empty means "every one of TargetUserID's sessions that the delivery
+	// predicate admits" — armed, and able to see the item — rather than
+	// every CONNECTED one; broadcast is targeted-with-an-empty-SESSION-
+	// predicate, not a separate code path and not an unfiltered one. watchNotificationVisible checks this against the
 	// SAME session id session_presence.go handed the connection at
 	// Add() time, exactly parallel to how TargetUserID gates against
 	// the connected caller's user id. An id that names no live session
@@ -160,7 +186,31 @@ type Bus interface {
 	// their IDs from separate critical sections could otherwise append
 	// to the replay buffer out of ID order, corrupting since()'s
 	// ordering assumptions.
-	Publish(n Notification)
+	//
+	// REPORTS ACCEPTANCE, NOT DELIVERY (BUG-2699). A nil error means the
+	// bus took ownership of the notification; it says nothing about
+	// whether any subscriber read it, and there is still no ack from the
+	// receiving side. Most producers publish best-effort on top of a
+	// durable store write and should discard the result deliberately —
+	// internal/server's publishWatchNotification helper is where that
+	// ruling lives. The push endpoint is the one caller that acts on it,
+	// because a push has no persistence to recover from.
+	//
+	// A RETURNED ERROR IS TWO DIFFERENT OUTCOMES, and a caller that acts
+	// on one must not collapse them:
+	//
+	//   - ErrBusClosed means nothing was published, provably. The bus was
+	//     already shut down; no subscriber can ever have seen it. Safe to
+	//     report as a clean refusal and safe for the caller to retry
+	//     against a live bus.
+	//   - Any OTHER error means UNCONFIRMED, not "did not happen".
+	//     RedisBus's publish is a Lua script call, and go-redis retries a
+	//     command whose reply was lost to a network error — which is why
+	//     that script carries a dedupe token at all (see redis_bus.go's
+	//     publishScript). The script may have run and published while the
+	//     call still returns an error, so re-publishing risks a DUPLICATE
+	//     dispatch rather than a repeat of nothing.
+	Publish(n Notification) error
 	// Subscribe returns a channel that receives every future
 	// Notification, with NO replay. There is exactly one logical stream
 	// (unlike internal/events.EventBus, which is workspace-scoped) —
@@ -320,13 +370,32 @@ func NewWithReplaySize(size int) *MemoryBus {
 // lock costs nothing (the send is O(1) and non-blocking either way) and
 // closes that window structurally: Unsubscribe/Close can no longer run
 // between "this channel is still a live subscriber" and "send to it".
-func (b *MemoryBus) Publish(n Notification) {
+func (b *MemoryBus) Publish(n Notification) error {
 	if n.Timestamp == 0 {
 		n.Timestamp = time.Now().UnixMilli()
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// BUG-2699: publishing after Close was the SILENT half of this bug,
+	// and the worse half. Close empties b.subscribers, so the loop below
+	// ran over an empty map and returned having done nothing at all — no
+	// error (Publish had no way to say so), and unlike RedisBus not even
+	// a log line, while still burning a sequence id and appending to a
+	// replay buffer nobody will ever read from.
+	//
+	// The window is real for the SINGLE-PROCESS deployment, not only for
+	// Redis: cmd/pad/cmd_server.go closes the watch bus BEFORE
+	// srv.Shutdown drains handlers (deliberately — SSE handlers block on
+	// their channel, so closing late holds shutdown to its full 30s
+	// deadline on any open stream), and that ordering applies to
+	// whichever implementation is wired. A push accepted moments earlier
+	// can reach here post-Close, and used to be lost while the handler
+	// answered 200.
+	if b.closed {
+		return ErrBusClosed
+	}
 
 	b.seq++
 	n.ID = b.seq
@@ -336,9 +405,16 @@ func (b *MemoryBus) Publish(n Notification) {
 		select {
 		case ch <- n:
 		default:
+			// A drop for SLOWNESS is not a Publish failure: the bus
+			// accepted the notification and fanned it out, and one
+			// subscriber's full buffer says nothing about the others.
+			// Reporting it as an error would tell the push endpoint that
+			// a delivery it cannot confirm either way had definitely
+			// failed — exactly the false precision BUG-2699 is about.
 			slog.Warn("watchevents: dropping notification for slow subscriber", "kind", n.Kind, "item_ref", n.ItemRef)
 		}
 	}
+	return nil
 }
 
 func (b *MemoryBus) Subscribe() chan Notification {

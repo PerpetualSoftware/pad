@@ -1,6 +1,9 @@
 package server
 
-import "net/http"
+import (
+	"log/slog"
+	"net/http"
+)
 
 // sessionsResponse is the body of GET /api/v1/sessions.
 //
@@ -66,6 +69,19 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	//     exists to prevent.
 	w.Header().Set("Cache-Control", "private, no-store")
 
-	sessions := s.sessionPresence.ListForUser(user.ID)
+	sessions, err := s.sessionPresence.ListForUser(user.ID)
+	if err != nil {
+		// The SAME 503 the nil-registry branch above returns, and for the
+		// same reason stated there: a server that cannot tell who is
+		// listening has no degraded answer to give, and answering 200 with
+		// an empty list is a lie in exactly the direction this endpoint
+		// exists to prevent. The nil branch covers "never wired"; this one
+		// covers "wired but unreachable right now" — a distinction only an
+		// out-of-process registry can produce (codex round 1, P1 on
+		// BUG-2698), and one the caller must not have to guess at.
+		slog.Warn("sessions: presence read failed", "error", err, "user_id", user.ID)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
+		return
+	}
 	writeJSON(w, http.StatusOK, sessionsResponse{Sessions: sessions, Count: len(sessions)})
 }

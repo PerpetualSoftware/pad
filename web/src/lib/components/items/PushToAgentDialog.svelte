@@ -35,10 +35,10 @@ line shows the split honestly rather than hiding the difference:
 
   - accepting > 0 → "M sessions accepting pushes" (and "of N connected" when
                    some are connected-but-unarmed). NOT "this will be
-                   delivered": the registry can name a session that died up to
-                   ~30s ago (an ungraceful disconnect is invisible until the
-                   next keepalive write fails), and even a live armed session
-                   gets no delivery receipt. Send is enabled; the caveat is
+                   delivered": the registry can name a session that is already
+                   gone (two bounds — see this file's DEPLOYMENT CONSTRAINT
+                   note), and even a live armed session gets no delivery
+                   receipt. Send is enabled; the caveat is
                    stated, not implied.
   - accepting == 0 → send is DISABLED, because a push to no armed session is
                    definitively lost (no inbox), and a push to a connected-but-
@@ -61,16 +61,34 @@ The bound is enforced client-side (`$lib/push/message`) against the server's
 own rune-after-collapse accounting, so an over-length message is caught in the
 composer rather than coming back as a 400.
 
-DEPLOYMENT CONSTRAINT, inherited not created. Both the presence registry and
-the event bus are per-PROCESS (`internal/server/session_presence.go`'s
-SINGLE-PROCESS LIMITATION note). Behind more than one padd process a load
-balancer can route the presence GET and the push POST to different instances,
-and then every claim on this surface — including "No agent session is
-connected" — can be wrong. That file already states the rule ("Do not put the
-web-UI push surface in front of a multi-process deployment until both exist");
-this dialog is the surface it means. The copy below is written for the
-single-process case ON PURPOSE: hedging every sentence for a deployment the
-server tells you not to run would cost honesty in the case that actually ships.
+DEPLOYMENT CONSTRAINT, LIFTED (BUG-2698) — kept here because the copy below
+was written under it. This dialog used to carry a warning that the presence
+registry and the event bus were both per-PROCESS, so behind more than one padd
+process a load balancer could route the presence GET and the push POST to
+different instances and every claim on this surface — including "No agent
+session is connected" — could be wrong. BUG-2651 made the bus shared and
+BUG-2698 made the registry shared, both on PAD_REDIS_URL, so a session
+connected to any instance is now visible and addressable from any other.
+
+What that changes for this file is nothing structural, which is the point: the
+copy below was deliberately written for the single-process case rather than
+hedged, and it is now correct for both. What it does NOT change is staleness, and the
+shared registry adds a SECOND window on top of the old one: a session whose
+CLIENT died ungracefully is listed for up to ~30s (the keepalive interval), and
+a session whose SERVER INSTANCE died is listed for up to ~90s (the registry's
+TTL — with per-process presence those entries vanished with the process). So
+`delivered_sessions` remains a prediction, "N connected" can name a session on
+an instance that no longer exists, and the outcome-unknown branch below stays
+load-bearing. See LiveSession's doc comment for both bounds.
+
+Nor is the count a match count: it filters on user, armed, and target id, while
+actual delivery ALSO applies each stream's own item visibility. A session it
+counts can still drop the push. Read it as what was ADDRESSED (BUG-2725).
+
+`delivered_sessions` can also arrive NULL: the server published a broadcast but
+could not read the presence registry to count it. Null means unknown, not zero
+— the targeted case is refused with a 503 rather than published, so a null is
+always a broadcast that went out.
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -123,9 +141,14 @@ server tells you not to run would cost honesty in the case that actually ships.
 	 * 10s is affordable: GET /api/v1/sessions falls through to the general API
 	 * limiter (600 req/min per user, burst 60) and is in no strict per-path
 	 * bucket, so a poll open for an hour costs 360 of a 36,000-request budget.
-	 * It is also the right ORDER of magnitude for the underlying signal — the
-	 * registry's own worst-case staleness is ~30s (keepalive interval), so
+	 * It is also the right ORDER of magnitude for the underlying signal — a
+	 * dropped CLIENT takes up to the ~30s keepalive interval to disappear, so
 	 * polling much faster would buy precision the data doesn't have.
+	 *
+	 * Deliberately reasoned against the ~30s client bound and not the ~90s
+	 * dead-INSTANCE one (see the header): re-polling does not shorten the
+	 * second, since every instance reads the same shared entry and returns
+	 * the same stale answer. A faster poll would buy nothing there either.
 	 */
 	const PRESENCE_POLL_MS = 10_000;
 
@@ -149,8 +172,9 @@ server tells you not to run would cost honesty in the case that actually ships.
 	/**
 	 * What we know about who is listening.
 	 *  - 'checking': first read of this opening is in flight, no answer yet.
-	 *  - 'known':    a 200 answered; `count` is authoritative (modulo the ~30s
-	 *                staleness every consumer of this data carries).
+	 *  - 'known':    a 200 answered; `count` is authoritative (modulo the
+	 *                staleness every consumer of this data carries — see the
+	 *                header for both bounds).
 	 *  - 'unknown':  the server could not answer (503 / 401) or the request
 	 *                failed. NOT zero — see this component's header.
 	 */
@@ -428,6 +452,15 @@ server tells you not to run would cost honesty in the case that actually ships.
 				? await api.items.push(wsSlug, itemSlug, collapsed, target)
 				: await api.items.push(wsSlug, itemSlug, collapsed);
 			sending = false;
+			// STRICT `=== undefined`, never `== undefined`, and both branches
+			// below are guarded by `target` for the same reason: since
+			// BUG-2698 the field can also be NULL, meaning "published, count
+			// unknown". A loose comparison would catch that null and route a
+			// successful broadcast into the mixed-version branch. It cannot
+			// arrive here in practice — a null is only ever emitted for a
+			// broadcast, and a targeted push with an unreadable registry is
+			// refused with a 503 — but the guard is one character wide, so
+			// pin it rather than rely on that.
 			if (target && result.delivered_sessions === undefined) {
 				// Mixed-version hazard (TASK-2588 round 2, codex). The server
 				// ships EMBEDDED in the binary (web/build is baked into the Go
@@ -582,12 +615,22 @@ server tells you not to run would cost honesty in the case that actually ships.
 						{acceptingCount === 1 ? 'session' : 'sessions'} accepting pushes</strong
 					>{#if connectedCount > acceptingCount}
 						<span class="muted"> (of {connectedCount} connected)</span>{/if}
-					<!-- Two separate hedges, both load-bearing. The registry can name a
-					     session that dropped ungracefully up to ~30s ago, so even
-					     "was listening" is past tense; and nothing acknowledges a
-					     push, so delivery is never confirmable. -->
+					<!-- Two separate hedges, both load-bearing. The registry can name
+					     a session that is already gone — up to ~30s for a dropped
+					     CLIENT, and on a Redis-backed deployment up to ~90s for a
+					     dead SERVER instance, whose entries clear on the shared
+					     registry's TTL (BUG-2698, codex round 23). So even "was
+					     listening" is past tense. And nothing acknowledges a push,
+					     so delivery is never confirmable.
+
+					     The copy says "recently" rather than naming either number:
+					     which one applies depends on a deployment shape the user
+					     cannot see, and a specific figure that is wrong in the other
+					     shape is worse than an honest vague one. The precise bounds
+					     live in LiveSession's doc comment for the people who can act
+					     on them. -->
 					— as of the last check. Pad can’t confirm delivery, and a session
-					that dropped in the last ~30 seconds can still be listed here.
+					that stopped listening recently can still be listed here.
 				</p>
 				<ul class="session-list">
 					{#each acceptingSessions as session (session.id)}

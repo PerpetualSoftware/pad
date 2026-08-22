@@ -55,7 +55,10 @@ export const PUSH_PRE_PUBLISH_ERROR_CODES: ReadonlySet<string> = new Set([
 	'not_found', // item or workspace doesn't resolve
 	'forbidden',
 	'permission_denied', // workspace-access middleware
-	'unavailable', // the bus isn't wired — nothing to publish TO
+	'unavailable', // the bus isn't wired, or was already closed — nothing published
+	// The 409 for a soft-deleted item. Resolution happens before the
+	// publish, so nothing went out (codex round 12 on BUG-2699).
+	'archived',
 	'rate_limited', // the client's own 429 shape; the handler never ran
 	'plan_limit_exceeded',
 	// Middleware, so strictly before the handler: nothing can have been
@@ -65,7 +68,26 @@ export const PUSH_PRE_PUBLISH_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /** True when `err` is a failure the push endpoint provably wrote BEFORE
- *  publishing, so the message did not go out and re-offering it is safe. */
+ *  publishing, so the message did not go out and re-offering it is safe.
+ *
+ *  WHAT THIS TRUSTS, said plainly (codex round 9): that a recognised code
+ *  came from the push HANDLER. An intermediary that synthesised one of
+ *  these codes AFTER the handler had already published would make this
+ *  return true for a delivered push, and the surface would offer a resend.
+ *
+ *  Left as-is rather than defended against, on two grounds. A proxy would
+ *  have to emit our exact envelope shape AND one of these exact codes,
+ *  where gateways emit HTML or their own JSON and land in the
+ *  outcome-unknown branch by default. And the alternative — a
+ *  per-response token proving handler provenance — is a real protocol for
+ *  a hazard nothing has produced. The default is what carries the safety
+ *  here: everything unrecognised is treated as possibly-delivered, so this
+ *  fails safe for every shape except a deliberate impersonation of ours.
+ *
+ *  Mirrored in Go by cmd/pad/cmd_push.go's pushPrePublishRefusalCodes,
+ *  with a test pinning the two lists together — the same question about
+ *  the same endpoint must not get different answers in a terminal and a
+ *  browser. */
 export function isPrePublishRefusal(err: unknown): boolean {
 	const code = err instanceof PadApiError ? err.code : '';
 	return code !== '' && PUSH_PRE_PUBLISH_ERROR_CODES.has(code);
@@ -133,7 +155,12 @@ export function routePrompt(
 
 /** What actually happened, once the route was taken. */
 export type DispatchOutcome =
-	| { kind: 'pushed'; count: number }
+	/** `count` is NULL when the server published the push but could not
+	 *  read the presence registry to count it (BUG-2698's
+	 *  `delivered_sessions: null`). Null is not zero: the notification went
+	 *  out, so the toast must still say pushed — it just cannot name a
+	 *  number. */
+	| { kind: 'pushed'; count: number | null }
 	| { kind: 'copied'; because: ClipboardReason }
 	| { kind: 'copy-failed'; because: ClipboardReason }
 	/** The server refused before publishing — nothing was sent, and offering
@@ -162,6 +189,15 @@ export interface DispatchMessage {
 export function describeDispatch(outcome: DispatchOutcome): DispatchMessage {
 	switch (outcome.kind) {
 		case 'pushed':
+			if (outcome.count === null) {
+				// Deliberately no number. Falling back to a stale preflight
+				// count here would assert a delivery figure the server just
+				// said it could not produce.
+				return {
+					message: 'Pushed to your agent sessions — delivery isn’t confirmed',
+					tone: 'success'
+				};
+			}
 			return {
 				message:
 					outcome.count === 1

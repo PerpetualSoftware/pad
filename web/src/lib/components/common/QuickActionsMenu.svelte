@@ -142,10 +142,16 @@
 	 * the menu goes on offering a push into a session that may be long gone.
 	 * That is the losing direction, so a known answer expires.
 	 *
-	 * 30s is not arbitrary: it is the server's own worst-case presence staleness
-	 * (`watchEventsKeepaliveInterval` — an ungraceful disconnect is invisible
-	 * until the next keepalive write fails). Past it an un-refreshed count is no
-	 * more informative than no count. Three poll intervals must fail in a row to
+	 * 30s is not arbitrary: it is the server's worst-case staleness for a dead
+	 * CLIENT (`watchEventsKeepaliveInterval` — an ungraceful disconnect is
+	 * invisible until the next keepalive write fails). Past it an un-refreshed
+	 * count is no more informative than no count.
+	 *
+	 * It is NOT the only bound on a Redis-backed deployment (BUG-2698): a dead
+	 * SERVER INSTANCE leaves its sessions listed until the shared registry's
+	 * ~90s TTL. Expiring the local answer at 30s does not shorten that and is
+	 * not trying to — a re-poll would return the same stale entry. Both windows
+	 * are why nothing on this surface claims delivery. Three poll intervals must fail in a row to
 	 * reach it. Same bound and same reasoning as PushToAgentDialog.
 	 */
 	const PRESENCE_MAX_AGE_MS = 30_000;
@@ -344,8 +350,25 @@
 		try {
 			// NEVER retried automatically, here or anywhere else: the endpoint
 			// carries no idempotency key.
-			await api.items.push(ws, target, collapsePushMessage(prompt));
-			announce({ kind: 'pushed', count: knownCount });
+			const result = await api.items.push(ws, target, collapsePushMessage(prompt));
+			// The SERVER's count wins over the preflight one (codex round 5).
+			// `knownCount` is whatever the last presence poll saw, which may
+			// be many seconds stale; the response's `delivered_sessions` is
+			// read at request time, immediately before the publish. Not a
+			// publish-time measurement and not a receipt — a pre-publish
+			// snapshot of the delivery predicate (codex round 24) — but far
+			// fresher than the poll, which is the whole reason to prefer it. And when it
+			// is NULL — published, but the registry could not be read — the
+			// toast must not fall back to the stale number, because that
+			// would assert a figure the server just said it could not
+			// produce. An ABSENT field (a server predating targeting) is the
+			// one case where the preflight count is still the best available
+			// answer.
+			const count =
+				result.delivered_sessions === undefined
+					? knownCount
+					: result.delivered_sessions;
+			announce({ kind: 'pushed', count });
 		} catch (err) {
 			if (isPrePublishRefusal(err)) {
 				// The server refused before publishing, so nothing went out and

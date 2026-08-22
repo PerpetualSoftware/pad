@@ -1,0 +1,202 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
+)
+
+// BUG-2699 codex round 9 — the CLI's half of "is this safe to re-run?".
+//
+// The push handler publishes BEFORE it writes its response, so an error is
+// not proof that nothing went out. The web dialog has distinguished the
+// two since TASK-2588; the CLI reported every failure identically, so the
+// same server outcome produced a safe message in a browser and a
+// misleading one in a terminal.
+//
+// The default matters more than any single code: anything unrecognised
+// must read as POSSIBLY DELIVERED, because being wrong that way costs a
+// warning while being wrong the other way costs a duplicate dispatch into
+// an agent harness.
+func TestPushRefusedBeforePublishing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("recognised pre-publish refusals are safe to re-run", func(t *testing.T) {
+		for _, code := range []string{
+			"bad_request", "unauthorized", "not_found", "forbidden",
+			"permission_denied", "unavailable", "archived", "rate_limited",
+			"plan_limit_exceeded", "csrf_error", "email_not_verified",
+		} {
+			if !pushRefusedBeforePublishing(&cli.APIError{Code: code, Message: "x"}) {
+				t.Errorf("%s should be recognised as a pre-publish refusal", code)
+			}
+		}
+	})
+
+	t.Run("internal_error is NOT safe, deliberately", func(t *testing.T) {
+		// It is pre-publish today, and left off anyway: that is a property
+		// of where one call currently sits, not of what the code means, so
+		// a writeInternalError added after the publish would silently make
+		// it wrong in the direction that costs a duplicate dispatch.
+		if pushRefusedBeforePublishing(&cli.APIError{Code: "internal_error", Message: "x"}) {
+			t.Fatal("internal_error must stay off the safe list — see pushPrePublishRefusalCodes for why")
+		}
+	})
+
+	t.Run("push_unconfirmed is NOT safe", func(t *testing.T) {
+		// The code the server emits precisely to say it does not know. If
+		// this were ever added to the map, the CLI would tell users to
+		// re-run the one case that is most likely to duplicate.
+		if pushRefusedBeforePublishing(&cli.APIError{Code: "push_unconfirmed", Message: "x"}) {
+			t.Fatal("push_unconfirmed must never be treated as a pre-publish refusal")
+		}
+	})
+
+	t.Run("unknown shapes default to possibly-delivered", func(t *testing.T) {
+		cases := []struct {
+			name string
+			err  error
+		}{
+			{"transport error", errors.New("request failed: connection reset")},
+			{"unrecognised code", &cli.APIError{Code: "bad_gateway", Message: "x"}},
+			{"empty code", &cli.APIError{Code: "", Message: "x"}},
+			{"gateway envelope", errors.New("API error: 502 <html>bad gateway</html>")},
+		}
+		for _, tc := range cases {
+			if pushRefusedBeforePublishing(tc.err) {
+				t.Errorf("%s must default to possibly-delivered", tc.name)
+			}
+		}
+	})
+
+	t.Run("wrapped API errors are still recognised", func(t *testing.T) {
+		// errors.As, not a type assertion: a wrapped refusal is still a
+		// refusal, and treating it as unknown would warn on a case that is
+		// provably safe.
+		wrapped := errors.Join(errors.New("context"), &cli.APIError{Code: "bad_request", Message: "x"})
+		if !pushRefusedBeforePublishing(wrapped) {
+			t.Fatal("a wrapped pre-publish refusal must still be recognised")
+		}
+	})
+}
+
+// TestPushRefusalCodesMatchTheWebAllowList pins the two surfaces together.
+//
+// They answer the same question about the same endpoint, so drift means a
+// push that is safe to retry in a browser and unsafe in a terminal, or the
+// reverse. Checked against the TypeScript source rather than a copy of it,
+// so editing one side without the other fails here.
+func TestPushRefusalCodesMatchTheWebAllowList(t *testing.T) {
+	t.Parallel()
+	webCodes := readWebPrePublishCodes(t)
+	for code := range pushPrePublishRefusalCodes {
+		if !webCodes[code] {
+			t.Errorf("%q is a pre-publish refusal in the CLI but not in web/src/lib/push/dispatch.ts", code)
+		}
+	}
+	for code := range webCodes {
+		if !pushPrePublishRefusalCodes[code] {
+			t.Errorf("%q is a pre-publish refusal in web/src/lib/push/dispatch.ts but not in the CLI", code)
+		}
+	}
+	// POSITIVE CONTROL: a parse that found nothing would make both loops
+	// vacuous and report agreement between a list and an empty set.
+	if len(webCodes) == 0 {
+		t.Fatal("parsed no codes out of the web allow-list — the parser is broken, not the lists")
+	}
+	// WHAT THIS TEST CANNOT DO, stated because agreement reads like
+	// completeness (codex round 12): it proves the two lists MATCH, never
+	// that either is complete. `archived` was missing from both for two
+	// rounds and this test was green throughout. Completeness comes from
+	// enumerating the handler's pre-publish error codes — see
+	// pushPrePublishRefusalCodes' doc comment, which records that
+	// enumeration and which codes were deliberately left off.
+}
+
+// readWebPrePublishCodes extracts the string literals from
+// PUSH_PRE_PUBLISH_ERROR_CODES in the web client.
+func readWebPrePublishCodes(t *testing.T) map[string]bool {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "push", "dispatch.ts"))
+	if err != nil {
+		t.Fatalf("read web dispatch.ts: %v", err)
+	}
+	text := string(src)
+	start := strings.Index(text, "PUSH_PRE_PUBLISH_ERROR_CODES")
+	if start < 0 {
+		t.Fatal("PUSH_PRE_PUBLISH_ERROR_CODES not found — it was renamed, and this pin needs updating with it")
+	}
+	open := strings.Index(text[start:], "([")
+	closeIdx := strings.Index(text[start:], "])")
+	if open < 0 || closeIdx < 0 || closeIdx < open {
+		t.Fatal("could not locate the code list body")
+	}
+	body := text[start+open : start+closeIdx]
+
+	out := map[string]bool{}
+	for _, m := range regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(body, -1) {
+		out[m[1]] = true
+	}
+	return out
+}
+
+// TestPushCmd_WarnsOnlyWhenTheOutcomeIsAmbiguous — codex round 30
+// (coverage-gap sweep).
+//
+// The classification helper is tested directly; nothing executed the
+// command and checked what a user actually sees. Both directions matter
+// and they fail differently: a missing warning on an ambiguous failure
+// invites a duplicate dispatch, and a spurious warning on a clean refusal
+// trains people to ignore it.
+func TestPushCmd_WarnsOnlyWhenTheOutcomeIsAmbiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		code     string
+		wantWarn bool
+	}{
+		{"ambiguous 502 warns", http.StatusBadGateway, "push_unconfirmed", true},
+		{"unrecognised code warns", http.StatusBadGateway, "bad_gateway", true},
+		// The CONTROLS. A fix that simply always warned would pass the two
+		// cases above and be useless.
+		{"clean refusal does not warn", http.StatusServiceUnavailable, "unavailable", false},
+		{"validation refusal does not warn", http.StatusBadRequest, "bad_request", false},
+		{"archived refusal does not warn", http.StatusConflict, "archived", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{"code": tc.code, "message": "nope"},
+				})
+			}))
+
+			cmd := pushCmd()
+			cmd.SetArgs([]string{"TASK-5", "-m", "triage this"})
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+
+			var execErr error
+			stderr := captureStderr(t, func() { execErr = cmd.Execute() })
+			if execErr == nil {
+				t.Fatal("a failed push must still return an error")
+			}
+
+			warned := strings.Contains(stderr, "may or may not have been delivered")
+			if warned != tc.wantWarn {
+				t.Fatalf("warning presence = %v, want %v (stderr: %q)", warned, tc.wantWarn, stderr)
+			}
+			if tc.wantWarn && !strings.Contains(stderr, "twice") {
+				t.Fatalf("the warning must say what re-running costs; got %q", stderr)
+			}
+		})
+	}
+}

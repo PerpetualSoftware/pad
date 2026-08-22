@@ -115,6 +115,22 @@ describe('describeDispatch', () => {
 		expect(many.message).toContain('delivery isn’t confirmed');
 	});
 
+	it('reports a null count as pushed WITHOUT a number', () => {
+		// BUG-2698: the server published the broadcast but could not read the
+		// presence registry to count it. Null is not zero — claiming "0 agent
+		// sessions" would tell the user nobody got a message that went out —
+		// and it is not a licence to substitute a stale preflight number
+		// either.
+		const unknown = describeDispatch({ kind: 'pushed', count: null });
+		expect(unknown.tone).toBe('success');
+		expect(unknown.message).toContain('Pushed');
+		expect(unknown.message).toContain('delivery isn’t confirmed');
+		// The wrong behaviours, asserted directly: any digit at all would
+		// mean a count was invented.
+		expect(unknown.message).not.toMatch(/\d/);
+		expect(unknown.message).not.toMatch(/delivered|received/i);
+	});
+
 	it('names the fallback AND its reason, so a copy never reads as a push', () => {
 		expect(describeDispatch({ kind: 'copied', because: 'no-sessions' }).message).toBe(
 			'No agent session accepting pushes — copied to clipboard instead'

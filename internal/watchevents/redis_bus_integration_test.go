@@ -209,3 +209,39 @@ func TestRedisBusCloseStopsReceiving(t *testing.T) {
 		t.Fatalf("Redis still reports %d subscriber(s) after Close", n)
 	}
 }
+
+// TestRedisBusPublishReportsAcceptanceOnASuccessfulRoundTrip — codex round
+// 30 (coverage-gap sweep).
+//
+// publish_result_test.go covers the FAILURE directions — ErrBusClosed, and
+// a transport error that must not claim the bus was closed — against a
+// dead client. Nothing asserted the success direction against a real
+// round trip: every integration test here ignored Publish's return value,
+// so an implementation that published correctly and then returned a
+// non-nil error would have made every push answer 502 push_unconfirmed
+// while the suite stayed green.
+//
+// Asserts BOTH that the call reports acceptance and that the notification
+// actually arrived, because either alone is compatible with the bug: a nil
+// error proves nothing if nothing was published, and an arrival proves
+// nothing about what the caller was told.
+func TestRedisBusPublishReportsAcceptanceOnASuccessfulRoundTrip(t *testing.T) {
+	bus, _ := newMiniredisBus(t, 16)
+	ch := bus.Subscribe()
+
+	if err := bus.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1", Summary: "triage this"}); err != nil {
+		t.Fatalf("a successful publish must report acceptance, got %v", err)
+	}
+
+	select {
+	case got := <-ch:
+		if got.ItemRef != "TASK-1" || got.Summary != "triage this" {
+			t.Fatalf("unexpected notification: %+v", got)
+		}
+		if got.ID == 0 {
+			t.Fatal("a published notification must carry the id the script assigned")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("publish reported acceptance but nothing arrived — the nil error was not evidence of a publish")
+	}
+}

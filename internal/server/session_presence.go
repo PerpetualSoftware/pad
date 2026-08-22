@@ -24,51 +24,60 @@ import (
 // carry a label (S2, TASK-2560) — turns the same data into the target
 // picker S5 needs.
 //
-// SINGLE-PROCESS LIMITATION, stated up front for the same reason
-// internal/watchevents states its own: MemorySessionPresence tracks
-// connections held open by THIS process only. In a multi-process padd
-// deployment (Pad Cloud) a session connected to instance A is invisible
-// to instance B, so /api/v1/sessions under-reports.
+// WHICH IMPLEMENTATION YOU GET, and what each one can and cannot see.
+// cmd/pad/cmd_server.go picks on PAD_REDIS_URL, the same switch both
+// buses use:
 //
-// THIS NOTE USED TO SAY presence and delivery were blind in the same
-// direction, and that the two had to be fixed together or not at all.
-// That was true when written and is no longer: BUG-2651 shipped
-// watchevents.RedisBus, so DELIVERY is now cross-instance WHEN
-// PAD_REDIS_URL IS SET — a push published on A reaches a stream held on
-// B, and B matches it against its own live sessions, which is the only
-// set B needs. Without that env var the deployment is single-process by
-// definition and none of this applies. What remains per-process in a
-// Redis-backed deployment is exactly this registry, and it is worth
-// being precise about what that costs, because the two halves fail
-// differently:
+//   - No PAD_REDIS_URL — MemorySessionPresence. The deployment is
+//     single-process by definition, so per-process presence is complete
+//     presence and nothing below applies.
+//   - PAD_REDIS_URL set — RedisSessionPresence (BUG-2698,
+//     session_presence_redis.go). Every instance reads and writes one
+//     shared registry, so a session held on B is visible to A.
 //
-//   - BROADCAST DELIVERY (fixed): a push with TargetUserID and no
-//     session id used to reach only the sessions on whichever instance
-//     handled the POST. It now reaches all of that user's sessions,
-//     wherever they are held.
-//   - TARGETED DELIVERY (still open, and NOT fixed by the bus): a push
-//     naming a specific session id is gated on THIS registry before it
-//     is published at all — see handlers_push.go, which skips the
-//     publish when the id is absent from the local snapshot. So a POST
-//     landing on A for a session held on B still delivers nothing. The
-//     bus would carry it; the gate means it is never put on the bus.
-//   - VISIBILITY (still open): GET /api/v1/sessions answers from ONE
-//     instance's registry, so a user whose session is held on B and who
-//     asks A sees nothing to target. Unchanged by BUG-2651 — neither
-//     better nor worse — so nothing regressed.
+// THAT SPLIT USED TO BE A DEFECT, and the history is worth keeping
+// because the three symptoms looked unrelated. BUG-2651 gave watchevents
+// a Redis bus, which made DELIVERY cross-instance while this registry
+// stayed per-process — and a shared bus with a per-process registry was
+// worse than either being consistent:
 //
-// The two open halves are the same defect wearing different clothes (filed
-// together as BUG-2698), and one implementation closes both: a shared-state SessionPresence makes
-// the snapshot right, which makes the picker complete AND makes the
-// push gate's premise true again. Do not put the web-UI push surface
-// (PLAN-2558 S3) in front of a multi-process deployment until it exists.
-// SessionPresence is an interface from day one so it can slot in without
-// touching the stream handler or the endpoint.
+//   - BROADCAST DELIVERY was fixed by the bus alone, but its REPORTED
+//     count was not: delivered_sessions counted the answering instance's
+//     sessions while the bus delivered to all of them.
+//   - TARGETED DELIVERY was not fixed by the bus at all, because
+//     handlers_push.go gates on THIS registry BEFORE publishing and
+//     skipped the publish entirely when the id was absent locally. The
+//     bus would have carried it; it was never put on the bus.
+//   - VISIBILITY was not fixed either: GET /api/v1/sessions answered
+//     from one instance's registry, so a user whose session was held on
+//     B and who asked A had nothing to select in the picker.
 //
-// (An earlier version of this note, written with BUG-2651, claimed
-// targeted delivery was fixed too. It was not: that claim was made from
-// reading the bus and this file without reading the push handler's gate,
-// and codex round 2 caught it.)
+// One shared registry closes all three, and in an order worth noticing:
+// making the registry global makes the snapshot right, which makes the
+// picker complete AND restores the push gate's original premise — the
+// skip then means what it was written to mean ("nothing is listening")
+// rather than "this instance cannot see who is listening". The tempting
+// shortcut of publishing unconditionally for targeted pushes would have
+// fixed delivery while making delivered_sessions:0 a lie in the other
+// direction.
+//
+// (Two earlier versions of this note were wrong in opposite directions —
+// one claimed BUG-2651 fixed targeted delivery, written from reading the
+// bus and this file without reading the push handler's gate; the one
+// before it claimed presence and delivery were blind in the same
+// direction and had to be fixed together. Kept as a reminder that a
+// claim about a path you have not read is a claim, not a caveat.)
+//
+// SessionPresence has been an interface since S1 precisely so the
+// shared-state implementation could slot in without rewriting the stream
+// handler or the endpoint, and that held: the STREAM HANDLER is unchanged.
+//
+// The ENDPOINT is not, and an earlier draft of this note claimed both were
+// (codex round 6). handleListSessions gained a 503 branch, because the
+// out-of-process implementation made "I could not find out" a reachable
+// answer that the in-process one never had — the interface absorbed the
+// implementation swap, not the new failure mode the implementation brought
+// with it. Those are different claims and only the first one was true.
 
 // LiveSession is one currently-connected user-scoped event stream —
 // i.e. one `GET /api/v1/events/stream` connection being held open.
@@ -83,6 +92,24 @@ import (
 // is invisible to the server until the next keepalive write fails, and
 // watchEventsKeepaliveInterval is 30s. So this list can name a listener
 // that is already gone, for up to ~30 seconds.
+//
+// A DEAD INSTANCE IS A SECOND, LONGER WINDOW, and it exists only for the
+// shared registry (codex round 1, P2 on BUG-2698). The ~30s above is
+// about a dead CLIENT, detected when the keepalive write fails and the
+// handler's defer deregisters. If the SERVER PROCESS dies instead,
+// MemorySessionPresence loses its entries instantly — they lived in the
+// process that died — while RedisSessionPresence's outlive it and clear
+// only when their TTL lapses, up to ~90s (sessionKeyTTL). During that
+// window a picker can offer a session on an instance that no longer
+// exists, and a push targeted at it will publish and reach nobody while
+// reporting one delivery.
+//
+// Documented rather than shortened, deliberately: a TTL close to the
+// renewal interval would start evicting LIVE sessions on any hiccup — a
+// GC pause, a briefly slow Redis — and an evicted live session is
+// invisible to the picker AND makes the push gate skip a genuinely
+// connected target. Do not fix a staleness window by creating an eviction
+// failure. See sessionKeyTTL for the arithmetic.
 //
 // That bound is acceptable for push, which is fire-and-forget either
 // way: a push to a session that died 5 seconds ago costs a message that
@@ -203,12 +230,29 @@ type SessionPresence interface {
 	Remove(userID string, sessionID string)
 	// ListForUser returns userID's live sessions, oldest connection
 	// first. The returned slice is a copy and is safe to retain.
-	ListForUser(userID string) []LiveSession
+	//
+	// THE ERROR IS NOT DECORATION, and an implementation that cannot fail
+	// must still not drop it (codex round 1, P1 on BUG-2698). Without it,
+	// "this user has no sessions" and "I could not find out" are the same
+	// value to every consumer — and they demand OPPOSITE handling: the
+	// first means a push has nothing to deliver to, the second means the
+	// caller must not conclude anything. An out-of-process implementation
+	// makes the difference reachable at runtime (a Redis outage), where
+	// returning an empty list would make handleListSessions answer 200
+	// with no sessions — the precise lie its 503 exists to avoid — and
+	// would make a TARGETED push skip its publish and lose the
+	// instruction while reporting success.
+	//
+	// MemorySessionPresence always returns a nil error; that is a property
+	// of that implementation, not of this contract.
+	ListForUser(userID string) ([]LiveSession, error)
 }
 
-// MemorySessionPresence is the in-process SessionPresence — see this
-// file's SINGLE-PROCESS LIMITATION note before deploying it behind more
-// than one padd process.
+// MemorySessionPresence is the in-process SessionPresence, and the one a
+// deployment gets when PAD_REDIS_URL is unset — which is also the only
+// deployment shape it is correct for. See this file's WHICH IMPLEMENTATION
+// YOU GET note before putting it behind more than one padd process;
+// RedisSessionPresence (session_presence_redis.go) is what that needs.
 type MemorySessionPresence struct {
 	mu sync.RWMutex
 	// byUser is userID -> sessionID -> session. Two levels rather than a
@@ -273,7 +317,7 @@ func (p *MemorySessionPresence) Remove(userID string, sessionID string) {
 // two connections that opened within the same clock tick (a real case
 // under a coarse monotonic clock, and an unstable list order would make
 // the S5 target picker jump around under the user's cursor).
-func (p *MemorySessionPresence) ListForUser(userID string) []LiveSession {
+func (p *MemorySessionPresence) ListForUser(userID string) ([]LiveSession, error) {
 	p.mu.RLock()
 	sessions := p.byUser[userID]
 	out := make([]LiveSession, 0, len(sessions))
@@ -288,5 +332,7 @@ func (p *MemorySessionPresence) ListForUser(userID string) []LiveSession {
 		}
 		return out[i].ConnectedAt.Before(out[j].ConnectedAt)
 	})
-	return out
+	// Always nil: an in-process map read cannot fail. See the interface's
+	// doc comment for why the error is in the signature anyway.
+	return out, nil
 }

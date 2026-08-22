@@ -254,6 +254,89 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		copyMock.mockResolvedValue(true);
 	});
 
+	it('reports the SERVER\'s delivered_sessions, not the stale preflight count', async () => {
+		// BUG-2698 codex round 5. The preflight poll saw three sessions; by
+		// the time the push landed the server matched one. The toast used to
+		// announce the preflight number because the response was discarded.
+		sessionsListMock.mockResolvedValue({
+			sessions: [
+				{ id: 's1', armed: true },
+				{ id: 's2', armed: true },
+				{ id: 's3', armed: true }
+			],
+			count: 3
+		});
+		pushMock.mockResolvedValue({ pushed: true, delivered_sessions: 1 });
+
+		const { host, component } = mountMenu();
+		await openMenu(host);
+		actionRow(host, 'Ship it').click();
+		await vi.waitFor(() => expect(pushMock).toHaveBeenCalledTimes(1));
+
+		await vi.waitFor(() => expect(toastShow).toHaveBeenCalled());
+		// The wrong behaviour's fingerprint, asserted directly: the stale 3.
+		expect(toastShow.mock.calls[0][0]).not.toContain('3 agent sessions');
+		expect(toastShow.mock.calls[0][0]).toContain('Pushed to your agent session');
+
+		unmount(component);
+		host.remove();
+	});
+
+	it('claims no number when the server could not count the delivery', async () => {
+		// delivered_sessions: null — published, but the presence registry was
+		// unreadable. Falling back to the preflight count here would assert a
+		// figure the server just said it could not produce.
+		sessionsListMock.mockResolvedValue({
+			sessions: [
+				{ id: 's1', armed: true },
+				{ id: 's2', armed: true }
+			],
+			count: 2
+		});
+		pushMock.mockResolvedValue({ pushed: true, delivered_sessions: null });
+
+		const { host, component } = mountMenu();
+		await openMenu(host);
+		actionRow(host, 'Ship it').click();
+		await vi.waitFor(() => expect(pushMock).toHaveBeenCalledTimes(1));
+
+		await vi.waitFor(() => expect(toastShow).toHaveBeenCalled());
+		const message = toastShow.mock.calls[0][0];
+		expect(message).toContain('Pushed');
+		expect(message).toContain('delivery isn’t confirmed');
+		// Any digit would mean a count was invented — the stale 2, or a 0.
+		expect(message).not.toMatch(/\d/);
+
+		unmount(component);
+		host.remove();
+	});
+
+	it('falls back to the preflight count when the server omits the field', async () => {
+		// A server predating session targeting sends no delivered_sessions at
+		// all. That is the one case where the preflight count is still the
+		// best answer available — the control that keeps the two tests above
+		// from passing for an implementation that simply never names a number.
+		sessionsListMock.mockResolvedValue({
+			sessions: [
+				{ id: 's1', armed: true },
+				{ id: 's2', armed: true }
+			],
+			count: 2
+		});
+		pushMock.mockResolvedValue({ pushed: true });
+
+		const { host, component } = mountMenu();
+		await openMenu(host);
+		actionRow(host, 'Ship it').click();
+		await vi.waitFor(() => expect(pushMock).toHaveBeenCalledTimes(1));
+
+		await vi.waitFor(() => expect(toastShow).toHaveBeenCalled());
+		expect(toastShow.mock.calls[0][0]).toContain('2 agent sessions');
+
+		unmount(component);
+		host.remove();
+	});
+
 	it('pushes the resolved prompt when a session is connected, and leaves the clipboard alone', async () => {
 		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1', armed: true }], count: 1 });
 		pushMock.mockResolvedValue({ pushed: true });

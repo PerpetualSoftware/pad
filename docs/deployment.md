@@ -24,7 +24,7 @@ Pad is a single Go binary with an embedded web UI. It supports SQLite (default) 
 
 - **Pad** serves the REST API and embedded SvelteKit web UI on a single port (default: 7777)
 - **PostgreSQL** stores all data (workspaces, items, users, activity). SQLite works for single-node.
-- **Redis** enables real-time SSE events across multiple Pad instances. Optional for single-node.
+- **Redis** carries real-time events, watch/push notifications, and the shared session-presence registry across multiple Pad instances. Optional for single-node.
 
 ## Quick Start with Docker Compose
 
@@ -82,9 +82,96 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub. Without Redis, SSE events are in-process only. |
+| `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Global maximum SSE connections |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum SSE connections |
+
+#### Redis configuration notes
+
+Pad's Redis integration assumes a **single Redis node** — `redis://…`, not a
+cluster. Both event buses and the session-presence registry use flat key names
+and a non-cluster client; pointing Pad at a Redis Cluster is not supported.
+
+**Avoid an evicting `maxmemory-policy` for Pad's Redis.**
+`docker-compose.prod.yml` sets `noeviction` for this reason; the plain
+`docker-compose.yml` keeps `allkeys-lru` on its 64 MB dev instance, where the
+consequence below is a momentary annoyance rather than a lost instruction —
+change it too if you run that file in anger.
+
+Under an evicting policy Redis may drop live session-presence entries under
+memory pressure. Nothing can distinguish that from a TTL lapsing, so a
+connected agent session briefly disappears from the picker and a push targeted
+at it reports
+`delivered_sessions: 0`. It self-repairs on the session's next 30-second
+renewal, and Pad's keyspace is small — a few hundred bytes per connected
+session plus two counters — so there is nothing to gain by evicting it.
+
+#### If push stops finding a session (on-call)
+
+The most likely Redis-related symptom is a **transient write failure while
+registering a session**. The agent's event stream stays up — the connection is
+never refused over a registry problem — but the session is absent from the
+shared registry, so:
+
+- it does not appear in `GET /api/v1/sessions` or the web picker, and
+- a push **targeted** at it returns `200 pushed:true` with
+  `delivered_sessions: 0` and skips publication, so the instruction is not
+  delivered.
+
+**What you'll see:** `session presence: failed to register session` or `failed
+to renew session entry` warnings (rate-limited to one per minute, carrying
+`failures_since_last_log` — a large count means the replica, a small one means
+a single session), and the session missing from the listing.
+
+**What to do:** restore Redis connectivity, capacity, or ACLs. Registration
+self-heals — each session's renewal re-writes its full entry, so an affected
+session reappears within ~30 seconds without reconnecting. Confirm it is listed
+again before re-sending anything.
+
+**What NOT to do:** do not blindly re-send. A *targeted* push reporting
+`delivered_sessions: 0` is safe to resend, because the server skipped the
+publish. A **broadcast** is always published, and a `502 push_unconfirmed` means
+the outcome is unknown — re-sending either can deliver a second instruction the
+agent acts on twice. Only re-send what the server told you it skipped.
+
+#### Upgrading a multi-instance deployment
+
+`PAD_REDIS_URL` now also backs the **session-presence registry** — the list of
+which agent sessions are connected, which `pad push` and the web UI's "Push to
+agent" picker read to decide where a push goes. Previously that registry was
+per-process even when Redis was configured, so a push aimed at a session held
+by another replica was silently dropped.
+
+**During a rolling upgrade, old and new replicas disagree about presence.** An
+old replica has only its own connections in view, so a push it answers cannot
+see a session held on a new replica, and `GET /api/v1/sessions` returns a
+different list depending on which replica answers. A TARGETED push reports this
+honestly — `delivered_sessions: 0`, and the publish is skipped, so nothing was
+sent — but the instruction is not delivered.
+
+This is the same behaviour every replica had *before* this build, so the
+rollout is not a regression; it is a window in which the fix is only partly in
+effect. Two ways to avoid the window:
+
+- **Blue/green** — bring up the new replicas, cut traffic over, retire the old
+  ones. No mixed period.
+- **Drain first** — scale old replicas out of the load balancer and let agent
+  monitors reconnect (`pad watch --stream` reconnects on its own) before
+  serving pushes from the new set.
+
+If neither is practical, a rolling upgrade is still safe: nothing is corrupted
+and no migration is needed. Targeted pushes may report `delivered_sessions: 0`
+and go undelivered until every replica runs the new build; those are safe to
+re-send once the rollout completes, because a targeted miss skips the publish
+entirely.
+
+**That safety does not extend to broadcasts.** A broadcast push is always
+published, on old and new replicas alike, and the shared notification bus
+carries it across instances regardless of which registry the answering replica
+used — so a broadcast reporting `0` during the rollout may well have been
+delivered. Re-sending one is a second instruction the receiving agent will act
+on twice. Only re-send a push the server told you it skipped. There is no Redis or database migration; the
+registry's keys are transient and expire on their own TTL.
 
 ### Security
 
@@ -318,7 +405,7 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 ## Production Checklist
 
 - [ ] **Database:** PostgreSQL configured with `PAD_DB_DRIVER=postgres`
-- [ ] **Redis:** Connected for multi-instance SSE (`PAD_REDIS_URL`)
+- [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`
 - [ ] **TLS:** Reverse proxy with valid certificates
 - [ ] **Secure cookies:** `PAD_SECURE_COOKIES=true` (requires TLS)
 - [ ] **Public URL:** `PAD_URL` set to your public-facing domain

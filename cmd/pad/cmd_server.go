@@ -679,20 +679,37 @@ func serveCmd() *cobra.Command {
 			}
 			srv.SetWatchEventsBus(watchBus)
 
-			// Live-session presence registry (PLAN-2558 S1). Wired
-			// unconditionally, and it is now the ONLY in-process piece
-			// of this pair — the watch bus above stopped being one when
-			// PAD_REDIS_URL is set (BUG-2651). So the old "same caveat
-			// as the bus directly above" reading no longer holds: the
-			// bus delivers across instances, while this registry still
-			// reports only the answering instance's connections.
+			// Live-session presence registry (PLAN-2558 S1), on the SAME
+			// PAD_REDIS_URL switch as both buses above (BUG-2698). The
+			// three now cross instance boundaries together, which is the
+			// point: a shared bus with a per-process registry was worse
+			// than either being consistent, because a session-targeted
+			// push was resolved against the answering instance's view and
+			// skipped the publish for a session the bus could have
+			// reached.
 			//
-			// See internal/server/session_presence.go's note for what
-			// that costs (a session picker that under-reports, rather
-			// than a push that lies) before putting the web-UI push
-			// surface (PLAN-2558 S3) in front of a multi-process
-			// deployment.
-			srv.SetSessionPresence(server.NewMemorySessionPresence())
+			// A self-hosted single-process binary keeps the in-memory
+			// registry and never touches Redis, same as the buses.
+			var sessionPresence server.SessionPresence
+			// Declared out here so the shutdown sequence below can close it
+			// at the right point in the order — see there for why that point
+			// is before http.Server.Shutdown rather than after.
+			var redisPresence *server.RedisSessionPresence
+			if watchRedis != nil {
+				redisPresence = server.NewRedisSessionPresence(watchRedis)
+				// Backstop for early-return paths that never reach the
+				// shutdown sequence; Close is idempotent. Deliberately does
+				// NOT delete this instance's entries — a shutdown racing a
+				// reconnect elsewhere would then delete a session that had
+				// already re-registered — so they clear on their TTL.
+				defer redisPresence.Close()
+				sessionPresence = redisPresence
+				slog.Info("Session presence registry using Redis (shared across instances)")
+			} else {
+				sessionPresence = server.NewMemorySessionPresence()
+				slog.Info("Session presence registry using in-memory (single instance)")
+			}
+			srv.SetSessionPresence(sessionPresence)
 
 			// Yjs collab room manager (PLAN-1248). Single-instance only
 			// today; multi-replica fanout via Redis is a deferred IDEA.
@@ -879,6 +896,33 @@ func serveCmd() *cobra.Command {
 				eventBus.Close()
 				slog.Info("Event bus closed")
 
+				// Presence closes FIRST — before the watch bus, and well before
+				// Shutdown. The ordering is load-bearing twice over (codex
+				// rounds 4 and 5 on BUG-2698).
+				//
+				// Remove waits for a session's renewal goroutine. Closing the bus
+				// is what RELEASES the SSE handlers, so each one immediately runs
+				// its deferred Remove — and any Remove that runs before Close
+				// still finds a live renewal to wait for, bypassing the drain
+				// bound entirely and putting that wait in front of Shutdown.
+				// Closing presence first cancels every renewal and drains them,
+				// so the Removes that follow have nothing left to wait on.
+				//
+				// Note it does NOT empty the registry — an earlier version of
+				// this comment said so, and Close deliberately retains the
+				// entries precisely so a concurrent Remove can still find and
+				// await a renewal (codex rounds 6 and 10). Remove's own wait is
+				// bounded by the same drain deadline, so a renewal Close could
+				// not drain cannot hold Shutdown either.
+				//
+				// Nothing here depends on the bus, so there is no cost to going
+				// first. Idempotent, so the deferred Close at the wiring site
+				// stays a harmless backstop for early-return paths.
+				if redisPresence != nil {
+					redisPresence.Close()
+					slog.Info("Session presence registry closed")
+				}
+
 				// Same reasoning for the watch bus, and it matters for the
 				// same reason: GET /api/v1/events/stream is a long-lived
 				// handler blocked on this bus's channel, so leaving it open
@@ -890,17 +934,22 @@ func serveCmd() *cobra.Command {
 				// call inside srv.Stop() is a no-op.
 				//
 				// THE TRADE, which is the same one eventBus above already
-				// makes and is worth naming (codex round 10): closing BEFORE
-				// Shutdown drains handlers means a push already in flight can
-				// Publish into a closed bus, be dropped, and still return
-				// HTTP 200 with pushed:true. Closing AFTER instead would hold
-				// Shutdown for its full 30s deadline on any open stream,
+				// makes and is worth naming: closing BEFORE Shutdown drains
+				// handlers means a push already in flight publishes into a
+				// closed bus and is not delivered. Closing AFTER instead would
+				// hold Shutdown for its full 30s deadline on any open stream,
 				// every time. Neither is free; this side loses a message in a
-				// window measured in milliseconds during a deliberate
-				// shutdown, the other side delays every shutdown by half a
-				// minute. Making the handler actually LEARN the publish was
-				// dropped needs Bus.Publish to report it, which is an
-				// interface change and a different unit.
+				// window measured in milliseconds during a deliberate shutdown,
+				// the other side delays every shutdown by half a minute.
+				//
+				// WHAT IT NO LONGER COSTS is the caller's understanding of it
+				// (BUG-2699). This comment used to end "...and still return HTTP
+				// 200 with pushed:true", and then note that fixing it needed an
+				// interface change and a different unit. That unit landed:
+				// Bus.Publish reports acceptance, so a push publishing into a
+				// closed bus gets ErrBusClosed and answers 503. The message is
+				// still lost; the caller is no longer told it was sent, and can
+				// safely re-send once the server is back.
 				watchBus.Close()
 				slog.Info("Watch notification bus closed")
 

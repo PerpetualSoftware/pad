@@ -327,7 +327,7 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 // that fallback could have applied: there is no longer a window in which an id
 // exists but the publish has not happened, so "assign or don't" and "publish
 // or don't" are the same decision.
-func (b *RedisBus) Publish(n Notification) {
+func (b *RedisBus) Publish(n Notification) error {
 	if n.Timestamp == 0 {
 		n.Timestamp = time.Now().UnixMilli()
 	}
@@ -338,7 +338,23 @@ func (b *RedisBus) Publish(n Notification) {
 	data, err := json.Marshal(n)
 	if err != nil {
 		slog.Error("watchevents: failed to marshal notification for Redis", "error", err, "kind", n.Kind)
-		return
+		return fmt.Errorf("watchevents: marshal notification: %w", err)
+	}
+
+	// Checked BEFORE the script call, and reported as ErrBusClosed rather
+	// than as whatever the cancelled context happens to produce (BUG-2699).
+	// Close() cancels b.ctx, so a post-Close publish already failed — but
+	// it failed with a context error indistinguishable from a request that
+	// raced a real cancellation, and the caller's two outcomes turn on
+	// exactly that distinction: closed proves nothing was published, while
+	// a transport error does not. Reading b.closed under the lock is what
+	// makes the proof available; inferring it from the error text would
+	// not.
+	b.mu.Lock()
+	closed := b.closed
+	b.mu.Unlock()
+	if closed {
+		return ErrBusClosed
 	}
 
 	// A fresh token per logical publish — NOT per attempt, which is the
@@ -351,9 +367,27 @@ func (b *RedisBus) Publish(n Notification) {
 	if err := publishScript.Run(b.ctx, b.client,
 		[]string{redisWatchSeqKey, redisWatchChannel, dedupeKey, redisWatchEpochKey},
 		string(data), redisWatchDedupeTTLSeconds, uuid.NewString()).Err(); err != nil {
-		slog.Error("watchevents: dropping notification — Redis publish failed, so no globally ordered ID was assigned",
+		// WORDED AS UNCONFIRMED, not as a drop (codex round 3). The earlier
+		// text said "dropping notification ... no globally ordered ID was
+		// assigned", which contradicts what this error actually means and
+		// contradicted the return path four lines down: go-redis retries a
+		// command whose reply was lost, so the script may already have run
+		// and published. An operator who reads "dropped" and re-sends turns
+		// a possible delivery into a duplicate DISPATCH.
+		slog.Error("watchevents: publish outcome UNCONFIRMED — the Redis call failed, but a lost reply can mean the notification was published anyway; do not re-send without checking",
 			"error", err, "kind", n.Kind, "item_ref", n.ItemRef)
+		// Returned as a plain wrapped error, deliberately NOT ErrBusClosed
+		// and deliberately not described as a drop to the caller, however
+		// the log line above phrases it for an operator. This error means
+		// UNCONFIRMED: go-redis retries a command whose reply was lost to a
+		// network error, which is the entire reason the script carries a
+		// SET-NX dedupe token (codex round 5), so the script may well have
+		// run and published while this call still returns non-nil. A caller
+		// that re-publishes on this error risks a duplicate DISPATCH, not a
+		// repeat of nothing — see Bus.Publish's doc comment.
+		return fmt.Errorf("watchevents: redis publish: %w", err)
 	}
+	return nil
 }
 
 // Subscribe returns a channel receiving every future Notification, with no

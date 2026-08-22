@@ -138,18 +138,16 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	// Publish SSE event
 	s.publishCommentEvent(sseCommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
 
-	if s.watchEvents != nil {
-		s.watchEvents.Publish(watchevents.Notification{
-			WorkspaceID:  workspaceID,
-			ItemID:       item.ID,
-			CollectionID: item.CollectionID,
-			ItemRef:      item.Ref,
-			Kind:         watchevents.KindComment,
-			Actor:        actor,
-			ActorName:    actorNameFromRequest(r),
-			Summary:      truncateForSummary(comment.Body, 120),
-		})
-	}
+	s.publishWatchNotification(watchevents.Notification{
+		WorkspaceID:  workspaceID,
+		ItemID:       item.ID,
+		CollectionID: item.CollectionID,
+		ItemRef:      item.Ref,
+		Kind:         watchevents.KindComment,
+		Actor:        actor,
+		ActorName:    actorNameFromRequest(r),
+		Summary:      truncateForSummary(comment.Body, 120),
+	})
 
 	writeJSON(w, http.StatusCreated, comment)
 }
@@ -371,18 +369,16 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	// hook entirely. Same kind=comment notification as a top-level
 	// comment; a watcher shouldn't lose replies just because they landed
 	// one level deeper in the thread.
-	if s.watchEvents != nil {
-		s.watchEvents.Publish(watchevents.Notification{
-			WorkspaceID:  workspaceID,
-			ItemID:       parentComment.ItemID,
-			CollectionID: replyCollID,
-			ItemRef:      replyItemRef,
-			Kind:         watchevents.KindComment,
-			Actor:        actor,
-			ActorName:    actorNameFromRequest(r),
-			Summary:      truncateForSummary(comment.Body, 120),
-		})
-	}
+	s.publishWatchNotification(watchevents.Notification{
+		WorkspaceID:  workspaceID,
+		ItemID:       parentComment.ItemID,
+		CollectionID: replyCollID,
+		ItemRef:      replyItemRef,
+		Kind:         watchevents.KindComment,
+		Actor:        actor,
+		ActorName:    actorNameFromRequest(r),
+		Summary:      truncateForSummary(comment.Body, 120),
+	})
 
 	writeJSON(w, http.StatusCreated, comment)
 }
