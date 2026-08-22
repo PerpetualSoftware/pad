@@ -278,10 +278,26 @@ func (rb *replayBuffer) append(n Notification) {
 	}
 }
 
-// since mirrors internal/events.replayBuffer.since exactly (same gap /
-// eviction semantics), scoped to this package's Notification type.
+// since mirrors internal/events.replayBuffer.since (same gap / eviction
+// semantics), scoped to this package's Notification type.
 func (rb *replayBuffer) since(sinceID int64) []Notification {
+	// AN EMPTY BUFFER CANNOT PROVE A CLIENT IS CURRENT (BUG-2731, found by a
+	// cross-artifact pass on that unit's branch). This buffer returning a
+	// non-nil empty slice reads as "caught up" to both SSE handlers, and
+	// MemoryBus assigns its own ids from 1 on every process start — so a
+	// client resuming with a cursor from a previous incarnation was told it
+	// had missed nothing.
+	//
+	// RedisBus never had this: replaySince applies the same rule through
+	// knownFrom before delegating here. MemoryBus reached this function
+	// directly, so the guard belongs at this level, where both get it.
+	//
+	// sinceID == 0 is exempt: a fresh subscriber is not resuming from a
+	// position, so there is no span to vouch for.
 	if rb.count == 0 {
+		if sinceID > 0 {
+			return nil
+		}
 		return []Notification{}
 	}
 	oldest := (rb.head - rb.count + rb.size) % rb.size
@@ -459,6 +475,15 @@ func (b *MemoryBus) Subscribe() chan Notification {
 // only in the returned replay slice), or published after (and thus only
 // delivered on the returned channel) — never both.
 func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification) {
+	// Reported with the lock released, like every other report in this
+	// package. RedisBus counts its own unservable resumes; MemoryBus did not,
+	// so pad_watchevents_resume_gaps_total read zero on a single-process
+	// deployment for a path that genuinely sends clients sync_required
+	// (BUG-2731, codex round 12). A counter that is structurally blind to one
+	// of its two implementations is worse than absent: it reads as evidence.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan Notification, 64)
@@ -469,6 +494,9 @@ func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, [
 	}
 	b.subscribers[ch] = struct{}{}
 	missed := b.replay.since(sinceID)
+	if missed == nil {
+		pending.resumeGap()
+	}
 	return ch, missed
 }
 
@@ -482,9 +510,16 @@ func (b *MemoryBus) Unsubscribe(ch chan Notification) {
 }
 
 func (b *MemoryBus) EventsSince(sinceID int64) []Notification {
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.replay.since(sinceID)
+	missed := b.replay.since(sinceID)
+	if missed == nil {
+		pending.resumeGap()
+	}
+	return missed
 }
 
 func (b *MemoryBus) Close() {

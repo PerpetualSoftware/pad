@@ -142,10 +142,21 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	var ch chan watchevents.Notification
 	var missed []watchevents.Notification
 	var lastID int64
+	// unreadableCursor mirrors the activity stream's rule (BUG-2731): sending
+	// this header at all means the client believes it has a position, so a
+	// value we cannot read is a cursor we cannot serve — NOT a fresh
+	// connection. Treating it as fresh silently drops everything published
+	// before this subscription. A genuinely fresh client sends no header.
+	var unreadableCursor bool
 	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
 		if parsed, perr := strconv.ParseInt(lastIDStr, 10, 64); perr == nil && parsed > 0 {
 			lastID = parsed
 			ch, missed = s.watchEvents.SubscribeAndReplaySince(lastID)
+		} else {
+			unreadableCursor = true
+			slog.Info("watch-events: resume carried an unreadable Last-Event-ID, sending sync_required",
+				"user_id", user.ID, "last_event_id", lastIDStr)
+			s.countResumeGap(false)
 		}
 	}
 	if ch == nil {
@@ -231,10 +242,26 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	}
 	flusher.Flush()
 
+	if unreadableCursor {
+		if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+			"reason": "Your last event ID could not be read. Full sync required.",
+		}); err != nil {
+			slog.Debug("watch-events: sync_required write failed, closing", "user_id", user.ID, "error", err)
+			return
+		}
+		flusher.Flush()
+	}
+
 	if lastID > 0 {
 		if missed == nil {
-			if err := writeSSEEvent(w, "sync_required", 0, map[string]string{
-				"reason": "Notification buffer exceeded. Reconnect without Last-Event-ID to resync.",
+			// Carries an empty `id:` so the client RETIRES the cursor we just
+			// refused, matching the activity stream (BUG-2731). Without it a
+			// generic SSE client resends the same unservable cursor on every
+			// reconnect and is answered the same way each time. The pad CLI
+			// masks this by clearing its own cursor; a browser or third-party
+			// consumer does not.
+			if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+				"reason": "This instance cannot vouch for notifications since your last ID. Full sync required.",
 			}); err != nil {
 				slog.Debug("watch-events: sync_required write failed, closing", "user_id", user.ID, "error", err)
 				return

@@ -3,9 +3,9 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/redisns"
@@ -28,25 +28,13 @@ const (
 	redisSeqSuffix = "event_seq"
 )
 
-// DEPLOYMENT SCOPING (BUG-2724). Both names above carry the installation's
-// PAD_REDIS_NAMESPACE when one is set — see internal/redisns — and are
-// byte-identical to the historical flat names when it is not.
-//
-// The rule, stated the same way in internal/watchevents and
-// internal/server's presence registry because it belongs to all three at
-// once: scoping comes from ONE shared config value built in
-// cmd/pad/cmd_server.go, never from one package growing a prefix the
-// others lack. Two installations sharing a Redis endpoint without distinct
-// namespaces cross-feed; different logical DBs do not help, since pub/sub
-// is not namespaced by DB at all.
-//
-// Redis CLUSTER remains unsupported across all three keyspaces: no hash
-// tags, and a non-cluster client. Deferred as one unit on BUG-2724.
-
 // RedisBus distributes events across multiple Pad instances via Redis pub/sub.
 // Each instance subscribes to Redis channels for its locally-connected SSE clients,
 // and publishes events to Redis so all instances see them.
 type RedisBus struct {
+	// observable carries the optional operational-event seam (BUG-2731).
+	observable
+
 	client *redis.Client
 
 	// keys builds this installation's Redis names (BUG-2724). The zero
@@ -54,20 +42,51 @@ type RedisBus struct {
 	// without one behaves exactly as it always did.
 	keys redisns.Keys
 
-	mu          sync.RWMutex
-	subscribers map[chan Event]*subscriber
+	// mu guards subscriber membership, the per-workspace subscription
+	// bookkeeping, AND the replay buffers TOGETHER.
+	//
+	// The buffers used to have their own RWMutex, and that separation is
+	// what made BUG-2731's case 4 unfixable in isolation. stopRedisSubscription
+	// does not JOIN the receive goroutine — sub.cancel() only signals it — so a
+	// straggler already inside fanOutLocally could re-create a buffer we had
+	// just dropped, with knownFrom set to its own ID, and the resulting
+	// one-entry buffer would then vouch for coverage it never had. One lock
+	// makes "is this workspace still being received?" and "append to its
+	// buffer" a single atomic decision.
+	//
+	// Holding a write lock through the fan-out cannot STALL anyone, for the
+	// reason internal/watchevents records for its own single-mutex design: the
+	// sends are already non-blocking (select/default — a full channel is
+	// dropped-and-logged, never awaited). It does serialize fan-outs, resumes
+	// and map work against each other, which is a real cost — and is why the
+	// subscriber map is indexed by workspace: the critical section is then
+	// proportional to one workspace's subscribers rather than to all of them.
+	mu sync.Mutex
+	// subscribers is indexed BY WORKSPACE, not a flat set (codex round 6).
+	// Fan-out runs under the same lock as everything else here, so scanning
+	// every local subscriber to filter by workspace would make one hot
+	// workspace's publish rate the serialization point for every other
+	// workspace's fan-out AND for every resume. The index makes the critical
+	// section O(subscribers in THIS workspace) with non-blocking sends.
+	//
+	// MemoryBus keeps its flat map deliberately: it has an RWMutex and a
+	// separate replay lock, so its fan-out does not exclude anyone.
+	subscribers map[string]map[chan Event]*subscriber
+	// workspaceOf resolves a channel back to its workspace on Unsubscribe,
+	// which is the one operation that has only the channel to go on.
+	workspaceOf map[chan Event]string
 
 	// Track which workspace channels we're subscribed to in Redis,
 	// so we subscribe/unsubscribe as local SSE clients come and go.
 	wsCounts map[string]int       // workspace → local subscriber count
 	wsSubs   map[string]*redisSub // workspace → active Redis subscription
 
-	// Monotonic sequence counter for event IDs (local to this instance).
-	seq atomic.Int64
+	// subGen numbers subscriptions so a message can be matched to the one it
+	// arrived on. See fanOut for the race it closes.
+	subGen int64
 
 	// Per-workspace replay buffers for Last-Event-ID support.
-	// Populated from events received via Redis pub/sub.
-	replayMu      sync.RWMutex
+	// Populated from events received via Redis pub/sub. Guarded by mu.
 	replayBuffers map[string]*replayBuffer
 	replaySize    int
 
@@ -79,6 +98,10 @@ type RedisBus struct {
 type redisSub struct {
 	pubsub *redis.PubSub
 	cancel context.CancelFunc
+	// gen identifies this subscription among all subscriptions this bus has
+	// opened for the workspace, so a message carrying a stale gen can be
+	// recognised as belonging to a subscription that has already ended.
+	gen int64
 }
 
 // NewRedisBus creates a new Redis-backed EventBus.
@@ -96,7 +119,8 @@ func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys) *RedisBus {
 	return &RedisBus{
 		client:        client,
 		keys:          keys,
-		subscribers:   make(map[chan Event]*subscriber),
+		subscribers:   make(map[string]map[chan Event]*subscriber),
+		workspaceOf:   make(map[chan Event]string),
 		wsCounts:      make(map[string]int),
 		wsSubs:        make(map[string]*redisSub),
 		replayBuffers: make(map[string]*replayBuffer),
@@ -112,18 +136,27 @@ func (b *RedisBus) Subscribe(workspaceID string) chan Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	ch := make(chan Event, 64)
-	b.subscribers[ch] = &subscriber{
-		ch:          ch,
-		workspaceID: workspaceID,
-	}
-
-	b.wsCounts[workspaceID]++
+	ch := b.addSubscriberLocked(workspaceID)
 	if b.wsCounts[workspaceID] == 1 {
 		// First local subscriber for this workspace — subscribe to Redis channel
 		b.startRedisSubscription(workspaceID)
 	}
 
+	return ch
+}
+
+// addSubscriberLocked registers a channel for a workspace and bumps its local
+// count. Callers must hold mu.
+func (b *RedisBus) addSubscriberLocked(workspaceID string) chan Event {
+	ch := make(chan Event, 64)
+	byWorkspace, ok := b.subscribers[workspaceID]
+	if !ok {
+		byWorkspace = make(map[chan Event]*subscriber)
+		b.subscribers[workspaceID] = byWorkspace
+	}
+	byWorkspace[ch] = &subscriber{ch: ch, workspaceID: workspaceID}
+	b.workspaceOf[ch] = workspaceID
+	b.wsCounts[workspaceID]++
 	return ch
 }
 
@@ -142,13 +175,7 @@ func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (
 		return nil, false
 	}
 
-	ch := make(chan Event, 64)
-	b.subscribers[ch] = &subscriber{
-		ch:          ch,
-		workspaceID: workspaceID,
-	}
-
-	b.wsCounts[workspaceID]++
+	ch := b.addSubscriberLocked(workspaceID)
 	if b.wsCounts[workspaceID] == 1 {
 		b.startRedisSubscription(workspaceID)
 	}
@@ -162,15 +189,19 @@ func (b *RedisBus) Unsubscribe(ch chan Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	sub, ok := b.subscribers[ch]
+	wsID, ok := b.workspaceOf[ch]
 	if !ok {
 		return
 	}
-
-	delete(b.subscribers, ch)
+	delete(b.workspaceOf, ch)
+	if byWorkspace, ok := b.subscribers[wsID]; ok {
+		delete(byWorkspace, ch)
+		if len(byWorkspace) == 0 {
+			delete(b.subscribers, wsID)
+		}
+	}
 	close(ch)
 
-	wsID := sub.workspaceID
 	b.wsCounts[wsID]--
 	if b.wsCounts[wsID] <= 0 {
 		delete(b.wsCounts, wsID)
@@ -186,14 +217,22 @@ func (b *RedisBus) Publish(event Event) {
 		event.Timestamp = time.Now().UnixMilli()
 	}
 
-	// Assign a globally ordered sequence ID via Redis atomic counter.
-	// This ensures all instances share the same ID space, so Last-Event-ID
-	// from one instance is meaningful on any other instance.
+	channel := b.keys.Name(redisChannelSuffix) + event.WorkspaceID
+	// Assign a globally ordered sequence ID via Redis atomic counter, so all
+	// instances share one ID space and Last-Event-ID from one instance is
+	// meaningful on any other.
 	id, err := b.client.Incr(b.ctx, b.keys.Name(redisSeqSuffix)).Result()
 	if err != nil {
-		// Fall back to local counter if Redis INCR fails (degraded mode).
-		slog.Warn("failed to get global event ID from Redis, falling back to local", "error", err)
-		id = b.seq.Add(1)
+		// NO LOCAL-COUNTER FALLBACK, and its removal is a fix rather than a
+		// regression (BUG-2731). The previous version answered a failed INCR
+		// by minting an id from a process-local counter starting at zero and
+		// publishing it anyway — an id from a different space, which every
+		// receiving instance reads as the counter having been reset. It also
+		// bought nothing: this bus has no local fan-out path, so an event
+		// that does not reach Redis reaches no subscriber on this instance
+		// either, fallback id or not. Failing loudly is the honest outcome.
+		slog.Error("failed to assign an event ID from Redis; dropping the publish", "error", err)
+		return
 	}
 	event.ID = id
 
@@ -203,23 +242,49 @@ func (b *RedisBus) Publish(event Event) {
 		return
 	}
 
-	channel := b.keys.Name(redisChannelSuffix) + event.WorkspaceID
 	if err := b.client.Publish(b.ctx, channel, data).Err(); err != nil {
 		slog.Error("failed to publish event to Redis", "channel", channel, "error", err)
 	}
 }
 
-// EventsSince returns buffered events for a workspace with IDs greater than sinceID.
-// Returns nil if sinceID has been evicted from the buffer (gap too large).
+// EventsSince returns buffered events for a workspace with IDs greater than
+// sinceID. Returns nil when this instance cannot vouch for the requested span
+// — see the EventBus interface and replayBuffer.since.
 func (b *RedisBus) EventsSince(workspaceID string, sinceID int64) []Event {
-	b.replayMu.RLock()
-	defer b.replayMu.RUnlock()
+	// Reported once, on the way out, and with the lock released — see the
+	// MemoryBus twin for why both no-buffer and refused-span must reach the
+	// same counter.
+	var missed []Event
+	defer func() {
+		if missed == nil {
+			b.reportResumeGap(workspaceID)
+		}
+	}()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	rb, ok := b.replayBuffers[workspaceID]
 	if !ok {
-		return []Event{}
+		// No buffer means this instance is not currently covering the
+		// workspace, or has only just started to. For a fresh client
+		// (sinceID == 0) that is honestly "nothing to replay"; for a
+		// resuming one it is the strongest form of "cannot vouch" there
+		// is, and answering []Event{} told it that it was caught up
+		// (BUG-2731).
+		//
+		// This is the NORMAL state for the first connection to a given
+		// workspace on a given replica, because buffers are built lazily
+		// in fanOutLocally — so a restart, a scale-up, or a namespace
+		// cutover all land here, not just an exotic failure.
+		if sinceID > 0 {
+			return nil
+		}
+		missed = []Event{}
+		return missed
 	}
-	return rb.since(sinceID)
+	missed = rb.since(sinceID)
+	return missed
 }
 
 // Close shuts down all Redis subscriptions and closes local subscriber channels.
@@ -235,23 +300,26 @@ func (b *RedisBus) Close() {
 		delete(b.wsSubs, wsID)
 	}
 
-	for ch := range b.subscribers {
-		delete(b.subscribers, ch)
-		close(ch)
+	for wsID, byWorkspace := range b.subscribers {
+		for ch := range byWorkspace {
+			delete(b.workspaceOf, ch)
+			close(ch)
+		}
+		delete(b.subscribers, wsID)
 	}
 }
 
 // SubscriberCount returns the number of active local subscribers.
 func (b *RedisBus) SubscriberCount() int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.subscribers)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.workspaceOf)
 }
 
 // WorkspaceSubscriberCount returns the number of active local subscribers for a workspace.
 func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.wsCounts[workspaceID]
 }
 
@@ -262,12 +330,15 @@ func (b *RedisBus) startRedisSubscription(workspaceID string) {
 	pubsub := b.client.Subscribe(b.ctx, channel)
 
 	subCtx, subCancel := context.WithCancel(b.ctx)
+	b.subGen++
+	gen := b.subGen
 	b.wsSubs[workspaceID] = &redisSub{
 		pubsub: pubsub,
 		cancel: subCancel,
+		gen:    gen,
 	}
 
-	go b.receiveMessages(subCtx, pubsub, workspaceID)
+	go b.receiveMessages(subCtx, pubsub, workspaceID, gen)
 }
 
 // stopRedisSubscription cancels and cleans up the Redis subscription for a workspace.
@@ -280,56 +351,253 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 	sub.cancel()
 	sub.pubsub.Close()
 	delete(b.wsSubs, workspaceID)
+
+	// WHEN WE STOP RECEIVING, THE HONEST STATE IS NO BUFFER, NOT A STALE
+	// CONTIGUOUS ONE (BUG-2731). This is the invariant a future optimization
+	// will be tempted to violate — keeping the buffer "in case they come
+	// back" looks like a free win and is the bug.
+	//
+	// From here until the workspace is subscribed again, events published on
+	// other instances never enter this buffer, while the buffer itself goes
+	// on LOOKING complete: same IDs, no eviction, nothing to distinguish it
+	// from a live one. A later client resuming with a cursor at or below the
+	// stale newest ID would be replayed the stale tail and told nothing about
+	// the hole. Dropping it makes the next resume answer nil, which is true.
+	delete(b.replayBuffers, workspaceID)
 }
 
 // receiveMessages reads from a Redis pub/sub channel and fans out to local subscribers.
-func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string) {
-	ch := pubsub.Channel()
+// receiveMessages consumes one workspace's Redis channel until the context is
+// cancelled.
+//
+// IT USES Receive RATHER THAN Channel, AND THAT IS THE POINT (codex round 6).
+// PubSub.Channel resubscribes transparently on a dropped connection — a Redis
+// failover, a network blip, a server restart — and hands back the messages
+// that arrive AFTER it recovers, saying nothing about the ones published while
+// it was down. The replay buffer then carries a hole it has no idea about, and
+// a resume across it is answered "caught up".
+//
+// A resubscription is the one form of mid-stream loss this process can
+// actually OBSERVE (contrast BUG-2735, which stays open precisely because a
+// message lost in transit leaves no local trace on a bus whose per-workspace
+// IDs are non-consecutive by construction). Receive surfaces each
+// *redis.Subscription, so every one after the first is treated exactly like a
+// stopped subscription: the workspace's coverage ends there.
+func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string, gen int64) {
+	defer b.reportReceiveLoopExited()
+
+	var subscribed bool
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		case msg, ok := <-ch:
-			if !ok {
+		}
+		raw, err := pubsub.Receive(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
 				return
 			}
+			if errors.Is(err, redis.ErrClosed) {
+				// The client or the PubSub was closed: nothing will redial,
+				// so continuing would spin.
+				slog.Debug("events: pub/sub closed", "workspace", workspaceID, "error", err)
+				return
+			}
+			// A TRANSIENT FAILURE, AND THE HONEST SIGNAL FOR ONE (codex round
+			// 6). Unlike PubSub.Channel, Receive surfaces the error instead of
+			// hiding a reconnect, and this loop must NOT exit on it — doing so
+			// would leave the instance publishing fine and receiving nothing.
+			// go-redis releases the failed connection and redials as part of
+			// serving the next Receive, so continuing the loop is what makes
+			// the reconnection happen.
+			//
+			// The error IS the coverage break: whatever was published while we
+			// were disconnected did not reach us, and we cannot know what. The
+			// resubscription confirmation below is the same fact arriving by a
+			// second route, and the drop is idempotent, so keying on both
+			// costs nothing and neither one alone is reliable.
+			slog.Warn("events: pub/sub receive failed; dropping this workspace's replay buffer, resumes across the gap will report sync_required",
+				"workspace", workspaceID, "error", err)
+			b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
+			subscribed = false
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(receiveRetryDelay):
+			}
+			continue
+		}
+
+		switch msg := raw.(type) {
+		case *redis.Subscription:
+			if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
+				continue
+			}
+			if !subscribed {
+				subscribed = true
+				continue
+			}
+			// A RESUBSCRIPTION: the connection dropped and came back, and
+			// whatever was published in between never reached us.
+			slog.Warn("events: pub/sub resubscribed; dropping this workspace's replay buffer, resumes across the gap will report sync_required",
+				"workspace", workspaceID, "channel", msg.Channel)
+			b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
+
+		case *redis.Message:
 			var event Event
 			if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
 				slog.Error("failed to unmarshal Redis event", "channel", msg.Channel, "error", err)
 				continue
 			}
-			b.fanOutLocally(event)
+			b.fanOutFromRedis(gen, event)
 		}
 	}
 }
 
-// fanOutLocally distributes an event to all local subscribers for the event's workspace
-// and stores it in the replay buffer.
+// receiveRetryDelay paces redial attempts after a pub/sub receive failure. It
+// is not a timeout on anything — go-redis does the redialing — only a bound on
+// how fast this loop spins while Redis is unreachable.
+const receiveRetryDelay = 200 * time.Millisecond
+
+// dropWorkspaceCoverage ends this instance's coverage of one workspace,
+// because something happened that its buffer cannot account for. The next
+// resume for that workspace answers nil until coverage is re-established.
+//
+// Scoped to the ONE workspace rather than all of them, unlike an ID-space
+// reset: a dropped subscription says nothing about the shared counter or about
+// any other workspace's channel, and dropping the rest would be a resync
+// charged to clients whose stream never broke.
+func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) {
+	var report string
+	defer func() {
+		if report != "" {
+			b.reportReset(report)
+		}
+	}()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// THE GENERATION CHECK BELONGS HERE TOO, not only in fan-out (codex round
+	// 7). A receive loop can notice its connection died LONG after the
+	// workspace was unsubscribed and resubscribed under it: last viewer
+	// leaves, the buffer is dropped and the subscription torn down, a viewer
+	// returns and a new generation starts buffering — and only then does the
+	// old goroutine reach this line and delete the REPLACEMENT buffer. The
+	// returning client is then told sync_required for an outage that ended
+	// before its subscription began, and the reset counter names an incident
+	// that did not happen to it.
+	if sub, ok := b.wsSubs[workspaceID]; !ok || sub.gen != gen {
+		return
+	}
+
+	if _, ok := b.replayBuffers[workspaceID]; !ok {
+		// Nothing buffered: there is no coverage to end and no client that
+		// could have been told it was current. Reporting here would give the
+		// counter a baseline on every reconnect of an idle workspace.
+		return
+	}
+	delete(b.replayBuffers, workspaceID)
+	report = reason
+}
+
+// currentSubGen reports the generation of the workspace's live subscription,
+// or 0 if it has none. Test seam: a real message carries its generation down
+// from receiveMessages, and a test driving the fan-out directly needs a way to
+// name the same value rather than guessing it.
+func (b *RedisBus) currentSubGen(workspaceID string) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if sub, ok := b.wsSubs[workspaceID]; ok {
+		return sub.gen
+	}
+	return 0
+}
+
+// fanOutFromRedis is the receive path: a message that arrived on the
+// subscription identified by gen.
+func (b *RedisBus) fanOutFromRedis(gen int64, event Event) {
+	b.fanOut(gen, event)
+}
+
+// fanOutLocally distributes an event to all local subscribers for the event's
+// workspace and stores it in the replay buffer, with no id-space information.
 func (b *RedisBus) fanOutLocally(event Event) {
+	b.fanOut(anySubscription, event)
+}
+
+// anySubscription opts out of the generation check for callers that are not a
+// receive loop — tests driving the fan-out directly. A real message always
+// carries the generation of the subscription it arrived on.
+const anySubscription int64 = 0
+
+func (b *RedisBus) fanOut(gen int64, event Event) {
+	// Registered FIRST so it runs LAST — after the Unlock below, so an
+	// observer may call back into the bus without deadlocking the receive
+	// loop.
+	var reset string
+	defer func() {
+		if reset != "" {
+			b.reportReset(reset)
+		}
+	}()
+
 	// Events received via Redis pub/sub already carry a global ID assigned by
-	// the publishing instance via Redis INCR. We use that ID directly so all
-	// instances share the same ID space for Last-Event-ID replay.
+	// publishScript. We use that ID directly so all instances share the same
+	// ID space for Last-Event-ID replay.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// FAN-OUT REFUSES TO APPEND FOR A WORKSPACE WITH NO LIVE SUBSCRIPTION
+	// (BUG-2731). sub.cancel() in stopRedisSubscription signals the receive
+	// goroutine; it does not join it, so a message already in flight can
+	// arrive here after the workspace was dropped. Appending it would
+	// re-create the buffer with knownFrom set to that straggler's ID — a
+	// one-entry buffer vouching for coverage that ended when the
+	// subscription did, which is precisely the state the drop exists to
+	// prevent.
+	//
+	// Checked under the same lock that guards wsSubs, so the answer cannot
+	// go stale between the check and the append.
+	sub, receiving := b.wsSubs[event.WorkspaceID]
+	if !receiving {
+		return
+	}
+	// ...AND THAT THIS MESSAGE BELONGS TO THE SUBSCRIPTION THAT IS LIVE NOW
+	// (codex round 1 F2). Checking only that SOME subscription exists leaves
+	// the same hole one step further along: last subscriber leaves, buffer
+	// dropped, a NEW subscriber arrives and registers a new subscription, and
+	// only THEN does the old receive goroutine's in-flight message land. It
+	// would be appended, setting knownFrom to a pre-outage ID, so a resume
+	// from that ID is answered "caught up" while the outage's events are gone.
+	if gen != anySubscription && sub.gen != gen {
+		return
+	}
 
 	// Store in replay buffer for reconnect replay.
-	b.replayMu.Lock()
 	rb, ok := b.replayBuffers[event.WorkspaceID]
 	if !ok {
 		rb = newReplayBuffer(b.replaySize)
 		b.replayBuffers[event.WorkspaceID] = rb
 	}
 	rb.append(event)
-	b.replayMu.Unlock()
 
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	for _, sub := range b.subscribers {
-		if sub.workspaceID != event.WorkspaceID {
-			continue
-		}
+	for _, sub := range b.subscribers[event.WorkspaceID] {
 		select {
 		case sub.ch <- event:
 		default:
+			// A DROP HERE IS SILENT TO THE SUBSCRIBER, and BUG-2731
+			// deliberately did not change that — see BUG-2730, which owns it
+			// for both buses. Everything BUG-2731 made honest is per-WORKSPACE
+			// state evaluated when a client asks (cold start, stopped
+			// subscription, reconnect, ID-space reset); this is per-SUBSCRIBER
+			// state discovered mid-fan-out about a connection that is still
+			// open, so telling it needs a channel from the bus to one live
+			// consumer that neither bus has.
+			//
+			// The consequence, so nobody reads this as harmless: a later
+			// delivered event advances that client's Last-Event-ID PAST the
+			// dropped IDs, after which no replica will replay them, because
+			// every replica agrees the cursor is current.
 			slog.Warn("dropping event for slow subscriber", "type", event.Type, "workspace", event.WorkspaceID)
 		}
 	}

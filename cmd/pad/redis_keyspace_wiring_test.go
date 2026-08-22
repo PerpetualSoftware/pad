@@ -66,6 +66,41 @@ func TestAllRedisKeyspacesShareOneNamespace(t *testing.T) {
 		}
 	}
 
+	// ONE LEVEL OF INDIRECTION IS ALLOWED AND CHECKED. The event bus is
+	// built by newObservedEventBus so its observer wiring is testable
+	// (BUG-2731), which means the constructor above receives that helper's
+	// PARAMETER rather than the outer variable. Naming the parameter
+	// redisKeys keeps the check above meaningful only if every CALL to the
+	// helper also passes the shared value — otherwise the identifier check
+	// is satisfied by a shadowed name and proves nothing.
+	//
+	// The `func ` exclusion and the EXACT count both matter (codex round 8):
+	// the naive pattern also matches the helper's own DECLARATION, so a
+	// version accepting "at least 2" would be satisfied by the declaration
+	// plus a single call site — passing while one deployment shape went
+	// unchecked.
+	helperCall := regexp.MustCompile(`(?:^|[^c])(?:\bfunc\s+)?newObservedEventBus\(([^)]*)\)`)
+	var helperCalls [][]string
+	for _, m := range helperCall.FindAllStringSubmatch(text, -1) {
+		if strings.Contains(m[0], "func ") {
+			continue // the declaration, not a call
+		}
+		helperCalls = append(helperCalls, m)
+	}
+	const wantHelperCalls = 2 // the Redis shape and the in-process shape
+	if len(helperCalls) != wantHelperCalls {
+		t.Fatalf("found %d newObservedEventBus CALL sites in cmd_server.go, want %d (the Redis and in-process shapes) — "+
+			"either a shape was dropped, a third was added without this guard being updated, or the helper "+
+			"was renamed and this half of the guard is now inert",
+			len(helperCalls), wantHelperCalls)
+	}
+	for _, m := range helperCalls {
+		if !argsContainIdentifier(m[1], sharedVar) {
+			t.Errorf("helper call %q does not pass %s — the namespace must reach the bus constructor "+
+				"from the shared value, not from a locally assembled one", strings.TrimSpace(m[0]), sharedVar)
+		}
+	}
+
 	// And that variable must come from the validated parser, not be
 	// assembled locally.
 	if !strings.Contains(text, sharedVar+", err := redisns.Parse(") {
