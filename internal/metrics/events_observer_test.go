@@ -78,7 +78,15 @@ func TestARealBusMovesTheRealCounter(t *testing.T) {
 	// Negative control FIRST, so a counter that was already non-zero for
 	// some unrelated reason cannot be mistaken for this test's work.
 	bus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1"})
-	if got := bus.EventsSince("ws-1", 1); got == nil {
+	// Read the id the bus actually assigned rather than spelling one out:
+	// since BUG-2736 the counter starts from this incarnation's base, so a
+	// literal 1 is a cursor from a DEAD space and would be answered as a gap
+	// — turning this negative control into the positive case by accident.
+	published := bus.EventsSince("ws-1", 0)
+	if len(published) != 1 {
+		t.Fatalf("fixture: expected one buffered event, got %d", len(published))
+	}
+	if got := bus.EventsSince("ws-1", published[0].ID); got == nil {
 		t.Fatal("a caught-up cursor must be served")
 	}
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 0)

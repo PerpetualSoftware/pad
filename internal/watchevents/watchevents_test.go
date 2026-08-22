@@ -211,15 +211,19 @@ func TestMemoryBus_ConcurrentPublish_MaintainsIDOrderInReplayBuffer(t *testing.T
 			t.Fatalf("replay buffer out of ID order at index %d: %d then %d", i, all[i-1].ID, all[i].ID)
 		}
 	}
-	// IDs must be a dense, unique 1..n set — every concurrent Publish
-	// got its own sequence number with no duplicates and no gaps.
+	// IDs must be a dense, unique run of n — every concurrent Publish got its
+	// own sequence number with no duplicates and no gaps. Anchored on the
+	// first ID the bus actually issued rather than on 1: since BUG-2736 the
+	// counter starts from this incarnation's base (see internal/idspace), so
+	// a literal 1 here would be asserting the process start time.
+	first := all[0].ID
 	seenIDs := make(map[int64]bool, n)
 	for _, e := range all {
 		seenIDs[e.ID] = true
 	}
-	for id := int64(1); id <= n; id++ {
+	for id := first; id < first+n; id++ {
 		if !seenIDs[id] {
-			t.Fatalf("missing sequence ID %d after %d concurrent publishes", id, n)
+			t.Fatalf("missing sequence ID %d (run of %d from %d) after %d concurrent publishes", id, n, first, n)
 		}
 	}
 }

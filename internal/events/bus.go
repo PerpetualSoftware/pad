@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/idspace"
 )
 
 // Event types
@@ -209,22 +211,24 @@ type replayBuffer struct {
 	// read against the shared counter) and the load arithmetic that ruled
 	// the second one out.
 	//
-	// THE ID SPACE'S IDENTITY IS ALSO NOT HERE. This buffer can say where its
-	// coverage started; it cannot say which INCARNATION of the counter that
-	// ID belongs to, so a restarted process reusing low IDs can still answer
-	// an old low cursor. That is BUG-2736, and it is deliberately a separate
-	// unit: closing it changes the Redis wire format and needs a two-phase
-	// rollout, which is a migration rather than a bug fix.
+	// THE ID SPACE'S IDENTITY IS STILL NOT HERE, and after BUG-2736 that is a
+	// division of labour rather than a gap. This buffer can say where its
+	// coverage started; it cannot say which INCARNATION of the counter that ID
+	// belongs to. The question is answered ABOVE this type, by whichever bus
+	// owns the ID space: MemoryBus compares the cursor against its own
+	// incarnation base (see internal/idspace), which it can do because it is
+	// the sole publisher into that space.
+	//
+	// RedisBus CANNOT, and that half is not written at the time of this
+	// comment: its counter is shared across processes, so identifying its ID
+	// space needs an epoch travelling with each message rather than anything
+	// one process can compute. Until that lands, a reset Redis counter can
+	// still leave two incarnations' IDs in one buffer — BUG-2736's second
+	// half, and the reason this paragraph is not simply deleted.
 	//
 	// Invalidated only by lifecycle facts this instance can actually
 	// observe — today, losing the workspace's subscription (it stopping, or
 	// a pub/sub reconnect) — never by a gap between IDs.
-	//
-	// AN ID-SPACE RESET IS NOT ON THAT LIST, deliberately. Detecting one
-	// needs the identity this buffer does not carry, so a reset Redis counter
-	// can still leave two incarnations' IDs in one buffer. That is BUG-2736's
-	// unit, and this comment names the omission rather than letting a reader
-	// assume the coverage rule covers more than it does.
 	//
 	// IT BOUNDS THE START OF COVERAGE, NOT ITS CONTINUITY, and that limit is
 	// structural rather than an omission: a message lost mid-subscription
@@ -343,8 +347,14 @@ type MemoryBus struct {
 	mu          sync.RWMutex
 	subscribers map[chan Event]*subscriber
 
-	// Monotonic sequence counter for event IDs.
+	// Monotonic sequence counter for event IDs, counting up from base.
 	seq atomic.Int64
+
+	// base identifies THIS incarnation of the counter. Set once at
+	// construction; see internal/idspace for what it buys and what it costs.
+	// A zero base is the pre-BUG-2736 behaviour (IDs from 1) and is
+	// deliberately unreachable through any constructor.
+	base int64
 
 	// Per-workspace replay buffers for Last-Event-ID support.
 	replayMu      sync.RWMutex
@@ -365,6 +375,7 @@ func NewWithReplay(bufferSize int, maxAge time.Duration) *MemoryBus {
 		replayBuffers: make(map[string]*replayBuffer),
 		replaySize:    bufferSize,
 		replayMaxAge:  maxAge,
+		base:          idspace.New(),
 	}
 }
 
@@ -427,8 +438,10 @@ func (b *MemoryBus) Publish(event Event) {
 		event.Timestamp = time.Now().UnixMilli()
 	}
 
-	// Assign a monotonic sequence ID.
-	event.ID = b.seq.Add(1)
+	// Assign a monotonic sequence ID within THIS incarnation's ID space.
+	// The base is what makes a restarted process's IDs distinguishable from
+	// the dead space's — see internal/idspace.
+	event.ID = b.base + b.seq.Add(1)
 
 	// Store in replay buffer for reconnect replay.
 	b.replayMu.Lock()
@@ -473,6 +486,25 @@ func (b *MemoryBus) EventsSince(workspaceID string, sinceID int64) []Event {
 			b.reportResumeGap(workspaceID)
 		}
 	}()
+
+	// A CURSOR THIS INCARNATION COULD NOT HAVE ISSUED IS A GAP, and this bus
+	// can say so EXACTLY rather than infer it (BUG-2736). Every ID it assigns
+	// is above base, so a non-zero cursor at or below base was issued by a
+	// previous incarnation of this process, whose events died with it.
+	//
+	// The coverage check in replayBuffer.since would refuse almost all of
+	// these anyway, because a fresh incarnation's knownFrom sits a whole
+	// stride above the dead space — but "almost all" is an inference from the
+	// stride invariant, and this is a fact about who issued the number. The
+	// one case the inference loses is the adjacent cursor: since() serves
+	// sinceID+1 == knownFrom on the reasoning that no ID lies strictly
+	// between, which is only true WITHIN one ID space. Checking the base
+	// makes that impossible to reach instead of improbable.
+	//
+	// sinceID == 0 is exempt: a fresh client is not resuming from a position.
+	if sinceID > 0 && sinceID <= b.base {
+		return nil
+	}
 
 	b.replayMu.RLock()
 	defer b.replayMu.RUnlock()

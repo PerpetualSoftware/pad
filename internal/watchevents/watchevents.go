@@ -51,6 +51,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/idspace"
 )
 
 // ErrBusClosed is returned by Publish when the bus has already been shut
@@ -363,8 +365,15 @@ type MemoryBus struct {
 
 	mu          sync.Mutex
 	subscribers map[chan Notification]struct{}
-	seq         int64
-	replay      *replayBuffer
+	// seq counts up from base, which identifies THIS incarnation of the
+	// counter (BUG-2736). Before it, seq restarted at 1 on every process
+	// start and a client resuming with a cursor from a previous incarnation
+	// was replayed the NEW space's notifications as though they followed the
+	// OLD space's — the same defect internal/events carried, for the same
+	// reason, and closed the same way. See internal/idspace.
+	seq    int64
+	base   int64
+	replay *replayBuffer
 	// closed makes a post-Close Subscribe hand back an already-closed
 	// channel rather than one nobody will ever close — see Subscribe.
 	closed bool
@@ -381,6 +390,7 @@ func NewWithReplaySize(size int) *MemoryBus {
 	return &MemoryBus{
 		subscribers: make(map[chan Notification]struct{}),
 		replay:      newReplayBuffer(size),
+		base:        idspace.New(),
 	}
 }
 
@@ -437,7 +447,7 @@ func (b *MemoryBus) Publish(n Notification) error {
 	}
 
 	b.seq++
-	n.ID = b.seq
+	n.ID = b.base + b.seq
 	b.replay.append(n)
 
 	for ch := range b.subscribers {
@@ -500,7 +510,7 @@ func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, [
 		return ch, nil
 	}
 	b.subscribers[ch] = struct{}{}
-	missed := b.replay.since(sinceID)
+	missed := b.replaySinceLocked(sinceID)
 	if missed == nil {
 		pending.resumeGap()
 	}
@@ -522,11 +532,45 @@ func (b *MemoryBus) EventsSince(sinceID int64) []Notification {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	missed := b.replay.since(sinceID)
+	missed := b.replaySinceLocked(sinceID)
 	if missed == nil {
 		pending.resumeGap()
 	}
 	return missed
+}
+
+// replaySinceLocked answers the resume question for THIS bus: which
+// notifications, if any, this incarnation can honestly hand a client holding
+// sinceID. Callers must hold mu.
+//
+// IT EXISTS SO THE TWO ENTRY POINTS CANNOT DIVERGE. EventsSince is the
+// documented standalone primitive; SubscribeAndReplaySince is the path the SSE
+// handler actually uses. When the incarnation check below was written inline in
+// EventsSince, the handler's path did not have it — the component was fixed and
+// its wiring was not, which is team CONVE-19's shape exactly. One helper, both
+// callers, no second copy to forget.
+func (b *MemoryBus) replaySinceLocked(sinceID int64) []Notification {
+	// A CURSOR THIS INCARNATION COULD NOT HAVE ISSUED IS A GAP, and this bus
+	// can say so EXACTLY rather than infer it (BUG-2736). Every id it assigns
+	// is above base, so a non-zero cursor at or below base was issued by a
+	// previous incarnation of this process — a space whose contents died with
+	// it. Before the base existed there was nothing to compare against, and
+	// such a client was replayed the new space's notifications as though they
+	// followed the old space's.
+	//
+	// This is checked HERE rather than inside replay.since because the buffer
+	// is shared with RedisBus, whose ids come from a counter shared across
+	// processes: `base` is meaningless there, and its coverage question is
+	// answered by knownFrom before it delegates. Two buses, two ways of
+	// knowing which id space a cursor belongs to — see redis_bus.go for why
+	// they are not one mechanism.
+	//
+	// sinceID == 0 is exempt: a fresh subscriber is not resuming from a
+	// position, so there is no span to vouch for.
+	if sinceID > 0 && sinceID <= b.base {
+		return nil
+	}
+	return b.replay.since(sinceID)
 }
 
 func (b *MemoryBus) Close() {

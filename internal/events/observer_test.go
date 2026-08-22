@@ -86,14 +86,12 @@ func TestServedResumesAreNotReportedAsGaps(t *testing.T) {
 	bus := New()
 	bus.SetObserver(obs)
 
-	for i := 0; i < 5; i++ {
-		bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	}
+	ids := publishN(bus, "ws-1", 5)
 
-	if got := bus.EventsSince("ws-1", 3); got == nil {
+	if got := bus.EventsSince("ws-1", ids[2]); got == nil {
 		t.Fatal("a cursor inside the buffer must be served")
 	}
-	if got := bus.EventsSince("ws-1", 5); got == nil {
+	if got := bus.EventsSince("ws-1", ids[4]); got == nil {
 		t.Fatal("a caught-up cursor must be served")
 	}
 	// A fresh client on a workspace with no events is not resuming at all.

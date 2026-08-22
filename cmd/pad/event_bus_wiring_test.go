@@ -28,7 +28,15 @@ func TestBothEventBusShapesReportToMetrics(t *testing.T) {
 		// Negative control first: a served resume must not move the counter,
 		// so a non-zero reading cannot be mistaken for this test's work.
 		bus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1"})
-		if got := bus.EventsSince("ws-1", 1); got == nil {
+		// The id comes from the bus, not from a literal: since BUG-2736 the
+		// in-process counter starts from this incarnation's base, so 1 names
+		// a dead space and would be answered as a gap — which would make this
+		// negative control assert the opposite of what it is for.
+		published := bus.EventsSince("ws-1", 0)
+		if len(published) != 1 {
+			t.Fatalf("fixture: expected one buffered event, got %d", len(published))
+		}
+		if got := bus.EventsSince("ws-1", published[0].ID); got == nil {
 			t.Fatal("a caught-up cursor must be served")
 		}
 		assertResumeGaps(t, m, 0)

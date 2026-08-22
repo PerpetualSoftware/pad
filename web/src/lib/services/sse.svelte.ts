@@ -4,7 +4,15 @@ export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unautho
 
 export interface ItemEvent {
 	type: string;
-	id?: number;
+	// NO `id` FIELD, DELIBERATELY. The server's SSE payload does carry one, and
+	// this interface used to declare it as `number` — unread by anything in
+	// web/src, which is the only reason it was harmless. Since BUG-2736 an
+	// event id encodes the id space's incarnation in its VALUE (a base derived
+	// from process start time), so ids are ~1.8e18 and past JavaScript's
+	// MAX_SAFE_INTEGER: anything that read this field would have silently got a
+	// rounded number. Resuming is EventSource's job — it captures and echoes
+	// Last-Event-ID itself, as an opaque string — so the client never needs
+	// the id. If you find yourself wanting it, take it as a string.
 	workspace_id: string;
 	item_id: string;
 	title: string;
