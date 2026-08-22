@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -370,93 +369,74 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 // receiveMessages consumes one workspace's Redis channel until the context is
 // cancelled.
 //
-// IT USES Receive RATHER THAN Channel, AND THAT IS THE POINT (codex round 6).
-// PubSub.Channel resubscribes transparently on a dropped connection — a Redis
-// failover, a network blip, a server restart — and hands back the messages
-// that arrive AFTER it recovers, saying nothing about the ones published while
-// it was down. The replay buffer then carries a hole it has no idea about, and
-// a resume across it is answered "caught up".
+// IT USES ChannelWithSubscriptions, AND BOTH HALVES OF THAT CHOICE MATTER.
 //
-// A resubscription is the one form of mid-stream loss this process can
-// actually OBSERVE (contrast BUG-2735, which stays open precisely because a
-// message lost in transit leaves no local trace on a bus whose per-workspace
-// IDs are non-consecutive by construction). Receive surfaces each
-// *redis.Subscription, so every one after the first is treated exactly like a
-// stopped subscription: the workspace's coverage ends there.
+// Against Channel: a plain message channel hides RESUBSCRIPTIONS. go-redis
+// reconnects transparently on a dropped connection — a Redis failover, a
+// network blip, a server restart — and hands back the messages that arrive
+// AFTER it recovers, saying nothing about the ones published while it was
+// down. The replay buffer then carries a hole it has no idea about, and a
+// resume across it is answered "caught up". A resubscription is the one form
+// of mid-stream loss this process can actually OBSERVE (contrast BUG-2735,
+// which stays open precisely because a message lost in transit leaves no local
+// trace on a bus whose per-workspace IDs are non-consecutive by construction),
+// so every subscription confirmation after the first ends that workspace's
+// coverage, exactly like a stopped subscription.
+//
+// Against a bare Receive loop, which is what this was first written as: only
+// the Channel* constructors start go-redis's health check (newChannel →
+// initHealthCheck), and go-redis owns the redial and backoff, so a hand-rolled
+// retry loop here is machinery this package does not need to maintain.
+//
+// WHAT NEITHER FORM DETECTS, measured rather than assumed: a HALF-OPEN
+// connection — no FIN, no RST, just a route that stopped working. The health
+// check's PubSub.Ping only WRITES the command and never reads a reply
+// (go-redis v9.22.0, pubsub.go), so it succeeds for as long as the socket
+// accepts writes, and the channel path sets no read deadline. A proxy that
+// silently stops forwarding produced no reconnect in 24 seconds of probing.
+// So an instance behind a wedged route still sits there receiving nothing
+// while its buffer keeps looking valid; detecting that needs application-level
+// idle tracking, which is BUG-2730's family and its own decision. Do not
+// assume the health check covers it.
 func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string, gen int64) {
 	defer b.reportReceiveLoopExited()
 
+	ch := pubsub.ChannelWithSubscriptions()
 	var subscribed bool
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return
-		}
-		raw, err := pubsub.Receive(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
+		case raw, ok := <-ch:
+			if !ok {
 				return
 			}
-			if errors.Is(err, redis.ErrClosed) {
-				// The client or the PubSub was closed: nothing will redial,
-				// so continuing would spin.
-				slog.Debug("events: pub/sub closed", "workspace", workspaceID, "error", err)
-				return
-			}
-			// A TRANSIENT FAILURE, AND THE HONEST SIGNAL FOR ONE (codex round
-			// 6). Unlike PubSub.Channel, Receive surfaces the error instead of
-			// hiding a reconnect, and this loop must NOT exit on it — doing so
-			// would leave the instance publishing fine and receiving nothing.
-			// go-redis releases the failed connection and redials as part of
-			// serving the next Receive, so continuing the loop is what makes
-			// the reconnection happen.
-			//
-			// The error IS the coverage break: whatever was published while we
-			// were disconnected did not reach us, and we cannot know what. The
-			// resubscription confirmation below is the same fact arriving by a
-			// second route, and the drop is idempotent, so keying on both
-			// costs nothing and neither one alone is reliable.
-			slog.Warn("events: pub/sub receive failed; dropping this workspace's replay buffer, resumes across the gap will report sync_required",
-				"workspace", workspaceID, "error", err)
-			b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
-			subscribed = false
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(receiveRetryDelay):
-			}
-			continue
-		}
+			switch msg := raw.(type) {
+			case *redis.Subscription:
+				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
+					continue
+				}
+				if !subscribed {
+					subscribed = true
+					continue
+				}
+				// A RESUBSCRIPTION: the connection dropped and came back, and
+				// whatever was published in between never reached us.
+				slog.Warn("events: pub/sub resubscribed; dropping this workspace's replay buffer, resumes across the gap will report sync_required",
+					"workspace", workspaceID, "channel", msg.Channel)
+				b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
 
-		switch msg := raw.(type) {
-		case *redis.Subscription:
-			if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
-				continue
+			case *redis.Message:
+				var event Event
+				if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
+					slog.Error("failed to unmarshal Redis event", "channel", msg.Channel, "error", err)
+					continue
+				}
+				b.fanOutFromRedis(gen, event)
 			}
-			if !subscribed {
-				subscribed = true
-				continue
-			}
-			// A RESUBSCRIPTION: the connection dropped and came back, and
-			// whatever was published in between never reached us.
-			slog.Warn("events: pub/sub resubscribed; dropping this workspace's replay buffer, resumes across the gap will report sync_required",
-				"workspace", workspaceID, "channel", msg.Channel)
-			b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
-
-		case *redis.Message:
-			var event Event
-			if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
-				slog.Error("failed to unmarshal Redis event", "channel", msg.Channel, "error", err)
-				continue
-			}
-			b.fanOutFromRedis(gen, event)
 		}
 	}
 }
-
-// receiveRetryDelay paces redial attempts after a pub/sub receive failure. It
-// is not a timeout on anything — go-redis does the redialing — only a bound on
-// how fast this loop spins while Redis is unreachable.
-const receiveRetryDelay = 200 * time.Millisecond
 
 // dropWorkspaceCoverage ends this instance's coverage of one workspace,
 // because something happened that its buffer cannot account for. The next
