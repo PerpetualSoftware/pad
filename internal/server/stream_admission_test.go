@@ -482,11 +482,11 @@ func rawSSEStatus(t *testing.T, baseURL, slug string) int {
 // limits were set.
 //
 // The assertion is that a HELD slot still counts after reconfiguration,
-// which is what a replacement breaks. An earlier version of this test
-// asserted the gauge instead and SURVIVED the mutation: the discarded
-// gate keeps its observer, so its releases keep driving the gauge and
-// the numbers look right while the budget is wrong. Worth recording —
-// the wrong end state is the one nothing is watching.
+// which is what a replacement breaks. An earlier version asserted the
+// GAUGE instead and survived the mutation, because the metric reads
+// whichever gate Server.admission() returns and so looks plausible while
+// the budget is wrong. Worth recording — the wrong end state is the one
+// nothing is watching.
 func TestSetSSELimitsDoesNotStrandHeldSlots(t *testing.T) {
 	t.Parallel()
 
@@ -637,5 +637,36 @@ func TestRedisHealthConcurrentStartStop(t *testing.T) {
 	case <-done:
 	case <-time.After(20 * time.Second):
 		t.Fatal("concurrent Start/Stop hung — a Start interleaved with a Stop's cancel-and-wait")
+	}
+}
+
+// TestStreamGaugeFollowsAReplacedMetricsInstance covers codex round 11's
+// P2: registration is once per METRICS INSTANCE, not once per Server. A
+// plain sync.Once left a second registry silently without the series,
+// which is a metric that is absent rather than wrong — the failure mode
+// nobody notices, because a dashboard with no data looks like a
+// deployment with no traffic.
+func TestStreamGaugeFollowsAReplacedMetricsInstance(t *testing.T) {
+	t.Parallel()
+
+	srv := testServer(t)
+	first := metrics.New()
+	srv.SetMetrics(first)
+	srv.SetSSELimits(0, 0, 0)
+
+	release, refusal := srv.admission().acquire("u1")
+	if refusal != admissionRefusalNone {
+		t.Fatalf("premise failed: acquire refused by %q", refusal)
+	}
+	defer release()
+	if got := gaugeValue(t, first); got != 1 {
+		t.Fatalf("premise failed: first registry's gauge = %v, want 1", got)
+	}
+
+	second := metrics.New()
+	srv.SetMetrics(second)
+
+	if got := gaugeValue(t, second); got != 1 {
+		t.Fatalf("the replacement registry's gauge = %v, want 1 — the collector never registered on it", got)
 	}
 }

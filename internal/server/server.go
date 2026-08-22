@@ -44,7 +44,7 @@ type Server struct {
 	router                *chi.Mux
 	routerOnce            sync.Once            // ensures setupRouter runs once, after all config
 	admitOnce             sync.Once            // lazily builds streamAdmit for servers that never call SetSSELimits
-	streamGaugeOnce       sync.Once            // registers pad_stream_connections_active exactly once
+	streamGaugeFor        *metrics.Metrics     // the metrics instance pad_stream_connections_active is registered on (BUG-2726)
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
@@ -1051,17 +1051,22 @@ func (s *Server) SetSSELimits(global, perWorkspace, perUser int) {
 // scrape-time collector over the admission gate's total. Called from both
 // SetSSELimits and SetMetrics because either can land first.
 //
-// Registered ONCE — MustRegister panics on a duplicate, and both callers
-// can fire. The closure reads s.admission() at scrape time rather than
-// capturing the gate, so it stays correct if the gate is ever rebuilt.
+// Registered ONCE PER METRICS INSTANCE. MustRegister panics on a
+// duplicate and both callers can fire, so this cannot simply register
+// every time — but a plain sync.Once was wrong in the other direction
+// (codex round 11): SetMetrics can install a DIFFERENT registry, and a
+// once-per-Server guard would leave that one silently missing the
+// series. Tracking which instance was wired covers both.
+//
+// The closure reads s.admission() at scrape time rather than capturing
+// the gate, so it stays correct if the gate is ever rebuilt.
 func (s *Server) wireStreamGauge() {
-	if s.metrics == nil {
+	if s.metrics == nil || s.streamGaugeFor == s.metrics {
 		return
 	}
-	s.streamGaugeOnce.Do(func() {
-		s.metrics.RegisterStreamConnectionsCollector(func() int {
-			return s.admission().heldTotal()
-		})
+	s.streamGaugeFor = s.metrics
+	s.metrics.RegisterStreamConnectionsCollector(func() int {
+		return s.admission().heldTotal()
 	})
 }
 

@@ -59,12 +59,12 @@ func newStreamAdmission(maxTotal, maxUser int) *streamAdmission {
 // old one still holds every open connection's slot, so those connections
 // stop counting against the limit and the process admits that many extra.
 //
-// The gauge, notably, does NOT expose it — verified rather than assumed,
-// by mutation-testing a version of this that asserted the gauge and
-// watching it pass. The discarded gate keeps its observer, so its
-// releases keep driving the gauge and the number stays plausible while
-// the budget is wrong. That is the failure worth avoiding structurally:
-// the visible signal stays right and the invisible one goes wrong.
+// The GAUGE would not expose it either, which is why the test for this
+// asserts admission behaviour rather than the metric: a replaced gate is
+// still reachable through Server.admission(), so the scrape reads the new
+// gate's total and the number looks plausible while the budget is wrong.
+// The visible signal stays right and the invisible one goes wrong —
+// worth avoiding structurally rather than watching for.
 func (a *streamAdmission) setLimits(maxTotal, maxUser int) {
 	a.mu.Lock()
 	a.maxTotal = maxTotal
@@ -144,7 +144,7 @@ func (a *streamAdmission) acquire(principal string) (release func(), refusal adm
 	}, admissionRefusalNone
 }
 
-// total returns the number of held slots. Backs
+// heldTotal returns the number of held slots. Backs
 // pad_stream_connections_active as a scrape-time collector — see
 // metrics.RegisterStreamConnectionsCollector for why that replaced a
 // pushed gauge.
