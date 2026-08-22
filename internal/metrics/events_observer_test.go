@@ -20,11 +20,6 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.ResumeGap("ws-1")
 	obs.ResumeGap("ws-2")
 
-	obs.SequenceReset(events.ResetReasonEpochChange)
-	obs.SequenceReset(events.ResetReasonCounterBackward)
-	obs.SequenceReset(events.ResetReasonCounterBackward)
-	obs.SequenceReset(events.ResetReasonCounterBackward)
-
 	obs.SequenceReset(events.ResetReasonSubscriptionResumed)
 	obs.SequenceReset(events.ResetReasonSubscriptionResumed)
 	obs.SequenceReset(events.ResetReasonSubscriptionResumed)
@@ -37,14 +32,9 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.ReceiveLoopExited()
 
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 2)
-	assertCounter(t, m, "pad_event_sequence_resets_total",
-		map[string]string{"reason": events.ResetReasonEpochChange}, 1)
-	assertCounter(t, m, "pad_event_sequence_resets_total",
-		map[string]string{"reason": events.ResetReasonCounterBackward}, 3)
-	// The third reason must land on its OWN series. It is labelled apart
-	// because an operator reads a Redis connection flap and a keyspace
-	// mistake differently, and an adapter that folded it into either of the
-	// others would satisfy every other assertion here.
+	// The reason must land on a LABELLED series, not on the bare counter: an
+	// adapter that dropped the label would satisfy a total-only assertion and
+	// silently merge reasons BUG-2736 will add.
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonSubscriptionResumed}, 4)
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)

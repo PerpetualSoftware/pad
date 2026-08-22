@@ -120,27 +120,18 @@ type Metrics struct {
 	EventResumeGapsTotal prometheus.Counter
 
 	// EventSequenceResetsTotal counts activity-stream coverage resets by
-	// reason. READ THE LABEL — the three mean different incidents:
-	//
-	//   epoch_change — the shared epoch key changed, so the ID space itself
-	//   is new and EVERY replay buffer was dropped. No benign baseline:
-	//   someone flushed the counter key or pointed two installations at one
-	//   endpoint. (A PAD_REDIS_NAMESPACE change does NOT land here — it
-	//   requires a restart, and a fresh instance has no coverage to lose.)
-	//
-	//   counter_backwards — an ID arrived at or below the high-water mark, so
-	//   every buffer was dropped. USUALLY a restarted counter, but during a
-	//   mixed-version rollout it also fires when an old build delivers IDs
-	//   out of order WITHIN the same space. Expect it during a roll; a
-	//   steady rate outside one is the alertable case.
+	// reason. One reason today:
 	//
 	//   subscription_resumed — a pub/sub connection dropped and resubscribed,
-	//   so ONE workspace's buffer was dropped. This one tracks Redis
-	//   connection health, not keyspace mistakes: expect it during a failover
-	//   and expect it to stop afterwards.
+	//   so ONE workspace's replay buffer was dropped and resumes across the
+	//   outage answer sync_required. This tracks Redis connection health:
+	//   expect it during a failover and expect it to stop afterwards.
 	//
-	// An alert on the total conflates a configuration error with a network
-	// blip.
+	// Labelled from the start rather than shipped as a bare counter, because
+	// BUG-2736's ID-space work adds reasons here that an operator diagnoses
+	// completely differently — a changed keyspace is a configuration mistake,
+	// a connection flap is not — and an alert built on an unlabelled total
+	// would have to be rewritten when they arrive.
 	EventSequenceResetsTotal *prometheus.CounterVec
 
 	// EventReceiveLoopExitsTotal counts a workspace's Redis subscription loop
@@ -377,7 +368,7 @@ func New() *Metrics {
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
-		Help: "Times activity-event replay coverage was dropped, by reason. READ THE LABEL: epoch_change means a new id space (no benign baseline); counter_backwards means an id arrived below the high-water mark, expected during a mixed-version roll; subscription_resumed is a Redis connection flap affecting one workspace.",
+		Help: "Times activity-event replay coverage was dropped, by reason. Today: subscription_resumed, a Redis connection flap affecting one workspace's buffer.",
 	}, []string{"reason"})
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
