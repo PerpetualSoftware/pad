@@ -174,19 +174,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	// Then the per-WORKSPACE bound, still atomic with the subscribe so two
-	// concurrent requests cannot both pass a check for the last slot.
-	// maxGlobal is passed as 0 — unlimited — because the gate above owns
-	// that bound now; leaving it here as well would mean two counters
-	// enforcing one configured number and refusing at different points.
+	// concurrent requests cannot both pass a check for the last slot. The
+	// bus no longer takes a global limit at all — the gate above owns that
+	// bound (BUG-2726), and leaving a second one here would mean two
+	// counters enforcing one configured number and refusing at different
+	// points.
 	//
-	// That leaves SubscribeIfAllowed's own global branch unreachable from
-	// production. It is still part of that type's contract and is tested
-	// directly in internal/events, rather than being left as a branch
-	// whose only instrument was this call site (codex round 5). Note for
-	// anyone reading the SSE limit tests in this package: since this
-	// change they exercise the ADMISSION GATE, not the bus's global
-	// bound, even though their names have not changed.
-	ch, ok := s.events.SubscribeIfAllowed(ws.ID, 0, s.sseMaxPerWorkspace)
+	// Note for anyone reading the SSE limit tests in this package: since
+	// that change they exercise the ADMISSION GATE, not the bus, even
+	// though their names have not changed.
+	ch, ok := s.events.SubscribeIfAllowed(ws.ID, s.sseMaxPerWorkspace)
 	if !ok {
 		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", "per_workspace",
 			"ws_current", s.events.WorkspaceSubscriberCount(ws.ID), "ws_max", s.sseMaxPerWorkspace)

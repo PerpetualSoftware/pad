@@ -127,17 +127,17 @@ func (b *RedisBus) Subscribe(workspaceID string) chan Event {
 	return ch
 }
 
-// SubscribeIfAllowed atomically checks limits and subscribes.
-// NOTE: Limits are enforced against local (per-pod) subscriber counts only.
-// In multi-replica deployments the effective cap is multiplied by the number
-// of replicas.  For truly global caps, use a Redis-backed counter.
-func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan Event, bool) {
+// SubscribeIfAllowed atomically checks the per-workspace limit and
+// subscribes. See the EventBus interface for why there is no global limit
+// here (BUG-2726).
+//
+// NOTE: the limit is enforced against local (per-pod) subscriber counts
+// only. In multi-replica deployments the effective cap is multiplied by
+// the number of replicas — as is every other streaming limit Pad has.
+func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if maxGlobal > 0 && len(b.subscribers) >= maxGlobal {
-		return nil, false
-	}
 	if maxPerWorkspace > 0 && b.wsCounts[workspaceID] >= maxPerWorkspace {
 		return nil, false
 	}

@@ -42,8 +42,8 @@ func (b *InstrumentedBus) Subscribe(workspaceID string) chan events.Event {
 
 // SubscribeIfAllowed delegates the atomic check-and-subscribe to the inner bus
 // and updates Prometheus gauges on success.
-func (b *InstrumentedBus) SubscribeIfAllowed(workspaceID string, maxGlobal, maxPerWorkspace int) (chan events.Event, bool) {
-	ch, ok := b.inner.SubscribeIfAllowed(workspaceID, maxGlobal, maxPerWorkspace)
+func (b *InstrumentedBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan events.Event, bool) {
+	ch, ok := b.inner.SubscribeIfAllowed(workspaceID, maxPerWorkspace)
 	if !ok {
 		return nil, false
 	}
