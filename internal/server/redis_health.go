@@ -63,9 +63,13 @@ type RedisHealth struct {
 	interval time.Duration
 	timeout  time.Duration
 
-	// onProbe, when non-nil, is called after every probe with its result.
-	// It is how the Prometheus gauge is written without this type
-	// importing the metrics package.
+	// onProbe, when non-nil, is called after every probe with its result,
+	// with no lock held. It is how the Prometheus gauge is written
+	// without this type importing the metrics package.
+	//
+	// It runs on the probe goroutine, so it must not call Stop — that
+	// waits for the goroutine it is running on. Set once at construction
+	// and never written again, so it needs no lock of its own.
 	onProbe func(ok bool)
 
 	mu        sync.RWMutex
@@ -74,8 +78,15 @@ type RedisHealth struct {
 	lastErr   string
 	lastCheck time.Time
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	// started and cancel are guarded by mu, like everything else on this
+	// type (codex round 9). They were plain fields written by Start and
+	// read by Stop, which is a data race between two goroutines even
+	// though the production sequence — Start at boot, Stop at shutdown —
+	// happens to order them. A lifecycle that is only safe because of the
+	// order its single caller happens to use is not safe, it is lucky.
+	started bool
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 // RedisHealthStatus is the cached probe result, as reported by
@@ -127,8 +138,19 @@ func (h *RedisHealth) Start() {
 	if h == nil || h.client == nil {
 		return
 	}
+
+	// IDEMPOTENT. A second Start used to leak the first loop and leave
+	// Stop cancelling only the second, so the first probed forever and
+	// wg.Wait never returned.
+	h.mu.Lock()
+	if h.started {
+		h.mu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	h.started = true
 	h.cancel = cancel
+	h.mu.Unlock()
 
 	h.probe(ctx)
 
@@ -148,12 +170,27 @@ func (h *RedisHealth) Start() {
 	}()
 }
 
-// Stop ends probing and waits for the goroutine to exit. Idempotent.
+// Stop ends probing and waits for the goroutine to exit. Idempotent, and
+// safe on a prober that was never started.
+//
+// MUST NOT be called from an onProbe callback: probe() runs on the
+// goroutine Stop waits for, so that self-deadlocks. The callback exists
+// to set a gauge, and the contract says so here rather than leaving the
+// hazard for whoever writes the second one.
 func (h *RedisHealth) Stop() {
-	if h == nil || h.cancel == nil {
+	if h == nil {
 		return
 	}
-	h.cancel()
+	h.mu.Lock()
+	cancel := h.cancel
+	h.cancel = nil
+	h.started = false
+	h.mu.Unlock()
+
+	if cancel == nil {
+		return
+	}
+	cancel()
 	h.wg.Wait()
 }
 

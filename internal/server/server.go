@@ -1066,8 +1066,15 @@ func (s *Server) wireStreamGauge() {
 // than a nil check at each call site.
 //
 // SetSSELimits reconfigures this gate in place rather than replacing it,
-// so calling it on a server that is already serving streams neither
-// strands their slots nor drifts the gauge.
+// so a late call neither strands held slots nor over-grants capacity.
+//
+// That is damage limitation, NOT a live-reconfiguration feature (codex
+// round 9). SetSSELimits also writes plain Server fields that request
+// handlers read — sseMaxPerWorkspace among them — so calling it while
+// requests are in flight is a data race regardless of how careful this
+// gate is. It is config-time: call it before ListenAndServe. The in-place
+// update exists so that a test, or an embedder that does call it late,
+// does not silently blow past its own limit.
 func (s *Server) admission() *streamAdmission {
 	s.admitOnce.Do(func() {
 		if s.streamAdmit == nil {

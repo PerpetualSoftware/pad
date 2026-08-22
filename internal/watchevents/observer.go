@@ -25,8 +25,21 @@ import "sync"
 // SequenceGap counts "this instance missed something", not "Redis was at
 // fault"; do not read a gap as evidence of any particular cause.
 //
-// Implementations must be safe for concurrent use and must not block —
-// they are called while the bus holds its mutex on the receive path.
+// Implementations must be safe for concurrent use and must not block.
+//
+// They MAY call back into the bus. Every report is fired AFTER the bus
+// releases its mutex, not while it is held (codex round 9), so an
+// observer that publishes or subscribes cannot deadlock the receive
+// loop. That is a property of the bus rather than a rule for
+// implementers, deliberately: an exported seam whose safety depends on
+// callers reading a comment is a deadlock waiting for the first observer
+// nobody reviewed.
+//
+// The ONE thing an observer must not do is call a bus method that
+// REPORTS — SubscribeAndReplaySince can raise a resume gap — because
+// that is unbounded mutual recursion, and no amount of lock discipline
+// here can prevent it. Found by the re-entrancy test hanging when it
+// tried exactly that.
 type Observer interface {
 	// NotificationDropped reports a notification this instance received but
 	// could not deliver to one of its own subscribers. reason is a bounded
@@ -106,6 +119,33 @@ func (o *observable) observer() Observer {
 	obs := o.obs
 	o.obsMu.RUnlock()
 	return obs
+}
+
+// pendingReports accumulates what a locked section wants to report, so
+// the reports can be fired after the lock is released. See Observer.
+type pendingReports struct {
+	drops      []string
+	resets     []string
+	gapMissing []int64
+}
+
+func (p *pendingReports) drop(reason string)  { p.drops = append(p.drops, reason) }
+func (p *pendingReports) reset(reason string) { p.resets = append(p.resets, reason) }
+func (p *pendingReports) gap(missing int64) {
+	p.gapMissing = append(p.gapMissing, missing)
+}
+
+// flush fires everything collected. MUST be called with no bus lock held.
+func (o *observable) flush(p *pendingReports) {
+	for _, r := range p.drops {
+		o.reportDropped(r)
+	}
+	for _, r := range p.resets {
+		o.reportReset(r)
+	}
+	for _, m := range p.gapMissing {
+		o.reportGap(m)
+	}
 }
 
 func (o *observable) reportDropped(reason string) {

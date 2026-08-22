@@ -237,3 +237,50 @@ func readyBody(t *testing.T, srv *Server, wantCode int) map[string]interface{} {
 	}
 	return body
 }
+
+// TestRedisHealthStartStopLifecycle covers the lifecycle codex round 9
+// flagged: a second Start used to leak the first loop and leave Stop
+// cancelling only the second, so wg.Wait never returned.
+//
+// Bounded explicitly, because the failure is a HANG rather than a wrong
+// value — an unbounded version would sit until the package timeout and
+// report as "tests are slow" instead of as this defect.
+func TestRedisHealthStartStopLifecycle(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 200 * time.Millisecond})
+	t.Cleanup(func() { _ = client.Close() })
+
+	h := NewRedisHealth(client, nil)
+	h.interval = 10 * time.Millisecond
+	h.timeout = 200 * time.Millisecond
+
+	h.Start()
+	h.Start() // second Start must be a no-op, not a second loop
+	h.Start()
+
+	// PREMISE: probing actually happened, so Stop below is stopping
+	// something.
+	if got := h.Status(); !got.Probed {
+		t.Fatalf("premise failed: not probed after Start (%+v)", got)
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		h.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop never returned — a repeated Start leaked a probe loop that nothing cancels")
+	}
+
+	// Stop is idempotent, and safe to call again.
+	h.Stop()
+
+	// And a prober that was never started stops cleanly.
+	fresh := NewRedisHealth(client, nil)
+	fresh.Stop()
+}

@@ -457,7 +457,10 @@ func rawSSEStatus(t *testing.T, baseURL, slug string) int {
 }
 
 // TestSetSSELimitsDoesNotStrandHeldSlots covers reconfiguration while
-// connections are held. Replacing the gate would leave the old one
+// connections are held. Note the scope: SetSSELimits is config-time
+// (see its doc comment — it writes Server fields handlers read), so this
+// is about not corrupting the gate's own accounting, not about supporting
+// live reconfiguration. Replacing the gate would leave the old one
 // holding the count and the new one starting at zero, so every connection
 // already open stops counting against the limit — the process silently
 // over-grants capacity by however many streams were held at the moment

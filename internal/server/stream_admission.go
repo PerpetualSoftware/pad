@@ -87,14 +87,22 @@ func (a *streamAdmission) setTotalObserver(fn func(total int)) {
 	a.mu.Unlock()
 }
 
-// notifyTotal reports the current total. Called with a.mu HELD, and it
-// reads a.total under that lock, so the value it reports is the one that
-// was true at the moment of the change rather than whatever a later
-// racing update leaves behind.
-func (a *streamAdmission) notifyTotal() {
-	if a.onTotal != nil {
-		a.onTotal(a.total)
+// snapshotTotal reads the current total and the callback under the lock,
+// returning a closure that fires it OUTSIDE the lock. Callers defer the
+// result.
+//
+// The value is captured under the lock so it is the total that was true
+// at the moment of the change rather than whatever a later racing update
+// leaves behind; the CALL happens after the unlock so a callback that
+// touches the gate cannot deadlock it (codex round 9). The Prometheus
+// callback does not, but a contract that depends on every future
+// callback author reading a comment is a deadlock with a delay on it.
+func (a *streamAdmission) snapshotTotal() func() {
+	fn, total := a.onTotal, a.total
+	if fn == nil {
+		return func() {}
 	}
+	return func() { fn(total) }
 }
 
 // admissionRefusal names which bound refused a connection, for the log
@@ -134,6 +142,10 @@ const (
 // caller that forgets cannot accidentally collapse every connection into
 // a single bucket.
 func (a *streamAdmission) acquire(principal string) (release func(), refusal admissionRefusal) {
+	// Registered FIRST so it runs LAST, after the Unlock below.
+	notify := func() {}
+	defer func() { notify() }()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -148,11 +160,14 @@ func (a *streamAdmission) acquire(principal string) (release func(), refusal adm
 	if principal != "" {
 		a.perUser[principal]++
 	}
-	a.notifyTotal()
+	notify = a.snapshotTotal()
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			releaseNotify := func() {}
+			defer func() { releaseNotify() }()
+
 			a.mu.Lock()
 			defer a.mu.Unlock()
 			a.total--
@@ -166,7 +181,7 @@ func (a *streamAdmission) acquire(principal string) (release func(), refusal adm
 					delete(a.perUser, principal)
 				}
 			}
-			a.notifyTotal()
+			releaseNotify = a.snapshotTotal()
 		})
 	}, admissionRefusalNone
 }

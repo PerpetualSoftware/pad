@@ -846,6 +846,11 @@ func decodePayload(payload string) (string, Notification, error) {
 // already climbed past our high-water mark (codex round 13), which is exactly
 // the case the epoch exists for.
 func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
+	// Registered FIRST so it runs LAST — after the Unlock below — because
+	// observer callbacks must not run under the bus mutex (codex round 9).
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	if b.epoch == "" {
 		b.epoch = epoch
@@ -858,7 +863,7 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 		b.lastAppendedID = 0
 		b.knownFrom = 0
 		b.epochJustChanged = true
-		b.reportReset(ResetReasonEpochChange)
+		pending.reset(ResetReasonEpochChange)
 	}
 	b.mu.Unlock()
 
@@ -866,6 +871,12 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 }
 
 func (b *RedisBus) fanOutLocally(n Notification) {
+	// Registered FIRST so it runs LAST — after the Unlock below. See
+	// Observer: reports fire with no bus lock held, so an observer may
+	// call back into the bus without deadlocking it.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -928,14 +939,14 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			"previous", b.lastAppendedID, "got", n.ID)
 		b.replay = newReplayBuffer(b.replaySize)
 		b.knownFrom = n.ID
-		b.reportReset(ResetReasonCounterBackward)
+		pending.reset(ResetReasonCounterBackward)
 
 	case n.ID != b.lastAppendedID+1:
 		slog.Warn("watchevents: gap in the received notification sequence; resumes across it will report sync_required",
 			"expected", b.lastAppendedID+1, "got", n.ID,
 			"missed", n.ID-b.lastAppendedID-1)
 		b.knownFrom = n.ID
-		b.reportGap(n.ID - b.lastAppendedID - 1)
+		pending.gap(n.ID - b.lastAppendedID - 1)
 	}
 	b.lastAppendedID = n.ID
 
@@ -947,7 +958,7 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		default:
 			slog.Warn("watchevents: dropping notification for slow subscriber",
 				"kind", n.Kind, "item_ref", n.ItemRef)
-			b.reportDropped(DropReasonSlowSubscriber)
+			pending.drop(DropReasonSlowSubscriber)
 		}
 	}
 }

@@ -463,3 +463,76 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		}
 	})
 }
+
+// reentrantObserver calls back INTO the bus from every callback. If the
+// bus fired reports while holding its own mutex, any of these would
+// deadlock it.
+type reentrantObserver struct {
+	b     *RedisBus
+	calls chan string
+}
+
+func (o *reentrantObserver) reenter(name string) {
+	// Two lock-taking entry points, so the test does not depend on which
+	// one a future implementation happens to leave safe.
+	//
+	// Deliberately NOT SubscribeAndReplaySince: it can itself report a
+	// resume gap, so calling it from an observer is unbounded mutual
+	// recursion — which this test found by hanging when it did. That is a
+	// real hazard for implementers and a different one from deadlock, so
+	// Observer's contract names it; it is not something the bus can fix
+	// on the caller's behalf.
+	ch := o.b.Subscribe()
+	o.b.Unsubscribe(ch)
+	select {
+	case o.calls <- name:
+	default:
+	}
+}
+
+func (o *reentrantObserver) NotificationDropped(string) { o.reenter("dropped") }
+func (o *reentrantObserver) SequenceGap(int64)          { o.reenter("gap") }
+func (o *reentrantObserver) SequenceReset(string)       { o.reenter("reset") }
+func (o *reentrantObserver) ResumeGap()                 { o.reenter("resume") }
+func (o *reentrantObserver) ReceiveLoopExited()         { o.reenter("exit") }
+
+// TestObserverMayReenterTheBus pins the contract Observer's doc states:
+// reports fire with no bus lock held, so an observer that calls back into
+// the bus cannot deadlock it.
+//
+// Written as a property of the BUS rather than a rule for implementers,
+// because an exported seam whose safety depends on callers reading a
+// comment fails the first time somebody does not. A deadlock hangs rather
+// than failing, so the test bounds itself and reports the hang as a
+// failure instead of letting the suite sit until the go test timeout.
+func TestObserverMayReenterTheBus(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newMiniredisBus(t, 64)
+	obs := &reentrantObserver{b: b, calls: make(chan string, 16)}
+	b.SetObserver(obs)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A gap: ids 1 then 3.
+		b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
+		b.fanOutLocally(Notification{ID: 3, Kind: KindPush})
+		// An epoch change, through the other locked path.
+		b.fanOutFromRedis("epoch-a", Notification{ID: 4, Kind: KindPush})
+		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the bus deadlocked: an observer that calls back into it never returned")
+	}
+
+	// PREMISE: the observer actually ran. Without this the test would
+	// pass against a bus that reported nothing at all, which does not
+	// deadlock either.
+	if len(obs.calls) == 0 {
+		t.Fatal("premise failed: no observer callback fired, so re-entrancy was never exercised")
+	}
+}

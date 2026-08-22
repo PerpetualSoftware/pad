@@ -382,6 +382,12 @@ func (b *MemoryBus) Publish(n Notification) error {
 		n.Timestamp = time.Now().UnixMilli()
 	}
 
+	// Registered FIRST so it runs LAST — after the Unlock below. See
+	// Observer: reports fire with no bus lock held, so an observer may
+	// call back into the bus without deadlocking it.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -419,7 +425,7 @@ func (b *MemoryBus) Publish(n Notification) error {
 			// a delivery it cannot confirm either way had definitely
 			// failed — exactly the false precision BUG-2699 is about.
 			slog.Warn("watchevents: dropping notification for slow subscriber", "kind", n.Kind, "item_ref", n.ItemRef)
-			b.reportDropped(DropReasonSlowSubscriber)
+			pending.drop(DropReasonSlowSubscriber)
 		}
 	}
 	return nil
