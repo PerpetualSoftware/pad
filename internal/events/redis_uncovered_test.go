@@ -19,11 +19,13 @@ import (
 // outside. Found by re-running the mutation battery on the split tree, which is
 // the point of re-running it — a subtraction hides its defects as absences.
 //
-// The arrangement now reproduces the PARTIAL failure the branch actually
+// The arrangement now reproduces a PARTIAL failure of the kind the branch
 // exists for: the sequence key holds a non-integer, so INCR fails while PUBLISH
-// keeps working. That is a realistic shape (a key-type collision with another
-// tenant of the same Redis), and it is the only one where a fallback ID would
-// actually reach subscribers.
+// keeps working. A key-type collision with another tenant of the same Redis is
+// one realistic route to that state and the cheapest to arrange here; an ACL
+// permitting PUBLISH while denying INCR is another. What matters is the shape —
+// ID assignment failing while delivery still works — because that is the only
+// shape in which a fallback ID would actually reach subscribers.
 func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})

@@ -15,11 +15,11 @@ import "sync"
 // because those conditions are detected INSIDE the bus and are invisible from
 // outside it:
 //
-//   - A resume this instance could not serve is a nil return from EventsSince.
-//     A wrapper CAN see that nil — the point is that it cannot see WHY, or
-//     that it happened at all without reimplementing the coverage rules it is
-//     wrapping, and the reason (cold start vs eviction vs reset) is what an
-//     operator needs. Instrumenting it outside would duplicate the decision.
+//   - A resume this instance could not serve is a nil return from EventsSince,
+//     and a wrapper CAN see that nil. What it cannot see is WHY — cold start,
+//     eviction, a stopped subscription — which is the part an operator acts
+//     on, and recovering it outside means reimplementing the coverage rules
+//     being wrapped.
 //   - A sequence reset is detected on the RECEIVE path, in fanOut, which no
 //     caller ever invokes and no wrapper can observe.
 //
@@ -35,11 +35,14 @@ type Observer interface {
 	// ResumeGap reports that a Last-Event-ID resume could not be served from
 	// this instance's view, so the client is told sync_required and re-fetches.
 	//
-	// This is the user-visible one: every increment is one client doing a
-	// full resync. It is also the metric that makes this fix falsifiable in
-	// production — the fix's whole claim is that the syncs it adds are the
-	// WARRANTED ones, and a rate that does not settle after a deploy is the
-	// evidence against it.
+	// Every increment is one client being told to reconcile. NOT necessarily a
+	// full re-fetch: the web client answers sync_required with an incremental
+	// /changes delta and only falls back to a full refresh after a long
+	// absence or a failure (web/src/lib/services/sync.svelte.ts).
+	//
+	// It is the metric that makes this fix falsifiable in production — the
+	// claim is that the syncs it adds are the WARRANTED ones, and a RATE that
+	// does not settle after a deploy is the evidence against it.
 	ResumeGap(workspaceID string)
 
 	// SequenceReset reports that this instance's replay coverage was thrown

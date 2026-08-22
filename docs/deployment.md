@@ -169,7 +169,8 @@ cross-tenant leak.
 >    Each answers a resume whose cursor belongs to the old keyspace with
 >    `sync_required`, by way of its cold replay-buffer coverage check rather
 >    than an epoch comparison — a freshly namespaced bus has no old epoch to
->    compare against. Expect a burst of full re-fetches as clients reconnect;
+>    compare against. Expect a burst of client reconciliation as they reconnect
+>    — an incremental `/changes` delta each, not a full page load;
 >    that is the cutover being paid for, and it is bounded by the number of
 >    reconnecting clients — each RESUME is counted, so a client that
 >    reconnects several times counts several times.
@@ -178,8 +179,10 @@ cross-tenant leak.
 >    sees in the new keyspace is served rather than refused, because nothing in
 >    an integer cursor distinguishes the two keyspaces. It is narrow — that one
 >    value, on a client that reconnects before the replica has seen anything
->    else — and closing it needs the ID space's identity on the wire, which the
->    SSE `id:` field has no room for. Tracked as BUG-2736. A maintenance window
+>    else — and closing it needs the ID space's identity to reach the client.
+>    The SSE spec would allow that (an event ID is arbitrary UTF-8); what
+>    excludes it is Pad's own `id:` contract, an int64 that every deployed
+>    client already parses. Tracked as BUG-2736. A maintenance window
 >    narrows it — clients reconnect against an already-cut-over instance rather
 >    than racing the cutover — but does not remove it, since their stored
 >    `Last-Event-ID` values still belong to the old keyspace and the wire
@@ -226,7 +229,7 @@ Alert on these instead:
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber |
 | `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
-| `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch counter above. **Expect a step around a deploy that settles back to baseline** — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
+| `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
 | `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. Today one reason: `subscription_resumed`, a pub/sub connection that dropped and resubscribed, dropping that workspace's buffer — expect it during a Redis failover and expect it to stop afterwards |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |

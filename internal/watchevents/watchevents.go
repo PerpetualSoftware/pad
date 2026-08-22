@@ -278,8 +278,15 @@ func (rb *replayBuffer) append(n Notification) {
 	}
 }
 
-// since mirrors internal/events.replayBuffer.since (same gap / eviction
-// semantics), scoped to this package's Notification type.
+// since is this package's replay-window query, scoped to Notification.
+//
+// It NO LONGER MIRRORS internal/events.replayBuffer.since, and the difference
+// is deliberate rather than drift: that one also applies a knownFrom coverage
+// check inside `since`, because its buffers are per-workspace and fed by a
+// global counter. Here the coverage question is answered one level up —
+// RedisBus.replaySince applies knownFrom before delegating, and MemoryBus has
+// only the guard below. Eviction and foreign-ID semantics are still the same
+// in both.
 func (rb *replayBuffer) since(sinceID int64) []Notification {
 	// AN EMPTY BUFFER CANNOT PROVE A CLIENT IS CURRENT (BUG-2731, found by a
 	// cross-artifact pass on that unit's branch). This buffer returning a

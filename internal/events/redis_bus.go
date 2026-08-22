@@ -388,16 +388,18 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 // initHealthCheck), and go-redis owns the redial and backoff, so a hand-rolled
 // retry loop here is machinery this package does not need to maintain.
 //
-// WHAT NEITHER FORM DETECTS, measured rather than assumed: a HALF-OPEN
-// connection — no FIN, no RST, just a route that stopped working. The health
-// check's PubSub.Ping only WRITES the command and never reads a reply
-// (go-redis v9.22.0, pubsub.go), so it succeeds for as long as the socket
-// accepts writes, and the channel path sets no read deadline. A proxy that
-// silently stops forwarding produced no reconnect in 24 seconds of probing.
-// So an instance behind a wedged route still sits there receiving nothing
-// while its buffer keeps looking valid; detecting that needs application-level
-// idle tracking, which is BUG-2730's family and its own decision. Do not
-// assume the health check covers it.
+// WHAT NEITHER FORM DETECTS: a HALF-OPEN connection — no FIN, no RST, just a
+// route that stopped working. Check it in the library rather than believing
+// this comment: PubSub.Ping calls writeCmd and returns, never reading a reply
+// (go-redis v9.22.0, pubsub.go), so the health check's error is nil for as
+// long as the socket accepts writes — which a half-open socket does until its
+// send buffer fills. The channel path sets no read deadline either
+// (Receive → ReceiveTimeout(ctx, 0)).
+//
+// So an instance behind a wedged route sits there receiving nothing while its
+// buffer keeps looking valid. Detecting that needs application-level idle
+// tracking, which is BUG-2730's family and its own decision, because it needs
+// a threshold. Do not assume the health check covers it.
 func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string, gen int64) {
 	defer b.reportReceiveLoopExited()
 

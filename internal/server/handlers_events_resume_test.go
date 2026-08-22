@@ -211,12 +211,17 @@ func TestAnUnreadableLastEventIDIsAGapNotAFreshConnection(t *testing.T) {
 	slug := createTestWorkspace(t, ts.URL, "Test")
 	url := ts.URL + "/api/v1/events?workspace=" + slug
 
-	// NOT in this list: a whitespace-only value. HTTP strips optional
-	// whitespace from header values, so the server sees an empty string —
-	// which the EventSource spec defines as "no position", the same as an
-	// absent header. Measured rather than assumed: a client sending "  "
-	// reaches the handler as `Last-Event-ID: ""`. Treating that as fresh is
-	// correct, so there is nothing here to assert.
+	// WHICH VALUES COUNT AS UNREADABLE IS OUR POLICY, not a spec requirement.
+	// The SSE spec governs what a client SENDS; it says nothing about what a
+	// server should do with a value it cannot use. Pad's contract is that
+	// `id:` is a positive int64, so anything else is a cursor we cannot serve.
+	//
+	// NOT in this list: a whitespace-only value. Measured with a throwaway
+	// server rather than assumed — Go's client trims the value on the way out,
+	// so a client sending "  " reaches the handler as `Last-Event-ID: ""` and
+	// is indistinguishable from an absent header, which is the same state the
+	// spec has a client report when it holds no position. Nothing to assert,
+	// because the input is not representable end to end.
 	for _, cursor := range []string{"-1", "0", "not-a-number", `"42"`, "99999999999999999999999"} {
 		t.Run(cursor, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())

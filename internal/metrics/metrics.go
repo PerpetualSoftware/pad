@@ -109,7 +109,9 @@ type Metrics struct {
 	// streams have independent id spaces and separate replay machinery, so
 	// one number would make either one's incident undiagnosable.
 	//
-	// EXPECT A STEP AROUND A DEPLOY AND A RETURN TO BASELINE AFTER IT. Each
+	// EXPECT A STEP AROUND A DEPLOY AND A RETURN TO BASELINE AFTER IT — of the
+	// RATE, not of the counter, which only ever increases within a process.
+	// Each
 	// instance starts with no coverage, so an early resume against a
 	// workspace a replica has not seen yet is a warranted gap. It counts
 	// RESUMES rather than clients — a deploy nobody reconnects through does
@@ -117,6 +119,10 @@ type Metrics struct {
 	// — so the step's size is not the connected-client count. A rate that
 	// does NOT settle is the evidence against BUG-2731's central claim, that
 	// the syncs it added are only the warranted ones, and is what to alert on.
+	//
+	// An increment means the client was told to RECONCILE, which is not the
+	// same as a full re-fetch: the web client answers with an incremental
+	// /changes delta first (web/src/lib/services/sync.svelte.ts).
 	EventResumeGapsTotal prometheus.Counter
 
 	// EventSequenceResetsTotal counts activity-stream coverage resets by

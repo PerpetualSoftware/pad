@@ -782,11 +782,21 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 // rare (buffer eviction only); the coverage check makes it common, so the
 // client's cursor has to be retired along with it.
 //
-// Per the EventSource spec the last event ID buffer is assigned from the `id`
-// field whatever its value, and an empty last event ID means no Last-Event-ID
-// header on the next connect — so the client comes back as a fresh subscriber,
-// which is exactly what it now is, having just re-fetched. A client that
-// ignores the empty field is no worse off than before this change.
+// VERIFIED AGAINST THE SPEC, not remembered (WHATWG HTML, server-sent events).
+// Three steps have to hold and all three do:
+//
+//   - "If the field value does not contain U+0000 NULL, then set the last
+//     event ID buffer to the field value" — an empty value qualifies, and the
+//     spec's own example says an id field with no value "resets the last event
+//     ID to the empty string".
+//   - the last event ID string is set from the buffer BEFORE the empty-data
+//     check returns, so a frame that dispatches no event still updates it.
+//   - on reconnect the header is added only "if the EventSource object's last
+//     event ID string is not the empty string".
+//
+// So the client comes back as a fresh subscriber, which is exactly what it now
+// is, having just re-fetched. A client that ignores the empty field is no
+// worse off than before this change.
 func writeSSEResetCursorEvent(w http.ResponseWriter, eventType string, data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
