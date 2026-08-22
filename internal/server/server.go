@@ -940,6 +940,28 @@ func (s *Server) SetSecureCookies(secure bool) {
 	s.secureCookies = secure
 }
 
+// countResumeGap records a resume this instance refused to serve, for the gaps
+// the BUS never sees (BUG-2731, codex round 12).
+//
+// The buses count their own coverage-based refusals, which is where most of
+// them happen. A cursor we could not even PARSE never reaches a bus, so
+// without this the counters undercount exactly the resyncs an operator is most
+// likely to be asked about — a client stuck in a resync loop because it keeps
+// sending a cursor nobody can read. No double counting: these paths return
+// before any bus call.
+//
+// Split by stream, matching the two counters' separate identities.
+func (s *Server) countResumeGap(activity bool) {
+	if s.metrics == nil {
+		return
+	}
+	if activity {
+		s.metrics.EventResumeGapsTotal.Inc()
+		return
+	}
+	s.metrics.WatchResumeGapsTotal.Inc()
+}
+
 // SetMetrics attaches Prometheus metrics to the server.
 // Must be called before the first request is served.
 //

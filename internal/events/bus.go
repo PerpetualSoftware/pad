@@ -156,7 +156,15 @@ type EventBus interface {
 
 	// EventsSince returns events for a workspace with IDs greater than sinceID.
 	// Used to replay missed events on SSE reconnect (Last-Event-ID).
-	// Returns nil if sinceID is too old and has been evicted from the buffer.
+	//
+	// Returns nil whenever this instance CANNOT VOUCH for the span the caller
+	// is asking about, which the SSE handler turns into sync_required. That
+	// covers eviction (the historical meaning), and since BUG-2731 also a
+	// buffer whose coverage starts above the caller's cursor — including the
+	// buffer not existing at all, which is a cold start, a restart, a
+	// scale-up, or the first connection to a workspace on this instance.
+	// Returns an empty (non-nil) slice only when the caller is genuinely
+	// caught up.
 	EventsSince(workspaceID string, sinceID int64) []Event
 
 	// Close shuts down the event bus and cleans up resources.
@@ -177,6 +185,56 @@ type replayBuffer struct {
 	size   int // max capacity
 	head   int // next write position
 	count  int // current number of events
+
+	// knownFrom is the lowest event ID from which this buffer's coverage of
+	// its workspace can be VOUCHED FOR: the first ID appended since this
+	// instance began continuously receiving the workspace. Zero means
+	// nothing has been appended, which is strictly less knowledge than any
+	// non-zero value and must produce at least as strong a signal.
+	//
+	// CONTINUITY HERE MEANS RECEIVING-CONTINUITY, NEVER ID-CONTIGUITY, and
+	// that is the one thing to understand before changing this (BUG-2731).
+	// internal/watchevents has a field of the same name that ALSO detects
+	// holes, by noticing a non-consecutive ID — and porting that here would
+	// be a serious regression, because this bus has a GLOBAL counter and
+	// PER-WORKSPACE buffers. Four publishes alternating across two
+	// workspaces give W=[1 4] and X=[2 3]: a workspace's buffer holds
+	// non-consecutive IDs BY CONSTRUCTION, so an id-contiguity check would
+	// fire on nearly every append, reset knownFrom every time, and turn
+	// every resume into sync_required — the false-positive inversion of the
+	// bug this field exists to fix. The watch bus can do it because it has
+	// one logical stream whose IDs are consecutive by construction; we
+	// cannot, and no cleverer local check recovers it — see BUG-2735, which
+	// carries the two real options (a per-workspace counter, or an authority
+	// read against the shared counter) and the load arithmetic that ruled
+	// the second one out.
+	//
+	// THE ID SPACE'S IDENTITY IS ALSO NOT HERE. This buffer can say where its
+	// coverage started; it cannot say which INCARNATION of the counter that
+	// ID belongs to, so a restarted process reusing low IDs can still answer
+	// an old low cursor. That is BUG-2736, and it is deliberately a separate
+	// unit: closing it changes the Redis wire format and needs a two-phase
+	// rollout, which is a migration rather than a bug fix.
+	//
+	// Invalidated only by lifecycle facts this instance can actually
+	// observe — today, losing the workspace's subscription (it stopping, or
+	// a pub/sub reconnect) — never by a gap between IDs.
+	//
+	// AN ID-SPACE RESET IS NOT ON THAT LIST, deliberately. Detecting one
+	// needs the identity this buffer does not carry, so a reset Redis counter
+	// can still leave two incarnations' IDs in one buffer. That is BUG-2736's
+	// unit, and this comment names the omission rather than letting a reader
+	// assume the coverage rule covers more than it does.
+	//
+	// IT BOUNDS THE START OF COVERAGE, NOT ITS CONTINUITY, and that limit is
+	// structural rather than an omission: a message lost mid-subscription
+	// (hold 100, miss 101, receive 102) leaves NO local trace here, because
+	// per-workspace IDs are non-consecutive by construction and 101 may
+	// simply have belonged to another workspace. BUG-2735 carries that case,
+	// the two non-local options for detecting it, and why one of them was
+	// ruled out on load. Do not try to recover it with a cleverer local
+	// check; there isn't one.
+	knownFrom int64
 }
 
 func newReplayBuffer(size int) *replayBuffer {
@@ -193,14 +251,39 @@ func (rb *replayBuffer) append(e Event) {
 	if rb.count < rb.size {
 		rb.count++
 	}
+	if rb.knownFrom == 0 {
+		// First append since this buffer started (or restarted) covering
+		// the workspace. From this ID forward we can answer honestly.
+		rb.knownFrom = e.ID
+	}
 }
 
 // since returns all buffered events with ID > sinceID, in chronological order.
-// Returns nil if sinceID is older than the oldest buffered event AND the buffer
-// is full (i.e. events have been evicted), meaning we can't guarantee completeness.
-// Returns an empty (non-nil) slice if sinceID is current (no missed events).
-// A sinceID of 0 means "give me everything in the buffer".
+// Returns nil when this buffer cannot vouch for completeness across the
+// requested span — the caller turns that into sync_required. Returns an empty
+// (non-nil) slice if sinceID is current (no missed events). A sinceID of 0
+// means "give me everything in the buffer" and is never a coverage question:
+// a fresh client is not resuming from a position, so there is no span to span.
 func (rb *replayBuffer) since(sinceID int64) []Event {
+	// COVERAGE CHECK (BUG-2731). A resume asking about IDs at or below what
+	// this buffer started covering cannot be answered honestly, and the
+	// pre-BUG-2731 code answered it anyway — with an empty-but-non-nil slice,
+	// which the SSE handler reads as "caught up". An empty buffer cannot
+	// prove a client is current, and neither can a partial one whose first
+	// event is above the client's cursor.
+	//
+	// sinceID+1 == knownFrom PASSES THIS CHECK: there is no ID strictly
+	// between the cursor and our first event, so no workspace event can have
+	// been missed in that span. (It may still be refused further down by the
+	// eviction or newest-ID checks — this one check is not the whole answer.)
+	// sinceID+1 < knownFrom leaves room for a missed event, and because the
+	// ID space is shared across workspaces (see knownFrom) we cannot tell
+	// whether the IDs in that room were ours. Refusing is the conservative
+	// direction and the only honest one.
+	if sinceID > 0 && (rb.knownFrom == 0 || sinceID+1 < rb.knownFrom) {
+		return nil
+	}
+
 	if rb.count == 0 {
 		return []Event{}
 	}
@@ -250,6 +333,13 @@ type subscriber struct {
 // MemoryBus is an in-process pub/sub event bus that fans out events
 // to all subscribers for a given workspace. Suitable for single-instance deployments.
 type MemoryBus struct {
+	// observable carries the optional operational-event seam (BUG-2731).
+	// Wired here as well as on RedisBus, and deliberately: a single-process
+	// deployment restarts too, and the cold-buffer resume gap is exactly as
+	// real there. The reset counters stay at zero here by construction —
+	// MemoryBus assigns its own IDs and has no shared counter to lose.
+	observable
+
 	mu          sync.RWMutex
 	subscribers map[chan Event]*subscriber
 
@@ -367,18 +457,46 @@ func (b *MemoryBus) Publish(event Event) {
 }
 
 // EventsSince returns buffered events for a workspace with IDs greater than sinceID.
-// Returns nil if sinceID has been evicted from the buffer (gap too large).
+// Returns nil when this instance cannot vouch for the requested span (gap too
+// large, or coverage that never reached back that far — see replayBuffer.since).
 // Returns an empty slice if the caller is fully caught up.
 func (b *MemoryBus) EventsSince(workspaceID string, sinceID int64) []Event {
+	// Counted in ONE place, on the way out, so both ways of failing to serve
+	// a resume land on the same counter: the workspace having no buffer at
+	// all, and since() refusing the span. Counting at each `return nil`
+	// instead is how a gap metric ends up measuring one of its two halves —
+	// the failure BUG-2699's own metric shipped with, and the reason this is
+	// structural rather than remembered.
+	var missed []Event
+	defer func() {
+		if missed == nil {
+			b.reportResumeGap(workspaceID)
+		}
+	}()
+
 	b.replayMu.RLock()
 	defer b.replayMu.RUnlock()
 
 	rb, ok := b.replayBuffers[workspaceID]
 	if !ok {
-		// No events ever published for this workspace.
-		return []Event{}
+		// Nothing has been published for this workspace IN THIS PROCESS.
+		//
+		// For a fresh client (sinceID == 0) that is honestly "nothing to
+		// replay". For a RESUMING client it is the strongest form of "cannot
+		// vouch" there is (BUG-2731): this bus assigns its own IDs starting
+		// from 1 on every start, so a non-zero cursor for a workspace we have
+		// never published to belongs to a previous incarnation of the process
+		// — or to another instance — and the events between it and now are
+		// unrecoverable here. Answering []Event{} told that client it was
+		// caught up and silently dropped everything it had missed.
+		if sinceID > 0 {
+			return nil
+		}
+		missed = []Event{}
+		return missed
 	}
-	return rb.since(sinceID)
+	missed = rb.since(sinceID)
+	return missed
 }
 
 // Close shuts down the event bus by closing all subscriber channels.

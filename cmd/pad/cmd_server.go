@@ -687,12 +687,12 @@ func serveCmd() *cobra.Command {
 				// only trace was a line nobody's log aggregator was
 				// shaped to catch.
 				redis.SetLogger(redisSlogLogger{})
-				eventBus = events.NewRedisBusWithKeys(rc, redisKeys)
+				eventBus = newObservedEventBus(rc, redisKeys, m)
 				watchRedis = rc
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB,
 					"namespace", redisKeys.Namespace())
 			} else {
-				eventBus = events.New()
+				eventBus = newObservedEventBus(nil, redisKeys, m)
 				slog.Info("Event bus using in-memory (single instance)")
 			}
 			// Wrap event bus with Prometheus instrumentation
@@ -1297,4 +1297,36 @@ func humanBytes(n int64) string {
 		exp = len(suffixes) - 1
 	}
 	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), suffixes[exp])
+}
+
+// newObservedEventBus builds the event bus for this deployment shape with its
+// operational observer already attached (BUG-2731). A nil client selects the
+// in-process bus.
+//
+// EXTRACTED SO THE WIRING IS TESTABLE, which is the whole point (CONVE-19:
+// wiring is a claim). Inline in the command's RunE, the SetObserver call was a
+// claim no test could reach: an events-package test proves the bus calls its
+// observer and a metrics-package test proves the adapter maps it, and both
+// pass with that line deleted.
+//
+// The observer attaches to the CONCRETE bus because SetObserver is not part of
+// the EventBus interface the wrapper implements, so it has to happen before
+// the value is widened — a typing constraint, not a subtle ordering
+// requirement. What the wrapper genuinely cannot do is REPLACE this: the
+// conditions reported here are detected inside the bus, on the receive path
+// and inside the coverage rules, not at the interface it wraps.
+//
+// The in-process bus is wired too, deliberately: a single-process deployment
+// restarts, and the cold-buffer resume gap is exactly as real there. Its reset
+// counter stays at zero by construction — MemoryBus owns its own IDs and has
+// no shared counter to lose.
+func newObservedEventBus(rc *redis.Client, redisKeys redisns.Keys, m *metrics.Metrics) events.EventBus {
+	if rc != nil {
+		bus := events.NewRedisBusWithKeys(rc, redisKeys)
+		bus.SetObserver(metrics.NewEventsObserver(m))
+		return bus
+	}
+	bus := events.New()
+	bus.SetObserver(metrics.NewEventsObserver(m))
+	return bus
 }

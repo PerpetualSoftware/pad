@@ -35,9 +35,18 @@ type Metrics struct {
 	//   - pad_watchevents_notifications_dropped_total moves on a
 	//     single-process binary too — MemoryBus has the same
 	//     slow-subscriber drop and the same observer.
-	//   - Everything sequence-related (gaps, resets, resume gaps, receive
-	//     loop exits) is Redis-only by construction: MemoryBus assigns
-	//     contiguous ids and has no subscription to lose.
+	//   - Sequence GAPS, RESETS and receive-loop exits are Redis-only by
+	//     construction on both buses: a MemoryBus assigns its own contiguous
+	//     ids and has no subscription to lose.
+	//   - RESUME GAPS are NOT, on either bus, and reading them as Redis-only
+	//     would be wrong (BUG-2731). A single-process instance restarts, and
+	//     a resume carrying a cursor from a previous incarnation is
+	//     unservable there for exactly the same reason it is on a cold
+	//     replica. Both pad_event_resume_gaps_total and
+	//     pad_watchevents_resume_gaps_total move without Redis.
+	//   - Resume gaps also have a second source that is not a bus at all:
+	//     a cursor the HANDLER could not parse never reaches one. See
+	//     server.countResumeGap.
 	//   - pad_redis_up is not registered at all without Redis; a zero on
 	//     a gauge named "up" asserts something false.
 	//
@@ -74,8 +83,12 @@ type Metrics struct {
 	// each of which sends a client sync_required. Distinct from
 	// WatchSequenceGapsTotal: that one is a delivery fault, this one is
 	// the user-visible consequence of any cursor this instance cannot
-	// vouch for — a hole, a cold start, an epoch change, or a
-	// disagreeing shared counter.
+	// vouch for — a hole, a cold start, an epoch change, a disagreeing
+	// shared counter, or a cursor that could not be parsed at all.
+	//
+	// Moves on a single-process deployment too (BUG-2731): MemoryBus
+	// restarts its id sequence, so a resume from a previous incarnation is
+	// genuinely unservable there.
 	WatchResumeGapsTotal prometheus.Counter
 
 	// WatchSequenceResetsTotal counts id-space changes (epoch change or
@@ -88,6 +101,52 @@ type Metrics struct {
 	// non-zero value outside a shutdown means an instance that publishes
 	// fine and receives nothing.
 	WatchReceiveLoopExitsTotal prometheus.Counter
+
+	// EventResumeGapsTotal counts activity-stream (/api/v1/events) resumes
+	// this instance could not serve, each of which sends a client
+	// sync_required (BUG-2731). The watch stream's twin is
+	// WatchResumeGapsTotal; they are separate counters because the two
+	// streams have independent id spaces and separate replay machinery, so
+	// one number would make either one's incident undiagnosable.
+	//
+	// EXPECT A STEP AROUND A DEPLOY AND A RETURN TO BASELINE AFTER IT — of the
+	// RATE, not of the counter, which only ever increases within a process.
+	// Each
+	// instance starts with no coverage, so an early resume against a
+	// workspace a replica has not seen yet is a warranted gap. It counts
+	// RESUMES rather than clients — a deploy nobody reconnects through does
+	// not move it, and one client reconnecting repeatedly moves it repeatedly
+	// — so the step's size is not the connected-client count. A rate that
+	// does NOT settle is the evidence against BUG-2731's central claim, that
+	// the syncs it added are only the warranted ones, and is what to alert on.
+	//
+	// An increment means the client was told to RECONCILE, which is not the
+	// same as a full re-fetch: the web client answers with an incremental
+	// /changes delta first (web/src/lib/services/sync.svelte.ts).
+	EventResumeGapsTotal prometheus.Counter
+
+	// EventSequenceResetsTotal counts activity-stream coverage resets by
+	// reason. One reason today:
+	//
+	//   subscription_resumed — a pub/sub connection dropped and resubscribed,
+	//   so ONE workspace's replay buffer was dropped and resumes across the
+	//   outage answer sync_required. This tracks Redis connection health:
+	//   expect it during a failover and expect it to stop afterwards.
+	//
+	// LABELLED FROM THE START rather than shipped as a bare counter, with one
+	// value today. BUG-2736's ID-space work adds reasons here, and an
+	// operator acts on the difference: a Redis connection FLAP is expected
+	// during a failover and self-resolves, while a changed KEYSPACE is a
+	// configuration mistake that does not. An alert built on an unlabelled
+	// total cannot separate them and would have to be rewritten the moment
+	// the second reason arrives.
+	EventSequenceResetsTotal *prometheus.CounterVec
+
+	// EventReceiveLoopExitsTotal counts a workspace's Redis subscription loop
+	// stopping. Expected at shutdown and whenever the last local subscriber
+	// for a workspace leaves, so unlike the watch stream's twin it does NOT
+	// stay at zero — read it as a RATE against a stable subscriber count.
+	EventReceiveLoopExitsTotal prometheus.Counter
 
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
@@ -310,6 +369,21 @@ func New() *Metrics {
 		Help: "Times the Redis subscription receive loop stopped. Non-zero outside shutdown means this instance receives no notifications at all.",
 	})
 
+	eventResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_resume_gaps_total",
+		Help: "Activity-stream resumes this instance could not serve, each sending a client sync_required. Counts resumes, not clients. Expect a step around a deploy (cold buffers) returning to baseline; a rate that does not settle is the signal.",
+	})
+
+	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_event_sequence_resets_total",
+		Help: "Times activity-event replay coverage was dropped, by reason. Today: subscription_resumed, a Redis connection flap affecting one workspace's buffer.",
+	}, []string{"reason"})
+
+	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_receive_loop_exits_total",
+		Help: "Times a workspace's activity subscription loop stopped. Expected at shutdown and when a workspace's last local subscriber leaves — read as a rate against a stable subscriber count.",
+	})
+
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
 		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew RISK a live session being unlisted and untargetable, deregister risks a DEAD one staying listed, list returns 503, prune is benign. A failure means an error was reported; Redis can fail after applying.",
@@ -322,6 +396,9 @@ func New() *Metrics {
 		watchResumeGapsTotal,
 		watchSequenceResetsTotal,
 		watchReceiveLoopExitsTotal,
+		eventResumeGapsTotal,
+		eventSequenceResetsTotal,
+		eventReceiveLoopExitsTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -348,6 +425,9 @@ func New() *Metrics {
 		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,
 		WatchResumeGapsTotal:           watchResumeGapsTotal,
 		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
+		EventResumeGapsTotal:           eventResumeGapsTotal,
+		EventSequenceResetsTotal:       eventSequenceResetsTotal,
+		EventReceiveLoopExitsTotal:     eventReceiveLoopExitsTotal,
 		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,
 		SessionPresenceFailuresTotal:   sessionPresenceFailuresTotal,
 
