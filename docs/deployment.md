@@ -144,8 +144,9 @@ ones, so upgrading changes nothing.
 
 Two installations sharing one Redis endpoint **without** distinct namespaces
 cross-feed notifications and merge their session-presence registries. Selecting
-different logical DB numbers does *not* help — Redis pub/sub is not namespaced
-by DB at all. The practical exposure is a **cloned database** (a staging
+different logical DB numbers only half helps: ordinary keys are DB-scoped, so
+the presence registries stay separate — but Redis pub/sub is not namespaced by
+DB at all, so both buses cross-feed regardless. The practical exposure is a **cloned database** (a staging
 environment restored from a production dump), because delivery is filtered on
 user id and user ids are per-installation UUIDs; for that case it is a genuine
 cross-tenant leak.
@@ -165,8 +166,10 @@ cross-tenant leak.
 >    same time. The env var and the binary version have to move together in both
 >    directions.
 > 3. **Client resync is honest on the watch stream and silent on the activity
->    stream.** `pad:*watchevents_epoch` makes the notification stream detect the
->    changed id space and answer resumes with `sync_required`. The workspace
+>    stream.** The notification stream answers resumes with `sync_required` —
+>    by way of its cold replay-buffer coverage check rather than the epoch
+>    comparison, since a freshly namespaced bus has no old epoch to compare
+>    against. The workspace
 >    activity stream (`/api/v1/events`) has no equivalent: a client reconnecting
 >    with a `Last-Event-ID` from the old keyspace against a fresh replay buffer
 >    is treated as caught up, so it silently misses whatever happened during the

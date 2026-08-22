@@ -20,8 +20,8 @@ import (
 // user exhaust the machine through the other one while every configured
 // limit still read as satisfied.
 //
-// So the global bound moves HERE and is passed to the events bus as 0
-// (unlimited) — see handleSSE. The per-WORKSPACE bound stays on that bus,
+// So the global bound moves HERE, and events.EventBus.SubscribeIfAllowed
+// no longer takes one at all. The per-WORKSPACE bound stays on that bus,
 // because it is genuinely workspace-scoped and the watch stream has no
 // coherent workspace to count against.
 //

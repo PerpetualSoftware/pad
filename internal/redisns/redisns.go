@@ -5,7 +5,10 @@
 // pad:event_seq, pad:watchevents*, pad:session:* — so two Pad installations
 // pointed at one Redis endpoint cross-feed each other's notifications and
 // merge each other's session-presence registries. Selecting different DB
-// numbers does not help: Redis pub/sub is not namespaced by DB at all. The
+// numbers only half helps: ordinary keys are DB-scoped, so the presence
+// registries would stay separate — but Redis pub/sub is not namespaced by
+// DB at all, so the buses cross-feed regardless, and a channel is where a
+// notification actually travels. The
 // blast radius is narrower than it sounds (delivery is filtered per-caller
 // on user id, and user ids are per-installation UUIDs) but for a CLONED
 // database — a staging environment restored from a production dump — it is
