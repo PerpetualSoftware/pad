@@ -773,7 +773,11 @@ func TestACorruptedEpochKeyIsRotatedRatherThanEmitted(t *testing.T) {
 	epochKey := redisns.Default.Name(redisEpochSuffix)
 	next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
 
-	for _, corrupt := range []string{"abc", "0", "-3", "1.5", ""} {
+	// The last two are the same defect by a different route (codex round 13):
+	// all digits, so a pattern match alone accepts them, and both overflow the
+	// int64 the RECEIVER parses them into — so the payload would be rejected
+	// on arrival and every event dropped, exactly as with "abc".
+	for _, corrupt := range []string{"abc", "0", "-3", "1.5", "", "9223372036854775808", "99999999999999999999999999"} {
 		if err := mr.Set(epochKey, corrupt); err != nil {
 			t.Fatalf("seed epoch %q: %v", corrupt, err)
 		}

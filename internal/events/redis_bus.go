@@ -203,13 +203,20 @@ elseif redis.call('EXISTS', KEYS[3]) == 0 then
   redis.call('SET', KEYS[3], tostring(g))
 end
 local epoch = redis.call('GET', KEYS[3])
-if not epoch or not string.match(epoch, '^[1-9][0-9]*$') then
+if not epoch or not string.match(epoch, '^[1-9][0-9]*$') or #epoch > 18 then
   -- The epoch key holds something that is not a positive generation --
   -- corrupted, hand-edited, or written by another installation sharing this
   -- keyspace. Emitting it would make every receiver reject the payload and
   -- drop the event, forever and for every publisher. Rotating instead makes
   -- the state self-healing: one generation change, one round of resyncs, and
   -- the space is identifiable again.
+  --
+  -- The LENGTH cap is part of the same guard, not a separate nicety: the
+  -- receiver parses this with Go's strconv.ParseInt, so a value that is all
+  -- digits but overflows int64 fails there while passing a pattern match here
+  -- -- the same total, silent, unrecoverable drop by a different route. Any
+  -- 18-digit number fits in an int64, and a generation counts installations'
+  -- id-space resets, so 18 digits is not a bound anything real approaches.
   local g = redis.call('INCR', KEYS[5])
   redis.call('SET', KEYS[3], tostring(g))
   epoch = tostring(g)
