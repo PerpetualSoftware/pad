@@ -142,15 +142,24 @@ return id
 // minting inside the script removes the propose-then-SET-NX race entirely —
 // two publishers can no longer both believe they minted the space.
 //
-// A DEDUPE TOKEN, matching internal/watchevents' script. The mechanism it
-// closes: go-redis retries a command whose reply was lost to a network error —
-// a Redis failover being the obvious trigger — so the script can run, publish,
-// and still return an error to its caller. Retried, it would publish the same
-// event again under a second ID, and both copies look perfectly valid
-// (ascending IDs, correct ordering), so nothing downstream can tell them
-// apart. It is not merely a duplicate row: the web layout raises a toast for
-// any externally-sourced item_created, so a duplicate is a duplicate toast
-// plus a redundant fetch.
+// A DEDUPE TOKEN, matching internal/watchevents' script, and it is REQUIRED BY
+// THE SCRIPT rather than a separate improvement bundled in (codex round 7
+// asked whether it should ship here at all — it must, and cutting it while
+// keeping the script would ship a regression).
+//
+// The mechanism: go-redis retries a command whose reply was lost to a network
+// error — a Redis failover being the obvious trigger — so the script can run,
+// publish, and still return an error to its caller. THE TWO PATHS DIFFER IN
+// WHAT A RETRY COSTS. Phase 1 retries a PUBLISH whose payload already carries
+// its ID, so a duplicate arrives under the SAME ID and a client's cursor logic
+// can see it for what it is. Phase 2's retry re-runs the assignment, so the
+// duplicate arrives under a SECOND ID, ascending and correctly ordered, and
+// nothing downstream can tell the two apart. Moving assignment into the script
+// is what makes retries worse; the token is what keeps them from being.
+//
+// It is not merely a duplicate row: the web layout raises a toast for any
+// externally-sourced item_created, so a duplicate is a duplicate toast plus a
+// redundant fetch.
 //
 // SET NX on a caller-generated token turns the retry into a no-op: the retry
 // carries the same KEYS[4], the SET fails, and the script returns 0 without

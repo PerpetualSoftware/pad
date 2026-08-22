@@ -332,6 +332,14 @@ though nothing was missed. Numeric detection alone cannot see it: by the time
 the new sequence passes the replica's high-water mark, it looks like ordinary
 progress.
 
+**What the fix does and does not close, stated before the procedure.** It
+stops a REPLICA from mixing two ID spaces in one replay buffer, which is what
+turns a counter reset into a silently wrong replay. It does NOT make a
+CLIENT'S CURSOR say which space it came from — that would change the wire
+format every deployed browser speaks. So this is a substantial mitigation and
+not a closure; the residual case and why it is deferred are at the end of this
+section.
+
 The fix gives each ID space an **epoch** — a monotonic generation number,
 minted by Redis when the space is created and carried as a
 `<epoch>|<id>|<json>` prefix on every message published **by a phase-2
