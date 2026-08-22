@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,29 @@ func TestBothEventBusShapesReportToMetrics(t *testing.T) {
 		bus := newObservedEventBus(&config.Config{}, client, redisns.Default, m)
 		t.Cleanup(bus.Close)
 
+		assertResumeGaps(t, m, 0)
+
+		// Negative control FIRST, same as the in-process shape: a bus that
+		// refused every resume would otherwise satisfy the gap assertion
+		// below while being completely broken.
+		//
+		// It goes the WHOLE way round — publish to Redis, receive it back
+		// through this bus's own subscription — because that is the only path
+		// that fills a Redis bus's replay buffer, and driving the fan-out
+		// directly would skip the decode this shape depends on.
+		ch := bus.Subscribe("ws-1")
+		t.Cleanup(func() { bus.Unsubscribe(ch) })
+		bus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1"})
+
+		var received events.Event
+		select {
+		case received = <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatal("the published event never came back through Redis")
+		}
+		if got := bus.EventsSince("ws-1", received.ID); got == nil {
+			t.Fatal("a caught-up cursor must be served")
+		}
 		assertResumeGaps(t, m, 0)
 
 		if got := bus.EventsSince("ws-never-seen", 4200); got != nil {
@@ -142,7 +166,7 @@ func TestThePublishEpochFlipReachesTheRedisBus(t *testing.T) {
 
 			bus := newObservedEventBus(&config.Config{EventsPublishEpoch: tc.publishEpoch}, client, redisns.Default, metrics.New())
 			t.Cleanup(bus.Close)
-			bus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1"})
+			bus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1", ItemID: "item-7"})
 
 			select {
 			case msg := <-incoming:
@@ -153,6 +177,11 @@ func TestThePublishEpochFlipReachesTheRedisBus(t *testing.T) {
 				bare := json.Unmarshal([]byte(msg.Payload), &ev) == nil
 				if bare == tc.wantPrefix {
 					t.Fatalf("publishEpoch=%v: got payload %q, want prefixed=%v", tc.publishEpoch, msg.Payload, tc.wantPrefix)
+				}
+				// And the event survives either form — otherwise a publisher
+				// that emitted a well-formed empty payload would pass.
+				if !strings.Contains(msg.Payload, `"item_id":"item-7"`) {
+					t.Fatalf("publishEpoch=%v: the event body must survive, got %q", tc.publishEpoch, msg.Payload)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("timed out waiting for the published event")

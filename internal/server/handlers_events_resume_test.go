@@ -78,6 +78,13 @@ func waitForFrameWithEvent(t *testing.T, frames <-chan string, eventType string)
 	}
 }
 
+// aboveAnyIncarnation is a Last-Event-ID chosen to sit ABOVE the in-process
+// bus's incarnation base, so a resume carrying it reaches the handler's
+// no-buffer path rather than being refused earlier by BUG-2736's incarnation
+// guard. Near math.MaxInt64 so it stays above the base for the next couple of
+// centuries; still parses as an int64, which the handler requires.
+const aboveAnyIncarnation = "9223372036854775806"
+
 // BUG-2731, codex round 3. A sync_required tells the client its cursor is
 // unservable — and must RETIRE that cursor, or the client keeps sending it and
 // every later reconnect on a quiet workspace is answered with sync_required
@@ -94,9 +101,15 @@ func TestSyncRequiredClearsTheClientCursor(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// A cursor this instance cannot vouch for: nothing has been published
-	// here, so it belongs to a previous incarnation.
-	frames := readRawSSEFrames(t, ctx, url, "4200")
+	// A cursor this instance cannot vouch for: nothing has been published for
+	// this workspace, so there is no buffer to answer from.
+	//
+	// THE VALUE IS DELIBERATELY HUGE. Since BUG-2736 the in-process bus counts
+	// from an incarnation base derived from process start time, so a small
+	// literal like 4200 is refused one level earlier — by the incarnation
+	// guard — and this test would no longer reach the no-buffer branch it is
+	// written for. A cursor above any plausible base does.
+	frames := readRawSSEFrames(t, ctx, url, aboveAnyIncarnation)
 	frame := waitForFrameWithEvent(t, frames, "sync_required")
 
 	if !strings.Contains(frame, "id: \n") && !strings.HasPrefix(frame, "id:") {
@@ -187,7 +200,7 @@ func TestSyncRequiredReasonDescribesTheActualCondition(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, "4200")
+	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, aboveAnyIncarnation)
 	frame := waitForFrameWithEvent(t, frames, "sync_required")
 
 	if strings.Contains(frame, "buffer exceeded") {
@@ -288,7 +301,7 @@ func TestWatchStreamSharesTheActivityCursorContracts(t *testing.T) {
 	t.Run("a cold resume is a gap and retires the cursor", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		frames := readRawSSEFramesAuthed(t, ctx, url, "4200", token)
+		frames := readRawSSEFramesAuthed(t, ctx, url, aboveAnyIncarnation, token)
 		frame := waitForFrameWithEvent(t, frames, "sync_required")
 		assertCursorRetired(t, frame)
 	})

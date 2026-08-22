@@ -103,3 +103,39 @@ func TestStreamAndRedisDefaults(t *testing.T) {
 		t.Errorf("default SSEMaxPerUser = %d, want 50", cfg.SSEMaxPerUser)
 	}
 }
+
+// codex round 4. The env-var mapping test above proves PAD_EVENTS_PUBLISH_EPOCH
+// reaches the field; it says nothing about the TOML tag. A wrong or missing
+// `toml:"events_publish_epoch"` would keep every other test green while an
+// operator who set the flag in ~/.pad/config.toml — which is the form the
+// rollback procedure warns about, because a file value outlives an unset env
+// var — silently stayed on phase 1.
+func TestEventsPublishEpochRoundTripsThroughTheConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "")
+
+	cfg := DefaultConfig()
+	cfg.EventsPublishEpoch = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.EventsPublishEpoch {
+		t.Error("events_publish_epoch did not survive a save/load round trip through config.toml")
+	}
+
+	// The other half of the rollback warning: an ABSENT env var must leave the
+	// file's value standing, not silently reset it. If this ever changes,
+	// docs/deployment.md's rollback procedure changes with it.
+	if os.Getenv("PAD_EVENTS_PUBLISH_EPOCH") != "" {
+		t.Fatal("fixture: the env var must be unset for this half to mean anything")
+	}
+	if !reloaded.EventsPublishEpoch {
+		t.Error("an unset env var must leave the config file's value alone")
+	}
+}

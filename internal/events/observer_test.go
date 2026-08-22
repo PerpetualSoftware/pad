@@ -69,6 +69,11 @@ func TestResumeGapIsReportedForBothWaysOfNotServing(t *testing.T) {
 	// incarnation with room for a missed ws-warm event above it.
 	other := publishN(bus, "ws-other", 49)
 	bus.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-warm"})
+	// PREMISE: ws-warm really does have a buffer, or the call below takes the
+	// no-buffer path and this half silently duplicates half one.
+	if warm := bus.EventsSince("ws-warm", 0); len(warm) != 1 {
+		t.Fatalf("fixture: ws-warm must hold exactly one buffered event, got %d", len(warm))
+	}
 	if got := bus.EventsSince("ws-warm", other[29]); got != nil {
 		t.Fatalf("expected a gap, got %d events", len(got))
 	}

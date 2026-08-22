@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,7 +140,7 @@ func TestPhaseTwoPublishesThePrefixedFormAndPhaseOneDoesNot(t *testing.T) {
 		b, _ := newFlippedRedisBus(t)
 		next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
 
-		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7", Title: "carried"})
 
 		epoch, ev, err := decodePayload(next())
 		if err != nil {
@@ -150,6 +151,12 @@ func TestPhaseTwoPublishesThePrefixedFormAndPhaseOneDoesNot(t *testing.T) {
 		}
 		if ev.ID != 1 {
 			t.Fatalf("first id from a fresh counter must be 1, got %d", ev.ID)
+		}
+		// THE BODY MUST SURVIVE THE PREFIX. Without this, `1|1|{}` satisfies
+		// every assertion above while the event's fields are lost — a wire
+		// format that is well-formed and empty.
+		if ev.Type != ItemUpdated || ev.WorkspaceID != "ws-1" || ev.ItemID != "item-7" || ev.Title != "carried" {
+			t.Fatalf("the event body must survive the prefix, got %+v", ev)
 		}
 	})
 
@@ -548,4 +555,102 @@ func mustParseGeneration(t *testing.T, s string) int64 {
 		t.Fatalf("epoch %q is not an integer generation: %v", s, err)
 	}
 	return n
+}
+
+func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testing.T) {
+	// codex round 4. Every other test in this file drives fanOutFromRedis
+	// directly, and the publish tests read the wire with a raw subscriber —
+	// so a regression that decoded the epoch correctly and then handed 0 to
+	// the fan-out would pass all of them, and reconciliation would silently
+	// never run in production.
+	b, _ := newFlippedRedisBus(t)
+
+	ch := b.Subscribe("ws-1")
+	defer b.Unsubscribe(ch)
+
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})
+
+	var received Event
+	select {
+	case received = <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the published event never came back through Redis")
+	}
+
+	// The id came from the PREFIX, not the body — the body was marshalled
+	// before the id existed, so a receive path that ignored the prefix would
+	// deliver 0 here.
+	if received.ID != 1 {
+		t.Fatalf("the id must come from the prefix; got %d", received.ID)
+	}
+	if received.ItemID != "item-7" {
+		t.Fatalf("the body must survive the round trip, got %+v", received)
+	}
+
+	b.mu.Lock()
+	adopted := b.epoch
+	b.mu.Unlock()
+	if adopted <= 0 {
+		t.Fatalf("the epoch must reach the bus through the receive path; it holds %d", adopted)
+	}
+
+	// And the event is buffered under that id, so a resume can be answered.
+	if got := b.EventsSince("ws-1", received.ID); got == nil {
+		t.Fatal("the received event must establish coverage")
+	}
+}
+
+func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
+	// codex round 4. The atomic script's whole justification is that publish
+	// order equals ID order globally — which matters because the receive path
+	// reads a descending ID as a counter reset and drops every buffer. Every
+	// other phase-2 test publishes once or drives the script sequentially, so
+	// a two-call INCR-then-PUBLISH implementation passes all of them.
+	//
+	// The instrument: many concurrent publishes, read off the channel in
+	// arrival order. Under the script, arrival order IS ID order. Under two
+	// calls, two publishers interleave between their INCR and their PUBLISH
+	// and a lower ID arrives after a higher one.
+	b, _ := newFlippedRedisBus(t)
+	channel := redisns.Default.Name(redisChannelSuffix) + "ws-1"
+
+	ps := b.client.Subscribe(context.Background(), channel)
+	defer func() { _ = ps.Close() }()
+	if _, err := ps.Receive(context.Background()); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	incoming := ps.Channel()
+
+	const n = 300
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+		}()
+	}
+	wg.Wait()
+
+	var prev int64
+	for i := 0; i < n; i++ {
+		select {
+		case msg := <-incoming:
+			_, ev, err := decodePayload(msg.Payload)
+			if err != nil {
+				t.Fatalf("message %d: %v", i, err)
+			}
+			if ev.ID <= prev {
+				t.Fatalf("message %d arrived out of ID order: %d after %d — publish order must equal ID order", i, ev.ID, prev)
+			}
+			prev = ev.ID
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d messages arrived", i, n)
+		}
+	}
+	// PREMISE: all n really were published, so the ordering assertion ran over
+	// the whole set rather than over a handful that happened to be ordered.
+	if prev != n {
+		t.Fatalf("the last id should be %d after %d publishes, got %d", n, n, prev)
+	}
 }
