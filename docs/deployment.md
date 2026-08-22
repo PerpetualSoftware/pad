@@ -106,14 +106,25 @@ against.
 > before this change; if you run many agent sessions per user, check
 > `PAD_SSE_MAX_PER_USER` against your fleet size.
 
-A refused connection is `429` with code `sse_limit_exceeded`. The CLI monitor
-treats it like any other non-200 and backs off (5s, growing linearly, capped at
-5 minutes), so refusal does not produce a reconnect storm.
+A refused connection is `429` with code `sse_limit_exceeded` and a `Retry-After`
+header. The CLI monitor (`pad watch --stream`) treats it like any other non-200
+and backs off (5s, growing linearly, capped at 5 minutes), so refusal does not
+produce a reconnect storm. `pad project watch` is interactive and exits with an
+actionable message instead.
 
-The per-user limit applies to every caller, including ones with no user
-account: a legacy workspace-scoped token or the fresh-install no-auth window is
-bounded per *workspace* instead, at the same number. Two legacy tokens for the
-same workspace therefore share a bucket.
+> **Browsers do not back off.** The web UI's activity stream uses `EventSource`,
+> which retries on its own fixed schedule and cannot see the status code or the
+> `Retry-After` header — so a refused browser tab reconnects roughly every few
+> seconds until capacity frees up. Size `PAD_SSE_MAX_CONNECTIONS` with that in
+> mind: reaching it does not shed load from browser clients the way it does from
+> the CLI. Tracked as BUG-2733.
+
+The per-user limit applies to every caller. On `/api/v1/events`, callers with no
+resolved user — a legacy workspace-scoped token, or the fresh-install window
+before the first admin exists — are bounded per *workspace* instead, at the same
+number, so two legacy tokens for one workspace share a bucket.
+`/api/v1/events/stream` has no equivalent case: it requires a resolved user and
+answers `401` without one.
 
 **All three limits are PER INSTANCE, not deployment-wide.** They are enforced
 in-process; there is no shared counter. A three-replica deployment with

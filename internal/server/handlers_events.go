@@ -151,16 +151,17 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
-
-	// GLOBAL and PER-USER bounds first, through the process-wide gate that
-	// also covers /api/v1/events/stream (BUG-2726). Both endpoints hold the
-	// same kind of connection, so one budget covers them; see
-	// streamAdmission for why this cannot live on either bus.
+	// ADMISSION BEFORE THE SSE HEADERS, so a refusal is an ordinary JSON
+	// error response (codex round 12). Setting Content-Type:
+	// text/event-stream first meant a 429 carried the JSON error envelope
+	// under an SSE content type, which is a different contract from the
+	// sibling endpoint's for the same refusal.
+	//
+	// The bounds here are the PER-INSTANCE and PER-PRINCIPAL ones, from
+	// the process-wide gate that also covers /api/v1/events/stream
+	// (BUG-2726). Both endpoints hold the same kind of connection, so one
+	// budget covers them; see streamAdmission for why this cannot live on
+	// either bus.
 	principal := streamPrincipal(r, ws.ID)
 	release, refusal := s.admission().acquire(principal)
 	if refusal != admissionRefusalNone {
@@ -168,10 +169,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", string(refusal),
 			"instance_current", total, "instance_max", s.sseMaxConnections,
 			"principal_current", perUser, "principal_max", s.sseMaxPerUser)
-		writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "SSE connection limit reached")
+		writeStreamLimitExceeded(w)
 		return
 	}
 	defer release()
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
 	// Then the per-WORKSPACE bound, still atomic with the subscribe so two
 	// concurrent requests cannot both pass a check for the last slot. The
@@ -187,7 +194,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", "per_workspace",
 			"ws_current", s.events.WorkspaceSubscriberCount(ws.ID), "ws_max", s.sseMaxPerWorkspace)
-		writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "SSE connection limit reached")
+		writeStreamLimitExceeded(w)
 		return
 	}
 	defer s.events.Unsubscribe(ch)

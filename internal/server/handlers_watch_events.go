@@ -121,7 +121,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		slog.Warn("watch stream connection limit reached", "user_id", user.ID, "refused_by", string(refusal),
 			"instance_current", total, "instance_max", s.sseMaxConnections,
 			"principal_current", perUser, "principal_max", s.sseMaxPerUser)
-		writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "SSE connection limit reached")
+		writeStreamLimitExceeded(w)
 		return
 	}
 	defer release()

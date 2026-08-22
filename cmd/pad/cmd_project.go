@@ -1071,6 +1071,27 @@ func watchCmd() *cobra.Command {
 			}
 			defer resp.Body.Close()
 
+			if resp.StatusCode == http.StatusTooManyRequests {
+				// The server is at its streaming-connection limit
+				// (BUG-2726). Distinguished from other non-200s because
+				// the remedy is different and the generic message —
+				// "event stream returned 429: {json}" — sends the reader
+				// looking for a bug rather than at a limit.
+				//
+				// This command exits rather than backing off, unlike the
+				// unattended `pad watch --stream` monitor: it is
+				// interactive and a human can decide. Retry-After says
+				// how long the server suggests waiting.
+				wait := resp.Header.Get("Retry-After")
+				if wait == "" {
+					wait = "a few seconds"
+				} else {
+					wait += "s"
+				}
+				return fmt.Errorf("the server is at its streaming-connection limit; retry in %s, "+
+					"or raise PAD_SSE_MAX_CONNECTIONS / PAD_SSE_MAX_PER_USER (both cover this stream "+
+					"and the agent watch stream together)", wait)
+			}
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
 				return fmt.Errorf("event stream returned %d: %s", resp.StatusCode, string(body))

@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 )
 
@@ -152,6 +153,29 @@ func (a *streamAdmission) heldTotal() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.total
+}
+
+// streamLimitRetryAfterSeconds is the Retry-After a refused streaming
+// connection is told to wait.
+//
+// A hint, not a promise: nothing reserves the slot, and a client that
+// waits exactly this long may be refused again. It is here because a bare
+// 429 tells a client only that it lost, and every client then picks its
+// own guess — the CLI monitor's ladder starts at 5s, so this matches it
+// rather than inventing a third number.
+//
+// Browsers' EventSource ignores Retry-After entirely and retries on its
+// own schedule; that gap is BUG-2733, not something a header can close.
+const streamLimitRetryAfterSeconds = 5
+
+// writeStreamLimitExceeded answers a refused streaming connection.
+//
+// One helper for both endpoints, so the refusal contract cannot drift
+// between them — status, error code, message and Retry-After are the
+// same thing said once.
+func writeStreamLimitExceeded(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(streamLimitRetryAfterSeconds))
+	writeError(w, http.StatusTooManyRequests, "sse_limit_exceeded", "Streaming connection limit reached")
 }
 
 // counts returns the current global total and this user's count, for log

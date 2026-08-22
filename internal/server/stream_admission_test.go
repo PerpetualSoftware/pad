@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -668,5 +671,72 @@ func TestStreamGaugeFollowsAReplacedMetricsInstance(t *testing.T) {
 
 	if got := gaugeValue(t, second); got != 1 {
 		t.Fatalf("the replacement registry's gauge = %v, want 1 — the collector never registered on it", got)
+	}
+}
+
+// TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints pins what a
+// refused client actually receives (codex round 12). Both endpoints must
+// answer the same way, or a client that handles one correctly mishandles
+// the other — and one of them used to send the JSON error envelope under
+// Content-Type: text/event-stream, because the SSE headers were set
+// before the admission check.
+func TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints(t *testing.T) {
+	t.Parallel()
+
+	srv := testServerWithWatchEvents(t)
+	srv.SetEventBus(events.New())
+	srv.SetSSELimits(1, 0, 0)
+	slug, _, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Spend the single slot.
+	closeSSE := holdAuthedSSE(ctx, t, ts.URL, slug, tok.Token)
+	defer closeSSE()
+
+	for _, tc := range []struct {
+		name string
+		url  string
+	}{
+		{"workspace stream", ts.URL + "/api/v1/events?workspace=" + slug},
+		{"watch stream", ts.URL + "/api/v1/events/stream"},
+	} {
+		req, err := http.NewRequest("GET", tc.url, nil)
+		if err != nil {
+			t.Fatalf("%s: build request: %v", tc.name, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok.Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: request failed: %v", tc.name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("%s: status = %d, want 429", tc.name, resp.StatusCode)
+			continue
+		}
+		if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("%s: Content-Type = %q, want application/json — the body is a JSON error envelope", tc.name, got)
+		}
+		if got := resp.Header.Get("Retry-After"); got == "" {
+			t.Errorf("%s: no Retry-After on the refusal", tc.name)
+		}
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			t.Errorf("%s: body is not the JSON error envelope: %v (%s)", tc.name, err, body)
+			continue
+		}
+		if envelope.Error.Code != "sse_limit_exceeded" {
+			t.Errorf("%s: error code = %q, want sse_limit_exceeded", tc.name, envelope.Error.Code)
+		}
 	}
 }
