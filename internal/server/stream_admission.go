@@ -43,7 +43,11 @@ type streamAdmission struct {
 	maxTotal int
 	maxUser  int
 
-	// onTotal, when non-nil, is called with the new total after every
+	// notifyMu serializes gauge notifications so a read-then-set pair
+	// cannot be interleaved by another. See publishTotal.
+	notifyMu sync.Mutex
+
+	// onTotal, when non-nil, is called with the current total after every
 	// admit and release. It drives pad_stream_connections_active without
 	// this type importing the metrics package — and it is a CALLBACK
 	// rather than a scrape-time collector because the gate's lock is on
@@ -87,22 +91,40 @@ func (a *streamAdmission) setTotalObserver(fn func(total int)) {
 	a.mu.Unlock()
 }
 
-// snapshotTotal reads the current total and the callback under the lock,
-// returning a closure that fires it OUTSIDE the lock. Callers defer the
-// result.
+// publishTotal returns a closure that reports the current total to the
+// observer. Callers defer it so it runs OUTSIDE a.mu.
 //
-// The value is captured under the lock so it is the total that was true
-// at the moment of the change rather than whatever a later racing update
-// leaves behind; the CALL happens after the unlock so a callback that
-// touches the gate cannot deadlock it (codex round 9). The Prometheus
-// callback does not, but a contract that depends on every future
-// callback author reading a comment is a deadlock with a delay on it.
-func (a *streamAdmission) snapshotTotal() func() {
-	fn, total := a.onTotal, a.total
-	if fn == nil {
-		return func() {}
+// Two properties, and the second is why this does not simply capture the
+// value:
+//
+//   - It runs with a.mu RELEASED, so a callback that touches the gate
+//     cannot deadlock it (codex round 9). The Prometheus callback does
+//     not touch it, but a contract that depends on every future callback
+//     author reading a comment is a deadlock with a delay on it.
+//   - It runs under notifyMu, and reads the total INSIDE that lock
+//     rather than capturing it at snapshot time (codex round 10).
+//     Capturing was reorderable: one admission could capture 1, a
+//     concurrent one capture 2, and the stale 1 land last — leaving
+//     pad_stream_connections_active permanently below the real total,
+//     which reads to an operator as spare capacity. Serializing
+//     read-then-set means whichever callback runs last also read last,
+//     so the gauge converges on the truth.
+//
+// Lock order is notifyMu then mu, and never the reverse: nothing holding
+// mu takes notifyMu.
+func (a *streamAdmission) publishTotal() func() {
+	return func() {
+		a.notifyMu.Lock()
+		defer a.notifyMu.Unlock()
+
+		a.mu.Lock()
+		fn, total := a.onTotal, a.total
+		a.mu.Unlock()
+
+		if fn != nil {
+			fn(total)
+		}
 	}
-	return func() { fn(total) }
 }
 
 // admissionRefusal names which bound refused a connection, for the log
@@ -160,7 +182,7 @@ func (a *streamAdmission) acquire(principal string) (release func(), refusal adm
 	if principal != "" {
 		a.perUser[principal]++
 	}
-	notify = a.snapshotTotal()
+	notify = a.publishTotal()
 
 	var once sync.Once
 	return func() {
@@ -181,7 +203,7 @@ func (a *streamAdmission) acquire(principal string) (release func(), refusal adm
 					delete(a.perUser, principal)
 				}
 			}
-			releaseNotify = a.snapshotTotal()
+			releaseNotify = a.publishTotal()
 		})
 	}, admissionRefusalNone
 }

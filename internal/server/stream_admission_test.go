@@ -2,10 +2,15 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
@@ -509,5 +514,108 @@ func TestSetSSELimitsDoesNotStrandHeldSlots(t *testing.T) {
 	srv.SetSSELimits(500, 100, 25)
 	if a := srv.admission(); a.maxUser != 25 || a.maxTotal != 500 {
 		t.Fatalf("gate holds maxTotal=%d maxUser=%d, want 500/25 — the update did not land", a.maxTotal, a.maxUser)
+	}
+}
+
+// TestStreamGaugeConvergesUnderConcurrency covers what the sequential
+// gauge test could not (codex round 10): with the total captured at
+// snapshot time rather than read at notify time, two concurrent updates
+// could land out of order and leave the gauge permanently below the real
+// count — which reads to an operator as spare capacity that is not there.
+//
+// Asserts the END STATE against the gate's own total rather than a
+// literal, so the test cannot pass by agreeing with a wrong constant.
+func TestStreamGaugeConvergesUnderConcurrency(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workers = 16
+		cycles  = 40
+		held    = 8
+	)
+
+	m := metrics.New()
+	a := newStreamAdmission(0, 0)
+	a.setTotalObserver(func(total int) {
+		// The sleep WIDENS the reorder window on purpose. Without it the
+		// race is real but so narrow that the broken version passes: a
+		// capture-at-snapshot build survived 5 runs of this test before
+		// the sleep was added, which would have made this an instrument
+		// that could not fail. With the fix, notifyMu serializes these
+		// and each reads the live total, so the sleep only costs time.
+		time.Sleep(50 * time.Microsecond)
+		m.StreamConnectionsActive.Set(float64(total))
+	})
+
+	// A steady population that stays held for the whole run, so the final
+	// total is non-zero and a gauge stuck at 0 cannot pass.
+	for i := 0; i < held; i++ {
+		if _, refusal := a.acquire("holder"); refusal != admissionRefusalNone {
+			t.Fatalf("premise failed: holder %d refused by %q", i, refusal)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for c := 0; c < cycles; c++ {
+				release, refusal := a.acquire(fmt.Sprintf("user-%d", w))
+				if refusal != admissionRefusalNone {
+					t.Errorf("worker %d cycle %d refused by %q with no limits", w, c, refusal)
+					return
+				}
+				release()
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	a.mu.Lock()
+	wantTotal := a.total
+	a.mu.Unlock()
+
+	if wantTotal != held {
+		t.Fatalf("gate total = %d after every transient slot was released, want %d", wantTotal, held)
+	}
+	if got := gaugeValue(t, m); got != float64(wantTotal) {
+		t.Fatalf("gauge = %v, gate total = %d — the gauge did not converge on the truth", got, wantTotal)
+	}
+}
+
+// TestRedisHealthConcurrentStartStop drives the lifecycle from many
+// goroutines. The round-9 fix guarded the FIELDS; round 10 pointed out
+// that Stop released the lock before cancelling and waiting, so a Start
+// could interleave and install a loop that Stop would wait for but never
+// cancel. The failure is a hang, so this bounds itself.
+func TestRedisHealthConcurrentStartStop(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 200 * time.Millisecond})
+	t.Cleanup(func() { _ = client.Close() })
+
+	h := NewRedisHealth(client, nil)
+	h.interval = time.Millisecond
+	h.timeout = 200 * time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(2)
+			go func() { defer wg.Done(); h.Start() }()
+			go func() { defer wg.Done(); h.Stop() }()
+		}
+		wg.Wait()
+		h.Stop() // and settle
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("concurrent Start/Stop hung — a Start interleaved with a Stop's cancel-and-wait")
 	}
 }

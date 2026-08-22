@@ -78,15 +78,24 @@ type RedisHealth struct {
 	lastErr   string
 	lastCheck time.Time
 
-	// started and cancel are guarded by mu, like everything else on this
-	// type (codex round 9). They were plain fields written by Start and
-	// read by Stop, which is a data race between two goroutines even
-	// though the production sequence — Start at boot, Stop at shutdown —
-	// happens to order them. A lifecycle that is only safe because of the
-	// order its single caller happens to use is not safe, it is lucky.
-	started bool
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	// lifecycleMu serializes Start and Stop ENTIRELY — including Stop's
+	// cancel and wait (codex round 10).
+	//
+	// Guarding only the field access, as the first version of this fix
+	// did, is not enough: Stop cleared started, unlocked, and only THEN
+	// cancelled and waited, so a Start racing into that window installed
+	// a fresh loop the in-flight Stop neither cancelled nor accounted
+	// for — and both share one WaitGroup, so the Stop could wait on a
+	// goroutine it had no way to end. The two operations are the unit
+	// that has to be atomic, not the fields they touch.
+	//
+	// Deliberately NOT mu: probe() takes mu on the goroutine Stop waits
+	// for, so holding mu across wg.Wait would deadlock. Lock order where
+	// both are taken is lifecycleMu then mu, never the reverse.
+	lifecycleMu sync.Mutex
+	started     bool
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // RedisHealthStatus is the cached probe result, as reported by
@@ -139,18 +148,18 @@ func (h *RedisHealth) Start() {
 		return
 	}
 
-	// IDEMPOTENT. A second Start used to leak the first loop and leave
-	// Stop cancelling only the second, so the first probed forever and
-	// wg.Wait never returned.
-	h.mu.Lock()
+	// IDEMPOTENT, and serialized against Stop for the whole operation. A
+	// second Start used to leak the first loop and leave Stop cancelling
+	// only the second, so the first probed forever and wg.Wait never
+	// returned.
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
 	if h.started {
-		h.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	h.started = true
 	h.cancel = cancel
-	h.mu.Unlock()
 
 	h.probe(ctx)
 
@@ -181,15 +190,19 @@ func (h *RedisHealth) Stop() {
 	if h == nil {
 		return
 	}
-	h.mu.Lock()
+	h.lifecycleMu.Lock()
+	defer h.lifecycleMu.Unlock()
+
+	if h.cancel == nil {
+		h.started = false
+		return
+	}
 	cancel := h.cancel
 	h.cancel = nil
 	h.started = false
-	h.mu.Unlock()
 
-	if cancel == nil {
-		return
-	}
+	// Cancel and wait INSIDE the lock, so no Start can interleave and
+	// install a loop this Stop will wait for but never cancel.
 	cancel()
 	h.wg.Wait()
 }
