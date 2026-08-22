@@ -172,6 +172,11 @@ const (
 // is bounded: DefaultReplayBufferSize entries, after which a resume answers
 // "gap too large" and the consumer resyncs.
 type RedisBus struct {
+	// observable carries the optional operational-event seam (BUG-2727).
+	// Embedded first so SetObserver is part of the type's own surface
+	// rather than something a caller reaches through a field.
+	observable
+
 	client *redis.Client
 
 	// mu guards subscribers AND replay together — see the type comment (3)
@@ -695,6 +700,22 @@ func (b *RedisBus) receiveMessages() {
 			return
 		case msg, ok := <-ch:
 			if !ok {
+				// The subscription's message channel closed. go-redis
+				// (v9.22.0) closes it ONLY on pool.ErrClosed — the client
+				// or the PubSub was closed — and retries every other
+				// receive error indefinitely while a health-check
+				// goroutine reconnects on ping failure. So the ordinary
+				// cause is our own shutdown, which cancels b.ctx and is
+				// caught by the case above; arriving HERE instead means
+				// the client went away underneath a bus that is still
+				// running, and from this point the instance publishes
+				// fine and receives nothing at all — including its own
+				// publishes, which come back through Redis like everyone
+				// else's. Silence was the original behaviour and made
+				// that state indistinguishable from a quiet workspace.
+				slog.Error("watchevents: Redis subscription closed; this instance will receive no further notifications " +
+					"(publishes still succeed, so nothing else will report this)")
+				b.reportReceiveLoopExited()
 				return
 			}
 			epoch, n, err := decodePayload(msg.Payload)
@@ -768,6 +789,7 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 		b.lastAppendedID = 0
 		b.knownFrom = 0
 		b.epochJustChanged = true
+		b.reportReset(ResetReasonEpochChange)
 	}
 	b.mu.Unlock()
 
@@ -837,11 +859,14 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			"previous", b.lastAppendedID, "got", n.ID)
 		b.replay = newReplayBuffer(b.replaySize)
 		b.knownFrom = n.ID
+		b.reportReset(ResetReasonCounterBackward)
 
 	case n.ID != b.lastAppendedID+1:
 		slog.Warn("watchevents: gap in the received notification sequence; resumes across it will report sync_required",
-			"expected", b.lastAppendedID+1, "got", n.ID)
+			"expected", b.lastAppendedID+1, "got", n.ID,
+			"missed", n.ID-b.lastAppendedID-1)
 		b.knownFrom = n.ID
+		b.reportGap(n.ID - b.lastAppendedID - 1)
 	}
 	b.lastAppendedID = n.ID
 
@@ -853,6 +878,7 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		default:
 			slog.Warn("watchevents: dropping notification for slow subscriber",
 				"kind", n.Kind, "item_ref", n.ItemRef)
+			b.reportDropped(DropReasonSlowSubscriber)
 		}
 	}
 }

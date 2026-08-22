@@ -27,6 +27,51 @@ type Metrics struct {
 	EventBusPublishTotal *prometheus.Counter
 	EventBusSubscribers  *prometheus.Gauge
 
+	// Redis operability metrics (BUG-2727). Wired from
+	// cmd/pad/cmd_server.go and only meaningful on a deployment with
+	// PAD_REDIS_URL set — a single-process binary never touches Redis, so
+	// these stay at their zero values there, which is the honest reading
+	// rather than an absence.
+	//
+	// RedisUp is written by internal/server's health prober, NOT sampled
+	// on scrape: a collector that dials on every scrape turns a monitoring
+	// system into a load generator and makes the metric's value depend on
+	// who is asking. It is 1 when the last probe succeeded, 0 when it
+	// failed, and absent entirely when the deployment has no Redis.
+	RedisUp prometheus.Gauge
+
+	// WatchNotificationsDroppedTotal counts notifications this instance
+	// RECEIVED and could not hand to one of its own subscribers. It does
+	// not count go-redis discarding messages before we see them — that
+	// shows up as a sequence gap instead; see watchevents.Observer for why
+	// the distinction matters when reading these two together.
+	WatchNotificationsDroppedTotal *prometheus.CounterVec
+
+	// WatchSequenceGapsTotal counts gap EVENTS;
+	// WatchNotificationsMissedTotal counts the notifications those gaps
+	// span. Both, because one gap of 500 and 500 gaps of one are very
+	// different incidents and a single counter cannot tell them apart.
+	WatchSequenceGapsTotal        prometheus.Counter
+	WatchNotificationsMissedTotal prometheus.Counter
+
+	// WatchSequenceResetsTotal counts id-space changes (epoch change or
+	// the shared counter going backwards) — each one drops this
+	// instance's replay buffer, so resumes across it answer
+	// sync_required.
+	WatchSequenceResetsTotal *prometheus.CounterVec
+
+	// WatchReceiveLoopExitsTotal counts the receive loop stopping. Any
+	// non-zero value outside a shutdown means an instance that publishes
+	// fine and receives nothing.
+	WatchReceiveLoopExitsTotal prometheus.Counter
+
+	// SessionPresenceFailuresTotal counts failed presence operations by
+	// op. A sustained non-zero rate means sessions are missing from
+	// GET /api/v1/sessions and untargetable by a session-directed push,
+	// which is invisible to the user beyond a push that quietly reaches
+	// nobody.
+	SessionPresenceFailuresTotal *prometheus.CounterVec
+
 	// MCP traffic metrics (PLAN-943 TASK-961). Wired from
 	// internal/server/middleware_mcp_audit.go (per-request seam) and
 	// internal/server/middleware_mcp_auth.go + middleware_auth.go
@@ -190,7 +235,49 @@ func New() *Metrics {
 		Buckets: []float64{10, 60, 300, 900, 3600, 21600, 86400, 7 * 86400, 30 * 86400, 60 * 86400},
 	})
 
+	redisUp := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pad_redis_up",
+		Help: "1 if the last Redis health probe succeeded, 0 if it failed. Not exported when the deployment has no Redis.",
+	})
+
+	watchNotificationsDroppedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_watchevents_notifications_dropped_total",
+		Help: "Notifications received by this instance but not delivered to a local subscriber, by reason.",
+	}, []string{"reason"})
+
+	watchSequenceGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_sequence_gaps_total",
+		Help: "Times this instance detected a forward jump in the notification id sequence, i.e. it missed at least one notification.",
+	})
+
+	watchNotificationsMissedTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_notifications_missed_total",
+		Help: "Notifications spanned by detected sequence gaps — how many were missed, where pad_watchevents_sequence_gaps_total counts how often.",
+	})
+
+	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_watchevents_sequence_resets_total",
+		Help: "Times the notification id space changed under this instance, dropping its replay buffer, by reason.",
+	}, []string{"reason"})
+
+	watchReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_receive_loop_exits_total",
+		Help: "Times the Redis subscription receive loop stopped. Non-zero outside shutdown means this instance receives no notifications at all.",
+	})
+
+	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_session_presence_failures_total",
+		Help: "Failed session-presence operations by op. Failures leave sessions unlisted and untargetable.",
+	}, []string{"op"})
+
 	reg.MustRegister(
+		redisUp,
+		watchNotificationsDroppedTotal,
+		watchSequenceGapsTotal,
+		watchNotificationsMissedTotal,
+		watchSequenceResetsTotal,
+		watchReceiveLoopExitsTotal,
+		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
 		httpResponseSize,
@@ -208,7 +295,16 @@ func New() *Metrics {
 	)
 
 	return &Metrics{
-		Registry:                   reg,
+		Registry: reg,
+
+		RedisUp:                        redisUp,
+		WatchNotificationsDroppedTotal: watchNotificationsDroppedTotal,
+		WatchSequenceGapsTotal:         watchSequenceGapsTotal,
+		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,
+		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
+		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,
+		SessionPresenceFailuresTotal:   sessionPresenceFailuresTotal,
+
 		HTTPRequestsTotal:          httpRequestsTotal,
 		HTTPRequestDuration:        httpRequestDuration,
 		HTTPResponseSize:           httpResponseSize,

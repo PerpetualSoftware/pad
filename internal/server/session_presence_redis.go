@@ -129,6 +129,10 @@ import (
 // busy. Consumers must keep treating this list as "connected as far as the
 // server can tell", never as a delivery guarantee.
 type RedisSessionPresence struct {
+	// presenceObservable carries the optional operational-event seam
+	// (BUG-2727). Embedded so SetObserver is part of the type's surface.
+	presenceObservable
+
 	client *redis.Client
 
 	// sessionKeyTTL and renewInterval are fields rather than constants so
@@ -447,6 +451,7 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string 
 		// registration that failed on a blip.
 		slog.Warn("session presence: failed to register session; it will be missing from the picker until the next renewal",
 			"error", err, "user_id", userID)
+		p.reportOpFailed(PresenceOpRegister)
 	}
 
 	go p.renewLoop(ctx, rn, userID, id, string(payload))
@@ -512,6 +517,14 @@ func (p *RedisSessionPresence) renewLoop(ctx context.Context, rn *renewal, userI
 			}
 			if err := p.write(ctx, userID, sessionID, payload); err != nil && ctx.Err() == nil {
 				p.warnRenewFailure(err, userID, sessionID)
+				// Counted on EVERY failure, while the log line above is
+				// rate-limited (that throttle exists because a Redis
+				// outage otherwise logs once per session per renewal —
+				// roughly 33 lines a second per replica at a thousand
+				// sessions). A counter has no such problem and wants the
+				// true rate: throttling it too would make the metric
+				// under-report exactly during the incident it exists for.
+				p.reportOpFailed(PresenceOpRenew)
 			}
 		}
 	}
@@ -588,6 +601,7 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 	if _, err := pipe.Exec(ctx); err != nil {
 		slog.Warn("session presence: failed to deregister session; it will expire on its TTL",
 			"error", err, "user_id", userID)
+		p.reportOpFailed(PresenceOpDeregister)
 	}
 }
 
@@ -617,6 +631,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		// anything. Collapsing the two here is the same defect this type
 		// was written to remove, one layer down.
 		slog.Warn("session presence: failed to read session index", "error", err, "user_id", userID)
+		p.reportOpFailed(PresenceOpList)
 		return nil, fmt.Errorf("session presence: read index: %w", err)
 	}
 	if len(ids) == 0 {
@@ -638,6 +653,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 	values, err := p.client.MGet(ctx, keys...).Result()
 	if err != nil {
 		slog.Warn("session presence: failed to read session entries", "error", err, "user_id", userID)
+		p.reportOpFailed(PresenceOpList)
 		return nil, fmt.Errorf("session presence: read entries: %w", err)
 	}
 
@@ -701,6 +717,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		).Err(); err != nil && !errors.Is(err, redis.Nil) {
 			slog.Debug("session presence: failed to prune expired index members",
 				"error", err, "user_id", userID)
+			p.reportOpFailed(PresenceOpPrune)
 		}
 	}
 

@@ -648,6 +648,16 @@ func serveCmd() *cobra.Command {
 				if err := rc.Ping(context.Background()).Err(); err != nil {
 					return fmt.Errorf("redis connection failed: %w", err)
 				}
+				// Route go-redis's own diagnostics into slog (BUG-2727).
+				// Its default logger writes to the standard log package,
+				// so its messages bypass the structured pipeline entirely
+				// — including the one that matters most here: "channel is
+				// full ... message is dropped", emitted when a
+				// subscription's 100-deep buffer stays full past the 60s
+				// send timeout. That is a silent notification loss whose
+				// only trace was a line nobody's log aggregator was
+				// shaped to catch.
+				redis.SetLogger(redisSlogLogger{})
 				eventBus = events.NewRedisBus(rc)
 				watchRedis = rc
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB)
@@ -671,10 +681,20 @@ func serveCmd() *cobra.Command {
 			// doc for what each implementation does and does not fix.
 			var watchBus watchevents.Bus
 			if watchRedis != nil {
-				watchBus = watchevents.NewRedisBus(watchRedis)
+				redisWatchBus := watchevents.NewRedisBus(watchRedis)
+				// Operational instrumentation (BUG-2727). Attached to the
+				// concrete type because the conditions it reports —
+				// dropped notifications, sequence gaps, id-space resets,
+				// the receive loop stopping — are detected inside the bus
+				// and are not visible at the Bus interface, so a wrapper
+				// of the events.EventBus kind cannot see them.
+				redisWatchBus.SetObserver(metrics.NewWatchEventsObserver(m))
+				watchBus = redisWatchBus
 				slog.Info("Watch notification bus using Redis pub/sub")
 			} else {
-				watchBus = watchevents.New()
+				memWatchBus := watchevents.New()
+				memWatchBus.SetObserver(metrics.NewWatchEventsObserver(m))
+				watchBus = memWatchBus
 				slog.Info("Watch notification bus using in-memory (single instance)")
 			}
 			srv.SetWatchEventsBus(watchBus)
@@ -697,6 +717,13 @@ func serveCmd() *cobra.Command {
 			var redisPresence *server.RedisSessionPresence
 			if watchRedis != nil {
 				redisPresence = server.NewRedisSessionPresence(watchRedis)
+				// Presence is fail-soft by design — a failed write leaves
+				// a live session unlisted rather than dropping its
+				// connection — so its failures have no user-visible
+				// signal beyond a push that quietly reaches fewer
+				// sessions. The counter is the only alertable trace
+				// (BUG-2727).
+				redisPresence.SetObserver(server.NewMetricsPresenceObserver(m))
 				// Backstop for early-return paths that never reach the
 				// shutdown sequence; Close is idempotent. Deliberately does
 				// NOT delete this instance's entries — a shutdown racing a
@@ -710,6 +737,24 @@ func serveCmd() *cobra.Command {
 				slog.Info("Session presence registry using in-memory (single instance)")
 			}
 			srv.SetSessionPresence(sessionPresence)
+
+			// Redis reachability prober (BUG-2727). Reports into
+			// /health/ready's payload and pad_redis_up; deliberately does
+			// NOT gate readiness — see server.RedisHealth's doc comment.
+			// Only wired when there IS a Redis, so a single-process
+			// deployment reports no redis block rather than a false one.
+			if watchRedis != nil {
+				redisHealth := server.NewRedisHealth(watchRedis, func(ok bool) {
+					if ok {
+						m.RedisUp.Set(1)
+					} else {
+						m.RedisUp.Set(0)
+					}
+				})
+				redisHealth.Start()
+				defer redisHealth.Stop()
+				srv.SetRedisHealth(redisHealth)
+			}
 
 			// Yjs collab room manager (PLAN-1248). Single-instance only
 			// today; multi-replica fanout via Redis is a deferred IDEA.
