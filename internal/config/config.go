@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -394,6 +395,16 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_EVENTS_PUBLISH_EPOCH"); v != "" {
 		if on, err := strconv.ParseBool(v); err == nil {
 			cfg.EventsPublishEpoch = on
+		} else {
+			// LOUD, because the silent reading is the dangerous one
+			// (BUG-2736, codex round 9). An operator who typed "yes" believes
+			// they have flipped phase 2; the value is ignored and the
+			// deployment stays on phase 1, which looks exactly like a correct
+			// phase-1 deployment from every metric. Ignoring it is still the
+			// right BEHAVIOUR — a typo must not flip a migration whose wrong
+			// direction loses events — but it must not be silent.
+			slog.Warn("PAD_EVENTS_PUBLISH_EPOCH is not a boolean and was ignored; this instance keeps its current event ID-space phase",
+				"value", v)
 		}
 	}
 	if v := os.Getenv("PAD_SSE_MAX_PER_USER"); v != "" {

@@ -689,8 +689,19 @@ func serveCmd() *cobra.Command {
 				redis.SetLogger(redisSlogLogger{})
 				eventBus = newObservedEventBus(cfg, rc, redisKeys, m)
 				watchRedis = rc
+				// THE EFFECTIVE PHASE IS LOGGED, not just configured
+				// (BUG-2736, codex round 9). An operator reading
+				// pad_event_sequence_resets_total cannot interpret it without
+				// knowing which phase this instance publishes in — a
+				// counter_backward rate is expected on phase 1 and an anomaly
+				// on phase 2 — and the config can arrive from an env var, a
+				// TOML file, or neither.
+				phase := 1
+				if cfg.EventsPublishEpoch {
+					phase = 2
+				}
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB,
-					"namespace", redisKeys.Namespace())
+					"namespace", redisKeys.Namespace(), "id_space_phase", phase)
 			} else {
 				eventBus = newObservedEventBus(cfg, nil, redisKeys, m)
 				slog.Info("Event bus using in-memory (single instance)")

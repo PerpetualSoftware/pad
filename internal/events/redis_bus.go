@@ -499,7 +499,8 @@ func (b *RedisBus) Publish(event Event) {
 	}
 
 	if err := b.client.Publish(b.ctx, channel, data).Err(); err != nil {
-		slog.Error("failed to publish event to Redis", "channel", channel, "error", err)
+		slog.Error("failed to publish event to Redis; the event may or may not have reached subscribers, and is not retried here",
+			"channel", channel, "phase", 1, "error", err)
 	}
 }
 
@@ -540,7 +541,8 @@ func (b *RedisBus) publishWithEpoch(channel string, event Event) {
 		// REPLY was lost, so an error here can accompany a publish that
 		// actually happened. That is what the dedupe token is for, and why
 		// this logs rather than re-publishing.
-		slog.Error("failed to publish event to Redis", "channel", channel, "error", err)
+		slog.Error("failed to publish event to Redis; the script is atomic so it did not half-execute, but a lost REPLY means it may have published anyway — do not re-publish by hand",
+			"channel", channel, "phase", 2, "error", err)
 	}
 }
 
@@ -1085,6 +1087,22 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// global IDs land in the same busy workspace routinely. BUG-2736's
 		// trail names the numeric-base design that closes it with neither
 		// cost, and why it is a follow-on rather than this unit.
+		if b.epoch == 0 && !b.buffersHoldEvents() {
+			// ADOPTING COLD. No buffers to invalidate, so no reset is
+			// reported — deliberately, since otherwise every replica would
+			// count one at startup and the reset metric would grow a
+			// per-deploy baseline instead of meaning something.
+			//
+			// It is logged rather than counted (codex round 9) because it is
+			// the moment the documented residual becomes possible on this
+			// replica: from here its first buffer starts at the first ID it
+			// sees, so a client holding the ID one below that — from a space
+			// this process never saw — is served. An operator correlating
+			// "clients reported missing events" against "which replica joined
+			// a space cold, and when" has nothing else to go on.
+			slog.Info("events: adopting an ID space with no buffered history; resumes adjacent to this instance's first id cannot be checked against the previous space",
+				"epoch", epoch, "id", event.ID, "workspace", event.WorkspaceID)
+		}
 		if b.epoch != 0 || b.buffersHoldEvents() {
 			slog.Warn("event ID space changed; dropping replay buffers, resumes spanning the change will report sync_required",
 				"previous_epoch", b.epoch, "new_epoch", epoch, "id", event.ID)
@@ -1101,7 +1119,23 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		rb = b.newBuffer()
 		b.replayBuffers[event.WorkspaceID] = rb
 	}
-	if rb.lastAppendedID != 0 && event.ID <= rb.lastAppendedID {
+	if b.epoch != 0 && rb.lastAppendedID != 0 && event.ID <= rb.lastAppendedID {
+		// IT ONLY RUNS ONCE AN EPOCH HAS BEEN ADOPTED, and that gate is not a
+		// detail (codex round 9). Phase 1 publishes with a two-call
+		// INCR-then-PUBLISH, so on any multi-instance deployment two
+		// publishers interleave routinely and a lower ID arrives after a
+		// higher one as ORDINARY TRAFFIC. Without the gate this branch would
+		// fire on that, dropping every replay buffer and resyncing every
+		// client — in the DEFAULT configuration, which is where every
+		// deployment sits until an operator flips phase 2. That is a
+		// regression this diff would have introduced, not a defect it finds.
+		//
+		// What the gate costs: a genuine counter reset on a
+		// never-flipped deployment goes undetected. That is exactly the
+		// behaviour before this change, so nothing regresses — and it is
+		// precisely the case phase 2 exists to fix, by making resets announce
+		// themselves as a generation change instead.
+		//
 		// THIS WHOLE MECHANISM IS TRANSITIONAL. READ THIS BEFORE TUNING IT.
 		//
 		// Once every publisher is flipped to phase 2, publish order equals ID

@@ -344,16 +344,19 @@ func TestAnEpochChangeDropsEveryWorkspaceAndClearsTheFloor(t *testing.T) {
 }
 
 func TestACounterGoingBackwardsRaisesTheFloor(t *testing.T) {
-	// The mixed-VERSION ordering case: a phase-1 publisher assigns and
-	// publishes in two calls, so a lower id can land after a higher one. The
-	// events between the two are unrecoverable here, so every cursor at or
-	// below what we discarded is refused.
+	// The mixed-VERSION ordering case DURING THE PHASE-2 ROLL: an un-flipped
+	// publisher assigns and publishes in two calls, so a lower id can land
+	// after a higher one. The events between the two are unrecoverable here,
+	// so every cursor at or below what we discarded is refused.
 	b := newTestRedisBus(t)
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 	_, gen := liveGen(t, b, "ws-1")
 
-	b.fanOutFromRedis(gen, 0, Event{ID: 200, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	// An epoch must be adopted first: the check is gated on it, because on a
+	// pure phase-1 deployment a backwards id is ordinary interleave rather
+	// than evidence of anything. The negative control below pins that gate.
+	b.fanOutFromRedis(gen, 3, Event{ID: 200, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	b.fanOutFromRedis(gen, 0, Event{ID: 150, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	_, resets := obs.snapshot()
@@ -370,6 +373,61 @@ func TestACounterGoingBackwardsRaisesTheFloor(t *testing.T) {
 	b.fanOutFromRedis(gen, 0, Event{ID: 201, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	if got := b.EventsSince("ws-1", 201); got == nil {
 		t.Fatal("a cursor above the discarded high-water mark must be served")
+	}
+}
+
+func TestAPhaseOneInterleaveDoesNotDropEveryBuffer(t *testing.T) {
+	// codex round 9, and the reason the backwards check is gated on having
+	// adopted an epoch. Phase 1 publishes with a two-call INCR-then-PUBLISH,
+	// so on any multi-instance deployment two publishers interleave routinely
+	// and a lower id arrives after a higher one as ORDINARY TRAFFIC.
+	//
+	// Reacting to that would drop every replay buffer and resync every client
+	// — in the DEFAULT configuration, which is where every deployment sits
+	// until an operator flips phase 2. This diff would have introduced that
+	// regression; the gate is what prevents it, and this is the test that
+	// fails if the gate is removed.
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	_, gen := liveGen(t, b, "ws-1")
+	_, gen2 := liveGen(t, b, "ws-2")
+
+	// PREMISE: no epoch has been adopted, which is what a phase-1 deployment
+	// looks like from here. If this ever stops holding, the assertions below
+	// are about a different situation.
+	if b.epoch != 0 {
+		t.Fatalf("fixture: a phase-1 bus must hold no epoch, got %d", b.epoch)
+	}
+
+	b.fanOutFromRedis(gen, 0, Event{ID: 200, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen2, 0, Event{ID: 201, Type: ItemUpdated, WorkspaceID: "ws-2"})
+	// The interleave: 199 was assigned before 200 and published after it.
+	b.fanOutFromRedis(gen, 0, Event{ID: 199, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	if _, resets := obs.snapshot(); len(resets) != 0 {
+		t.Fatalf("an ordinary phase-1 interleave must not be reported as a sequence reset, got %v", resets)
+	}
+	// The OTHER workspace's coverage must survive: this branch drops every
+	// buffer, so a regression here is charged to clients whose stream never
+	// went near the interleave.
+	if got := b.EventsSince("ws-2", 201); got == nil {
+		t.Fatal("an unrelated workspace's coverage must survive a phase-1 interleave")
+	}
+
+	// WHAT IS NOT CLAIMED, so this test is not read as promising more than it
+	// does: the INTERLEAVED workspace's own buffer now holds ids out of order,
+	// and replayBuffer.since computes newest by POSITION — so a cursor at the
+	// higher id looks foreign and is refused, while one at the lower id is
+	// served. That is pre-existing behaviour, unchanged by this diff (main has
+	// the same buffer and no backwards handling at all), and it is strictly
+	// less harmful than dropping every workspace's buffer. Asserted rather
+	// than described, so a future change to since() surfaces here.
+	if got := b.EventsSince("ws-1", 200); got != nil {
+		t.Fatalf("expected the out-of-order cursor to read as foreign (pre-existing), got %d events", len(got))
+	}
+	if got := b.EventsSince("ws-1", 199); got == nil {
+		t.Fatal("a cursor at the buffer's last-appended id must still be served")
 	}
 }
 

@@ -427,13 +427,25 @@ order equals ID order globally.
 
 So the expectation depends on where you are:
 
-- **Phase 1, steady state** — a low background rate on a busy multi-instance
-  deployment is normal and always was.
-- **Any roll with two publisher versions running** — expect it to rise, in both
-  directions, for the length of the roll.
+- **Phase 1, before this replica has ever seen a prefixed message** — expect
+  ZERO. The check is deliberately not armed until an epoch has been adopted,
+  because a phase-1 deployment's two-call publish interleaves as ordinary
+  traffic and reacting to that would drop every replay buffer on a busy
+  multi-instance deployment. The cost of that gate is that a counter reset on
+  a never-flipped deployment goes undetected — which is exactly the behaviour
+  before this migration existed, and precisely what phase 2 fixes.
+- **During the phase-2 roll, once a replica has adopted the epoch** — expect it
+  to rise for the length of the roll: un-flipped publishers are still
+  assigning and publishing in two calls, and this replica is now armed.
 - **Phase 2, every publisher flipped** — expect it at or near zero. A
   persistent rate here is an anomaly worth investigating rather than tuning
   away.
+
+**Which phase an instance is publishing in is in its startup log**, as
+`id_space_phase=1` or `id_space_phase=2` on the "Event bus using Redis pub/sub"
+line — the counter above cannot be read without it. An unparseable
+`PAD_EVENTS_PUBLISH_EPOCH` is ignored (a typo must not flip a migration whose
+wrong direction loses events) and logs a warning naming the value.
 
 **What this migration does not fix.** A client's `Last-Event-ID` is still a
 bare integer with no epoch in it, and that is deliberate — every deployed
