@@ -44,6 +44,7 @@ type Server struct {
 	router                *chi.Mux
 	routerOnce            sync.Once            // ensures setupRouter runs once, after all config
 	admitOnce             sync.Once            // lazily builds streamAdmit for servers that never call SetSSELimits
+	streamGaugeOnce       sync.Once            // registers pad_stream_connections_active exactly once
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
@@ -1046,17 +1047,21 @@ func (s *Server) SetSSELimits(global, perWorkspace, perUser int) {
 	s.wireStreamGauge()
 }
 
-// wireStreamGauge points the admission gate's total at
-// pad_stream_connections_active, when both exist. Called from both
-// SetSSELimits and SetMetrics because either can land first, and the
-// gauge is only useful when both have.
+// wireStreamGauge registers pad_stream_connections_active as a
+// scrape-time collector over the admission gate's total. Called from both
+// SetSSELimits and SetMetrics because either can land first.
+//
+// Registered ONCE — MustRegister panics on a duplicate, and both callers
+// can fire. The closure reads s.admission() at scrape time rather than
+// capturing the gate, so it stays correct if the gate is ever rebuilt.
 func (s *Server) wireStreamGauge() {
-	if s.metrics == nil || s.streamAdmit == nil {
+	if s.metrics == nil {
 		return
 	}
-	gauge := s.metrics.StreamConnectionsActive
-	s.streamAdmit.setTotalObserver(func(total int) {
-		gauge.Set(float64(total))
+	s.streamGaugeOnce.Do(func() {
+		s.metrics.RegisterStreamConnectionsCollector(func() int {
+			return s.admission().heldTotal()
+		})
 	})
 }
 

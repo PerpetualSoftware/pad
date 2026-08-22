@@ -42,17 +42,6 @@ type streamAdmission struct {
 	perUser  map[string]int
 	maxTotal int
 	maxUser  int
-
-	// notifyMu serializes gauge notifications so a read-then-set pair
-	// cannot be interleaved by another. See publishTotal.
-	notifyMu sync.Mutex
-
-	// onTotal, when non-nil, is called with the current total after every
-	// admit and release. It drives pad_stream_connections_active without
-	// this type importing the metrics package — and it is a CALLBACK
-	// rather than a scrape-time collector because the gate's lock is on
-	// the connection path and a scraper should never contend for it.
-	onTotal func(total int)
 }
 
 func newStreamAdmission(maxTotal, maxUser int) *streamAdmission {
@@ -81,50 +70,6 @@ func (a *streamAdmission) setLimits(maxTotal, maxUser int) {
 	a.maxTotal = maxTotal
 	a.maxUser = maxUser
 	a.mu.Unlock()
-}
-
-// setTotalObserver attaches the gauge callback. Config-time only, like
-// the limits themselves.
-func (a *streamAdmission) setTotalObserver(fn func(total int)) {
-	a.mu.Lock()
-	a.onTotal = fn
-	a.mu.Unlock()
-}
-
-// publishTotal returns a closure that reports the current total to the
-// observer. Callers defer it so it runs OUTSIDE a.mu.
-//
-// Two properties, and the second is why this does not simply capture the
-// value:
-//
-//   - It runs with a.mu RELEASED, so a callback that touches the gate
-//     cannot deadlock it (codex round 9). The Prometheus callback does
-//     not touch it, but a contract that depends on every future callback
-//     author reading a comment is a deadlock with a delay on it.
-//   - It runs under notifyMu, and reads the total INSIDE that lock
-//     rather than capturing it at snapshot time (codex round 10).
-//     Capturing was reorderable: one admission could capture 1, a
-//     concurrent one capture 2, and the stale 1 land last — leaving
-//     pad_stream_connections_active permanently below the real total,
-//     which reads to an operator as spare capacity. Serializing
-//     read-then-set means whichever callback runs last also read last,
-//     so the gauge converges on the truth.
-//
-// Lock order is notifyMu then mu, and never the reverse: nothing holding
-// mu takes notifyMu.
-func (a *streamAdmission) publishTotal() func() {
-	return func() {
-		a.notifyMu.Lock()
-		defer a.notifyMu.Unlock()
-
-		a.mu.Lock()
-		fn, total := a.onTotal, a.total
-		a.mu.Unlock()
-
-		if fn != nil {
-			fn(total)
-		}
-	}
 }
 
 // admissionRefusal names which bound refused a connection, for the log
@@ -164,10 +109,6 @@ const (
 // caller that forgets cannot accidentally collapse every connection into
 // a single bucket.
 func (a *streamAdmission) acquire(principal string) (release func(), refusal admissionRefusal) {
-	// Registered FIRST so it runs LAST, after the Unlock below.
-	notify := func() {}
-	defer func() { notify() }()
-
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -182,14 +123,10 @@ func (a *streamAdmission) acquire(principal string) (release func(), refusal adm
 	if principal != "" {
 		a.perUser[principal]++
 	}
-	notify = a.publishTotal()
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			releaseNotify := func() {}
-			defer func() { releaseNotify() }()
-
 			a.mu.Lock()
 			defer a.mu.Unlock()
 			a.total--
@@ -203,9 +140,18 @@ func (a *streamAdmission) acquire(principal string) (release func(), refusal adm
 					delete(a.perUser, principal)
 				}
 			}
-			releaseNotify = a.publishTotal()
 		})
 	}, admissionRefusalNone
+}
+
+// total returns the number of held slots. Backs
+// pad_stream_connections_active as a scrape-time collector — see
+// metrics.RegisterStreamConnectionsCollector for why that replaced a
+// pushed gauge.
+func (a *streamAdmission) heldTotal() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.total
 }
 
 // counts returns the current global total and this user's count, for log

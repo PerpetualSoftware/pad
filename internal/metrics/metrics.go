@@ -81,29 +81,6 @@ type Metrics struct {
 	// fine and receives nothing.
 	WatchReceiveLoopExitsTotal prometheus.Counter
 
-	// StreamConnectionsActive counts every held streaming connection on
-	// THIS INSTANCE — BOTH /api/v1/events and /api/v1/events/stream —
-	// which is the population PAD_SSE_MAX_CONNECTIONS and
-	// PAD_SSE_MAX_PER_USER actually bound (BUG-2726).
-	//
-	// Per instance, because the limits are: they are enforced in-process
-	// with no shared counter, so a three-replica deployment admits three
-	// times the configured number. Said here as well as in the Help
-	// string because "global" is what the config name suggests and a
-	// responder reading one replica's gauge against the configured
-	// number would conclude there was headroom the deployment does not
-	// have.
-	//
-	// SSEConnectionsActive above is NOT that number and never was: it is
-	// written by the events.EventBus wrapper, so it has only ever counted
-	// the workspace stream. Before this change that was every SSE
-	// connection Pad had a limit for; it no longer is, so an operator
-	// watching it against the global limit would have been reading one
-	// endpoint's share of a two-endpoint budget. Both are kept — the old
-	// one is still the right number for per-workspace questions — and
-	// both now say in their Help which population they cover.
-	StreamConnectionsActive prometheus.Gauge
-
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -319,18 +296,12 @@ func New() *Metrics {
 		Help: "Times the Redis subscription receive loop stopped. Non-zero outside shutdown means this instance receives no notifications at all.",
 	})
 
-	streamConnectionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "pad_stream_connections_active",
-		Help: "Active streaming connections on THIS INSTANCE across both SSE endpoints — the population PAD_SSE_MAX_CONNECTIONS bounds. Limits are per instance; sum across replicas for the deployment total.",
-	})
-
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
 		Help: "Failed session-presence operations by op. Failures leave sessions unlisted and untargetable.",
 	}, []string{"op"})
 
 	reg.MustRegister(
-		streamConnectionsActive,
 		watchNotificationsDroppedTotal,
 		watchSequenceGapsTotal,
 		watchNotificationsMissedTotal,
@@ -358,7 +329,6 @@ func New() *Metrics {
 		Registry: reg,
 
 		RedisUp:                        redisUp,
-		StreamConnectionsActive:        streamConnectionsActive,
 		WatchNotificationsDroppedTotal: watchNotificationsDroppedTotal,
 		WatchSequenceGapsTotal:         watchSequenceGapsTotal,
 		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,
@@ -393,6 +363,34 @@ func New() *Metrics {
 // Prometheus gauge accepts writes and is simply never gathered.
 func (m *Metrics) RegisterRedisUp() {
 	m.Registry.MustRegister(m.RedisUp)
+}
+
+// RegisterStreamConnectionsCollector exposes pad_stream_connections_active
+// as a CALLBACK collector, sampled on scrape (BUG-2726).
+//
+// A collector rather than a gauge somebody pushes to, for the same reason
+// RegisterDBCollector is one: zero overhead between scrapes, always
+// fresh, and — the part learned the hard way here — no ordering problem.
+// The push version fired a callback per admit and release, and took two
+// review rounds to get right: round 9 found it running under the gate's
+// lock, a deadlock hazard for any callback that touched the gate, and
+// round 10 found the FIX reorderable, so a stale value could land last
+// and leave the gauge permanently BELOW the real total — which reads to
+// an operator as spare capacity that is not there. Reading the number
+// when someone asks for it has neither failure mode, and deletes both
+// mechanisms.
+//
+// Sampling on scrape is safe HERE in a way a Redis PING would not be: no
+// I/O, no side effects, and the value cannot depend on who is asking.
+// That distinction is why pad_redis_up is a probed gauge and this is not.
+//
+// total must be safe for concurrent use; it is called from the scrape
+// goroutine.
+func (m *Metrics) RegisterStreamConnectionsCollector(total func() int) {
+	m.Registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "pad_stream_connections_active",
+		Help: "Active streaming connections on THIS INSTANCE across both SSE endpoints — the population PAD_SSE_MAX_CONNECTIONS bounds. Limits are per instance; sum across replicas for the deployment total.",
+	}, func() float64 { return float64(total()) }))
 }
 
 // RegisterDBCollector registers a callback-based collector that exposes

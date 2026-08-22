@@ -273,31 +273,41 @@ func TestStreamAdmissionUnitSemantics(t *testing.T) {
 	})
 }
 
-// TestStreamAdmissionDrivesTheGauge pins pad_stream_connections_active to
-// the gate's real total, in BOTH directions. A gauge that only ever went
-// up would pass an admit-only assertion while reporting a monotonically
-// growing fiction — which is exactly what an operator watching it against
-// PAD_SSE_MAX_CONNECTIONS would act on.
-func TestStreamAdmissionDrivesTheGauge(t *testing.T) {
+// TestStreamAdmissionTracksItsTotal pins the number the gauge reads.
+//
+// This used to assert a push callback's argument sequence. The callback
+// is gone — pad_stream_connections_active is a scrape-time collector now,
+// because the pushed version cost two review rounds (a deadlock hazard,
+// then a reordering that left the gauge below the truth) and reading the
+// number on demand has neither failure mode. What is left to assert is
+// that the number itself is right in both directions.
+func TestStreamAdmissionTracksItsTotal(t *testing.T) {
 	t.Parallel()
 
-	var got []int
 	a := newStreamAdmission(0, 0)
-	a.setTotalObserver(func(total int) { got = append(got, total) })
+	if got := a.heldTotal(); got != 0 {
+		t.Fatalf("premise failed: fresh gate reports %d held", got)
+	}
 
 	r1, _ := a.acquire("u1")
-	r2, _ := a.acquire("u2")
-	r1()
-	r2()
-
-	want := []int{1, 2, 1, 0}
-	if len(got) != len(want) {
-		t.Fatalf("gauge saw %v, want %v", got, want)
+	if got := a.heldTotal(); got != 1 {
+		t.Fatalf("after one admit: %d, want 1", got)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("gauge saw %v, want %v", got, want)
-		}
+	r2, _ := a.acquire("u2")
+	if got := a.heldTotal(); got != 2 {
+		t.Fatalf("after two admits: %d, want 2", got)
+	}
+	r1()
+	if got := a.heldTotal(); got != 1 {
+		t.Fatalf("after one release: %d, want 1", got)
+	}
+	r2()
+	if got := a.heldTotal(); got != 0 {
+		t.Fatalf("after both releases: %d, want 0", got)
+	}
+	r2() // idempotent release must not go negative
+	if got := a.heldTotal(); got != 0 {
+		t.Fatalf("after a double release: %d, want 0", got)
 	}
 }
 
@@ -517,15 +527,15 @@ func TestSetSSELimitsDoesNotStrandHeldSlots(t *testing.T) {
 	}
 }
 
-// TestStreamGaugeConvergesUnderConcurrency covers what the sequential
-// gauge test could not (codex round 10): with the total captured at
-// snapshot time rather than read at notify time, two concurrent updates
-// could land out of order and leave the gauge permanently below the real
-// count — which reads to an operator as spare capacity that is not there.
+// TestStreamGaugeIsCorrectUnderConcurrency drives the gate hard from many
+// goroutines and asserts the SCRAPED value matches the gate's own total.
 //
-// Asserts the END STATE against the gate's own total rather than a
-// literal, so the test cannot pass by agreeing with a wrong constant.
-func TestStreamGaugeConvergesUnderConcurrency(t *testing.T) {
+// The pushed-callback version of this metric needed a deliberately
+// widened race window to be testable at all, and even then the first
+// attempt survived five runs against a broken build. A collector has no
+// window to widen: the scrape reads the same lock the mutations take, so
+// this asserts the property directly.
+func TestStreamGaugeIsCorrectUnderConcurrency(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -536,23 +546,17 @@ func TestStreamGaugeConvergesUnderConcurrency(t *testing.T) {
 
 	m := metrics.New()
 	a := newStreamAdmission(0, 0)
-	a.setTotalObserver(func(total int) {
-		// The sleep WIDENS the reorder window on purpose. Without it the
-		// race is real but so narrow that the broken version passes: a
-		// capture-at-snapshot build survived 5 runs of this test before
-		// the sleep was added, which would have made this an instrument
-		// that could not fail. With the fix, notifyMu serializes these
-		// and each reads the live total, so the sleep only costs time.
-		time.Sleep(50 * time.Microsecond)
-		m.StreamConnectionsActive.Set(float64(total))
-	})
+	m.RegisterStreamConnectionsCollector(a.heldTotal)
 
-	// A steady population that stays held for the whole run, so the final
-	// total is non-zero and a gauge stuck at 0 cannot pass.
+	// A steady population held for the whole run, so the final total is
+	// non-zero and a collector stuck at 0 cannot pass.
 	for i := 0; i < held; i++ {
 		if _, refusal := a.acquire("holder"); refusal != admissionRefusalNone {
 			t.Fatalf("premise failed: holder %d refused by %q", i, refusal)
 		}
+	}
+	if got := gaugeValue(t, m); got != float64(held) {
+		t.Fatalf("premise failed: gauge = %v with %d held", got, held)
 	}
 
 	var wg sync.WaitGroup
@@ -566,22 +570,38 @@ func TestStreamGaugeConvergesUnderConcurrency(t *testing.T) {
 					t.Errorf("worker %d cycle %d refused by %q with no limits", w, c, refusal)
 					return
 				}
+				// Scrape WHILE the churn is running, so the collector is
+				// exercised concurrently with the mutations rather than
+				// only at rest.
+				_ = gaugeValueQuiet(m)
 				release()
 			}
 		}(w)
 	}
 	wg.Wait()
 
-	a.mu.Lock()
-	wantTotal := a.total
-	a.mu.Unlock()
+	if got, want := gaugeValue(t, m), float64(a.heldTotal()); got != want {
+		t.Fatalf("gauge = %v, gate total = %v", got, want)
+	}
+	if got := gaugeValue(t, m); got != float64(held) {
+		t.Fatalf("gauge = %v after every transient slot was released, want %d", got, held)
+	}
+}
 
-	if wantTotal != held {
-		t.Fatalf("gate total = %d after every transient slot was released, want %d", wantTotal, held)
+// gaugeValueQuiet is gaugeValue without the testing hooks, safe to call
+// from a worker goroutine (t.Fatalf from a non-test goroutine is an
+// error in its own right).
+func gaugeValueQuiet(m *metrics.Metrics) float64 {
+	families, err := m.Registry.Gather()
+	if err != nil {
+		return -1
 	}
-	if got := gaugeValue(t, m); got != float64(wantTotal) {
-		t.Fatalf("gauge = %v, gate total = %d — the gauge did not converge on the truth", got, wantTotal)
+	for _, f := range families {
+		if f.GetName() == "pad_stream_connections_active" && len(f.GetMetric()) == 1 {
+			return f.GetMetric()[0].GetGauge().GetValue()
+		}
 	}
+	return -1
 }
 
 // TestRedisHealthConcurrentStartStop drives the lifecycle from many
