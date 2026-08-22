@@ -84,9 +84,9 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
 | `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Empty means the historical names. |
-| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Global maximum streaming connections, across **both** `/api/v1/events` and `/api/v1/events/stream` |
-| `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events` |
-| `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections, across **both** endpoints |
+| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across both `/api/v1/events` and `/api/v1/events/stream` |
+| `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
+| `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
 
 #### Streaming connection limits
 
@@ -110,6 +110,14 @@ A refused connection is `429` with code `sse_limit_exceeded`. The CLI monitor
 treats it like any other non-200 and backs off (5s, growing linearly, capped at
 5 minutes), so refusal does not produce a reconnect storm.
 
+**All three limits are PER INSTANCE, not deployment-wide.** They are enforced
+in-process; there is no shared counter. A three-replica deployment with
+`PAD_SSE_MAX_CONNECTIONS=1000` admits up to 3000 connections in total, and a
+single user can hold `PAD_SSE_MAX_PER_USER` connections *on each replica*. Size
+them per pod and multiply by replica count for the deployment ceiling. Watch
+`pad_stream_connections_active` (per instance) rather than inferring the total
+from the configured number.
+
 #### Redis configuration notes
 
 **One namespace per installation, or one endpoint per installation.** Every
@@ -127,11 +135,32 @@ user id and user ids are per-installation UUIDs; for that case it is a genuine
 cross-tenant leak.
 
 > **Changing the namespace on a running deployment is a cutover, not a tweak.**
-> `pad:*event_seq` and `pad:watchevents_epoch` carry `Last-Event-ID` meaning, so
-> renaming them makes connected clients resync (they receive `sync_required`
-> and re-fetch; no data is lost). Session-presence entries are transient — 90s
-> TTL — and cost nothing. Set the namespace before going multi-installation
-> rather than after.
+> Set it before going multi-installation rather than after, and take a brief
+> maintenance window if you can. Three things to know:
+>
+> 1. **It partitions a rolling upgrade.** Replicas with the namespace set and
+>    replicas without it do not share pub/sub channels, counters, or the
+>    presence registry — they behave as two separate installations for as long
+>    as the rollout takes. `GET /api/v1/sessions` answers differently depending
+>    on which replica handles it, and a session-targeted push aimed across the
+>    partition is skipped (reported honestly as `delivered_sessions: 0`, but not
+>    delivered). Roll all replicas together, or accept a split for the duration.
+> 2. **Rolling BACK re-creates the split** unless the namespace is unset at the
+>    same time. The env var and the binary version have to move together in both
+>    directions.
+> 3. **Client resync is honest on the watch stream and silent on the activity
+>    stream.** `pad:*watchevents_epoch` makes the notification stream detect the
+>    changed id space and answer resumes with `sync_required`. The workspace
+>    activity stream (`/api/v1/events`) has no equivalent: a client reconnecting
+>    with a `Last-Event-ID` from the old keyspace against a fresh replay buffer
+>    is treated as caught up, so it silently misses whatever happened during the
+>    cutover until its next full page load. That is a pre-existing property of
+>    any cold replay buffer (a replica restart does the same), not something the
+>    namespace introduced — it is called out here because a namespace change is
+>    the one case an operator triggers deliberately.
+>
+> Session-presence entries are transient — 90s TTL — and cost nothing either
+> way.
 
 Pad's Redis integration assumes a **single Redis node** — `redis://…`, not a
 cluster. Key names carry no hash tags and Pad dials a non-cluster client, so a
@@ -153,7 +182,8 @@ Alert on these instead:
 
 | Metric | Meaning |
 |--------|---------|
-| `pad_redis_up` | `0` when the last probe (every 15s) failed |
+| `pad_redis_up` | `0` when the last probe (every 15s) failed. Exported only when Redis is configured — absence means "no Redis", not "down" |
+| `pad_stream_connections_active` | Held streaming connections on this instance, across both SSE endpoints — the population the limits bound |
 | `pad_watchevents_sequence_gaps_total` | This instance missed notifications — a gap event |
 | `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber |
@@ -405,10 +435,13 @@ Pad exposes Prometheus metrics at `/metrics` (unauthenticated). Key metrics:
 | `pad_http_requests_total` | counter | Total HTTP requests by method, path, status |
 | `pad_http_request_duration_seconds` | histogram | Request latency |
 | `pad_http_response_size_bytes` | histogram | Response body sizes |
-| `pad_sse_connections_active` | gauge | Current SSE connections |
+| `pad_sse_connections_active` | gauge | Connections on the workspace activity stream (`/api/v1/events`) only |
+| `pad_stream_connections_active` | gauge | Held connections across **both** SSE endpoints — the population the limits bound |
 | `pad_eventbus_publish_total` | counter | Events published |
 | `pad_eventbus_subscribers` | gauge | Active event subscribers |
 | `pad_db_open_connections` | gauge | Database connection pool stats |
+
+Redis-specific metrics are listed under [Redis health and metrics](#redis-health-and-metrics).
 
 ### Health Check
 

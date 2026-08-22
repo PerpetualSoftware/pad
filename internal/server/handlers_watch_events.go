@@ -192,6 +192,23 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		defer s.sessionPresence.Remove(user.ID, sessionID)
 	}
 
+	// Release the admission slot BEFORE the Redis cleanup above it
+	// (codex round 2 P2). Defers run LIFO, so this later registration
+	// runs FIRST — ahead of Remove, which does a Redis round trip bounded
+	// by presenceOpTimeout (5s) and can wait on a renewal goroutine. With
+	// the slot's only release being the one at acquire time, a
+	// disconnecting client kept holding its slot for that whole window,
+	// and a reconnect arriving inside it could be refused by a bound the
+	// connection had already stopped consuming. During a Redis outage —
+	// exactly when clients reconnect most — that window is at its widest.
+	//
+	// The acquire-site defer STAYS as the safety net for any early return
+	// between there and here; release is idempotent (sync.Once), so
+	// deferring it twice releases once. Belt and braces deliberately: a
+	// future edit adding a return above this line must not be able to
+	// leak a slot for the process's lifetime.
+	defer release()
+
 	watches, werr := s.loadWatchPredicates(r, user.ID)
 	if werr != nil {
 		slog.Warn("watch-events: failed to load caller's watches, denying watch-scoped matches",

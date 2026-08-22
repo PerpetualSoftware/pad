@@ -73,6 +73,21 @@ type Metrics struct {
 	// fine and receives nothing.
 	WatchReceiveLoopExitsTotal prometheus.Counter
 
+	// StreamConnectionsActive counts every held streaming connection —
+	// BOTH /api/v1/events and /api/v1/events/stream — which is the
+	// population PAD_SSE_MAX_CONNECTIONS and PAD_SSE_MAX_PER_USER
+	// actually bound (BUG-2726).
+	//
+	// SSEConnectionsActive above is NOT that number and never was: it is
+	// written by the events.EventBus wrapper, so it has only ever counted
+	// the workspace stream. Before this change that was every SSE
+	// connection Pad had a limit for; it no longer is, so an operator
+	// watching it against the global limit would have been reading one
+	// endpoint's share of a two-endpoint budget. Both are kept — the old
+	// one is still the right number for per-workspace questions — and
+	// both now say in their Help which population they cover.
+	StreamConnectionsActive prometheus.Gauge
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. A sustained non-zero rate means sessions are missing from
 	// GET /api/v1/sessions and untargetable by a session-directed push,
@@ -136,7 +151,7 @@ func New() *Metrics {
 
 	sseConnectionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pad_sse_connections_active",
-		Help: "Total number of active SSE connections.",
+		Help: "Active connections on the workspace activity stream (/api/v1/events) only. See pad_stream_connections_active for all streaming connections.",
 	})
 
 	eventBusPublishTotal := prometheus.NewCounter(prometheus.CounterOpts{
@@ -273,12 +288,18 @@ func New() *Metrics {
 		Help: "Times the Redis subscription receive loop stopped. Non-zero outside shutdown means this instance receives no notifications at all.",
 	})
 
+	streamConnectionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "pad_stream_connections_active",
+		Help: "Active streaming connections across both SSE endpoints — the population bounded by PAD_SSE_MAX_CONNECTIONS.",
+	})
+
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
 		Help: "Failed session-presence operations by op. Failures leave sessions unlisted and untargetable.",
 	}, []string{"op"})
 
 	reg.MustRegister(
+		streamConnectionsActive,
 		watchNotificationsDroppedTotal,
 		watchSequenceGapsTotal,
 		watchNotificationsMissedTotal,
@@ -305,6 +326,7 @@ func New() *Metrics {
 		Registry: reg,
 
 		RedisUp:                        redisUp,
+		StreamConnectionsActive:        streamConnectionsActive,
 		WatchNotificationsDroppedTotal: watchNotificationsDroppedTotal,
 		WatchSequenceGapsTotal:         watchSequenceGapsTotal,
 		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,

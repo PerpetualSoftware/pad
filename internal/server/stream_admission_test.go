@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
 )
 
 // rawWatchStreamStatus opens the watch stream and returns only the status
@@ -242,4 +243,105 @@ func TestStreamAdmissionUnitSemantics(t *testing.T) {
 			t.Fatalf("perUser holds %d entries after every slot was released, want 0 — the map grows without bound", len(a.perUser))
 		}
 	})
+}
+
+// TestStreamAdmissionDrivesTheGauge pins pad_stream_connections_active to
+// the gate's real total, in BOTH directions. A gauge that only ever went
+// up would pass an admit-only assertion while reporting a monotonically
+// growing fiction — which is exactly what an operator watching it against
+// PAD_SSE_MAX_CONNECTIONS would act on.
+func TestStreamAdmissionDrivesTheGauge(t *testing.T) {
+	t.Parallel()
+
+	var got []int
+	a := newStreamAdmission(0, 0)
+	a.setTotalObserver(func(total int) { got = append(got, total) })
+
+	r1, _ := a.acquire("u1")
+	r2, _ := a.acquire("u2")
+	r1()
+	r2()
+
+	want := []int{1, 2, 1, 0}
+	if len(got) != len(want) {
+		t.Fatalf("gauge saw %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("gauge saw %v, want %v", got, want)
+		}
+	}
+}
+
+// TestStreamGaugeReachesMetricsThroughEitherWiringOrder covers the seam
+// that SetMetrics and SetSSELimits can be called in either order, plus
+// the lazily-built gate a server that never sets limits ends up with. All
+// three paths have to end with a gauge that moves, or the metric lies by
+// staying at zero while streams are held.
+func TestStreamGaugeReachesMetricsThroughEitherWiringOrder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("limits then metrics", func(t *testing.T) {
+		t.Parallel()
+		srv := testServer(t)
+		srv.SetSSELimits(0, 0, 0)
+		m := metrics.New()
+		srv.SetMetrics(m)
+		assertGaugeTracksAdmission(t, srv, m)
+	})
+
+	t.Run("metrics then limits", func(t *testing.T) {
+		t.Parallel()
+		srv := testServer(t)
+		m := metrics.New()
+		srv.SetMetrics(m)
+		srv.SetSSELimits(0, 0, 0)
+		assertGaugeTracksAdmission(t, srv, m)
+	})
+
+	t.Run("metrics only, gate built lazily", func(t *testing.T) {
+		t.Parallel()
+		srv := testServer(t)
+		m := metrics.New()
+		srv.SetMetrics(m)
+		assertGaugeTracksAdmission(t, srv, m)
+	})
+}
+
+func assertGaugeTracksAdmission(t *testing.T, srv *Server, m *metrics.Metrics) {
+	t.Helper()
+
+	if got := gaugeValue(t, m); got != 0 {
+		t.Fatalf("premise failed: gauge starts at %v, want 0", got)
+	}
+	release, refusal := srv.admission().acquire("u1")
+	if refusal != admissionRefusalNone {
+		t.Fatalf("acquire refused by %q with no limits set", refusal)
+	}
+	if got := gaugeValue(t, m); got != 1 {
+		t.Fatalf("gauge = %v after one admit, want 1", got)
+	}
+	release()
+	if got := gaugeValue(t, m); got != 0 {
+		t.Fatalf("gauge = %v after release, want 0", got)
+	}
+}
+
+func gaugeValue(t *testing.T, m *metrics.Metrics) float64 {
+	t.Helper()
+	families, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != "pad_stream_connections_active" {
+			continue
+		}
+		if len(f.GetMetric()) != 1 {
+			t.Fatalf("pad_stream_connections_active has %d series, want 1", len(f.GetMetric()))
+		}
+		return f.GetMetric()[0].GetGauge().GetValue()
+	}
+	t.Fatal("pad_stream_connections_active is not exported")
+	return 0
 }

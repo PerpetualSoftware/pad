@@ -39,6 +39,13 @@ type streamAdmission struct {
 	perUser  map[string]int
 	maxTotal int
 	maxUser  int
+
+	// onTotal, when non-nil, is called with the new total after every
+	// admit and release. It drives pad_stream_connections_active without
+	// this type importing the metrics package — and it is a CALLBACK
+	// rather than a scrape-time collector because the gate's lock is on
+	// the connection path and a scraper should never contend for it.
+	onTotal func(total int)
 }
 
 func newStreamAdmission(maxTotal, maxUser int) *streamAdmission {
@@ -46,6 +53,24 @@ func newStreamAdmission(maxTotal, maxUser int) *streamAdmission {
 		perUser:  map[string]int{},
 		maxTotal: maxTotal,
 		maxUser:  maxUser,
+	}
+}
+
+// setTotalObserver attaches the gauge callback. Config-time only, like
+// the limits themselves.
+func (a *streamAdmission) setTotalObserver(fn func(total int)) {
+	a.mu.Lock()
+	a.onTotal = fn
+	a.mu.Unlock()
+}
+
+// notifyTotal reports the current total. Called with a.mu HELD, and it
+// reads a.total under that lock, so the value it reports is the one that
+// was true at the moment of the change rather than whatever a later
+// racing update leaves behind.
+func (a *streamAdmission) notifyTotal() {
+	if a.onTotal != nil {
+		a.onTotal(a.total)
 	}
 }
 
@@ -83,6 +108,7 @@ func (a *streamAdmission) acquire(userID string) (release func(), refusal admiss
 	if userID != "" {
 		a.perUser[userID]++
 	}
+	a.notifyTotal()
 
 	var once sync.Once
 	return func() {
@@ -100,6 +126,7 @@ func (a *streamAdmission) acquire(userID string) (release func(), refusal admiss
 					delete(a.perUser, userID)
 				}
 			}
+			a.notifyTotal()
 		})
 	}, admissionRefusalNone
 }

@@ -950,6 +950,7 @@ func (s *Server) SetSecureCookies(secure bool) {
 func (s *Server) SetMetrics(m *metrics.Metrics) {
 	s.metrics = m
 	s.wireOAuthMetricsObserver()
+	s.wireStreamGauge()
 }
 
 // wireOAuthMetricsObserver attaches the OAuth metrics that need both
@@ -1039,6 +1040,21 @@ func (s *Server) SetSSELimits(global, perWorkspace, perUser int) {
 	s.sseMaxPerWorkspace = perWorkspace
 	s.sseMaxPerUser = perUser
 	s.streamAdmit = newStreamAdmission(global, perUser)
+	s.wireStreamGauge()
+}
+
+// wireStreamGauge points the admission gate's total at
+// pad_stream_connections_active, when both exist. Called from both
+// SetSSELimits and SetMetrics because either can land first, and the
+// gauge is only useful when both have.
+func (s *Server) wireStreamGauge() {
+	if s.metrics == nil || s.streamAdmit == nil {
+		return
+	}
+	gauge := s.metrics.StreamConnectionsActive
+	s.streamAdmit.setTotalObserver(func(total int) {
+		gauge.Set(float64(total))
+	})
 }
 
 // admission returns the shared stream admission gate, constructing an
@@ -1054,6 +1070,12 @@ func (s *Server) admission() *streamAdmission {
 	s.admitOnce.Do(func() {
 		if s.streamAdmit == nil {
 			s.streamAdmit = newStreamAdmission(s.sseMaxConnections, s.sseMaxPerUser)
+			// The lazily-built gate needs the gauge too, or a server
+			// wired with metrics but never given explicit limits would
+			// export a permanently-zero pad_stream_connections_active
+			// while serving streams — the same shape of lie as an
+			// unregistered metric reporting 0.
+			s.wireStreamGauge()
 		}
 	})
 	return s.streamAdmit
