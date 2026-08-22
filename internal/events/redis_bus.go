@@ -975,19 +975,14 @@ func decodePayload(payload string) (int64, Event, error) {
 		if err != nil {
 			return 0, Event{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
 		}
-		if id <= 0 {
-			// The sequence counts from 1, and the SSE handler omits the id:
-			// field for a non-positive id — so such an event would be
-			// delivered with no cursor to advance to, and the client would
-			// keep resuming from the id before it. Refusing it is honest:
-			// the receive path turns that into an end of coverage.
-			return 0, Event{}, fmt.Errorf("payload id prefix %d is not a positive sequence id", id)
-		}
 		var event Event
 		if err := json.Unmarshal([]byte(body), &event); err != nil {
 			return 0, Event{}, fmt.Errorf("payload body is not an Event: %w", err)
 		}
 		event.ID = id
+		if err := requirePositiveID(event.ID); err != nil {
+			return 0, Event{}, err
+		}
 		return epoch, event, nil
 	}
 
@@ -995,7 +990,28 @@ func decodePayload(payload string) (int64, Event, error) {
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
 		return 0, Event{}, fmt.Errorf("payload is neither <epoch>|<id>|<json> nor a bare Event: %w", err)
 	}
+	if err := requirePositiveID(event.ID); err != nil {
+		return 0, Event{}, err
+	}
 	return 0, event, nil
+}
+
+// requirePositiveID is applied to BOTH wire forms, and being applied to both
+// is the point (codex round 16). It lived inside the prefixed branch first, so
+// a bare payload carrying id 0 or a negative was accepted — delivered with no
+// SSE cursor for the client to advance to, and, once an epoch has been
+// adopted, read as the sequence going backwards and used to discard every
+// replay buffer.
+//
+// The sequence counts from 1, so a non-positive id is not something this
+// installation published in either form. Returning an error routes it where an
+// unreadable payload goes: this workspace's coverage ends and the next resume
+// says so.
+func requirePositiveID(id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("payload id %d is not a positive sequence id", id)
+	}
+	return nil
 }
 
 // fanOutFromRedis is the receive path: a message that arrived on the

@@ -126,7 +126,14 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 			"negative id":         "7|-4|" + string(body),
 			"body is not JSON":    "7|77|not json",
 			"neither form":        "not json at all",
-			"prefix without id":   "7|" + string(body),
+			// THE BARE FORM MUST BE HELD TO THE SAME RULE (codex round 16).
+			// The id check lived in the prefixed branch only, so these were
+			// accepted: delivered with no SSE cursor, and once an epoch is
+			// adopted, read as the sequence going backwards and used to
+			// discard every replay buffer.
+			"bare, zero id":     string(mustMarshalEvent(t, Event{ID: 0, Type: ItemUpdated, WorkspaceID: "ws-1"})),
+			"bare, negative id": string(mustMarshalEvent(t, Event{ID: -7, Type: ItemUpdated, WorkspaceID: "ws-1"})),
+			"prefix without id": "7|" + string(body),
 		} {
 			if _, _, err := decodePayload(payload); err == nil {
 				t.Errorf("%s: want an error, got none", name)
@@ -619,6 +626,15 @@ func TestEpochGenerationsAreMintedByRedisAndIncrease(t *testing.T) {
 	if g1 <= 0 {
 		t.Fatalf("a generation must be positive (zero is the no-information sentinel), got %d", g1)
 	}
+}
+
+func mustMarshalEvent(t *testing.T, e Event) []byte {
+	t.Helper()
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
 }
 
 func mustParseGeneration(t *testing.T, s string) int64 {
