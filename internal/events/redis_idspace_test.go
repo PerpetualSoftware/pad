@@ -898,3 +898,133 @@ func TestAScriptThatDiedBeforePublishingDoesNotBlockItsRetry(t *testing.T) {
 		t.Fatal("the retry must actually publish")
 	}
 }
+
+func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
+	// codex round 12. Parsing, publishing and fan-out were each tested alone;
+	// the CLAIM the two phases rest on is that a phase-1 and a phase-2
+	// instance on one Redis deliver each other's events. That needs both buses
+	// at once, which nothing exercised.
+	mr := miniredis.RunT(t)
+	newBus := func(publishEpoch bool) *RedisBus {
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = client.Close() })
+		b := NewRedisBusWithKeys(client, redisns.Default, publishEpoch)
+		t.Cleanup(b.Close)
+		return b
+	}
+	phase1, phase2 := newBus(false), newBus(true)
+
+	// Both are subscribed to the same workspace, as two replicas serving
+	// clients would be.
+	ch1 := phase1.Subscribe("ws-1")
+	defer phase1.Unsubscribe(ch1)
+	ch2 := phase2.Subscribe("ws-1")
+	defer phase2.Unsubscribe(ch2)
+
+	recv := func(t *testing.T, ch chan Event, who string) Event {
+		t.Helper()
+		select {
+		case e := <-ch:
+			return e
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s never received the event", who)
+			return Event{}
+		}
+	}
+
+	// Phase 1 publishes the bare form. BOTH must deliver it.
+	phase1.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1", ItemID: "from-phase-1"})
+	if got := recv(t, ch1, "phase-1 receiver"); got.ItemID != "from-phase-1" {
+		t.Fatalf("phase-1 receiver got %+v", got)
+	}
+	bareOnTwo := recv(t, ch2, "phase-2 receiver")
+	if bareOnTwo.ItemID != "from-phase-1" {
+		t.Fatalf("phase-2 receiver got %+v", bareOnTwo)
+	}
+
+	// Phase 2 publishes the prefixed form. BOTH must deliver it — the phase-1
+	// receiver is running a binary that ACCEPTS the prefix even though it does
+	// not emit one, which is the whole reason phase 1 must be rolled first.
+	phase2.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1", ItemID: "from-phase-2"})
+	prefixedOnOne := recv(t, ch1, "phase-1 receiver")
+	if prefixedOnOne.ItemID != "from-phase-2" {
+		t.Fatalf("phase-1 receiver got %+v", prefixedOnOne)
+	}
+	if got := recv(t, ch2, "phase-2 receiver"); got.ItemID != "from-phase-2" {
+		t.Fatalf("phase-2 receiver got %+v", got)
+	}
+
+	// PREMISE, so this is not passing on two buses that both happened to
+	// publish the same shape: the two payload forms really did differ.
+	if prefixedOnOne.ID <= bareOnTwo.ID {
+		t.Fatalf("fixture: the second publish should carry a higher id, got %d after %d", prefixedOnOne.ID, bareOnTwo.ID)
+	}
+	phase2.mu.Lock()
+	adopted := phase2.epoch
+	phase2.mu.Unlock()
+	if adopted == 0 {
+		t.Fatal("fixture: the phase-2 receiver should have adopted an epoch from the prefixed message")
+	}
+
+	// And both can still answer a resume, which is what the buffers are for.
+	if got := phase1.EventsSince("ws-1", prefixedOnOne.ID); got == nil {
+		t.Fatal("the phase-1 receiver must be able to answer a resume after the mixed run")
+	}
+	if got := phase2.EventsSince("ws-1", prefixedOnOne.ID); got == nil {
+		t.Fatal("the phase-2 receiver must be able to answer a resume after the mixed run")
+	}
+}
+
+func TestARepeatedIDIsTreatedAsBackwards(t *testing.T) {
+	// codex round 12: the guard is `<=`, and every test used a strictly lower
+	// id — so a `<` implementation passed them all while letting a REPEATED id
+	// into the buffer. That is a duplicate delivery and a replay that can
+	// serve the same id twice, with no reset reported.
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	_, gen := liveGen(t, b, "ws-1")
+
+	b.fanOutFromRedis(gen, 3, Event{ID: 300, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutFromRedis(gen, 3, Event{ID: 300, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	_, resets := obs.snapshot()
+	if len(resets) != 1 || resets[0] != ResetReasonCounterBackward {
+		t.Fatalf("a repeated id must be reported as %s, got %v", ResetReasonCounterBackward, resets)
+	}
+}
+
+func TestAColdJoinAcceptsTheAdjacentCursor(t *testing.T) {
+	// CHARACTERIZATION of the residual this unit deliberately leaves open, so
+	// it is executable rather than only described (codex round 12).
+	//
+	// A bus with EMPTY buffers adopts an epoch without dropping anything, so
+	// its first buffer starts at exactly the first id it sees — and a client
+	// holding the id one below that, from a space this process never saw, is
+	// SERVED. Closing it locally means refusing the adjacent cursor forever,
+	// which trades a rare silent skip for a common extra resync: a client
+	// legitimately holds 149 from replica A and reconnects to replica B whose
+	// first id is 150, routinely.
+	//
+	// If this test starts failing because someone made the adjacent cursor
+	// refuse, that is not necessarily wrong — but it is the load trade above,
+	// and it should be a decision rather than a side effect.
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	_, gen := liveGen(t, b, "ws-1")
+
+	b.fanOutFromRedis(gen, 9, Event{ID: 150, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	if _, resets := obs.snapshot(); len(resets) != 0 {
+		t.Fatalf("a cold join must not report a reset — that would give the metric a per-deploy baseline; got %v", resets)
+	}
+	if got := b.EventsSince("ws-1", 149); got == nil {
+		t.Fatal("the adjacent cursor is ACCEPTED today; see this test's comment before changing that")
+	}
+	// The boundary, so the characterization is exact rather than approximate:
+	// one lower than adjacent leaves room for a missed event and IS refused.
+	if got := b.EventsSince("ws-1", 148); got != nil {
+		t.Fatalf("a cursor with room for a missed event must be a gap, got %d events", len(got))
+	}
+}

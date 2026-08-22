@@ -139,3 +139,50 @@ func TestEventsPublishEpochRoundTripsThroughTheConfigFile(t *testing.T) {
 		t.Error("an unset env var must leave the config file's value alone")
 	}
 }
+
+// codex round 12. The rollback procedure tells an operator to make the
+// EFFECTIVE value false, and warns that unsetting the environment variable is
+// not the same thing. Neither half of that had a test, so a load order that
+// let the file win over an explicit env-var false would have kept a deployment
+// stuck on phase 2 while its operator believed they had rolled back.
+func TestEventsPublishEpochPrecedenceBetweenEnvAndFile(t *testing.T) {
+	writeFileValue := func(t *testing.T) {
+		t.Helper()
+		cfg := DefaultConfig()
+		cfg.EventsPublishEpoch = true
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+
+	t.Run("an explicit env false overrides a true in the file", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		writeFileValue(t)
+		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "false")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if cfg.EventsPublishEpoch {
+			t.Error("an explicit env-var false must win over the config file — this is the documented rollback")
+		}
+	})
+
+	t.Run("an unparseable env value leaves the file's value standing", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		writeFileValue(t)
+		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "off-ish")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		// The value is IGNORED, not read as false: a typo must not flip a
+		// migration in either direction. The warning is what tells the
+		// operator; the behaviour is to change nothing.
+		if !cfg.EventsPublishEpoch {
+			t.Error("an unparseable env value must leave the configured value alone, not reset it")
+		}
+	})
+}
