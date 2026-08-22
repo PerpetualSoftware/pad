@@ -15,6 +15,13 @@ import (
 // prevent. A knob tested only where it is consumed is a knob whose wiring
 // is untested; this is the wiring.
 func TestStreamAndRedisEnvMapping(t *testing.T) {
+	// HOME first: Load() resolves ~/.pad and creates it. Without this the
+	// test passes anywhere a developer's HOME is writable and fails in a
+	// sandbox that sets HOME to an unwritable path — which is exactly
+	// what the Nix check does, and the only gate that caught it. Every
+	// other test in this package does the same.
+	t.Setenv("HOME", t.TempDir())
+
 	t.Setenv("PAD_REDIS_NAMESPACE", "staging-eu")
 	t.Setenv("PAD_SSE_MAX_PER_USER", "7")
 	t.Setenv("PAD_SSE_MAX_CONNECTIONS", "11")
