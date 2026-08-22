@@ -55,6 +55,47 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	if n := mr.Publish("pad:inst-b:events:ws-1", "probe"); n == 0 {
 		t.Error("the namespaced bus is not subscribed to pad:inst-b:events:ws-1")
 	}
+
+	// WHERE THE BUS PUBLISHES, which is a separate claim from where it
+	// subscribes and the one cross-feed actually travels on. Caught by
+	// mutation testing: pointing Publish at the default channel while
+	// leaving the subscribe namespaced left every assertion above green,
+	// because a local subscriber is served by this bus's own fan-out and
+	// never notices which channel the message went out on.
+	//
+	// Observed with RAW clients rather than through the bus, so the answer
+	// cannot come from the local fan-out path.
+	defaultSub := redis.NewClient(&redis.Options{Addr: mr.Addr()}).Subscribe(t.Context(), "pad:events:ws-1")
+	t.Cleanup(func() { _ = defaultSub.Close() })
+	nsSub := redis.NewClient(&redis.Options{Addr: mr.Addr()}).Subscribe(t.Context(), "pad:inst-b:events:ws-1")
+	t.Cleanup(func() { _ = nsSub.Close() })
+	// Wait for both subscriptions to be live before publishing — pub/sub
+	// is at-most-once, so a message sent before they establish proves
+	// nothing either way.
+	if _, err := defaultSub.Receive(t.Context()); err != nil {
+		t.Fatalf("premise failed: default-channel subscription not confirmed: %v", err)
+	}
+	if _, err := nsSub.Receive(t.Context()); err != nil {
+		t.Fatalf("premise failed: namespaced-channel subscription not confirmed: %v", err)
+	}
+
+	b.Publish(Event{Type: "item.updated", WorkspaceID: "ws-1"})
+
+	select {
+	case msg := <-nsSub.Channel():
+		if msg.Channel != "pad:inst-b:events:ws-1" {
+			t.Errorf("received on %q, want pad:inst-b:events:ws-1", msg.Channel)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("the namespaced bus published nothing to pad:inst-b:events:ws-1")
+	}
+
+	select {
+	case msg := <-defaultSub.Channel():
+		t.Errorf("the namespaced bus published to the DEFAULT channel %q — a second installation would receive it", msg.Channel)
+	case <-time.After(300 * time.Millisecond):
+		// Correct: nothing on the historical channel.
+	}
 }
 
 // TestRedisBusDefaultKeepsHistoricalKeys is the upgrade promise for this
