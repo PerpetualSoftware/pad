@@ -254,6 +254,19 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Replay missed events if the client provided Last-Event-ID.
 	// The browser's EventSource sends this automatically on reconnect.
+	//
+	// SUBSCRIBING AND READING THE BUFFER ARE TWO STEPS HERE, AND THAT IS A
+	// KNOWN DEFECT — BUG-2730, not an oversight and not fixed by BUG-2731.
+	// An event published in the window between them lands in BOTH the replay
+	// below and the live channel, so the client processes it twice: a
+	// duplicate toast and duplicate work, though never a lost event.
+	//
+	// internal/watchevents closed the same window with SubscribeAndReplaySince,
+	// one atomic operation under the bus's own lock. Doing that here means a
+	// new method on events.EventBus across three implementations, folded
+	// together with the admission check SubscribeIfAllowed already performs —
+	// which is why it is its own unit rather than a rider on a fix about
+	// COVERAGE. BUG-2730 owns the live-stream-honesty family for both buses.
 	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
 		lastID, parseErr := strconv.ParseInt(lastIDStr, 10, 64)
 		if parseErr != nil || lastID <= 0 {
