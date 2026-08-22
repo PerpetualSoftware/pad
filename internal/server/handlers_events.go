@@ -151,11 +151,17 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ADMISSION BEFORE THE SSE HEADERS, so a refusal is an ordinary JSON
-	// error response (codex round 12). Setting Content-Type:
-	// text/event-stream first meant a 429 carried the JSON error envelope
-	// under an SSE content type, which is a different contract from the
+	// EVERY REFUSAL PATH BEFORE THE SSE HEADERS, so a 429 is an ordinary
+	// JSON error response (codex rounds 12 and 13). Setting Content-Type:
+	// text/event-stream first meant a refusal carried the JSON error
+	// envelope under an SSE content type — a different contract from the
 	// sibling endpoint's for the same refusal.
+	//
+	// Round 12 moved the ADMISSION check up and left the per-workspace
+	// one below the headers, so half the refusals still had the wrong
+	// content type; round 13 found the half I did not move. Both are up
+	// here now, which is the point: the headers go out only once nothing
+	// can refuse.
 	//
 	// The bounds here are the PER-INSTANCE and PER-PRINCIPAL ones, from
 	// the process-wide gate that also covers /api/v1/events/stream
@@ -173,12 +179,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
 	// Then the per-WORKSPACE bound, still atomic with the subscribe so two
 	// concurrent requests cannot both pass a check for the last slot. The
@@ -198,6 +198,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.events.Unsubscribe(ch)
+
+	// Set SSE headers. Nothing below this line refuses the connection.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
 	// Log warning at 80% global capacity. Reads the ADMISSION gate's total
 	// rather than this bus's subscriber count, which since BUG-2726 is only

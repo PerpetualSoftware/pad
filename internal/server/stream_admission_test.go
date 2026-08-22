@@ -697,18 +697,35 @@ func TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints(t *testing.T) {
 	closeSSE := holdAuthedSSE(ctx, t, ts.URL, slug, tok.Token)
 	defer closeSSE()
 
+	// EVERY refusal path, not one per endpoint. Codex round 12 named the
+	// admission refusal; round 13 found that the workspace stream has a
+	// SECOND one — the per-workspace bound — which was still answering
+	// after the SSE headers went out. A reviewer naming one instance is
+	// naming a sample (team CONVE-18), and this table is the enumeration
+	// that the first version of this test skipped.
+	perWorkspaceSrv := testServer(t)
+	perWorkspaceSrv.SetEventBus(events.New())
+	perWorkspaceSrv.SetSSELimits(0, 1, 0) // per-workspace only
+	pwTS := httptest.NewServer(perWorkspaceSrv)
+	defer pwTS.Close()
+	pwSlug, _, pwTok, _ := setupWatchTestUser(t, perWorkspaceSrv)
+	closePW := holdAuthedSSE(ctx, t, pwTS.URL, pwSlug, pwTok.Token)
+	defer closePW()
+
 	for _, tc := range []struct {
-		name string
-		url  string
+		name  string
+		url   string
+		token string
 	}{
-		{"workspace stream", ts.URL + "/api/v1/events?workspace=" + slug},
-		{"watch stream", ts.URL + "/api/v1/events/stream"},
+		{"workspace stream, admission bound", ts.URL + "/api/v1/events?workspace=" + slug, tok.Token},
+		{"watch stream, admission bound", ts.URL + "/api/v1/events/stream", tok.Token},
+		{"workspace stream, per-workspace bound", pwTS.URL + "/api/v1/events?workspace=" + pwSlug, pwTok.Token},
 	} {
 		req, err := http.NewRequest("GET", tc.url, nil)
 		if err != nil {
 			t.Fatalf("%s: build request: %v", tc.name, err)
 		}
-		req.Header.Set("Authorization", "Bearer "+tok.Token)
+		req.Header.Set("Authorization", "Bearer "+tc.token)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("%s: request failed: %v", tc.name, err)

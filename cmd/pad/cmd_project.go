@@ -1088,9 +1088,15 @@ func watchCmd() *cobra.Command {
 				} else {
 					wait += "s"
 				}
+				// All THREE knobs named, because all three can refuse
+				// this endpoint (codex round 13 — the first version
+				// listed only the two that also cover the watch stream,
+				// which is a true statement that omits the one most
+				// likely to be the cause for a busy workspace).
 				return fmt.Errorf("the server is at its streaming-connection limit; retry in %s, "+
-					"or raise PAD_SSE_MAX_CONNECTIONS / PAD_SSE_MAX_PER_USER (both cover this stream "+
-					"and the agent watch stream together)", wait)
+					"or raise PAD_SSE_MAX_PER_WORKSPACE (this stream only), "+
+					"PAD_SSE_MAX_CONNECTIONS or PAD_SSE_MAX_PER_USER "+
+					"(both cover this stream and the agent watch stream together)", wait)
 			}
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
