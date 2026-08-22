@@ -6,11 +6,15 @@ import (
 )
 
 // BUG-2731's defect, found in this package by a cross-artifact pass on that
-// unit's branch. MemoryBus assigns its own ids from 1 on every process start,
-// so a client resuming with a cursor from a previous incarnation is asking
-// about a sequence this process never had — and an empty buffer answering with
-// a non-nil empty slice tells it, through both SSE handlers, that it missed
-// nothing.
+// unit's branch: an empty buffer answering a resume with a non-nil empty slice
+// tells the client, through both SSE handlers, that it missed nothing.
+//
+// THE CURSORS HERE SIT ABOVE THIS INCARNATION'S BASE, and that is load-bearing
+// rather than incidental. Since BUG-2736 a cursor at or below base is refused
+// one level up, by the incarnation check in EventsSince — so a test using a
+// small literal like 4200 would still pass while proving nothing about the
+// cold-buffer guard it is named for. Two guards, two reachable cases, tested
+// separately.
 //
 // Both halves asserted: the gap IS produced where continuity cannot be proven,
 // and is NOT produced where it can. Without the second, a bus that refused
@@ -19,7 +23,7 @@ func TestAColdBufferCannotVouchForAResume(t *testing.T) {
 	b := New()
 	t.Cleanup(b.Close)
 
-	if got := b.EventsSince(4200); got != nil {
+	if got := b.EventsSince(b.base + 4200); got != nil {
 		t.Fatalf("a resume against a bus that has published nothing must be a gap, got %d notifications", len(got))
 	}
 
@@ -37,11 +41,66 @@ func TestAColdBufferCannotVouchForAResume(t *testing.T) {
 	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if got := b.EventsSince(1); got == nil {
+	all := b.EventsSince(0)
+	if len(all) != 1 {
+		t.Fatalf("a fresh subscriber must receive the buffered notification, got %v", all)
+	}
+	if got := b.EventsSince(all[0].ID); got == nil {
 		t.Fatal("a cursor at our newest notification must be served")
 	}
-	if got := b.EventsSince(0); got == nil || len(got) != 1 {
-		t.Fatalf("a fresh subscriber must receive the buffered notification, got %v", got)
+}
+
+// The incarnation guard, which is the OTHER way a resume can be unservable on
+// this bus (BUG-2736). Separated from the cold-buffer test above because the
+// two answer different questions and a single test covering both would go on
+// passing if either guard were deleted.
+func TestACursorFromAPreviousIncarnationIsAGapEvenWithAWarmBuffer(t *testing.T) {
+	b := New()
+	t.Cleanup(b.Close)
+
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	// PREMISE: the buffer is warm, so the cold-buffer guard cannot be what
+	// answers this. Without the assertion the test would pass on a bus where
+	// the publish silently failed.
+	all := b.EventsSince(0)
+	if len(all) != 1 {
+		t.Fatalf("fixture: expected one buffered notification, got %d", len(all))
+	}
+
+	// A cursor a PREVIOUS incarnation could have issued: at or below base.
+	if got := b.EventsSince(b.base); got != nil {
+		t.Fatalf("a cursor at this incarnation's base belongs to the dead space and must be a gap, got %d", len(got))
+	}
+	if got := b.EventsSince(1); got != nil {
+		t.Fatalf("a cursor of 1 — what every pre-BUG-2736 incarnation issued first — must be a gap, got %d", len(got))
+	}
+
+	// Control: the first id this incarnation issued is base+1, and a cursor
+	// there is served. One away from the refused value, so the boundary is
+	// pinned rather than approximated.
+	if got := b.EventsSince(b.base + 1); got == nil {
+		t.Fatal("the first id this incarnation issued must be servable")
+	}
+
+	// AND THE WIRING, not just the component (team CONVE-19). The SSE handler
+	// resumes through SubscribeAndReplaySince, not EventsSince; when this
+	// guard was written inline in EventsSince the handler's path did not have
+	// it, and every assertion above still passed. Both entry points, or the
+	// fix is only true of the one nobody calls.
+	ch, missed := b.SubscribeAndReplaySince(1)
+	defer b.Unsubscribe(ch)
+	if ch == nil {
+		t.Fatal("the subscription must still be established when the replay is refused")
+	}
+	if missed != nil {
+		t.Fatalf("SubscribeAndReplaySince must refuse a previous incarnation's cursor, got %d notifications", len(missed))
+	}
+	ch2, missed2 := b.SubscribeAndReplaySince(b.base + 1)
+	defer b.Unsubscribe(ch2)
+	if missed2 == nil {
+		t.Fatal("SubscribeAndReplaySince must serve a cursor this incarnation issued")
 	}
 }
 
@@ -53,7 +112,7 @@ func TestSubscribeAndReplaySinceRefusesAColdResume(t *testing.T) {
 	b := New()
 	t.Cleanup(b.Close)
 
-	ch, missed := b.SubscribeAndReplaySince(4200)
+	ch, missed := b.SubscribeAndReplaySince(b.base + 4200)
 	if ch == nil {
 		t.Fatal("the subscription must still be established even when the replay is refused")
 	}
@@ -88,10 +147,10 @@ func TestMemoryBusReportsItsOwnResumeGaps(t *testing.T) {
 
 	// Both entry points, because the handler uses SubscribeAndReplaySince and
 	// EventsSince is the documented standalone primitive.
-	if got := b.EventsSince(4200); got != nil {
+	if got := b.EventsSince(b.base + 4200); got != nil {
 		t.Fatalf("expected a gap, got %d", len(got))
 	}
-	ch, missed := b.SubscribeAndReplaySince(4200)
+	ch, missed := b.SubscribeAndReplaySince(b.base + 4200)
 	if missed != nil {
 		t.Fatalf("expected a gap, got %d", len(missed))
 	}
@@ -106,7 +165,11 @@ func TestMemoryBusReportsItsOwnResumeGaps(t *testing.T) {
 	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if got := b.EventsSince(1); got == nil {
+	warm := b.EventsSince(0)
+	if len(warm) != 1 {
+		t.Fatalf("fixture: expected one buffered notification, got %d", len(warm))
+	}
+	if got := b.EventsSince(warm[0].ID); got == nil {
 		t.Fatal("a caught-up cursor must be served")
 	}
 	ch2, missed2 := b.SubscribeAndReplaySince(0)

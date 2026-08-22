@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -110,6 +111,37 @@ type Config struct {
 	// nothing either way. It also partitions a rolling upgrade in both
 	// directions; see docs/deployment.md.
 	RedisNamespace string `toml:"redis_namespace"`
+
+	// EventsPublishEpoch turns on PHASE 2 of the event ID-space migration
+	// (BUG-2736): this instance publishes the "<epoch>|<id>|<json>" wire form
+	// instead of the historical bare JSON body.
+	//
+	// IT IS A TWO-PHASE FLIP, AND THE ORDER IS NOT OPTIONAL. Every instance
+	// ACCEPTS both forms from the release that introduced this field; only
+	// emission is gated. An instance running an OLDER binary cannot parse a
+	// prefixed payload at all — it fails to unmarshal and drops the event for
+	// its own clients — so flipping this before every instance is upgraded
+	// loses events for the ones that are not. Phase 1: roll the new binary
+	// everywhere with this false. Phase 2: set it true and roll again. Both
+	// forms are in flight during that second roll, which is exactly the case
+	// accept-both exists for, so it is zero-loss.
+	//
+	// What phase 2 buys, and why the emission is worth a migration: the epoch
+	// identifies WHICH INCARNATION of the shared Redis counter an event came
+	// from, so a receiving instance can tell a counter reset from ordinary
+	// progress instead of merging two ID spaces into one replay buffer. Phase
+	// 2 also moves ID assignment into a single atomic Redis script, so publish
+	// order equals ID order globally.
+	//
+	// Rolling BACK TO PHASE 1 is safe for the same reason: set the EFFECTIVE
+	// value false and roll — peers accept the bare form throughout. Two
+	// wrinkles, both easy to get wrong: unsetting the environment variable is
+	// not the same as setting it false, because this field can also come from
+	// config.toml and the file's value stands when the variable is absent; and
+	// downgrading PAST phase 1 is a second step in the reverse order, because
+	// a pre-phase-1 binary still cannot parse the prefix. See
+	// docs/deployment.md for the full procedure in both directions.
+	EventsPublishEpoch bool `toml:"events_publish_epoch"`
 
 	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
 	// pointer so an absent `[push]` table stays nil and Save() (via the
@@ -359,6 +391,21 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_REDIS_NAMESPACE"); v != "" {
 		cfg.RedisNamespace = v
+	}
+	if v := os.Getenv("PAD_EVENTS_PUBLISH_EPOCH"); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil {
+			cfg.EventsPublishEpoch = on
+		} else {
+			// LOUD, because the silent reading is the dangerous one
+			// (BUG-2736, codex round 9). An operator who typed "yes" believes
+			// they have flipped phase 2; the value is ignored and the
+			// deployment stays on phase 1, which looks exactly like a correct
+			// phase-1 deployment from every metric. Ignoring it is still the
+			// right BEHAVIOUR — a typo must not flip a migration whose wrong
+			// direction loses events — but it must not be silent.
+			slog.Warn("PAD_EVENTS_PUBLISH_EPOCH is not a boolean and was ignored; this instance keeps its current event ID-space phase",
+				"value", v)
+		}
 	}
 	if v := os.Getenv("PAD_SSE_MAX_PER_USER"); v != "" {
 		if max, err := strconv.Atoi(v); err == nil {

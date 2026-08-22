@@ -26,6 +26,7 @@ func TestStreamAndRedisEnvMapping(t *testing.T) {
 	t.Setenv("PAD_SSE_MAX_PER_USER", "7")
 	t.Setenv("PAD_SSE_MAX_CONNECTIONS", "11")
 	t.Setenv("PAD_SSE_MAX_PER_WORKSPACE", "13")
+	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -46,6 +47,30 @@ func TestStreamAndRedisEnvMapping(t *testing.T) {
 	if cfg.SSEMaxPerWorkspace != 13 {
 		t.Errorf("SSEMaxPerWorkspace = %d, want 13", cfg.SSEMaxPerWorkspace)
 	}
+	// BUG-2736's phase-2 flip. Its consumer (the Redis bus wire form) has its
+	// own tests and they all pass with Load() never populating this — the
+	// deployment would simply stay on phase 1 forever, which looks exactly
+	// like a correct phase-1 deployment. That is the wiring gap this closes.
+	if !cfg.EventsPublishEpoch {
+		t.Error("EventsPublishEpoch = false, want true from PAD_EVENTS_PUBLISH_EPOCH")
+	}
+}
+
+// A value that is not a boolean must leave the field alone rather than be
+// read as truthy. Getting this backwards flips a deployment into phase 2 on a
+// typo, which is the one direction of this migration that loses events on
+// instances that have not been upgraded.
+func TestEventsPublishEpochIgnoresANonBooleanValue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "yes-please")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.EventsPublishEpoch {
+		t.Error("an unparseable value must leave the flip off, not turn it on")
+	}
 }
 
 // TestStreamAndRedisDefaults pins the shipped defaults. The per-user
@@ -55,6 +80,7 @@ func TestStreamAndRedisDefaults(t *testing.T) {
 	for _, key := range []string{
 		"PAD_REDIS_NAMESPACE", "PAD_SSE_MAX_PER_USER",
 		"PAD_SSE_MAX_CONNECTIONS", "PAD_SSE_MAX_PER_WORKSPACE",
+		"PAD_EVENTS_PUBLISH_EPOCH",
 	} {
 		if _, set := os.LookupEnv(key); set {
 			t.Setenv(key, "")
@@ -66,7 +92,97 @@ func TestStreamAndRedisDefaults(t *testing.T) {
 	if cfg.RedisNamespace != "" {
 		t.Errorf("default RedisNamespace = %q, want empty — a default namespace would move every existing deployment's keys", cfg.RedisNamespace)
 	}
+	// The default MUST be off. Phase 2 emits a wire form older instances
+	// cannot parse, so defaulting it on would break a rolling upgrade for
+	// every deployment that upgrades without reading the release notes —
+	// which is the failure the two-phase rollout exists to prevent.
+	if cfg.EventsPublishEpoch {
+		t.Error("default EventsPublishEpoch = true, want false — phase 2 must be opted into after every instance accepts the new form")
+	}
 	if cfg.SSEMaxPerUser != 50 {
 		t.Errorf("default SSEMaxPerUser = %d, want 50", cfg.SSEMaxPerUser)
 	}
+}
+
+// codex round 4. The env-var mapping test above proves PAD_EVENTS_PUBLISH_EPOCH
+// reaches the field; it says nothing about the TOML tag. A wrong or missing
+// `toml:"events_publish_epoch"` would keep every other test green while an
+// operator who set the flag in ~/.pad/config.toml — which is the form the
+// rollback procedure warns about, because a file value outlives an unset env
+// var — silently stayed on phase 1.
+func TestEventsPublishEpochRoundTripsThroughTheConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "")
+
+	cfg := DefaultConfig()
+	cfg.EventsPublishEpoch = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.EventsPublishEpoch {
+		t.Error("events_publish_epoch did not survive a save/load round trip through config.toml")
+	}
+
+	// The other half of the rollback warning: an ABSENT env var must leave the
+	// file's value standing, not silently reset it. If this ever changes,
+	// docs/deployment.md's rollback procedure changes with it.
+	if os.Getenv("PAD_EVENTS_PUBLISH_EPOCH") != "" {
+		t.Fatal("fixture: the env var must be unset for this half to mean anything")
+	}
+	if !reloaded.EventsPublishEpoch {
+		t.Error("an unset env var must leave the config file's value alone")
+	}
+}
+
+// codex round 12. The rollback procedure tells an operator to make the
+// EFFECTIVE value false, and warns that unsetting the environment variable is
+// not the same thing. Neither half of that had a test, so a load order that
+// let the file win over an explicit env-var false would have kept a deployment
+// stuck on phase 2 while its operator believed they had rolled back.
+func TestEventsPublishEpochPrecedenceBetweenEnvAndFile(t *testing.T) {
+	writeFileValue := func(t *testing.T) {
+		t.Helper()
+		cfg := DefaultConfig()
+		cfg.EventsPublishEpoch = true
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+
+	t.Run("an explicit env false overrides a true in the file", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		writeFileValue(t)
+		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "false")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if cfg.EventsPublishEpoch {
+			t.Error("an explicit env-var false must win over the config file — this is the documented rollback")
+		}
+	})
+
+	t.Run("an unparseable env value leaves the file's value standing", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		writeFileValue(t)
+		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "off-ish")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		// The value is IGNORED, not read as false: a typo must not flip a
+		// migration in either direction. The warning is what tells the
+		// operator; the behaviour is to change nothing.
+		if !cfg.EventsPublishEpoch {
+			t.Error("an unparseable env value must leave the configured value alone, not reset it")
+		}
+	})
 }

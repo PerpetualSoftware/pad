@@ -77,6 +77,55 @@ const (
 	// ResetReasonSubscriptionResumed is scoped to ONE workspace: a dropped
 	// subscription says nothing about any other channel. See Observer.
 	ResetReasonSubscriptionResumed = "subscription_resumed"
+
+	// ResetReasonEpochChange means the shared Redis counter's ID SPACE
+	// changed: the epoch travelling with an arriving message is not the one
+	// this instance had adopted (BUG-2736). Every buffer is dropped, not just
+	// the arriving event's workspace, because the counter is global.
+	//
+	// What an operator does with it: a handful at once, correlated with a
+	// deploy or a Redis restart, is the mechanism working. A steady trickle
+	// means the counter key is being evicted or deleted repeatedly — check
+	// maxmemory policy against the events keyspace.
+	ResetReasonEpochChange = "epoch_change"
+
+	// ResetReasonCounterBackward means an ID arrived at or below a buffer's
+	// high-water mark WITHOUT an epoch change: the same numeric space
+	// delivered something out of order, or restarted inside its own epoch.
+	//
+	// WHAT TO EXPECT DEPENDS ON THE PHASE. On phase 1 it can be non-zero at
+	// any time: that path assigns and publishes in two calls, so two instances
+	// can interleave, and a counter reset there carries no epoch to explain
+	// itself. During any roll with two publisher versions running, expect it
+	// to rise. On phase 2 with every publisher flipped, expect it at or near
+	// zero — a persistent rate there is an anomaly worth investigating rather
+	// than tuning away. See the comment at the branch that reports it.
+	ResetReasonCounterBackward = "counter_backward"
+
+	// ResetReasonEpochRegressed means a LOWER generation was observed, so this
+	// instance could not vouch for the space its buffers described and dropped
+	// them.
+	//
+	// TWO CAUSES, told apart by COUNT rather than by anything at the moment it
+	// fires. A single one alongside an epoch_change is a message that was in
+	// flight when the generation rotated — benign, and the drop next to it is
+	// nearly free because the rotation had already dropped the buffers. A
+	// RUN of them means the counter itself went backwards and stayed there,
+	// realistically a Redis failover to a replica that lost writes; the bus
+	// recovers by adopting the lower generation, but every ID space boundary
+	// it reports is suspect until the counter is durable again.
+	ResetReasonEpochRegressed = "epoch_regressed"
+
+	// ResetReasonUndecodableMessage means a pub/sub message could not be
+	// parsed, so ONE workspace's coverage ended rather than the buffer going
+	// on claiming a span that now has a hole in it.
+	//
+	// Expect zero. A non-zero count means something is publishing onto this
+	// installation's channels that is not this installation — a namespace
+	// collision is the likely cause — or that a payload is being truncated in
+	// transit. Either way the events behind it are lost; the counter is what
+	// says so.
+	ResetReasonUndecodableMessage = "undecodable_message"
 )
 
 // observable is the shared, nil-safe Observer holder both bus implementations

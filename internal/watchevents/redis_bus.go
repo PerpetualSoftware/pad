@@ -54,6 +54,10 @@ const (
 	// question is not "is this number bigger" but "is this the same
 	// sequence". Minted once per id space by the publish script and carried
 	// on every message.
+	//
+	// AN OPAQUE TOKEN HERE, A NUMERIC BASE ON MemoryBus (BUG-2736), and the
+	// two are NOT interchangeable spellings of one idea. The reason is stated
+	// once, in internal/idspace's package comment.
 	redisWatchEpochSuffix = "watchevents_epoch"
 
 	// DEPLOYMENT SCOPING (BUG-2724). These names carry the installation's
