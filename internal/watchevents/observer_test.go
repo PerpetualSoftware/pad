@@ -159,6 +159,55 @@ func TestMemoryBusReportsSlowSubscriberDrop(t *testing.T) {
 	}
 }
 
+// TestRedisBusReportsSlowSubscriberDrop is the REDIS bus's own drop
+// site. The memory-bus test above covers a different function in a
+// different file (codex round 5): the two implementations each have
+// their own fan-out loop, so one being instrumented says nothing about
+// the other, and the Redis one is the only one a multi-instance
+// deployment ever runs.
+func TestRedisBusReportsSlowSubscriberDrop(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newMiniredisBus(t, 128)
+	obs := newRecordingObserver()
+	b.SetObserver(obs)
+
+	ch := b.Subscribe()
+
+	// PREMISE: a subscriber with room is delivered to and reports
+	// nothing, so the assertion below is about the OVERFLOW rather than
+	// about a bus that reports on every notification.
+	b.fanOutLocally(Notification{ID: 1, Kind: KindPush, ItemRef: "TASK-1"})
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("premise failed: a subscriber with room did not receive the notification")
+	}
+	if got := obs.snapshot(); got.totalEvents != 0 {
+		t.Fatalf("premise failed: healthy delivery reported %d observer events (%+v)", got.totalEvents, got)
+	}
+
+	// Fill the 64-deep subscriber buffer without draining, then overflow.
+	// Ids stay contiguous so no gap is reported and the drop is the only
+	// event in the snapshot.
+	for i := int64(2); i <= 65; i++ {
+		b.fanOutLocally(Notification{ID: i, Kind: KindPush, ItemRef: "TASK-2"})
+	}
+	if got := obs.snapshot(); got.totalEvents != 0 {
+		t.Fatalf("premise failed: filling to capacity reported %d events (%+v)", got.totalEvents, got)
+	}
+
+	b.fanOutLocally(Notification{ID: 66, Kind: KindPush, ItemRef: "TASK-3"})
+
+	got := obs.snapshot()
+	if got.dropped[DropReasonSlowSubscriber] != 1 {
+		t.Fatalf("dropped[%s] = %d, want 1 (%+v)", DropReasonSlowSubscriber, got.dropped[DropReasonSlowSubscriber], got)
+	}
+	if got.totalEvents != 1 {
+		t.Fatalf("total observer events = %d, want exactly 1 — the drop and nothing else (%+v)", got.totalEvents, got)
+	}
+}
+
 // TestRedisBusReportsSequenceGap drives fanOutLocally directly, which is
 // where the detection lives, and pins BOTH numbers: that a gap was
 // reported once, and how many notifications it spanned. One counter

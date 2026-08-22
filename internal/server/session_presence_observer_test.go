@@ -141,6 +141,88 @@ func TestPresenceReportsCorruptEntriesAsListFailures(t *testing.T) {
 	// can exercise it; see the comment at that branch.
 }
 
+// TestPresenceReportsRenewAndDeregisterFailures covers the two ops the
+// earlier tests left uninstrumented (codex round 5). They matter for
+// opposite reasons, which is exactly why counting them separately was
+// worth doing: a failed RENEW under-reports (a live session expires out
+// of the picker), a failed DEREGISTER over-reports (a dead session stays
+// listed and a push aimed at it is accepted and reaches nobody).
+func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("renew", func(t *testing.T) {
+		t.Parallel()
+		mr := miniredis.RunT(t)
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 200 * time.Millisecond})
+		t.Cleanup(func() { _ = client.Close() })
+
+		p := NewRedisSessionPresence(client)
+		p.opTimeout = 300 * time.Millisecond
+		p.renewInterval = 20 * time.Millisecond
+		t.Cleanup(p.Close)
+
+		obs := newRecordingPresenceObserver()
+		p.SetObserver(obs)
+
+		if id := p.Add("user-1", SessionIdentity{Label: "docapp"}); id == "" {
+			t.Fatal("premise failed: Add returned an empty session id")
+		}
+		// PREMISE: renewals are running and succeeding, so the failures
+		// below are caused by the outage rather than by a loop that never
+		// ticked.
+		time.Sleep(80 * time.Millisecond)
+		if counts, total := obs.counts(); total != 0 {
+			t.Fatalf("premise failed: healthy renewals reported %d failures %v", total, counts)
+		}
+
+		mr.Close()
+
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if counts, _ := obs.counts(); counts[PresenceOpRenew] > 0 {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		counts, _ := obs.counts()
+		t.Fatalf("renewals against a dead Redis reported no %s failure: %v", PresenceOpRenew, counts)
+	})
+
+	t.Run("deregister", func(t *testing.T) {
+		t.Parallel()
+		mr := miniredis.RunT(t)
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 200 * time.Millisecond})
+		t.Cleanup(func() { _ = client.Close() })
+
+		p := NewRedisSessionPresence(client)
+		p.opTimeout = 300 * time.Millisecond
+		t.Cleanup(p.Close)
+
+		obs := newRecordingPresenceObserver()
+		p.SetObserver(obs)
+
+		id := p.Add("user-1", SessionIdentity{Label: "docapp"})
+		if id == "" {
+			t.Fatal("premise failed: Add returned an empty session id")
+		}
+		// PREMISE: a HEALTHY deregister reports nothing, so the assertion
+		// below distinguishes the failure from the operation itself.
+		p.Remove("user-1", id)
+		if counts, total := obs.counts(); total != 0 {
+			t.Fatalf("premise failed: a healthy deregister reported %d failures %v", total, counts)
+		}
+
+		id2 := p.Add("user-1", SessionIdentity{Label: "docapp-2"})
+		mr.Close()
+		p.Remove("user-1", id2)
+
+		counts, _ := obs.counts()
+		if counts[PresenceOpDeregister] == 0 {
+			t.Fatalf("a failed deregister reported no %s failure: %v — a dead session stays listed and a push aimed at it reaches nobody", PresenceOpDeregister, counts)
+		}
+	})
+}
+
 func corruptEntryFixture(t *testing.T) (*RedisSessionPresence, *miniredis.Miniredis, *redis.Client, *recordingPresenceObserver) {
 	t.Helper()
 	mr := miniredis.RunT(t)
