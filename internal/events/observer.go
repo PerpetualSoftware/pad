@@ -102,14 +102,18 @@ const (
 	// than tuning away. See the comment at the branch that reports it.
 	ResetReasonCounterBackward = "counter_backward"
 
-	// ResetReasonEpochRegressed means the shared generation counter went
-	// BACKWARDS and stayed there — realistically a Redis failover to a replica
-	// whose copy of that counter predates the last rotation.
+	// ResetReasonEpochRegressed means a LOWER generation was observed, so this
+	// instance could not vouch for the space its buffers described and dropped
+	// them.
 	//
-	// It is rare and it is serious: unlike a rotation, it means Redis lost
-	// writes. Expect zero. One occurrence per failover is the mechanism
-	// recovering; a repeating count means the counter is not durable, and
-	// every ID space boundary this bus reports is suspect until it is.
+	// TWO CAUSES, told apart by COUNT rather than by anything at the moment it
+	// fires. A single one alongside an epoch_change is a message that was in
+	// flight when the generation rotated — benign, and the drop next to it is
+	// nearly free because the rotation had already dropped the buffers. A
+	// RUN of them means the counter itself went backwards and stayed there,
+	// realistically a Redis failover to a replica that lost writes; the bus
+	// recovers by adopting the lower generation, but every ID space boundary
+	// it reports is suspect until the counter is durable again.
 	ResetReasonEpochRegressed = "epoch_regressed"
 
 	// ResetReasonUndecodableMessage means a pub/sub message could not be

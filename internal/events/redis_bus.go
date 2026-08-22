@@ -1135,8 +1135,26 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// instead flipped the bus BACK to the dead generation, dropping every
 		// buffer a second time and making the "one drop per instance per roll"
 		// property false.
-		slog.Warn("events: discarding a message from an abandoned ID space",
+		// THE MESSAGE IS DISCARDED AND SO IS OUR COVERAGE (codex round 19).
+		// Discarding alone left the buffers claiming a span they could still
+		// answer, so a client reconnecting during the window was told it was
+		// caught up — while, if this is a REGRESSION rather than a straggler,
+		// the messages being discarded are the live stream. Thirty seconds of
+		// real events missed, silently, by a bus that had already decided it
+		// could not classify what it was seeing.
+		//
+		// Ending coverage is the honest reading of "we cannot tell which space
+		// this belongs to". The classification still waits out the window —
+		// the epoch is NOT adopted here — so a true straggler does not drag
+		// the bus into the dead space. Its cost is one extra drop next to a
+		// rotation that had already dropped the buffers, which is nearly free
+		// and loud either way.
+		slog.Warn("events: discarding a message from an abandoned ID space and ending replay coverage",
 			"message_epoch", epoch, "current_epoch", b.epoch, "id", event.ID, "workspace", event.WorkspaceID)
+		if b.buffersHoldEvents() {
+			b.dropAllBuffers(false)
+			reset = ResetReasonEpochRegressed
+		}
 		return
 	}
 	if epoch != 0 && epoch < b.epoch {

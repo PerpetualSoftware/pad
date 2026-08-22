@@ -573,20 +573,29 @@ func TestAStragglerFromAnAbandonedIDSpaceIsDiscarded(t *testing.T) {
 	if b.epoch != 2 {
 		t.Fatalf("a straggler from an abandoned generation must not move the epoch; it became %d", b.epoch)
 	}
-	if _, resets := obs.snapshot(); len(resets) != 1 {
-		t.Fatalf("a straggler must not cause a second reset, got %v", resets)
-	}
-	// And it must not be BUFFERED, or the dead space's id sits in a live
-	// buffer and a resume can be answered across the boundary.
+	// It must not be BUFFERED, or the dead space's id sits in a live buffer
+	// and a resume can be answered across the boundary.
 	if rb, ok := b.replayBuffers["ws-a"]; ok && rb.count != 0 {
 		t.Fatalf("the straggler must not be appended; ws-a's buffer holds %d events", rb.count)
 	}
+	// AND IT ENDS COVERAGE (codex round 19). Discarding the message while
+	// leaving the buffers valid told a reconnecting client it was caught up —
+	// harmless if this really is a straggler, and thirty seconds of silently
+	// missed events if the generation regressed instead. The bus cannot tell
+	// which at this moment, which is exactly why it must not claim to.
+	_, resets = obs.snapshot()
+	if len(resets) != 2 || resets[1] != ResetReasonEpochRegressed {
+		t.Fatalf("a lower generation must end coverage and be reported as %s, got %v", ResetReasonEpochRegressed, resets)
+	}
+	if got := b.EventsSince("ws-b", 1); got != nil {
+		t.Fatalf("coverage must have ended while the generation is in doubt, got %d events", len(got))
+	}
 
-	// Control: the live generation still buffers normally, so the discard is
-	// scoped to the abandoned space rather than to the workspace.
+	// Control: the live generation re-establishes coverage immediately, so the
+	// end of coverage is a resync and not a dead bus.
 	b.fanOutFromRedis(genA, 2, Event{ID: 2, Type: ItemUpdated, WorkspaceID: "ws-a"})
 	if got := b.EventsSince("ws-a", 2); got == nil {
-		t.Fatal("a message in the live generation must establish coverage")
+		t.Fatal("a message in the live generation must establish coverage again")
 	}
 }
 
