@@ -16,8 +16,13 @@
 // none, because an operator rule that holds for two of three keyspaces is
 // harder to state than the flat one it replaces. This package is that
 // "at once": one value, built once in cmd/pad/cmd_server.go, passed into
-// all three constructors. The three cannot drift because there is nothing
-// to drift from.
+// all three constructors.
+//
+// That is a CONVENTION, not a guarantee — each constructor takes its own
+// Keys and nothing in the type system stops a future caller passing a
+// different one. cmd/pad/redis_keyspace_wiring_test.go is what enforces
+// it, and it does so by reading the wiring source, which is a weaker
+// instrument than a compiler and is named as such where it lives.
 //
 // HAZARD FOR ANYONE SWEEPING THE PREFIX. The string "pad:" also begins
 // Pad's OAuth SCOPE values — pad:read, pad:write, pad:admin — in
@@ -46,6 +51,27 @@ import (
 // shared Redis's keyspace is still legible to an operator running KEYS.
 const prefix = "pad:"
 
+// reservedNames are Pad's own first path segments. A namespace equal to
+// one of them nests this installation inside the DEFAULT installation's
+// keyspace — "events" being the sharp case, since pad:events:* is the
+// activity channel space — which is the collision the namespace exists to
+// prevent, reached through the namespace itself.
+//
+// Kept in sync by hand with the suffixes the three packages pass to Name.
+// A drift here is not silent: it costs a namespace that should have been
+// rejected, which is exactly the case the reserved list is for.
+var reservedNames = map[string]bool{
+	"events":            true,
+	"event_seq":         true,
+	"watchevents":       true,
+	"watchevents_seq":   true,
+	"watchevents_epoch": true,
+	"session":           true,
+	"sessions":          true,
+}
+
+const reservedList = "events, event_seq, watchevents, watchevents_seq, watchevents_epoch, session, sessions"
+
 // Keys builds namespaced names. The zero value is Default — today's exact
 // names — which is what makes an existing deployment's replay buffers,
 // counters and presence entries survive an upgrade untouched.
@@ -73,15 +99,31 @@ var Default = Keys{}
 // The character set is deliberately narrow — lowercase letters, digits,
 // hyphen, underscore — because a namespace ends up inside key names, in
 // Lua KEYS arguments, and in operator-facing logs. A colon is rejected
-// specifically: it is Pad's own separator, and allowing one would let a
-// namespace forge a key path (ns "a:events" would make pad:a:events:<ws>
-// collide with installation "a"'s channel).
+// specifically: it is Pad's own separator, so a namespace containing one
+// spans segments and makes the keyspace ambiguous to anyone (or anything)
+// reading KEYS output back.
+//
+// An earlier version of this comment justified that with a collision
+// example that was simply WRONG — it claimed ns "a:events" would produce
+// pad:a:events:<ws> and collide with installation "a"'s channel, when the
+// suffix is appended too and the result is pad:a:events:events:<ws>. The
+// rule is right; the reasoning was not, and a false example is worse than
+// none because the next reader trusts it.
+//
+// A REAL collision exists and needs no colon at all: reservedNames below
+// rejects namespaces equal to Pad's own first path segments. Namespace
+// "events" would put every key of this installation inside
+// pad:events:*, which is the default installation's activity CHANNEL
+// space.
 func Parse(ns string) (Keys, error) {
 	if ns == "" {
 		return Default, nil
 	}
 	if strings.TrimSpace(ns) == "" {
 		return Keys{}, fmt.Errorf("redis namespace %q is whitespace only: leave it unset for the default keyspace, or give it a real name — a blank value would silently share the default keyspace with another installation", ns)
+	}
+	if reservedNames[ns] {
+		return Keys{}, fmt.Errorf("redis namespace %q is one of Pad's own key segments (%s): it would place this installation's keys inside the default installation's keyspace", ns, reservedList)
 	}
 	for _, r := range ns {
 		switch {

@@ -18,12 +18,22 @@ import "sync"
 // WHAT THIS DOES AND DOES NOT SEE (BUG-2727). These callbacks report what
 // PAD detects. They do NOT hook go-redis, which has its own silent drop:
 // it buffers 100 messages per subscription and discards further ones after
-// a 60s send timeout, logging only through its own internal logger. That
-// drop is not reported here directly — it is reported by its CONSEQUENCE,
-// as a SequenceGap, because a discarded message leaves a hole in the id
-// sequence exactly like a message lost across a reconnect does. So
-// SequenceGap counts "this instance missed something", not "Redis was at
-// fault"; do not read a gap as evidence of any particular cause.
+// a 60s send timeout, logging only through its own internal logger.
+//
+// Such a drop is USUALLY visible here by its CONSEQUENCE, as a
+// SequenceGap: the discarded message leaves a hole in the id sequence
+// exactly like one lost across a reconnect. Two boundaries on that, both
+// real:
+//
+//   - Detection needs a LATER notification to expose the hole. Drop the
+//     newest message on a bus that then goes quiet and no gap is ever
+//     reported, because nothing arrives to be non-consecutive with.
+//   - A gap says "this instance missed something", NOT "Redis was at
+//     fault". Reconnects produce them too. Do not read a gap as evidence
+//     of any particular cause.
+//
+// go-redis's own log line is the only direct evidence of that drop, which
+// is why cmd/pad routes its logger into slog.
 //
 // Implementations must be safe for concurrent use and must not block.
 //

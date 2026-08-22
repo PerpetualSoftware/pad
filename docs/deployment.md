@@ -93,9 +93,9 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 Pad has two SSE endpoints and they share one budget. `/api/v1/events` is
 workspace-scoped (the web UI's activity stream); `/api/v1/events/stream` is
 user-scoped (agent watch notifications, `pad watch --stream`). A held
-connection costs the same goroutine, subscription and — with Redis — presence
-registration whichever one opened it, so `PAD_SSE_MAX_CONNECTIONS` and
-`PAD_SSE_MAX_PER_USER` bound them together. Only `PAD_SSE_MAX_PER_WORKSPACE`
+connection costs a goroutine and a bus subscription whichever one opened it —
+and, on the watch stream only, a session-presence registration in shared Redis —
+so `PAD_SSE_MAX_CONNECTIONS` and `PAD_SSE_MAX_PER_USER` bound them together. Only `PAD_SSE_MAX_PER_WORKSPACE`
 is endpoint-specific, because the watch stream has no workspace to count
 against.
 

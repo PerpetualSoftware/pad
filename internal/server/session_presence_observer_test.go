@@ -105,9 +105,10 @@ func TestPresenceReportsFailedOps(t *testing.T) {
 // under-report precisely the case an operator is least likely to notice
 // any other way — a dead Redis is obvious, a corrupt row is not.
 //
-// Drives real corrupt rows through miniredis rather than calling the
-// reporter, and covers BOTH shapes: a non-JSON string, and a value that
-// is not a string at all.
+// Drives a real corrupt row through miniredis rather than calling the
+// reporter. ONE shape, not both: the non-string arm is unreachable
+// through MGET and the subtest that would have driven it is absent by
+// design — see the note where it would have been.
 func TestPresenceReportsCorruptEntriesAsListFailures(t *testing.T) {
 	t.Parallel()
 

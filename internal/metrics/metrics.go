@@ -29,9 +29,11 @@ type Metrics struct {
 
 	// Redis operability metrics (BUG-2727). Wired from
 	// cmd/pad/cmd_server.go and only meaningful on a deployment with
-	// PAD_REDIS_URL set — a single-process binary never touches Redis, so
-	// these stay at their zero values there, which is the honest reading
-	// rather than an absence.
+	// PAD_REDIS_URL set. On a single-process binary the COUNTERS below
+	// stay at zero, which is the honest reading — nothing was dropped,
+	// nothing was missed. pad_redis_up is the exception and is not
+	// registered at all there, because a zero on a GAUGE named "up"
+	// asserts something false; see its own comment.
 	//
 	// RedisUp is written by internal/server's health prober, NOT sampled
 	// on scrape: a collector that dials on every scrape turns a monitoring
@@ -298,7 +300,7 @@ func New() *Metrics {
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
-		Help: "Failed session-presence operations by op. Failures leave sessions unlisted and untargetable.",
+		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew leave a live session unlisted and untargetable, deregister leaves a DEAD one listed, list returns 503, prune is benign.",
 	}, []string{"op"})
 
 	reg.MustRegister(

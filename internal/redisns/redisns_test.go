@@ -64,10 +64,10 @@ func TestNamespacedNames(t *testing.T) {
 func TestParseRejectsNamesThatCouldForgeAKeyPath(t *testing.T) {
 	t.Parallel()
 
-	// The colon case is the load-bearing one: Pad's own separator. Without
-	// it, namespace "a:events" would build pad:a:events:<ws> and collide
-	// with installation "a"'s channel — reintroducing the cross-feed this
-	// package exists to prevent, through the mechanism meant to fix it.
+	// A colon is Pad's own separator, so a namespace containing one spans
+	// segments and makes the keyspace ambiguous to read back. (An earlier
+	// version of this comment justified the rule with a collision example
+	// that was wrong — see Parse.)
 	for _, bad := range []string{"a:events", "Staging", "with space", "emoji-🐦", "tab\there", "sub/path", "quote'"} {
 		if _, err := Parse(bad); err == nil {
 			t.Errorf("Parse(%q) accepted an invalid namespace", bad)
@@ -87,6 +87,27 @@ func TestParseRejectsNamesThatCouldForgeAKeyPath(t *testing.T) {
 	for _, good := range []string{"", "staging", "prod-2", "eu_west", "a", "0"} {
 		if _, err := Parse(good); err != nil {
 			t.Errorf("Parse(%q) rejected a valid namespace: %v", good, err)
+		}
+	}
+
+	// The REAL collision the character set cannot catch: a namespace
+	// equal to one of Pad's own first segments nests this installation
+	// inside the default one's keyspace. "events" is the sharp case —
+	// pad:events:* is the default installation's activity channel space,
+	// so namespace "events" would put every key of this installation
+	// inside it.
+	for _, reserved := range []string{"events", "event_seq", "watchevents", "watchevents_seq", "watchevents_epoch", "session", "sessions"} {
+		if _, err := Parse(reserved); err == nil {
+			t.Errorf("Parse(%q) accepted a namespace equal to one of Pad's own key segments", reserved)
+		}
+	}
+
+	// The control leg: names that merely CONTAIN a reserved word are fine.
+	// Without it a build that rejected anything containing "session" would
+	// pass the loop above while refusing perfectly good namespaces.
+	for _, ok := range []string{"events-eu", "my-events", "sessions2", "prod-session"} {
+		if _, err := Parse(ok); err != nil {
+			t.Errorf("Parse(%q) rejected a namespace that only contains a reserved word: %v", ok, err)
 		}
 	}
 

@@ -712,14 +712,28 @@ func TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints(t *testing.T) {
 	closePW := holdAuthedSSE(ctx, t, pwTS.URL, pwSlug, pwTok.Token)
 	defer closePW()
 
+	// And the PER-USER bound, which the first two servers disable — round
+	// 15 caught the "every refusal path" claim omitting it, which is the
+	// same undercount as round 13's, one round later.
+	perUserSrv := testServerWithWatchEvents(t)
+	perUserSrv.SetEventBus(events.New())
+	perUserSrv.SetSSELimits(0, 0, 1) // per-user only
+	puTS := httptest.NewServer(perUserSrv)
+	defer puTS.Close()
+	puSlug, _, puTok, _ := setupWatchTestUser(t, perUserSrv)
+	closePU := holdAuthedSSE(ctx, t, puTS.URL, puSlug, puTok.Token)
+	defer closePU()
+
 	for _, tc := range []struct {
 		name  string
 		url   string
 		token string
 	}{
-		{"workspace stream, admission bound", ts.URL + "/api/v1/events?workspace=" + slug, tok.Token},
-		{"watch stream, admission bound", ts.URL + "/api/v1/events/stream", tok.Token},
+		{"workspace stream, per-instance bound", ts.URL + "/api/v1/events?workspace=" + slug, tok.Token},
+		{"watch stream, per-instance bound", ts.URL + "/api/v1/events/stream", tok.Token},
 		{"workspace stream, per-workspace bound", pwTS.URL + "/api/v1/events?workspace=" + pwSlug, pwTok.Token},
+		{"workspace stream, per-user bound", puTS.URL + "/api/v1/events?workspace=" + puSlug, puTok.Token},
+		{"watch stream, per-user bound", puTS.URL + "/api/v1/events/stream", puTok.Token},
 	} {
 		req, err := http.NewRequest("GET", tc.url, nil)
 		if err != nil {

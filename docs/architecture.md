@@ -93,8 +93,9 @@ the distinction matters for anything touching either:
 | Consumers | the web UI | `pad watch --stream`, the agent monitor |
 | Auth | a resolved user, a legacy workspace token, or the fresh-install window | a resolved user, always |
 
-They cost the same process resources — a goroutine, a bus subscription,
-and (with Redis) a session-presence registration — so they share ONE
+They cost the same process resources — a goroutine and a bus subscription
+each, plus (with Redis) a session-presence registration for the watch
+stream, which is the only one that registers — so they share ONE
 admission budget, enforced per instance by
 `internal/server/stream_admission.go` before either subscribes:
 `PAD_SSE_MAX_CONNECTIONS` and `PAD_SSE_MAX_PER_USER` cover both,

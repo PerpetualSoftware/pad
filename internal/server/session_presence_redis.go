@@ -707,9 +707,20 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 	var expired []string
 	for i, v := range values {
 		if v == nil {
-			// The session key's TTL lapsed — its process stopped renewing,
-			// i.e. it died without deregistering. Prune the index member so
-			// a crashed instance's leftovers don't accumulate.
+			// The session key is GONE. Usually that means its TTL lapsed
+			// because the process stopped renewing — it died without
+			// deregistering — but it is not proof of that: an eviction
+			// under maxmemory, a Redis restart, or a manual DEL produce
+			// exactly the same nil, and this type's own doc comment says
+			// eviction is indistinguishable from expiry. Nothing here
+			// depends on telling them apart, since the response is the
+			// same either way: treat the session as gone and prune the
+			// index member so leftovers do not accumulate.
+			//
+			// The pruning itself is CONDITIONAL for precisely this
+			// reason — a live session whose key was evicted can be
+			// rewritten by its own renewal between this read and the
+			// prune. See pruneIndexScript.
 			expired = append(expired, ids[i])
 			continue
 		}
