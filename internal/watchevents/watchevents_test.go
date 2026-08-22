@@ -149,7 +149,15 @@ func TestMemoryBus_EventsSince_EvictedGapReturnsNil(t *testing.T) {
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-3"}) // evicts TASK-1's slot
 
-	got := b.EventsSince(1) // TASK-1's ID, now evicted
+	// TASK-1's id, read back rather than spelled out. A literal 1 would be
+	// refused by the incarnation guard (BUG-2736) before eviction was ever
+	// consulted, leaving this test green with the branch it names deleted.
+	evicted := b.base + 1
+	if survivors := b.EventsSince(0); len(survivors) != 2 || survivors[0].ID != evicted+1 {
+		t.Fatalf("fixture: expected TASK-2 and TASK-3 to survive with TASK-1 (%d) evicted, got %+v", evicted, survivors)
+	}
+
+	got := b.EventsSince(evicted)
 	if got != nil {
 		t.Fatalf("expected nil (gap too large), got %+v", got)
 	}
@@ -211,15 +219,19 @@ func TestMemoryBus_ConcurrentPublish_MaintainsIDOrderInReplayBuffer(t *testing.T
 			t.Fatalf("replay buffer out of ID order at index %d: %d then %d", i, all[i-1].ID, all[i].ID)
 		}
 	}
-	// IDs must be a dense, unique 1..n set — every concurrent Publish
-	// got its own sequence number with no duplicates and no gaps.
+	// IDs must be a dense, unique run of n — every concurrent Publish got its
+	// own sequence number with no duplicates and no gaps. Anchored on the
+	// first ID the bus actually issued rather than on 1: since BUG-2736 the
+	// counter starts from this incarnation's base (see internal/idspace), so
+	// a literal 1 here would be asserting the process start time.
+	first := all[0].ID
 	seenIDs := make(map[int64]bool, n)
 	for _, e := range all {
 		seenIDs[e.ID] = true
 	}
-	for id := int64(1); id <= n; id++ {
+	for id := first; id < first+n; id++ {
 		if !seenIDs[id] {
-			t.Fatalf("missing sequence ID %d after %d concurrent publishes", id, n)
+			t.Fatalf("missing sequence ID %d (run of %d from %d) after %d concurrent publishes", id, n, first, n)
 		}
 	}
 }

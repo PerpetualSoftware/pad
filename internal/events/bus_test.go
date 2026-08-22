@@ -301,12 +301,10 @@ func TestEventIDsAreMonotonic(t *testing.T) {
 func TestEventsSinceCaughtUp(t *testing.T) {
 	bus := New()
 
-	bus.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
-	bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	ids := publishTyped(bus, "ws-1", ItemCreated, ItemUpdated, ItemUpdated)
 
 	// Ask for events since the last one — should get empty slice
-	events := bus.EventsSince("ws-1", 3)
+	events := bus.EventsSince("ws-1", ids[2])
 	if events == nil {
 		t.Fatal("expected non-nil slice")
 	}
@@ -318,12 +316,10 @@ func TestEventsSinceCaughtUp(t *testing.T) {
 func TestEventsSinceReplay(t *testing.T) {
 	bus := New()
 
-	bus.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
-	bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	bus.Publish(Event{Type: ItemArchived, WorkspaceID: "ws-1"})
+	ids := publishTyped(bus, "ws-1", ItemCreated, ItemUpdated, ItemArchived)
 
-	// Ask for events since ID 1 — should get events 2 and 3
-	events := bus.EventsSince("ws-1", 1)
+	// Ask for events since the first — should get the second and third
+	events := bus.EventsSince("ws-1", ids[0])
 	if events == nil {
 		t.Fatal("expected non-nil slice")
 	}
@@ -343,24 +339,22 @@ func TestEventsSinceGapTooLarge(t *testing.T) {
 	bus := NewWithReplay(3, 5*time.Minute)
 
 	// Publish 5 events (buffer only holds 3)
-	for i := 0; i < 5; i++ {
-		bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	}
+	ids := publishN(bus, "ws-1", 5)
 
-	// Oldest buffered event should be ID 3 (events 1 and 2 are evicted)
-	// Asking for events since ID 1 should return nil (gap too large)
-	events := bus.EventsSince("ws-1", 1)
+	// The oldest buffered event is now ids[2]; ids[0] and ids[1] were evicted,
+	// so a resume from ids[0] cannot be answered completely.
+	events := bus.EventsSince("ws-1", ids[0])
 	if events != nil {
 		t.Fatalf("expected nil (gap too large), got %d events", len(events))
 	}
 
-	// Asking for events since ID 3 should work
-	events = bus.EventsSince("ws-1", 3)
+	// Asking from the oldest event still buffered should work
+	events = bus.EventsSince("ws-1", ids[2])
 	if events == nil {
 		t.Fatal("expected non-nil slice")
 	}
 	if len(events) != 2 {
-		t.Fatalf("expected 2 events (IDs 4,5), got %d", len(events))
+		t.Fatalf("expected 2 events (ids %v), got %d", ids[3:], len(events))
 	}
 }
 
@@ -398,11 +392,14 @@ func TestEventsSinceForeignID(t *testing.T) {
 	// Last-Event-ID from a different instance whose IDs are in a different range.
 	bus := New()
 
-	bus.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
-	bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	ids := publishTyped(bus, "ws-1", ItemCreated, ItemUpdated)
 
-	// sinceID=500 is way beyond our newest (ID 2) — foreign sequence
-	events := bus.EventsSince("ws-1", 500)
+	// A cursor ABOVE our newest belongs to a sequence we are not part of.
+	// Stated relative to what we issued: since BUG-2736 an absolute constant
+	// like 500 sits BELOW this incarnation's base, so it would be refused by
+	// the coverage check instead — the same nil for a different reason, which
+	// is a test passing while proving nothing about the branch it names.
+	events := bus.EventsSince("ws-1", ids[1]+500)
 	if events != nil {
 		t.Fatalf("expected nil (foreign ID), got %d events", len(events))
 	}
@@ -411,34 +408,28 @@ func TestEventsSinceForeignID(t *testing.T) {
 func TestReplayBufferWrapAround(t *testing.T) {
 	bus := NewWithReplay(4, 5*time.Minute)
 
-	// Fill buffer exactly
-	for i := 0; i < 4; i++ {
-		bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	}
+	// Fill the buffer exactly, then overflow it by 2.
+	ids := publishTyped(bus, "ws-1",
+		ItemUpdated, ItemUpdated, ItemUpdated, ItemUpdated,
+		ItemCreated, ItemArchived)
 
-	// Overflow by 2
-	bus.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
-	bus.Publish(Event{Type: ItemArchived, WorkspaceID: "ws-1"})
-
-	// Buffer should hold events 3,4,5,6 (1,2 evicted)
-	// sinceID=3 should work: events 4,5,6
-	events := bus.EventsSince("ws-1", 3)
+	// The buffer now holds ids[2..5]; ids[0] and ids[1] were evicted.
+	events := bus.EventsSince("ws-1", ids[2])
 	if events == nil {
-		t.Fatal("expected non-nil slice for sinceID=3")
+		t.Fatalf("expected non-nil slice for a cursor at the oldest buffered id %d", ids[2])
 	}
 	if len(events) != 3 {
-		t.Fatalf("expected 3 events (IDs 4,5,6), got %d", len(events))
+		t.Fatalf("expected 3 events (ids %v), got %d", ids[3:], len(events))
 	}
 
-	// sinceID=2 should be a gap (event 2 is evicted, oldest in buffer is 3)
-	events = bus.EventsSince("ws-1", 2)
+	// A cursor at an EVICTED id is a gap: its successor is gone.
+	events = bus.EventsSince("ws-1", ids[1])
 	if events != nil {
-		t.Fatalf("expected nil (gap) for sinceID=2, got %d events", len(events))
+		t.Fatalf("expected nil (gap) for evicted id %d, got %d events", ids[1], len(events))
 	}
 
-	// sinceID=1 should also be a gap
-	events = bus.EventsSince("ws-1", 1)
+	events = bus.EventsSince("ws-1", ids[0])
 	if events != nil {
-		t.Fatalf("expected nil (gap) for sinceID=1, got %d events", len(events))
+		t.Fatalf("expected nil (gap) for evicted id %d, got %d events", ids[0], len(events))
 	}
 }

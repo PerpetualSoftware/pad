@@ -87,6 +87,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across both `/api/v1/events` and `/api/v1/events/stream` |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
+| `PAD_EVENTS_PUBLISH_EPOCH` | `false` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. **Only set this once every instance runs a binary that accepts it** — see *Event ID-space migration* below. Ignored without Redis. |
 
 #### Streaming connection limits
 
@@ -230,7 +231,7 @@ Alert on these instead:
 | `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
-| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. Today one reason: `subscription_resumed`, a pub/sub connection that dropped and resubscribed, dropping that workspace's buffer — expect it during a Redis failover and expect it to stop afterwards |
+| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase. `epoch_regressed` — a LOWER generation was seen, so this instance stopped vouching for its buffers. One alongside an `epoch_change` is a message that was in flight when the generation rotated; a RUN of them means the counter itself went backwards, i.e. Redis lost writes. `undecodable_message` — a message on these channels could not be parsed, so that workspace's coverage ended; expect zero, and suspect a namespace collision |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
 
@@ -314,6 +315,174 @@ used — so a broadcast reporting `0` during the rollout may well have been
 delivered. Re-sending one is a second instruction the receiving agent will act
 on twice. Only re-send a push the server told you it skipped. There is no Redis or database migration; the
 registry's keys are transient and expire on their own TTL.
+
+#### Event ID-space migration (`PAD_EVENTS_PUBLISH_EPOCH`)
+
+Events on the workspace activity stream (`GET /api/v1/events`) carry a
+`Last-Event-ID` so a reconnecting client can be replayed what it missed. With
+Redis, every instance shares one counter, so those IDs are meaningful across
+replicas.
+
+**The problem this migration fixes.** If that shared counter is ever reset —
+the key evicted under `maxmemory`, deleted by hand, a fresh Redis after a
+restore — IDs start again from 1. A replica that was buffering the old
+sequence cannot tell the new 101 from the old 101, so it can merge two ID
+spaces into one replay buffer and answer a resume across the boundary as
+though nothing was missed. Numeric detection alone cannot see it: by the time
+the new sequence passes the replica's high-water mark, it looks like ordinary
+progress.
+
+**What the fix does and does not close, stated before the procedure.** It
+stops a REPLICA from mixing two ID spaces in one replay buffer, which is what
+turns a counter reset into a silently wrong replay. It does NOT make a
+CLIENT'S CURSOR say which space it came from — that would change the wire
+format every deployed browser speaks. So this is a substantial mitigation and
+not a closure; the residual case and why it is deferred are at the end of this
+section.
+
+The fix gives each ID space an **epoch** — a monotonic generation number,
+minted by Redis when the space is created and carried as a
+`<epoch>|<id>|<json>` prefix on every message published **by a phase-2
+instance**. Phase-1 instances publish the historical bare JSON and carry no
+epoch at all, which is what the two phases are about. A replica that sees a HIGHER
+generation drops its replay buffers and answers resumes across the change with
+`sync_required`, which is honest rather than silent. A message carrying a
+LOWER generation is a straggler from a space that has been abandoned, and is
+discarded rather than delivered.
+
+The generation is a number rather than an opaque token so the two spaces can
+be ORDERED. Workspaces have independent subscriptions and Redis does not order
+messages across channels, so a pre-rotation message on one channel can arrive
+after a post-rotation message on another; with an unordered token that is
+indistinguishable from a second rotation.
+
+**It rolls out in two phases, and the order is not optional.**
+
+| Phase | What you do | What instances publish | What they accept |
+|-------|-------------|------------------------|------------------|
+| 1 | Roll the new binary everywhere. Leave `PAD_EVENTS_PUBLISH_EPOCH` unset. | The historical bare JSON | Both forms |
+| 2 | Set `PAD_EVENTS_PUBLISH_EPOCH=true` and roll again. | `<epoch>\|<id>\|<json>` | Both forms |
+
+The asymmetry that makes two phases necessary: an instance running a
+**pre-phase-1** binary cannot parse a prefixed payload at all. It fails to
+unmarshal the message and drops the event for its own clients. So flipping
+before every instance is upgraded loses events on the ones that are not — not
+a resync, a silent loss.
+
+Both rolls are zero-loss in the other direction, because accept-both is on
+from phase 1: during the phase-2 roll, flipped and un-flipped instances are
+publishing different forms at the same time and every instance reads both.
+
+**Rolling back to phase 1** is safe: make the effective value **false** and
+roll. Peers accept the bare form throughout, so there is no window where this
+direction loses events.
+
+Two things about rolling back that are easy to get wrong:
+
+- **Setting the value to false is not the same as unsetting the environment
+  variable.** `events_publish_epoch` can also be set in `~/.pad/config.toml`,
+  and the config file's value stands when the environment variable is absent.
+  Clear both, or set the environment variable explicitly to `false`.
+- **Downgrading past phase 1 is a SECOND step, and the order is the reverse of
+  the upgrade.** A pre-phase-1 binary cannot parse the prefixed form. So:
+  first roll every instance to phase 1 (new binary, flip off) and let the roll
+  finish, *then* downgrade the binary. Introducing an old binary while any
+  flipped instance is still publishing drops events on the old one — the same
+  asymmetry that makes the upgrade two phases, in reverse.
+
+There is no Redis or database migration in either direction. The epoch key and
+its generation counter are created by the first flipped publisher; a phase-1 instance deletes it if it
+ever sees the sequence counter restart, so a counter that is reset while the
+deployment sits on phase 1 does not leave a stale epoch for a later phase 2 to
+adopt.
+
+**What you should see when phase 2 lands.** A replica learns the epoch from
+the first prefixed message it RECEIVES — which means only replicas currently
+subscribed to a workspace see it, and only when that workspace next has
+traffic. If such a replica had already buffered un-prefixed events, it drops
+its buffers once, records
+`pad_event_sequence_resets_total{reason="epoch_change"}`, and clients resuming
+across that moment get `sync_required` and re-fetch. A replica whose buffers
+are EMPTY adopts the epoch without dropping anything and without a reset
+count, deliberately: otherwise every replica would report a reset at startup
+and the counter would grow a per-deploy baseline instead of meaning something.
+
+Do not delete the generation counter (`<namespace>event_epoch_gen`) by hand,
+and keep it out of any eviction policy: it is what makes one ID space orderable
+against the next. Losing it lets a later reset reuse a generation that has
+already been seen, which makes two different ID spaces look identical — the
+one shape the epoch exists to prevent. It is a single small integer key; the
+events keyspace should not be under `allkeys-lru` (see *Redis configuration
+notes*). **One drop per replica
+per roll** — if the counter keeps climbing, something is deleting the epoch or
+sequence key repeatedly; check `maxmemory-policy` against the events keyspace
+(see *Redis configuration notes*).
+
+`pad_event_sequence_resets_total{reason="counter_backward"}` is the other
+counter to watch. It fires when an ID arrives at or below what a buffer had
+already seen.
+
+**On phase 1 it can be non-zero at any time, not only during a roll.** Phase 1
+keeps the historical two-call publish — `INCR`, then `PUBLISH` — so two
+instances can interleave (INCR 5, INCR 6, PUBLISH 6, PUBLISH 5) and a receiver
+sees 5 arrive after 6. That window is older than this migration; phase 2 is
+what closes it, by moving ID assignment into a single atomic script so publish
+order equals ID order globally.
+
+So the expectation depends on where you are:
+
+- **Phase 1, before this replica has ever seen a prefixed message** — expect
+  ZERO. The check is deliberately not armed until an epoch has been adopted,
+  because a phase-1 deployment's two-call publish interleaves as ordinary
+  traffic and reacting to that would drop every replay buffer on a busy
+  multi-instance deployment. The cost of that gate is that a counter reset on
+  a never-flipped deployment goes undetected — which is exactly the behaviour
+  before this migration existed, and precisely what phase 2 fixes.
+- **During the phase-2 roll, once a replica has adopted the epoch** — expect it
+  to rise for the length of the roll: un-flipped publishers are still
+  assigning and publishing in two calls, and this replica is now armed.
+- **Phase 2, every publisher flipped** — expect it at or near zero. A
+  persistent rate here is an anomaly worth investigating rather than tuning
+  away.
+
+**Which phase an instance is publishing in is in its startup log**, as
+`id_space_phase=1` or `id_space_phase=2` on the "Event bus using Redis pub/sub"
+line — the counter above cannot be read without it. An unparseable
+`PAD_EVENTS_PUBLISH_EPOCH` is ignored (a typo must not flip a migration whose
+wrong direction loses events) and logs a warning naming the value.
+
+**One narrow window during the phase-2 roll.** Once a replica has adopted the
+epoch, a message from an un-flipped instance carries no epoch and is treated as
+belonging to the current space — which it does, unless the sequence counter
+reset between that publisher assigning its ID and publishing it. An ID from the
+dead space can then land in a buffer describing the new one. There is no way to
+tell the two apart from the message alone, and the alternatives are worse: a
+replica that refused un-flipped messages would resync its clients on every one
+of them for the length of the roll. It usually ends loudly and quickly: the next
+event that workspace receives is lower than the straggler's ID, which trips
+`counter_backward`, drops the buffers and is reported. It is not guaranteed to
+— the sequence counter is shared across workspaces while that check is per
+workspace, so if other workspaces carry the counter past the straggler's value
+first, nothing fires and the dead-space ID stays in that workspace's buffer.
+Closing that needs the same thing the residual below needs.
+
+**What this migration does not fix.** A client's `Last-Event-ID` is still a
+bare integer with no epoch in it, and that is deliberate — every deployed
+browser speaks that format, and `EventSource` echoes the header with no
+application code in the path to translate it. So an old ID and a new ID of the
+same numeric value remain indistinguishable **to a resume**, even though the
+replica's buffers can no longer mix them. The exposure is a client that
+reconnects with a cursor whose number the new sequence has already reached.
+Tracked on BUG-2736.
+
+Single-process deployments (no `PAD_REDIS_URL`) need none of this and ignore
+the variable: that bus owns its counter, so it identifies its own ID space
+from its start time. Two runs' IDs can only collide if the earlier process
+published more than 2^20 events per millisecond of its own lifetime, or if a
+restart completed inside a single millisecond — both deterministic bounds
+rather than probabilities, and neither reachable by a process that has to bind
+a listener and open a database before it can publish anything. A clock stepped **backwards** across a restart degrades the other
+way, into extra `sync_required` responses rather than wrong replays.
 
 ### Security
 

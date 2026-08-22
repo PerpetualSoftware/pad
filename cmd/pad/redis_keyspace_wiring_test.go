@@ -95,6 +95,18 @@ func TestAllRedisKeyspacesShareOneNamespace(t *testing.T) {
 			len(helperCalls), wantHelperCalls)
 	}
 	for _, m := range helperCalls {
+		// THE DEPLOYMENT CONFIG MUST REACH THE HELPER TOO (BUG-2736, codex
+		// round 4). newObservedEventBus reads the phase-2 flip off the config
+		// it is given, and a Go test can construct any config it likes — so
+		// passing `&config.Config{}` at these two call sites would leave
+		// PAD_EVENTS_PUBLISH_EPOCH silently ignored in production while every
+		// behavioural test in the tree stayed green. This half of the guard is
+		// the only thing that reads the real call sites.
+		if !argsContainIdentifier(m[1], "cfg") {
+			t.Errorf("helper call %q does not pass cfg — the deployment's config must reach the bus "+
+				"from the loaded value, or a flag like PAD_EVENTS_PUBLISH_EPOCH is read into a struct "+
+				"nothing in production consults", strings.TrimSpace(m[0]))
+		}
 		if !argsContainIdentifier(m[1], sharedVar) {
 			t.Errorf("helper call %q does not pass %s — the namespace must reach the bus constructor "+
 				"from the shared value, not from a locally assembled one", strings.TrimSpace(m[0]), sharedVar)
