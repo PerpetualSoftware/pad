@@ -122,6 +122,8 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 			"zero epoch sentinel": "0|77|" + string(body),
 			"negative epoch":      "-3|77|" + string(body),
 			"non-integer id":      "7|seventy|" + string(body),
+			"zero id":             "7|0|" + string(body),
+			"negative id":         "7|-4|" + string(body),
 			"body is not JSON":    "7|77|not json",
 			"neither form":        "not json at all",
 			"prefix without id":   "7|" + string(body),
@@ -758,5 +760,141 @@ func TestAPersistentlyRegressedGenerationIsAcceptedAsANewSpace(t *testing.T) {
 	b.fanOutFromRedis(gen, 4, Event{ID: 12, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	if got := b.EventsSince("ws-1", 12); got == nil {
 		t.Fatal("after accepting the regression the bus must serve the new space again")
+	}
+}
+
+func TestACorruptedEpochKeyIsRotatedRatherThanEmitted(t *testing.T) {
+	// codex round 11. A publisher trusted whatever the epoch key held. Set to
+	// something that is not a positive generation — corrupted, hand-edited, or
+	// written by another installation sharing the keyspace — it would be
+	// emitted into every prefix, every receiver would reject the payload, and
+	// every event would be dropped for as long as the key stayed that way.
+	b, mr := newFlippedRedisBus(t)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+	next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
+
+	for _, corrupt := range []string{"abc", "0", "-3", "1.5", ""} {
+		if err := mr.Set(epochKey, corrupt); err != nil {
+			t.Fatalf("seed epoch %q: %v", corrupt, err)
+		}
+		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+		epoch, _, err := decodePayload(next())
+		if err != nil {
+			t.Fatalf("epoch %q: the publisher must emit a decodable payload, got %v", corrupt, err)
+		}
+		if epoch <= 0 {
+			t.Fatalf("epoch %q: want a positive generation on the wire, got %d", corrupt, epoch)
+		}
+		stored, err := mr.Get(epochKey)
+		if err != nil || stored == corrupt {
+			t.Fatalf("epoch %q: the key must be rotated, it reads %q (%v)", corrupt, stored, err)
+		}
+	}
+
+	// Control: a VALID epoch is left alone, or the rotation fires on every
+	// publish and the generation means nothing.
+	valid, err := mr.Get(epochKey)
+	if err != nil {
+		t.Fatalf("read epoch: %v", err)
+	}
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	_, _, _ = decodePayload(next())
+	after, err := mr.Get(epochKey)
+	if err != nil {
+		t.Fatalf("read epoch: %v", err)
+	}
+	if after != valid {
+		t.Fatalf("a valid epoch must survive a publish; %q became %q", valid, after)
+	}
+}
+
+func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
+	// codex round 11. Dropping an unreadable message and carrying on left the
+	// buffer claiming a span with a hole in it: the event gone, the ids either
+	// side contiguous, and a later resume across it answered "caught up".
+	b, _ := newFlippedRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+
+	ch := b.Subscribe("ws-1")
+	defer b.Unsubscribe(ch)
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	var first Event
+	select {
+	case first = <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first event never arrived")
+	}
+	// PREMISE: coverage exists before the garbage arrives, or the assertion
+	// below is about a bus that never had any.
+	if got := b.EventsSince("ws-1", first.ID); got == nil {
+		t.Fatal("fixture: coverage must be established first")
+	}
+
+	// Something publishes onto our channel that we cannot read.
+	if err := b.client.Publish(context.Background(),
+		redisns.Default.Name(redisChannelSuffix)+"ws-1", "not a payload").Err(); err != nil {
+		t.Fatalf("publish garbage: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if b.EventsSince("ws-1", first.ID) == nil {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := b.EventsSince("ws-1", first.ID); got != nil {
+		t.Fatalf("a message we could not read is a hole; the resume must be a gap, got %d events", len(got))
+	}
+	_, resets := obs.snapshot()
+	if len(resets) == 0 || resets[len(resets)-1] != ResetReasonUndecodableMessage {
+		t.Fatalf("want the drop reported as %s, got %v", ResetReasonUndecodableMessage, resets)
+	}
+}
+
+func TestAScriptThatDiedBeforePublishingDoesNotBlockItsRetry(t *testing.T) {
+	// codex round 11, and the reason the dedupe token is CHECKED first and
+	// WRITTEN last. Redis runs Lua atomically against interleaving, not with
+	// rollback: a script that errors part way through keeps whatever it
+	// already wrote. Written first, the token would survive a run that never
+	// published, and the retry would decline — the event lost permanently and
+	// silently, with the caller told it succeeded.
+	b, mr := newFlippedRedisBus(t)
+	channel := redisns.Default.Name(redisChannelSuffix) + "ws-1"
+	next := listen(t, b.client, channel)
+
+	body, _ := json.Marshal(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	keys := []string{
+		redisns.Default.Name(redisSeqSuffix), channel,
+		redisns.Default.Name(redisEpochSuffix),
+		redisns.Default.Name(redisDedupeSuffix) + "one-logical-publish",
+		redisns.Default.Name(redisEpochGenSuffix),
+	}
+
+	// Make INCR fail: a sequence key holding something that is not an integer.
+	// This stands in for any mid-script error — a wrong-typed key, an ACL
+	// denial — since the script's failure MODE is what matters, not its cause.
+	if err := mr.Set(redisns.Default.Name(redisSeqSuffix), "not-a-number"); err != nil {
+		t.Fatalf("seed sequence: %v", err)
+	}
+	if err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Err(); err == nil {
+		t.Fatal("fixture: the script must fail here, or this test proves nothing")
+	}
+
+	// The obstacle clears — the operator fixes the key, the ACL is restored —
+	// and go-redis retries the same logical publish with the SAME token.
+	mr.Del(redisns.Default.Name(redisSeqSuffix))
+	id, err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Int64()
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("a retry of a publish that never happened must not be declined; the event would be lost with the caller told it succeeded")
+	}
+	if payload := next(); payload == "" {
+		t.Fatal("the retry must actually publish")
 	}
 }

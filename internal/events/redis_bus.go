@@ -161,9 +161,17 @@ return id
 // externally-sourced item_created, so a duplicate is a duplicate toast plus a
 // redundant fetch.
 //
-// SET NX on a caller-generated token turns the retry into a no-op: the retry
-// carries the same KEYS[4], the SET fails, and the script returns 0 without
-// publishing.
+// The token is CHECKED FIRST AND WRITTEN LAST, which is not the obvious order
+// and is the one that matters (codex round 11). Written first, any error later
+// in the script — Redis runs Lua atomically against interleaving, NOT with
+// rollback — would leave the token behind on a run that never published, and
+// the retry would then decline: the event lost, permanently and silently, with
+// the caller told it succeeded. Written after the PUBLISH, a script that dies
+// early leaves no token and the retry does the right thing, while a script
+// that completed and merely lost its reply leaves one and the retry declines.
+// The remaining window is an error on the final SET itself, whose key is a
+// fresh uuid and so cannot be wrong-typed; its cost would be a duplicate
+// rather than a loss.
 //
 // WHAT IT DOES NOT COVER, so nobody reads it as a guarantee (codex round 6): a
 // retry that lands on a DIFFERENT Redis. If the original primary executed the
@@ -173,7 +181,7 @@ return id
 // — and the client is not told. The token is as durable as Redis replication
 // and no more; this narrows the window rather than closing it.
 var publishScript = redis.NewScript(`
-if redis.call('SET', KEYS[4], '1', 'NX', 'EX', ARGV[2]) == false then
+if redis.call('EXISTS', KEYS[4]) == 1 then
   return 0
 end
 local id = redis.call('INCR', KEYS[1])
@@ -195,7 +203,19 @@ elseif redis.call('EXISTS', KEYS[3]) == 0 then
   redis.call('SET', KEYS[3], tostring(g))
 end
 local epoch = redis.call('GET', KEYS[3])
+if not epoch or not string.match(epoch, '^[1-9][0-9]*$') then
+  -- The epoch key holds something that is not a positive generation --
+  -- corrupted, hand-edited, or written by another installation sharing this
+  -- keyspace. Emitting it would make every receiver reject the payload and
+  -- drop the event, forever and for every publisher. Rotating instead makes
+  -- the state self-healing: one generation change, one round of resyncs, and
+  -- the space is identifiable again.
+  local g = redis.call('INCR', KEYS[5])
+  redis.call('SET', KEYS[3], tostring(g))
+  epoch = tostring(g)
+end
 redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id .. '|' .. ARGV[1])
+redis.call('SET', KEYS[4], '1', 'EX', ARGV[2])
 return id
 `)
 
@@ -731,7 +751,20 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 			case *redis.Message:
 				epoch, event, err := decodePayload(msg.Payload)
 				if err != nil {
-					slog.Error("failed to decode Redis event", "channel", msg.Channel, "error", err)
+					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS WORKSPACE'S
+					// COVERAGE (codex round 11). Dropping it and carrying on
+					// left the buffer claiming a span it no longer had: the
+					// event is gone, the ids either side of it look
+					// contiguous, and a later resume across it is answered
+					// "caught up". Silent loss, from a payload we know we
+					// failed to read.
+					//
+					// The workspace comes from the CHANNEL rather than from
+					// the body, which is what makes this possible at all when
+					// the body is the thing that would not parse.
+					slog.Error("failed to decode Redis event; ending this workspace's replay coverage, resumes across it will report sync_required",
+						"channel", msg.Channel, "error", err)
+					b.dropWorkspaceCoverage(workspaceID, ResetReasonUndecodableMessage, gen)
 					continue
 				}
 				b.fanOutFromRedis(gen, epoch, event)
@@ -911,6 +944,14 @@ func decodePayload(payload string) (int64, Event, error) {
 		id, err := strconv.ParseInt(idPart, 10, 64)
 		if err != nil {
 			return 0, Event{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
+		}
+		if id <= 0 {
+			// The sequence counts from 1, and the SSE handler omits the id:
+			// field for a non-positive id — so such an event would be
+			// delivered with no cursor to advance to, and the client would
+			// keep resuming from the id before it. Refusing it is honest:
+			// the receive path turns that into an end of coverage.
+			return 0, Event{}, fmt.Errorf("payload id prefix %d is not a positive sequence id", id)
 		}
 		var event Event
 		if err := json.Unmarshal([]byte(body), &event); err != nil {

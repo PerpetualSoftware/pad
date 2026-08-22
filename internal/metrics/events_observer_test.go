@@ -34,6 +34,11 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SequenceReset(events.ResetReasonCounterBackward)
 	obs.SequenceReset(events.ResetReasonCounterBackward)
 	obs.SequenceReset(events.ResetReasonEpochRegressed)
+	obs.SequenceReset(events.ResetReasonUndecodableMessage)
+	obs.SequenceReset(events.ResetReasonUndecodableMessage)
+	obs.SequenceReset(events.ResetReasonUndecodableMessage)
+	obs.SequenceReset(events.ResetReasonUndecodableMessage)
+	obs.SequenceReset(events.ResetReasonUndecodableMessage)
 
 	obs.ReceiveLoopExited()
 	obs.ReceiveLoopExited()
@@ -53,6 +58,8 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 		map[string]string{"reason": events.ResetReasonCounterBackward}, 2)
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonEpochRegressed}, 1)
+	assertCounter(t, m, "pad_event_sequence_resets_total",
+		map[string]string{"reason": events.ResetReasonUndecodableMessage}, 5)
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)
 }
 

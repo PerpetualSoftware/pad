@@ -111,6 +111,17 @@ const (
 	// recovering; a repeating count means the counter is not durable, and
 	// every ID space boundary this bus reports is suspect until it is.
 	ResetReasonEpochRegressed = "epoch_regressed"
+
+	// ResetReasonUndecodableMessage means a pub/sub message could not be
+	// parsed, so ONE workspace's coverage ended rather than the buffer going
+	// on claiming a span that now has a hole in it.
+	//
+	// Expect zero. A non-zero count means something is publishing onto this
+	// installation's channels that is not this installation — a namespace
+	// collision is the likely cause — or that a payload is being truncated in
+	// transit. Either way the events behind it are lost; the counter is what
+	// says so.
+	ResetReasonUndecodableMessage = "undecodable_message"
 )
 
 // observable is the shared, nil-safe Observer holder both bus implementations
