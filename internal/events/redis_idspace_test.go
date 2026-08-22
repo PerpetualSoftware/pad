@@ -1128,3 +1128,42 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 		})
 	}
 }
+
+func TestAStragglerFromBeforeAResetIsBoundedByTheNextNewSpaceEvent(t *testing.T) {
+	// codex round 17 named a window the design leaves open: once an epoch is
+	// adopted, a BARE message is treated as belonging to the current space,
+	// and it does — unless the counter reset between that publisher's
+	// assignment and its publish.
+	//
+	// The comment at that branch says the exposure is one event wide and ends
+	// loudly. That is a mechanical claim, so it is asserted here rather than
+	// only written down.
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	_, gen := liveGen(t, b, "ws-1")
+
+	// The new space, after a reset: generation 4, ids from 1.
+	b.fanOutFromRedis(gen, 4, Event{ID: 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	// The straggler: assigned 100 in the DEAD space, published bare after the
+	// reset, so it carries no epoch to give it away.
+	b.fanOutFromRedis(gen, 0, Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if _, resets := obs.snapshot(); len(resets) != 0 {
+		t.Fatalf("nothing can detect the straggler ON ARRIVAL; a reset here would mean the discriminator exists after all, got %v", resets)
+	}
+
+	// The next event from the NEW space is lower than the straggler, which is
+	// what closes the window.
+	b.fanOutFromRedis(gen, 4, Event{ID: 2, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	_, resets := obs.snapshot()
+	if len(resets) != 1 || resets[0] != ResetReasonCounterBackward {
+		t.Fatalf("the next new-space event must close the window loudly, got %v", resets)
+	}
+	// And the buffer that held the straggler is gone, so nothing is replayed
+	// across the boundary after this point.
+	if got := b.EventsSince("ws-1", 1); got != nil {
+		t.Fatalf("a cursor inside the window must be refused once it closes, got %d events", len(got))
+	}
+}

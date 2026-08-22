@@ -1020,6 +1020,27 @@ func requirePositiveID(id int64) error {
 // A zero epoch means the payload carried no ID-space information (a phase-1 or
 // pre-BUG-2736 publisher, or a direct test call) and the bookkeeping is left
 // alone — silence is not evidence of a change.
+//
+// THAT LEAVES ONE NARROW HOLE DURING THE PHASE-2 ROLL, named here because it
+// is a property of the design rather than an oversight (codex round 17). Once
+// an epoch has been adopted, a bare message is TREATED AS BELONGING TO THE
+// CURRENT SPACE, and it usually does: an un-flipped publisher INCRs the same
+// counter. It does not if the counter reset between that publisher's
+// assignment and its publish — an id from the dead space then lands in a
+// buffer describing the new one.
+//
+// The alternative rules are worse. Refusing bare messages once an epoch is
+// adopted would end coverage on EVERY un-flipped publish for the length of the
+// roll, which is a resync storm; delivering them without buffering would put
+// holes in the buffer that nothing records. And there is no discriminator: an
+// id from the dead space and an id from an un-flipped publisher are both
+// "above what we hold" and are otherwise identical.
+//
+// What bounds it: the very next event from the new space is LOWER than the
+// straggler's id, so the counter-backwards branch fires, drops the buffers and
+// reports a reset. The exposure is one event wide and ends loudly — a resume
+// landing inside that window can be answered wrongly, and the window closes on
+// the next publish.
 func (b *RedisBus) fanOutFromRedis(gen, epoch int64, event Event) {
 	b.fanOut(gen, epoch, event)
 }

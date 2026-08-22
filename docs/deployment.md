@@ -451,6 +451,17 @@ line — the counter above cannot be read without it. An unparseable
 `PAD_EVENTS_PUBLISH_EPOCH` is ignored (a typo must not flip a migration whose
 wrong direction loses events) and logs a warning naming the value.
 
+**One narrow window during the phase-2 roll.** Once a replica has adopted the
+epoch, a message from an un-flipped instance carries no epoch and is treated as
+belonging to the current space — which it does, unless the sequence counter
+reset between that publisher assigning its ID and publishing it. An ID from the
+dead space can then land in a buffer describing the new one. There is no way to
+tell the two apart from the message alone, and the alternatives are worse: a
+replica that refused un-flipped messages would resync its clients on every one
+of them for the length of the roll. The exposure is one event wide and ends
+loudly — the next event from the new space is lower, which trips
+`counter_backward`, drops the buffers and is reported.
+
 **What this migration does not fix.** A client's `Last-Event-ID` is still a
 bare integer with no epoch in it, and that is deliberate — every deployed
 browser speaks that format, and `EventSource` echoes the header with no
