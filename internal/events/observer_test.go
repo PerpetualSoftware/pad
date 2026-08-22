@@ -54,17 +54,22 @@ func TestResumeGapIsReportedForBothWaysOfNotServing(t *testing.T) {
 	bus := New()
 	bus.SetObserver(obs)
 
+	// BOTH CURSORS ARE INSIDE THIS INCARNATION'S SPACE, which is what keeps
+	// the two halves distinct. A small literal would be refused by the
+	// incarnation guard before either branch below was reached (BUG-2736), so
+	// this test would pass with BOTH of the branches it names deleted.
+
 	// Half one: no buffer for this workspace at all.
-	if got := bus.EventsSince("ws-cold", 4200); got != nil {
+	if got := bus.EventsSince("ws-cold", bus.base+4200); got != nil {
 		t.Fatalf("expected a gap, got %d events", len(got))
 	}
 
-	// Half two: a buffer exists, and refuses the span.
-	for i := 0; i < 49; i++ {
-		bus.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-other"})
-	}
+	// Half two: a buffer exists, and refuses the span. ws-other's ids push the
+	// shared counter up, so a cursor among them is a real position in this
+	// incarnation with room for a missed ws-warm event above it.
+	other := publishN(bus, "ws-other", 49)
 	bus.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-warm"})
-	if got := bus.EventsSince("ws-warm", 30); got != nil {
+	if got := bus.EventsSince("ws-warm", other[29]); got != nil {
 		t.Fatalf("expected a gap, got %d events", len(got))
 	}
 
@@ -113,8 +118,10 @@ func TestAnObserverMayCallBackIntoTheBus(t *testing.T) {
 	done := make(chan struct{})
 	bus.SetObserver(callbackObserver{bus: bus, done: done})
 
-	// Triggers a resume gap, whose report calls Publish from inside.
-	_ = bus.EventsSince("ws-1", 99)
+	// Triggers a resume gap, whose report calls Publish from inside. Which of
+	// the gap branches answers does not matter here — only that one does —
+	// but the cursor is base-relative anyway so the reason stays legible.
+	_ = bus.EventsSince("ws-1", bus.base+99)
 
 	select {
 	case <-done:

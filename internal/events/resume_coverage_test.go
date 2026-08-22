@@ -14,12 +14,19 @@ import "testing"
 // a bus that answers nil unconditionally.
 
 func TestResumeAgainstAWorkspaceThisProcessHasNeverPublished(t *testing.T) {
-	// Case 1: cold buffer. The bus assigns its own IDs from 1 on every start,
-	// so a non-zero cursor here belongs to a previous incarnation.
+	// Case 1: cold buffer — a workspace this process has never published to,
+	// which is a cold start, a restart, or a scale-up.
+	//
+	// THE CURSOR IS BASE-RELATIVE, and that is what keeps this test about the
+	// no-buffer branch. Since BUG-2736 a small literal like 4200 sits below
+	// this incarnation's base and is refused one level up by the incarnation
+	// guard, so the branch this test is named for would never be reached and
+	// deleting it would leave the test green.
 	bus := New()
+	cursor := bus.base + 4200
 
-	if got := bus.EventsSince("ws-1", 4200); got != nil {
-		t.Fatalf("resuming from 4200 against a workspace with no buffer must be a gap, got %d events", len(got))
+	if got := bus.EventsSince("ws-1", cursor); got != nil {
+		t.Fatalf("resuming from %d against a workspace with no buffer must be a gap, got %d events", cursor, len(got))
 	}
 
 	// Negative control: a FRESH client (no Last-Event-ID) is not resuming from

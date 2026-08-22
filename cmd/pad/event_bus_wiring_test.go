@@ -45,7 +45,12 @@ func TestBothEventBusShapesReportToMetrics(t *testing.T) {
 		}
 		assertResumeGaps(t, m, 0)
 
-		if got := bus.EventsSince("ws-never-seen", 4200); got != nil {
+		// The unservable resume: a cursor from THIS incarnation naming a
+		// workspace with no buffer. Base-relative for the same reason as
+		// above — a small literal would be refused by the incarnation guard
+		// rather than by the no-buffer branch, so the counter would move for
+		// a reason this test does not name.
+		if got := bus.EventsSince("ws-never-seen", published[0].ID+4200); got != nil {
 			t.Fatalf("expected a gap, got %d events", len(got))
 		}
 		assertResumeGaps(t, m, 1)

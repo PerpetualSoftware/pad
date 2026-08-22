@@ -91,8 +91,11 @@ func TestARealBusMovesTheRealCounter(t *testing.T) {
 	}
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 0)
 
-	// A resume this instance genuinely cannot serve.
-	if got := bus.EventsSince("ws-never-seen", 4200); got != nil {
+	// A resume this instance genuinely cannot serve: a cursor from THIS
+	// incarnation (so the incarnation guard is not what answers it) naming a
+	// workspace with no buffer.
+	cursor := published[0].ID + 4200
+	if got := bus.EventsSince("ws-never-seen", cursor); got != nil {
 		t.Fatalf("expected a gap, got %d events", len(got))
 	}
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 1)

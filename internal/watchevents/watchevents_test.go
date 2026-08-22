@@ -149,7 +149,15 @@ func TestMemoryBus_EventsSince_EvictedGapReturnsNil(t *testing.T) {
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-3"}) // evicts TASK-1's slot
 
-	got := b.EventsSince(1) // TASK-1's ID, now evicted
+	// TASK-1's id, read back rather than spelled out. A literal 1 would be
+	// refused by the incarnation guard (BUG-2736) before eviction was ever
+	// consulted, leaving this test green with the branch it names deleted.
+	evicted := b.base + 1
+	if survivors := b.EventsSince(0); len(survivors) != 2 || survivors[0].ID != evicted+1 {
+		t.Fatalf("fixture: expected TASK-2 and TASK-3 to survive with TASK-1 (%d) evicted, got %+v", evicted, survivors)
+	}
+
+	got := b.EventsSince(evicted)
 	if got != nil {
 		t.Fatalf("expected nil (gap too large), got %+v", got)
 	}
