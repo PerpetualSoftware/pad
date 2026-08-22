@@ -7,7 +7,7 @@ import "testing"
 // though the two were the same sequence.
 //
 // The fix carries the ID space's identity in the ID's VALUE (see
-// idIncarnationShift), so these tests assert BOTH halves of that: the
+// internal/idspace), so these tests assert BOTH halves of that: the
 // mechanism (the spaces are disjoint, and disjoint in the right direction) and
 // the behaviour it produces (the stale cursor is refused). Asserting only the
 // behaviour would pass on a bus that answers nil unconditionally, which is the
@@ -46,6 +46,12 @@ func publishTyped(b *MemoryBus, workspaceID string, types ...string) []int64 {
 func TestRestartCursorIsRefusedBecauseTheIDSpacesAreDisjoint(t *testing.T) {
 	const ws = "ws-1"
 
+	// Two BUS INCARNATIONS in one process, which is what a test can build:
+	// a genuine process restart is not reproducible in-process, and the thing
+	// under test is the bus's identity rather than the operating system's. The
+	// two are equivalent here because a bus takes its base at construction,
+	// exactly as it does at process start.
+	//
 	// Incarnation 1: the client streams and leaves holding a cursor.
 	first := New()
 	firstIDs := publishN(first, ws, 3)

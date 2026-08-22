@@ -42,8 +42,11 @@ const (
 	// mixes two ID spaces and a client resuming from OLD 100 is handed NEW 101,
 	// having silently missed everything the old space had above 100.
 	//
-	// Same mechanism, same reasoning, and the same key shape as
-	// internal/watchevents' watchevents_epoch. Deliberately a DISTINCT key
+	// Same mechanism and the same reasoning as internal/watchevents'
+	// watchevents_epoch, but NOT the same value shape: that one is an opaque
+	// uuid minted by its publisher, this one is a monotonic generation minted
+	// by Redis (see redisEpochGenSuffix for why comparability was needed here
+	// and what an unordered token could not do). Deliberately a DISTINCT key
 	// from that one for the same reason the counters are distinct: the two
 	// buses carry independent Last-Event-ID spaces.
 	redisEpochSuffix = "event_epoch"
@@ -799,13 +802,22 @@ func (b *RedisBus) newBuffer() *replayBuffer {
 // reasons answer it differently ON PURPOSE. Getting this backwards produces a
 // RESYNC LOOP, which is worse than the bug the floor exists to fix.
 //
-//   - COUNTER BACKWARDS, no epoch change: the arriving ID is in the SAME
-//     numeric space we were already tracking (whoever published it INCRed the
-//     same key). We just discarded events a cursor can legitimately ask about,
-//     and the successor of such a cursor is exactly what we threw away — so
-//     the floor is raised. The case this really covers is a mixed-version or
-//     mixed-FORMAT roll, where a phase-1 publisher's non-atomic INCR/PUBLISH
-//     delivers a LOWER ID after a newer one.
+//   - COUNTER BACKWARDS, no epoch change: we CANNOT TELL which of two things
+//     happened, and that is the point. Either the arriving ID is in the same
+//     numeric space and simply arrived out of order (a phase-1 publisher's
+//     non-atomic INCR/PUBLISH, during any roll), or the counter genuinely
+//     reset and no epoch was there to say so — which is every phase-1
+//     deployment, since phase 1 publishes no epoch at all. Either way we have
+//     just discarded events a cursor can legitimately ask about, so the floor
+//     is raised.
+//
+//     THE COST OF RAISING IT ON A REAL PHASE-1 RESET is the resync loop the
+//     epoch branch below avoids: the new sequence restarts low, so cursors are
+//     refused until it climbs past the dead high-water mark, and each refusal
+//     hands the client a fresh low cursor. It is bounded by that climb, and it
+//     is LOUD. The alternative — not raising it — is a silent skip, and this
+//     family chooses loud every time. Phase 2 removes the case entirely: a
+//     genuine restart there rotates the generation and takes the branch below.
 //
 //   - EPOCH CHANGE: a genuinely NEW space, typically restarting from 1 while
 //     the dead space had climbed high. Raising the floor there would refuse
@@ -843,7 +855,7 @@ func (b *RedisBus) dropAllBuffers(raiseFloor bool) {
 // publishes — which, until an operator flips config.EventsPublishEpoch, is
 // every instance — as well as what a pre-BUG-2736 binary publishes. Accepting
 // it is what makes both rolls zero-loss in the new-receiving-old direction. It
-// returns an empty epoch, which the receive path reads as "no ID-space
+// returns a ZERO epoch, which the receive path reads as "no ID-space
 // information" and leaves the epoch bookkeeping untouched rather than treating
 // it as a change.
 //
@@ -853,9 +865,9 @@ func (b *RedisBus) dropAllBuffers(raiseFloor bool) {
 // flip is a second roll. See docs/deployment.md.
 //
 // Splitting on the FIRST two separators keeps a '|' inside the JSON body
-// harmless: the epoch is a uuid and the ID is digits, so neither can contain
-// one. The leading '{' check is what stops a JSON body that happens to contain
-// two '|' characters from being mistaken for a prefixed payload — an epoch is
+// harmless: the epoch and the ID are both digits, so neither can contain one.
+// The leading '{' check is what stops a JSON body that happens to contain two
+// '|' characters from being mistaken for a prefixed payload — an epoch is
 // never a JSON object.
 func decodePayload(payload string) (int64, Event, error) {
 	if parts := strings.SplitN(payload, "|", 3); len(parts) == 3 && !strings.HasPrefix(parts[0], "{") {

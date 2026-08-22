@@ -27,6 +27,11 @@ func publishN(t *testing.T, b *MemoryBus, n int) []int64 {
 }
 
 func TestRestartCursorIsRefusedBecauseTheIDSpacesAreDisjoint(t *testing.T) {
+	// Two BUS INCARNATIONS in one process — a genuine process restart is not
+	// reproducible in-process, and a bus takes its base at construction
+	// exactly as it does at process start, so the two are equivalent for what
+	// is under test here.
+	//
 	// Incarnation 1: the watcher streams and leaves holding a cursor.
 	first := New()
 	firstIDs := publishN(t, first, 3)

@@ -551,15 +551,20 @@ func runWatchMonitor(ctx context.Context) error {
 // exhausted (connection closed) or a read error occurs. Returns the
 // last-seen event ID for Last-Event-ID resume on reconnect.
 //
-// On "sync_required" (the server's signal that the requested
-// Last-Event-ID has been evicted from its replay buffer — TASK-2533
-// codex round 1 finding 6), this CLEARS the returned cursor rather than
+// On "sync_required" (the server's signal that it cannot vouch for the span
+// the requested Last-Event-ID asks about — TASK-2533 codex round 1 finding 6),
+// this CLEARS the returned cursor rather than
 // leaving it at the stale value. Without this, the caller's next
 // reconnect would resend the SAME stale Last-Event-ID, the server would
 // respond sync_required again, forever — an unrecoverable resume loop
 // that only a process restart could break. Clearing it makes the next
 // reconnect a fresh (non-resuming) subscription instead, which is
-// exactly what sync_required is telling the caller to do: the gap is
+// exactly what sync_required is telling the caller to do. EVICTION IS ONLY ONE
+// OF ITS CAUSES and has not been the only one since BUG-2731: the server also
+// sends it for an unreadable cursor, for coverage that never reached back that
+// far, for a lost subscription, and — since BUG-2736 — for a cursor issued by
+// a previous incarnation of the server process. The client's handling is the
+// same for all of them: the gap is
 // too large to replay, stop trying.
 func streamWatchEvents(resp *http.Response, lastEventID string) string {
 	scanner := bufio.NewScanner(resp.Body)

@@ -50,10 +50,12 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 		t.Errorf("the namespaced bus also wrote the DEFAULT counter pad:event_seq")
 	}
 
-	// BUG-2736 added two more keys to this keyspace, and a key that misses the
-	// namespace is exactly the cross-feed BUG-2724 exists to stop — the epoch
-	// especially, since two installations sharing one epoch key would each
-	// read the other's ID-space changes as their own and drop their buffers.
+	// BUG-2736 added three more key families to this keyspace (the epoch, its
+	// generation counter, and the per-publish dedupe tokens), and a key that
+	// misses the namespace is exactly the cross-feed BUG-2724 exists to stop —
+	// the epoch especially, since two installations sharing one epoch key
+	// would each read the other's ID-space changes as their own and drop their
+	// buffers.
 	// Driven through the flipped publish path, because that is the only path
 	// that writes them.
 	flipped := NewRedisBusWithKeys(client, keys, true)

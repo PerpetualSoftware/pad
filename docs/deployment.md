@@ -231,7 +231,7 @@ Alert on these instead:
 | `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
-| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. Today one reason: `subscription_resumed`, a pub/sub connection that dropped and resubscribed, dropping that workspace's buffer — expect it during a Redis failover and expect it to stop afterwards |
+| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
 
@@ -333,8 +333,10 @@ the new sequence passes the replica's high-water mark, it looks like ordinary
 progress.
 
 The fix gives each ID space an **epoch** — a monotonic generation number,
-minted by Redis when the space is created and carried on every published
-message as a `<epoch>|<id>|<json>` prefix. A replica that sees a HIGHER
+minted by Redis when the space is created and carried as a
+`<epoch>|<id>|<json>` prefix on every message published **by a phase-2
+instance**. Phase-1 instances publish the historical bare JSON and carry no
+epoch at all, which is what the two phases are about. A replica that sees a HIGHER
 generation drops its replay buffers and answers resumes across the change with
 `sync_required`, which is honest rather than silent. A message carrying a
 LOWER generation is a straggler from a space that has been abandoned, and is
@@ -386,14 +388,20 @@ ever sees the sequence counter restart, so a counter that is reset while the
 deployment sits on phase 1 does not leave a stale epoch for a later phase 2 to
 adopt.
 
-**What you should see when phase 2 lands.** The first flipped message reaches
-each replica and, if that replica had already buffered un-prefixed events, it
-drops its buffers once and records
-`pad_event_sequence_resets_total{reason="epoch_change"}`. Do not delete the
-generation counter (`<namespace>event_epoch_gen`) by hand: it is what makes
-one ID space orderable against the next, and resetting it can make a genuine
-rotation look like a straggler and be ignored. Clients resuming
-across that moment get `sync_required` and re-fetch. **One drop per replica
+**What you should see when phase 2 lands.** A replica learns the epoch from
+the first prefixed message it RECEIVES — which means only replicas currently
+subscribed to a workspace see it, and only when that workspace next has
+traffic. If such a replica had already buffered un-prefixed events, it drops
+its buffers once, records
+`pad_event_sequence_resets_total{reason="epoch_change"}`, and clients resuming
+across that moment get `sync_required` and re-fetch. A replica whose buffers
+are EMPTY adopts the epoch without dropping anything and without a reset
+count, deliberately: otherwise every replica would report a reset at startup
+and the counter would grow a per-deploy baseline instead of meaning something.
+
+Do not delete the generation counter (`<namespace>event_epoch_gen`) by hand:
+it is what makes one ID space orderable against the next, and resetting it can
+make a genuine rotation look like a straggler and be ignored. **One drop per replica
 per roll** — if the counter keeps climbing, something is deleting the epoch or
 sequence key repeatedly; check `maxmemory-policy` against the events keyspace
 (see *Redis configuration notes*).
@@ -430,8 +438,11 @@ Tracked on BUG-2736.
 
 Single-process deployments (no `PAD_REDIS_URL`) need none of this and ignore
 the variable: that bus owns its counter, so it identifies its own ID space
-from its start time and a restart's IDs cannot collide with the previous
-run's.
+from its start time. Two runs' IDs can only collide if the earlier process
+published more than 2^20 events per millisecond of its own lifetime — a
+deterministic bound rather than a probability, and one no real deployment
+approaches. A clock stepped **backwards** across a restart degrades the other
+way, into extra `sync_required` responses rather than wrong replays.
 
 ### Security
 

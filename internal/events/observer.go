@@ -93,11 +93,13 @@ const (
 	// high-water mark WITHOUT an epoch change: the same numeric space
 	// delivered something out of order, or restarted inside its own epoch.
 	//
-	// EXPECTED DURING A MIXED-VERSION OR MIXED-FORMAT ROLL and not otherwise:
-	// an older publisher assigns and publishes in two calls, so two instances
-	// can interleave. Seeing it in steady state, with every instance on the
-	// atomic script, is an anomaly worth investigating rather than tuning
-	// away — see the comment at the branch that reports it.
+	// WHAT TO EXPECT DEPENDS ON THE PHASE. On phase 1 it can be non-zero at
+	// any time: that path assigns and publishes in two calls, so two instances
+	// can interleave, and a counter reset there carries no epoch to explain
+	// itself. During any roll with two publisher versions running, expect it
+	// to rise. On phase 2 with every publisher flipped, expect it at or near
+	// zero — a persistent rate there is an anomaly worth investigating rather
+	// than tuning away. See the comment at the branch that reports it.
 	ResetReasonCounterBackward = "counter_backward"
 )
 

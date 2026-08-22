@@ -219,12 +219,10 @@ type replayBuffer struct {
 	// incarnation base (see internal/idspace), which it can do because it is
 	// the sole publisher into that space.
 	//
-	// RedisBus CANNOT, and that half is not written at the time of this
-	// comment: its counter is shared across processes, so identifying its ID
-	// space needs an epoch travelling with each message rather than anything
-	// one process can compute. Until that lands, a reset Redis counter can
-	// still leave two incarnations' IDs in one buffer — BUG-2736's second
-	// half, and the reason this paragraph is not simply deleted.
+	// RedisBus cannot compute one — its counter is shared across processes —
+	// so its ID space is identified by an epoch GENERATION travelling with
+	// each message, reconciled in RedisBus.fanOut before anything reaches this
+	// buffer. Same question, two answers, for reasons redis_bus.go records.
 	//
 	// Invalidated only by lifecycle facts this instance can actually
 	// observe — today, losing the workspace's subscription (it stopping, or
@@ -591,12 +589,15 @@ func (b *MemoryBus) EventsSince(workspaceID string, sinceID int64) []Event {
 		//
 		// For a fresh client (sinceID == 0) that is honestly "nothing to
 		// replay". For a RESUMING client it is the strongest form of "cannot
-		// vouch" there is (BUG-2731): this bus assigns its own IDs starting
-		// from 1 on every start, so a non-zero cursor for a workspace we have
-		// never published to belongs to a previous incarnation of the process
-		// — or to another instance — and the events between it and now are
-		// unrecoverable here. Answering []Event{} told that client it was
-		// caught up and silently dropped everything it had missed.
+		// vouch" there is (BUG-2731): a non-zero cursor for a workspace we
+		// have never published to names events we cannot reconstruct, whoever
+		// issued it. Answering []Event{} told that client it was caught up and
+		// silently dropped everything it had missed.
+		//
+		// A cursor from a PREVIOUS INCARNATION of this process is refused
+		// earlier, by the base check above — since BUG-2736 this bus counts
+		// from an incarnation base rather than from 1, so the two cases are
+		// distinguishable and are answered separately.
 		if sinceID > 0 {
 			return nil
 		}

@@ -126,20 +126,29 @@ type Metrics struct {
 	EventResumeGapsTotal prometheus.Counter
 
 	// EventSequenceResetsTotal counts activity-stream coverage resets by
-	// reason. One reason today:
+	// reason. Three reasons:
 	//
 	//   subscription_resumed — a pub/sub connection dropped and resubscribed,
 	//   so ONE workspace's replay buffer was dropped and resumes across the
 	//   outage answer sync_required. This tracks Redis connection health:
 	//   expect it during a failover and expect it to stop afterwards.
 	//
-	// LABELLED FROM THE START rather than shipped as a bare counter, with one
-	// value today. BUG-2736's ID-space work adds reasons here, and an
-	// operator acts on the difference: a Redis connection FLAP is expected
-	// during a failover and self-resolves, while a changed KEYSPACE is a
-	// configuration mistake that does not. An alert built on an unlabelled
-	// total cannot separate them and would have to be rewritten the moment
-	// the second reason arrives.
+	//   epoch_change — the shared counter's ID space changed generation, so
+	//   EVERY buffer was dropped (the counter is global). Expect a handful at
+	//   once, correlated with a deploy or a Redis restart. A steady trickle
+	//   means the counter or epoch key is being evicted repeatedly.
+	//
+	//   counter_backward — an ID arrived at or below a buffer's high-water
+	//   mark with no generation change. Expected on phase 1 and during any
+	//   mixed-version roll; at or near zero once every publisher is flipped.
+	//
+	// LABELLED FROM THE START rather than shipped as a bare counter, which
+	// BUG-2736 immediately vindicated by adding two more values. An operator
+	// acts on the difference: a Redis connection FLAP is expected during a
+	// failover and self-resolves, a GENERATION change is expected once per
+	// cutover, and a persistent counter_backward on a fully flipped deployment
+	// is none of those. An alert built on an unlabelled total cannot separate
+	// them.
 	EventSequenceResetsTotal *prometheus.CounterVec
 
 	// EventReceiveLoopExitsTotal counts a workspace's Redis subscription loop
@@ -376,7 +385,7 @@ func New() *Metrics {
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
-		Help: "Times activity-event replay coverage was dropped, by reason. Today: subscription_resumed, a Redis connection flap affecting one workspace's buffer.",
+		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change).",
 	}, []string{"reason"})
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{

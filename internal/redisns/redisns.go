@@ -37,8 +37,10 @@
 // NOT CLUSTER SUPPORT. These names carry no hash tags, and Pad dials
 // redis.NewClient rather than NewClusterClient, so Redis Cluster is
 // unsupported. Adding tags is deliberately deferred to whenever a cluster
-// client lands (BUG-2724): the buses' publish script spans four keys in a
-// single EVAL and would fail CROSSSLOT exactly as presence's MGET does, so
+// client lands (BUG-2724): the activity bus's publish script spans FIVE keys
+// in a single EVAL (sequence, channel, epoch, dedupe, epoch generation), its
+// phase-1 assign script spans two, and the watch bus's spans four — each would
+// fail CROSSSLOT exactly as presence's MGET does, so
 // tagging one keyspace buys nothing on its own — and there is no cluster
 // client here to exercise tagged keys against, which would make them
 // untested by construction.
@@ -64,6 +66,8 @@ const prefix = "pad:"
 var reservedNames = map[string]bool{
 	"events":            true,
 	"event_seq":         true,
+	"event_epoch":       true,
+	"event_epoch_gen":   true,
 	"watchevents":       true,
 	"watchevents_seq":   true,
 	"watchevents_epoch": true,
