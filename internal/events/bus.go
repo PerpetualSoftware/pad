@@ -465,13 +465,22 @@ func (s *subscriber) signalGap() {
 	}
 }
 
+// subscriberChanDepth is how far a subscriber may fall behind before the bus
+// starts dropping events for it — and telling it so; see the fan-out in
+// Publish. Changing it changes how tolerant this process is of a slow SSE
+// consumer before that consumer is asked to resync.
+//
+// Named rather than inlined so the tests that assert the behaviour AT this
+// boundary can derive it instead of restating it.
+const subscriberChanDepth = 64
+
 // newSubscriber builds a subscriber with both of its channels, so no path
 // can register one that has an event channel and no gap channel — a nil
 // gaps channel would silently discard every signal (a send on nil blocks,
 // and the default arm would take it forever).
 func newSubscriber(workspaceID string) *subscriber {
 	return &subscriber{
-		ch:          make(chan Event, 64),
+		ch:          make(chan Event, subscriberChanDepth),
 		workspaceID: workspaceID,
 		gaps:        make(chan struct{}, 1),
 	}

@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -661,10 +662,20 @@ func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testi
 	// so a regression that decoded the epoch correctly and then handed 0 to
 	// the fan-out would pass all of them, and reconciliation would silently
 	// never run in production.
-	b, _ := newFlippedRedisBus(t)
+	b, mr := newFlippedRedisBus(t)
 
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// Subscribe() returns before Redis has REGISTERED the subscription. It
+	// does write the SUBSCRIBE command synchronously, but it does not wait
+	// for the server to confirm it (go-redis PubSub.subscribe writes and
+	// returns), and the publish that follows travels on a DIFFERENT
+	// connection — so Redis can process the publish first. Publishing into
+	// that window loses the event OUTRIGHT, not slowly: RedisBus.Publish has
+	// no local fan-out, and nothing replays a pub/sub message nobody was
+	// listening for. Hence a wait rather than a longer timeout — the round
+	// trip here is bimodal, tens of milliseconds or never (BUG-2742).
+	waitForSubscribers(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", true)
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})
 
@@ -712,14 +723,56 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 	b, _ := newFlippedRedisBus(t)
 	channel := redisns.Default.Name(redisChannelSuffix) + "ws-1"
 
+	const n = 300
+
 	ps := b.client.Subscribe(context.Background(), channel)
 	defer func() { _ = ps.Close() }()
 	if _, err := ps.Receive(context.Background()); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	incoming := ps.Channel()
+	// SIZED ABOVE THE MESSAGE COUNT, so truncation is structurally impossible
+	// rather than merely unlikely (codex round 7). go-redis defaults this to
+	// 100 and drops past it, so publishing 300 through a 100-deep buffer makes
+	// the arrival count depend on how much CPU the reader gets — the exact
+	// defect this unit removes elsewhere. Draining early narrows that window;
+	// sizing the buffer closes it.
+	incoming := ps.Channel(redis.WithChannelSize(n * 2))
 
-	const n = 300
+	// The reader also starts BEFORE the publishes rather than after them, so
+	// it is competing with the publishers instead of beginning n messages
+	// behind. With the buffer sized above n that is belt and braces, and it
+	// is kept because the two defend different things: the size stops the
+	// buffer truncating the sample, and starting early stops this test
+	// pretending a burst is consumed instantly.
+	//
+	// One reader, so the order it records IS arrival order.
+	ids := make([]int64, 0, n)
+	collected := make(chan error, 1)
+	go func() {
+		for len(ids) < n {
+			select {
+			case msg, open := <-incoming:
+				if !open {
+					// Reported, not dereferenced: a closed channel hands back
+					// a nil *Message, and reading Payload off it panics the
+					// test binary with a stack instead of naming the failure.
+					collected <- fmt.Errorf("the pubsub channel closed after %d of %d messages", len(ids), n)
+					return
+				}
+				_, ev, err := decodePayload(msg.Payload)
+				if err != nil {
+					collected <- fmt.Errorf("message %d: %w", len(ids), err)
+					return
+				}
+				ids = append(ids, ev.ID)
+			case <-time.After(30 * time.Second):
+				collected <- fmt.Errorf("only %d of %d messages arrived", len(ids), n)
+				return
+			}
+		}
+		collected <- nil
+	}()
+
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -730,21 +783,16 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 	}
 	wg.Wait()
 
+	if err := <-collected; err != nil {
+		t.Fatal(err)
+	}
+
 	var prev int64
-	for i := 0; i < n; i++ {
-		select {
-		case msg := <-incoming:
-			_, ev, err := decodePayload(msg.Payload)
-			if err != nil {
-				t.Fatalf("message %d: %v", i, err)
-			}
-			if ev.ID <= prev {
-				t.Fatalf("message %d arrived out of ID order: %d after %d — publish order must equal ID order", i, ev.ID, prev)
-			}
-			prev = ev.ID
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d of %d messages arrived", i, n)
+	for i, id := range ids {
+		if id <= prev {
+			t.Fatalf("message %d arrived out of ID order: %d after %d — publish order must equal ID order", i, id, prev)
 		}
+		prev = id
 	}
 	// PREMISE: all n really were published, so the ordering assertion ran over
 	// the whole set rather than over a handful that happened to be ordered.
@@ -855,12 +903,17 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 	// codex round 11. Dropping an unreadable message and carrying on left the
 	// buffer claiming a span with a hole in it: the event gone, the ids either
 	// side contiguous, and a later resume across it answered "caught up".
-	b, _ := newFlippedRedisBus(t)
+	b, mr := newFlippedRedisBus(t)
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// See TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath:
+	// publishing before the subscription is registered loses the event for
+	// good, and here it would look like the coverage-establishing publish
+	// simply never arrived (BUG-2742).
+	waitForSubscribers(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", true)
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	var first Event
@@ -962,6 +1015,13 @@ func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
 	defer phase1.Unsubscribe(ch1)
 	ch2, _ := phase2.Subscribe("ws-1")
 	defer phase2.Unsubscribe(ch2)
+	// BOTH must be registered before anything is published: this test's whole
+	// claim is that each replica sees the other's events, and a publish that
+	// lands while only one of them has registered is lost for the other with
+	// no way to tell that apart from "the phase-2 receiver never got it"
+	// (BUG-2742). Counting is what makes it two — waiting for "a subscriber"
+	// is satisfied by whichever registers first.
+	waitForSubscriberCount(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", 2)
 
 	recv := func(t *testing.T, ch chan Event, who string) Event {
 		t.Helper()
@@ -1091,12 +1151,15 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			b, _ := newFlippedRedisBus(t)
+			b, mr := newFlippedRedisBus(t)
 			obs := &recordingObserver{}
 			b.SetObserver(obs)
 
 			ch, _ := b.Subscribe("ws-1")
 			defer b.Unsubscribe(ch)
+			// Registration before the first publish — see BUG-2742 and the
+			// note on TestAPrefixedPayloadReachesReconciliation...
+			waitForSubscribers(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", true)
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 			var first Event
