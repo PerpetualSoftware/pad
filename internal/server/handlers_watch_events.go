@@ -141,6 +141,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// internal/watchevents.
 	var ch chan watchevents.Notification
 	var missed []watchevents.Notification
+	var gaps <-chan struct{}
 	var lastID int64
 	// unreadableCursor mirrors the activity stream's rule (BUG-2731): sending
 	// this header at all means the client believes it has a position, so a
@@ -151,7 +152,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
 		if parsed, perr := strconv.ParseInt(lastIDStr, 10, 64); perr == nil && parsed > 0 {
 			lastID = parsed
-			ch, missed = s.watchEvents.SubscribeAndReplaySince(lastID)
+			ch, missed, gaps = s.watchEvents.SubscribeAndReplaySince(lastID)
 		} else {
 			unreadableCursor = true
 			slog.Info("watch-events: resume carried an unreadable Last-Event-ID, sending sync_required",
@@ -160,7 +161,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if ch == nil {
-		ch = s.watchEvents.Subscribe()
+		ch, gaps = s.watchEvents.Subscribe()
 	}
 	defer s.watchEvents.Unsubscribe(ch)
 
@@ -308,6 +309,38 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			}
 			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
 				slog.Debug("watch-events: notification write failed, closing", "user_id", user.ID, "error", err)
+				return
+			}
+			flusher.Flush()
+
+		case <-gaps:
+			// THIS STREAM HAS A HOLE (BUG-2730). Either this instance failed
+			// to hand this connection a notification (its channel was full),
+			// or this instance discovered a gap in what it received from
+			// Redis — a pub/sub reconnect, a dropped message, an id-space
+			// reset — which every subscriber here shares.
+			//
+			// Raising knownFrom already made a RECONNECT across such a hole
+			// honest. A client holding the stream OPEN across it was told
+			// nothing: it stayed connected, kept receiving everything after
+			// the gap, and silently never saw what went missing, while this
+			// process had logged the exact id range. The one consumer that
+			// could act on it was the one consumer not informed.
+			//
+			// sync_required, mid-stream, is the answer for the same reason
+			// the resume path uses it: the pad CLI already clears its cursor
+			// on it (cmd/pad/cmd_watch.go) and any other consumer treats it
+			// as "stop trusting your position", which is exactly true here.
+			// The empty `id:` retires the cursor, so a generic SSE client
+			// does not go on resending a position we have just said we
+			// cannot vouch for.
+			slog.Info("watch-events: live subscriber missed notifications, sending sync_required mid-stream",
+				"user_id", user.ID)
+			s.countResumeGap(false)
+			if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+				"reason": "This stream missed notifications it cannot replay. Full sync required.",
+			}); err != nil {
+				slog.Debug("watch-events: mid-stream sync_required write failed, closing", "user_id", user.ID, "error", err)
 				return
 			}
 			flusher.Flush()

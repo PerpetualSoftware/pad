@@ -12,7 +12,7 @@ func TestMemoryBus_PublishDeliversToSubscriber(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	b.Publish(Notification{WorkspaceID: "ws1", ItemID: "item1", Kind: KindStatusChange})
@@ -41,7 +41,7 @@ func TestMemoryBus_PublishDeliversPushWithTargetUserID(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
 	b.Publish(Notification{
@@ -70,7 +70,7 @@ func TestMemoryBus_UnsubscribeClosesChannel(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 	b.Unsubscribe(ch)
 
 	if _, ok := <-ch; ok {
@@ -83,8 +83,8 @@ func TestMemoryBus_MultipleSubscribersAllReceive(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	ch1 := b.Subscribe()
-	ch2 := b.Subscribe()
+	ch1, _ := b.Subscribe()
+	ch2, _ := b.Subscribe()
 	defer b.Unsubscribe(ch1)
 	defer b.Unsubscribe(ch2)
 
@@ -168,7 +168,7 @@ func TestMemoryBus_SlowSubscriberDoesNotBlockPublish(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	ch := b.Subscribe() // never drained
+	ch, _ := b.Subscribe() // never drained
 	defer b.Unsubscribe(ch)
 
 	done := make(chan struct{})
@@ -256,7 +256,7 @@ func TestMemoryBus_SubscribeAndReplaySince_NoDuplicateUnderConcurrentPublish(t *
 	seeded := b.EventsSince(0)
 	sinceID := seeded[2].ID // resume from partway through history
 
-	ch, missed := b.SubscribeAndReplaySince(sinceID)
+	ch, missed, _ := b.SubscribeAndReplaySince(sinceID)
 	defer b.Unsubscribe(ch)
 
 	const concurrentPublishes = 20
@@ -325,7 +325,7 @@ func TestMemoryBus_ConcurrentPublishUnsubscribeClose_NoPanic(t *testing.T) {
 		const numChannels = 20
 		chs := make([]chan Notification, numChannels)
 		for i := range chs {
-			chs[i] = b.Subscribe()
+			chs[i], _ = b.Subscribe()
 		}
 
 		var wg sync.WaitGroup
@@ -369,7 +369,7 @@ func TestMemoryBus_ConcurrentPublishUnsubscribeClose_NoPanic(t *testing.T) {
 				}
 			}()
 			for i := 0; i < 200; i++ {
-				ch := b.Subscribe()
+				ch, _ := b.Subscribe()
 				b.Unsubscribe(ch)
 			}
 		}()

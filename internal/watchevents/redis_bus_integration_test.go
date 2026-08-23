@@ -60,7 +60,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestRedisBusRoundTripDeliversToTheSameInstance(t *testing.T) {
 	b, _ := newMiniredisBus(t, 64)
 
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1", Summary: "hello"})
 
 	select {
@@ -87,7 +87,7 @@ func TestRedisBusRoundTripCrossInstance(t *testing.T) {
 	busB := NewRedisBusWithReplaySize(clientB, 64)
 	t.Cleanup(busB.Close)
 
-	chB := busB.Subscribe()
+	chB, _ := busB.Subscribe()
 
 	// Published on A.
 	a.Publish(Notification{Kind: KindPush, ItemRef: "TASK-9", Summary: "from A"})
@@ -114,7 +114,7 @@ func TestRedisBusIDsAreSharedAcrossInstances(t *testing.T) {
 	busB := NewRedisBusWithReplaySize(clientB, 64)
 	t.Cleanup(busB.Close)
 
-	ch := a.Subscribe()
+	ch, _ := a.Subscribe()
 
 	a.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	busB.Publish(Notification{Kind: KindComment, ItemRef: "TASK-2"})
@@ -146,7 +146,7 @@ func TestRedisBusIDsAreSharedAcrossInstances(t *testing.T) {
 // that pretended to would be testing its own mock.
 func TestRedisBusPublishIsIdempotentUnderRetry(t *testing.T) {
 	b, _ := newMiniredisBus(t, 64)
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 
 	token := redisns.Default.Name(redisWatchDedupeSuffix) + "fixed-token-for-this-test"
 	keys := []string{redisns.Default.Name(redisWatchSeqSuffix), redisns.Default.Name(redisWatchChannelSuffix), token, redisns.Default.Name(redisWatchEpochSuffix)}
@@ -185,7 +185,7 @@ func TestRedisBusPublishIsIdempotentUnderRetry(t *testing.T) {
 func TestRedisBusCloseStopsReceiving(t *testing.T) {
 	b, mr := newMiniredisBus(t, 64)
 
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
 	select {
 	case <-ch:
@@ -228,7 +228,7 @@ func TestRedisBusCloseStopsReceiving(t *testing.T) {
 // nothing about what the caller was told.
 func TestRedisBusPublishReportsAcceptanceOnASuccessfulRoundTrip(t *testing.T) {
 	bus, _ := newMiniredisBus(t, 16)
-	ch := bus.Subscribe()
+	ch, _ := bus.Subscribe()
 
 	if err := bus.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1", Summary: "triage this"}); err != nil {
 		t.Fatalf("a successful publish must report acceptance, got %v", err)

@@ -89,7 +89,7 @@ func TestACursorFromAPreviousIncarnationIsAGapEvenWithAWarmBuffer(t *testing.T) 
 	// guard was written inline in EventsSince the handler's path did not have
 	// it, and every assertion above still passed. Both entry points, or the
 	// fix is only true of the one nobody calls.
-	ch, missed := b.SubscribeAndReplaySince(1)
+	ch, missed, _ := b.SubscribeAndReplaySince(1)
 	defer b.Unsubscribe(ch)
 	if ch == nil {
 		t.Fatal("the subscription must still be established when the replay is refused")
@@ -97,7 +97,7 @@ func TestACursorFromAPreviousIncarnationIsAGapEvenWithAWarmBuffer(t *testing.T) 
 	if missed != nil {
 		t.Fatalf("SubscribeAndReplaySince must refuse a previous incarnation's cursor, got %d notifications", len(missed))
 	}
-	ch2, missed2 := b.SubscribeAndReplaySince(b.base + 1)
+	ch2, missed2, _ := b.SubscribeAndReplaySince(b.base + 1)
 	defer b.Unsubscribe(ch2)
 	if missed2 == nil {
 		t.Fatal("SubscribeAndReplaySince must serve a cursor this incarnation issued")
@@ -112,7 +112,7 @@ func TestSubscribeAndReplaySinceRefusesAColdResume(t *testing.T) {
 	b := New()
 	t.Cleanup(b.Close)
 
-	ch, missed := b.SubscribeAndReplaySince(b.base + 4200)
+	ch, missed, _ := b.SubscribeAndReplaySince(b.base + 4200)
 	if ch == nil {
 		t.Fatal("the subscription must still be established even when the replay is refused")
 	}
@@ -121,7 +121,7 @@ func TestSubscribeAndReplaySinceRefusesAColdResume(t *testing.T) {
 	}
 
 	// Control: a fresh subscriber gets a usable, non-gap answer.
-	ch2, missed2 := b.SubscribeAndReplaySince(0)
+	ch2, missed2, _ := b.SubscribeAndReplaySince(0)
 	defer b.Unsubscribe(ch2)
 	if ch2 == nil {
 		t.Fatal("a fresh subscription must be established")
@@ -150,7 +150,7 @@ func TestMemoryBusReportsItsOwnResumeGaps(t *testing.T) {
 	if got := b.EventsSince(b.base + 4200); got != nil {
 		t.Fatalf("expected a gap, got %d", len(got))
 	}
-	ch, missed := b.SubscribeAndReplaySince(b.base + 4200)
+	ch, missed, _ := b.SubscribeAndReplaySince(b.base + 4200)
 	if missed != nil {
 		t.Fatalf("expected a gap, got %d", len(missed))
 	}
@@ -172,7 +172,7 @@ func TestMemoryBusReportsItsOwnResumeGaps(t *testing.T) {
 	if got := b.EventsSince(warm[0].ID); got == nil {
 		t.Fatal("a caught-up cursor must be served")
 	}
-	ch2, missed2 := b.SubscribeAndReplaySince(0)
+	ch2, missed2, _ := b.SubscribeAndReplaySince(0)
 	defer b.Unsubscribe(ch2)
 	if missed2 == nil {
 		t.Fatal("a fresh subscriber must not be answered with a gap")

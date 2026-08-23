@@ -46,9 +46,9 @@ func (b *stubBus) publishAttempts() int {
 	return b.attempts
 }
 
-func (b *stubBus) Subscribe() chan watchevents.Notification { return nil }
-func (b *stubBus) SubscribeAndReplaySince(int64) (chan watchevents.Notification, []watchevents.Notification) {
-	return nil, nil
+func (b *stubBus) Subscribe() (chan watchevents.Notification, <-chan struct{}) { return nil, nil }
+func (b *stubBus) SubscribeAndReplaySince(int64) (chan watchevents.Notification, []watchevents.Notification, <-chan struct{}) {
+	return nil, nil, nil
 }
 func (b *stubBus) Unsubscribe(chan watchevents.Notification) {}
 func (b *stubBus) EventsSince(int64) []watchevents.Notification {

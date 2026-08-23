@@ -10,6 +10,7 @@ type recordingObserver struct {
 	resumeGaps []string
 	resets     []string
 	loopExits  int
+	drops      []string
 }
 
 func (o *recordingObserver) ResumeGap(workspaceID string) {
@@ -28,6 +29,18 @@ func (o *recordingObserver) ReceiveLoopExited() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.loopExits++
+}
+
+func (o *recordingObserver) EventDropped(reason string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.drops = append(o.drops, reason)
+}
+
+func (o *recordingObserver) dropped() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.drops...)
 }
 
 func (o *recordingObserver) exits() int {
@@ -146,5 +159,7 @@ func (o callbackObserver) ResumeGap(string) {
 }
 
 func (o callbackObserver) SequenceReset(string) {}
+
+func (o callbackObserver) EventDropped(string) {}
 
 func (o callbackObserver) ReceiveLoopExited() {}
