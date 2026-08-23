@@ -230,14 +230,11 @@ func waitForSubscriberCount(t *testing.T, mr *miniredis.Miniredis, channel strin
 // helper they would call to set themselves up. An undecodable message ends
 // this instance's coverage of the workspace.
 //
-// It was harmless in every EXISTING caller, but not for the reason I first
-// wrote here (codex round 7 corrected it): four of the callers do run after a
-// publish, so the old helper really was ending coverage on a live buffer. It
-// did not matter because those four go on to assert about Redis KEYS rather
-// than about coverage or delivery. That is a property of what each call site
-// happens to assert next — the thinnest possible guarantee, and one that stops
-// holding the moment somebody adds a coverage assertion after a wait, or
-// copies the helper into a test that has one.
+// It was harmless in every existing caller, but only because the callers that
+// ran after a publish go on to assert about Redis KEYS rather than about
+// coverage or delivery. That is a property of what each call site happens to
+// assert next — the thinnest possible guarantee, and one that stops holding
+// the moment somebody adds a coverage assertion after a wait.
 //
 // The deadline is a LIVENESS bound, not a latency assertion: registration is
 // a sub-millisecond-to-milliseconds affair, and this number exists so a test

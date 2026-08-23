@@ -366,27 +366,23 @@ func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
 // scheduling race with no single point to pause at once the fix is in, because
 // the fix is precisely that no such point exists.
 //
-// WHY IT IS SHAPED LIKE THIS, because the obvious shape is the one it replaces
-// (BUG-2742). The first version published 320 events while a goroutine drained
-// concurrently, and guarded against vacuity with "at least half must arrive".
-// That guard is a bet on runner speed: the bus DELIBERATELY drops for a
-// subscriber that cannot keep up, so how many arrive is a continuous function
-// of how much CPU the reader gets. It reddened four CI runs across three PRs
-// reporting 64, 65, 144 and 150 of 320 — and 64 is exactly subscriberChanDepth,
-// one buffer-full and nothing after it.
+// WHY IT IS SHAPED LIKE THIS — the obvious shape is the one it replaces, and
+// that one reddened CI (BUG-2742). Publishing a large burst while a goroutine
+// drains, then guarding vacuity with "at least half must arrive", makes the
+// sample size a bet on runner speed: this bus DELIBERATELY drops for a
+// subscriber that cannot keep up, so the arrival count is a function of how
+// much CPU the reader gets.
 //
-// So the sample is made untruncatable instead of large: no reader runs during
-// the publishes, and no more events than the channel is deep are published, so
-// a drop CANNOT occur and every publish is still in the buffer afterwards. The
-// vacuity guard is then `count == total` — an equality, not a threshold, and
-// not a bet on anything.
+// So the sample is made untruncatable rather than large. No reader runs during
+// the publishes and no more events than the channel is deep are published, so
+// a drop cannot occur — which turns the vacuity guard into `count == total`,
+// an equality rather than a threshold.
 //
-// Detection power comes from REPEATING the round rather than from volume,
-// which is what the bounded channel could not give. Measured against the
-// mutation this test exists to catch (release replayMu after the append, so
-// fan-out runs outside it): the version this replaces caught it 9 times in 30
-// runs; this one caught it 25 times in 25, and costs ~10ms against that
-// version's fixed 0.5s.
+// Detection power then comes from REPEATING the round, which is the thing a
+// bounded channel could not supply. Do not trade rounds back for a bigger
+// burst: the round count was chosen by measuring catch rate against the
+// mutation below, and the burst is what could not be measured reliably. See
+// BUG-2742 for the figures.
 func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 	// Enough publishers to interleave, few enough events that the subscriber
 	// channel cannot overflow.

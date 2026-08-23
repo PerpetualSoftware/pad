@@ -465,12 +465,13 @@ func (s *subscriber) signalGap() {
 	}
 }
 
-// subscriberChanDepth is how many events a subscriber may fall behind before
-// the bus starts dropping for it (and telling it so — see the fan-out in
-// Publish). Named rather than inlined because a test needs to state the
-// premise "fewer events than this cannot be dropped" in terms of the real
-// number: a test that hardcodes 64 alongside this one silently stops proving
-// what it claims the day the depth changes.
+// subscriberChanDepth is how far a subscriber may fall behind before the bus
+// starts dropping events for it — and telling it so; see the fan-out in
+// Publish. Changing it changes how tolerant this process is of a slow SSE
+// consumer before that consumer is asked to resync.
+//
+// Named rather than inlined so the tests that assert the behaviour AT this
+// boundary can derive it instead of restating it.
 const subscriberChanDepth = 64
 
 // newSubscriber builds a subscriber with both of its channels, so no path
