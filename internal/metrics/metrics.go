@@ -125,6 +125,17 @@ type Metrics struct {
 	// /changes delta first (web/src/lib/services/sync.svelte.ts).
 	EventResumeGapsTotal prometheus.Counter
 
+	// EventEventsDroppedTotal counts activity events this instance received
+	// but could not hand to a live subscriber, by reason. Per-SUBSCRIBER, not
+	// per-event: the same event reached every subscriber that was keeping up.
+	//
+	// The watch stream's twin (WatchNotificationsDroppedTotal) has existed
+	// since BUG-2699; this one arrives with BUG-2730, which is also what made
+	// the drop honest — the affected subscriber is now told mid-stream. Read
+	// it alongside pad_event_resume_gaps_total: a rise here produces a rise
+	// there one client at a time, and that is the fix working, not a fault.
+	EventEventsDroppedTotal *prometheus.CounterVec
+
 	// EventSequenceResetsTotal counts activity-stream coverage resets by
 	// reason. Three reasons:
 	//
@@ -377,7 +388,7 @@ func New() *Metrics {
 
 	watchResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_watchevents_resume_gaps_total",
-		Help: "Resumes this instance could not serve, each sending a client sync_required.",
+		Help: "sync_required signals sent on the watch stream: a resume this instance could not serve, an unreadable cursor, or (since BUG-2730) a live subscriber told mid-stream that it missed notifications.",
 	})
 
 	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -392,8 +403,13 @@ func New() *Metrics {
 
 	eventResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_resume_gaps_total",
-		Help: "Activity-stream resumes this instance could not serve, each sending a client sync_required. Counts resumes, not clients. Expect a step around a deploy (cold buffers) returning to baseline; a rate that does not settle is the signal.",
+		Help: "sync_required signals sent on the activity stream: a resume this instance could not serve, an unreadable cursor, or (since BUG-2730) a live subscriber told mid-stream that it missed events. Counts signals, not clients. Expect a step around a deploy (cold buffers) returning to baseline; a rate that does not settle is the signal.",
 	})
+
+	eventEventsDroppedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_event_events_dropped_total",
+		Help: "Activity events not delivered to a live subscriber, by reason: slow_subscriber (that connection's 64-deep channel was full). Per-subscriber, not per-event. Since BUG-2730 each drop also sends that subscriber sync_required, so expect a matching rise in pad_event_resume_gaps_total.",
+	}, []string{"reason"})
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
@@ -418,6 +434,7 @@ func New() *Metrics {
 		watchSequenceResetsTotal,
 		watchReceiveLoopExitsTotal,
 		eventResumeGapsTotal,
+		eventEventsDroppedTotal,
 		eventSequenceResetsTotal,
 		eventReceiveLoopExitsTotal,
 		sessionPresenceFailuresTotal,
@@ -447,6 +464,7 @@ func New() *Metrics {
 		WatchResumeGapsTotal:           watchResumeGapsTotal,
 		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
 		EventResumeGapsTotal:           eventResumeGapsTotal,
+		EventEventsDroppedTotal:        eventEventsDroppedTotal,
 		EventSequenceResetsTotal:       eventSequenceResetsTotal,
 		EventReceiveLoopExitsTotal:     eventReceiveLoopExitsTotal,
 		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,

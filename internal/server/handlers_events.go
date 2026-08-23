@@ -196,8 +196,41 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Note for anyone reading the SSE limit tests in this package: since
 	// that change they exercise the ADMISSION GATE, not the bus, even
 	// though their names have not changed.
-	ch, ok := s.events.SubscribeIfAllowed(ws.ID, s.sseMaxPerWorkspace)
-	if !ok {
+	// THE CURSOR IS PARSED BEFORE THE SUBSCRIBE, and that ordering is the fix
+	// for the duplicate window BUG-2730 owns. Reading Last-Event-ID here lets
+	// the resuming case subscribe and capture its replay in ONE call, under
+	// the bus's own lock, so an event published between the two can no longer
+	// land in both the replay set and the live channel.
+	//
+	// unreadableCursor: sending the header at all means the client believes it
+	// has a position, so a value we cannot read is a cursor we cannot serve —
+	// NOT a fresh connection (BUG-2731, codex round 10). Treating it as fresh
+	// silently drops everything published before this subscription. A
+	// genuinely fresh client sends no header and leaves both of these zero.
+	var lastID int64
+	var unreadableCursor bool
+	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
+		parsed, parseErr := strconv.ParseInt(lastIDStr, 10, 64)
+		if parseErr != nil || parsed <= 0 {
+			unreadableCursor = true
+			slog.Info("SSE resume carried an unreadable Last-Event-ID, sending sync_required",
+				"workspace", ws.Slug, "last_event_id", lastIDStr)
+			s.countResumeGap(true)
+		} else {
+			lastID = parsed
+		}
+	}
+
+	var ch chan events.Event
+	var missed []events.Event
+	var gaps <-chan struct{}
+	var subscribed bool
+	if lastID > 0 {
+		ch, missed, gaps, subscribed = s.events.SubscribeAndReplaySince(ws.ID, lastID, s.sseMaxPerWorkspace)
+	} else {
+		ch, gaps, subscribed = s.events.SubscribeIfAllowed(ws.ID, s.sseMaxPerWorkspace)
+	}
+	if !subscribed {
 		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", "per_workspace",
 			"ws_current", s.events.WorkspaceSubscriberCount(ws.ID), "ws_max", s.sseMaxPerWorkspace)
 		writeStreamLimitExceeded(w)
@@ -252,97 +285,64 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
-	// Replay missed events if the client provided Last-Event-ID.
-	// The browser's EventSource sends this automatically on reconnect.
+	// Replay is already captured — SubscribeAndReplaySince did it above,
+	// atomically with the subscribe. What is left here is writing it out.
 	//
-	// SUBSCRIBING AND READING THE BUFFER ARE TWO STEPS HERE, AND THAT IS A
-	// KNOWN DEFECT — BUG-2730, not an oversight and not fixed by BUG-2731.
-	// An event published in the window between them lands in BOTH the replay
-	// below and the live channel, so the client processes it twice: a
-	// duplicate toast and duplicate work, though never a lost event.
-	//
-	// internal/watchevents closed the same window with SubscribeAndReplaySince,
-	// one atomic operation under the bus's own lock. Doing that here means a
-	// new method on events.EventBus across three implementations, folded
-	// together with the admission check SubscribeIfAllowed already performs —
-	// which is why it is its own unit rather than a rider on a fix about
-	// COVERAGE. BUG-2730 owns the live-stream-honesty family for both buses.
-	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
-		lastID, parseErr := strconv.ParseInt(lastIDStr, 10, 64)
-		if parseErr != nil || lastID <= 0 {
-			// AN UNREADABLE CURSOR IS A CURSOR WE CANNOT VOUCH FOR, not an
-			// absent one (BUG-2731, codex round 10). Sending the header at
-			// all means the client believes it has a position; if we cannot
-			// read it — whitespace, quotes, a negative or zero value, an
-			// integer too large — then we cannot serve it, and treating it as
-			// a fresh connection silently drops everything published before
-			// this subscription.
-			//
-			// A genuinely fresh client sends NO header and never reaches
-			// here, so this costs a resync only for clients that are already
-			// broken, which is exactly who needs one.
-			slog.Info("SSE resume carried an unreadable Last-Event-ID, sending sync_required",
-				"workspace", ws.Slug, "last_event_id", lastIDStr)
-			s.countResumeGap(true)
+	// The two-step subscribe-then-read this used to do was BUG-2730's
+	// duplicate window: an event published between the two landed in BOTH the
+	// replay set and the live channel, so the client processed it twice.
+	// internal/watchevents closed the same window the same way; this bus now
+	// matches it.
+	if unreadableCursor {
+		if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+			"reason": "Your last event ID could not be read. Full sync required.",
+		}); err != nil {
+			slog.Debug("SSE: sync_required write failed, closing",
+				"workspace", ws.Slug, "error", err)
+			return
+		}
+		flusher.Flush()
+	} else if lastID > 0 {
+		if missed == nil {
+			// This instance cannot vouch for the span the client is asking
+			// about, so it is told to re-fetch rather than left believing it
+			// is current. Several causes reach here — eviction, coverage
+			// starting above the cursor, no buffer at all (a cold start, a
+			// restart, a scale-up, or simply the first connection to this
+			// workspace on this instance), and an ID-space reset. The bus
+			// decides which; from here they are one answer, and
+			// pad_event_resume_gaps_total is where the mix is visible.
+			slog.Info("SSE resume could not be served from this instance's view, sending sync_required",
+				"workspace", ws.Slug, "last_event_id", lastID)
 			if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
-				"reason": "Your last event ID could not be read. Full sync required.",
+				// The client dispatches its delta sync on the event NAME and
+				// never reads this string, which is precisely why correcting
+				// it is free — the earlier decision to keep "Event buffer
+				// exceeded" as a deliberate non-change had it backwards
+				// (codex round 6). Eviction is now one of several reasons
+				// this fires, so the old text named the rarest of them.
+				"reason": "This instance cannot vouch for events since your last ID. Full sync required.",
 			}); err != nil {
 				slog.Debug("SSE: sync_required write failed, closing",
 					"workspace", ws.Slug, "error", err)
 				return
 			}
 			flusher.Flush()
-		} else {
-			missed := s.events.EventsSince(ws.ID, lastID)
-			if missed == nil {
-				// This instance cannot vouch for the span the client is
-				// asking about, so it is told to re-fetch rather than left
-				// believing it is current.
-				//
-				// The comment here used to say "buffer evicted", which was
-				// the only case that produced nil BEFORE BUG-2731 and is now
-				// one of several: eviction, a buffer whose coverage starts
-				// above the cursor, no buffer at all (a cold start, a
-				// restart, a scale-up, or simply the first connection to
-				// this workspace on this instance), and an ID-space reset.
-				// The bus decides which; from here they are one answer, and
-				// the pad_event_resume_gaps_total counter is where the mix
-				// is visible.
-				slog.Info("SSE resume could not be served from this instance's view, sending sync_required",
-					"workspace", ws.Slug, "last_event_id", lastID)
-				if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
-					// The client dispatches its delta sync on the event NAME
-					// and never reads this string, which is precisely why
-					// correcting it is free — the earlier decision to keep
-					// "Event buffer exceeded" as a deliberate non-change had
-					// it backwards (codex round 6). Eviction is now one of
-					// several reasons this fires, so the old text named the
-					// rarest of them, and anyone who ever did read it — a
-					// curious operator with devtools open — would be misled
-					// for no benefit.
-					"reason": "This instance cannot vouch for events since your last ID. Full sync required.",
-				}); err != nil {
-					slog.Debug("SSE: sync_required write failed, closing",
-						"workspace", ws.Slug, "error", err)
-					return
-				}
-				flusher.Flush()
-			} else if len(missed) > 0 {
-				slog.Info("SSE replaying missed events",
-					"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
-				for _, event := range missed {
-					if sseEventVisible(event) {
-						if err := writeSSEEvent(w, event.Type, event.ID, event); err != nil {
-							slog.Debug("SSE: replay write failed, closing",
-								"workspace", ws.Slug, "error", err)
-							return
-						}
-						flusher.Flush()
+		} else if len(missed) > 0 {
+			slog.Info("SSE replaying missed events",
+				"workspace", ws.Slug, "last_event_id", lastID, "count", len(missed))
+			for _, event := range missed {
+				if sseEventVisible(event) {
+					if err := writeSSEEvent(w, event.Type, event.ID, event); err != nil {
+						slog.Debug("SSE: replay write failed, closing",
+							"workspace", ws.Slug, "error", err)
+						return
 					}
+					flusher.Flush()
 				}
 			}
-			// If len(missed) == 0: client is caught up, nothing to replay.
 		}
+		// If len(missed) == 0: client is caught up, nothing to replay.
 	}
 
 	// Keepalive ticker — see sseKeepaliveInterval doc for why the
@@ -402,6 +402,50 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				}
 				flusher.Flush()
 			}
+
+		case <-gaps:
+			// THIS SUBSCRIBER HAS A HOLE (BUG-2730). The bus raised the flag
+			// because it could not hand this connection an event — its
+			// channel was full — or because this instance's coverage of the
+			// workspace ended under it (a pub/sub flap, an undecodable
+			// message, an ID-space reset). Either way the promise a held-open
+			// stream makes, "you will see everything from your cursor
+			// forward", has already been broken, and until this fix the
+			// client was never told: a later delivered event advanced its
+			// Last-Event-ID past the missing IDs, after which no replica
+			// would ever replay them.
+			//
+			// The answer is the same signal a resume we cannot serve gets,
+			// emitted mid-stream. The client acts on it identically — the web
+			// client runs an incremental /changes delta, not a full refresh
+			// (web/src/lib/services/sync.svelte.ts) — so no new client
+			// vocabulary is needed for a distinction it would act on the same
+			// way. The cursor is retired with the empty `id:` for the same
+			// reason the resume path retires it: the position we would be
+			// confirming is one we have just said we cannot vouch for.
+			//
+			// LOAD POSTURE, stated because it is the cost side and someone
+			// will want to see it: for a slow subscriber this answers "you
+			// could not keep up" with "now also fetch a delta". The gap
+			// channel coalesces (capacity 1, non-blocking send), so the
+			// signal's rate is bounded by how fast this loop reads it, never
+			// by the drop rate, and the web client defers a sync_required
+			// that arrives mid-sync rather than stacking them (BUG-2508). If
+			// that still feeds back in production, the escape hatch named on
+			// BUG-2730 is to replay from the buffer instead of resyncing —
+			// the dropped events are still in it, since it holds 1024 against
+			// the channel's 64.
+			slog.Info("SSE: live subscriber missed events, sending sync_required mid-stream",
+				"workspace", ws.Slug, "user_id", sseUserID)
+			s.countResumeGap(true)
+			if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+				"reason": "This stream missed events it cannot replay. Full sync required.",
+			}); err != nil {
+				slog.Debug("SSE: mid-stream sync_required write failed, closing",
+					"workspace", ws.Slug, "error", err)
+				return
+			}
+			flusher.Flush()
 
 		case <-keepalive.C:
 			// Send keepalive comment to prevent proxy/LB timeouts.

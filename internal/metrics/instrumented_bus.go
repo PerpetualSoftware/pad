@@ -42,19 +42,41 @@ func (b *InstrumentedBus) Subscribe(workspaceID string) chan events.Event {
 
 // SubscribeIfAllowed delegates the atomic check-and-subscribe to the inner bus
 // and updates Prometheus gauges on success.
-func (b *InstrumentedBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan events.Event, bool) {
-	ch, ok := b.inner.SubscribeIfAllowed(workspaceID, maxPerWorkspace)
+func (b *InstrumentedBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan events.Event, <-chan struct{}, bool) {
+	ch, gaps, ok := b.inner.SubscribeIfAllowed(workspaceID, maxPerWorkspace)
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 
+	b.trackSubscription(ch, workspaceID)
+	return ch, gaps, true
+}
+
+// SubscribeAndReplaySince delegates the atomic check-subscribe-and-replay to
+// the inner bus and updates the same gauges as SubscribeIfAllowed.
+//
+// The gap channel and the replay set pass through untouched: both are the
+// inner bus's own knowledge (BUG-2730), and this wrapper exists to count
+// subscriptions, not to have an opinion about coverage.
+func (b *InstrumentedBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan events.Event, []events.Event, <-chan struct{}, bool) {
+	ch, missed, gaps, ok := b.inner.SubscribeAndReplaySince(workspaceID, sinceID, maxPerWorkspace)
+	if !ok {
+		return nil, nil, nil, false
+	}
+
+	b.trackSubscription(ch, workspaceID)
+	return ch, missed, gaps, true
+}
+
+// trackSubscription records the channel's workspace and bumps the gauges, so
+// every successful subscribe path does the same bookkeeping.
+func (b *InstrumentedBus) trackSubscription(ch chan events.Event, workspaceID string) {
 	b.mu.Lock()
 	b.workspaces[ch] = workspaceID
 	b.mu.Unlock()
 
 	(*b.metrics.SSEConnectionsActive).Inc()
 	(*b.metrics.EventBusSubscribers).Set(float64(b.inner.SubscriberCount()))
-	return ch, true
 }
 
 // Unsubscribe delegates to the inner bus and decrements the SSE connection gauge.

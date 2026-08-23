@@ -70,7 +70,33 @@ type Observer interface {
 	// than those two causes, which is otherwise invisible from outside the
 	// process.
 	ReceiveLoopExited()
+
+	// EventDropped reports that a live subscriber's channel was full, so one
+	// event was not delivered TO THAT SUBSCRIBER. reason is bounded so it can
+	// be a metric label; today there is one:
+	//
+	//   "slow_subscriber" — the consumer had not drained its 64-deep channel.
+	//
+	// This is per-SUBSCRIBER, unlike every other report on this interface:
+	// the same event reached every other subscriber for the workspace. It is
+	// the counter for the condition BUG-2730 made honest — since that fix the
+	// affected subscriber is told (its stream emits sync_required mid-stream),
+	// so a non-zero rate here is a population of clients doing an extra delta
+	// sync, not a population silently missing data.
+	//
+	// internal/watchevents has had the equivalent (NotificationDropped) since
+	// BUG-2699; this bus's drops were log-only until BUG-2730, which is why a
+	// deploy that starts reporting them is not necessarily a regression — it
+	// may be the first time they were countable.
+	EventDropped(reason string)
 }
+
+// Drop reasons. Bounded by construction so they are safe as metric labels.
+const (
+	// DropReasonSlowSubscriber is the only drop reason today: a subscriber's
+	// buffered channel was full at fan-out time.
+	DropReasonSlowSubscriber = "slow_subscriber"
+)
 
 // Reset reasons. Bounded by construction so they are safe as metric labels.
 const (
@@ -166,5 +192,11 @@ func (o *observable) reportReset(reason string) {
 func (o *observable) reportReceiveLoopExited() {
 	if obs := o.observer(); obs != nil {
 		obs.ReceiveLoopExited()
+	}
+}
+
+func (o *observable) reportDropped(reason string) {
+	if obs := o.observer(); obs != nil {
+		obs.EventDropped(reason)
 	}
 }

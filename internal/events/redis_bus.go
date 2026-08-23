@@ -393,28 +393,28 @@ func (b *RedisBus) Subscribe(workspaceID string) chan Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	ch := b.addSubscriberLocked(workspaceID)
+	sub := b.addSubscriberLocked(workspaceID)
 	if b.wsCounts[workspaceID] == 1 {
 		// First local subscriber for this workspace — subscribe to Redis channel
 		b.startRedisSubscription(workspaceID)
 	}
 
-	return ch
+	return sub.ch
 }
 
 // addSubscriberLocked registers a channel for a workspace and bumps its local
 // count. Callers must hold mu.
-func (b *RedisBus) addSubscriberLocked(workspaceID string) chan Event {
-	ch := make(chan Event, 64)
+func (b *RedisBus) addSubscriberLocked(workspaceID string) *subscriber {
+	sub := newSubscriber(workspaceID)
 	byWorkspace, ok := b.subscribers[workspaceID]
 	if !ok {
 		byWorkspace = make(map[chan Event]*subscriber)
 		b.subscribers[workspaceID] = byWorkspace
 	}
-	byWorkspace[ch] = &subscriber{ch: ch, workspaceID: workspaceID}
-	b.workspaceOf[ch] = workspaceID
+	byWorkspace[sub.ch] = sub
+	b.workspaceOf[sub.ch] = workspaceID
 	b.wsCounts[workspaceID]++
-	return ch
+	return sub
 }
 
 // SubscribeIfAllowed atomically checks the per-workspace limit and
@@ -424,20 +424,61 @@ func (b *RedisBus) addSubscriberLocked(workspaceID string) chan Event {
 // NOTE: the limit is enforced against local (per-pod) subscriber counts
 // only. In multi-replica deployments the effective cap is multiplied by
 // the number of replicas — as is every other streaming limit Pad has.
-func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, bool) {
+func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if maxPerWorkspace > 0 && b.wsCounts[workspaceID] >= maxPerWorkspace {
-		return nil, false
+		return nil, nil, false
 	}
 
-	ch := b.addSubscriberLocked(workspaceID)
+	sub := b.addSubscriberLocked(workspaceID)
 	if b.wsCounts[workspaceID] == 1 {
 		b.startRedisSubscription(workspaceID)
 	}
 
-	return ch, true
+	return sub.ch, sub.gaps, true
+}
+
+// SubscribeAndReplaySince implements EventBus. See the interface for the
+// guarantee.
+//
+// One lock does it here: this bus keeps subscribers and replay buffers under
+// the same b.mu, and fanOut holds it across the buffer append AND the fan-out
+// to live channels. So an event is either fully applied before this call's
+// critical section (in the buffer, not on the new channel) or entirely after
+// it (on the channel, replay already read) — never both, never neither.
+func (b *RedisBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
+	// Reported on the way out with the lock released, and only for a caller
+	// that was actually resuming. See the MemoryBus twin.
+	var missed []Event
+	resuming := sinceID > 0
+	defer func() {
+		if resuming && missed == nil {
+			b.reportResumeGap(workspaceID)
+		}
+	}()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if maxPerWorkspace > 0 && b.wsCounts[workspaceID] >= maxPerWorkspace {
+		// A refused connection is an admission event, not a resume this
+		// instance could not serve; clearing this keeps it out of the gap
+		// counter's population.
+		resuming = false
+		return nil, nil, nil, false
+	}
+
+	sub := b.addSubscriberLocked(workspaceID)
+	if b.wsCounts[workspaceID] == 1 {
+		b.startRedisSubscription(workspaceID)
+	}
+
+	if resuming {
+		missed = b.eventsSinceLocked(workspaceID, sinceID)
+	}
+	return sub.ch, missed, sub.gaps, true
 }
 
 // Unsubscribe removes a local subscriber and closes its channel.
@@ -597,6 +638,15 @@ func (b *RedisBus) EventsSince(workspaceID string, sinceID int64) []Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	missed = b.eventsSinceLocked(workspaceID, sinceID)
+	return missed
+}
+
+// eventsSinceLocked is EventsSince without the observer report. Callers must
+// hold b.mu. Shared with SubscribeAndReplaySince so the two cannot drift in
+// what "cannot vouch" means; the report stays with the caller because a
+// SubscribeAndReplaySince may not be a resume at all.
+func (b *RedisBus) eventsSinceLocked(workspaceID string, sinceID int64) []Event {
 	rb, ok := b.replayBuffers[workspaceID]
 	if !ok {
 		// No buffer means this instance is not currently covering the
@@ -613,11 +663,9 @@ func (b *RedisBus) EventsSince(workspaceID string, sinceID int64) []Event {
 		if sinceID > 0 {
 			return nil
 		}
-		missed = []Event{}
-		return missed
+		return []Event{}
 	}
-	missed = rb.since(sinceID)
-	return missed
+	return rb.since(sinceID)
 }
 
 // Close shuts down all Redis subscriptions and closes local subscriber channels.
@@ -853,7 +901,37 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 		return
 	}
 	delete(b.replayBuffers, workspaceID)
+	// TELL THE SUBSCRIBERS THAT ARE STILL HOLDING THE STREAM OPEN (BUG-2730).
+	// Ending coverage makes the next RESUME honest; it does nothing for a
+	// client that never reconnects, and the reasons that reach here — a
+	// subscription that dropped and resumed, a message we could not decode —
+	// are exactly the ones where events went missing while those clients sat
+	// there believing they were current.
+	//
+	// Scoped to this workspace's subscribers, matching the buffer drop
+	// directly above: no other workspace's channel is implicated.
+	b.signalWorkspaceLocked(workspaceID)
 	report = reason
+}
+
+// signalWorkspaceLocked raises the gap flag for every live subscriber of one
+// workspace. Callers must hold b.mu; every send is non-blocking, so holding it
+// costs nothing and cannot deadlock.
+func (b *RedisBus) signalWorkspaceLocked(workspaceID string) {
+	for _, sub := range b.subscribers[workspaceID] {
+		sub.signalGap()
+	}
+}
+
+// signalAllLocked raises the gap flag for every live subscriber on this
+// instance, for the resets that invalidate every workspace at once rather than
+// one channel. Callers must hold b.mu.
+func (b *RedisBus) signalAllLocked() {
+	for _, byWorkspace := range b.subscribers {
+		for _, sub := range byWorkspace {
+			sub.signalGap()
+		}
+	}
 }
 
 // currentSubGen reports the generation of the workspace's live subscription,
@@ -948,6 +1026,11 @@ func (b *RedisBus) dropAllBuffers(floor floorAction) {
 	}
 	b.hadReset = true
 	b.replayBuffers = make(map[string]*replayBuffer)
+	// Every workspace's coverage just ended, so every live subscriber has a
+	// hole it does not know about (BUG-2730). Announced here rather than at
+	// each caller so no future reset path can drop the buffers and forget to
+	// say so.
+	b.signalAllLocked()
 }
 
 // floorAction says what a buffer drop should do with the standing
@@ -1123,9 +1206,13 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 	// observer may call back into the bus without deadlocking the receive
 	// loop.
 	var reset string
+	dropped := 0
 	defer func() {
 		if reset != "" {
 			b.reportReset(reset)
+		}
+		for range dropped {
+			b.reportDropped(DropReasonSlowSubscriber)
 		}
 	}()
 
@@ -1376,6 +1463,8 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 			// dropped IDs, after which no replica will replay them, because
 			// every replica agrees the cursor is current.
 			slog.Warn("dropping event for slow subscriber", "type", event.Type, "workspace", event.WorkspaceID)
+			sub.signalGap()
+			dropped++
 		}
 	}
 }
