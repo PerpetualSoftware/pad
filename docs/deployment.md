@@ -244,6 +244,19 @@ reading the metrics below, and for anyone writing a third-party consumer:
   anything. That is why `pad_watchevents_sequence_gaps_total` has no
   `pad_event_*` counterpart.
 
+  **What a failover now COSTS, since detecting it is not free.** A
+  resubscription ends coverage for the whole instance, so every SSE client
+  connected to it is told mid-stream and reconciles. On an instance at the
+  default `PAD_SSE_MAX_CONNECTIONS` that is up to a thousand reconcile
+  requests arriving together — the per-connection signal coalescing does not
+  smooth the FIRST wave, only repeats within it. That is the deliberate trade
+  this whole family makes (chatty-but-correct beats quiet-but-lossy), and the
+  numbers to watch are `pad_watchevents_midstream_resyncs_total` against
+  `pad_watchevents_sequence_resets_total`: their ratio is the fan-out, i.e.
+  how many clients one detection costs you. If a failover's reconcile burst is
+  a capacity problem for a deployment, the answer is fewer connections per
+  instance, not a quieter bus.
+
   **Two gaps in that detection remain, and an operator should know both.** A
   message lost in transit with the connection intact — no flap, no decode
   failure, just a message that never arrived (BUG-2735): on the watch stream a

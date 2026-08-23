@@ -786,6 +786,19 @@ func (b *RedisBus) Close() {
 // timeout warn path) and go-redis subscribing afterwards. That window really
 // was uncovered — the constructor logs exactly that — so announcing a hole
 // for it is honest.
+//
+// AND ONE CASE IT UNDER-REPORTS, checked in the library rather than assumed:
+// the subscription confirmation goes through the SAME bounded channel as
+// messages (go-redis v9.22.0, initAllChan — `case *Subscription, *Message:`,
+// chanSize 100, chanSendTimeout 1 minute), so a confirmation can be DROPPED
+// under sustained load exactly like a message. Coverage still ends, by the
+// other road: a full channel means messages are flowing, the outage left a
+// hole in their ids, and the gap arm in fanOutLocally raises it on the next
+// one consumed. The operator sees it as a sequence gap rather than a
+// subscription_resumed reset, which is a less specific label for the same
+// truth. What is NOT covered is BUG-2727's standing boundary — drops whose
+// hole no later notification ever exposes — and this changes neither
+// direction of it.
 func (b *RedisBus) receiveMessages() {
 	defer b.wg.Done()
 	ch := b.pubsub.ChannelWithSubscriptions()
