@@ -21,6 +21,7 @@ const realGetClientRects = HTMLElement.prototype.getClientRects;
 // point is the spy itself and the pass-through branch recurses. Capture the
 // pristine probes before any spy exists — at module load.
 const REAL_QUERY_ALL = document.querySelectorAll.bind(document);
+const REAL_QUERY = document.querySelector.bind(document);
 const REAL_MATCHES = Element.prototype.matches;
 
 /** A direct child of `<body>` — the shape a portaled viewer root has. */
@@ -41,11 +42,15 @@ function openModal(html = ''): HTMLDialogElement {
 }
 
 /**
- * jsdom implements neither `showModal()` top-layer state nor the `:modal`
- * pseudo-class (it throws on it), so emulate a supporting engine: `dialogs`
- * are the open modal ones, everything else answers normally. Both probes the
- * module makes — `document.querySelectorAll` and `Element.matches` — are
- * covered, and `selectorLog` (when given) records every selector asked for.
+ * jsdom implements no `showModal()` top-layer state, and as of jsdom 29 it
+ * PARSES `:modal` without ever matching it (before 29 it threw). Neither is a
+ * real engine: the bare environment now looks "supporting" to the module's
+ * probe while never matching a modal, so BOTH directions are emulated
+ * explicitly — this helper for a supporting engine, `mockModalUnsupported`
+ * for a non-parsing one. Here `dialogs` are the open modal ones, everything
+ * else answers normally. Both probes the module makes —
+ * `document.querySelectorAll` and `Element.matches` — are covered, and
+ * `selectorLog` (when given) records every selector asked for.
  */
 function mockOpenModals(
 	oracle: Element[] | ((el: Element) => boolean),
@@ -69,6 +74,32 @@ function mockOpenModals(
 		selectorLog?.push(selector);
 		if (selector !== 'dialog:modal') return realMatches.call(this, selector);
 		return realMatches.call(this, 'dialog') && isModal(this);
+	});
+}
+
+/**
+ * Emulate an engine that does not PARSE `:modal` — the fallback-path premise.
+ * jsdom 26 was that engine for free (any `:modal` query threw), so these
+ * tests used to run on the bare environment; jsdom 29 parses the pseudo-class
+ * but never matches it, which the module's probe reads as a SUPPORTING
+ * engine. Every probe the module makes (`querySelector`, `querySelectorAll`,
+ * `Element.matches`) throws the SyntaxError a non-parsing engine raises.
+ */
+function mockModalUnsupported(): void {
+	vi.spyOn(document, 'querySelector').mockImplementation((selector: string) => {
+		if (selector.startsWith('dialog:modal')) throw new SyntaxError('unsupported pseudo-class');
+		return REAL_QUERY(selector);
+	});
+	vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
+		if (selector.startsWith('dialog:modal')) throw new SyntaxError('unsupported pseudo-class');
+		return REAL_QUERY_ALL(selector);
+	});
+	vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+		this: Element,
+		selector: string,
+	) {
+		if (selector.startsWith('dialog:modal')) throw new SyntaxError('unsupported pseudo-class');
+		return REAL_MATCHES.call(this, selector);
 	});
 }
 
@@ -629,9 +660,11 @@ describe('isBlockedByModal', () => {
 			closed.id = 'closed';
 			const viewer = bodyChild('viewer');
 
-			// jsdom's real behaviour: `:modal` throws. The arbitration fallback
-			// ("no modal") is safe, but applying it to the MUTATOR would write
-			// `inert` onto a live `showModal()` dialog and kill it.
+			// On a non-parsing engine (emulated — jsdom 29 parses `:modal`) the
+			// arbitration fallback ("no modal") is safe, but applying it to the
+			// MUTATOR would write `inert` onto a live `showModal()` dialog and
+			// kill it.
+			mockModalUnsupported();
 			dialog.showModal();
 			const lease = acquire(viewer);
 
@@ -937,6 +970,7 @@ describe('hasForeignEscapeOwner', () => {
 		// `showModal()` dialog is indistinguishable from a non-modal one, so
 		// letting the lease out-rank it would fire the browser's native `cancel`
 		// AND run the stack: two layers on one press.
+		mockModalUnsupported();
 		const dialog = openModal();
 		dialog.setAttribute('open', '');
 		expect(hasForeignEscapeOwner()).toBe(true);
@@ -947,10 +981,12 @@ describe('hasForeignEscapeOwner', () => {
 	});
 
 	it('falls back to `dialog[open]` where `:modal` is unsupported', () => {
-		// jsdom is that engine (it throws on the pseudo-class), so this is the
-		// path every other test here runs on. The fallback is deliberately the
-		// PRE-TASK-2429 selector: where the narrower question can't be asked, the
-		// answer is exactly today's behaviour, never something wider.
+		// Emulated: jsdom 26 threw on the pseudo-class and WAS this engine for
+		// free; jsdom 29 parses it, so the non-parsing engine is stubbed. The
+		// fallback is deliberately the PRE-TASK-2429 selector: where the narrower
+		// question can't be asked, the answer is exactly today's behaviour, never
+		// something wider.
+		mockModalUnsupported();
 		const dialog = openModal();
 		dialog.setAttribute('open', '');
 		expect(hasForeignEscapeOwner()).toBe(true);
@@ -961,6 +997,7 @@ describe('hasForeignEscapeOwner', () => {
 		// it with showModal()/close(), so a fallback that dropped the `[open]`
 		// qualifier would report a foreign Escape owner on every page that merely
 		// HAS a Modal — swallowing the viewer's Escape everywhere.
+		mockModalUnsupported();
 		openModal();
 		expect(hasForeignEscapeOwner()).toBe(false);
 	});
