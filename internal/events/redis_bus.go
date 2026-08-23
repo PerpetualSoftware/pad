@@ -299,6 +299,16 @@ type RedisBus struct {
 	replayBuffers map[string]*replayBuffer
 	replaySize    int
 
+	// afterSubscribeRegister is a TEST SEAM, nil in production. It runs
+	// inside SubscribeAndReplaySince's critical section, after the subscriber
+	// is registered and before the replay is read — the only point at which
+	// that method's guarantee (an event is in the replay OR on the channel,
+	// never both) is observable. A hook that publishes must do so from
+	// another goroutine: b.mu is held here, so publishing inline would
+	// deadlock, which is itself the property under test. Mirrors the seam on
+	// MemoryBus and on watchevents.RedisBus.
+	afterSubscribeRegister func()
+
 	// publishEpoch selects the wire form this instance EMITS: the phase-2
 	// "<epoch>|<id>|<json>" prefix when true, the historical bare JSON body
 	// when false. Receiving accepts both regardless — see decodePayload and
@@ -473,6 +483,9 @@ func (b *RedisBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, ma
 	sub := b.addSubscriberLocked(workspaceID)
 	if b.wsCounts[workspaceID] == 1 {
 		b.startRedisSubscription(workspaceID)
+	}
+	if b.afterSubscribeRegister != nil {
+		b.afterSubscribeRegister()
 	}
 
 	if resuming {

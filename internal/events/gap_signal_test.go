@@ -477,11 +477,31 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 	b.fanOutLocally(Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-1"})
 	b.fanOutLocally(Event{ID: 11, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-2"})
 
+	// THE INTERLEAVING IS THE TEST. Publishing only before the call and after
+	// it returns proves nothing: a version that released the lock between
+	// registering and reading the buffer would pass that. The seam attempts a
+	// fan-out from inside the critical section, which is the one moment the
+	// guarantee is observable.
+	published := make(chan struct{})
+	b.afterSubscribeRegister = func() {
+		go func() {
+			defer close(published)
+			// Blocks on b.mu until SubscribeAndReplaySince releases it.
+			b.fanOutLocally(Event{ID: 12, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "during"})
+		}()
+		// Long enough for that goroutine to reach the lock and park. If it
+		// has not, the publish simply lands after, which cannot produce a
+		// duplicate — the window only ever makes this stricter.
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	ch, missed, gaps, ok := b.SubscribeAndReplaySince("ws-1", 10, 0)
 	if !ok {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
+	<-published
+
 	if gaps == nil {
 		t.Error("no gap channel returned")
 	}
@@ -492,10 +512,13 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 		t.Error("the event AT the cursor was replayed; the client already has it")
 	}
 
-	// Published after: must arrive live and NOT be in the replay just read.
-	b.fanOutLocally(Event{ID: 12, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "after"})
-	if !drainContains(t, ch, "after") {
-		t.Error("an event published after the subscribe was not delivered live")
+	inReplay := containsItem(missed, "during")
+	inLive := drainContains(t, ch, "during")
+	if inReplay && inLive {
+		t.Error("the event published between subscribe and replay was delivered TWICE")
+	}
+	if !inReplay && !inLive {
+		t.Error("the event published between subscribe and replay was LOST")
 	}
 }
 
