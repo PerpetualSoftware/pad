@@ -559,3 +559,87 @@ func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
 		t.Fatalf("a cursor from the abandoned space must be refused, got %d events", len(got))
 	}
 }
+
+// A BROKEN HOST CLOCK MUST NOT BE FATAL (BUG-2740, codex round 7).
+//
+// The seed is an input, and an unset or misconfigured clock can report zero or
+// a negative second. Before the clamp, the repair SET that at the generation
+// key and returned it as the epoch — and because the epoch guard rejects
+// anything not matching ^[1-9][0-9]*$, it rotated, called back into the
+// repair, got the SAME bad seed, and assigned it to the epoch WITHOUT
+// revalidating. An unparseable epoch reached the wire, which every receiver
+// rejects: a total, permanent drop, arrived at through the mechanism meant to
+// prevent it.
+//
+// Each case publishes with the generation key corrupted, so the repair path
+// runs, and asserts the event survives with a USABLE epoch.
+func TestABrokenClockDoesNotProduceAnUnpublishableEpoch(t *testing.T) {
+	genKey := redisns.Default.Name(redisEpochGenSuffix)
+
+	for _, tc := range []struct {
+		name string
+		unix int64
+		want string
+	}{
+		{"zero", 0, "1"},
+		{"negative", -86400, "1"},
+		{"one", 1, "1"},
+		{"ordinary", 1700000000, "1700000000"},
+		{"absurdly far future", 1 << 62, "99999999999999999"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clampGenerationSeed(tc.unix); got != tc.want {
+				t.Fatalf("clampGenerationSeed(%d) = %s, want %s", tc.unix, got, tc.want)
+			}
+
+			// AND THE END TO END LEG, because the unit assertion above would
+			// pass just as well against a clamp nothing calls.
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { _ = client.Close() })
+			b := NewRedisBusWithKeys(client, redisns.Default, true)
+			b.nowUnix = func() int64 { return tc.unix }
+			t.Cleanup(b.Close)
+
+			next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
+			ctx := context.Background()
+
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "a"})
+			if _, _, err := decodePayload(next()); err != nil {
+				t.Fatalf("fixture: %v", err)
+			}
+
+			// CLEAR THE EPOCH, or no rotation branch fires and the repair
+			// never runs — the second publish would simply reuse the epoch
+			// the fixture minted. Three of these cases passed that way on the
+			// first attempt, because the epoch the fixture mints is 1 and
+			// three of the expected clamps are also 1: vacuous, and only
+			// visible because the other two disagreed.
+			epochKey := redisns.Default.Name(redisEpochSuffix)
+			if err := b.client.Del(ctx, epochKey).Err(); err != nil {
+				t.Fatalf("clear the epoch: %v", err)
+			}
+			if err := b.client.Del(ctx, genKey).Err(); err != nil {
+				t.Fatalf("clear the generation key: %v", err)
+			}
+			if err := b.client.RPush(ctx, genKey, "x").Err(); err != nil {
+				t.Fatalf("corrupt the generation key: %v", err)
+			}
+
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "b"})
+			epoch, ev, err := decodePayload(next())
+			if err != nil {
+				t.Fatalf("a repair under a %s clock must still publish a decodable event: %v", tc.name, err)
+			}
+			if ev.ItemID != "b" {
+				t.Fatalf("the event must carry its body, got %+v", ev)
+			}
+			if epoch <= 0 {
+				t.Fatalf("the published epoch must be a positive generation, got %d", epoch)
+			}
+			if got := strconv.FormatInt(epoch, 10); got != tc.want {
+				t.Fatalf("published epoch %s, want the clamped seed %s", got, tc.want)
+			}
+		})
+	}
+}

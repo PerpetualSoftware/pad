@@ -131,10 +131,48 @@ return id
 //
 // A seam rather than a direct call so tests can pin it.
 func (b *RedisBus) generationRestartSeed() string {
+	now := time.Now().Unix
 	if b.nowUnix != nil {
-		return strconv.FormatInt(b.nowUnix(), 10)
+		now = b.nowUnix
 	}
-	return strconv.FormatInt(time.Now().Unix(), 10)
+	return clampGenerationSeed(now())
+}
+
+// clampGenerationSeed forces the seed into the shape publishScript's guards
+// accept: a positive integer of at most 17 digits.
+//
+// THE CLOCK IS AN INPUT, AND A BROKEN ONE WAS FATAL (BUG-2740, codex round
+// 7). An unset or misconfigured host clock can report zero or a negative
+// second. The repair would then SET that at the generation key and return it
+// as the epoch — and the epoch guard rejects anything not matching
+// ^[1-9][0-9]*$, so it rotates, calls back into the repair, receives the SAME
+// bad seed, and assigns it to the epoch WITHOUT revalidating. The result is
+// an unparseable epoch on the wire, which every receiver rejects: the total,
+// silent, unrecoverable drop the epoch guard exists to prevent, reached
+// through the thing that was supposed to fix it.
+//
+// The floor is 1 rather than anything cleverer. It gives up the ruling's
+// property — a seed above any counted history — because a broken clock cannot
+// deliver that property at all, and the choice is then between a value that
+// is merely LOW and one that is FATAL. A low generation is detected
+// (epoch_regressed) and costs a round of resyncs; an invalid one drops every
+// event until a human intervenes.
+//
+// The ceiling exists for the same reason as next_gen's: a value over 17
+// digits is not usable as a generation, so seeding one would repair the key
+// into a state the very next rotation rejects. Unix seconds cannot reach it
+// by elapsing, but a misconfigured clock is exactly what this function exists
+// to survive.
+func clampGenerationSeed(unix int64) string {
+	const maxSeed = 99999999999999999 // 17 digits, next_gen's ceiling
+	switch {
+	case unix < 1:
+		return "1"
+	case unix > maxSeed:
+		return strconv.FormatInt(maxSeed, 10)
+	default:
+		return strconv.FormatInt(unix, 10)
+	}
 }
 
 // publishScript assigns the ID and publishes in ONE atomic Redis call. It is
