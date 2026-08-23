@@ -189,3 +189,92 @@ func TestAHealthyGenerationCounterIsIncrementedNotReseeded(t *testing.T) {
 		t.Fatalf("a healthy counter was reseeded to the wall-clock value %d", fixedSeed)
 	}
 }
+
+// ALL THREE ROTATION BRANCHES, because the table above reaches only one of
+// them and a mutation said so: guarding just the id == 1 site survived the
+// whole suite.
+//
+// publishScript rotates the id space from three places — a sequence starting
+// at 1, an absent epoch on a sequence already in flight, and a corrupted
+// epoch — and each INCRs the generation counter. A guard on one is a guard on
+// none, since the other two abort the script exactly as before. This drives
+// each branch with the counter corrupted underneath it.
+//
+// The branch is selected by the STATE, not by an argument, so each case sets
+// up the state that forces it and then asserts the same repair.
+func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
+	genKey := redisns.Default.Name(redisEpochGenSuffix)
+	seqKey := redisns.Default.Name(redisSeqSuffix)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+
+	for _, tc := range []struct {
+		branch  string
+		arrange func(t *testing.T, b *RedisBus)
+	}{
+		{"sequence starting at 1", func(t *testing.T, b *RedisBus) {
+			ctx := context.Background()
+			// A fresh id space: the seq key gone takes the id == 1 branch,
+			// which rotates unconditionally.
+			if err := b.client.Del(ctx, seqKey, epochKey).Err(); err != nil {
+				t.Fatalf("clear seq and epoch: %v", err)
+			}
+		}},
+		{"absent epoch on a live sequence", func(t *testing.T, b *RedisBus) {
+			ctx := context.Background()
+			if err := b.client.Del(ctx, epochKey).Err(); err != nil {
+				t.Fatalf("clear the epoch: %v", err)
+			}
+		}},
+		{"corrupted epoch", func(t *testing.T, b *RedisBus) {
+			ctx := context.Background()
+			// A wrong-TYPED epoch reaches the recovery branch at the bottom
+			// of the script — the one that rotates because the epoch itself
+			// is unusable. Both shared keys corrupted at once is the shape a
+			// namespace collision or a mixed restore actually produces.
+			if err := b.client.Del(ctx, epochKey).Err(); err != nil {
+				t.Fatalf("clear the epoch: %v", err)
+			}
+			if err := b.client.RPush(ctx, epochKey, "not", "an", "epoch").Err(); err != nil {
+				t.Fatalf("corrupt the epoch: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.branch, func(t *testing.T) {
+			b, mr := newSeededFlippedBus(t)
+			next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
+			ctx := context.Background()
+
+			// Get the sequence past 1 so the branches that need a live
+			// sequence can be reached; the first case then clears it again.
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+			if _, _, err := decodePayload(next()); err != nil {
+				t.Fatalf("fixture: the first publish must succeed, got %v", err)
+			}
+
+			tc.arrange(t, b)
+
+			if err := b.client.Del(ctx, genKey).Err(); err != nil {
+				t.Fatalf("clear the generation key: %v", err)
+			}
+			if err := b.client.RPush(ctx, genKey, "not", "a", "counter").Err(); err != nil {
+				t.Fatalf("corrupt the generation key: %v", err)
+			}
+
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-9"})
+
+			epoch, ev, err := decodePayload(next())
+			if err != nil {
+				t.Fatalf("the %s branch must survive a corrupted generation counter: %v", tc.branch, err)
+			}
+			if ev.ItemID != "item-9" {
+				t.Fatalf("the event must still carry its body, got %+v", ev)
+			}
+			if epoch != fixedSeed {
+				t.Fatalf("the %s branch must restart the generation at the seed %d, got %d", tc.branch, fixedSeed, epoch)
+			}
+			if got := mr.Type(genKey); got != "string" {
+				t.Fatalf("the generation key must be repaired to a string, it holds %q", got)
+			}
+		})
+	}
+}
