@@ -221,13 +221,24 @@ type Bus interface {
 	// SubscribeAndReplaySince for a Last-Event-ID resume.
 	//
 	// The second return is this subscriber's GAP SIGNAL (BUG-2730): a
-	// capacity-1, coalescing channel raised whenever this instance fails to
-	// deliver a notification TO THIS SUBSCRIBER (a full channel) or discovers
-	// a hole in what it received from Redis, which every live subscriber
-	// shares. It is how a held-open stream learns it has missed something;
-	// the SSE handler answers with sync_required mid-stream. Never closed —
-	// the notification channel closing is the end-of-life signal, and a
-	// closed gap channel would make a consumer's select spin.
+	// capacity-1, coalescing channel raised whenever this instance can no
+	// longer vouch for what this subscriber has seen. Two scopes: PER
+	// SUBSCRIBER, when delivery to it failed because its channel was full;
+	// and PER INSTANCE, when the instance's own coverage ended, which every
+	// live subscriber shares. It is how a held-open stream learns it has
+	// missed something; the SSE handler answers with sync_required
+	// mid-stream. Never closed — the notification channel closing is the
+	// end-of-life signal, and a closed gap channel would make a consumer's
+	// select spin.
+	//
+	// The per-instance causes are implementation-specific and are ALL
+	// RedisBus's, because they are all transport faults: a hole in the
+	// received id sequence, a counter reset, an epoch change, a pub/sub
+	// resubscription, and a message that could not be decoded (the last two
+	// from BUG-2739). MemoryBus raises only the per-subscriber cause — it
+	// has no transport to lose anything in, so its sequence is contiguous by
+	// construction. A caller must not read "no instance-wide signal" as
+	// evidence of anything beyond which bus it is talking to.
 	Subscribe() (chan Notification, <-chan struct{})
 	// SubscribeAndReplaySince atomically subscribes AND captures every
 	// buffered notification with ID > sinceID, under the SAME lock
@@ -237,10 +248,14 @@ type Bus interface {
 	// channel — this closes that window structurally rather than
 	// requiring the consumer to dedupe by ID.
 	//
-	// The replay is nil when this instance cannot vouch for the span —
-	// eviction, a recorded hole, a cold start, or an id space this instance
-	// cannot compare against. The caller turns that into sync_required; the
-	// subscription is still valid, only the replay is unavailable.
+	// The replay is nil when this instance cannot vouch for the span. The
+	// span is the claim, NOT that anything was necessarily lost: eviction, a
+	// recorded hole, a cold start, an id space this instance cannot compare
+	// against, and — on RedisBus since BUG-2739 — a pub/sub resubscription or
+	// a message it could not decode, where it cannot tell whether a
+	// notification went missing and therefore stops vouching. The caller
+	// turns any of them into sync_required; the subscription is still valid,
+	// only the replay is unavailable.
 	//
 	// The third return is the subscriber's GAP SIGNAL — see Subscribe.
 	SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{})
