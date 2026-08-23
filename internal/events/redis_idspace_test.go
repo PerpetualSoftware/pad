@@ -661,10 +661,17 @@ func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testi
 	// so a regression that decoded the epoch correctly and then handed 0 to
 	// the fan-out would pass all of them, and reconciliation would silently
 	// never run in production.
-	b, _ := newFlippedRedisBus(t)
+	b, mr := newFlippedRedisBus(t)
 
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// Subscribe() returns before Redis has registered the subscription — the
+	// SUBSCRIBE goes out from the receive goroutine, which has not
+	// necessarily run yet. Publishing into that window loses the event
+	// OUTRIGHT, not slowly: nothing replays a pub/sub message nobody was
+	// listening for, so the wait below is what stands between this test and a
+	// failure no timeout can rescue (BUG-2742).
+	waitForSubscribers(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", true)
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})
 
@@ -855,12 +862,17 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 	// codex round 11. Dropping an unreadable message and carrying on left the
 	// buffer claiming a span with a hole in it: the event gone, the ids either
 	// side contiguous, and a later resume across it answered "caught up".
-	b, _ := newFlippedRedisBus(t)
+	b, mr := newFlippedRedisBus(t)
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// See TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath:
+	// publishing before the subscription is registered loses the event for
+	// good, and here it would look like the coverage-establishing publish
+	// simply never arrived (BUG-2742).
+	waitForSubscribers(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", true)
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	var first Event
@@ -962,6 +974,13 @@ func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
 	defer phase1.Unsubscribe(ch1)
 	ch2, _ := phase2.Subscribe("ws-1")
 	defer phase2.Unsubscribe(ch2)
+	// BOTH must be registered before anything is published: this test's whole
+	// claim is that each replica sees the other's events, and a publish that
+	// lands while only one of them has registered is lost for the other with
+	// no way to tell that apart from "the phase-2 receiver never got it"
+	// (BUG-2742). Counting is what makes it two — waiting for "a subscriber"
+	// is satisfied by whichever registers first.
+	waitForSubscriberCount(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", 2)
 
 	recv := func(t *testing.T, ch chan Event, who string) Event {
 		t.Helper()
@@ -1091,12 +1110,15 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			b, _ := newFlippedRedisBus(t)
+			b, mr := newFlippedRedisBus(t)
 			obs := &recordingObserver{}
 			b.SetObserver(obs)
 
 			ch, _ := b.Subscribe("ws-1")
 			defer b.Unsubscribe(ch)
+			// Registration before the first publish — see BUG-2742 and the
+			// note on TestAPrefixedPayloadReachesReconciliation...
+			waitForSubscribers(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", true)
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 			var first Event

@@ -182,18 +182,52 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 // assertion wants; it is deliberately not an event any consumer sees.
 func waitForSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string, want bool) {
 	t.Helper()
+	n, ok := pollSubscriberCount(mr, channel, func(n int) bool { return (n > 0) == want })
+	if ok {
+		return
+	}
+	if want {
+		t.Fatalf("nothing subscribed to %s within the deadline", channel)
+	}
+	t.Fatalf("%s has %d subscribers, want none", channel, n)
+}
+
+// waitForSubscriberCount is waitForSubscribers when the number matters —
+// two replicas on one Redis, where "someone is listening" is satisfied by the
+// first of them and the test needs both.
+func waitForSubscriberCount(t *testing.T, mr *miniredis.Miniredis, channel string, want int) {
+	t.Helper()
+	if n, ok := pollSubscriberCount(mr, channel, func(n int) bool { return n >= want }); !ok {
+		t.Fatalf("%s has %d subscribers, want at least %d, within the deadline", channel, n, want)
+	}
+}
+
+// pollSubscriberCount READS the server's registration state rather than
+// publishing a probe to infer it.
+//
+// The probe version worked and was a trap for the next person to reuse it:
+// "probe" is not a decodable payload, so on a bus that reads the wire prefix
+// it is an UNDECODABLE MESSAGE — the exact condition several tests in this
+// package assert about, injected by the helper they would call to set
+// themselves up. It happened to be harmless where the helper was already used,
+// because an undecodable message only ends coverage that EXISTS and every such
+// call site ran before the first publish. That is a property of the call
+// sites, not of the helper, and it silently stops holding the first time
+// someone waits for a subscriber after establishing coverage.
+//
+// The deadline is a LIVENESS bound, not a latency assertion: registration is
+// a sub-millisecond-to-milliseconds affair, and this number exists so a test
+// that will never see a subscriber fails instead of hanging.
+func pollSubscriberCount(mr *miniredis.Miniredis, channel string, satisfied func(int) bool) (int, bool) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		n := mr.Publish(channel, "probe")
-		if (n > 0) == want {
-			return
+		n := mr.PubSubNumSub(channel)[channel]
+		if satisfied(n) {
+			return n, true
 		}
 		if time.Now().After(deadline) {
-			if want {
-				t.Fatalf("nothing subscribed to %s within the deadline", channel)
-			}
-			t.Fatalf("%s has %d subscribers, want none", channel, n)
+			return n, false
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 }
