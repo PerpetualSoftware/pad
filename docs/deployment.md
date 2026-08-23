@@ -228,14 +228,21 @@ reading the metrics below, and for anyone writing a third-party consumer:
   or this instance itself missed messages from Redis, which every subscriber on
   it shares.
 
-  **Both streams now detect the same three things** (BUG-2739): a hole in the
-  received ID sequence, a pub/sub resubscription, and a message that could not
-  be decoded. The first is found by ID arithmetic and so needs a LATER
-  notification to expose it; the other two are found the moment they happen,
-  which is what covers the case ID arithmetic never reaches — a flap that
-  loses the newest notification on a stream that then goes quiet. Before this,
-  the watch stream detected only the first, so that flap left a connected CLI
-  silently stale indefinitely.
+  **Both streams now detect a pub/sub resubscription and a message they could
+  not decode** (BUG-2739), and end the affected coverage when they do. Before
+  this the watch stream detected neither, and its only signal was a hole in
+  the received ID sequence — which needs a LATER notification to expose it, so
+  a flap that lost the newest notification on a stream that then went quiet
+  left a connected CLI silently stale indefinitely. Detecting the two
+  conditions directly is what covers the case ID arithmetic never reaches.
+
+  **ID-sequence detection itself is watch-stream only, and that asymmetry is
+  by construction rather than an omission.** The watch stream has one channel
+  and one counter, so its IDs are consecutive and a hole is visible as a jump.
+  The activity stream's IDs come from a counter shared across workspaces, so
+  per-workspace holes are the NORMAL state and no arithmetic on them means
+  anything. That is why `pad_watchevents_sequence_gaps_total` has no
+  `pad_event_*` counterpart.
 
   **Two gaps in that detection remain, and an operator should know both.** A
   message lost in transit with the connection intact — no flap, no decode
