@@ -498,3 +498,50 @@ func TestQueuedEventsGoOutBeforeTheGapAnnouncement(t *testing.T) {
 		}
 	}
 }
+
+// TestGapAnnouncementIsNotStarvedByContinuousRefill is the counterfactual to
+// the ordering barrier's own bound.
+//
+// The barrier's first version waited for an empty channel and its comment
+// claimed that could not starve. It can: a publisher refilling faster than the
+// client drains keeps len(ch) above zero forever, and the subscriber this
+// signal exists for — a slow one on a busy workspace — is exactly the one
+// whose channel never empties. The wait is bounded by the queue depth captured
+// at latch time instead, so it terminates whatever the publisher does.
+func TestGapAnnouncementIsNotStarvedByContinuousRefill(t *testing.T) {
+	srv := testServerWithEvents(t)
+	inner := events.New()
+	bus := &gapEventBus{EventBus: inner, gaps: make(chan struct{}, 1)}
+	srv.SetEventBus(bus)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug := createTestWorkspace(t, ts.URL, "Test")
+	wsID := workspaceIDForSlug(t, srv, slug)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, "")
+	waitForFrameWithEvent(t, frames, "connected")
+
+	// Refill continuously for the whole test, so the handler's channel is
+	// never observed empty.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				inner.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: wsID, Collection: "tasks"})
+			}
+		}
+	}()
+
+	bus.gaps <- struct{}{}
+
+	// The announcement must still arrive. Under the unbounded version this
+	// times out, because the emptiness condition is never satisfied.
+	waitForFrameWithEvent(t, frames, "sync_required")
+}

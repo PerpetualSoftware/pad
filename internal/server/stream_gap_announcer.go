@@ -40,6 +40,28 @@ func (s *Server) gapCooldown() time.Duration {
 	return midStreamGapCooldown
 }
 
+// gapReadyToAnnounce is the SSE handlers' ordering barrier, as a predicate.
+//
+// latched says a gap is waiting; queued is the subscriber channel's current
+// depth; budget is the depth captured when the gap was latched, decremented
+// once per event taken off the channel since.
+//
+// The announcement waits for the events that were already queued when the gap
+// arrived, so a client is not told its position is untrustworthy and then
+// immediately handed IDs that re-establish one, below the hole. It waits for
+// them BY COUNT rather than for the channel to empty: an emptiness-only
+// condition never fires under continuous refill, and the subscriber this
+// signal exists for — a slow one on a busy workspace — is exactly the one
+// whose channel never empties.
+//
+// A function rather than an expression inlined in two select loops because the
+// starvation case is not reliably reproducible end-to-end (the channel does
+// briefly empty under most schedulings), so the bound needs somewhere it can
+// be asserted directly.
+func gapReadyToAnnounce(latched bool, queued, budget int) bool {
+	return latched && (queued == 0 || budget <= 0)
+}
+
 // gapAnnouncer rate-limits one connection's mid-stream gap announcements
 // without losing any.
 //

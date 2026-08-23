@@ -315,6 +315,9 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// gapSeen latches a gap until the notification channel is empty — see the
 	// ordering barrier at the top of the loop.
 	gapSeen := false
+	// gapDrainBudget is how many already-queued events still owe delivery
+	// before the latched gap may be announced — see the barrier below.
+	gapDrainBudget := 0
 
 	ctx := r.Context()
 	for {
@@ -326,16 +329,23 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		// re-establish one, below the hole; and on an ID-space change those
 		// queued events belong to the abandoned space.
 		//
-		// So the announcement waits until the channel is empty. Nothing is
-		// discarded to achieve it, which matters most on the watch stream:
-		// a queued one-shot PUSH is not recoverable by any reconcile, so
-		// dropping it to make the cursor tidy would lose the only copy.
+		// So the announcement waits for the events that were ALREADY QUEUED
+		// when the gap arrived. Nothing is discarded to achieve it, which
+		// matters most on the watch stream: a queued one-shot PUSH is not
+		// recoverable by any reconcile, so dropping it to make the cursor
+		// tidy would lose the only copy.
 		//
-		// Draining cannot starve the announcement — the loop delivers one
-		// event per iteration and re-checks, so the announcement lands on the
-		// first iteration where nothing is queued, immediately if the channel
-		// was empty when the gap arrived.
-		if gapSeen && len(ch) == 0 {
+		// THE WAIT IS BOUNDED BY A COUNT, NOT BY THE CHANNEL EMPTYING. An
+		// earlier version waited for len(ch) == 0 and claimed it could not
+		// starve; that is false under continuous refill, and the subscriber
+		// this signal exists for — a slow one on a busy workspace — is
+		// precisely the one whose channel never empties. gapDrainBudget is
+		// the queue depth captured at the moment the gap was latched, so once
+		// that many events have gone out, every event that was queued before
+		// the hole has been delivered and anything still waiting arrived
+		// after it. Terminating by construction, and exact rather than a
+		// timeout.
+		if gapReadyToAnnounce(gapSeen, len(ch), gapDrainBudget) {
 			gapSeen = false
 			if gapAnn.observe() && !announceGap() {
 				return
@@ -349,6 +359,13 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		case n, ok := <-ch:
 			if !ok {
 				return
+			}
+			// Counts against the latched gap's drain budget whether or not
+			// this one is VISIBLE to the caller: the budget measures how many
+			// queued events predate the hole, and a filtered event occupied a
+			// slot exactly like a delivered one.
+			if gapDrainBudget > 0 {
+				gapDrainBudget--
 			}
 			if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, n) {
 				continue
@@ -385,7 +402,10 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			// the window is latched, not discarded. See gapAnnouncer.
 			// Latched, not announced here: the barrier at the top of the
 			// loop decides when, so anything already queued goes out first.
+			// The depth is captured NOW — it is the exact number of events
+			// that predate the hole, and it is what bounds the wait.
 			gapSeen = true
+			gapDrainBudget = len(ch)
 
 		case <-gapAnn.cool():
 			if gapAnn.flush() && !announceGap() {
