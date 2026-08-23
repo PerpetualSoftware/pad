@@ -417,6 +417,36 @@ Alert on these instead:
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
 
+
+### A repaired generation counter
+
+`event_epoch_gen` is a shared Redis key, and the same things that corrupt any
+shared key can corrupt it: a namespace collision with another installation, a
+hand-edit during an incident, a restore that mixed keyspaces. Since BUG-2740 a
+corrupted one is REPAIRED rather than fatal — before that, every phase-2
+publish consumed a sequence ID and then failed, permanently, because the branch
+that would have rotated the generation was the branch that could not run.
+
+Two operator-visible consequences, neither of which had documentation:
+
+- **A repair reseeds the generation from wall-clock SECONDS.** That is above
+  any counted history, so it normally reads as an ordinary `epoch_change`. It
+  is not guaranteed to be above a counter that a collision or a hand-edit had
+  pushed higher, so it can instead surface as `epoch_regressed` — which
+  otherwise means a failover to a replica that lost writes. **The tell is the
+  value**: read the key, and a repaired generation looks like a unix timestamp
+  (ten digits, around 1.7e9) rather than a small count of ID-space resets.
+  There is no repair-specific counter or log line, because the repair happens
+  inside a Lua script.
+- **Clients resync once.** A repair is an ID-space change like any other, so
+  receivers stop vouching for their buffers and reconcile. One round, not a
+  loop: the repaired key is valid, so the next rotation increments it normally.
+
+What a repair does NOT do is merge two ID spaces — that is the outcome the
+whole epoch mechanism exists to prevent, and a rotation, even a backwards one,
+is detected rather than silent.
+
+
 **`pad_watchevents_sequence_resets_total` has no released contract yet, and
 that is why BUG-2739 could change it freely.** The whole metric was introduced
 after `v0.14.0` and no tagged release emits it, so nothing outside a
@@ -552,7 +582,9 @@ format every deployed browser speaks. So this is a substantial mitigation and
 not a closure; the residual case and why it is deferred are at the end of this
 section.
 
-The fix gives each ID space an **epoch** — a monotonic generation number,
+The fix gives each ID space an **epoch** — a generation number (monotonic in
+normal operation; see *A repaired generation counter* below for the one case
+that is not),
 minted by Redis when the space is created and carried as a
 `<epoch>|<id>|<json>` prefix on every message published **by a phase-2
 instance**. Phase-1 instances publish the historical bare JSON and carry no

@@ -205,9 +205,21 @@ type Metrics struct {
 	//   lost.
 	//
 	//   epoch_regressed — the shared generation counter went BACKWARDS and
-	//   stayed there, which realistically means a Redis failover to a replica
-	//   that lost writes. Expect zero; one per failover is the mechanism
-	//   recovering, and a repeating count means the counter is not durable.
+	//   stayed there. Two causes now, and they are diagnosed differently.
+	//   Usually a Redis failover to a replica that lost writes: expect zero,
+	//   one per failover is the mechanism recovering, and a repeating count
+	//   means the counter is not durable. Since BUG-2740 it can ALSO be the
+	//   generation counter having been found corrupted and REPAIRED, which
+	//   reseeds it from wall-clock seconds — above any counted history, but
+	//   not necessarily above a counter that a collision or a hand-edit had
+	//   pushed higher.
+	//
+	//   THERE IS NO REPAIR-SPECIFIC SIGNAL — the repair happens inside a Lua
+	//   script, which cannot log through slog and does not change this
+	//   counter's label. The tell is the VALUE: read the generation key, and
+	//   a repaired one looks like a unix timestamp (ten digits, ~1.7e9)
+	//   rather than a small count of id-space resets. That is a deliberate
+	//   property of the seed rather than a coincidence.
 	//
 	// LABELLED FROM THE START rather than shipped as a bare counter, which
 	// BUG-2736 immediately vindicated by adding two more values. An operator
