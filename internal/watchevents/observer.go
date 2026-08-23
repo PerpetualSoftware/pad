@@ -43,10 +43,15 @@ import "sync"
 // for implementers, because an exported seam whose safety depends on
 // callers reading a comment fails the first time somebody does not.
 //
-// The ONE thing an observer must not do is call a bus method that
-// REPORTS — SubscribeAndReplaySince can raise a resume gap — because
-// that is unbounded mutual recursion, which no lock discipline here can
-// prevent.
+// TWO things an observer must not do. Call a bus method that REPORTS —
+// SubscribeAndReplaySince can raise a resume gap — because that is
+// unbounded mutual recursion, which no lock discipline here can prevent.
+// And call Close: reports fire on the RECEIVE GOROUTINE, and Close waits
+// on that goroutine through b.wg.Wait(), so an observer closing the bus
+// from a callback waits on itself forever. Not a lock-ordering problem
+// and not fixable by one — the goroutine is the resource being waited
+// for. (Found by a lifecycle review on BUG-2739; the contract said only
+// the first, which reads as though the second were allowed.)
 type Observer interface {
 	// NotificationDropped reports a notification this instance received but
 	// could not deliver to one of its own subscribers. reason is a bounded
