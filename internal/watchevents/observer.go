@@ -76,7 +76,7 @@ type Observer interface {
 
 	// SequenceReset reports that this instance's replay coverage was
 	// dropped. reason is bounded: "epoch_change" (the shared epoch key
-	// changed), "counter_backwards" (an id arrived at or below the
+	// changed), "counter_backward" (an id arrived at or below the
 	// high-water mark), "subscription_resumed" (go-redis reconnected and
 	// re-subscribed, so the outage's notifications never arrived) or
 	// "undecodable_message" (a message on the channel could not be parsed).
@@ -200,7 +200,7 @@ const (
 	DropReasonSlowSubscriber = "slow_subscriber"
 
 	ResetReasonEpochChange     = "epoch_change"
-	ResetReasonCounterBackward = "counter_backwards"
+	ResetReasonCounterBackward = "counter_backward"
 
 	// ResetReasonSubscriptionResumed means go-redis reconnected and
 	// re-subscribed: whatever was published while the connection was down
