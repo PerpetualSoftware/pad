@@ -314,6 +314,18 @@ reading the metrics below, and for anyone writing a third-party consumer:
   threshold, which is a deployment decision rather than an implementation
   detail.
 
+  **A third residual affects RESUMES rather than open streams** (BUG-2743): if
+  the watch counter restarts without the epoch rotating — evicted under
+  `maxmemory`, lost to a `FLUSHDB`, restored from a stale snapshot — the old
+  and new ID spaces overlap, and a `Last-Event-ID` inside that overlap cannot
+  be attributed to either. The instance refuses the cursors it can identify as
+  stale and serves the rest, so a client holding an old-space cursor in the
+  overlap can be handed new-space notifications as though they followed it.
+  Arithmetic on the IDs cannot close this — telling two sequences apart is
+  what the epoch token is for, and this is precisely the case the epoch does
+  not see. Rotating the epoch (see *Event ID-space migration*) is what makes a
+  deliberate counter reset safe.
+
   A RECONNECTING client is largely covered on the watch stream anyway, because
   a resume consults the shared counter rather than local state alone. Not
   entirely: that check reads the counter at one instant, so a notification
