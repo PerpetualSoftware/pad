@@ -1,6 +1,7 @@
 package events
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -347,5 +348,75 @@ func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
 	}
 	if got := obs.resetReasons(); len(got) != 0 {
 		t.Errorf("a reset was reported for a workspace with no coverage to end: %v", got)
+	}
+}
+
+// TestConcurrentPublishesDeliverInIDOrder is the other way a client ends up
+// processing an event twice, and it is not the subscribe/replay window.
+//
+// If ID assignment and fan-out are separate critical sections, two concurrent
+// publishes can take IDs N and N+1 and deliver in the other order. A
+// subscriber that sees N+1 and then N has a cursor that REGRESSED, so its next
+// reconnect replays N+1 a second time — a duplicate this unit's headline
+// guarantee says nothing about.
+//
+// A stress test rather than a seam-driven one: the interleaving is a
+// scheduling race with no single point to pause at once the fix is in, because
+// the fix is precisely that no such point exists. Verified to fail against the
+// unserialized version.
+func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
+	b := New()
+	defer b.Close()
+
+	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(ch)
+
+	const publishers, each = 8, 40
+	total := publishers * each
+
+	// Drained concurrently: a 64-deep channel would otherwise overflow and
+	// the dropped IDs would look like an ordering fault.
+	received := make(chan int64, total)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range total {
+			e, ok := <-ch
+			if !ok {
+				return
+			}
+			received <- e.ID
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for range publishers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range each {
+				b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+			}
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reader did not receive every published event")
+	}
+	close(received)
+
+	var prev int64
+	for id := range received {
+		if id <= prev {
+			t.Fatalf("IDs arrived out of order: %d after %d — a subscriber's cursor regressed, "+
+				"so its next reconnect replays events it already has", id, prev)
+		}
+		prev = id
 	}
 }

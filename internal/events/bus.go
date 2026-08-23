@@ -693,9 +693,26 @@ func (b *MemoryBus) Publish(event Event) {
 		b.replayBuffers[event.WorkspaceID] = rb
 	}
 	rb.append(event)
-	b.replayMu.Unlock()
 
-	// Fan out to live subscribers, still under the b.mu.RLock taken above.
+	// FAN OUT UNDER replayMu TOO, so ID assignment and delivery are ONE
+	// critical section. Releasing it here and fanning out afterwards let two
+	// concurrent publishes take IDs N and N+1 and then deliver in the other
+	// order: a subscriber saw N+1, then N, so its SSE cursor REGRESSED to N
+	// and its next reconnect replayed N+1 a second time. A duplicate by a
+	// different route than the subscribe/replay window this unit closed, and
+	// closing one while leaving the other would have been a half-answer.
+	//
+	// Both sibling implementations already serialize this way —
+	// events.RedisBus holds b.mu across append and fan-out, and
+	// watchevents.MemoryBus holds its single mutex across both. This one was
+	// the outlier.
+	//
+	// The cost is that publishes serialize. They already serialized on the ID
+	// assignment, and every send below is non-blocking, so what is added is
+	// an O(subscribers) walk inside a lock that a resume read also wants —
+	// the same trade RedisBus has always made.
+	defer b.replayMu.Unlock()
+
 	for _, sub := range b.subscribers {
 		if sub.workspaceID != event.WorkspaceID {
 			continue
