@@ -93,10 +93,14 @@ type Metrics struct {
 
 	// WatchSequenceResetsTotal counts this instance's watch replay
 	// coverage being dropped, by reason. Two of the reasons mean the id
-	// SPACE changed under us (epoch_change, counter_backward); two mean
-	// it did not and we simply lost part of it (subscription_resumed,
-	// undecodable_message). Either way resumes across it answer
-	// sync_required. Kept in sync with watchevents' Reset* constants.
+	// SPACE changed under us (epoch_change, counter_backward). The other
+	// two mean it did not: subscription_resumed, where the outage's
+	// notifications demonstrably never arrived; and undecodable_message,
+	// where the instance knows only that something it could not read
+	// arrived on its channel — it may or may not have been ours, and
+	// stopping vouching is the honest answer to not being able to tell.
+	// All four make resumes across them answer sync_required. Kept in
+	// sync with watchevents' Reset* constants.
 	WatchSequenceResetsTotal *prometheus.CounterVec
 
 	// WatchReceiveLoopExitsTotal counts the receive loop stopping. Any
