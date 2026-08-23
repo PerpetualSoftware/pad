@@ -218,22 +218,21 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 		t.Fatalf("after a resubscription the buffer must not vouch for the outage, got %d notifications", len(refused))
 	}
 
-	// THE LOCAL VIEW, ASSERTED SEPARATELY, and this leg is not redundant with
-	// the one above (CONVE-12). SubscribeAndReplaySince consults the shared
-	// counter first (resumeOutrunsLocalView), and that check refuses this
-	// cursor on its own once lastAppendedID is back to 0 — so the refusal
-	// above passes even if dropCoverage leaves knownFrom stale, rescued by a
-	// mechanism that has nothing to do with the fix. Verified by mutation: a
-	// dropCoverage that skips `knownFrom = 0` survives every assertion in
-	// this file except this one.
+	// THE LOCAL VIEW, ASSERTED SEPARATELY. The refusal above goes through
+	// SubscribeAndReplaySince, which consults the shared counter BEFORE local
+	// state (resumeOutrunsLocalView) — so it can pass on the authority
+	// check alone, a mechanism with nothing to do with this fix. EventsSince
+	// deliberately skips that check and answers from local state only, so
+	// this leg says the instance itself does not vouch for the span.
 	//
-	// EventsSince is the discriminating instrument because it answers from
-	// LOCAL state only and deliberately skips the authority check. With
-	// knownFrom stale it walks past the coverage guard into an emptied buffer
-	// and returns an empty-but-non-nil slice — which the SSE handler reads as
-	// "caught up", the exact lie this bug is about. It also matters in
-	// production, not only under mutation: the authority check answers false
-	// when the Redis read FAILS, which is precisely when a flap is happening.
+	// HONEST SCORING (CONVE-12 cuts both ways): this leg does NOT currently
+	// kill a mutation the other legs miss. Removing `knownFrom = 0` from
+	// dropCoverage survives it, because the emptied buffer makes
+	// replayBuffer.since answer nil for any sinceID > 0 regardless — see the
+	// note on that line in dropCoverage. Kept anyway, because the invariant
+	// it states is the one that matters in production when the authority
+	// check is unavailable: a failed Redis read makes resumeOutrunsLocalView
+	// answer false, and a flap is exactly when Redis reads fail.
 	if local := b.EventsSince(first.ID); local != nil {
 		t.Fatalf("this instance must not vouch for that span from local state alone, got %d notifications — "+
 			"dropCoverage must set knownFrom = 0, not merely empty the buffer", len(local))
@@ -344,22 +343,21 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 		t.Fatalf("after an undecodable message the buffer must not vouch for the span, got %d notifications", len(refused))
 	}
 
-	// THE LOCAL VIEW, ASSERTED SEPARATELY, and this leg is not redundant with
-	// the one above (CONVE-12). SubscribeAndReplaySince consults the shared
-	// counter first (resumeOutrunsLocalView), and that check refuses this
-	// cursor on its own once lastAppendedID is back to 0 — so the refusal
-	// above passes even if dropCoverage leaves knownFrom stale, rescued by a
-	// mechanism that has nothing to do with the fix. Verified by mutation: a
-	// dropCoverage that skips `knownFrom = 0` survives every assertion in
-	// this file except this one.
+	// THE LOCAL VIEW, ASSERTED SEPARATELY. The refusal above goes through
+	// SubscribeAndReplaySince, which consults the shared counter BEFORE local
+	// state (resumeOutrunsLocalView) — so it can pass on the authority
+	// check alone, a mechanism with nothing to do with this fix. EventsSince
+	// deliberately skips that check and answers from local state only, so
+	// this leg says the instance itself does not vouch for the span.
 	//
-	// EventsSince is the discriminating instrument because it answers from
-	// LOCAL state only and deliberately skips the authority check. With
-	// knownFrom stale it walks past the coverage guard into an emptied buffer
-	// and returns an empty-but-non-nil slice — which the SSE handler reads as
-	// "caught up", the exact lie this bug is about. It also matters in
-	// production, not only under mutation: the authority check answers false
-	// when the Redis read FAILS, which is precisely when a flap is happening.
+	// HONEST SCORING (CONVE-12 cuts both ways): this leg does NOT currently
+	// kill a mutation the other legs miss. Removing `knownFrom = 0` from
+	// dropCoverage survives it, because the emptied buffer makes
+	// replayBuffer.since answer nil for any sinceID > 0 regardless — see the
+	// note on that line in dropCoverage. Kept anyway, because the invariant
+	// it states is the one that matters in production when the authority
+	// check is unavailable: a failed Redis read makes resumeOutrunsLocalView
+	// answer false, and a flap is exactly when Redis reads fail.
 	if local := b.EventsSince(first.ID); local != nil {
 		t.Fatalf("this instance must not vouch for that span from local state alone, got %d notifications — "+
 			"dropCoverage must set knownFrom = 0, not merely empty the buffer", len(local))

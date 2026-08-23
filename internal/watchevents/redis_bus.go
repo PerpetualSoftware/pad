@@ -1105,6 +1105,17 @@ func (b *RedisBus) dropCoverage(reason string) {
 
 	b.replay = newReplayBuffer(b.replaySize)
 	b.lastAppendedID = 0
+	// DEFENCE IN DEPTH, AND NO TEST FAILS IF IT IS DELETED — said out loud
+	// rather than left for the next person to discover by mutation, which is
+	// how it was found here. With the buffer emptied on the line above,
+	// replayBuffer.since already answers nil to any sinceID > 0 (its
+	// count == 0 guard), and the next notification takes the cold-start arm
+	// and overwrites knownFrom anyway. So this line is unobservable today.
+	//
+	// Kept because without it dropCoverage's correctness would rest on
+	// another type's internal guard, in another file, for a reason unrelated
+	// to coverage — and because "we cover nothing" is the statement this
+	// function exists to make, in the three fields that say it.
 	b.knownFrom = 0
 	pending.reset(reason)
 	// Every live subscriber's coverage just ended (BUG-2730). Ending it makes
