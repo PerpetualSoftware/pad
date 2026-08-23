@@ -407,8 +407,36 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
+	// gapSeen latches a gap the bus reported until the event channel is
+	// empty — see the ordering barrier at the top of the loop.
+	gapSeen := false
+
 	ctx := r.Context()
 	for {
+		// ORDERING BARRIER (BUG-2730). The event channel and the gap channel
+		// are two arms of one select, so when both are ready Go picks at
+		// random — and announcing first, then draining events the subscriber
+		// queued BEFORE the hole, is the wrong order twice over. The client
+		// is told its position is untrustworthy and then handed IDs that
+		// re-establish one, below the hole; and on an ID-space change those
+		// queued events belong to the abandoned space.
+		//
+		// So the announcement waits until the channel is empty. Nothing is
+		// discarded to achieve it, which matters most on the watch stream:
+		// a queued one-shot PUSH is not recoverable by any reconcile, so
+		// dropping it to make the cursor tidy would lose the only copy.
+		//
+		// Draining cannot starve the announcement — the loop delivers one
+		// event per iteration and re-checks, so the announcement lands on the
+		// first iteration where nothing is queued, immediately if the channel
+		// was empty when the gap arrived.
+		if gapSeen && len(ch) == 0 {
+			gapSeen = false
+			if gapAnn.observe() && !announceGap() {
+				return
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			// Client disconnected
@@ -465,12 +493,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// named on BUG-2730 (replay from the buffer rather than resync;
 			// the dropped events are still in it, 1024 deep against the
 			// channel's 64).
-			if !gapAnn.observe() {
-				continue
-			}
-			if !announceGap() {
-				return
-			}
+			// Latched, not announced here: the barrier at the top of the
+			// loop decides when, so anything already queued goes out first.
+			gapSeen = true
 
 		case <-gapAnn.cool():
 			if gapAnn.flush() && !announceGap() {

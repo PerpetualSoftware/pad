@@ -440,3 +440,61 @@ func assertGapBurstYieldsOneThenOne(t *testing.T, frames <-chan string, gaps cha
 	// silently discarded.
 	waitForFrameWithEvent(t, frames, "sync_required")
 }
+
+// TestQueuedEventsGoOutBeforeTheGapAnnouncement pins the ordering barrier.
+//
+// Both channels are arms of one select, so with both ready Go picks at random.
+// Announcing first and then draining pre-hole events hands the client IDs that
+// re-establish the cursor the announcement just retired, below the hole. The
+// barrier makes the announcement wait for an empty channel.
+//
+// The test raises the gap and publishes in the same breath, then asserts the
+// ORDER of the frames. Without the barrier this fails roughly half the time,
+// which -count makes reliable.
+func TestQueuedEventsGoOutBeforeTheGapAnnouncement(t *testing.T) {
+	srv := testServerWithEvents(t)
+	inner := events.New()
+	bus := &gapEventBus{EventBus: inner, gaps: make(chan struct{}, 1)}
+	srv.SetEventBus(bus)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug := createTestWorkspace(t, ts.URL, "Test")
+	wsID := workspaceIDForSlug(t, srv, slug)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, "")
+	waitForFrameWithEvent(t, frames, "connected")
+
+	// Queue events FIRST so they are sitting in the subscriber's channel, then
+	// raise the gap. Both select arms are now ready.
+	const queued = 20
+	for range queued {
+		inner.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: wsID, Collection: "tasks"})
+	}
+	bus.gaps <- struct{}{}
+
+	seenEvents := 0
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				t.Fatalf("stream closed after %d/%d events and no announcement", seenEvents, queued)
+			}
+			switch {
+			case strings.Contains(f, "event: sync_required"):
+				if seenEvents != queued {
+					t.Fatalf("the gap was announced after %d of %d queued events; "+
+						"the remaining ones would re-establish a cursor below the hole", seenEvents, queued)
+				}
+				return
+			case strings.Contains(f, "event: "+events.ItemCreated):
+				seenEvents++
+			}
+		case <-deadline:
+			t.Fatalf("no announcement arrived; saw %d/%d events", seenEvents, queued)
+		}
+	}
+}
