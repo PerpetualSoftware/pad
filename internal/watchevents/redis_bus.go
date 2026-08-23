@@ -1053,7 +1053,9 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		slog.Warn("watchevents: notification id went backwards across a coverage drop; "+
 			"the Redis sequence counter was reset during the outage",
 			"high_water", b.highWaterID, "got", n.ID)
-		b.knownFrom = n.ID
+		// n.ID + 1, NOT n.ID — see the note on the arm below; the id space
+		// restarted, so a cursor at n.ID-1 may belong to the old one.
+		b.knownFrom = n.ID + 1
 		b.highWaterID = n.ID
 		pending.reset(ResetReasonCounterBackward)
 		b.signalAllLocked()
@@ -1114,7 +1116,26 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			"Dropping the replay buffer — resumes from the previous id space will report sync_required",
 			"previous", b.lastAppendedID, "got", n.ID)
 		b.replay = newReplayBuffer(b.replaySize)
-		b.knownFrom = n.ID
+		// n.ID + 1, NOT n.ID (BUG-2739, codex round 21). The id space
+		// RESTARTED, so the two spaces overlap and a client presenting
+		// n.ID-1 may be holding the OLD sequence's n.ID-1 — a different
+		// notification entirely. knownFrom = n.ID admitted exactly that
+		// cursor and replayed the new space's ids as though they followed
+		// it, which is the corruption this arm exists to prevent, reached
+		// one line later.
+		//
+		// This is the SAME reasoning the cold-start arm applies after an
+		// epoch change, and for the same reason: an id space changed under
+		// us. The epoch arm had it and this one did not, which was a gap
+		// rather than a distinction — a counter evicted WITHOUT an epoch
+		// rotation is precisely the case the epoch cannot see, so it is the
+		// case that needed the guard most.
+		//
+		// The cost is one refused resume for a client genuinely at n.ID-1 of
+		// the NEW space, which it could only hold by having been served by
+		// another instance — the conservative direction, same trade the
+		// epoch arm already accepts.
+		b.knownFrom = n.ID + 1
 		// The high water mark REBASES onto the new space here, and must:
 		// leaving it at the old space's peak would make every id of the
 		// restarted sequence look backward to the cold-start arm after any

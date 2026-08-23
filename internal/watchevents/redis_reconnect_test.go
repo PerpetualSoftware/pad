@@ -684,3 +684,70 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 			"the old epoch's high water mark was not discarded", after)
 	}
 }
+
+// A CURSOR FROM THE OLD ID SPACE MUST NOT BE SERVED THE NEW ONE (BUG-2739,
+// codex round 21).
+//
+// Both backward arms set knownFrom to the first id they see of the restarted
+// sequence, which ADMITS a resume from one below it — and one below it is
+// exactly the ambiguous cursor, because the two spaces overlap and the client
+// may be holding the OLD sequence's copy of that id. Serving it replays the
+// new space's notifications as though they followed the client's old cursor,
+// which is the corruption these arms exist to prevent.
+//
+// Pre-existing on the connected path (verified by running this case against
+// unmodified main, where it fails), and inherited by the arm this branch
+// added — so both are covered here, and the two must not drift apart.
+//
+// The assertion is through EventsSince because it answers from LOCAL state
+// only: the shared-counter check cannot see this at all, since after the reset
+// the remote counter and our high-water mark AGREE on the new space's value.
+func TestAnOldSpaceCursorIsRefusedAfterACounterReset(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		drop bool
+	}{
+		{"reset seen while connected", false},
+		{"reset seen across a coverage drop", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newLocalOnlyBus(64)
+			defer b.Close()
+
+			for _, id := range []int64{198, 199, 200} {
+				b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "OLD"})
+			}
+
+			// CONTROL: inside the OLD space, a cursor below our newest is
+			// served. Without this leg the test passes against a bus that
+			// refuses every resume.
+			if got := b.EventsSince(198); len(got) != 2 {
+				t.Fatalf("a cursor inside the old space must be served, got %d notifications", len(got))
+			}
+
+			if tc.drop {
+				b.dropCoverage(ResetReasonSubscriptionResumed)
+			}
+
+			// The counter restarted while we were away and climbed to 100
+			// without us; 100 is the first id of the new space we receive.
+			b.fanOutLocally(Notification{ID: 100, Kind: KindComment, ItemRef: "NEW"})
+
+			if got := b.EventsSince(99); got != nil {
+				t.Fatalf("cursor 99 is ambiguous — it may be the OLD space's 99 — and must be refused, "+
+					"got %d notifications; knownFrom must be n.ID+1 after a counter reset, not n.ID", len(got))
+			}
+
+			// AND THE NEW SPACE STILL WORKS: a client genuinely at 100 is
+			// served whatever follows. Without this leg, refusing everything
+			// forever would pass the assertion above.
+			b.fanOutLocally(Notification{ID: 101, Kind: KindComment, ItemRef: "NEWER"})
+			got := b.EventsSince(100)
+			if len(got) != 1 || got[0].ItemRef != "NEWER" {
+				t.Fatalf("a cursor inside the NEW space must be served, got %+v", got)
+			}
+		})
+	}
+}
