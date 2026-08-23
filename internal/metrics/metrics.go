@@ -136,6 +136,23 @@ type Metrics struct {
 	// there one client at a time, and that is the fix working, not a fault.
 	EventEventsDroppedTotal *prometheus.CounterVec
 
+	// EventMidstreamResyncsTotal and WatchMidstreamResyncsTotal count clients
+	// told MID-STREAM that they have a hole (BUG-2730) — a signal that did not
+	// exist before, on connections that stay open.
+	//
+	// SEPARATE FROM THE RESUME COUNTERS ON PURPOSE. Folding them in would have
+	// silently changed what every existing alert on
+	// pad_*_resume_gaps_total measures, and mixed-version fleets would report
+	// two different populations under one name during a rollout.
+	//
+	// Counts CLIENTS TOLD, not causes: one instance-wide coverage loss moves
+	// this once per live subscriber while pad_*_sequence_resets_total moves
+	// once. The ratio between them is the fan-out, which is the number an
+	// operator actually wants when deciding whether a resync storm is
+	// underway.
+	EventMidstreamResyncsTotal prometheus.Counter
+	WatchMidstreamResyncsTotal prometheus.Counter
+
 	// EventSequenceResetsTotal counts activity-stream coverage resets by
 	// reason. Three reasons:
 	//
@@ -388,7 +405,7 @@ func New() *Metrics {
 
 	watchResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_watchevents_resume_gaps_total",
-		Help: "sync_required signals sent on the watch stream: a resume this instance could not serve, an unreadable cursor, or (since BUG-2730) a live subscriber told mid-stream that it missed notifications.",
+		Help: "Resumes this instance could not serve, each sending a client sync_required. Resume-time only — a live subscriber told mid-stream is counted by pad_watchevents_midstream_resyncs_total instead, so existing alerts on this counter keep their meaning.",
 	})
 
 	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -403,7 +420,17 @@ func New() *Metrics {
 
 	eventResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_resume_gaps_total",
-		Help: "sync_required signals sent on the activity stream: a resume this instance could not serve, an unreadable cursor, or (since BUG-2730) a live subscriber told mid-stream that it missed events. Counts signals, not clients. Expect a step around a deploy (cold buffers) returning to baseline; a rate that does not settle is the signal.",
+		Help: "Activity-stream resumes this instance could not serve, each sending a client sync_required. Counts resumes, not clients. Resume-time only — a live subscriber told mid-stream is counted by pad_event_midstream_resyncs_total instead, so existing alerts on this counter keep their meaning. Expect a step around a deploy (cold buffers) returning to baseline; a rate that does not settle is the signal.",
+	})
+
+	eventMidstreamResyncsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_midstream_resyncs_total",
+		Help: "Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open (BUG-2730). Counts clients told, not causes — one instance-wide coverage loss tells every subscriber and increments this once per subscriber, while pad_event_sequence_resets_total counts it once. New in BUG-2730; a fresh counter rather than folding into pad_event_resume_gaps_total, so alerts on that one keep their meaning.",
+	})
+
+	watchMidstreamResyncsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_midstream_resyncs_total",
+		Help: "Watch-stream subscribers told MID-STREAM that they missed notifications, on a connection that stayed open (BUG-2730). Counts clients told, not causes. See pad_event_midstream_resyncs_total.",
 	})
 
 	eventEventsDroppedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -435,6 +462,8 @@ func New() *Metrics {
 		watchReceiveLoopExitsTotal,
 		eventResumeGapsTotal,
 		eventEventsDroppedTotal,
+		eventMidstreamResyncsTotal,
+		watchMidstreamResyncsTotal,
 		eventSequenceResetsTotal,
 		eventReceiveLoopExitsTotal,
 		sessionPresenceFailuresTotal,
@@ -465,6 +494,8 @@ func New() *Metrics {
 		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
 		EventResumeGapsTotal:           eventResumeGapsTotal,
 		EventEventsDroppedTotal:        eventEventsDroppedTotal,
+		EventMidstreamResyncsTotal:     eventMidstreamResyncsTotal,
+		WatchMidstreamResyncsTotal:     watchMidstreamResyncsTotal,
 		EventSequenceResetsTotal:       eventSequenceResetsTotal,
 		EventReceiveLoopExitsTotal:     eventReceiveLoopExitsTotal,
 		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,

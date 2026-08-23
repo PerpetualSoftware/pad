@@ -378,6 +378,29 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	membershipCheck := time.NewTimer(firstDelay)
 	defer membershipCheck.Stop()
 
+	// Bounds how often this connection can be told mid-stream that it has a
+	// hole — see gapAnnouncer for why a slow subscriber needs bounding and
+	// why nothing is dropped to achieve it.
+	gapAnn := newGapAnnouncer(midStreamGapCooldown)
+	defer gapAnn.stop()
+
+	// announceGap writes the mid-stream signal. Returns false when the write
+	// failed, which means the client is gone and the handler must return.
+	announceGap := func() bool {
+		slog.Info("SSE: live subscriber missed events, sending sync_required mid-stream",
+			"workspace", ws.Slug, "user_id", sseUserID)
+		s.countMidStreamResync(true)
+		if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+			"reason": "This stream missed events it cannot replay. Full sync required.",
+		}); err != nil {
+			slog.Debug("SSE: mid-stream sync_required write failed, closing",
+				"workspace", ws.Slug, "error", err)
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
 	ctx := r.Context()
 	for {
 		select {
@@ -429,28 +452,24 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// reason the resume path retires it: the position we would be
 			// confirming is one we have just said we cannot vouch for.
 			//
-			// LOAD POSTURE, stated because it is the cost side and someone
-			// will want to see it: for a slow subscriber this answers "you
-			// could not keep up" with "now also fetch a delta". The gap
-			// channel coalesces (capacity 1, non-blocking send), so the
-			// signal's rate is bounded by how fast this loop reads it, never
-			// by the drop rate, and the web client defers a sync_required
-			// that arrives mid-sync rather than stacking them (BUG-2508). If
-			// that still feeds back in production, the escape hatch named on
-			// BUG-2730 is to replay from the buffer instead of resyncing —
-			// the dropped events are still in it, since it holds 1024 against
-			// the channel's 64.
-			slog.Info("SSE: live subscriber missed events, sending sync_required mid-stream",
-				"workspace", ws.Slug, "user_id", sseUserID)
-			s.countResumeGap(true)
-			if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
-				"reason": "This stream missed events it cannot replay. Full sync required.",
-			}); err != nil {
-				slog.Debug("SSE: mid-stream sync_required write failed, closing",
-					"workspace", ws.Slug, "error", err)
+			// Rate-limited per connection, and nothing is lost by it: a gap
+			// inside the cooldown is latched and announced when the window
+			// closes. See gapAnnouncer for the feedback loop that makes the
+			// bound necessary — the escape hatch if it proves insufficient is
+			// named on BUG-2730 (replay from the buffer rather than resync;
+			// the dropped events are still in it, 1024 deep against the
+			// channel's 64).
+			if !gapAnn.observe() {
+				continue
+			}
+			if !announceGap() {
 				return
 			}
-			flusher.Flush()
+
+		case <-gapAnn.cool():
+			if gapAnn.flush() && !announceGap() {
+				return
+			}
 
 		case <-keepalive.C:
 			// Send keepalive comment to prevent proxy/LB timeouts.

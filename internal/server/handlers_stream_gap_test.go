@@ -84,14 +84,19 @@ func TestActivityStreamAnnouncesAGapMidStream(t *testing.T) {
 	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, "")
 	waitForFrameWithEvent(t, frames, "connected")
 
-	before := counterValue(t, m.EventResumeGapsTotal)
+	resumeBefore := counterValue(t, m.EventResumeGapsTotal)
 	bus.gaps <- struct{}{}
 
 	frame := waitForFrameWithEvent(t, frames, "sync_required")
 	assertRetiresCursor(t, frame)
 
-	if got := counterValue(t, m.EventResumeGapsTotal); got <= before {
-		t.Errorf("a mid-stream gap did not move the sync_required counter: %v -> %v", before, got)
+	if got := counterValue(t, m.EventMidstreamResyncsTotal); got != 1 {
+		t.Errorf("pad_event_midstream_resyncs_total = %v, want 1", got)
+	}
+	// The RESUME counter must not move: existing alerts are written against
+	// it and this was not a resume (codex round 4).
+	if got := counterValue(t, m.EventResumeGapsTotal); got != resumeBefore {
+		t.Errorf("a mid-stream gap moved the resume counter: %v -> %v", resumeBefore, got)
 	}
 
 	// THE STREAM MUST STAY OPEN (codex round 3). sync_required tells the

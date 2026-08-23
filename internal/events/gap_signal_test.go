@@ -318,3 +318,34 @@ func TestIDSpaceResetSignalsEveryWorkspace(t *testing.T) {
 		t.Error("an ID-space reset invalidates every buffer, so every subscriber must be told")
 	}
 }
+
+// TestCoverageDropWithNoBufferStillSignals is codex round 4's P1. A subscriber
+// that connected and then sat through a pub/sub outage before ANY event was
+// received for its workspace has the largest possible hole and the least
+// evidence of it — and the early return that (correctly) suppresses the reset
+// metric was returning before the subscribers were told.
+//
+// The control is the metric: the reset must stay unreported, because there was
+// no coverage to end. Without that leg the obvious "fix" of deleting the early
+// return would pass.
+func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+
+	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(ch)
+
+	// Deliberately no fanOutLocally: this workspace has no replay buffer.
+	b.dropWorkspaceCoverage("ws-1", ResetReasonSubscriptionResumed, b.currentSubGen("ws-1"))
+
+	if !raised(gaps) {
+		t.Error("a subscriber that sat through an outage before any event arrived was not told")
+	}
+	if got := obs.resetReasons(); len(got) != 0 {
+		t.Errorf("a reset was reported for a workspace with no coverage to end: %v", got)
+	}
+}

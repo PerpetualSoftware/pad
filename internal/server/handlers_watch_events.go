@@ -294,6 +294,24 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		revalC = *ch
 	}
 
+	// Same per-connection bound as the activity stream — see gapAnnouncer.
+	gapAnn := newGapAnnouncer(midStreamGapCooldown)
+	defer gapAnn.stop()
+
+	announceGap := func() bool {
+		slog.Info("watch-events: live subscriber missed notifications, sending sync_required mid-stream",
+			"user_id", user.ID)
+		s.countMidStreamResync(false)
+		if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+			"reason": "This stream missed notifications it cannot replay. Full sync required.",
+		}); err != nil {
+			slog.Debug("watch-events: mid-stream sync_required write failed, closing", "user_id", user.ID, "error", err)
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
 	ctx := r.Context()
 	for {
 		select {
@@ -334,16 +352,20 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			// The empty `id:` retires the cursor, so a generic SSE client
 			// does not go on resending a position we have just said we
 			// cannot vouch for.
-			slog.Info("watch-events: live subscriber missed notifications, sending sync_required mid-stream",
-				"user_id", user.ID)
-			s.countResumeGap(false)
-			if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
-				"reason": "This stream missed notifications it cannot replay. Full sync required.",
-			}); err != nil {
-				slog.Debug("watch-events: mid-stream sync_required write failed, closing", "user_id", user.ID, "error", err)
+			//
+			// Rate-limited per connection with nothing dropped — a gap inside
+			// the window is latched, not discarded. See gapAnnouncer.
+			if !gapAnn.observe() {
+				continue
+			}
+			if !announceGap() {
 				return
 			}
-			flusher.Flush()
+
+		case <-gapAnn.cool():
+			if gapAnn.flush() && !announceGap() {
+				return
+			}
 
 		case <-keepalive.C:
 			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {

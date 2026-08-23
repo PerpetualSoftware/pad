@@ -895,9 +895,24 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 	}
 
 	if _, ok := b.replayBuffers[workspaceID]; !ok {
-		// Nothing buffered: there is no coverage to end and no client that
-		// could have been told it was current. Reporting here would give the
-		// counter a baseline on every reconnect of an idle workspace.
+		// Nothing buffered: there is no coverage to END, so no buffer to drop
+		// and nothing to report. Reporting here would give the reset counter
+		// a baseline on every reconnect of an idle workspace.
+		//
+		// THE LIVE SUBSCRIBERS STILL GET TOLD, and that is not a contradiction
+		// (codex round 4). "No buffer" says nothing was RECEIVED for this
+		// workspace on this instance; it does not say nothing was PUBLISHED.
+		// A subscriber that connected and then sat through a pub/sub outage
+		// has exactly the hole this signal exists for, and it is the case
+		// where the instance has the least idea what it missed. Answering
+		// only when a buffer happens to exist would make the honesty
+		// conditional on having already received something, which is
+		// backwards.
+		//
+		// The asymmetry is deliberate: the metric measures COVERAGE ENDINGS
+		// (there was none) and the signal measures CLIENTS WHO MAY HAVE
+		// MISSED SOMETHING (there are some).
+		b.signalWorkspaceLocked(workspaceID)
 		return
 	}
 	delete(b.replayBuffers, workspaceID)

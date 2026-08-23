@@ -962,6 +962,25 @@ func (s *Server) countResumeGap(activity bool) {
 	s.metrics.WatchResumeGapsTotal.Inc()
 }
 
+// countMidStreamResync records a client told MID-STREAM that it missed
+// events, on a connection that stayed open (BUG-2730).
+//
+// Deliberately NOT countResumeGap: that counter's population is resumes this
+// instance could not serve, and existing alerts are written against it.
+// Widening it in place would have changed what those alerts measure without
+// changing their name, and a mixed-version fleet would report two populations
+// under one metric for the length of a rollout.
+func (s *Server) countMidStreamResync(activity bool) {
+	if s.metrics == nil {
+		return
+	}
+	if activity {
+		s.metrics.EventMidstreamResyncsTotal.Inc()
+		return
+	}
+	s.metrics.WatchMidstreamResyncsTotal.Inc()
+}
+
 // SetMetrics attaches Prometheus metrics to the server.
 // Must be called before the first request is served.
 //
