@@ -426,8 +426,12 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 
 			// Every publish has returned, so everything that will ever be in
 			// the channel is in it now: drain without blocking and without a
-			// timer. Nothing here waits on a goroutine being scheduled, which
-			// is what makes the result load-independent.
+			// timer. Nothing in the ASSERTION path waits on a goroutine being
+			// scheduled, which is what stops load from truncating the sample.
+			// It does not make detection deterministic: whether a broken bus
+			// actually interleaves on a given round is still up to the
+			// scheduler, which is why the round count above exists and why
+			// the header quotes a measured catch rate rather than a proof.
 			//
 			// CONTIGUOUS, not merely increasing (codex round 2): one bus, one
 			// workspace and nothing else publishing means the ids assigned are

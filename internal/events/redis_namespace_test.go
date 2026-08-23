@@ -170,16 +170,16 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 // waitForSubscribers polls until the channel has (or provably lacks)
 // subscribers.
 //
-// POLLING, not a single check, because go-redis establishes a
-// subscription ASYNCHRONOUSLY: Subscribe returns before the SUBSCRIBE
-// reaches the server, so an immediate assertion races the connection.
+// POLLING, not a single check, because a subscription is not registered by
+// the time Subscribe returns. go-redis DOES write the SUBSCRIBE command
+// synchronously — Client.Subscribe calls PubSub.Subscribe, which writes it —
+// but it does not wait for the server to confirm it, and anything the test
+// does next travels on a different connection. So an immediate assertion
+// races the server's processing of that command.
+//
 // That race made TestRedisBusDefaultKeepsHistoricalKeys fail once in a
 // full-suite run — a flake in the test, not the code, and the kind that
 // would have been blamed on the next unrelated change.
-//
-// The "probe" payload is not valid JSON, so a bus that IS subscribed logs
-// an unmarshal error when it arrives. That noise is the confirmation the
-// assertion wants; it is deliberately not an event any consumer sees.
 func waitForSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string, want bool) {
 	t.Helper()
 	n, ok := pollSubscriberCount(mr, channel, func(n int) bool { return (n > 0) == want })

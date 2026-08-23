@@ -736,9 +736,16 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 	// ps.Channel() is bounded — go-redis buffers ~100 — so publishing all n
 	// before anything drains makes the arrival COUNT a function of how much
 	// CPU the reader gets, which is the exact defect that reddened CI four
-	// times in this package's sibling test. Draining concurrently keeps the
-	// buffer from ever being the constraint, so the assertion below is about
-	// ordering rather than about runner speed.
+	// times in this package's sibling test. Draining concurrently means the
+	// reader is competing with the publishers rather than starting 300
+	// messages behind them.
+	//
+	// Honest limit: this is a large mitigation, not a guarantee. A reader
+	// starved for long enough can still fall 100 behind, and then this fails
+	// on arrival count again. Unlike the sibling test, the bound here belongs
+	// to go-redis rather than to us, so it cannot be made structurally
+	// impossible the same way — if this one ever does flake, the answer is to
+	// raise ChannelSize, not to lower the assertion.
 	//
 	// One reader, so the order it records IS arrival order.
 	ids := make([]int64, 0, n)
