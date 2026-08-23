@@ -252,6 +252,17 @@ differently and a third-party consumer cannot infer this from the frame:
 - **Keep the connection open.** The frame is not a close and does not ask for a
   reconnect. The server keeps streaming; a client that tears down and redials
   on every `sync_required` turns one delta into a reconnect storm.
+- **Expect events after it, possibly with IDs below the hole.** A mid-stream
+  `sync_required` is not ordered against events the server had already queued
+  for that connection, so a client can receive the frame and then events that
+  predate the gap. Their IDs re-establish a cursor at a position the server has
+  just disclaimed. This is deliberate and bounded: reconciling is what the
+  frame asked for, and a later reconnect from such a cursor is refused by the
+  coverage check and answered with `sync_required` again. Holding the
+  announcement back until those events drained was tried and removed — every
+  version of it could defer the announcement indefinitely while a busy
+  workspace kept the queue full, and an unbounded silence is worse than a
+  redundant resync.
 - **Stop trusting your cursor.** The empty `id:` retires it, so a compliant SSE
   client stops sending `Last-Event-ID` on its next reconnect. Do not re-send
   the old value: the server has just said it cannot vouch for that position.

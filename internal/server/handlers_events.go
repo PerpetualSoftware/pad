@@ -407,46 +407,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	// gapSeen latches a gap the bus reported until the event channel is
-	// empty — see the ordering barrier at the top of the loop.
-	gapSeen := false
-	// gapDrainBudget is how many already-queued events still owe delivery
-	// before the latched gap may be announced — see the barrier below.
-	gapDrainBudget := 0
-
 	ctx := r.Context()
 	for {
-		// ORDERING BARRIER (BUG-2730). The event channel and the gap channel
-		// are two arms of one select, so when both are ready Go picks at
-		// random — and announcing first, then draining events the subscriber
-		// queued BEFORE the hole, is the wrong order twice over. The client
-		// is told its position is untrustworthy and then handed IDs that
-		// re-establish one, below the hole; and on an ID-space change those
-		// queued events belong to the abandoned space.
-		//
-		// So the announcement waits for the events that were ALREADY QUEUED
-		// when the gap arrived. Nothing is discarded to achieve it, which
-		// matters most on the watch stream: a queued one-shot PUSH is not
-		// recoverable by any reconcile, so dropping it to make the cursor
-		// tidy would lose the only copy.
-		//
-		// THE WAIT IS BOUNDED BY A COUNT, NOT BY THE CHANNEL EMPTYING. An
-		// earlier version waited for len(ch) == 0 and claimed it could not
-		// starve; that is false under continuous refill, and the subscriber
-		// this signal exists for — a slow one on a busy workspace — is
-		// precisely the one whose channel never empties. gapDrainBudget is
-		// the queue depth captured at the moment the gap was latched, so once
-		// that many events have gone out, every event that was queued before
-		// the hole has been delivered and anything still waiting arrived
-		// after it. Terminating by construction, and exact rather than a
-		// timeout.
-		if gapReadyToAnnounce(gapSeen, len(ch), gapDrainBudget) {
-			gapSeen = false
-			if gapAnn.observe() && !announceGap() {
-				return
-			}
-		}
-
 		select {
 		case <-ctx.Done():
 			// Client disconnected
@@ -456,13 +418,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				// Channel closed (unsubscribed)
 				return
-			}
-			// Counts against the latched gap's drain budget whether or not
-			// this one is VISIBLE to the caller: the budget measures how many
-			// queued events predate the hole, and a filtered event occupied a
-			// slot exactly like a delivered one.
-			if gapDrainBudget > 0 {
-				gapDrainBudget--
 			}
 			if sseEventVisible(event) {
 				// Broken-pipe / EOF on the live event path means the
@@ -510,12 +465,28 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// named on BUG-2730 (replay from the buffer rather than resync;
 			// the dropped events are still in it, 1024 deep against the
 			// channel's 64).
-			// Latched, not announced here: the barrier at the top of the
-			// loop decides when, so anything already queued goes out first.
-			// The depth is captured NOW — it is the exact number of events
-			// that predate the hole, and it is what bounds the wait.
-			gapSeen = true
-			gapDrainBudget = len(ch)
+			// ORDERING AGAINST QUEUED EVENTS IS DELIBERATELY NOT GUARANTEED.
+			// This and the event channel are two arms of one select, so with
+			// both ready Go picks at random: a client can receive
+			// sync_required and then events that were queued BEFORE the hole,
+			// whose IDs re-establish the cursor this frame just retired, at a
+			// position below the hole.
+			//
+			// That is bounded and self-correcting — the client was told to
+			// reconcile, and a later reconnect from a below-the-hole cursor
+			// is refused by the coverage check and told again. A barrier that
+			// held the announcement until the pre-hole events had drained was
+			// built and REMOVED: every version of it could defer the
+			// announcement indefinitely under a producer that refills faster
+			// than a slow client drains, and an unbounded silence is a worse
+			// failure than a redundant resync. Documented in
+			// docs/deployment.md rather than left for a reader to discover.
+			if !gapAnn.observe() {
+				continue
+			}
+			if !announceGap() {
+				return
+			}
 
 		case <-gapAnn.cool():
 			if gapAnn.flush() && !announceGap() {
