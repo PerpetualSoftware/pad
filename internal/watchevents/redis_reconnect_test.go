@@ -100,20 +100,28 @@ func newCutterBus(t *testing.T, size int) (*RedisBus, *miniredis.Miniredis, *tcp
 	return b, mr, cutter, obs
 }
 
-// waitForResets blocks until the observer has recorded at least one reset,
-// returning the counts. It fails the test rather than returning empty, so a
-// caller cannot mistake "not yet" for "never".
-func waitForResets(t *testing.T, obs *recordingObserver, what string) observerCounts {
+// waitForReset blocks until the observer has recorded a reset FOR THE GIVEN
+// REASON, returning the counts. It fails the test rather than returning empty,
+// so a caller cannot mistake "not yet" for "never".
+//
+// Reason-specific rather than "any reset", which is what it was first written
+// as (codex round 3). Waiting on any reset lets an unrelated one satisfy the
+// wait and lets the test proceed to its real assertions before the condition
+// under test has happened — the wait would then be measuring nothing, and the
+// assertions after it would be racing. It also makes the failure message name
+// what was expected instead of reporting a bare absence.
+func waitForReset(t *testing.T, obs *recordingObserver, reason, what string) observerCounts {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		got := obs.snapshot()
-		if len(got.resets) > 0 {
+		if got.resets[reason] > 0 {
 			return got
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s; no reset was ever reported", what)
+	t.Fatalf("timed out waiting for %s; no %q reset was ever reported (saw %v)",
+		what, reason, obs.snapshot().resets)
 	return observerCounts{}
 }
 
@@ -140,7 +148,7 @@ func TestCoverageIsReestablishedByTheNextNotification(t *testing.T) {
 	drainOne(t, ch)
 
 	cutter.cut()
-	waitForResets(t, obs, "a resubscription after the connection was severed")
+	waitForReset(t, obs, ResetReasonSubscriptionResumed, "a resubscription after the connection was severed")
 
 	// The bus is now covering nothing. Publish again: this notification is
 	// received normally, and its arrival is what re-establishes coverage.
@@ -205,7 +213,7 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 
 	cutter.cut()
 
-	got := waitForResets(t, obs, "a resubscription after the connection was severed")
+	got := waitForReset(t, obs, ResetReasonSubscriptionResumed, "a resubscription after the connection was severed")
 	if got.resets[ResetReasonSubscriptionResumed] == 0 {
 		t.Fatalf("a pub/sub resubscription must be reported as %q, got %v",
 			ResetReasonSubscriptionResumed, got.resets)
@@ -280,7 +288,7 @@ func TestAResubscriptionSignalsEverySubscriberHoldingTheStreamOpen(t *testing.T)
 	}
 
 	cutter.cut()
-	waitForResets(t, obs, "a resubscription after the connection was severed")
+	waitForReset(t, obs, ResetReasonSubscriptionResumed, "a resubscription after the connection was severed")
 
 	if !raised(gapsA) || !raised(gapsB) {
 		t.Fatal("every subscriber connected across the outage must be signalled, not just a reconnecting one")
@@ -328,7 +336,7 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 	// to produce a payload the codec rejects.
 	mr.Publish(b.keys.Name(redisWatchChannelSuffix), "this is not <epoch>|<id>|<json>")
 
-	got := waitForResets(t, obs, "an undecodable message on the watch channel")
+	got := waitForReset(t, obs, ResetReasonUndecodableMessage, "an undecodable message on the watch channel")
 	if got.resets[ResetReasonUndecodableMessage] == 0 {
 		t.Fatalf("an undecodable message must be reported as %q, got %v",
 			ResetReasonUndecodableMessage, got.resets)
@@ -379,6 +387,21 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 //
 // A comment cannot hold that. This does: it constructs a bus, lets it settle,
 // and asserts NO reset and NO raised gap.
+//
+// IT PASSES ON UNFIXED main, AND THAT IS CORRECT — it is a control, not a
+// regression test. The unfixed Channel() discards confirmations, so nothing
+// is reported either way. Its discriminating mutation is the removal of the
+// constructor's Receive, which was RUN rather than assumed: with
+// `pubsub.Receive(subCtx)` deleted this fails 3/3 with
+// `got map[subscription_resumed:1]`.
+//
+// Codex round 3 argued the guard could not work, on the theory that the
+// initial confirmation would arrive before SetObserver and Subscribe are
+// called and so go unrecorded. It does not: go-redis does not deliver the
+// confirmation until the channel goroutine started by
+// ChannelWithSubscriptions reads it, which is after the constructor returns
+// and after newCutterBus attaches the observer. Settled by running the
+// mutation, not by arguing the timing.
 func TestNoCoverageIsDroppedAtStartup(t *testing.T) {
 	b, _, _, obs := newCutterBus(t, 64)
 
