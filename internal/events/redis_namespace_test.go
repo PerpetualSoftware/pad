@@ -35,6 +35,12 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	// observe.
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// This test only reads KEYS, which the publish writes whether or not
+	// anyone is listening — so it does not NEED the wait. It is here because
+	// this is one of the two shortest Redis-bus tests in the package and
+	// therefore what the next person copies; leaving Subscribe followed
+	// straight by Publish teaches the race (BUG-2742, codex round 10).
+	waitForSubscribers(t, mr, "pad:inst-b:events:ws-1", true)
 
 	b.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})
 
@@ -154,6 +160,9 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// Not needed for the key assertions below; present so the pattern a
+	// reader copies from here is the safe one. See the twin above.
+	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
 	b.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})
 
@@ -169,6 +178,16 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 
 // waitForSubscribers polls until the channel has (or provably lacks)
 // subscribers.
+//
+// CALL IT AFTER Subscribe AND BEFORE THE FIRST Publish, on any test that
+// expects an event to ARRIVE. A publish issued before the subscription is
+// registered is lost outright — not delayed — so a test without this wait
+// fails on a loaded runner roughly once in a hundred runs, with a message
+// about an event that never came and no bound that can rescue it. That is
+// BUG-2742, four CI failures across three pull requests.
+//
+// Not needed by a test that only asserts on Redis KEYS: the publish writes
+// those whether or not anyone is listening.
 //
 // POLLING, not a single check, because a subscription is not registered by
 // the time Subscribe returns. go-redis DOES write the SUBSCRIBE command
