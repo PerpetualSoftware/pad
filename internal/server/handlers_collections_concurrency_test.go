@@ -253,7 +253,7 @@ func TestUpdateCollection_PublishesCollectionUpdatedEvent(t *testing.T) {
 	var coll models.Collection
 	parseJSON(t, createRR, &coll)
 
-	ch := srv.events.Subscribe(ws.ID)
+	ch, _ := srv.events.Subscribe(ws.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
@@ -315,7 +315,7 @@ func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
 	parseJSON(t, createRR, &coll)
 	oldSlug := coll.Slug
 
-	ch := srv.events.Subscribe(ws.ID)
+	ch, _ := srv.events.Subscribe(ws.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+oldSlug, map[string]interface{}{
@@ -398,7 +398,7 @@ func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	}
 
 	t.Run("migration touching an item sets items_changed", func(t *testing.T) {
-		ch := srv.events.Subscribe(ws.ID)
+		ch, _ := srv.events.Subscribe(ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
 		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
@@ -428,7 +428,7 @@ func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	})
 
 	t.Run("migration matching ZERO items still sets items_changed (no row-count leak)", func(t *testing.T) {
-		ch := srv.events.Subscribe(ws.ID)
+		ch, _ := srv.events.Subscribe(ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
 		// Rename an option value that NO item currently has → 0 rows migrated.
@@ -450,7 +450,7 @@ func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	})
 
 	t.Run("settings-only update leaves items_changed false", func(t *testing.T) {
-		ch := srv.events.Subscribe(ws.ID)
+		ch, _ := srv.events.Subscribe(ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
 		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{

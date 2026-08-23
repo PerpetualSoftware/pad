@@ -55,7 +55,7 @@ func deadClient(t *testing.T) *redis.Client {
 func newLocalOnlyBus(size int) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &RedisBus{
-		subscribers: make(map[chan Notification]struct{}),
+		subscribers: make(map[chan Notification]*subscriber),
 		replay:      newReplayBuffer(size),
 		// replaySize matters: the epoch-reset path rebuilds the buffer from
 		// it, and a fixture that left it zero turned a counter reset into a
@@ -85,7 +85,7 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 		b.fanOutLocally(Notification{ID: i, Kind: KindComment, ItemRef: "TASK-1"})
 	}
 
-	ch, missed := b.SubscribeAndReplaySince(1)
+	ch, missed, _ := b.SubscribeAndReplaySince(1)
 
 	if len(missed) != 2 {
 		t.Fatalf("replay since 1 should carry ids 2,3; got %d entries: %+v", len(missed), missed)
@@ -149,7 +149,7 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 
 	// Join mid-flight.
 	time.Sleep(2 * time.Millisecond)
-	ch, missed := b.SubscribeAndReplaySince(0)
+	ch, missed, _ := b.SubscribeAndReplaySince(0)
 
 	wg.Wait()
 
@@ -259,7 +259,7 @@ func TestRedisBusSubscribeAndReplayNeverDoubleDelivers(t *testing.T) {
 			}()
 		}
 
-		ch, missed := b.SubscribeAndReplaySince(0)
+		ch, missed, _ := b.SubscribeAndReplaySince(0)
 		b.afterSubscribeRegister = nil
 
 		// Block until the forced fan-out has actually completed before
@@ -371,7 +371,7 @@ func TestRedisBusPublishFailsClosedWhenIDsAreUnavailable(t *testing.T) {
 	b.client = client
 	defer b.Close()
 
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 	b.Publish(Notification{Kind: KindPush, ItemRef: "TASK-1", Summary: "should not be published"})
 
 	cmds := rec.names()
@@ -714,7 +714,7 @@ func TestRedisBusDecodePayloadRoundTrip(t *testing.T) {
 // close.
 func TestRedisBusCloseIsIdempotentAndClosesSubscribers(t *testing.T) {
 	b := newLocalOnlyBus(16)
-	ch := b.Subscribe()
+	ch, _ := b.Subscribe()
 
 	b.Close()
 	b.Close() // must not panic on a double close of the same channels
@@ -730,7 +730,7 @@ func TestRedisBusCloseIsIdempotentAndClosesSubscribers(t *testing.T) {
 
 	// A subscriber arriving after Close must get a closed channel rather than
 	// registering into a bus that will never close it.
-	late := b.Subscribe()
+	late, _ := b.Subscribe()
 	select {
 	case _, ok := <-late:
 		if ok {

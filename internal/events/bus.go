@@ -128,9 +128,17 @@ type Event struct {
 // EventBus is the interface for pub/sub event distribution.
 // Implementations include MemoryBus (in-process) and RedisBus (cross-instance).
 type EventBus interface {
-	// Subscribe registers a new subscriber for the given workspace.
-	// Returns a buffered channel that will receive events for that workspace.
-	Subscribe(workspaceID string) chan Event
+	// Subscribe registers a new subscriber for the given workspace and
+	// returns its event channel and its GAP SIGNAL — see
+	// SubscribeIfAllowed for what the second one carries.
+	//
+	// It returns the gap channel even though this is the unbounded,
+	// no-replay primitive that no handler uses, and that is the point: an
+	// interface method whose subscribers CANNOT be told they missed
+	// something is a silent under-delivery waiting for its first production
+	// caller (codex round 5). Every way of registering a subscriber hands
+	// back the same two things.
+	Subscribe(workspaceID string) (chan Event, <-chan struct{})
 
 	// SubscribeIfAllowed atomically checks the per-workspace subscriber
 	// limit and, only if it is satisfied, subscribes in the same critical
@@ -148,7 +156,38 @@ type EventBus interface {
 	// before subscribing. The per-workspace bound stays here because it is
 	// genuinely workspace-scoped and the other endpoint has no workspace
 	// to count against.
-	SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, bool)
+	//
+	// The second return is this subscriber's GAP SIGNAL (BUG-2730): a
+	// capacity-1, coalescing channel raised whenever this instance may have
+	// under-delivered to this subscriber. Two scopes reach it — a full
+	// channel at fan-out time, which is about this ONE connection; and a loss
+	// of this instance's coverage of the workspace (a pub/sub flap, an
+	// undecodable message, an ID-space reset), which every subscriber of that
+	// workspace shares. Reading it is how a held-open stream learns it has a hole; the
+	// SSE handler answers by emitting sync_required mid-stream. It is never
+	// closed, so a consumer may select on it for the subscription's whole
+	// life without the select spinning once the subscription ends; the event
+	// channel closing is the end-of-life signal.
+	SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, bool)
+
+	// SubscribeAndReplaySince atomically checks the per-workspace limit,
+	// registers the subscriber, and captures the buffered events above
+	// sinceID — all in ONE critical section (BUG-2730).
+	//
+	// Subscribing and reading the replay buffer as two calls, which is what
+	// the SSE handler did until this existed, leaves a window where an event
+	// published in between lands in BOTH the replay set and the live channel,
+	// so the client processes it twice. This closes that window structurally
+	// rather than asking the consumer to dedupe by ID — the same guarantee
+	// internal/watchevents' method of the same name provides, for the same
+	// reason.
+	//
+	// missed is nil when this instance CANNOT VOUCH for the span (the
+	// EventsSince contract, unchanged), which the handler turns into
+	// sync_required. Callers must only interpret a nil missed that way when
+	// they actually passed a resuming cursor: sinceID <= 0 means "not
+	// resuming" and always yields a nil missed with nothing wrong.
+	SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (ch chan Event, missed []Event, gaps <-chan struct{}, ok bool)
 
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Event)
@@ -389,6 +428,53 @@ func (rb *replayBuffer) since(sinceID int64) []Event {
 type subscriber struct {
 	ch          chan Event
 	workspaceID string
+
+	// gaps carries the "you personally have a hole" signal to this one
+	// subscriber's consumer (BUG-2730). Capacity 1 and written with a
+	// non-blocking send, so it COALESCES: many drops between two reads
+	// raise it once. That is deliberate and is the load bound — the
+	// signal's rate is the consumer's read rate, never the drop rate,
+	// which matters because the consumer we are signalling is by
+	// definition one that could not keep up.
+	//
+	// Never closed by the bus's fan-out paths; Unsubscribe/Close own its
+	// lifetime alongside ch, so the two are always retired together.
+	gaps chan struct{}
+}
+
+// signalGap raises this subscriber's gap flag without blocking.//
+// INVARIANT FOR ANYONE ADDING A THIRD CAUSE: every cause that reaches this
+// channel must have the SAME remediation — "your position is untrustworthy,
+// reconcile". The channel carries no payload, and that is the enforcement
+// rather than an oversight: a distinction it cannot represent cannot be
+// silently lost downstream, because it cannot be put in. Coalescing makes the
+// same point from the other side — two causes arriving between two reads
+// become one signal, so any per-cause handling would already be undecidable.
+//
+// A condition needing different handling, different telemetry, or precedence
+// over another does NOT belong here. Give it its own seam, or the first
+// maintainer to need the distinction will discover it was thrown away.
+//
+// Callers may hold the bus lock: the send can never block (capacity 1,
+// default arm), so this adds no ordering hazard to a fan-out that already
+// runs under it.
+func (s *subscriber) signalGap() {
+	select {
+	case s.gaps <- struct{}{}:
+	default:
+	}
+}
+
+// newSubscriber builds a subscriber with both of its channels, so no path
+// can register one that has an event channel and no gap channel — a nil
+// gaps channel would silently discard every signal (a send on nil blocks,
+// and the default arm would take it forever).
+func newSubscriber(workspaceID string) *subscriber {
+	return &subscriber{
+		ch:          make(chan Event, 64),
+		workspaceID: workspaceID,
+		gaps:        make(chan struct{}, 1),
+	}
 }
 
 // MemoryBus is an in-process pub/sub event bus that fans out events
@@ -418,6 +504,22 @@ type MemoryBus struct {
 	// oversight, is stated once in internal/idspace's package comment.
 	base int64
 
+	// afterSubscribeRegister is a TEST SEAM, nil in production. It runs
+	// inside SubscribeAndReplaySince's critical section, immediately after
+	// the subscriber is registered and before the replay is read.
+	//
+	// It exists because the guarantee that method makes — an event is in the
+	// replay OR on the channel, never both — is only observable when a
+	// publish is attempted BETWEEN those two steps, and nothing outside the
+	// bus can arrange that interleaving. A test hook that runs there can.
+	// internal/watchevents' RedisBus carries the same seam for the same
+	// reason.
+	//
+	// A hook that publishes must do so from another goroutine: b.mu is held
+	// here, so publishing inline would deadlock — which is itself the
+	// property under test.
+	afterSubscribeRegister func()
+
 	// Per-workspace replay buffers for Last-Event-ID support.
 	replayMu      sync.RWMutex
 	replayBuffers map[string]*replayBuffer
@@ -443,20 +545,17 @@ func NewWithReplay(bufferSize int, maxAge time.Duration) *MemoryBus {
 
 // Subscribe registers a new subscriber for the given workspace.
 // Returns a buffered channel that will receive events for that workspace.
-func (b *MemoryBus) Subscribe(workspaceID string) chan Event {
+func (b *MemoryBus) Subscribe(workspaceID string) (chan Event, <-chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	ch := make(chan Event, 64)
-	b.subscribers[ch] = &subscriber{
-		ch:          ch,
-		workspaceID: workspaceID,
-	}
-	return ch
+	sub := newSubscriber(workspaceID)
+	b.subscribers[sub.ch] = sub
+	return sub.ch, sub.gaps
 }
 
 // SubscribeIfAllowed atomically checks limits and subscribes.
-func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, bool) {
+func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -468,19 +567,68 @@ func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) 
 			}
 		}
 		if count >= maxPerWorkspace {
-			return nil, false
+			return nil, nil, false
 		}
 	}
 
-	ch := make(chan Event, 64)
-	b.subscribers[ch] = &subscriber{
-		ch:          ch,
-		workspaceID: workspaceID,
+	sub := newSubscriber(workspaceID)
+	b.subscribers[sub.ch] = sub
+	return sub.ch, sub.gaps, true
+}
+
+// SubscribeAndReplaySince implements EventBus. See the interface for the
+// guarantee; the mechanism here is the lock order Publish documents — b.mu
+// exclusively, then b.replayMu, so no publish can be between its append and
+// its fan-out while this runs.
+func (b *MemoryBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
+	// Counted on the way out, with no lock held, and only for a caller that
+	// was actually resuming — mirroring EventsSince, whose own report this
+	// path bypasses because it reads the buffer directly.
+	var missed []Event
+	resuming := sinceID > 0
+	defer func() {
+		if resuming && missed == nil {
+			b.reportResumeGap(workspaceID)
+		}
+	}()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if maxPerWorkspace > 0 {
+		count := 0
+		for _, sub := range b.subscribers {
+			if sub.workspaceID == workspaceID {
+				count++
+			}
+		}
+		if count >= maxPerWorkspace {
+			// resuming is cleared so the deferred report does not fire for a
+			// subscription that never happened: a refused connection is an
+			// admission event, not a resume this instance could not serve.
+			resuming = false
+			return nil, nil, nil, false
+		}
 	}
-	return ch, true
+
+	sub := newSubscriber(workspaceID)
+	b.subscribers[sub.ch] = sub
+	if b.afterSubscribeRegister != nil {
+		b.afterSubscribeRegister()
+	}
+
+	if resuming {
+		missed = b.eventsSinceLocked(workspaceID, sinceID)
+	}
+	return sub.ch, missed, sub.gaps, true
 }
 
 // Unsubscribe removes a subscriber and closes its channel.
+//
+// The subscriber's gap channel is deliberately NOT closed. A closed channel
+// is always ready, so a consumer selecting on both would spin at full speed
+// between Unsubscribe and its own exit; the event channel closing is the
+// end-of-life signal, and it already is one.
 func (b *MemoryBus) Unsubscribe(ch chan Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -499,6 +647,37 @@ func (b *MemoryBus) Publish(event Event) {
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().UnixMilli()
 	}
+
+	// Registered FIRST so it runs LAST — after every Unlock below. Reports
+	// fire with no bus lock held, per Observer's contract, which is what lets
+	// an observer call back into the bus. Same discipline as
+	// internal/watchevents' pendingReports, without needing the type for a
+	// single counter.
+	dropped := 0
+	defer func() {
+		for range dropped {
+			b.reportDropped(DropReasonSlowSubscriber)
+		}
+	}()
+
+	// SUBSCRIBER-SET LOCK FIRST, AND HELD ACROSS BOTH HALVES (BUG-2730).
+	// Publish has two effects a resuming client can observe — the append to
+	// the replay buffer and the send to live channels — and until this fix
+	// they were two separate critical sections with a window between them.
+	// A SubscribeAndReplaySince landing in that window sees the event in
+	// NEITHER (subscribed after the fan-out snapshot, read the buffer before
+	// the append) or in BOTH. Holding b.mu across both makes the pair atomic
+	// with respect to that call, which takes b.mu exclusively.
+	//
+	// LOCK ORDER IS b.mu THEN b.replayMu, everywhere, without exception. The
+	// reverse nesting anywhere in this file is a deadlock; EventsSince takes
+	// replayMu alone, which is safe precisely because it takes b.mu never.
+	//
+	// RLock rather than Lock: concurrent publishes still fan out
+	// concurrently, exactly as before. The only thing excluded is the
+	// exclusive holder — subscribe, unsubscribe, close.
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 
 	// Store in replay buffer for reconnect replay.
 	b.replayMu.Lock()
@@ -525,11 +704,25 @@ func (b *MemoryBus) Publish(event Event) {
 		b.replayBuffers[event.WorkspaceID] = rb
 	}
 	rb.append(event)
-	b.replayMu.Unlock()
 
-	// Fan out to live subscribers.
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	// FAN OUT UNDER replayMu TOO, so ID assignment and delivery are ONE
+	// critical section. Releasing it here and fanning out afterwards let two
+	// concurrent publishes take IDs N and N+1 and then deliver in the other
+	// order: a subscriber saw N+1, then N, so its SSE cursor REGRESSED to N
+	// and its next reconnect replayed N+1 a second time. A duplicate by a
+	// different route than the subscribe/replay window this unit closed, and
+	// closing one while leaving the other would have been a half-answer.
+	//
+	// Both sibling implementations already serialize this way —
+	// events.RedisBus holds b.mu across append and fan-out, and
+	// watchevents.MemoryBus holds its single mutex across both. This one was
+	// the outlier.
+	//
+	// The cost is that publishes serialize. They already serialized on the ID
+	// assignment, and every send below is non-blocking, so what is added is
+	// an O(subscribers) walk inside a lock that a resume read also wants —
+	// the same trade RedisBus has always made.
+	defer b.replayMu.Unlock()
 
 	for _, sub := range b.subscribers {
 		if sub.workspaceID != event.WorkspaceID {
@@ -538,7 +731,19 @@ func (b *MemoryBus) Publish(event Event) {
 		select {
 		case sub.ch <- event:
 		default:
+			// THE DROP IS NOW ANNOUNCED TO THE SUBSCRIBER IT HAPPENED TO
+			// (BUG-2730). Before this, the process knew and the one
+			// consumer whose correctness depended on it did not: a later
+			// delivered event advances that client's Last-Event-ID past
+			// the dropped IDs, after which no replica will ever replay
+			// them because every replica agrees the cursor is current.
+			//
+			// Announced to THIS subscriber only. A full channel is a fact
+			// about one connection's read rate; every other subscriber
+			// received the event.
 			slog.Warn("dropping event for slow subscriber", "type", event.Type, "workspace", event.WorkspaceID)
+			sub.signalGap()
+			dropped++
 		}
 	}
 }
@@ -561,6 +766,22 @@ func (b *MemoryBus) EventsSince(workspaceID string, sinceID int64) []Event {
 		}
 	}()
 
+	missed = b.eventsSinceLocked(workspaceID, sinceID)
+	return missed
+}
+
+// eventsSinceLocked is EventsSince without the observer report — the shared
+// core, so the two callers cannot drift in what "cannot vouch" means.
+//
+// It takes b.replayMu itself and takes b.mu NEVER, which is what makes it
+// callable both on its own (EventsSince) and with b.mu already held
+// exclusively (SubscribeAndReplaySince). See Publish for the lock order that
+// makes the second case safe.
+//
+// The report is the CALLER's job because the two callers count different
+// populations: every EventsSince call is a resume, while a
+// SubscribeAndReplaySince may be a fresh subscription that never asked.
+func (b *MemoryBus) eventsSinceLocked(workspaceID string, sinceID int64) []Event {
 	// A CURSOR THIS INCARNATION COULD NOT HAVE ISSUED IS A GAP, and this bus
 	// can say so EXACTLY rather than infer it (BUG-2736). Every ID it assigns
 	// is above base, so a non-zero cursor at or below base was issued by a
@@ -601,11 +822,9 @@ func (b *MemoryBus) EventsSince(workspaceID string, sinceID int64) []Event {
 		if sinceID > 0 {
 			return nil
 		}
-		missed = []Event{}
-		return missed
+		return []Event{}
 	}
-	missed = rb.since(sinceID)
-	return missed
+	return rb.since(sinceID)
 }
 
 // Close shuts down the event bus by closing all subscriber channels.

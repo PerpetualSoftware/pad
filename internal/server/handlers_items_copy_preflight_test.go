@@ -900,9 +900,9 @@ func TestCopyPreflight_WritesNothing(t *testing.T) {
 
 	// Subscribe to BOTH workspaces before the snapshot so any publish
 	// lands in a buffer we can inspect afterwards.
-	chA := f.bus.Subscribe(f.wsA.ID)
+	chA, _ := f.bus.Subscribe(f.wsA.ID)
 	defer f.bus.Unsubscribe(chA)
-	chB := f.bus.Subscribe(f.wsB.ID)
+	chB, _ := f.bus.Subscribe(f.wsB.ID)
 	defer f.bus.Unsubscribe(chB)
 
 	before := f.snapshot()

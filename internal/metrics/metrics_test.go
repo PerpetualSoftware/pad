@@ -387,7 +387,7 @@ func TestInstrumentedBus_SubscribeUnsubscribe(t *testing.T) {
 	bus := NewInstrumentedBus(inner, m)
 
 	// Subscribe to a workspace
-	ch := bus.Subscribe("ws-1")
+	ch, _ := bus.Subscribe("ws-1")
 	if ch == nil {
 		t.Fatal("Subscribe should return a channel")
 	}
@@ -399,14 +399,14 @@ func TestInstrumentedBus_SubscribeUnsubscribe(t *testing.T) {
 	}
 
 	// Subscribe a second connection to same workspace
-	ch2 := bus.Subscribe("ws-1")
+	ch2, _ := bus.Subscribe("ws-1")
 	gauge = getGaugeValue(t, *m.SSEConnectionsActive)
 	if gauge != 2 {
 		t.Errorf("Expected SSE active connections = 2, got %v", gauge)
 	}
 
 	// Subscribe to a different workspace
-	ch3 := bus.Subscribe("ws-2")
+	ch3, _ := bus.Subscribe("ws-2")
 	gauge = getGaugeValue(t, *m.SSEConnectionsActive)
 	if gauge != 3 {
 		t.Errorf("Expected SSE active connections = 3, got %v", gauge)
@@ -434,7 +434,7 @@ func TestInstrumentedBus_Publish(t *testing.T) {
 	bus := NewInstrumentedBus(inner, m)
 
 	// Subscribe so we can publish
-	ch := bus.Subscribe("ws-1")
+	ch, _ := bus.Subscribe("ws-1")
 	defer bus.Unsubscribe(ch)
 
 	bus.Publish(events.Event{Type: "test", WorkspaceID: "ws-1"})
@@ -458,7 +458,7 @@ func TestInstrumentedBus_SubscriberCount(t *testing.T) {
 		t.Errorf("Expected 0 subscribers initially")
 	}
 
-	ch := bus.Subscribe("ws-1")
+	ch, _ := bus.Subscribe("ws-1")
 	if bus.SubscriberCount() != 1 {
 		t.Errorf("Expected 1 subscriber after subscribe")
 	}

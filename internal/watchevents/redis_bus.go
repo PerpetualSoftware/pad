@@ -202,7 +202,7 @@ type RedisBus struct {
 	// mu guards subscribers AND replay together — see the type comment (3)
 	// and SubscribeAndReplaySince.
 	mu          sync.Mutex
-	subscribers map[chan Notification]struct{}
+	subscribers map[chan Notification]*subscriber
 	replay      *replayBuffer
 	replaySize  int
 	closed      bool
@@ -315,7 +315,7 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *Red
 	b := &RedisBus{
 		client:      client,
 		keys:        keys,
-		subscribers: make(map[chan Notification]struct{}),
+		subscribers: make(map[chan Notification]*subscriber),
 		replay:      newReplayBuffer(size),
 		replaySize:  size,
 		ctx:         ctx,
@@ -433,19 +433,20 @@ func (b *RedisBus) Publish(n Notification) error {
 
 // Subscribe returns a channel receiving every future Notification, with no
 // replay — same contract as MemoryBus.Subscribe.
-func (b *RedisBus) Subscribe() chan Notification {
+func (b *RedisBus) Subscribe() (chan Notification, <-chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ch := make(chan Notification, 64)
+	sub := newSubscriber()
+	ch := sub.ch
 	if b.closed {
 		// A subscriber registered after Close would never be closed by
 		// anyone. Hand back an already-closed channel so the consumer's
 		// range/select terminates instead of blocking forever.
 		close(ch)
-		return ch
+		return ch, sub.gaps
 	}
-	b.subscribers[ch] = struct{}{}
-	return ch
+	b.subscribers[ch] = sub
+	return ch, sub.gaps
 }
 
 // SubscribeAndReplaySince atomically registers the subscriber and captures the
@@ -461,10 +462,13 @@ func (b *RedisBus) Subscribe() chan Notification {
 // argument MemoryBus makes, one layer further out, with fan-out standing in
 // for Publish because that is where delivery happens here.
 //
-// Returns (ch, nil) when sinceID has been evicted; the subscription is valid,
-// only the replay is unavailable, and the caller should treat it like the SSE
-// handler's sync_required signal.
-func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification) {
+// The replay is nil whenever this instance cannot vouch for the span —
+// eviction, a recorded hole, a cold start, or a resume that outruns the local
+// view. The subscription is valid either way; only the replay is unavailable,
+// and the caller turns that into sync_required.
+//
+// The third return is the subscriber's GAP SIGNAL — see Subscribe.
+func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
 	// Consulted BEFORE the lock: it sleeps and does network I/O. See its
 	// comment for why that ordering is also the only one that preserves the
 	// subscribe-and-replay guarantee.
@@ -477,19 +481,20 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ch := make(chan Notification, 64)
+	sub := newSubscriber()
+	ch := sub.ch
 	if b.closed {
 		close(ch)
-		return ch, nil
+		return ch, nil, sub.gaps
 	}
-	b.subscribers[ch] = struct{}{}
+	b.subscribers[ch] = sub
 	if b.afterSubscribeRegister != nil {
 		b.afterSubscribeRegister()
 	}
 	if forceGap {
 		// Already counted by resumeOutrunsLocalView, which is where that
 		// decision is made.
-		return ch, nil
+		return ch, nil, sub.gaps
 	}
 
 	missed := b.replaySince(sinceID)
@@ -506,7 +511,7 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		// with the lock released.
 		pending.resumeGap()
 	}
-	return ch, missed
+	return ch, missed, sub.gaps
 }
 
 // settleWindow is how long resumeOutrunsLocalView waits before deciding that
@@ -871,6 +876,11 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 		b.knownFrom = 0
 		b.epochJustChanged = true
 		pending.reset(ResetReasonEpochChange)
+		// Every live subscriber's coverage just ended (BUG-2730). Ending it
+		// makes the next RESUME honest and does nothing for a client that is
+		// still holding the stream open, which is the case this signal
+		// exists for.
+		b.signalAllLocked()
 	}
 	b.mu.Unlock()
 
@@ -947,6 +957,7 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		b.replay = newReplayBuffer(b.replaySize)
 		b.knownFrom = n.ID
 		pending.reset(ResetReasonCounterBackward)
+		b.signalAllLocked()
 
 	case n.ID != b.lastAppendedID+1:
 		slog.Warn("watchevents: gap in the received notification sequence; resumes across it will report sync_required",
@@ -954,18 +965,48 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			"missed", n.ID-b.lastAppendedID-1)
 		b.knownFrom = n.ID
 		pending.gap(n.ID - b.lastAppendedID - 1)
+		// THE HOLE IS ANNOUNCED TO EVERY SUBSCRIBER ON THIS INSTANCE
+		// (BUG-2730). Raising knownFrom above already made a RECONNECT
+		// honest — replaySince refuses a cursor below it and the stream
+		// answers sync_required. A client holding the stream OPEN across the
+		// same hole was told nothing: it stayed connected, kept receiving
+		// everything after the gap, and never saw what went missing, while
+		// this instance had logged the exact id range.
+		//
+		// PER-INSTANCE, and that is the whole scope. The missing ids never
+		// arrived HERE; other instances may have received them fine, so
+		// announcing wider would charge a resync to clients whose stream is
+		// intact. And every subscriber registered at this moment is exactly
+		// the set that was connected across the hole — anyone subscribing
+		// after this line missed nothing they were promised, and is
+		// correctly not in the set.
+		b.signalAllLocked()
 	}
 	b.lastAppendedID = n.ID
 
 	b.replay.append(n)
 
-	for ch := range b.subscribers {
+	for _, sub := range b.subscribers {
 		select {
-		case ch <- n:
+		case sub.ch <- n:
 		default:
 			slog.Warn("watchevents: dropping notification for slow subscriber",
 				"kind", n.Kind, "item_ref", n.ItemRef)
+			// This one only: a full channel is a fact about one connection's
+			// read rate, and every other subscriber received the
+			// notification.
+			sub.signalGap()
 			pending.drop(DropReasonSlowSubscriber)
 		}
+	}
+}
+
+// signalAllLocked raises the gap flag for every live subscriber on this
+// instance — the per-INSTANCE half of BUG-2730, for the conditions where the
+// hole belongs to the bus rather than to one slow reader. Callers must hold
+// b.mu; every send is non-blocking, so holding it cannot deadlock.
+func (b *RedisBus) signalAllLocked() {
+	for _, sub := range b.subscribers {
+		sub.signalGap()
 	}
 }

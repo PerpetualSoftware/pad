@@ -345,7 +345,7 @@ func TestBulkItems_EmitsCollectionScopedBatchEvent(t *testing.T) {
 	if err != nil || wsRow == nil {
 		t.Fatalf("resolve workspace: %v", err)
 	}
-	ch := srv.events.Subscribe(wsRow.ID)
+	ch, _ := srv.events.Subscribe(wsRow.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open","priority":"low"}`)
@@ -414,7 +414,7 @@ func TestBulkItems_CollectionMoveNotifiesBothScopes(t *testing.T) {
 
 	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open"}`)
 
-	ch := srv.events.Subscribe(wsRow.ID)
+	ch, _ := srv.events.Subscribe(wsRow.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{

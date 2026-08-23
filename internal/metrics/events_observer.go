@@ -43,3 +43,9 @@ func (o *EventsObserver) SequenceReset(reason string) {
 func (o *EventsObserver) ReceiveLoopExited() {
 	o.m.EventReceiveLoopExitsTotal.Inc()
 }
+
+// EventDropped mirrors WatchEventsObserver.NotificationDropped. reason is
+// bounded by the events package, so it is safe as a label.
+func (o *EventsObserver) EventDropped(reason string) {
+	o.m.EventEventsDroppedTotal.WithLabelValues(reason).Inc()
+}

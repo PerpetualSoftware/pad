@@ -141,6 +141,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// internal/watchevents.
 	var ch chan watchevents.Notification
 	var missed []watchevents.Notification
+	var gaps <-chan struct{}
 	var lastID int64
 	// unreadableCursor mirrors the activity stream's rule (BUG-2731): sending
 	// this header at all means the client believes it has a position, so a
@@ -151,7 +152,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
 		if parsed, perr := strconv.ParseInt(lastIDStr, 10, 64); perr == nil && parsed > 0 {
 			lastID = parsed
-			ch, missed = s.watchEvents.SubscribeAndReplaySince(lastID)
+			ch, missed, gaps = s.watchEvents.SubscribeAndReplaySince(lastID)
 		} else {
 			unreadableCursor = true
 			slog.Info("watch-events: resume carried an unreadable Last-Event-ID, sending sync_required",
@@ -160,7 +161,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if ch == nil {
-		ch = s.watchEvents.Subscribe()
+		ch, gaps = s.watchEvents.Subscribe()
 	}
 	defer s.watchEvents.Unsubscribe(ch)
 
@@ -293,6 +294,24 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		revalC = *ch
 	}
 
+	// Same per-connection bound as the activity stream — see gapAnnouncer.
+	gapAnn := newGapAnnouncer(s.gapCooldown())
+	defer gapAnn.stop()
+
+	announceGap := func() bool {
+		slog.Info("watch-events: live subscriber missed notifications, sending sync_required mid-stream",
+			"user_id", user.ID)
+		s.countMidStreamResync(false)
+		if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
+			"reason": "This stream missed notifications it cannot replay. Full sync required.",
+		}); err != nil {
+			slog.Debug("watch-events: mid-stream sync_required write failed, closing", "user_id", user.ID, "error", err)
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
 	ctx := r.Context()
 	for {
 		select {
@@ -311,6 +330,58 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			flusher.Flush()
+
+		case <-gaps:
+			// THIS STREAM HAS A HOLE (BUG-2730). Either this instance failed
+			// to hand this connection a notification (its channel was full),
+			// or this instance discovered a gap in what it received from
+			// Redis — a pub/sub reconnect, a dropped message, an id-space
+			// reset — which every subscriber here shares.
+			//
+			// Raising knownFrom already made a RECONNECT across such a hole
+			// honest. A client holding the stream OPEN across it was told
+			// nothing: it stayed connected, kept receiving everything after
+			// the gap, and silently never saw what went missing, while this
+			// process had logged the exact id range. The one consumer that
+			// could act on it was the one consumer not informed.
+			//
+			// sync_required, mid-stream, is the answer for the same reason
+			// the resume path uses it: the pad CLI already clears its cursor
+			// on it (cmd/pad/cmd_watch.go) and any other consumer treats it
+			// as "stop trusting your position", which is exactly true here.
+			// The empty `id:` retires the cursor, so a generic SSE client
+			// does not go on resending a position we have just said we
+			// cannot vouch for.
+			//
+			// Rate-limited per connection with nothing dropped — a gap inside
+			// the window is latched, not discarded. See gapAnnouncer.
+			// ORDERING AGAINST QUEUED EVENTS IS DELIBERATELY NOT GUARANTEED.
+			// This and the event channel are two arms of one select, so with
+			// both ready Go picks at random: a client can receive
+			// sync_required and then events that were queued BEFORE the hole,
+			// whose IDs re-establish the cursor this frame just retired, at a
+			// position below the hole.
+			//
+			// That is bounded and self-correcting — the client was told to
+			// reconcile, and a later reconnect from a below-the-hole cursor
+			// is refused by the coverage check and told again. A barrier that
+			// held the announcement until the pre-hole events had drained was
+			// built and REMOVED: every version of it could defer the
+			// announcement indefinitely under a producer that refills faster
+			// than a slow client drains, and an unbounded silence is a worse
+			// failure than a redundant resync. Documented in
+			// docs/deployment.md rather than left for a reader to discover.
+			if !gapAnn.observe() {
+				continue
+			}
+			if !announceGap() {
+				return
+			}
+
+		case <-gapAnn.cool():
+			if gapAnn.flush() && !announceGap() {
+				return
+			}
 
 		case <-keepalive.C:
 			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {

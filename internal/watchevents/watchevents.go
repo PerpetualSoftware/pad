@@ -219,19 +219,31 @@ type Bus interface {
 	// per-caller filtering happens in the consumer, not the bus, per
 	// DR-2. Use this for a fresh (non-resuming) connection; use
 	// SubscribeAndReplaySince for a Last-Event-ID resume.
-	Subscribe() chan Notification
+	//
+	// The second return is this subscriber's GAP SIGNAL (BUG-2730): a
+	// capacity-1, coalescing channel raised whenever this instance fails to
+	// deliver a notification TO THIS SUBSCRIBER (a full channel) or discovers
+	// a hole in what it received from Redis, which every live subscriber
+	// shares. It is how a held-open stream learns it has missed something;
+	// the SSE handler answers with sync_required mid-stream. Never closed —
+	// the notification channel closing is the end-of-life signal, and a
+	// closed gap channel would make a consumer's select spin.
+	Subscribe() (chan Notification, <-chan struct{})
 	// SubscribeAndReplaySince atomically subscribes AND captures every
 	// buffered notification with ID > sinceID, under the SAME lock
 	// (codex round 1 finding 3). Subscribing and reading the replay
 	// buffer as two separate calls leaves a window where a Notification
 	// published in between lands in BOTH the replay set and the live
 	// channel — this closes that window structurally rather than
-	// requiring the consumer to dedupe by ID. Returns (ch, nil) if
-	// sinceID has been evicted from the buffer (gap too large — caller
-	// should treat this like the SSE handler's sync_required signal);
-	// the subscription is still valid in that case, only the replay is
-	// unavailable.
-	SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification)
+	// requiring the consumer to dedupe by ID.
+	//
+	// The replay is nil when this instance cannot vouch for the span —
+	// eviction, a recorded hole, a cold start, or an id space this instance
+	// cannot compare against. The caller turns that into sync_required; the
+	// subscription is still valid, only the replay is unavailable.
+	//
+	// The third return is the subscriber's GAP SIGNAL — see Subscribe.
+	SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{})
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Notification)
 	// EventsSince returns buffered notifications with ID > sinceID, for
@@ -293,9 +305,11 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 	// AN EMPTY BUFFER CANNOT PROVE A CLIENT IS CURRENT (BUG-2731, found by a
 	// cross-artifact pass on that unit's branch). This buffer returning a
 	// non-nil empty slice reads as "caught up" to both SSE handlers, and
-	// MemoryBus assigns its own ids from 1 on every process start — so a
+	// MemoryBus assigned its own ids from 1 on every process start — so a
 	// client resuming with a cursor from a previous incarnation was told it
-	// had missed nothing.
+	// had missed nothing. (Since BUG-2736 it counts from an incarnation base
+	// instead, which makes that cursor recognisable; this rule is what caught
+	// it before there was a base, and still covers eviction.)
 	//
 	// RedisBus never had this: replaySince applies the same rule through
 	// knownFrom before delegating here. MemoryBus reached this function
@@ -364,7 +378,7 @@ type MemoryBus struct {
 	observable
 
 	mu          sync.Mutex
-	subscribers map[chan Notification]struct{}
+	subscribers map[chan Notification]*subscriber
 	// seq counts up from base, which identifies THIS incarnation of the
 	// counter (BUG-2736). The asymmetry with this package's RedisBus — a
 	// numeric base here, an opaque epoch key there — is deliberate; see
@@ -390,7 +404,7 @@ func New() *MemoryBus {
 // capacity (tests use a small one).
 func NewWithReplaySize(size int) *MemoryBus {
 	return &MemoryBus{
-		subscribers: make(map[chan Notification]struct{}),
+		subscribers: make(map[chan Notification]*subscriber),
 		replay:      newReplayBuffer(size),
 		base:        idspace.New(),
 	}
@@ -452,10 +466,15 @@ func (b *MemoryBus) Publish(n Notification) error {
 	n.ID = b.base + b.seq
 	b.replay.append(n)
 
-	for ch := range b.subscribers {
+	for _, sub := range b.subscribers {
 		select {
-		case ch <- n:
+		case sub.ch <- n:
 		default:
+			// ANNOUNCED TO THIS SUBSCRIBER (BUG-2730) so the connection that
+			// lost the notification finds out, instead of the process
+			// knowing and the one consumer whose correctness depends on it
+			// not.
+			sub.signalGap()
 			// A drop for SLOWNESS is not a Publish failure: the bus
 			// accepted the notification and fanned it out, and one
 			// subscriber's full buffer says nothing about the others.
@@ -469,10 +488,58 @@ func (b *MemoryBus) Publish(n Notification) error {
 	return nil
 }
 
-func (b *MemoryBus) Subscribe() chan Notification {
+// subscriber is one live consumer: its notification channel and the gap
+// signal that tells it, and only it, that this instance failed to deliver
+// something (BUG-2730).
+type subscriber struct {
+	ch chan Notification
+
+	// gaps has capacity 1 and is written with a non-blocking send, so it
+	// COALESCES: many misses between two reads raise it once. That is the
+	// load bound — the signal's rate is the consumer's read rate, never the
+	// miss rate, which matters because for a slow-subscriber drop the
+	// consumer we are signalling is by definition one that could not keep up.
+	//
+	// Never closed. Unsubscribe/Close retire ch, and a consumer selecting on
+	// a closed gaps channel would spin at full speed until it noticed.
+	gaps chan struct{}
+}
+
+// signalGap raises this subscriber's gap flag without blocking. Safe to call
+// with the bus lock held: the send can never block.//
+// INVARIANT FOR ANYONE ADDING A THIRD CAUSE: every cause that reaches this
+// channel must have the SAME remediation — "your position is untrustworthy,
+// reconcile". The channel carries no payload, and that is the enforcement
+// rather than an oversight: a distinction it cannot represent cannot be
+// silently lost downstream, because it cannot be put in. Coalescing makes the
+// same point from the other side — two causes arriving between two reads
+// become one signal, so any per-cause handling would already be undecidable.
+//
+// A condition needing different handling, different telemetry, or precedence
+// over another does NOT belong here. Give it its own seam, or the first
+// maintainer to need the distinction will discover it was thrown away.
+func (s *subscriber) signalGap() {
+	select {
+	case s.gaps <- struct{}{}:
+	default:
+	}
+}
+
+// newSubscriber builds a subscriber with BOTH channels, so no path can
+// register one whose gaps channel is nil — a nil channel silently swallows
+// every signal through the default arm.
+func newSubscriber() *subscriber {
+	return &subscriber{
+		ch:   make(chan Notification, 64),
+		gaps: make(chan struct{}, 1),
+	}
+}
+
+func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ch := make(chan Notification, 64)
+	sub := newSubscriber()
+	ch := sub.ch
 	if b.closed {
 		// Subscribing after Close used to register a channel that nobody
 		// would ever close, so a consumer ranging over it blocked forever —
@@ -481,10 +548,10 @@ func (b *MemoryBus) Subscribe() chan Notification {
 		// start and the two implementations must not differ in a way a
 		// consumer can feel (codex round 2 on BUG-2651).
 		close(ch)
-		return ch
+		return ch, sub.gaps
 	}
-	b.subscribers[ch] = struct{}{}
-	return ch
+	b.subscribers[ch] = sub
+	return ch, sub.gaps
 }
 
 // SubscribeAndReplaySince — see the Bus interface doc comment for why
@@ -493,7 +560,7 @@ func (b *MemoryBus) Subscribe() chan Notification {
 // means a Notification is either: published before this call (and thus
 // only in the returned replay slice), or published after (and thus only
 // delivered on the returned channel) — never both.
-func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification) {
+func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
 	// Reported with the lock released, like every other report in this
 	// package. RedisBus counts its own unservable resumes; MemoryBus did not,
 	// so pad_watchevents_resume_gaps_total read zero on a single-process
@@ -505,18 +572,19 @@ func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, [
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ch := make(chan Notification, 64)
+	sub := newSubscriber()
+	ch := sub.ch
 	if b.closed {
 		// Same post-Close guard as Subscribe.
 		close(ch)
-		return ch, nil
+		return ch, nil, sub.gaps
 	}
-	b.subscribers[ch] = struct{}{}
+	b.subscribers[ch] = sub
 	missed := b.replaySinceLocked(sinceID)
 	if missed == nil {
 		pending.resumeGap()
 	}
-	return ch, missed
+	return ch, missed, sub.gaps
 }
 
 func (b *MemoryBus) Unsubscribe(ch chan Notification) {

@@ -66,16 +66,20 @@ type Server struct {
 	ipChangeEnforceStrict bool                 // when true, revoke+reject sessions whose client IP OR User-Agent hash differs from the one recorded at session creation
 	sseMaxConnections     int                  // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace    int                  // per-workspace SSE connection limit (0 = unlimited)
-	sseMaxPerUser         int                  // per-user SSE connection limit across BOTH stream endpoints (0 = unlimited, BUG-2726)
-	streamAdmit           *streamAdmission     // shared admission gate for both stream endpoints (BUG-2726)
-	cloudMode             bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
-	cloudSecrets          []string             // shared secrets for sidecar ↔ pad communication (supports rotation)
-	cloudSidecar          CloudSidecar         // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
-	billingAvailable      bool                 // true when PAD_BILLING_AVAILABLE=true — gates Stripe Checkout CTAs in the web UI (TASK-800)
-	version               string               // release version (e.g. "dev", "1.2.3")
-	commit                string               // git commit hash
-	buildTime             string               // build timestamp
-	twoFAChallengeSecret  []byte               // HMAC key for 2FA challenge tokens
+	// midStreamGapCooldownOverride shortens the mid-stream gap rate limit.
+	// Zero (production) means midStreamGapCooldown. Tests only; set before
+	// serving, read per connection.
+	midStreamGapCooldownOverride time.Duration
+	sseMaxPerUser                int              // per-user SSE connection limit across BOTH stream endpoints (0 = unlimited, BUG-2726)
+	streamAdmit                  *streamAdmission // shared admission gate for both stream endpoints (BUG-2726)
+	cloudMode                    bool             // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
+	cloudSecrets                 []string         // shared secrets for sidecar ↔ pad communication (supports rotation)
+	cloudSidecar                 CloudSidecar     // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
+	billingAvailable             bool             // true when PAD_BILLING_AVAILABLE=true — gates Stripe Checkout CTAs in the web UI (TASK-800)
+	version                      string           // release version (e.g. "dev", "1.2.3")
+	commit                       string           // git commit hash
+	buildTime                    string           // build timestamp
+	twoFAChallengeSecret         []byte           // HMAC key for 2FA challenge tokens
 
 	// Attachments storage. Wired via SetAttachments at startup; nil-checked
 	// by handlers so a server constructed for a test that doesn't need
@@ -960,6 +964,25 @@ func (s *Server) countResumeGap(activity bool) {
 		return
 	}
 	s.metrics.WatchResumeGapsTotal.Inc()
+}
+
+// countMidStreamResync records a client told MID-STREAM that it missed
+// events, on a connection that stayed open (BUG-2730).
+//
+// Deliberately NOT countResumeGap: that counter's population is resumes this
+// instance could not serve, and existing alerts are written against it.
+// Widening it in place would have changed what those alerts measure without
+// changing their name, and a mixed-version fleet would report two populations
+// under one metric for the length of a rollout.
+func (s *Server) countMidStreamResync(activity bool) {
+	if s.metrics == nil {
+		return
+	}
+	if activity {
+		s.metrics.EventMidstreamResyncsTotal.Inc()
+		return
+	}
+	s.metrics.WatchMidstreamResyncsTotal.Inc()
 }
 
 // SetMetrics attaches Prometheus metrics to the server.

@@ -33,7 +33,7 @@ func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	ch := b.Subscribe("ws-1")
+	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
@@ -68,20 +68,20 @@ func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 func TestRedisBusSubscriptionAccounting(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	first, ok := b.SubscribeIfAllowed("ws-1", 2)
+	first, _, ok := b.SubscribeIfAllowed("ws-1", 2)
 	if !ok {
 		t.Fatal("the first subscriber must be admitted")
 	}
-	second, ok := b.SubscribeIfAllowed("ws-1", 2)
+	second, _, ok := b.SubscribeIfAllowed("ws-1", 2)
 	if !ok {
 		t.Fatal("the second subscriber must be admitted")
 	}
-	if _, ok := b.SubscribeIfAllowed("ws-1", 2); ok {
+	if _, _, ok := b.SubscribeIfAllowed("ws-1", 2); ok {
 		t.Fatal("the third subscriber must be refused at a limit of 2")
 	}
 
 	// A different workspace is accounted separately.
-	other, ok := b.SubscribeIfAllowed("ws-2", 2)
+	other, _, ok := b.SubscribeIfAllowed("ws-2", 2)
 	if !ok {
 		t.Fatal("a different workspace must have its own budget")
 	}
@@ -100,7 +100,7 @@ func TestRedisBusSubscriptionAccounting(t *testing.T) {
 	if got := b.WorkspaceSubscriberCount("ws-1"); got != 1 {
 		t.Fatalf("after one unsubscribe, WorkspaceSubscriberCount(ws-1) = %d, want 1", got)
 	}
-	third, ok := b.SubscribeIfAllowed("ws-1", 2)
+	third, _, ok := b.SubscribeIfAllowed("ws-1", 2)
 	if !ok {
 		t.Fatal("the freed slot must be reusable")
 	}
@@ -124,8 +124,8 @@ func TestClosingALiveRedisBusReleasesEverything(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	one := b.Subscribe("ws-1")
-	two := b.Subscribe("ws-2")
+	one, _ := b.Subscribe("ws-1")
+	two, _ := b.Subscribe("ws-2")
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 	waitForSubscribers(t, mr, "pad:events:ws-2", true)
 
