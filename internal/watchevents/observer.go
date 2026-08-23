@@ -55,10 +55,10 @@ type Observer interface {
 	NotificationDropped(reason string)
 
 	// SequenceGap reports that the received id sequence skipped forward:
-	// this instance missed `missing` notifications. Resumes across the gap
-	// are answered with sync_required (see fanOutLocally); subscribers
-	// holding a stream open across it are told nothing, which is BUG-2730
-	// and not this seam's job to fix.
+	// this instance missed `missing` notifications. Both kinds of client are
+	// told (see fanOutLocally): a resume across the gap is answered with
+	// sync_required, and since BUG-2730 every subscriber holding a stream
+	// open across it is signalled and gets the same answer mid-stream.
 	SequenceGap(missing int64)
 
 	// ResumeGap reports that a RESUME could not be served from this

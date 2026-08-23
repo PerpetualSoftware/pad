@@ -8,8 +8,10 @@ import (
 
 // InstrumentedBus wraps an events.EventBus to record Prometheus metrics
 // for SSE connections (per workspace) and event publish counts.
-// It implements the events.EventBus interface so it can be used as a
-// drop-in replacement without changing the interface or its implementations.
+// It implements the events.EventBus interface so it can be used as a drop-in
+// replacement anywhere one is wired. Being a drop-in does NOT mean the
+// interface is frozen: this type tracks it, and every method that grew a
+// return value (BUG-2730's gap channel among them) grew one here too.
 type InstrumentedBus struct {
 	inner   events.EventBus
 	metrics *Metrics

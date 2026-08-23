@@ -235,11 +235,14 @@ type Bus interface {
 	// buffer as two separate calls leaves a window where a Notification
 	// published in between lands in BOTH the replay set and the live
 	// channel — this closes that window structurally rather than
-	// requiring the consumer to dedupe by ID. Returns (ch, nil) if
-	// sinceID has been evicted from the buffer (gap too large — caller
-	// should treat this like the SSE handler's sync_required signal);
-	// the subscription is still valid in that case, only the replay is
-	// unavailable.
+	// requiring the consumer to dedupe by ID.
+	//
+	// The replay is nil when this instance cannot vouch for the span —
+	// eviction, a recorded hole, a cold start, or an id space this instance
+	// cannot compare against. The caller turns that into sync_required; the
+	// subscription is still valid, only the replay is unavailable.
+	//
+	// The third return is the subscriber's GAP SIGNAL — see Subscribe.
 	SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{})
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Notification)
@@ -302,9 +305,11 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 	// AN EMPTY BUFFER CANNOT PROVE A CLIENT IS CURRENT (BUG-2731, found by a
 	// cross-artifact pass on that unit's branch). This buffer returning a
 	// non-nil empty slice reads as "caught up" to both SSE handlers, and
-	// MemoryBus assigns its own ids from 1 on every process start — so a
+	// MemoryBus assigned its own ids from 1 on every process start — so a
 	// client resuming with a cursor from a previous incarnation was told it
-	// had missed nothing.
+	// had missed nothing. (Since BUG-2736 it counts from an incarnation base
+	// instead, which makes that cursor recognisable; this rule is what caught
+	// it before there was a base, and still covers eviction.)
 	//
 	// RedisBus never had this: replaySince applies the same rule through
 	// knownFrom before delegating here. MemoryBus reached this function

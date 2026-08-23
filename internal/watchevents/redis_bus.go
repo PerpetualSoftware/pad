@@ -462,9 +462,12 @@ func (b *RedisBus) Subscribe() (chan Notification, <-chan struct{}) {
 // argument MemoryBus makes, one layer further out, with fan-out standing in
 // for Publish because that is where delivery happens here.
 //
-// Returns (ch, nil) when sinceID has been evicted; the subscription is valid,
-// only the replay is unavailable, and the caller should treat it like the SSE
-// handler's sync_required signal.
+// The replay is nil whenever this instance cannot vouch for the span —
+// eviction, a recorded hole, a cold start, or a resume that outruns the local
+// view. The subscription is valid either way; only the replay is unavailable,
+// and the caller turns that into sync_required.
+//
+// The third return is the subscriber's GAP SIGNAL — see Subscribe.
 func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
 	// Consulted BEFORE the lock: it sleeps and does network I/O. See its
 	// comment for why that ordering is also the only one that preserves the

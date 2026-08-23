@@ -158,9 +158,12 @@ type EventBus interface {
 	// to count against.
 	//
 	// The second return is this subscriber's GAP SIGNAL (BUG-2730): a
-	// capacity-1, coalescing channel that is raised whenever the bus fails to
-	// deliver an event TO THIS SUBSCRIBER — today, a full channel at fan-out
-	// time. Reading it is how a held-open stream learns it has a hole; the
+	// capacity-1, coalescing channel raised whenever this instance may have
+	// under-delivered to this subscriber. Two scopes reach it — a full
+	// channel at fan-out time, which is about this ONE connection; and a loss
+	// of this instance's coverage of the workspace (a pub/sub flap, an
+	// undecodable message, an ID-space reset), which every subscriber of that
+	// workspace shares. Reading it is how a held-open stream learns it has a hole; the
 	// SSE handler answers by emitting sync_required mid-stream. It is never
 	// closed, so a consumer may select on it for the subscription's whole
 	// life without the select spinning once the subscription ends; the event

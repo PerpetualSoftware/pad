@@ -53,8 +53,14 @@ func init() {
 // could not parse. pad_event_resume_gaps_total counts them; the bus decides
 // most, and from here they are one answer.
 //
-// NOT an ID-space reset: detecting a restarted Redis counter needs identity
-// the replay buffer does not carry, so that case is still silent. BUG-2736.
+// An ID-space reset reaches the same answer since BUG-2736: the Redis bus
+// carries a generation, so a restarted counter is detected and every buffer
+// dropped. What stays silent is narrower — a phase-1 publisher, whose messages
+// carry no generation at all.
+//
+// Since BUG-2730 a client can also be told sync_required MID-STREAM, on a
+// connection that never reconnected. That population is separate:
+// pad_event_midstream_resyncs_total, not the counter named above.
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// SSE requires the event bus
 	if s.events == nil {
