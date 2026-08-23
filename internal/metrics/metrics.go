@@ -134,12 +134,13 @@ type Metrics struct {
 	// the drop honest — the affected subscriber is now told mid-stream.
 	//
 	// Read it alongside pad_event_midstream_resyncs_total, but NOT as a
-	// one-to-one correspondence: the gap channel coalesces and the handler
-	// rate-limits, so a burst of drops on one connection produces a single
-	// announcement. Expect drops >= announcements, and treat a large ratio as
-	// what it is — one client falling a long way behind, not many clients
-	// affected. It does NOT move pad_event_resume_gaps_total, which stayed
-	// resume-only so existing alerts keep their meaning.
+	// one-to-one correspondence, in either direction: the gap channel
+	// coalesces and the handler rate-limits, so a burst of drops on one
+	// connection produces a single announcement; and coverage losses produce
+	// announcements with no drop at all. A large drop-to-announcement ratio
+	// is one client falling a long way behind, not many clients affected. It
+	// does NOT move pad_event_resume_gaps_total, which stayed resume-only so
+	// existing alerts keep their meaning.
 	EventEventsDroppedTotal *prometheus.CounterVec
 
 	// EventMidstreamResyncsTotal and WatchMidstreamResyncsTotal count clients
@@ -154,10 +155,14 @@ type Metrics struct {
 	// Counts ANNOUNCEMENTS MADE, which is close to clients told but not
 	// identical, and the difference matters when reading it:
 	//
-	//   - one instance-wide coverage loss moves this once per live
-	//     subscriber, while pad_*_sequence_resets_total moves once. That
-	//     ratio is the fan-out, and it is the number to look at when deciding
-	//     whether a resync storm is underway.
+	//   - a reset that drops buffers moves this once per live subscriber,
+	//     while pad_*_sequence_resets_total moves once. That ratio is the
+	//     fan-out, and it is the number to look at when deciding whether a
+	//     resync storm is underway.
+	//   - a coverage loss on a workspace with NO buffer yet announces while
+	//     moving no cause counter at all, deliberately: there was no coverage
+	//     to end, but the subscribers still have a hole. So this counter can
+	//     move with every cause counter flat.
 	//   - a burst of drops on ONE connection moves this once, not once per
 	//     drop: the gap channel coalesces and the handler rate-limits.
 	//   - the same connection can be counted repeatedly over its life, once
@@ -441,17 +446,17 @@ func New() *Metrics {
 
 	eventMidstreamResyncsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_midstream_resyncs_total",
-		Help: "Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open (BUG-2730). Counts clients told, not causes — one instance-wide coverage loss tells every subscriber and increments this once per subscriber, while pad_event_sequence_resets_total counts it once. New in BUG-2730; a fresh counter rather than folding into pad_event_resume_gaps_total, so alerts on that one keep their meaning.",
+		Help: "Activity-stream announcements made to a subscriber MID-STREAM, on a connection that stayed open (BUG-2730). Counts announcements, not causes and not distinct clients. A reset that drops buffers moves this once per live subscriber while pad_event_sequence_resets_total moves once, so that ratio is the fan-out; a coverage loss on a workspace with no buffer yet announces while moving NO cause counter, because there was no coverage to end; and a burst of drops on one connection announces once, because signals coalesce and are rate-limited. A fresh counter rather than folding into pad_event_resume_gaps_total, so alerts on that one keep their meaning.",
 	})
 
 	watchMidstreamResyncsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_watchevents_midstream_resyncs_total",
-		Help: "Watch-stream subscribers told MID-STREAM that they missed notifications, on a connection that stayed open (BUG-2730). Counts clients told, not causes. See pad_event_midstream_resyncs_total.",
+		Help: "Watch-stream announcements made to a subscriber MID-STREAM, on a connection that stayed open (BUG-2730). Counts announcements, not causes and not distinct clients. Its causes are a slow-subscriber drop (pad_watchevents_notifications_dropped_total) and a received sequence gap or reset (pad_watchevents_sequence_gaps_total, pad_watchevents_sequence_resets_total) — a gap announces to EVERY subscriber, so this can exceed all of them.",
 	})
 
 	eventEventsDroppedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_events_dropped_total",
-		Help: "Activity events not delivered to a live subscriber, by reason: slow_subscriber (that connection's 64-deep channel was full). Per-subscriber, not per-event. Since BUG-2730 a drop also tells that subscriber, so expect pad_event_midstream_resyncs_total to rise with it — but not one-for-one: signals coalesce and are rate-limited per connection, so drops >= announcements. It does NOT move pad_event_resume_gaps_total, which stayed resume-only.",
+		Help: "Activity events not delivered to a live subscriber, by reason: slow_subscriber (that connection's 64-deep channel was full). Per-subscriber, not per-event. Since BUG-2730 a drop also tells that subscriber, so expect pad_event_midstream_resyncs_total to rise with it — but not one-for-one, and not exclusively: signals coalesce and are rate-limited per connection, so drops exceed the announcements THIS cause produces, while coverage losses add announcements with no drop at all. It does NOT move pad_event_resume_gaps_total, which stayed resume-only.",
 	}, []string{"reason"})
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
