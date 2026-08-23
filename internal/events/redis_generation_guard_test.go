@@ -213,10 +213,21 @@ func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
 	}{
 		{"sequence starting at 1", func(t *testing.T, b *RedisBus) {
 			ctx := context.Background()
-			// A fresh id space: the seq key gone takes the id == 1 branch,
-			// which rotates unconditionally.
-			if err := b.client.Del(ctx, seqKey, epochKey).Err(); err != nil {
-				t.Fatalf("clear seq and epoch: %v", err)
+			// A fresh id space takes the id == 1 branch, which rotates
+			// unconditionally.
+			//
+			// THE EPOCH IS LEFT IN PLACE AND VALID, which is what ISOLATES
+			// this branch (codex round 3). Clearing it too — the obvious
+			// setup — lets the absent-epoch branch fire instead and produce
+			// an identical result, so the case passed with the id == 1 body
+			// deleted entirely. A stale epoch surviving a restarted sequence
+			// is also the real-world shape: the seq key is what gets evicted,
+			// and the epoch is what is left pointing at the abandoned space.
+			if err := b.client.Del(ctx, seqKey).Err(); err != nil {
+				t.Fatalf("clear the sequence: %v", err)
+			}
+			if got, err := b.client.Get(ctx, epochKey).Result(); err != nil || got == "" {
+				t.Fatalf("fixture: this case needs a live epoch to isolate the branch, got %q (err %v)", got, err)
 			}
 		}},
 		{"absent epoch on a live sequence", func(t *testing.T, b *RedisBus) {

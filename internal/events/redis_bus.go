@@ -275,11 +275,18 @@ local function next_gen()
     -- never merges two id spaces.
     --
     -- The stronger repair would be max(seed, current_epoch + 1), since the
-    -- epoch key is a second witness to the generation in use. It only helps
-    -- where that key is readable — not in the branch that fires BECAUSE the
-    -- epoch is corrupted — so it buys partial monotonicity, which is harder
-    -- to reason about than a bounded, detected residual. Raised with the lead
-    -- rather than taken unilaterally: the seed value is a ruling.
+    -- epoch key is a second witness to the generation in use. RULED AGAINST
+    -- (lead, day-55), and the deciding reason is not that it is partial: a
+    -- repair path that reads a NEIGHBOURING shared key to compute its seed
+    -- takes a dependency on that neighbour's health in exactly the state
+    -- where neighbours are suspect. It would be load-bearing on the thing
+    -- that just failed. It also only helps where the epoch is readable, which
+    -- excludes the branch that fires BECAUSE the epoch is corrupted.
+    --
+    -- The residual is accepted as inside the ruling's intent — orderability
+    -- without coordination — because it is bounded to one resync round,
+    -- detected rather than silent, and never merges two id spaces. Reversible
+    -- in one line if that judgement changes.
     redis.call('SET', KEYS[5], ARGV[3])
     return ARGV[3]
   end
@@ -346,6 +353,12 @@ if not epoch or not string.match(epoch, '^[1-9][0-9]*$') or #epoch > 18 then
   redis.call('SET', KEYS[3], g)
   epoch = g
 end
+-- NOTE (BUG-2744): 'id' is a Lua NUMBER here, so this concatenation has the
+-- same %.14g precision hazard next_gen avoids by reading its value back. Not
+-- fixed with it: id is also this script's return value and is compared
+-- numerically on the Go side, so the remedy has a design question attached.
+-- Reachable by corruption rather than by counting — a hand-edited or collided
+-- event_seq ARRIVES at that magnitude the same way the generation key does.
 redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id .. '|' .. ARGV[1])
 redis.call('SET', KEYS[4], '1', 'EX', ARGV[2])
 return id
