@@ -199,6 +199,14 @@ func TestAReconnectOnAnIdleWorkspaceIsNotAReset(t *testing.T) {
 	// Positive control in the same test, so a bus that never reports anything
 	// at all cannot pass: once something IS buffered, the next reconnect does
 	// report.
+	// The reconnect above re-subscribed, and a publish that beats the
+	// REPLACEMENT registration is lost outright rather than delayed
+	// (BUG-2742). Today the 2s poll before this line happens to leave enough
+	// room, which is safety by accident: the poll exists to prove a reset was
+	// NOT reported and would exit early the moment that changed, taking the
+	// margin with it. Waiting explicitly costs milliseconds and does not
+	// depend on the loop above keeping its current shape.
+	waitForSubscribers(t, mr, "pad:events:ws-idle", true)
 	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-idle"})
 	drain(t, ch, 1)
 	cutter.cut()

@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -730,6 +731,36 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 	incoming := ps.Channel()
 
 	const n = 300
+
+	// THE READER STARTS FIRST, and that is not a stylistic choice (BUG-2742).
+	// ps.Channel() is bounded — go-redis buffers ~100 — so publishing all n
+	// before anything drains makes the arrival COUNT a function of how much
+	// CPU the reader gets, which is the exact defect that reddened CI four
+	// times in this package's sibling test. Draining concurrently keeps the
+	// buffer from ever being the constraint, so the assertion below is about
+	// ordering rather than about runner speed.
+	//
+	// One reader, so the order it records IS arrival order.
+	ids := make([]int64, 0, n)
+	collected := make(chan error, 1)
+	go func() {
+		for len(ids) < n {
+			select {
+			case msg := <-incoming:
+				_, ev, err := decodePayload(msg.Payload)
+				if err != nil {
+					collected <- fmt.Errorf("message %d: %w", len(ids), err)
+					return
+				}
+				ids = append(ids, ev.ID)
+			case <-time.After(30 * time.Second):
+				collected <- fmt.Errorf("only %d of %d messages arrived", len(ids), n)
+				return
+			}
+		}
+		collected <- nil
+	}()
+
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -740,21 +771,16 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 	}
 	wg.Wait()
 
+	if err := <-collected; err != nil {
+		t.Fatal(err)
+	}
+
 	var prev int64
-	for i := 0; i < n; i++ {
-		select {
-		case msg := <-incoming:
-			_, ev, err := decodePayload(msg.Payload)
-			if err != nil {
-				t.Fatalf("message %d: %v", i, err)
-			}
-			if ev.ID <= prev {
-				t.Fatalf("message %d arrived out of ID order: %d after %d — publish order must equal ID order", i, ev.ID, prev)
-			}
-			prev = ev.ID
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d of %d messages arrived", i, n)
+	for i, id := range ids {
+		if id <= prev {
+			t.Fatalf("message %d arrived out of ID order: %d after %d — publish order must equal ID order", i, id, prev)
 		}
+		prev = id
 	}
 	// PREMISE: all n really were published, so the ordering assertion ran over
 	// the whole set rather than over a handful that happened to be ordered.
