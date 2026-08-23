@@ -217,6 +217,44 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 	if refused != nil {
 		t.Fatalf("after a resubscription the buffer must not vouch for the outage, got %d notifications", len(refused))
 	}
+
+	// THE LOCAL VIEW, ASSERTED SEPARATELY, and this leg is not redundant with
+	// the one above (CONVE-12). SubscribeAndReplaySince consults the shared
+	// counter first (resumeOutrunsLocalView), and that check refuses this
+	// cursor on its own once lastAppendedID is back to 0 — so the refusal
+	// above passes even if dropCoverage leaves knownFrom stale, rescued by a
+	// mechanism that has nothing to do with the fix. Verified by mutation: a
+	// dropCoverage that skips `knownFrom = 0` survives every assertion in
+	// this file except this one.
+	//
+	// EventsSince is the discriminating instrument because it answers from
+	// LOCAL state only and deliberately skips the authority check. With
+	// knownFrom stale it walks past the coverage guard into an emptied buffer
+	// and returns an empty-but-non-nil slice — which the SSE handler reads as
+	// "caught up", the exact lie this bug is about. It also matters in
+	// production, not only under mutation: the authority check answers false
+	// when the Redis read FAILS, which is precisely when a flap is happening.
+	if local := b.EventsSince(first.ID); local != nil {
+		t.Fatalf("this instance must not vouch for that span from local state alone, got %d notifications — "+
+			"dropCoverage must set knownFrom = 0, not merely empty the buffer", len(local))
+	}
+
+	// AND A SUBSCRIBER ARRIVING WITH NO CURSOR IS NOT HANDED THE PRE-OUTAGE
+	// BUFFER. sinceID == 0 means "everything you have buffered", and it does
+	// NOT go through the coverage guard — replaySince short-circuits it — so
+	// a dropCoverage that clears the bookkeeping without emptying the buffer
+	// replays the pre-flap notifications to a client that then believes it is
+	// caught up at the newest of them. It is not: the ids lost in the flap sit
+	// just above that, nothing later will be non-contiguous (lastAppendedID is
+	// back to 0, so the next notification takes the cold-start arm), and this
+	// subscriber is not in the signalled set because it arrived afterwards.
+	// Silent loss, handed out by us. Verified by mutation: keeping the buffer
+	// survives every other assertion here.
+	freshCh, fresh, _ := b.SubscribeAndReplaySince(0)
+	defer b.Unsubscribe(freshCh)
+	if len(fresh) != 0 {
+		t.Fatalf("a subscriber arriving after the outage must not be handed the pre-outage buffer, got %d notifications", len(fresh))
+	}
 }
 
 // THE PROPERTY THE UNIT EXISTS FOR: the client holding the stream OPEN across
@@ -305,6 +343,28 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 	if refused != nil {
 		t.Fatalf("after an undecodable message the buffer must not vouch for the span, got %d notifications", len(refused))
 	}
+
+	// THE LOCAL VIEW, ASSERTED SEPARATELY, and this leg is not redundant with
+	// the one above (CONVE-12). SubscribeAndReplaySince consults the shared
+	// counter first (resumeOutrunsLocalView), and that check refuses this
+	// cursor on its own once lastAppendedID is back to 0 — so the refusal
+	// above passes even if dropCoverage leaves knownFrom stale, rescued by a
+	// mechanism that has nothing to do with the fix. Verified by mutation: a
+	// dropCoverage that skips `knownFrom = 0` survives every assertion in
+	// this file except this one.
+	//
+	// EventsSince is the discriminating instrument because it answers from
+	// LOCAL state only and deliberately skips the authority check. With
+	// knownFrom stale it walks past the coverage guard into an emptied buffer
+	// and returns an empty-but-non-nil slice — which the SSE handler reads as
+	// "caught up", the exact lie this bug is about. It also matters in
+	// production, not only under mutation: the authority check answers false
+	// when the Redis read FAILS, which is precisely when a flap is happening.
+	if local := b.EventsSince(first.ID); local != nil {
+		t.Fatalf("this instance must not vouch for that span from local state alone, got %d notifications — "+
+			"dropCoverage must set knownFrom = 0, not merely empty the buffer", len(local))
+	}
+
 	if !raised(gaps) {
 		t.Fatal("the subscriber holding the stream open must be told about a message we could not read")
 	}
