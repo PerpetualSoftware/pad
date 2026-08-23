@@ -858,7 +858,15 @@ func (b *RedisBus) receiveMessages() {
 			switch msg := raw.(type) {
 			case *redis.Subscription:
 				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
-					// unsubscribe confirmations, which arrive at Close.
+					// Unsubscribe confirmations. DEFENCE, AND NO TEST FAILS
+					// IF IT IS DELETED — measured, not assumed: this bus
+					// never calls pubsub.Unsubscribe, and at Close the loop
+					// leaves through the ctx.Done() case or the closed
+					// channel rather than reading anything further. Kept
+					// because the alternative is a graceful stop
+					// incrementing an operator's failover counter if either
+					// of those ever changes, and because reading the Kind
+					// is what makes this branch's meaning legible at all.
 					continue
 				}
 				// A RESUBSCRIPTION: the connection dropped and came back, and

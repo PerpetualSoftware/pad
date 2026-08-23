@@ -116,3 +116,72 @@ func labelsMatch(pairs []*dto.LabelPair, want map[string]string) bool {
 	}
 	return true
 }
+
+// TestWatchEventsResetReasonsReachTheMetricWithTheirWireSPELLING covers the
+// two reasons BUG-2739 added, and does it with LITERAL strings rather than
+// the exported constants.
+//
+// That is the whole point of the test and the reason it does not simply
+// extend the table above (codex round 7). Every other assertion in this file
+// derives its expected label from the same constant the code emits, so the
+// pair moves together: rename the constant and the suite stays green while
+// every operator dashboard breaks. A metric label is a WIRE FORMAT with
+// consumers outside this repo, and a wire format is pinned by writing it out.
+//
+// counter_backward is included for the same reason — its spelling was
+// CHANGED on this branch (it was counter_backwards), and nothing in the tree
+// would have noticed either the change or a revert of it.
+func TestWatchEventsResetReasonsReachTheMetricWithTheirWireSpelling(t *testing.T) {
+	t.Parallel()
+
+	m := New()
+	obs := NewWatchEventsObserver(m)
+
+	obs.SequenceReset(watchevents.ResetReasonSubscriptionResumed)
+	obs.SequenceReset(watchevents.ResetReasonUndecodableMessage)
+	obs.SequenceReset(watchevents.ResetReasonUndecodableMessage)
+	obs.SequenceReset(watchevents.ResetReasonCounterBackward)
+	obs.SequenceReset(watchevents.ResetReasonEpochChange)
+
+	// Literal, deliberately. Do not replace these with the constants.
+	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
+		map[string]string{"reason": "subscription_resumed"}, 1)
+	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
+		map[string]string{"reason": "undecodable_message"}, 2)
+	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
+		map[string]string{"reason": "counter_backward"}, 1)
+	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
+		map[string]string{"reason": "epoch_change"}, 1)
+
+	// AND THE SPELLING THAT WAS RETIRED IS NOT ALSO BEING EMITTED. Without
+	// this leg the assertions above pass on an adapter that emits both, which
+	// is what a "compatibility shim" fix for the rename would look like — a
+	// double-counting bus that satisfies old and new dashboards at once.
+	if got := counterValue(t, m, "pad_watchevents_sequence_resets_total",
+		map[string]string{"reason": "counter_backwards"}); got != 0 {
+		t.Fatalf("the retired plural spelling must not be emitted, got %v", got)
+	}
+}
+
+// counterValue reads one labelled counter, answering 0 when the series does
+// not exist — which is the state an absence assertion wants, and which
+// assertCounter cannot express because it fails on a missing series.
+func counterValue(t *testing.T, m *Metrics, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, fam := range families {
+		if fam.GetName() != name {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			if !labelsMatch(metric.GetLabel(), labels) {
+				continue
+			}
+			return metric.GetCounter().GetValue()
+		}
+	}
+	return 0
+}

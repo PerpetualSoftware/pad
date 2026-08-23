@@ -457,3 +457,79 @@ func drainOne(t *testing.T, ch chan Notification) Notification {
 	}
 	return Notification{}
 }
+
+// Close must not look like a resubscription (codex round 7).
+//
+// WHAT THIS DOES AND DOES NOT PIN, because the first version of this comment
+// got it wrong and the mutation said so. It pins the INVARIANT — a graceful
+// stop must not move an operator's failover counter — and that invariant is
+// worth a test whichever mechanism upholds it.
+//
+// It does NOT exercise the Kind filter in receiveMessages. Deleting that
+// filter leaves this test green, because Close cancels b.ctx and the loop
+// takes the ctx.Done() case (or sees the channel closed) rather than
+// processing any unsubscribe confirmation. RedisBus never calls
+// pubsub.Unsubscribe, so in practice nothing reaches that branch: the filter
+// is defence, and is labelled as such where it lives.
+//
+// The assertion is a DIFFERENCE across Close rather than a final total, so a
+// pre-existing reset from earlier in the test cannot mask a new one.
+func TestCloseDoesNotLookLikeAResubscription(t *testing.T) {
+	b, _, _, obs := newCutterBus(t, 64)
+
+	ch, _ := b.Subscribe()
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	drainOne(t, ch)
+
+	before := obs.snapshot().resets[ResetReasonSubscriptionResumed]
+
+	b.Close()
+	// Close returns only after wg.Wait(), so the receive loop has finished by
+	// here and any confirmation it was going to mishandle already went
+	// through. No sleep is needed and none would make this stronger.
+
+	if after := obs.snapshot().resets[ResetReasonSubscriptionResumed]; after != before {
+		t.Fatalf("Close must not report a resubscription: %q went %d -> %d. "+
+			"Closing the PubSub emits unsubscribe confirmations on the same channel as subscribe ones; "+
+			"the Kind filter in receiveMessages is what tells them apart",
+			ResetReasonSubscriptionResumed, before, after)
+	}
+}
+
+// A resubscription with NOTHING in the buffer yet (codex round 7).
+//
+// Every other reconnect test publishes first, so all of them enter
+// dropCoverage with real bookkeeping to clear. An instance that has been up
+// but idle — a fresh replica, or any instance during a quiet period — has
+// lastAppendedID and knownFrom already at 0 and an empty buffer, and its
+// subscribers are exactly the ones a flap can strand, because there is no
+// later notification pending to expose anything.
+//
+// The behaviour under test is that it still REPORTS and still SIGNALS. A
+// dropCoverage guarded by "only if we were covering something" would look
+// like a reasonable optimisation and would silently reintroduce this bug for
+// the quietest instances, which are the ones it hurts most.
+func TestAResubscriptionOnAnIdleBusStillEndsCoverage(t *testing.T) {
+	b, _, cutter, obs := newCutterBus(t, 64)
+
+	ch, gaps := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	// CONTROL: nothing has been published, so nothing has been reported.
+	if got := obs.snapshot(); len(got.resets) != 0 {
+		t.Fatalf("an idle bus must report nothing before the cut, got %v", got.resets)
+	}
+	if raised(gaps) {
+		t.Fatal("an idle bus must not signal a gap before the cut")
+	}
+
+	cutter.cut()
+
+	waitForReset(t, obs, ResetReasonSubscriptionResumed, "a resubscription on an idle bus")
+	if !raised(gaps) {
+		t.Fatal("a subscriber connected across a flap must be told even when the bus had buffered nothing — " +
+			"an empty buffer is not evidence that nothing was missed, it is the absence of evidence either way")
+	}
+}
