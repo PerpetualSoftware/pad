@@ -421,10 +421,21 @@ func TestNoCoverageIsDroppedAtStartup(t *testing.T) {
 	ch, gaps := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
-	// Long enough for a startup confirmation to have arrived on the channel
-	// if the constructor were no longer consuming it. The probe that
-	// established this behaviour saw zero within 1.5s.
-	time.Sleep(500 * time.Millisecond)
+	// ORDERED, NOT TIMED (codex round 16). The first version slept 500ms and
+	// hoped. This publishes and waits for DELIVERY instead, which gives a real
+	// happens-before: the pub/sub channel is FIFO, so a startup confirmation —
+	// if the constructor were no longer consuming it — is queued AHEAD of this
+	// notification and has necessarily been processed by the time the
+	// notification comes out the other end. Receiving it therefore proves the
+	// loop has already had its chance to mishandle the confirmation.
+	//
+	// It also makes the assertions' premise explicit: a subscription that
+	// delivers is a LIVE one, not a dead loop reporting nothing because it
+	// receives nothing.
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	drainOne(t, ch)
 
 	if got := obs.snapshot(); len(got.resets) != 0 {
 		t.Fatalf("a bus that has merely started must not drop coverage, got %v — "+
@@ -433,14 +444,6 @@ func TestNoCoverageIsDroppedAtStartup(t *testing.T) {
 	if raised(gaps) {
 		t.Fatal("a subscriber on a freshly started bus must not be told it missed anything")
 	}
-
-	// And it still works: the premise of the assertions above is a LIVE
-	// subscription, not a dead one that reports nothing because it receives
-	// nothing.
-	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-	drainOne(t, ch)
 }
 
 // drainOne reads one notification or fails.

@@ -1184,9 +1184,12 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 // makes the NEXT notification look contiguous — no arm of fanOutLocally's
 // switch fires, so knownFrom is never re-established, stays 0, and
 // replaySince refuses EVERY resume on this instance from then on. It reads
-// correct and bricks resumes permanently. TestCoverageIsReestablishedByTheNextNotification
-// is what holds this, and it is why the recovery case was written before the
-// refusal case.
+// correct and bricks resumes permanently.
+// TestCoverageIsReestablishedByTheNextNotification is what holds this, and it
+// is why the recovery case was written before the refusal case.
+//
+// highWaterID deliberately SURVIVES, because backward-counter detection needs
+// a mark that a coverage drop does not erase — see its field comment.
 //
 // epochJustChanged is deliberately NOT set: these conditions are a hole in our
 // view of the SAME id space, so the cold-start arm's ordinary knownFrom = n.ID
@@ -1203,47 +1206,13 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 // subscriber on the instance. Ending coverage locally is the record that
 // survives Redis being unreadable, which is the whole point of keeping one.
 //
-// THE COST OF THAT CHOICE, stated rather than glossed: when the outage lost
-// NOTHING — no publish happened while we were away — this discards a buffer
-// that was still complete, and a client reconnecting before the next
-// notification is answered sync_required instead of being replayed. That is
-// the package's standing trade (chatty-but-correct beats quiet-but-lossy,
-// the lead's ruling recorded on resumeOutrunsLocalView), and it is bounded:
-// the next notification re-establishes coverage, and a LIVE subscriber loses
-// nothing either way because it stays connected.
-//
-// WHY DROP AT ALL, given the resume path independently catches a real loss
-// (a counter ahead of our high-water mark) and the gap arm catches it on the
-// next notification? Because both of those need something to happen — a
-// reachable Redis, or a later publish. The live subscriber on a stream that
-// then goes quiet has neither, and it is the client this whole unit exists
-// for.
-//
-// THREAT MODEL for the undecodable arm, since it lets a WRITER to the channel
-// force a resync at will: anyone able to publish onto this channel can
-// already publish forged notifications, which is strictly worse than making
-// us disclaim coverage. The realistic cause is not an attacker but two Pad
-// installations sharing a Redis without PAD_REDIS_NAMESPACE set (BUG-2724),
-// which is why the metric help points at a namespace collision. Rate-limiting
-// the drop would need a threshold, and a threshold is a deployment decision
-// rather than an implementation detail — the same reason BUG-2738 is not
-// fixed here.
-//
-// WHAT A FLOOD OF SUCH MESSAGES COSTS, since "out of threat model" is not the
-// same as "free" (codex round 10). Per message: one ERROR log, one metric
-// increment, one replay-buffer allocation, and one pass over the subscriber
-// map. Three of those four are self-bounding — the subscriber pass is a
-// non-blocking send onto a capacity-1 flag that is already raised, so it
-// collapses to nothing; the metric increment IS the alarm an operator would
-// want at full rate; and the receive loop is serial, so the allocations are
-// one at a time against a GC rather than a growing heap. The unbounded one is
-// LOG VOLUME, which is the residual: a flood writes one line per message, and
-// bounding it is the same threshold decision as above.
-//
-// Payload size is deliberately not capped here, because a cap at this layer
-// would not do anything: go-redis has already read the whole message into
-// memory before decodePayload sees it. Bounding that belongs to the Redis
-// deployment (proto-max-bulk-len) and to who holds PUBLISH.
+// The cost of that choice, and the reason we drop at all when the resume path
+// and the gap arm each catch a real loss independently, are stated in
+// docs/deployment.md under "What a failover now COSTS" — they are operator
+// decisions and belong where operators read. The short version: both of those
+// other detections need something to HAPPEN (a reachable Redis, or a later
+// publish), and the live subscriber on a stream that then goes quiet has
+// neither. That client is what this function exists for.
 func (b *RedisBus) dropCoverage(reason string) {
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire with
 	// no bus lock held. See Observer.

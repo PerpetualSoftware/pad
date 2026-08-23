@@ -271,6 +271,24 @@ reading the metrics below, and for anyone writing a third-party consumer:
   ever becomes a capacity problem the answer is fewer connections per
   instance, not a quieter bus.
 
+  **Who can force a resync, and what a flood of them costs.** The
+  undecodable-message detection is reachable by anyone who can `PUBLISH` onto
+  the watch channel, which sounds worse than it is: the same access allows
+  publishing FORGED notifications, so a channel writer is outside the threat
+  model already. The realistic cause is two Pad installations sharing a Redis
+  without `PAD_REDIS_NAMESPACE` set — which is why the metric's reason points
+  at a namespace collision. Under a flood, three of the four per-message costs
+  are self-bounding: the announcement is a non-blocking send onto a
+  capacity-1 flag that is already raised, so it collapses to nothing; the
+  metric increment IS the alarm you want, at full rate; and the receive loop
+  is serial, so buffer allocations are one at a time against a GC rather than
+  a growing heap. **Log volume is the residual** — one ERROR line per message
+  — and bounding it needs a rate threshold, which is a deployment decision
+  this code declines to make on your behalf. Payload size is deliberately not
+  capped in Pad, because go-redis has read the whole message into memory
+  before Pad sees it; bound it with Redis's `proto-max-bulk-len` and with who
+  holds `PUBLISH`.
+
   **Two gaps in that detection remain, and an operator should know both.** A
   message lost in transit with the connection intact — no flap, no decode
   failure, just a message that never arrived (BUG-2735): on the watch stream a
@@ -376,10 +394,20 @@ the unlabelled total now counts more things, which is the metric doing what
 its name says rather than a regression. During a rolling deploy an instance on
 the older build reports neither new reason and keeps the old spelling — so a
 mixed fleet reports two shapes under one name for the rollout's length, which
-is acceptable precisely because no released version is in that fleet. **This
-paragraph expires at the next tag**: once a release ships either spelling, the
-next change to this metric is a real contract break and needs the versioned
-treatment instead.
+is acceptable precisely because no released version is in that fleet.
+
+**Re-derive that rather than trusting this paragraph**, because it is a claim
+about release state and release state changes without anyone editing this file:
+
+```
+git describe --tags --abbrev=0 origin/main      # the latest tag
+git log --reverse --format=%H -S pad_watchevents_sequence_resets_total \
+  -- internal/metrics/metrics.go | head -1      # the commit that introduced it
+git merge-base --is-ancestor <commit> <tag>     # non-zero exit => still unreleased
+```
+
+Once a release does ship this metric, the next change to it is a real contract
+break and needs versioned treatment instead of a note here.
 
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch resume counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
