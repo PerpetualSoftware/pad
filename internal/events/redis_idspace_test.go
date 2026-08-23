@@ -665,12 +665,15 @@ func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testi
 
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
-	// Subscribe() returns before Redis has registered the subscription — the
-	// SUBSCRIBE goes out from the receive goroutine, which has not
-	// necessarily run yet. Publishing into that window loses the event
-	// OUTRIGHT, not slowly: nothing replays a pub/sub message nobody was
-	// listening for, so the wait below is what stands between this test and a
-	// failure no timeout can rescue (BUG-2742).
+	// Subscribe() returns before Redis has REGISTERED the subscription. It
+	// does write the SUBSCRIBE command synchronously, but it does not wait
+	// for the server to confirm it (go-redis PubSub.subscribe writes and
+	// returns), and the publish that follows travels on a DIFFERENT
+	// connection — so Redis can process the publish first. Publishing into
+	// that window loses the event OUTRIGHT, not slowly: RedisBus.Publish has
+	// no local fan-out, and nothing replays a pub/sub message nobody was
+	// listening for. Hence a wait rather than a longer timeout — the round
+	// trip here is bimodal, tens of milliseconds or never (BUG-2742).
 	waitForSubscribers(t, mr, redisns.Default.Name(redisChannelSuffix)+"ws-1", true)
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})

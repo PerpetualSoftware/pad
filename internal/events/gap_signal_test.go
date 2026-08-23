@@ -374,8 +374,8 @@ func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
 // one buffer-full and nothing after it.
 //
 // So the sample is made untruncatable instead of large: no reader runs during
-// the publishes, and fewer events than the channel is deep are published, so a
-// drop CANNOT occur and every publish is still in the buffer afterwards. The
+// the publishes, and no more events than the channel is deep are published, so
+// a drop CANNOT occur and every publish is still in the buffer afterwards. The
 // vacuity guard is then `count == total` — an equality, not a threshold, and
 // not a bet on anything.
 //
@@ -387,11 +387,19 @@ func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
 // version's fixed 0.5s.
 func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 	// Enough publishers to interleave, few enough events that the subscriber
-	// channel cannot overflow. Derived from the real depth so that changing
-	// the depth cannot silently turn the no-drop premise into a false one.
+	// channel cannot overflow.
 	const publishers = 32
-	const each = subscriberChanDepth / publishers
+	const each = 2
 	const total = publishers * each
+
+	// COMPILE-TIME premise check. Deriving `each` from subscriberChanDepth
+	// looks tidier and is a trap: integer division silently yields 0 the day
+	// the depth drops below `publishers`, and then total is 0, nothing is
+	// published, and `count == total` passes as 0 == 0 — the test going
+	// permanently vacuous with no signal at all (codex round 2). Stating the
+	// numbers and failing the BUILD when they stop being compatible is the
+	// version that cannot rot quietly.
+	const _ uint = subscriberChanDepth - total
 
 	for round := range 40 {
 		func() {
@@ -420,6 +428,13 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 			// the channel is in it now: drain without blocking and without a
 			// timer. Nothing here waits on a goroutine being scheduled, which
 			// is what makes the result load-independent.
+			//
+			// CONTIGUOUS, not merely increasing (codex round 2): one bus, one
+			// workspace and nothing else publishing means the ids assigned are
+			// exactly base+1..base+total, so the delivered sequence must have
+			// no holes. "Increasing" would also be satisfied by a bus that
+			// dropped some of these and delivered something else with a bigger
+			// id, which is a pass for the wrong reason.
 			var prev int64
 			var count int
 		drain:
@@ -427,10 +442,11 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 				select {
 				case e := <-ch:
 					count++
-					if e.ID <= prev {
-						t.Fatalf("round %d: IDs arrived out of order: %d after %d — a subscriber's "+
-							"cursor regressed, so its next reconnect replays events it already has",
-							round, e.ID, prev)
+					if prev != 0 && e.ID != prev+1 {
+						t.Fatalf("round %d: ids arrived as %d after %d — consecutive publishes on one "+
+							"bus must deliver consecutively; a subscriber whose cursor goes backwards "+
+							"replays on its next reconnect, and one that skips has a hole nothing "+
+							"will fill", round, e.ID, prev)
 					}
 					prev = e.ID
 				default:
@@ -438,8 +454,9 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 				}
 			}
 
-			// PREMISE, not a tolerance: with no reader draining and fewer
-			// events published than the channel is deep, a drop is impossible.
+			// PREMISE, not a tolerance: with no reader draining and no more
+			// events published than the channel is deep, a drop is impossible
+			// — the channel starts empty and every publish fits.
 			// If this ever fires, the ordering assertion above ran on a
 			// truncated sample and proved less than it claims — which is the
 			// defect this test was rewritten to remove.
