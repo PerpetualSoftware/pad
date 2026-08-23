@@ -301,8 +301,8 @@ func TestAResubscriptionSignalsEverySubscriberHoldingTheStreamOpen(t *testing.T)
 	}
 }
 
-// An undecodable message is a hole whose id cannot even be named, so coverage
-// ends rather than the message being discarded.
+// An unreadable message makes coverage unprovable, so coverage ends rather
+// than the message being discarded.
 //
 // It is NOT enough that this bus's ids are consecutive by construction and the
 // gap arm would catch it on the next notification: detection through the gap

@@ -885,21 +885,31 @@ func (b *RedisBus) receiveMessages() {
 					// behaviour and left the buffer claiming a span it no
 					// longer had.
 					//
-					// It is NOT enough that this bus's ids are consecutive by
-					// construction — one channel, one counter — so the next
-					// notification's id would expose the hole through the gap
-					// arm below. That detection needs a LATER notification to
-					// arrive, and an undecodable NEWEST message on a stream
-					// that then goes quiet is exactly the case with no later
-					// one. (internal/events cannot lean on id arithmetic at
-					// all, since its per-workspace ids are non-consecutive by
-					// construction; it reaches the same drop by a different
-					// road.)
+					// WHAT WE KNOW is narrower than "a notification was
+					// lost": something arrived on our channel that we could
+					// not read. It may have been ours, or it may be foreign
+					// — another installation sharing this Redis without
+					// PAD_REDIS_NAMESPACE (BUG-2724), a probe, an older
+					// publisher. Coverage ends because we cannot TELL, which
+					// is a claim about our own evidence rather than about the
+					// stream.
 					//
-					// knownFrom = 0 is the honest value because the id of what
-					// we missed is unknown BY DEFINITION — there is nothing to
-					// raise it to. Recovery is bounded by the next publish,
-					// which re-establishes coverage through the cold-start arm.
+					// It is NOT enough that this bus's ids are consecutive by
+					// construction — one channel, one counter — so IF the
+					// message was ours the next notification's id would expose
+					// the miss through the gap arm below. That detection needs
+					// a LATER notification to arrive, and an unreadable NEWEST
+					// message on a stream that then goes quiet is exactly the
+					// case with no later one. (internal/events cannot lean on
+					// id arithmetic at all, since its per-workspace ids are
+					// non-consecutive by construction; it reaches the same
+					// drop by a different road.)
+					//
+					// knownFrom = 0 is the honest value because there is no id
+					// to raise it to — we cannot name what we may have missed,
+					// which is the same fact from the other side. Recovery is
+					// bounded by the next publish, which re-establishes
+					// coverage through the cold-start arm.
 					slog.Error("watchevents: failed to decode notification from Redis; "+
 						"dropping the replay buffer — resumes across it will report sync_required",
 						"error", err, "channel", msg.Channel)
