@@ -447,9 +447,31 @@ Two operator-visible consequences, neither of which had documentation:
   space can be disclaimed again when it is finally adopted. Bounded by that
   window, and visible as `epoch_regressed` rather than `epoch_change`.
 
-What a repair does NOT do is merge two ID spaces — that is the outcome the
-whole epoch mechanism exists to prevent, and a rotation, even a backwards one,
-is detected rather than silent.
+**Two repairs CAN collide, and what catches it is not the epoch.** The seed is
+above any COUNTED history; it is not a monotonicity guarantee. Corrupt the key
+twice inside one second and both repairs seed the same value, so two genuinely
+different ID spaces carry the identical epoch — and an equal epoch means "same
+space" by design, so neither `epoch_change` nor `epoch_regressed` fires.
+
+The detection chain that does hold, stated so nobody has to rediscover it:
+
+> A merge requires IDs to be REUSED at a receiver. Reuse requires the sequence
+> counter to go BACKWARDS. A backwards counter is detected regardless of what
+> the epoch says — it is the `counter_backward` reason, which drops the
+> affected buffers and refuses cursors below the discarded high-water mark.
+
+So the guarantee is carried by a different detector than the epoch mechanism
+suggests. That is deliberate and it is tested end to end
+(`TestACollidingRepairIsCaughtBySequenceRatherThanEpoch`), because a future
+change that weakened `counter_backward` would remove a protection nothing else
+here advertises.
+
+Two cases that look similar and are not. A sequence counter set FORWARD — say
+to 50, so the next ID is 51 — is a jump inside ONE space: IDs stay unique and
+increasing, nothing is reused, and per-workspace IDs are non-consecutive by
+construction anyway. And a receiver that never held the colliding range has
+nothing to merge; what it experiences is a gap, which is the pre-existing
+undetectable-loss case tracked as BUG-2735.
 
 
 **`pad_watchevents_sequence_resets_total` has no released contract yet, and

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/alicebob/miniredis/v2"
@@ -437,5 +438,124 @@ func TestTheGenerationCeilingIsOneUnderTheEpochCeiling(t *testing.T) {
 				t.Fatalf("a usable counter must be incremented, not reseeded to %d", fixedSeed)
 			}
 		})
+	}
+}
+
+// A REPAIRED GENERATION CAN COLLIDE, AND WHAT CATCHES IT IS THE SEQUENCE, NOT
+// THE EPOCH (BUG-2740, codex round 5 + the lead's probe request).
+//
+// The repair seeds from wall-clock seconds, which is above any COUNTED
+// history but is not a monotonicity guarantee: corrupt the key twice inside
+// one second and both repairs seed the same value, so two genuinely different
+// id spaces carry the identical epoch. The epoch comparison cannot separate
+// them — equal means "same space" by design, so epoch_regressed does not fire
+// either.
+//
+// It is still not silent, and this test exists because that was folklore
+// until it was measured. A second id space means ids are REISSUED, and a
+// reissued id arrives at or below the receiver's high-water mark with no
+// generation change — which is the counter_backward arm. Buffers dropped,
+// floor raised, old cursors refused.
+//
+// Pinning the chain matters more than pinning the arm: the guarantee is
+// carried by a DIFFERENT detector than the one the epoch mechanism suggests,
+// so a future change that weakens counter_backward would remove a protection
+// nothing here says it provides.
+func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
+	b, _ := newSeededFlippedBus(t) // nowUnix pinned: both repairs seed the same value
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+
+	genKey := redisns.Default.Name(redisEpochGenSuffix)
+	seqKey := redisns.Default.Name(redisSeqSuffix)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+	ctx := context.Background()
+
+	ch, _ := b.Subscribe("ws-1")
+	defer b.Unsubscribe(ch)
+
+	waitFor := func(n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			select {
+			case _, ok := <-ch:
+				if !ok {
+					t.Fatal("subscriber channel closed")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("timed out waiting for delivery %d of %d", i+1, n)
+			}
+		}
+	}
+	corrupt := func() {
+		t.Helper()
+		if err := b.client.Del(ctx, genKey).Err(); err != nil {
+			t.Fatalf("clear the generation key: %v", err)
+		}
+		if err := b.client.RPush(ctx, genKey, "x").Err(); err != nil {
+			t.Fatalf("corrupt the generation key: %v", err)
+		}
+	}
+
+	// SPACE A, published under a repaired generation.
+	corrupt()
+	for _, id := range []string{"a1", "a2", "a3"} {
+		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: id})
+	}
+	waitFor(3)
+
+	epochA, err := b.client.Get(ctx, epochKey).Result()
+	if err != nil {
+		t.Fatalf("read the epoch: %v", err)
+	}
+	if _, resets := obs.snapshot(); len(resets) != 0 {
+		t.Fatalf("control: a repaired-but-consistent space must report no reset, got %v", resets)
+	}
+	// Control: the buffer vouches for this span right now.
+	if b.EventsSince("ws-1", 1) == nil {
+		t.Fatal("control: a cursor inside space A must be served before the collision")
+	}
+
+	// SPACE B: the sequence restarts AND the generation is corrupted again
+	// inside the same second, so the repair lands on the same seed.
+	if err := b.client.Del(ctx, seqKey).Err(); err != nil {
+		t.Fatalf("reset the sequence: %v", err)
+	}
+	corrupt()
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "b1"})
+	waitFor(1)
+
+	epochB, err := b.client.Get(ctx, epochKey).Result()
+	if err != nil {
+		t.Fatalf("read the epoch: %v", err)
+	}
+
+	// THE PREMISE OF THE TEST, asserted rather than assumed: the two spaces
+	// really do collide on the epoch. If a future change makes the seed
+	// monotonic this assertion fails, which is the correct signal — the test
+	// would then be describing a state that can no longer occur.
+	if epochA != epochB {
+		t.Fatalf("this test needs the two spaces to share an epoch; got %s then %s", epochA, epochB)
+	}
+
+	_, resets := obs.snapshot()
+	var sawBackward bool
+	for _, r := range resets {
+		if r == ResetReasonCounterBackward {
+			sawBackward = true
+		}
+		if r == ResetReasonEpochRegressed || r == ResetReasonEpochChange {
+			t.Fatalf("the epoch is unchanged, so no epoch-based reason should fire; got %v", resets)
+		}
+	}
+	if !sawBackward {
+		t.Fatalf("a colliding repair must be caught by the SEQUENCE going backwards (%q), got %v",
+			ResetReasonCounterBackward, resets)
+	}
+
+	// And the consequence, not just the report: the old cursor is refused
+	// rather than replayed the new space's events.
+	if got := b.EventsSince("ws-1", 1); got != nil {
+		t.Fatalf("a cursor from the abandoned space must be refused, got %d events", len(got))
 	}
 }
