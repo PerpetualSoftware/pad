@@ -1127,6 +1127,42 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 // view of the SAME id space, so the cold-start arm's ordinary knownFrom = n.ID
 // is correct. The +1 exists only for the ambiguity between two different id
 // spaces, where a client's cursor might belong to the old one.
+//
+// WHY NOT ASK THE SHARED COUNTER FIRST, which would tell us whether anything
+// was actually published during the outage and spare the buffer when nothing
+// was? Because the answer is unavailable exactly when it matters. A
+// resubscription means the Redis connection just failed; a counter read on
+// that path either fails (resumeOutrunsLocalView answers FALSE on a failed
+// read, by design, so the caller proceeds on local knowledge) or blocks the
+// single receive goroutine on network I/O, stalling delivery for every
+// subscriber on the instance. Ending coverage locally is the record that
+// survives Redis being unreadable, which is the whole point of keeping one.
+//
+// THE COST OF THAT CHOICE, stated rather than glossed: when the outage lost
+// NOTHING — no publish happened while we were away — this discards a buffer
+// that was still complete, and a client reconnecting before the next
+// notification is answered sync_required instead of being replayed. That is
+// the package's standing trade (chatty-but-correct beats quiet-but-lossy,
+// the lead's ruling recorded on resumeOutrunsLocalView), and it is bounded:
+// the next notification re-establishes coverage, and a LIVE subscriber loses
+// nothing either way because it stays connected.
+//
+// WHY DROP AT ALL, given the resume path independently catches a real loss
+// (a counter ahead of our high-water mark) and the gap arm catches it on the
+// next notification? Because both of those need something to happen — a
+// reachable Redis, or a later publish. The live subscriber on a stream that
+// then goes quiet has neither, and it is the client this whole unit exists
+// for.
+//
+// THREAT MODEL for the undecodable arm, since it lets a WRITER to the channel
+// force a resync at will: anyone able to publish onto this channel can
+// already publish forged notifications, which is strictly worse than making
+// us disclaim coverage. The realistic cause is not an attacker but two Pad
+// installations sharing a Redis without PAD_REDIS_NAMESPACE set (BUG-2724),
+// which is why the metric help points at a namespace collision. Rate-limiting
+// the drop would need a threshold, and a threshold is a deployment decision
+// rather than an implementation detail — the same reason BUG-2738 is not
+// fixed here.
 func (b *RedisBus) dropCoverage(reason string) {
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire with
 	// no bus lock held. See Observer.
