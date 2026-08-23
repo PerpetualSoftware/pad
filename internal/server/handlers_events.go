@@ -387,7 +387,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Bounds how often this connection can be told mid-stream that it has a
 	// hole — see gapAnnouncer for why a slow subscriber needs bounding and
 	// why nothing is dropped to achieve it.
-	gapAnn := newGapAnnouncer(midStreamGapCooldown)
+	gapAnn := newGapAnnouncer(s.gapCooldown())
 	defer gapAnn.stop()
 
 	// announceGap writes the mid-stream signal. Returns false when the write

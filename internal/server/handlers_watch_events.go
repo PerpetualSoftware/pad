@@ -295,7 +295,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Same per-connection bound as the activity stream — see gapAnnouncer.
-	gapAnn := newGapAnnouncer(midStreamGapCooldown)
+	gapAnn := newGapAnnouncer(s.gapCooldown())
 	defer gapAnn.stop()
 
 	announceGap := func() bool {

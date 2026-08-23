@@ -26,6 +26,20 @@ import "time"
 // window closes, so the client always learns — at most once per window.
 const midStreamGapCooldown = 5 * time.Second
 
+// gapCooldown is the interval a handler should use — midStreamGapCooldown
+// unless a test has narrowed it.
+//
+// A field rather than the bare constant because the rate limit's BINDING to
+// the handlers is a separate claim from the limiter working (team CONVE-19),
+// and an integration test that had to wait out five real seconds per assertion
+// would not be written.
+func (s *Server) gapCooldown() time.Duration {
+	if s.midStreamGapCooldownOverride > 0 {
+		return s.midStreamGapCooldownOverride
+	}
+	return midStreamGapCooldown
+}
+
 // gapAnnouncer rate-limits one connection's mid-stream gap announcements
 // without losing any.
 //

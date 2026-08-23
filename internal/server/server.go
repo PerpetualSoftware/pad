@@ -66,6 +66,10 @@ type Server struct {
 	ipChangeEnforceStrict bool                 // when true, revoke+reject sessions whose client IP OR User-Agent hash differs from the one recorded at session creation
 	sseMaxConnections     int                  // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace    int                  // per-workspace SSE connection limit (0 = unlimited)
+	// midStreamGapCooldownOverride shortens the mid-stream gap rate limit.
+	// Zero (production) means midStreamGapCooldown. Tests only; set before
+	// serving, read per connection.
+	midStreamGapCooldownOverride time.Duration
 	sseMaxPerUser         int                  // per-user SSE connection limit across BOTH stream endpoints (0 = unlimited, BUG-2726)
 	streamAdmit           *streamAdmission     // shared admission gate for both stream endpoints (BUG-2726)
 	cloudMode             bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)

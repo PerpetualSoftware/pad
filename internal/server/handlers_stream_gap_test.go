@@ -372,3 +372,71 @@ func waitUntilWorkspaceIdle(t *testing.T, srv *Server, slug string) {
 	}
 	t.Fatal("the held connection never released its workspace slot")
 }
+
+// The announcer is tested directly in stream_gap_announcer_test.go, which
+// vouches for the limiter and says nothing about whether either handler USES
+// it (team CONVE-19). A handler that emitted sync_required straight from
+// `case <-gaps:` would pass every other test in this file and reopen the
+// feedback loop the limiter exists to prevent, so both handlers get this.
+func TestActivityStreamRateLimitsGapAnnouncements(t *testing.T) {
+	srv := testServerWithEvents(t)
+	srv.midStreamGapCooldownOverride = 250 * time.Millisecond
+	bus := &gapEventBus{EventBus: events.New(), gaps: make(chan struct{}, 1)}
+	srv.SetEventBus(bus)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug := createTestWorkspace(t, ts.URL, "Test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, "")
+	waitForFrameWithEvent(t, frames, "connected")
+
+	assertGapBurstYieldsOneThenOne(t, frames, bus.gaps, 250*time.Millisecond)
+}
+
+func TestWatchStreamRateLimitsGapAnnouncements(t *testing.T) {
+	srv := testServer(t)
+	srv.midStreamGapCooldownOverride = 250 * time.Millisecond
+	bus := &gapWatchBus{Bus: watchevents.New(), gaps: make(chan struct{}, 1)}
+	srv.SetWatchEventsBus(bus)
+	_, _, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	frames := readRawSSEFramesAuthed(t, ctx, ts.URL+"/api/v1/events/stream", "", tok.Token)
+	waitForFrameWithEvent(t, frames, "connected")
+
+	assertGapBurstYieldsOneThenOne(t, frames, bus.gaps, 250*time.Millisecond)
+}
+
+// assertGapBurstYieldsOneThenOne drives a burst of gaps through one connection
+// and asserts both halves of the bound: exactly ONE announcement inside the
+// window (a handler that ignored the limiter would send three), and one MORE
+// after it (a handler that simply dropped the extras would send none, which is
+// this fix's own defect one layer up).
+func assertGapBurstYieldsOneThenOne(t *testing.T, frames <-chan string, gaps chan struct{}, cooldown time.Duration) {
+	t.Helper()
+
+	// The bus channel is capacity 1 and coalescing, so a burst is delivered by
+	// raising it again as soon as the handler has taken the previous one. Three
+	// raises means at least two gaps land inside the first window.
+	for range 3 {
+		gaps <- struct{}{}
+	}
+
+	waitForFrameWithEvent(t, frames, "sync_required")
+
+	// Nothing more until the window closes. Deliberately less than the
+	// cooldown, so this leg fails for an unlimited handler and cannot pass by
+	// simply outlasting the timer.
+	assertNoFrameWithEvent(t, frames, "sync_required", cooldown/2)
+
+	// ...and then the latched one, so the burst was bounded rather than
+	// silently discarded.
+	waitForFrameWithEvent(t, frames, "sync_required")
+}
