@@ -109,6 +109,34 @@ end
 return id
 `)
 
+// generationRestartSeed is the value publishScript restarts the generation
+// counter at when it finds that key corrupted (BUG-2740, ARGV[3]).
+//
+// Wall-clock SECONDS, per Dave's day-49 ruling: generations only have to be
+// orderable among themselves, and a corrupted key cannot testify to what the
+// previous generation was, so there is nothing to derive a safe increment
+// from. Seconds are strictly above any plausible increment-from-1 history
+// with no coordination and no stored state to trust.
+//
+// PASSED IN rather than read with redis.call('TIME') inside the script, for
+// two reasons and not for a replication one: the script stays deterministic,
+// and a test can inject a fixed seed and assert the exact restart value —
+// which is what lets the mutation matrix tell "repaired" apart from
+// "repaired to the wrong thing".
+//
+// Clock skew between publishers is harmless here. The script is atomic, so
+// the first publisher to reach a corrupted key repairs it and every other
+// publisher then finds a usable counter and simply increments; no two seeds
+// are ever compared with each other.
+//
+// A seam rather than a direct call so tests can pin it.
+func (b *RedisBus) generationRestartSeed() string {
+	if b.nowUnix != nil {
+		return strconv.FormatInt(b.nowUnix(), 10)
+	}
+	return strconv.FormatInt(time.Now().Unix(), 10)
+}
+
 // publishScript assigns the ID and publishes in ONE atomic Redis call. It is
 // PHASE 2 ONLY: an instance that has not been flipped still publishes through
 // the two-call path in Publish, because the bare wire form carries the ID
@@ -181,6 +209,64 @@ return id
 // — and the client is not told. The token is as durable as Redis replication
 // and no more; this narrows the window rather than closing it.
 var publishScript = redis.NewScript(`
+-- next_gen returns the next generation for the id space, REPAIRING the
+-- generation counter first if it holds something INCR cannot work with
+-- (BUG-2740).
+--
+-- Every INCR of KEYS[5] goes through here, and the reason is that an INCR
+-- against a corrupted key ABORTS THE SCRIPT — after the INCR of KEYS[1] has
+-- already advanced the sequence. Redis is atomic against interleaving but
+-- does not roll back a script's earlier writes on an error, so the failure
+-- burns an id (a hole to every receiver), repeats on the next publish, and
+-- never self-heals, because the branch that would rotate the generation is
+-- the branch that cannot run.
+--
+-- FOUR WAYS IT ABORTS, all measured against the pinned miniredis rather than
+-- assumed, because the filing named only the first two:
+--
+--   list  -> WRONGTYPE
+--   hash  -> WRONGTYPE
+--   string 'abc'                 -> ERR value is not an integer or out of range
+--   string '9223372036854775807' -> ERR increment or decrement would overflow
+--
+-- So a TYPE check alone would have covered half of them. The value has to be
+-- validated too, on exactly the terms the epoch key's guard uses next to it:
+-- a positive integer of at most 18 digits, which is what the RECEIVER's
+-- strconv.ParseInt can read back.
+--
+-- REPAIR IS SET, NOT DEL: SET replaces a key of any type (measured), and
+-- BUG-2736's mutation matrix already established here that a DEL is
+-- removable without any test noticing.
+local function next_gen()
+  local usable = false
+  local t = redis.call('TYPE', KEYS[5])['ok']
+  if t == 'none' then
+    usable = true
+  elseif t == 'string' then
+    local v = redis.call('GET', KEYS[5])
+    if string.match(v, '^[1-9][0-9]*$') and #v <= 18 then
+      usable = true
+    end
+  end
+  if not usable then
+    -- RESTARTED AT WALL-CLOCK SECONDS, not at 1 (Dave's ruling, day-49).
+    -- Generations only have to be orderable among THEMSELVES, and the
+    -- corrupted key is the only witness to what the previous one was, so it
+    -- cannot testify. A wall-clock seed is strictly above any plausible
+    -- increment-from-1 history with no coordination and nothing stored to
+    -- trust. Restarting at 1 would make the new generation LOWER than ones
+    -- receivers have already adopted, which BUG-2736's design reads as a
+    -- regression.
+    --
+    -- The seed arrives as ARGV[3] rather than from redis.call('TIME') so the
+    -- script stays deterministic and the exact restart value is assertable in
+    -- a test. (TIME does work here — measured — but nothing needs it to.)
+    redis.call('SET', KEYS[5], ARGV[3])
+    return ARGV[3]
+  end
+  return tostring(redis.call('INCR', KEYS[5]))
+end
+
 if redis.call('EXISTS', KEYS[4]) == 1 then
   return 0
 end
@@ -193,14 +279,14 @@ if id == 1 then
   -- nothing -- and the numeric check misses it too whenever a receiver's
   -- high-water mark is low enough that the restarted counter climbs past it
   -- before that receiver sees anything.
-  local g = redis.call('INCR', KEYS[5])
-  redis.call('SET', KEYS[3], tostring(g))
+  local g = next_gen()
+  redis.call('SET', KEYS[3], g)
 elseif redis.call('EXISTS', KEYS[3]) == 0 then
   -- No epoch yet for a sequence already in flight: the installation's first
   -- flipped publish, or a phase-1 instance cleared a stale one. Mint the next
   -- generation. Inside the script, so two publishers cannot both mint.
-  local g = redis.call('INCR', KEYS[5])
-  redis.call('SET', KEYS[3], tostring(g))
+  local g = next_gen()
+  redis.call('SET', KEYS[3], g)
 end
 local epoch = false
 if redis.call('TYPE', KEYS[3])['ok'] == 'string' then
@@ -228,9 +314,9 @@ if not epoch or not string.match(epoch, '^[1-9][0-9]*$') or #epoch > 18 then
   -- -- the same total, silent, unrecoverable drop by a different route. Any
   -- 18-digit number fits in an int64, and a generation counts installations'
   -- id-space resets, so 18 digits is not a bound anything real approaches.
-  local g = redis.call('INCR', KEYS[5])
-  redis.call('SET', KEYS[3], tostring(g))
-  epoch = tostring(g)
+  local g = next_gen()
+  redis.call('SET', KEYS[3], g)
+  epoch = g
 end
 redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id .. '|' .. ARGV[1])
 redis.call('SET', KEYS[4], '1', 'EX', ARGV[2])
@@ -245,6 +331,12 @@ type RedisBus struct {
 	observable
 
 	client *redis.Client
+
+	// nowUnix overrides the wall clock behind generationRestartSeed. Nil in
+	// every real construction; set only by tests, so the exact value a
+	// corrupted generation counter is repaired to can be asserted rather than
+	// bounded (BUG-2740).
+	nowUnix func() int64
 
 	// keys builds this installation's Redis names (BUG-2724). The zero
 	// value is the historical un-namespaced keyspace, so a bus constructed
@@ -617,7 +709,7 @@ func (b *RedisBus) publishWithEpoch(channel string, event Event) {
 			b.keys.Name(redisSeqSuffix), channel, b.keys.Name(redisEpochSuffix),
 			dedupeKey, b.keys.Name(redisEpochGenSuffix),
 		},
-		string(data), redisDedupeTTLSeconds).Err(); err != nil {
+		string(data), redisDedupeTTLSeconds, b.generationRestartSeed()).Err(); err != nil {
 		// NO LOCAL-COUNTER FALLBACK, for the same reason the phase-1 path has
 		// none (BUG-2731): an ID minted locally belongs to a different space,
 		// which every receiving instance reads as a counter reset, and this
