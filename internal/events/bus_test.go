@@ -126,15 +126,15 @@ func TestSlowConsumerDropsEvents(t *testing.T) {
 	ch, _ := bus.Subscribe("ws-1")
 	defer bus.Unsubscribe(ch)
 
-	// Fill the channel buffer (64 events)
-	for i := 0; i < 100; i++ {
+	// Overfill the channel buffer, so the drop path runs.
+	for i := 0; i < subscriberChanDepth+36; i++ {
 		bus.Publish(Event{
 			Type:        DocumentUpdated,
 			WorkspaceID: "ws-1",
 		})
 	}
 
-	// Should have 64 events (buffer size), rest dropped
+	// Should have exactly a buffer's worth; the rest dropped.
 	count := 0
 	for {
 		select {
@@ -145,8 +145,8 @@ func TestSlowConsumerDropsEvents(t *testing.T) {
 		}
 	}
 done:
-	if count != 64 {
-		t.Fatalf("expected 64 buffered events, got %d", count)
+	if count != subscriberChanDepth {
+		t.Fatalf("expected %d buffered events, got %d", subscriberChanDepth, count)
 	}
 }
 

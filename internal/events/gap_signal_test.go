@@ -36,10 +36,12 @@ func TestDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 	defer b.Unsubscribe(slow)
 	defer b.Unsubscribe(fast)
 
-	// Exactly fills the slow subscriber's 64-deep channel; the fast one is
-	// drained each time, so only one of the two is behind.
-	const chanDepth = 64
-	for range chanDepth {
+	// Exactly fills the slow subscriber's channel; the fast one is drained
+	// each time, so only one of the two is behind. Derived rather than
+	// restated: this test's whole claim is about the boundary AT the depth,
+	// so a literal that drifts from the real one would leave it asserting
+	// something about an arbitrary number instead.
+	for range subscriberChanDepth {
 		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 		<-fast
 	}
