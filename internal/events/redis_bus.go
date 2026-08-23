@@ -244,7 +244,20 @@ local function next_gen()
     usable = true
   elseif t == 'string' then
     local v = redis.call('GET', KEYS[5])
-    if string.match(v, '^[1-9][0-9]*$') and #v <= 18 then
+    -- 17, NOT 18, and the difference is derived rather than chosen (codex
+    -- round 4). This value is about to be INCREMENTED and the result becomes
+    -- the EPOCH, which the guard further down rejects above 18 digits. Accept
+    -- 18 here and a counter at 999999999999999999 increments to a 19-digit
+    -- epoch, that guard fires, and the script rotates a SECOND time inside
+    -- one publish — finding a 19-digit generation, repairing it to the
+    -- wall-clock seed, and publishing a generation far BELOW the one
+    -- receivers hold. Measured: seeded at 18 digits the published epoch came
+    -- back as the seed; at 17 digits it came back as the ordinary increment.
+    --
+    -- So the ceiling for what is USABLE is one digit under the ceiling for
+    -- what is PUBLISHABLE. A value at or above it is treated as corrupted and
+    -- repaired once, which is a single detected rotation instead of two.
+    if string.match(v, '^[1-9][0-9]*$') and #v <= 17 then
       usable = true
     end
   end
@@ -354,11 +367,15 @@ if not epoch or not string.match(epoch, '^[1-9][0-9]*$') or #epoch > 18 then
   epoch = g
 end
 -- NOTE (BUG-2744): 'id' is a Lua NUMBER here, so this concatenation has the
--- same %.14g precision hazard next_gen avoids by reading its value back. Not
--- fixed with it: id is also this script's return value and is compared
--- numerically on the Go side, so the remedy has a design question attached.
+-- same %.14g precision hazard next_gen avoids by reading its value back.
 -- Reachable by corruption rather than by counting — a hand-edited or collided
 -- event_seq ARRIVES at that magnitude the same way the generation key does.
+--
+-- Left for that item rather than fixed here, and the reason is NOT that the
+-- return value constrains it: this caller discards the result (.Err()), so a
+-- wrong id here reaches the wire with nothing on the Go side to notice.
+-- assignScript's id IS consumed, which is why the remedy spans both paths and
+-- is that item's design question.
 redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id .. '|' .. ARGV[1])
 redis.call('SET', KEYS[4], '1', 'EX', ARGV[2])
 return id

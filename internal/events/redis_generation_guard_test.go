@@ -301,10 +301,13 @@ func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
 // exactly. The published epoch and the stored generation would disagree, and
 // the receiver would adopt a generation the publisher does not hold.
 //
-// 18 digits is not a magnitude a generation counter reaches by counting — it
-// is the magnitude a HAND-EDITED or collided key arrives at, which is the
-// same class of event this whole guard exists for.
-func TestThePublishedGenerationMatchesTheStoredOneAtTheGuardsLimit(t *testing.T) {
+// Divergence starts at 2^53, not at the guard's digit ceiling — doubles are
+// exact only to 9007199254740992 — so this is live for a large part of the
+// range the guard admits, not just at its edge. And such a magnitude is not
+// one a generation counter reaches by counting: it is what a HAND-EDITED or
+// collided key arrives at, which is the same class of event this whole guard
+// exists for.
+func TestThePublishedGenerationMatchesTheStoredOneAboveExactDoubleRange(t *testing.T) {
 	b, _ := newSeededFlippedBus(t)
 	genKey := redisns.Default.Name(redisEpochGenSuffix)
 	epochKey := redisns.Default.Name(redisEpochSuffix)
@@ -316,10 +319,15 @@ func TestThePublishedGenerationMatchesTheStoredOneAtTheGuardsLimit(t *testing.T)
 		t.Fatalf("fixture: the first publish must succeed, got %v", err)
 	}
 
-	// A valid 18-digit generation: inside the guard, so it is INCREMENTED
-	// rather than repaired — which is the path where the stringification
-	// happens.
-	const nearLimit = "999999999999999998"
+	// A valid generation INSIDE the guard, so it is INCREMENTED rather than
+	// repaired — which is the path where the stringification happens.
+	//
+	// The magnitude is chosen, not arbitrary: doubles represent integers
+	// exactly only to 2^53 (9007199254740992, 16 digits), so divergence
+	// begins well below the 17-digit ceiling. Measured — this value
+	// increments to 99999999999999999 in the key while tostring() renders it
+	// 100000000000000000.
+	const nearLimit = "99999999999999998"
 	if err := b.client.Set(ctx, genKey, nearLimit, 0).Err(); err != nil {
 		t.Fatalf("seed the generation: %v", err)
 	}
@@ -342,7 +350,92 @@ func TestThePublishedGenerationMatchesTheStoredOneAtTheGuardsLimit(t *testing.T)
 			"tostring() of the INCR result loses precision at this magnitude; read the value back with GET",
 			published, stored)
 	}
-	if stored != "999999999999999999" {
+	if stored != "99999999999999999" {
 		t.Fatalf("the counter must have incremented exactly once, it holds %s", stored)
+	}
+}
+
+// A generation at or above the guard's ceiling is repaired ONCE, not rotated
+// twice inside one publish (BUG-2740, codex round 4).
+//
+// The two ceilings interact, and that is the whole point of this case. The
+// value next_gen accepts is about to be INCREMENTED and the result becomes the
+// EPOCH — and the epoch guard further down rejects anything over 18 digits. So
+// a generation ceiling of 18 lets a counter at 999999999999999999 increment
+// into a 19-digit epoch, the epoch guard fires, and the script rotates a
+// SECOND time within one publish: it finds a 19-digit generation, repairs it
+// to the wall-clock seed, and publishes a generation far BELOW the one
+// receivers hold.
+//
+// The ceiling for what is USABLE therefore has to sit one digit under the
+// ceiling for what is PUBLISHABLE. This pins both sides of that boundary.
+func TestTheGenerationCeilingIsOneUnderTheEpochCeiling(t *testing.T) {
+	genKey := redisns.Default.Name(redisEpochGenSuffix)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+
+	for _, tc := range []struct {
+		name     string
+		seed     string
+		want     string
+		repaired bool
+	}{
+		{"at the ceiling, incremented", "99999999999999997", "99999999999999998", false},
+		{"over the ceiling, repaired once", "999999999999999999", strconv.FormatInt(fixedSeed, 10), true},
+		// THE CASE THAT DISCRIMINATES THE CEILING ITSELF, and the reason the
+		// two above do not: an 18-digit value whose increment STAYS 18
+		// digits. With the ceiling at 17 it is over the line and repaired to
+		// the seed; with the ceiling wrongly at 18 it is accepted and simply
+		// incremented, and no second rotation occurs to bring it back to the
+		// seed — so the two settings produce different published values here,
+		// where for 999999999999999999 they produce the same one by different
+		// routes. Found by mutation: without this row, moving the ceiling
+		// back to 18 passes the whole suite.
+		{"just over the ceiling, increment would be clean", "100000000000000000", strconv.FormatInt(fixedSeed, 10), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := newSeededFlippedBus(t)
+			next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
+			ctx := context.Background()
+
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "a"})
+			if _, _, err := decodePayload(next()); err != nil {
+				t.Fatalf("fixture: %v", err)
+			}
+
+			if err := b.client.Set(ctx, genKey, tc.seed, 0).Err(); err != nil {
+				t.Fatalf("seed the generation: %v", err)
+			}
+			if err := b.client.Del(ctx, epochKey).Err(); err != nil {
+				t.Fatalf("clear the epoch: %v", err)
+			}
+
+			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "b"})
+			published, _, err := decodePayload(next())
+			if err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+
+			stored, err := b.client.Get(ctx, genKey).Result()
+			if err != nil {
+				t.Fatalf("read the generation: %v", err)
+			}
+			if stored != tc.want {
+				t.Fatalf("generation: want %s, got %s", tc.want, stored)
+			}
+			if strconv.FormatInt(published, 10) != stored {
+				t.Fatalf("the published epoch %d must equal the stored generation %s", published, stored)
+			}
+
+			// THE LEG THAT CATCHES THE DOUBLE ROTATION. When the value is
+			// repaired, it must land on the seed EXACTLY — a second rotation
+			// would leave seed+1 behind, which is what an 18-digit ceiling
+			// produced.
+			if tc.repaired && stored != strconv.FormatInt(fixedSeed, 10) {
+				t.Fatalf("a repair must rotate exactly once: want the seed %d, got %s", fixedSeed, stored)
+			}
+			if !tc.repaired && published == fixedSeed {
+				t.Fatalf("a usable counter must be incremented, not reseeded to %d", fixedSeed)
+			}
+		})
 	}
 }
