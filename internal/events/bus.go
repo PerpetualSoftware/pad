@@ -465,13 +465,21 @@ func (s *subscriber) signalGap() {
 	}
 }
 
+// subscriberChanDepth is how many events a subscriber may fall behind before
+// the bus starts dropping for it (and telling it so — see the fan-out in
+// Publish). Named rather than inlined because a test needs to state the
+// premise "fewer events than this cannot be dropped" in terms of the real
+// number: a test that hardcodes 64 alongside this one silently stops proving
+// what it claims the day the depth changes.
+const subscriberChanDepth = 64
+
 // newSubscriber builds a subscriber with both of its channels, so no path
 // can register one that has an event channel and no gap channel — a nil
 // gaps channel would silently discard every signal (a send on nil blocks,
 // and the default arm would take it forever).
 func newSubscriber(workspaceID string) *subscriber {
 	return &subscriber{
-		ch:          make(chan Event, 64),
+		ch:          make(chan Event, subscriberChanDepth),
 		workspaceID: workspaceID,
 		gaps:        make(chan struct{}, 1),
 	}

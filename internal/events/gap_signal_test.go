@@ -362,76 +362,93 @@ func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
 //
 // A stress test rather than a seam-driven one: the interleaving is a
 // scheduling race with no single point to pause at once the fix is in, because
-// the fix is precisely that no such point exists. Verified to fail against the
-// unserialized version.
+// the fix is precisely that no such point exists.
+//
+// WHY IT IS SHAPED LIKE THIS, because the obvious shape is the one it replaces
+// (BUG-2742). The first version published 320 events while a goroutine drained
+// concurrently, and guarded against vacuity with "at least half must arrive".
+// That guard is a bet on runner speed: the bus DELIBERATELY drops for a
+// subscriber that cannot keep up, so how many arrive is a continuous function
+// of how much CPU the reader gets. It reddened four CI runs across three PRs
+// reporting 64, 65, 144 and 150 of 320 — and 64 is exactly subscriberChanDepth,
+// one buffer-full and nothing after it.
+//
+// So the sample is made untruncatable instead of large: no reader runs during
+// the publishes, and fewer events than the channel is deep are published, so a
+// drop CANNOT occur and every publish is still in the buffer afterwards. The
+// vacuity guard is then `count == total` — an equality, not a threshold, and
+// not a bet on anything.
+//
+// Detection power comes from REPEATING the round rather than from volume,
+// which is what the bounded channel could not give. Measured against the
+// mutation this test exists to catch (release replayMu after the append, so
+// fan-out runs outside it): the version this replaces caught it 9 times in 30
+// runs; this one caught it 25 times in 25, and costs ~10ms against that
+// version's fixed 0.5s.
 func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
-	b := New()
-	defer b.Close()
+	// Enough publishers to interleave, few enough events that the subscriber
+	// channel cannot overflow. Derived from the real depth so that changing
+	// the depth cannot silently turn the no-drop premise into a false one.
+	const publishers = 32
+	const each = subscriberChanDepth / publishers
+	const total = publishers * each
 
-	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
-		t.Fatal("subscribe refused")
-	}
-	defer b.Unsubscribe(ch)
+	for round := range 40 {
+		func() {
+			b := New()
+			defer b.Close()
 
-	const publishers, each = 8, 40
-	total := publishers * each
-
-	// Drained concurrently. The reader may legitimately MISS some — a 64-deep
-	// channel overflows and the bus drops for a slow subscriber, which is the
-	// behaviour tested elsewhere — so this reads until the stream goes quiet
-	// rather than demanding all of them. The claim under test is the ORDER of
-	// what arrives, and a minimum count below keeps it from passing vacuously.
-	received := make(chan int64, total)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case e, ok := <-ch:
-				if !ok {
-					return
-				}
-				received <- e.ID
-			case <-time.After(500 * time.Millisecond):
-				return
+			ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+			if !ok {
+				t.Fatal("subscribe refused")
 			}
-		}
-	}()
+			defer b.Unsubscribe(ch)
 
-	var wg sync.WaitGroup
-	for range publishers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range each {
-				b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+			var wg sync.WaitGroup
+			for range publishers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for range each {
+						b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+					}
+				}()
+			}
+			wg.Wait()
+
+			// Every publish has returned, so everything that will ever be in
+			// the channel is in it now: drain without blocking and without a
+			// timer. Nothing here waits on a goroutine being scheduled, which
+			// is what makes the result load-independent.
+			var prev int64
+			var count int
+		drain:
+			for {
+				select {
+				case e := <-ch:
+					count++
+					if e.ID <= prev {
+						t.Fatalf("round %d: IDs arrived out of order: %d after %d — a subscriber's "+
+							"cursor regressed, so its next reconnect replays events it already has",
+							round, e.ID, prev)
+					}
+					prev = e.ID
+				default:
+					break drain
+				}
+			}
+
+			// PREMISE, not a tolerance: with no reader draining and fewer
+			// events published than the channel is deep, a drop is impossible.
+			// If this ever fires, the ordering assertion above ran on a
+			// truncated sample and proved less than it claims — which is the
+			// defect this test was rewritten to remove.
+			if count != total {
+				t.Fatalf("round %d: %d of %d events arrived; with a %d-deep channel and no "+
+					"concurrent reader nothing may be dropped, so the ordering check above "+
+					"ran on a sample it cannot vouch for", round, count, total, subscriberChanDepth)
 			}
 		}()
-	}
-	wg.Wait()
-
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the reader never went quiet")
-	}
-	close(received)
-
-	var prev int64
-	var count int
-	for id := range received {
-		count++
-		if id <= prev {
-			t.Fatalf("IDs arrived out of order: %d after %d — a subscriber's cursor regressed, "+
-				"so its next reconnect replays events it already has", id, prev)
-		}
-		prev = id
-	}
-	// Not vacuous: an empty or near-empty stream would satisfy the ordering
-	// check trivially.
-	if count < total/2 {
-		t.Fatalf("only %d of %d events arrived; too few to say anything about ordering", count, total)
 	}
 }
 
