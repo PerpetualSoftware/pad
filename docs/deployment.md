@@ -244,7 +244,28 @@ an empty `id:` field, exactly as the resume case does, so a client stops
 resending a position the server has just disclaimed.
 
 There is no separate event name for the mid-stream case, deliberately: every
-client acts on the two identically. There IS a separate metric — see
+client acts on the two identically.
+
+**What a client should DO with it**, since the two endpoints recover
+differently and a third-party consumer cannot infer this from the frame:
+
+- **Keep the connection open.** The frame is not a close and does not ask for a
+  reconnect. The server keeps streaming; a client that tears down and redials
+  on every `sync_required` turns one delta into a reconnect storm.
+- **Stop trusting your cursor.** The empty `id:` retires it, so a compliant SSE
+  client stops sending `Last-Event-ID` on its next reconnect. Do not re-send
+  the old value: the server has just said it cannot vouch for that position.
+- **On `/api/v1/events`, reconcile the workspace.** Its events describe item
+  state, so a delta refetch recovers everything missed. The web client uses
+  `/changes`; any client can re-read the items it cares about.
+- **On `/api/v1/events/stream`, reconcile what you can and accept the rest is
+  gone.** Watch-matched notifications describe item state and can be re-derived
+  by re-reading those items. One-shot PUSHES cannot: they are not stored as
+  recoverable state, there is no backfill endpoint for them, and a push missed
+  during a hole is missed permanently. This endpoint is best-effort for pushes
+  by design, and `sync_required` on it means "your position is untrustworthy",
+  not "re-fetch and you will be whole again". The `pad` CLI monitor does
+  exactly this: it clears its cursor and keeps listening. There IS a separate metric — see
 `pad_event_midstream_resyncs_total` below — so the two populations stay
 distinguishable to an operator without changing what any existing alert means.
 
