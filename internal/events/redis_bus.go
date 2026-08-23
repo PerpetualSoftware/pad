@@ -1652,6 +1652,27 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// clients resync repeatedly. Bounded by the roll — once every
 		// publisher is flipped, restarts rotate the epoch, and an epoch change
 		// CLEARS the floor (see dropAllBuffers).
+		// WHY A PER-WORKSPACE CHECK IS ENOUGH FOR A GLOBAL COUNTER, since
+		// two separate reviews have now asked (BUG-2740 rounds 5 and 8) and
+		// the answer is not obvious from here.
+		//
+		// The sequence is shared across workspaces, so a restarted counter
+		// reissues ids that other workspaces may consume — and this compares
+		// only against THIS workspace's high-water mark. That is sufficient
+		// because the unit of coherence is the per-workspace buffer and the
+		// per-workspace cursor: an id can only CORRUPT a buffer by colliding
+		// with one already in it, and an id at or below this workspace's
+		// high-water mark is exactly what this arm catches. A reissued id
+		// that lands in a DIFFERENT workspace collides with nothing here.
+		//
+		// Measured rather than argued, both shapes: a counter DELETED
+		// restarts at 1, which takes publishScript's id == 1 branch and
+		// rotates the epoch unconditionally, so every buffer is dropped
+		// through epoch_change before this arm is reached. A counter SET
+		// backwards above 1 skips that rotation — and then a workspace whose
+		// own ids are reissued sees them as backward and lands here, while a
+		// workspace that never held them keeps a strictly increasing stream
+		// and needs no reset.
 		slog.Warn("event sequence went backwards; dropping replay buffers, resumes below the discarded high-water mark will report sync_required",
 			"high_water_mark", rb.lastAppendedID, "id", event.ID, "workspace", event.WorkspaceID)
 		b.dropAllBuffers(floorRaise)
