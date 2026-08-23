@@ -492,8 +492,8 @@ func TestCloseDoesNotLookLikeAResubscription(t *testing.T) {
 
 	if after := obs.snapshot().resets[ResetReasonSubscriptionResumed]; after != before {
 		t.Fatalf("Close must not report a resubscription: %q went %d -> %d. "+
-			"Closing the PubSub emits unsubscribe confirmations on the same channel as subscribe ones; "+
-			"the Kind filter in receiveMessages is what tells them apart",
+			"Something on the shutdown path is reaching dropCoverage — check whether receiveMessages "+
+			"now processes a confirmation on the way out instead of leaving through ctx.Done()",
 			ResetReasonSubscriptionResumed, before, after)
 	}
 }
