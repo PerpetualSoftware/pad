@@ -260,6 +260,25 @@ type RedisBus struct {
 	knownFrom      int64
 	lastAppendedID int64
 
+	// highWaterID is the highest id this instance has EVER appended in the
+	// current epoch, and it exists because lastAppendedID does not survive
+	// dropCoverage (BUG-2739, codex round 13).
+	//
+	// Backward-counter detection reads "did an id arrive at or below what we
+	// already hold", and dropCoverage answers 0 to that question — so a
+	// counter reset that happens DURING the outage that caused the drop
+	// arrives afterwards looking like an ordinary cold start, and
+	// counter_backward is never reported. That composite is not exotic: a
+	// Redis restarted from a stale snapshot drops every connection (the
+	// resubscription) and restores watchevents_seq to an older value (the
+	// reset), in one event.
+	//
+	// It changes no coverage decision — both roads reach knownFrom = n.ID
+	// over an emptied buffer — so this is purely the OPERATOR's signal, which
+	// docs/deployment.md leans on per migration phase. Reset only when the
+	// epoch changes, since ids from a new space are not comparable with it.
+	highWaterID int64
+
 	// epoch identifies the id space these ids belong to. A change means the
 	// counter was reset and the buffer describes a sequence that no longer
 	// exists — see redisWatchEpochSuffix and fanOutFromRedis.
@@ -989,6 +1008,9 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 		b.replay = newReplayBuffer(b.replaySize)
 		b.lastAppendedID = 0
 		b.knownFrom = 0
+		// The new space's ids are not comparable with the old space's high
+		// water mark, so it goes with the epoch it belonged to.
+		b.highWaterID = 0
 		b.epochJustChanged = true
 		pending.reset(ResetReasonEpochChange)
 		// Every live subscriber's coverage just ended (BUG-2730). Ending it
@@ -1014,6 +1036,28 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 
 	// Coverage bookkeeping before the append — see knownFrom's comment.
 	switch {
+	case b.lastAppendedID == 0 && !b.epochJustChanged && b.highWaterID > 0 && n.ID <= b.highWaterID:
+		// A COLD START THAT IS ACTUALLY A COUNTER RESET (codex round 13).
+		//
+		// lastAppendedID is 0 because dropCoverage zeroed it, not because
+		// this instance is new — and the id that arrived is at or below what
+		// we held before that drop, which is the counter having gone
+		// backwards. Without this arm the reset is indistinguishable from a
+		// cold start and counter_backward is never reported, even though the
+		// operator is looking at exactly the Redis incident that produces
+		// both at once.
+		//
+		// It reaches the same COVERAGE decision as the arm below —
+		// knownFrom = n.ID over an already-empty buffer — so this exists for
+		// the report and the signal, not to change what any client is told.
+		slog.Warn("watchevents: notification id went backwards across a coverage drop; "+
+			"the Redis sequence counter was reset during the outage",
+			"high_water", b.highWaterID, "got", n.ID)
+		b.knownFrom = n.ID
+		b.highWaterID = n.ID
+		pending.reset(ResetReasonCounterBackward)
+		b.signalAllLocked()
+
 	case b.lastAppendedID == 0:
 		// Cold start: this instance knows nothing before this id, so a client
 		// resuming from the id JUST BELOW it is contiguous with our view and
@@ -1071,6 +1115,11 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			"previous", b.lastAppendedID, "got", n.ID)
 		b.replay = newReplayBuffer(b.replaySize)
 		b.knownFrom = n.ID
+		// The high water mark REBASES onto the new space here, and must:
+		// leaving it at the old space's peak would make every id of the
+		// restarted sequence look backward to the cold-start arm after any
+		// later dropCoverage, turning one reset into a run of false ones.
+		b.highWaterID = n.ID
 		pending.reset(ResetReasonCounterBackward)
 		b.signalAllLocked()
 
@@ -1098,6 +1147,9 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		b.signalAllLocked()
 	}
 	b.lastAppendedID = n.ID
+	if n.ID > b.highWaterID {
+		b.highWaterID = n.ID
+	}
 
 	b.replay.append(n)
 

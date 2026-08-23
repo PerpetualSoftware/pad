@@ -533,3 +533,141 @@ func TestAResubscriptionOnAnIdleBusStillEndsCoverage(t *testing.T) {
 			"an empty buffer is not evidence that nothing was missed, it is the absence of evidence either way")
 	}
 }
+
+// A COUNTER RESET THAT HAPPENS DURING THE RECONNECT WINDOW (codex round 13).
+//
+// The two conditions were covered separately and their COMPOSITION was not,
+// which is where the regression lived: dropCoverage zeroes lastAppendedID, so
+// a reset that arrives after it looks like an ordinary cold start and
+// counter_backward is never reported. Not an exotic pairing — a Redis
+// restarted from a stale snapshot drops every connection AND restores
+// watchevents_seq to an older value in one event.
+//
+// Driven through fanOutLocally rather than through a real Redis, because
+// miniredis will not evict a key mid-test on demand; the arm under test is
+// the local bookkeeping, and the reconnect half is covered by the tests above
+// that DO sever a connection.
+func TestACounterResetDuringTheReconnectWindowIsStillReported(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+	obs := newRecordingObserver()
+	b.SetObserver(obs)
+
+	for _, id := range []int64{1, 2, 3} {
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-1"})
+	}
+
+	// CONTROL: an ordinary contiguous stream reports nothing.
+	if got := obs.snapshot(); len(got.resets) != 0 || got.gaps != 0 {
+		t.Fatalf("a contiguous stream must report nothing, got resets=%v gaps=%d", got.resets, got.gaps)
+	}
+
+	// The outage. dropCoverage zeroes lastAppendedID; the counter is reset in
+	// Redis while we are away.
+	b.dropCoverage(ResetReasonSubscriptionResumed)
+
+	// The first notification of the restarted sequence.
+	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-2"})
+
+	got := obs.snapshot()
+	if got.resets[ResetReasonCounterBackward] != 1 {
+		t.Fatalf("a counter reset inside the reconnect window must still be reported as %q, got %v — "+
+			"lastAppendedID does not survive dropCoverage, so backward detection needs the separate high water mark",
+			ResetReasonCounterBackward, got.resets)
+	}
+
+	// AND THE MARK REBASED, so the restarted sequence is not read as a run of
+	// further resets. Without the rebase this is where one incident becomes a
+	// stream of false counter_backward reports.
+	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-3"})
+	b.dropCoverage(ResetReasonSubscriptionResumed)
+	b.fanOutLocally(Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-4"})
+
+	if after := obs.snapshot().resets[ResetReasonCounterBackward]; after != 1 {
+		t.Fatalf("ids climbing within the NEW space must not report further resets: %q went 1 -> %d",
+			ResetReasonCounterBackward, after)
+	}
+}
+
+// The same rebase obligation on the ORIGINAL backward arm — the one that fires
+// when lastAppendedID is still set — which is a separate site with the
+// identical failure mode and was covered by nothing.
+//
+// A reset detected there leaves the instance tracking a small id while the
+// high water mark still holds the old space's peak. Every later id of the
+// restarted sequence is below that peak, so the first coverage drop after it
+// turns one incident into a second, false reset — and then another, and
+// another. Verified by mutation: without this test, dropping the rebase from
+// that arm survives the suite.
+func TestTheOriginalBackwardArmRebasesTheHighWaterMark(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+	obs := newRecordingObserver()
+	b.SetObserver(obs)
+
+	for _, id := range []int64{98, 99, 100} {
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-1"})
+	}
+
+	// The counter resets while we are CONNECTED, so the original arm sees it.
+	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-2"})
+	if got := obs.snapshot(); got.resets[ResetReasonCounterBackward] != 1 {
+		t.Fatalf("the connected counter reset must be reported once, got %v", got.resets)
+	}
+
+	// The new space climbs normally, then a flap drops coverage.
+	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-3"})
+	b.dropCoverage(ResetReasonSubscriptionResumed)
+	b.fanOutLocally(Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-4"})
+
+	if after := obs.snapshot().resets[ResetReasonCounterBackward]; after != 1 {
+		t.Fatalf("id 3 of the restarted sequence is not a second reset: %q went 1 -> %d — "+
+			"the original backward arm must rebase the high water mark onto the new space",
+			ResetReasonCounterBackward, after)
+	}
+}
+
+// An epoch change discards the high water mark, because ids from a new space
+// are not comparable with the old space's peak.
+//
+// Without this the first notification of a new epoch — which legitimately
+// restarts low — would be reported as a counter reset, turning every
+// id-space migration into a false alarm on the metric operators use to WATCH
+// that migration.
+func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
+	b := newLocalOnlyBus(64)
+	defer b.Close()
+	obs := newRecordingObserver()
+	b.SetObserver(obs)
+
+	b.fanOutFromRedis("epoch-a", Notification{ID: 90, Kind: KindComment, ItemRef: "TASK-1"})
+	b.fanOutFromRedis("epoch-a", Notification{ID: 91, Kind: KindComment, ItemRef: "TASK-2"})
+
+	// The migration: new epoch, ids restart from 1.
+	b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-3"})
+
+	got := obs.snapshot()
+	if got.resets[ResetReasonEpochChange] != 1 {
+		t.Fatalf("the epoch change must be reported, got %v", got.resets)
+	}
+	if got.resets[ResetReasonCounterBackward] != 0 {
+		t.Fatalf("a new epoch's low ids are not a counter reset, got %v — "+
+			"the high water mark must be discarded with the epoch it belonged to", got.resets)
+	}
+
+	// THE LEG THAT ACTUALLY DISCRIMINATES, and the assertion above does not:
+	// the epoch arm sets epochJustChanged, which suppresses backward
+	// detection for the very next notification whether or not the mark was
+	// cleared. A STALE mark only bites later — after a coverage drop, when an
+	// ordinary id of the new space falls below the OLD space's peak and is
+	// read as a reset. Verified by mutation: without this leg, deleting
+	// `highWaterID = 0` from the epoch arm survives the whole suite.
+	b.fanOutFromRedis("epoch-b", Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-4"})
+	b.dropCoverage(ResetReasonSubscriptionResumed)
+	b.fanOutFromRedis("epoch-b", Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-5"})
+
+	if after := obs.snapshot().resets[ResetReasonCounterBackward]; after != 0 {
+		t.Fatalf("an ordinary id of the new epoch must not be read as a counter reset after a coverage drop, got %d — "+
+			"the old epoch's high water mark was not discarded", after)
+	}
+}
