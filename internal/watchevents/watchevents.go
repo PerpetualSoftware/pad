@@ -506,7 +506,18 @@ type subscriber struct {
 }
 
 // signalGap raises this subscriber's gap flag without blocking. Safe to call
-// with the bus lock held: the send can never block.
+// with the bus lock held: the send can never block.//
+// INVARIANT FOR ANYONE ADDING A THIRD CAUSE: every cause that reaches this
+// channel must have the SAME remediation — "your position is untrustworthy,
+// reconcile". The channel carries no payload, and that is the enforcement
+// rather than an oversight: a distinction it cannot represent cannot be
+// silently lost downstream, because it cannot be put in. Coalescing makes the
+// same point from the other side — two causes arriving between two reads
+// become one signal, so any per-cause handling would already be undecidable.
+//
+// A condition needing different handling, different telemetry, or precedence
+// over another does NOT belong here. Give it its own seam, or the first
+// maintainer to need the distinction will discover it was thrown away.
 func (s *subscriber) signalGap() {
 	select {
 	case s.gaps <- struct{}{}:
