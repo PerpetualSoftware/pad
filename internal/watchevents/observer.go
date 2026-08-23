@@ -74,10 +74,16 @@ type Observer interface {
 	// USER-VISIBLE, since it produces a resync.
 	ResumeGap()
 
-	// SequenceReset reports that the id space itself changed under this
-	// instance and the replay buffer was dropped. reason is bounded:
-	// "epoch_change" (the shared epoch key changed) or "counter_backwards"
-	// (an id arrived at or below the high-water mark).
+	// SequenceReset reports that this instance's replay coverage was
+	// dropped. reason is bounded: "epoch_change" (the shared epoch key
+	// changed), "counter_backwards" (an id arrived at or below the
+	// high-water mark), "subscription_resumed" (go-redis reconnected and
+	// re-subscribed, so the outage's notifications never arrived) or
+	// "undecodable_message" (a message on the channel could not be parsed).
+	//
+	// The first two mean the ID SPACE changed under us; the last two mean it
+	// did not and we simply missed part of it. Both end coverage, because
+	// the buffer cannot account for the span either way.
 	SequenceReset(reason string)
 
 	// ReceiveLoopExited reports that the single consumer of the shared
@@ -195,4 +201,15 @@ const (
 
 	ResetReasonEpochChange     = "epoch_change"
 	ResetReasonCounterBackward = "counter_backwards"
+
+	// ResetReasonSubscriptionResumed means go-redis reconnected and
+	// re-subscribed: whatever was published while the connection was down
+	// never reached this instance. Expect these during a Redis failover and
+	// expect them to stop afterwards.
+	ResetReasonSubscriptionResumed = "subscription_resumed"
+
+	// ResetReasonUndecodableMessage means a message on the watch channel
+	// could not be parsed, so this instance missed a notification whose id it
+	// cannot even name. Expect zero; suspect a namespace collision.
+	ResetReasonUndecodableMessage = "undecodable_message"
 )

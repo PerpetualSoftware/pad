@@ -228,14 +228,32 @@ reading the metrics below, and for anyone writing a third-party consumer:
   or this instance itself missed messages from Redis, which every subscriber on
   it shares.
 
-  **The second cause is detected differently on the two streams, and the
-  coverage is not yet equal.** The activity stream notices a pub/sub
-  resubscription and an undecodable message directly, and ends the affected
-  workspace's coverage. The watch stream notices neither: it learns of a hole
-  only when a LATER notification arrives with a non-contiguous ID, so a flap
-  that loses the newest notification with nothing published after it leaves a
-  connected CLI silently stale until something else is published. Porting the
-  activity stream's detection to the watch bus is tracked as BUG-2739.
+  **Both streams now detect the same three things** (BUG-2739): a hole in the
+  received ID sequence, a pub/sub resubscription, and a message that could not
+  be decoded. The first is found by ID arithmetic and so needs a LATER
+  notification to expose it; the other two are found the moment they happen,
+  which is what covers the case ID arithmetic never reaches — a flap that
+  loses the newest notification on a stream that then goes quiet. Before this,
+  the watch stream detected only the first, so that flap left a connected CLI
+  silently stale indefinitely.
+
+  **Two gaps in that detection remain, and an operator should know both.** A
+  message lost in transit with the connection intact — no flap, no decode
+  failure, just a message that never arrived (BUG-2735): on the watch stream a
+  LATER notification exposes it as an ID gap, while on the activity stream,
+  whose per-workspace IDs are non-consecutive by construction, nothing local
+  ever does. And a HALF-OPEN connection — a route that stopped carrying
+  traffic without closing, so nothing ever resubscribes and no message ever
+  arrives to be non-consecutive with (BUG-2738). Do not assume go-redis's
+  pub/sub health check covers the second: `PubSub.Ping` writes the command and
+  never reads a reply, so it reports healthy for as long as the socket accepts
+  writes. Detecting it needs application-level idle tracking, which needs a
+  threshold, which is a deployment decision rather than an implementation
+  detail.
+
+  A RECONNECTING client is covered in both cases on the watch stream anyway,
+  because a resume consults the shared counter rather than local state alone.
+  It is the client holding a stream open that these two can leave stale.
 
 The second case is newer — before it, a held-open stream that missed events was
 never told, and a later delivered event advanced its cursor past the missing
@@ -310,7 +328,7 @@ Alert on these instead:
 | `pad_watchevents_midstream_resyncs_total` | Watch-stream subscribers told MID-STREAM that they missed notifications, on a connection that stayed open. New in BUG-2730 |
 | `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber — that connection's buffer was full. Since BUG-2730 that subscriber is told (`sync_required`, mid-stream) rather than silently under-served, so a rise here produces a rise in `pad_watchevents_midstream_resyncs_total`, one client at a time |
-| `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
+| `pad_watchevents_sequence_resets_total` | Watch replay coverage dropped, by reason. `epoch_change` — the shared counter's ID space changed generation. `counter_backwards` — an ID arrived at or below the high-water mark with no generation change. `subscription_resumed` — a pub/sub connection dropped and re-subscribed, so whatever was published during the outage never arrived; expect these during a Redis failover and expect them to stop afterwards. `undecodable_message` — a message on the watch channel could not be parsed, so a notification whose ID cannot even be named was missed; expect zero, and suspect a namespace collision. The first two mean the ID space changed under this instance; the last two mean it did not and part of it was simply missed. Every reason also announces to live subscribers, so each moves `pad_watchevents_midstream_resyncs_total` once per subscriber connected at the time |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch resume counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
 | `pad_event_midstream_resyncs_total` | Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open. New in BUG-2730, and the counter to watch when judging whether that fix is costing more resyncs than it is worth. It counts ANNOUNCEMENTS, not causes and not distinct clients: a reset that drops buffers moves it once per live subscriber (and that ratio against `pad_event_sequence_resets_total` is the fan-out); a burst of drops on ONE connection moves it once, because signals coalesce and are rate-limited per connection; and a coverage loss on a workspace with no buffer yet moves it while every cause counter stays flat, because there was no coverage to end but the subscribers still have a hole |
