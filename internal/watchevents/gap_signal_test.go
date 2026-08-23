@@ -146,3 +146,59 @@ func TestMemoryBusSignalsTheDroppedSubscriberOnly(t *testing.T) {
 		t.Error("a subscriber that received everything was told it had missed something")
 	}
 }
+
+// TestEpochChangeSignalsEverySubscriber and its sibling below cover the other
+// two per-instance arms. The sequence-gap arm was tested first because it is
+// the one the bug was filed against; these two reach the same signal by
+// different reasoning, and a fix applied to one arm and not the others would
+// otherwise ship looking complete.
+func TestEpochChangeSignalsEverySubscriber(t *testing.T) {
+	b := newLocalOnlyBus(16)
+	defer b.Close()
+
+	chA, gapsA := b.Subscribe()
+	chB, gapsB := b.Subscribe()
+	defer b.Unsubscribe(chA)
+	defer b.Unsubscribe(chB)
+
+	b.fanOutFromRedis("epoch-1", Notification{ID: 1, Kind: "test"})
+	<-chA
+	<-chB
+	if raised(gapsA) || raised(gapsB) {
+		t.Fatal("adopting the first epoch raised the flag; there was nothing to miss")
+	}
+
+	// A different epoch: the id space this instance was tracking is gone, so
+	// every buffered id is meaningless and every subscriber has a hole.
+	b.fanOutFromRedis("epoch-2", Notification{ID: 1, Kind: "test"})
+
+	if !raised(gapsA) || !raised(gapsB) {
+		t.Error("an epoch change invalidates the whole buffer, so every subscriber must be told")
+	}
+}
+
+// TestCounterBackwardsSignalsEverySubscriber is the arm for a shared counter
+// that restarted inside one epoch — evicted under maxmemory, lost to a
+// FLUSHDB, restored from an older snapshot.
+func TestCounterBackwardsSignalsEverySubscriber(t *testing.T) {
+	b := newLocalOnlyBus(16)
+	defer b.Close()
+
+	chA, gapsA := b.Subscribe()
+	chB, gapsB := b.Subscribe()
+	defer b.Unsubscribe(chA)
+	defer b.Unsubscribe(chB)
+
+	b.fanOutLocally(Notification{ID: 100, Kind: "test"})
+	<-chA
+	<-chB
+	if raised(gapsA) || raised(gapsB) {
+		t.Fatal("a first notification raised the flag")
+	}
+
+	b.fanOutLocally(Notification{ID: 3, Kind: "test"})
+
+	if !raised(gapsA) || !raised(gapsB) {
+		t.Error("a counter reset drops the whole buffer, so every subscriber must be told")
+	}
+}

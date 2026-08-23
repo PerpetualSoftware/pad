@@ -69,7 +69,10 @@ func (b *gapWatchBus) SubscribeAndReplaySince(sinceID int64) (chan watchevents.N
 // cannot vouch for.
 func TestActivityStreamAnnouncesAGapMidStream(t *testing.T) {
 	srv := testServerWithEvents(t)
-	bus := &gapEventBus{EventBus: events.New(), gaps: make(chan struct{}, 1)}
+	m := metrics.New()
+	srv.SetMetrics(m)
+	inner := events.New()
+	bus := &gapEventBus{EventBus: inner, gaps: make(chan struct{}, 1)}
 	srv.SetEventBus(bus)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -81,10 +84,26 @@ func TestActivityStreamAnnouncesAGapMidStream(t *testing.T) {
 	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, "")
 	waitForFrameWithEvent(t, frames, "connected")
 
+	before := counterValue(t, m.EventResumeGapsTotal)
 	bus.gaps <- struct{}{}
 
 	frame := waitForFrameWithEvent(t, frames, "sync_required")
 	assertRetiresCursor(t, frame)
+
+	if got := counterValue(t, m.EventResumeGapsTotal); got <= before {
+		t.Errorf("a mid-stream gap did not move the sync_required counter: %v -> %v", before, got)
+	}
+
+	// THE STREAM MUST STAY OPEN (codex round 3). sync_required tells the
+	// client to reconcile, not that the connection is over — and a handler
+	// that emitted it and then returned would have passed everything above.
+	// An ordinary event arriving afterwards is the proof.
+	inner.Publish(events.Event{
+		Type:        events.ItemCreated,
+		WorkspaceID: workspaceIDForSlug(t, srv, slug),
+		Collection:  "tasks",
+	})
+	waitForFrameWithEvent(t, frames, events.ItemCreated)
 }
 
 // TestActivityStreamStaysQuietWithoutAGap is the control. Without it the test
@@ -177,6 +196,31 @@ func TestWatchStreamAnnouncesAGapMidStream(t *testing.T) {
 
 	frame := waitForFrameWithEvent(t, frames, "sync_required")
 	assertRetiresCursor(t, frame)
+
+	// Same liveness claim as the activity twin (codex round 3). This stream
+	// has no cheap ordinary event to publish — a notification needs a watch
+	// predicate to match — so the assertion is that the handler did not
+	// return: a closed frames channel is what a returned handler looks like
+	// from here.
+	assertStreamStillOpen(t, frames, 300*time.Millisecond)
+}
+
+// assertStreamStillOpen fails if the frame channel closes within the window,
+// which is what a handler returning looks like to a reader.
+func assertStreamStillOpen(t *testing.T, frames <-chan string, within time.Duration) {
+	t.Helper()
+	deadline := time.After(within)
+	for {
+		select {
+		case _, ok := <-frames:
+			if !ok {
+				t.Fatal("the stream closed after the mid-stream sync_required; " +
+					"the signal tells a client to reconcile, not that the connection is over")
+			}
+		case <-deadline:
+			return
+		}
+	}
 }
 
 // TestWatchStreamStaysQuietWithoutAGap is that handler's control leg.
@@ -247,6 +291,12 @@ func assertNoFrameWithEvent(t *testing.T, frames <-chan string, eventType string
 // The control leg is the second half: an unreadable cursor on a connection
 // that IS admitted must still count, or the fix would read as correct while
 // having simply deleted the increment.
+//
+// SCOPE, recorded because codex round 3 raised it: origin/main also does not
+// count a refused connection — it parsed the cursor after admission, so the
+// question never arose there. This test therefore does NOT argue for the
+// parse-before-subscribe ordering; it is a regression test for the defect that
+// ordering introduced, and it fails if the increment moves back.
 func TestRefusedConnectionDoesNotCountASyncRequired(t *testing.T) {
 	srv := testServerWithEvents(t)
 	m := metrics.New()

@@ -108,9 +108,12 @@ func TestSubscribeAndReplayIsAtomic(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	// One event before the resume, so the cursor names a real position and
-	// the replay has something legitimate to carry.
-	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before"})
+	// TWO events before the resume: the cursor names the first, so the second
+	// is what the replay must legitimately carry. One would not do — a cursor
+	// at the only event's id leaves nothing above it, and the replay would be
+	// correctly empty either way.
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-1"})
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-2"})
 	cursor := b.EventsSince("ws-1", 0)[0].ID
 
 	published := make(chan struct{})
@@ -134,6 +137,14 @@ func TestSubscribeAndReplayIsAtomic(t *testing.T) {
 	defer b.Unsubscribe(ch)
 	<-published
 
+	// The seeded event MUST be in the replay. Without this leg the test would
+	// pass for an implementation that always answers "cannot vouch" (nil
+	// missed) and delivers everything live — which satisfies "never both" by
+	// never replaying anything (codex round 3).
+	if !containsItem(missed, "before-2") {
+		t.Fatalf("the event above the cursor was not replayed; missed = %+v", missed)
+	}
+
 	inReplay := containsItem(missed, "during")
 	inLive := drainContains(t, ch, "during")
 
@@ -154,7 +165,7 @@ func TestTwoStepSubscribeThenReplayDuplicates(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before"})
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-1"})
 	cursor := b.EventsSince("ws-1", 0)[0].ID
 
 	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
@@ -197,5 +208,113 @@ func drainContains(t *testing.T, ch chan Event, itemID string) bool {
 		default:
 			return found
 		}
+	}
+}
+
+// TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo is the per-subscriber
+// scope on the multi-instance implementation, which keeps subscribers indexed
+// by workspace and so has its own way to get the scope wrong.
+func TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
+	b := newTestRedisBus(t)
+
+	slow, slowGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	fast, fastGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(slow)
+	defer b.Unsubscribe(fast)
+
+	// Contiguous ids so no coverage arm can fire and take credit.
+	for i := 1; i <= 64; i++ {
+		b.fanOutLocally(Event{ID: int64(i), Type: ItemUpdated, WorkspaceID: "ws-1"})
+		<-fast
+	}
+	if raised(slowGaps) {
+		t.Fatal("a full-but-not-yet-overflowing channel raised the flag")
+	}
+
+	b.fanOutLocally(Event{ID: 65, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	<-fast
+
+	if !raised(slowGaps) {
+		t.Error("the subscriber whose event was dropped was not told")
+	}
+	if raised(fastGaps) {
+		t.Error("a subscriber that received every event was told it had missed one")
+	}
+}
+
+// TestCoverageDropSignalsOnlyThatWorkspace pins the per-INSTANCE scope on the
+// activity bus. Ending a workspace's coverage makes its next RESUME honest and
+// says nothing to a client still holding the stream open, which is the case
+// this signal exists for — but a dropped subscription says nothing about any
+// OTHER workspace's channel, so the control leg is a second workspace's
+// subscriber staying quiet.
+func TestCoverageDropSignalsOnlyThatWorkspace(t *testing.T) {
+	b := newTestRedisBus(t)
+
+	affected, affectedGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	bystander, bystanderGaps, ok := b.SubscribeIfAllowed("ws-2", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(affected)
+	defer b.Unsubscribe(bystander)
+
+	// A buffer must exist, or dropWorkspaceCoverage returns early with
+	// nothing to end — and the test would pass for a bus that never signals.
+	b.fanOutLocally(Event{ID: 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	<-affected
+	if raised(affectedGaps) {
+		t.Fatal("an ordinary event raised the coverage flag")
+	}
+
+	b.dropWorkspaceCoverage("ws-1", ResetReasonSubscriptionResumed, b.currentSubGen("ws-1"))
+
+	if !raised(affectedGaps) {
+		t.Error("a subscriber whose workspace coverage ended was not told")
+	}
+	if raised(bystanderGaps) {
+		t.Error("a subscriber on an unaffected workspace was told it had missed something")
+	}
+}
+
+// TestIDSpaceResetSignalsEveryWorkspace is the other per-instance scope: an
+// ID-space change invalidates every buffer at once, so every subscriber has a
+// hole. This is the case where the bystander in the test above SHOULD be told,
+// which is what makes the two tests a pair rather than a repetition.
+func TestIDSpaceResetSignalsEveryWorkspace(t *testing.T) {
+	b := newTestRedisBus(t)
+
+	one, oneGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	two, twoGaps, ok := b.SubscribeIfAllowed("ws-2", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(one)
+	defer b.Unsubscribe(two)
+
+	b.fanOutLocally(Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	<-one
+	b.fanOutLocally(Event{ID: 11, Type: ItemUpdated, WorkspaceID: "ws-2"})
+	<-two
+	if raised(oneGaps) || raised(twoGaps) {
+		t.Fatal("ordinary events raised the flag")
+	}
+
+	b.dropAllBuffers(floorRaise)
+
+	if !raised(oneGaps) || !raised(twoGaps) {
+		t.Error("an ID-space reset invalidates every buffer, so every subscriber must be told")
 	}
 }
