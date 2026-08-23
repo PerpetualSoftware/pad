@@ -571,10 +571,13 @@ func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
 // rejects: a total, permanent drop, arrived at through the mechanism meant to
 // prevent it.
 //
-// Each case publishes with the generation key corrupted, so the repair path
-// runs, and asserts the event survives with a USABLE epoch.
-func TestABrokenClockDoesNotProduceAnUnpublishableEpoch(t *testing.T) {
-	genKey := redisns.Default.Name(redisEpochGenSuffix)
+// SPLIT INTO A PURE TABLE PLUS ONE WIRED CASE, deliberately. The clamp's
+// behaviour is arithmetic and needs no Redis; standing up a server per row
+// bought nothing and cost five of them, on a package whose timing-sensitive
+// tests are already load-fragile (BUG-2742). The end-to-end leg below is what
+// stops the table being a unit test for a function nothing calls.
+func TestClampGenerationSeed(t *testing.T) {
+	t.Parallel()
 
 	for _, tc := range []struct {
 		name string
@@ -587,59 +590,56 @@ func TestABrokenClockDoesNotProduceAnUnpublishableEpoch(t *testing.T) {
 		{"ordinary", 1700000000, "1700000000"},
 		{"absurdly far future", 1 << 62, "99999999999999999"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := clampGenerationSeed(tc.unix); got != tc.want {
-				t.Fatalf("clampGenerationSeed(%d) = %s, want %s", tc.unix, got, tc.want)
-			}
+		if got := clampGenerationSeed(tc.unix); got != tc.want {
+			t.Errorf("clampGenerationSeed(%d) = %s, want %s (%s)", tc.unix, got, tc.want, tc.name)
+		}
+	}
+}
 
-			// AND THE END TO END LEG, because the unit assertion above would
-			// pass just as well against a clamp nothing calls.
-			mr := miniredis.RunT(t)
-			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-			t.Cleanup(func() { _ = client.Close() })
-			b := NewRedisBusWithKeys(client, redisns.Default, true)
-			b.nowUnix = func() int64 { return tc.unix }
-			t.Cleanup(b.Close)
+// THE WIRING, which the table above cannot prove: a clock that would have been
+// fatal still publishes a decodable event with a usable epoch.
+//
+// Zero is the case to drive end to end — it is the one that reproduced the
+// original failure, since "0" fails the epoch guard's ^[1-9] and sent the
+// script back into the repair for the same bad seed.
+func TestABrokenClockDoesNotProduceAnUnpublishableEpoch(t *testing.T) {
+	genKey := redisns.Default.Name(redisEpochGenSuffix)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
 
-			next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
-			ctx := context.Background()
+	b, _ := newSeededFlippedBus(t)
+	b.nowUnix = func() int64 { return 0 }
 
-			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "a"})
-			if _, _, err := decodePayload(next()); err != nil {
-				t.Fatalf("fixture: %v", err)
-			}
+	next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
+	ctx := context.Background()
 
-			// CLEAR THE EPOCH, or no rotation branch fires and the repair
-			// never runs — the second publish would simply reuse the epoch
-			// the fixture minted. Three of these cases passed that way on the
-			// first attempt, because the epoch the fixture mints is 1 and
-			// three of the expected clamps are also 1: vacuous, and only
-			// visible because the other two disagreed.
-			epochKey := redisns.Default.Name(redisEpochSuffix)
-			if err := b.client.Del(ctx, epochKey).Err(); err != nil {
-				t.Fatalf("clear the epoch: %v", err)
-			}
-			if err := b.client.Del(ctx, genKey).Err(); err != nil {
-				t.Fatalf("clear the generation key: %v", err)
-			}
-			if err := b.client.RPush(ctx, genKey, "x").Err(); err != nil {
-				t.Fatalf("corrupt the generation key: %v", err)
-			}
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "a"})
+	if _, _, err := decodePayload(next()); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
 
-			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "b"})
-			epoch, ev, err := decodePayload(next())
-			if err != nil {
-				t.Fatalf("a repair under a %s clock must still publish a decodable event: %v", tc.name, err)
-			}
-			if ev.ItemID != "b" {
-				t.Fatalf("the event must carry its body, got %+v", ev)
-			}
-			if epoch <= 0 {
-				t.Fatalf("the published epoch must be a positive generation, got %d", epoch)
-			}
-			if got := strconv.FormatInt(epoch, 10); got != tc.want {
-				t.Fatalf("published epoch %s, want the clamped seed %s", got, tc.want)
-			}
-		})
+	// Clear the epoch, or no rotation branch fires and the repair never runs
+	// — the second publish would just reuse the epoch the fixture minted. An
+	// earlier version of this test missed that and passed vacuously wherever
+	// the expected clamp happened to equal that epoch.
+	if err := b.client.Del(ctx, epochKey).Err(); err != nil {
+		t.Fatalf("clear the epoch: %v", err)
+	}
+	if err := b.client.Del(ctx, genKey).Err(); err != nil {
+		t.Fatalf("clear the generation key: %v", err)
+	}
+	if err := b.client.RPush(ctx, genKey, "x").Err(); err != nil {
+		t.Fatalf("corrupt the generation key: %v", err)
+	}
+
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "b"})
+	epoch, ev, err := decodePayload(next())
+	if err != nil {
+		t.Fatalf("a repair under a zero clock must still publish a decodable event: %v", err)
+	}
+	if ev.ItemID != "b" {
+		t.Fatalf("the event must carry its body, got %+v", ev)
+	}
+	if epoch != 1 {
+		t.Fatalf("want the clamped seed 1 on the wire, got %d", epoch)
 	}
 }
