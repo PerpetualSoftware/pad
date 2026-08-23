@@ -278,3 +278,60 @@ func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
 		})
 	}
 }
+
+// The generation reaching the wire must be the one in the key, at every
+// magnitude the guard admits (BUG-2740, codex round 2).
+//
+// Redis hands an integer reply to Lua as a NUMBER, and Lua 5.1 numbers are
+// doubles printed with %.14g — so tostring() stops being faithful BELOW the
+// 18 digits this guard accepts. Measured at the boundary rather than reasoned
+// about: a counter at 999999999999999998 increments to 999999999999999999,
+// and tostring() renders that 1000000000000000000 while GET returns it
+// exactly. The published epoch and the stored generation would disagree, and
+// the receiver would adopt a generation the publisher does not hold.
+//
+// 18 digits is not a magnitude a generation counter reaches by counting — it
+// is the magnitude a HAND-EDITED or collided key arrives at, which is the
+// same class of event this whole guard exists for.
+func TestThePublishedGenerationMatchesTheStoredOneAtTheGuardsLimit(t *testing.T) {
+	b, _ := newSeededFlippedBus(t)
+	genKey := redisns.Default.Name(redisEpochGenSuffix)
+	epochKey := redisns.Default.Name(redisEpochSuffix)
+	next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
+	ctx := context.Background()
+
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	if _, _, err := decodePayload(next()); err != nil {
+		t.Fatalf("fixture: the first publish must succeed, got %v", err)
+	}
+
+	// A valid 18-digit generation: inside the guard, so it is INCREMENTED
+	// rather than repaired — which is the path where the stringification
+	// happens.
+	const nearLimit = "999999999999999998"
+	if err := b.client.Set(ctx, genKey, nearLimit, 0).Err(); err != nil {
+		t.Fatalf("seed the generation: %v", err)
+	}
+	if err := b.client.Del(ctx, epochKey).Err(); err != nil {
+		t.Fatalf("clear the epoch: %v", err)
+	}
+
+	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-11"})
+	published, _, err := decodePayload(next())
+	if err != nil {
+		t.Fatalf("publish at the guard's limit: %v", err)
+	}
+
+	stored, err := b.client.Get(ctx, genKey).Result()
+	if err != nil {
+		t.Fatalf("read the generation back: %v", err)
+	}
+	if strconv.FormatInt(published, 10) != stored {
+		t.Fatalf("the published generation %d must equal the stored one %s — "+
+			"tostring() of the INCR result loses precision at this magnitude; read the value back with GET",
+			published, stored)
+	}
+	if stored != "999999999999999999" {
+		t.Fatalf("the counter must have incremented exactly once, it holds %s", stored)
+	}
+}

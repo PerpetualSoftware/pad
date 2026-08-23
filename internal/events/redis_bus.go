@@ -261,10 +261,38 @@ local function next_gen()
     -- The seed arrives as ARGV[3] rather than from redis.call('TIME') so the
     -- script stays deterministic and the exact restart value is assertable in
     -- a test. (TIME does work here — measured — but nothing needs it to.)
+    --
+    -- WHAT THE SEED DOES NOT GUARANTEE, stated because 'strictly above any
+    -- increment-from-1 history' is the ruling's premise and is not the same
+    -- as monotonic (codex round 2). A host clock stepped BACKWARDS, or the
+    -- key corrupted a second time within the same second, can seed a
+    -- generation at or below the one receivers already hold. Two things bound
+    -- it. Consecutive repairs are already safe without the clock: the first
+    -- one leaves a VALID counter, so the next publisher increments it rather
+    -- than reseeding. And a generation that does go backwards is DETECTED
+    -- rather than silent — BUG-2736's receivers report epoch_regressed and
+    -- stop vouching for their buffers, which costs a round of resyncs and
+    -- never merges two id spaces.
+    --
+    -- The stronger repair would be max(seed, current_epoch + 1), since the
+    -- epoch key is a second witness to the generation in use. It only helps
+    -- where that key is readable — not in the branch that fires BECAUSE the
+    -- epoch is corrupted — so it buys partial monotonicity, which is harder
+    -- to reason about than a bounded, detected residual. Raised with the lead
+    -- rather than taken unilaterally: the seed value is a ruling.
     redis.call('SET', KEYS[5], ARGV[3])
     return ARGV[3]
   end
-  return tostring(redis.call('INCR', KEYS[5]))
+  -- READ THE VALUE BACK rather than stringifying the INCR result. Redis
+  -- returns an integer reply to Lua as a NUMBER, and Lua 5.1 numbers are
+  -- doubles printed with %.14g — so tostring() stops being faithful before
+  -- the 18 digits this guard admits. Measured at the boundary: a counter at
+  -- 999999999999999998 increments to 999999999999999999, and tostring()
+  -- renders it 1000000000000000000 while GET returns it exactly. Publishing
+  -- the stringified form would put a generation on the wire that does not
+  -- match the one in the key.
+  redis.call('INCR', KEYS[5])
+  return redis.call('GET', KEYS[5])
 end
 
 if redis.call('EXISTS', KEYS[4]) == 1 then
