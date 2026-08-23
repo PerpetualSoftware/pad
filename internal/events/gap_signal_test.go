@@ -36,10 +36,12 @@ func TestDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 	defer b.Unsubscribe(slow)
 	defer b.Unsubscribe(fast)
 
-	// Exactly fills the slow subscriber's 64-deep channel; the fast one is
-	// drained each time, so only one of the two is behind.
-	const chanDepth = 64
-	for range chanDepth {
+	// Exactly fills the slow subscriber's channel; the fast one is drained
+	// each time, so only one of the two is behind. Derived rather than
+	// restated: this test's whole claim is about the boundary AT the depth,
+	// so a literal that drifts from the real one would leave it asserting
+	// something about an arbitrary number instead.
+	for range subscriberChanDepth {
 		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 		<-fast
 	}
@@ -74,7 +76,7 @@ func TestDropIsReportedToTheObserver(t *testing.T) {
 	}
 	defer b.Unsubscribe(ch)
 
-	for range 64 {
+	for range subscriberChanDepth {
 		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 	}
 	if got := obs.dropped(); len(got) != 0 {
@@ -230,7 +232,7 @@ func TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 	defer b.Unsubscribe(fast)
 
 	// Contiguous ids so no coverage arm can fire and take credit.
-	for i := 1; i <= 64; i++ {
+	for i := 1; i <= subscriberChanDepth; i++ {
 		b.fanOutLocally(Event{ID: int64(i), Type: ItemUpdated, WorkspaceID: "ws-1"})
 		<-fast
 	}
@@ -238,7 +240,7 @@ func TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 		t.Fatal("a full-but-not-yet-overflowing channel raised the flag")
 	}
 
-	b.fanOutLocally(Event{ID: 65, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutLocally(Event{ID: subscriberChanDepth + 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	<-fast
 
 	if !raised(slowGaps) {
@@ -362,76 +364,110 @@ func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
 //
 // A stress test rather than a seam-driven one: the interleaving is a
 // scheduling race with no single point to pause at once the fix is in, because
-// the fix is precisely that no such point exists. Verified to fail against the
-// unserialized version.
+// the fix is precisely that no such point exists.
+//
+// WHY IT IS SHAPED LIKE THIS — the obvious shape is the one it replaces, and
+// that one reddened CI (BUG-2742). Publishing a large burst while a goroutine
+// drains, then guarding vacuity with "at least half must arrive", makes the
+// sample size a bet on runner speed: this bus DELIBERATELY drops for a
+// subscriber that cannot keep up, so the arrival count is a function of how
+// much CPU the reader gets.
+//
+// So the sample is made untruncatable rather than large. No reader runs during
+// the publishes and no more events than the channel is deep are published, so
+// a drop cannot occur — which turns the vacuity guard into `count == total`,
+// an equality rather than a threshold.
+//
+// Detection power then comes from REPEATING the round, which is the thing a
+// bounded channel could not supply. Do not trade rounds back for a bigger
+// burst: the round count was chosen by measuring catch rate against the
+// mutation below, and the burst is what could not be measured reliably. See
+// BUG-2742 for the figures.
 func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
-	b := New()
-	defer b.Close()
+	// Enough publishers to interleave, few enough events that the subscriber
+	// channel cannot overflow.
+	const publishers = 32
+	const each = 2
+	const total = publishers * each
 
-	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
-		t.Fatal("subscribe refused")
-	}
-	defer b.Unsubscribe(ch)
+	// COMPILE-TIME premise check. Deriving `each` from subscriberChanDepth
+	// looks tidier and is a trap: integer division silently yields 0 the day
+	// the depth drops below `publishers`, and then total is 0, nothing is
+	// published, and `count == total` passes as 0 == 0 — the test going
+	// permanently vacuous with no signal at all (codex round 2). Stating the
+	// numbers and failing the BUILD when they stop being compatible is the
+	// version that cannot rot quietly.
+	const _ uint = subscriberChanDepth - total
 
-	const publishers, each = 8, 40
-	total := publishers * each
+	for round := range 40 {
+		func() {
+			b := New()
+			defer b.Close()
 
-	// Drained concurrently. The reader may legitimately MISS some — a 64-deep
-	// channel overflows and the bus drops for a slow subscriber, which is the
-	// behaviour tested elsewhere — so this reads until the stream goes quiet
-	// rather than demanding all of them. The claim under test is the ORDER of
-	// what arrives, and a minimum count below keeps it from passing vacuously.
-	received := make(chan int64, total)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case e, ok := <-ch:
-				if !ok {
-					return
-				}
-				received <- e.ID
-			case <-time.After(500 * time.Millisecond):
-				return
+			ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+			if !ok {
+				t.Fatal("subscribe refused")
 			}
-		}
-	}()
+			defer b.Unsubscribe(ch)
 
-	var wg sync.WaitGroup
-	for range publishers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range each {
-				b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+			var wg sync.WaitGroup
+			for range publishers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for range each {
+						b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+					}
+				}()
+			}
+			wg.Wait()
+
+			// Every publish has returned, so everything that will ever be in
+			// the channel is in it now: drain without blocking and without a
+			// timer. Nothing in the ASSERTION path waits on a goroutine being
+			// scheduled, which is what stops load from truncating the sample.
+			// It does not make detection deterministic: whether a broken bus
+			// actually interleaves on a given round is still up to the
+			// scheduler, which is why the round count above exists and why
+			// the header quotes a measured catch rate rather than a proof.
+			//
+			// CONTIGUOUS, not merely increasing (codex round 2): one bus, one
+			// workspace and nothing else publishing means the ids assigned are
+			// exactly base+1..base+total, so the delivered sequence must have
+			// no holes. "Increasing" would also be satisfied by a bus that
+			// dropped some of these and delivered something else with a bigger
+			// id, which is a pass for the wrong reason.
+			var prev int64
+			var count int
+		drain:
+			for {
+				select {
+				case e := <-ch:
+					count++
+					if prev != 0 && e.ID != prev+1 {
+						t.Fatalf("round %d: ids arrived as %d after %d — consecutive publishes on one "+
+							"bus must deliver consecutively; a subscriber whose cursor goes backwards "+
+							"replays on its next reconnect, and one that skips has a hole nothing "+
+							"will fill", round, e.ID, prev)
+					}
+					prev = e.ID
+				default:
+					break drain
+				}
+			}
+
+			// PREMISE, not a tolerance: with no reader draining and no more
+			// events published than the channel is deep, a drop is impossible
+			// — the channel starts empty and every publish fits.
+			// If this ever fires, the ordering assertion above ran on a
+			// truncated sample and proved less than it claims — which is the
+			// defect this test was rewritten to remove.
+			if count != total {
+				t.Fatalf("round %d: %d of %d events arrived; with a %d-deep channel and no "+
+					"concurrent reader nothing may be dropped, so the ordering check above "+
+					"ran on a sample it cannot vouch for", round, count, total, subscriberChanDepth)
 			}
 		}()
-	}
-	wg.Wait()
-
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the reader never went quiet")
-	}
-	close(received)
-
-	var prev int64
-	var count int
-	for id := range received {
-		count++
-		if id <= prev {
-			t.Fatalf("IDs arrived out of order: %d after %d — a subscriber's cursor regressed, "+
-				"so its next reconnect replays events it already has", id, prev)
-		}
-		prev = id
-	}
-	// Not vacuous: an empty or near-empty stream would satisfy the ordering
-	// check trivially.
-	if count < total/2 {
-		t.Fatalf("only %d of %d events arrived; too few to say anything about ordering", count, total)
 	}
 }
 
@@ -453,7 +489,7 @@ func TestActivityGapSignalCoalesces(t *testing.T) {
 	}
 
 	if !raised(gaps) {
-		t.Fatal("no gap signal after 200 events into a 64-deep channel")
+		t.Fatalf("no gap signal after 200 events into a %d-deep channel", subscriberChanDepth)
 	}
 	if raised(gaps) {
 		t.Error("more than one signal was queued; the channel must coalesce, not accumulate")
@@ -605,14 +641,14 @@ func TestRedisBusDropIsReportedPerSubscriber(t *testing.T) {
 	defer b.Unsubscribe(slowB)
 
 	// Fill both channels, then overflow both with ONE event.
-	for i := 1; i <= 64; i++ {
+	for i := 1; i <= subscriberChanDepth; i++ {
 		b.fanOutLocally(Event{ID: int64(i), Type: ItemUpdated, WorkspaceID: "ws-1"})
 	}
 	if got := obs.dropped(); len(got) != 0 {
 		t.Fatalf("drops reported before either channel overflowed: %v", got)
 	}
 
-	b.fanOutLocally(Event{ID: 65, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutLocally(Event{ID: subscriberChanDepth + 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	got := obs.dropped()
 	if len(got) != 2 {

@@ -199,8 +199,40 @@ func TestAReconnectOnAnIdleWorkspaceIsNotAReset(t *testing.T) {
 	// Positive control in the same test, so a bus that never reports anything
 	// at all cannot pass: once something IS buffered, the next reconnect does
 	// report.
-	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-idle"})
-	drain(t, ch, 1)
+	// PUBLISH UNTIL ONE LANDS, because after a reconnect nothing else proves
+	// the REPLACEMENT subscription is live (BUG-2742, codex rounds 8 and 9).
+	//
+	// A publish that beats the replacement is lost outright, so this wants a
+	// registration wait — but counting subscribers cannot supply one here.
+	// Measured across the cut, the count goes 1 -> 0 -> 1 within a couple of
+	// milliseconds: the STALE registration still reads 1 until miniredis
+	// notices the closed socket, so a count-based wait placed after the cut
+	// returns instantly on the dead subscription. Waiting for the 1 -> 0
+	// transition is not available either — in one trial of five the count
+	// never dropped inside 3s, so that wait can hang.
+	//
+	// An event arriving IS the proof, and it is the only one that cannot be
+	// satisfied by the stale connection. Retrying costs nothing when the
+	// subscription is already live (the first publish returns immediately)
+	// and cannot pass early when it is not. The extra events some rounds
+	// publish are harmless: what the rest of the test needs is a buffer with
+	// something in it, not a buffer with exactly one thing in it.
+	//
+	// The outer bound is a LIVENESS bound; the inner one is a retry cadence.
+	// Neither is a latency assertion.
+	live := false
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline) && !live; {
+		b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-idle"})
+		select {
+		case <-ch:
+			live = true
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if !live {
+		t.Fatal("no published event ever came back after the reconnect, so the replacement " +
+			"subscription never became live and the assertion below would be about nothing")
+	}
 	cutter.cut()
 
 	deadline = time.Now().Add(10 * time.Second)

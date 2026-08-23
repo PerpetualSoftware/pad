@@ -35,6 +35,12 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	// observe.
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// This test only reads KEYS, which the publish writes whether or not
+	// anyone is listening — so it does not NEED the wait. It is here because
+	// this is one of the two shortest Redis-bus tests in the package and
+	// therefore what the next person copies; leaving Subscribe followed
+	// straight by Publish teaches the race (BUG-2742, codex round 10).
+	waitForSubscribers(t, mr, "pad:inst-b:events:ws-1", true)
 
 	b.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})
 
@@ -154,6 +160,9 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 
 	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
+	// Not needed for the key assertions below; present so the pattern a
+	// reader copies from here is the safe one. See the twin above.
+	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
 	b.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})
 
@@ -170,30 +179,85 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 // waitForSubscribers polls until the channel has (or provably lacks)
 // subscribers.
 //
-// POLLING, not a single check, because go-redis establishes a
-// subscription ASYNCHRONOUSLY: Subscribe returns before the SUBSCRIBE
-// reaches the server, so an immediate assertion races the connection.
+// CALL IT AFTER Subscribe AND BEFORE THE FIRST Publish, on any test that
+// expects an event to ARRIVE. A publish issued before the subscription is
+// registered is lost outright — not delayed — so a test without this wait
+// fails on a loaded runner roughly once in a hundred runs, with a message
+// about an event that never came and no bound that can rescue it. That is
+// BUG-2742, four CI failures across three pull requests.
+//
+// Not needed by a test that only asserts on Redis KEYS: the publish writes
+// those whether or not anyone is listening.
+//
+// POLLING, not a single check, because a subscription is not registered by
+// the time Subscribe returns. go-redis DOES write the SUBSCRIBE command
+// synchronously — Client.Subscribe calls PubSub.Subscribe, which writes it —
+// but it does not wait for the server to confirm it, and anything the test
+// does next travels on a different connection. So an immediate assertion
+// races the server's processing of that command.
+//
 // That race made TestRedisBusDefaultKeepsHistoricalKeys fail once in a
 // full-suite run — a flake in the test, not the code, and the kind that
 // would have been blamed on the next unrelated change.
-//
-// The "probe" payload is not valid JSON, so a bus that IS subscribed logs
-// an unmarshal error when it arrives. That noise is the confirmation the
-// assertion wants; it is deliberately not an event any consumer sees.
 func waitForSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string, want bool) {
 	t.Helper()
+	n, ok := pollSubscriberCount(mr, channel, func(n int) bool { return (n > 0) == want })
+	if ok {
+		return
+	}
+	if want {
+		t.Fatalf("nothing subscribed to %s within the deadline", channel)
+	}
+	t.Fatalf("%s has %d subscribers, want none", channel, n)
+}
+
+// waitForSubscriberCount is waitForSubscribers when the number matters —
+// two replicas on one Redis, where "someone is listening" is satisfied by the
+// first of them and the test needs both.
+func waitForSubscriberCount(t *testing.T, mr *miniredis.Miniredis, channel string, want int) {
+	t.Helper()
+	if n, ok := pollSubscriberCount(mr, channel, func(n int) bool { return n >= want }); !ok {
+		t.Fatalf("%s has %d subscribers, want at least %d, within the deadline", channel, n, want)
+	}
+}
+
+// pollSubscriberCount READS the server's registration state rather than
+// publishing a probe to infer it.
+//
+// The probe version worked and was a trap for the next person to reuse it:
+// "probe" is not a decodable payload, so it is an UNDECODABLE MESSAGE — the
+// exact condition several tests in this package assert about, injected by the
+// helper they would call to set themselves up. An undecodable message ends
+// this instance's coverage of the workspace.
+//
+// It was harmless in every existing caller, but only because the callers that
+// ran after a publish go on to assert about Redis KEYS rather than about
+// coverage or delivery. That is a property of what each call site happens to
+// assert next — the thinnest possible guarantee, and one that stops holding
+// the moment somebody adds a coverage assertion after a wait.
+//
+// The deadline is a LIVENESS bound, not a latency assertion: registration is
+// a sub-millisecond-to-milliseconds affair, and this number exists so a test
+// that will never see a subscriber fails instead of hanging.
+//
+// WHAT WAITING HERE DELIBERATELY STOPS TESTING, so that nobody re-discovers
+// it as a gap: every caller of this helper is no longer exercising the window
+// between subscribing and being registered, and a publish inside that window
+// is lost for good. That window is REAL IN PRODUCTION, where nothing waits —
+// see BUG-2747, which also records that internal/watchevents closes the same
+// window in its constructor and this bus does not. It is tracked there rather
+// than by leaving tests that fail on a loaded runner roughly one time in a
+// hundred, which is a defect detector nobody can act on.
+func pollSubscriberCount(mr *miniredis.Miniredis, channel string, satisfied func(int) bool) (int, bool) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		n := mr.Publish(channel, "probe")
-		if (n > 0) == want {
-			return
+		n := mr.PubSubNumSub(channel)[channel]
+		if satisfied(n) {
+			return n, true
 		}
 		if time.Now().After(deadline) {
-			if want {
-				t.Fatalf("nothing subscribed to %s within the deadline", channel)
-			}
-			t.Fatalf("%s has %d subscribers, want none", channel, n)
+			return n, false
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 }
