@@ -751,7 +751,14 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 	go func() {
 		for len(ids) < n {
 			select {
-			case msg := <-incoming:
+			case msg, open := <-incoming:
+				if !open {
+					// Reported, not dereferenced: a closed channel hands back
+					// a nil *Message, and reading Payload off it panics the
+					// test binary with a stack instead of naming the failure.
+					collected <- fmt.Errorf("the pubsub channel closed after %d of %d messages", len(ids), n)
+					return
+				}
 				_, ev, err := decodePayload(msg.Payload)
 				if err != nil {
 					collected <- fmt.Errorf("message %d: %w", len(ids), err)

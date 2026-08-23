@@ -199,14 +199,24 @@ func TestAReconnectOnAnIdleWorkspaceIsNotAReset(t *testing.T) {
 	// Positive control in the same test, so a bus that never reports anything
 	// at all cannot pass: once something IS buffered, the next reconnect does
 	// report.
-	// The reconnect above re-subscribed, and a publish that beats the
-	// REPLACEMENT registration is lost outright rather than delayed
-	// (BUG-2742). Today the 2s poll before this line happens to leave enough
-	// room, which is safety by accident: the poll exists to prove a reset was
-	// NOT reported and would exit early the moment that changed, taking the
-	// margin with it. Waiting explicitly costs milliseconds and does not
-	// depend on the loop above keeping its current shape.
-	waitForSubscribers(t, mr, "pad:events:ws-idle", true)
+	// NO REGISTRATION WAIT HERE, and the reason is worth keeping because the
+	// obvious one does not work (BUG-2742, codex round 8).
+	//
+	// A publish that beats the REPLACEMENT subscription after a reconnect is
+	// lost outright, so this line looks like it wants waitForSubscribers. But
+	// that helper counts subscribers, and measured across the cut the count
+	// goes 1 -> 0 -> 1 over a couple of milliseconds: the STALE registration
+	// still reads 1 until miniredis notices the closed socket. A wait placed
+	// just after the cut therefore returns immediately on the dead
+	// subscription and guarantees nothing — and in one trial of five the
+	// count never dropped at all within 3s, so waiting for the 1 -> 0
+	// transition instead risks hanging.
+	//
+	// What actually protects this publish is the 2s poll above, which runs to
+	// completion whenever no reset is reported — which is the case this test
+	// asserts. That is margin by accident rather than by construction, and
+	// the honest thing is to say so rather than to add a wait that reads as a
+	// guarantee and is not one.
 	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-idle"})
 	drain(t, ch, 1)
 	cutter.cut()
