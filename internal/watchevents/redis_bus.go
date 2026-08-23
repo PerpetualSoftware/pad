@@ -1135,6 +1135,21 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		// the NEW space, which it could only hold by having been served by
 		// another instance — the conservative direction, same trade the
 		// epoch arm already accepts.
+		//
+		// WHAT THIS DOES NOT CLOSE, because arithmetic on ids cannot
+		// (BUG-2743 tracks the complete fix). replaySince serves any cursor
+		// at or above knownFrom-1, so this admits n.ID itself — and if the
+		// OLD space also reached n.ID, that cursor is still ambiguous. The
+		// same is true of every old-space id up to the old high water mark,
+		// and of the epoch arm's identical +1. Closing it needs a boundary
+		// that remembers the OLD space's extent (refuse everything at or
+		// below it until the new space climbs past), not a larger constant
+		// here. That is a resume-semantics change touching the epoch path
+		// too, so it is its own unit.
+		//
+		// This arm is mitigation, and the epoch is the actual answer: an
+		// opaque token is the only thing that can say "different sequence"
+		// when the numbers cannot. See redisWatchEpochSuffix.
 		b.knownFrom = n.ID + 1
 		// The high water mark REBASES onto the new space here, and must:
 		// leaving it at the old space's peak would make every id of the

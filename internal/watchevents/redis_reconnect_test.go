@@ -702,6 +702,14 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 // The assertion is through EventsSince because it answers from LOCAL state
 // only: the shared-counter check cannot see this at all, since after the reset
 // the remote counter and our high-water mark AGREE on the new space's value.
+//
+// SCOPE, so this test is not read as more than it is (codex round 22): it
+// pins the boundary at n.ID-1, and n.ID ITSELF is still admitted. If the old
+// space also reached n.ID that cursor remains ambiguous, as does every
+// old-space id up to the old high water mark. No constant here closes that —
+// it needs a boundary that remembers the old space's extent, which is
+// BUG-2743. The +1 is a strict improvement over n.ID and not a complete fix,
+// and the epoch is what actually distinguishes two sequences.
 func TestAnOldSpaceCursorIsRefusedAfterACounterReset(t *testing.T) {
 	t.Parallel()
 
