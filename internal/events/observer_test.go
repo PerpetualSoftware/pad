@@ -37,6 +37,12 @@ func (o *recordingObserver) EventDropped(reason string) {
 	o.drops = append(o.drops, reason)
 }
 
+func (o *recordingObserver) gaps() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.resumeGaps...)
+}
+
 func (o *recordingObserver) resetReasons() []string {
 	o.mu.Lock()
 	defer o.mu.Unlock()

@@ -185,6 +185,8 @@ func waitForFrameRefusing(t *testing.T, frames <-chan string, want, refuse strin
 // stream, whose handler is a different function with its own select loop.
 func TestWatchStreamAnnouncesAGapMidStream(t *testing.T) {
 	srv := testServer(t)
+	m := metrics.New()
+	srv.SetMetrics(m)
 	bus := &gapWatchBus{Bus: watchevents.New(), gaps: make(chan struct{}, 1)}
 	srv.SetWatchEventsBus(bus)
 	_, _, tok, _ := setupWatchTestUser(t, srv)
@@ -201,6 +203,19 @@ func TestWatchStreamAnnouncesAGapMidStream(t *testing.T) {
 
 	frame := waitForFrameWithEvent(t, frames, "sync_required")
 	assertRetiresCursor(t, frame)
+
+	// The WATCH counter, not the activity one. countMidStreamResync takes a
+	// bool to pick between them, which is exactly the kind of argument that
+	// gets passed the wrong way round.
+	if got := counterValue(t, m.WatchMidstreamResyncsTotal); got != 1 {
+		t.Errorf("pad_watchevents_midstream_resyncs_total = %v, want 1", got)
+	}
+	if got := counterValue(t, m.EventMidstreamResyncsTotal); got != 0 {
+		t.Errorf("a watch-stream announcement moved the ACTIVITY counter: %v", got)
+	}
+	if got := counterValue(t, m.WatchResumeGapsTotal); got != 0 {
+		t.Errorf("a mid-stream gap moved the watch resume counter: %v", got)
+	}
 
 	// Same liveness claim as the activity twin (codex round 3). This stream
 	// has no cheap ordinary event to publish — a notification needs a watch

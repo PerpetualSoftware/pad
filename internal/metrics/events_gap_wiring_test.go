@@ -43,7 +43,8 @@ func TestInstrumentedBusPassesTheGapChannelThrough(t *testing.T) {
 func TestInstrumentedBusForwardsTheReplay(t *testing.T) {
 	inner := events.New()
 	defer inner.Close()
-	b := NewInstrumentedBus(inner, New())
+	m := New()
+	b := NewInstrumentedBus(inner, m)
 
 	b.Publish(events.Event{Type: events.ItemUpdated, WorkspaceID: "ws-1", ItemID: "one"})
 	b.Publish(events.Event{Type: events.ItemUpdated, WorkspaceID: "ws-1", ItemID: "two"})
@@ -60,9 +61,11 @@ func TestInstrumentedBusForwardsTheReplay(t *testing.T) {
 	if len(missed) != 1 || missed[0].ItemID != "two" {
 		t.Fatalf("the replay was not forwarded intact: %+v", missed)
 	}
-	if got := (*b.metrics.EventBusSubscribers); got == nil {
-		t.Error("the subscriber gauge was not wired on this path")
-	}
+	// The gauge must have been SET, not merely be non-nil — the wrapper's
+	// whole job on this path is the bookkeeping, and a delegation that
+	// forwarded the data and skipped trackSubscription would look identical
+	// to a nil check.
+	assertGauge(t, m, "pad_sse_connections_active", 1)
 }
 
 // The adapter is the last hop between the bus's report and Prometheus. It is
@@ -81,4 +84,27 @@ func TestEventsObserverRecordsADrop(t *testing.T) {
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 0)
 	assertCounter(t, m, "pad_watchevents_notifications_dropped_total",
 		map[string]string{"reason": events.DropReasonSlowSubscriber}, 0)
+}
+
+// assertGauge mirrors assertCounter for gauge families.
+func assertGauge(t *testing.T, m *Metrics, name string, want float64) {
+	t.Helper()
+	families, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			if got := metric.GetGauge().GetValue(); got != want {
+				t.Errorf("%s = %v, want %v", name, got, want)
+			}
+			return
+		}
+	}
+	if want != 0 {
+		t.Errorf("%s is not exported", name)
+	}
 }

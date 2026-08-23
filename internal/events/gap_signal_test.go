@@ -377,18 +377,25 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 	const publishers, each = 8, 40
 	total := publishers * each
 
-	// Drained concurrently: a 64-deep channel would otherwise overflow and
-	// the dropped IDs would look like an ordering fault.
+	// Drained concurrently. The reader may legitimately MISS some — a 64-deep
+	// channel overflows and the bus drops for a slow subscriber, which is the
+	// behaviour tested elsewhere — so this reads until the stream goes quiet
+	// rather than demanding all of them. The claim under test is the ORDER of
+	// what arrives, and a minimum count below keeps it from passing vacuously.
 	received := make(chan int64, total)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for range total {
-			e, ok := <-ch
-			if !ok {
+		for {
+			select {
+			case e, ok := <-ch:
+				if !ok {
+					return
+				}
+				received <- e.ID
+			case <-time.After(500 * time.Millisecond):
 				return
 			}
-			received <- e.ID
 		}
 	}()
 
@@ -406,17 +413,245 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the reader did not receive every published event")
+	case <-time.After(20 * time.Second):
+		t.Fatal("the reader never went quiet")
 	}
 	close(received)
 
 	var prev int64
+	var count int
 	for id := range received {
+		count++
 		if id <= prev {
 			t.Fatalf("IDs arrived out of order: %d after %d — a subscriber's cursor regressed, "+
 				"so its next reconnect replays events it already has", id, prev)
 		}
 		prev = id
+	}
+	// Not vacuous: an empty or near-empty stream would satisfy the ordering
+	// check trivially.
+	if count < total/2 {
+		t.Fatalf("only %d of %d events arrived; too few to say anything about ordering", count, total)
+	}
+}
+
+// TestActivityGapSignalCoalesces is the load bound on THIS bus. The watch
+// bus's twin existed from the start; this one did not, and the bound is the
+// whole answer to "does telling a slow subscriber make it slower".
+func TestActivityGapSignalCoalesces(t *testing.T) {
+	b := New()
+	defer b.Close()
+
+	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(ch)
+
+	for range 200 {
+		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	}
+
+	if !raised(gaps) {
+		t.Fatal("no gap signal after 200 events into a 64-deep channel")
+	}
+	if raised(gaps) {
+		t.Error("more than one signal was queued; the channel must coalesce, not accumulate")
+	}
+}
+
+// TestRedisBusSubscribeAndReplayIsAtomic is the multi-instance twin of
+// TestSubscribeAndReplayIsAtomic. It gets its own test because the two
+// implementations reach the guarantee by different means — this one keeps
+// subscribers and buffers under a single mutex, so a future refactor that
+// split them would break here and nowhere else.
+func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
+	b := newTestRedisBus(t)
+
+	// A holder first: this bus builds a workspace's replay buffer as part of
+	// COVERING it, and a resume against a workspace it has never covered is
+	// answered "cannot vouch" — correctly, and not what this test is about.
+	holder, _ := b.Subscribe("ws-1")
+	defer b.Unsubscribe(holder)
+
+	b.fanOutLocally(Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-1"})
+	b.fanOutLocally(Event{ID: 11, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-2"})
+
+	ch, missed, gaps, ok := b.SubscribeAndReplaySince("ws-1", 10, 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(ch)
+	if gaps == nil {
+		t.Error("no gap channel returned")
+	}
+	if !containsItem(missed, "before-2") {
+		t.Fatalf("the event above the cursor was not replayed: %+v", missed)
+	}
+	if containsItem(missed, "before-1") {
+		t.Error("the event AT the cursor was replayed; the client already has it")
+	}
+
+	// Published after: must arrive live and NOT be in the replay just read.
+	b.fanOutLocally(Event{ID: 12, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "after"})
+	if !drainContains(t, ch, "after") {
+		t.Error("an event published after the subscribe was not delivered live")
+	}
+}
+
+// TestResumeIsSubjectToTheWorkspaceLimit closes a hole the new API could have
+// opened: the resume path is a second door onto the same subscriber set, and a
+// client that supplies Last-Event-ID must not thereby skip the bound that a
+// fresh one is held to.
+func TestResumeIsSubjectToTheWorkspaceLimit(t *testing.T) {
+	b := New()
+	defer b.Close()
+
+	first, _, ok := b.SubscribeIfAllowed("ws-1", 1)
+	if !ok {
+		t.Fatal("the first subscribe was refused")
+	}
+	defer b.Unsubscribe(first)
+
+	if _, _, _, ok := b.SubscribeAndReplaySince("ws-1", 1, 1); ok {
+		t.Error("a resuming client was admitted past the per-workspace limit")
+	}
+	// Control: the same call succeeds when there is room, so the refusal above
+	// is the limit and not the method being broken.
+	if _, _, _, ok := b.SubscribeAndReplaySince("ws-1", 1, 2); !ok {
+		t.Error("a resuming client was refused with room to spare")
+	}
+}
+
+// TestAtomicResumeReportsAnUnservableSpan pins the observer report on the NEW
+// path. EventsSince has always reported; this method reads the buffer directly
+// and had to carry its own, and the report is what makes the resync population
+// visible in production.
+func TestAtomicResumeReportsAnUnservableSpan(t *testing.T) {
+	b := New()
+	defer b.Close()
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+
+	// A cursor for a workspace this process has never published to.
+	ch, missed, _, ok := b.SubscribeAndReplaySince("ws-unknown", b.base+9999, 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(ch)
+	if missed != nil {
+		t.Fatalf("a cursor for an unknown workspace was answered as servable: %+v", missed)
+	}
+	if got := obs.gaps(); len(got) != 1 || got[0] != "ws-unknown" {
+		t.Errorf("resume gaps reported = %v, want exactly [ws-unknown]", got)
+	}
+
+	// Control: a FRESH subscription on the same path reports nothing. Without
+	// this leg the report could fire on every subscribe and still pass.
+	obs2 := &recordingObserver{}
+	b.SetObserver(obs2)
+	ch2, _, _, ok := b.SubscribeAndReplaySince("ws-unknown", 0, 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(ch2)
+	if got := obs2.gaps(); len(got) != 0 {
+		t.Errorf("a fresh subscription reported a resume gap: %v", got)
+	}
+}
+
+// TestRedisBusDropIsReportedPerSubscriber pins two things the single-subscriber
+// tests cannot: that the Redis fan-out reports drops at all, and that it
+// reports once per DROPPED SUBSCRIBER rather than once per publish. A report
+// hoisted out of the loop would halve the counter on a two-slow-subscriber
+// workspace and look right on every other test.
+func TestRedisBusDropIsReportedPerSubscriber(t *testing.T) {
+	b := newTestRedisBus(t)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+
+	slowA, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	slowB, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	defer b.Unsubscribe(slowA)
+	defer b.Unsubscribe(slowB)
+
+	// Fill both channels, then overflow both with ONE event.
+	for i := 1; i <= 64; i++ {
+		b.fanOutLocally(Event{ID: int64(i), Type: ItemUpdated, WorkspaceID: "ws-1"})
+	}
+	if got := obs.dropped(); len(got) != 0 {
+		t.Fatalf("drops reported before either channel overflowed: %v", got)
+	}
+
+	b.fanOutLocally(Event{ID: 65, Type: ItemUpdated, WorkspaceID: "ws-1"})
+
+	got := obs.dropped()
+	if len(got) != 2 {
+		t.Fatalf("one event dropped for TWO subscribers must report twice, got %d: %v", len(got), got)
+	}
+	for _, r := range got {
+		if r != DropReasonSlowSubscriber {
+			t.Errorf("reason = %q, want %q", r, DropReasonSlowSubscriber)
+		}
+	}
+}
+
+// TestGapChannelOutlivesUnsubscribe pins the lifetime rule stated on the field.
+// Closing the gap channel would make it permanently ready, and a consumer
+// selecting on both would spin at full speed between Unsubscribe and noticing
+// the event channel had closed.
+func TestGapChannelOutlivesUnsubscribe(t *testing.T) {
+	b := New()
+	defer b.Close()
+
+	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("subscribe refused")
+	}
+	b.Unsubscribe(ch)
+
+	if _, open := <-ch; open {
+		t.Fatal("Unsubscribe must close the event channel; the rest of this test assumes it")
+	}
+	select {
+	case <-gaps:
+		t.Error("the gap channel was closed or signalled by Unsubscribe; a consumer's select would spin")
+	default:
+	}
+}
+
+// TestEverySubscribeAPIReturnsAGapChannel is the small structural claim behind
+// the seam: no way of registering a subscriber may hand back a nil signal,
+// because a nil channel swallows every send through the default arm and the
+// subscriber would be silently unreachable.
+func TestEverySubscribeAPIReturnsAGapChannel(t *testing.T) {
+	for name, sub := range map[string]func(b *MemoryBus) (chan Event, <-chan struct{}){
+		"Subscribe": func(b *MemoryBus) (chan Event, <-chan struct{}) {
+			return b.Subscribe("ws-1")
+		},
+		"SubscribeIfAllowed": func(b *MemoryBus) (chan Event, <-chan struct{}) {
+			ch, gaps, _ := b.SubscribeIfAllowed("ws-1", 0)
+			return ch, gaps
+		},
+		"SubscribeAndReplaySince": func(b *MemoryBus) (chan Event, <-chan struct{}) {
+			ch, _, gaps, _ := b.SubscribeAndReplaySince("ws-1", 0, 0)
+			return ch, gaps
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := New()
+			defer b.Close()
+			ch, gaps := sub(b)
+			defer b.Unsubscribe(ch)
+			if gaps == nil {
+				t.Errorf("%s returned a nil gap channel; every drop for this subscriber would be silent", name)
+			}
+		})
 	}
 }

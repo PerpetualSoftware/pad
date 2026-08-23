@@ -78,3 +78,26 @@ func TestGapAnnouncerDoesNotAnnounceAnEmptyWindow(t *testing.T) {
 		t.Error("a gap after a quiet window was bounded; the window had already closed")
 	}
 }
+
+// The production cooldown is a real number with a stated reason (a delta-sync
+// round trip), and every handler test overrides it — so nothing else would
+// notice it being set to zero, which would disable the bound entirely on the
+// only deployment that matters.
+func TestProductionGapCooldownIsNotDisabled(t *testing.T) {
+	var s Server
+	if got := s.gapCooldown(); got != midStreamGapCooldown {
+		t.Errorf("a server with no override must use the production cooldown, got %v", got)
+	}
+	if midStreamGapCooldown <= 0 {
+		t.Fatal("the production cooldown is not positive; the rate limit is off")
+	}
+	if midStreamGapCooldown >= sseKeepaliveInterval {
+		t.Errorf("cooldown %v is not shorter than the %v keepalive; a new hole would wait "+
+			"longer than the connection's own heartbeat", midStreamGapCooldown, sseKeepaliveInterval)
+	}
+
+	s.midStreamGapCooldownOverride = 7 * time.Millisecond
+	if got := s.gapCooldown(); got != 7*time.Millisecond {
+		t.Errorf("the override was ignored: %v", got)
+	}
+}
