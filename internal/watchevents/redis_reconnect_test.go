@@ -10,6 +10,12 @@ package watchevents
 // invisible to id arithmetic when the lost notification is the NEWEST one and
 // the stream then goes quiet — which is the case a connected CLI sits in
 // forever.
+//
+// SCOPED TO THE OPEN STREAM, deliberately. A RECONNECTING client was already
+// covered before this work, because resumeOutrunsLocalView asks the shared
+// counter instead of trusting local state — which is why several tests here
+// assert through EventsSince as well: it is the only reader that answers from
+// local state alone, so it can tell this fix apart from that one.
 
 import (
 	"io"
@@ -303,6 +309,13 @@ func TestAResubscriptionSignalsEverySubscriberHoldingTheStreamOpen(t *testing.T)
 // arm needs a LATER notification to arrive, and the case that matters is an
 // undecodable NEWEST message on a stream that then goes quiet. So the test
 // publishes NOTHING afterwards — which is exactly what makes it discriminate.
+//
+// Note what the instance does and does not know here, because the assertion
+// is about coverage rather than about loss: it knows a message it could not
+// read arrived on its channel, NOT that a notification was missed. The
+// payload could equally be something foreign. Ending coverage is the honest
+// response to not being able to tell, which is why the test asserts a refusal
+// and a signal rather than any claim about a missing id.
 func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 	b, mr, _, obs := newCutterBus(t, 64)
 

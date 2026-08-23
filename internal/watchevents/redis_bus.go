@@ -336,9 +336,15 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *Red
 	// subscription is live. The window is small and entirely real.
 	//
 	// A failure here is logged rather than fatal: the receive loop's
-	// Channel() re-subscribes on reconnect, so a bus that missed its first
-	// confirmation still recovers — it just cannot promise it was listening
-	// from the moment it was constructed.
+	// ChannelWithSubscriptions() re-subscribes on reconnect, so a bus that
+	// missed its first confirmation still recovers — it just cannot promise
+	// it was listening from the moment it was constructed.
+	//
+	// THIS RECEIVE IS LOAD-BEARING FOR receiveMessages, which has no
+	// "skip the first confirmation" flag precisely because this consumes the
+	// initial one. Removing it makes every bus announce a hole at startup.
+	// See that function's comment, and TestNoCoverageIsDroppedAtStartup,
+	// which fails if this line goes away.
 	subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer subCancel()
 	if _, err := b.pubsub.Receive(subCtx); err != nil {
@@ -792,13 +798,19 @@ func (b *RedisBus) Close() {
 // messages (go-redis v9.22.0, initAllChan — `case *Subscription, *Message:`,
 // chanSize 100, chanSendTimeout 1 minute), so a confirmation can be DROPPED
 // under sustained load exactly like a message. Coverage still ends, by the
-// other road: a full channel means messages are flowing, the outage left a
-// hole in their ids, and the gap arm in fanOutLocally raises it on the next
-// one consumed. The operator sees it as a sequence gap rather than a
-// subscription_resumed reset, which is a less specific label for the same
-// truth. What is NOT covered is BUG-2727's standing boundary — drops whose
-// hole no later notification ever exposes — and this changes neither
-// direction of it.
+// other road IN THE USUAL CASE: a full channel means messages are flowing,
+// so if the outage lost anything the next message consumed is non-contiguous
+// and the gap arm in fanOutLocally raises it. The operator then sees a
+// sequence gap rather than a subscription_resumed reset — a less specific
+// label for the same truth.
+//
+// NOT a guarantee, and the exceptions are worth naming rather than rounding
+// off. If nothing was published during the outage there is no hole to find,
+// which is fine — nothing was lost. If the drops continue through whatever
+// would have exposed the hole and the stream then goes quiet, nothing ever
+// does: that is BUG-2727's standing boundary, unchanged in both directions
+// by this work. A reconnecting client is covered either way, since
+// resumeOutrunsLocalView asks the shared counter rather than local state.
 func (b *RedisBus) receiveMessages() {
 	defer b.wg.Done()
 	ch := b.pubsub.ChannelWithSubscriptions()

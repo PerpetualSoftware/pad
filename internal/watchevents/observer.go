@@ -46,12 +46,20 @@ import "sync"
 // TWO things an observer must not do. Call a bus method that REPORTS —
 // SubscribeAndReplaySince can raise a resume gap — because that is
 // unbounded mutual recursion, which no lock discipline here can prevent.
-// And call Close: reports fire on the RECEIVE GOROUTINE, and Close waits
-// on that goroutine through b.wg.Wait(), so an observer closing the bus
-// from a callback waits on itself forever. Not a lock-ordering problem
-// and not fixable by one — the goroutine is the resource being waited
-// for. (Found by a lifecycle review on BUG-2739; the contract said only
-// the first, which reads as though the second were allowed.)
+// And, when the callback is running on RedisBus's receive goroutine,
+// call Close: that method waits on the receive goroutine through
+// wg.Wait(), so it would be waiting on itself forever. Not a
+// lock-ordering problem and not fixable by one — the goroutine is the
+// resource being waited for.
+//
+// The second hazard is narrower than the first, and an implementer
+// cannot tell from inside which case it is in: reports raised on the
+// RECEIVE path carry it, while a ResumeGap raised by
+// SubscribeAndReplaySince runs on the CALLER's goroutine and MemoryBus
+// has no receive goroutine at all. Since the callback cannot distinguish
+// them, the rule is stated unconditionally. (Found by a lifecycle review
+// on BUG-2739; the contract named only the first, which reads as though
+// the second were allowed.)
 type Observer interface {
 	// NotificationDropped reports a notification this instance received but
 	// could not deliver to one of its own subscribers. reason is a bounded
@@ -81,14 +89,16 @@ type Observer interface {
 
 	// SequenceReset reports that this instance's replay coverage was
 	// dropped. reason is bounded: "epoch_change" (the shared epoch key
-	// changed), "counter_backward" (an id arrived at or below the
-	// high-water mark), "subscription_resumed" (go-redis reconnected and
-	// re-subscribed, so the outage's notifications never arrived) or
-	// "undecodable_message" (a message on the channel could not be parsed).
+	// changed — an opaque token here, not a numeric generation),
+	// "counter_backward" (an id arrived at or below the high-water mark
+	// with the epoch unchanged), "subscription_resumed" (go-redis
+	// reconnected and re-subscribed, so the outage's notifications never
+	// arrived) or "undecodable_message" (a message on the channel could
+	// not be parsed).
 	//
 	// The first two mean the ID SPACE changed under us; the last two mean it
-	// did not and we simply missed part of it. Both end coverage, because
-	// the buffer cannot account for the span either way.
+	// did not and we can no longer account for part of it. All end coverage,
+	// because the buffer cannot vouch for the span either way.
 	SequenceReset(reason string)
 
 	// ReceiveLoopExited reports that the single consumer of the shared
@@ -214,7 +224,13 @@ const (
 	ResetReasonSubscriptionResumed = "subscription_resumed"
 
 	// ResetReasonUndecodableMessage means a message on the watch channel
-	// could not be parsed, so this instance missed a notification whose id it
-	// cannot even name. Expect zero; suspect a namespace collision.
+	// could not be parsed. Note what this does and does NOT establish: the
+	// instance knows only that something arrived on its channel that it could
+	// not read. It cannot tell whether that was a notification it should have
+	// had (so there is now a hole with an id it cannot name) or something
+	// foreign that was never ours. It stops vouching BECAUSE it cannot tell —
+	// the honest reading of an unreadable message is that coverage is no
+	// longer provable, not that a specific notification was lost. Expect
+	// zero; suspect a namespace collision.
 	ResetReasonUndecodableMessage = "undecodable_message"
 )

@@ -91,10 +91,12 @@ type Metrics struct {
 	// genuinely unservable there.
 	WatchResumeGapsTotal prometheus.Counter
 
-	// WatchSequenceResetsTotal counts id-space changes (epoch change or
-	// the shared counter going backwards) — each one drops this
-	// instance's replay buffer, so resumes across it answer
-	// sync_required.
+	// WatchSequenceResetsTotal counts this instance's watch replay
+	// coverage being dropped, by reason. Two of the reasons mean the id
+	// SPACE changed under us (epoch_change, counter_backward); two mean
+	// it did not and we simply lost part of it (subscription_resumed,
+	// undecodable_message). Either way resumes across it answer
+	// sync_required. Kept in sync with watchevents' Reset* constants.
 	WatchSequenceResetsTotal *prometheus.CounterVec
 
 	// WatchReceiveLoopExitsTotal counts the receive loop stopping. Any
@@ -431,7 +433,7 @@ func New() *Metrics {
 
 	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_watchevents_sequence_resets_total",
-		Help: "Times this instance's watch-stream replay coverage was dropped, by reason: epoch_change (the shared counter's ID space changed generation), counter_backward (an ID arrived at or below the high-water mark with no generation change), subscription_resumed (go-redis reconnected and re-subscribed, so whatever was published during the outage never arrived — expect these during a Redis failover and expect them to stop afterwards), undecodable_message (a message on the watch channel could not be parsed, so a notification whose ID cannot even be named was missed — expect zero, and suspect a namespace collision). The first two mean the ID space changed under this instance; the last two mean it did not and part of it was simply missed. Every reason also announces to live subscribers, so each moves pad_watchevents_midstream_resyncs_total once per subscriber connected at the time.",
+		Help: "Times this instance's watch-stream replay coverage was dropped, by reason: epoch_change (the watch epoch token changed, so the IDs are from a different sequence — an opaque UUID here, not a numeric generation), counter_backward (an ID arrived at or below the high-water mark with the epoch unchanged), subscription_resumed (go-redis reconnected and re-subscribed, so whatever was published during the outage never arrived — expect these during a Redis failover and expect them to stop afterwards), undecodable_message (a message on the watch channel could not be parsed; the instance cannot tell whether it was a notification it should have had or something foreign, which is exactly why it stops vouching — expect zero, and suspect a namespace collision). The first two mean the ID space changed under this instance; the last two mean it did not and this instance can no longer account for part of it. Each also announces to the watch subscribers connected at that moment, so each moves pad_watchevents_midstream_resyncs_total once per such subscriber.",
 	}, []string{"reason"})
 
 	watchReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{

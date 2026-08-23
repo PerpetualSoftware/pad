@@ -230,11 +230,18 @@ reading the metrics below, and for anyone writing a third-party consumer:
 
   **Both streams now detect a pub/sub resubscription and a message they could
   not decode** (BUG-2739), and end the affected coverage when they do. Before
-  this the watch stream detected neither, and its only signal was a hole in
-  the received ID sequence — which needs a LATER notification to expose it, so
-  a flap that lost the newest notification on a stream that then went quiet
-  left a connected CLI silently stale indefinitely. Detecting the two
-  conditions directly is what covers the case ID arithmetic never reaches.
+  this the watch stream detected neither, and for a client HOLDING A STREAM
+  OPEN its only signal was a hole in the received ID sequence — which needs a
+  LATER notification to expose it, so a flap that lost the newest notification
+  on a stream that then went quiet left a connected CLI silently stale
+  indefinitely. Detecting the two conditions directly is what covers the case
+  ID arithmetic never reaches.
+
+  A RECONNECTING client was never in that position and still is not: a resume
+  asks the shared counter what the newest ID is rather than trusting the
+  instance's local view, so a cursor the instance cannot vouch for is refused
+  whether or not the instance ever noticed the flap. The gap this closes is
+  specifically the open-stream one.
 
   **ID-sequence detection itself is watch-stream only, and that asymmetry is
   by construction rather than an omission.** The watch stream has one channel
@@ -244,17 +251,24 @@ reading the metrics below, and for anyone writing a third-party consumer:
   anything. That is why `pad_watchevents_sequence_gaps_total` has no
   `pad_event_*` counterpart.
 
-  **What a failover now COSTS, since detecting it is not free.** A
-  resubscription ends coverage for the whole instance, so every SSE client
-  connected to it is told mid-stream and reconciles. On an instance at the
-  default `PAD_SSE_MAX_CONNECTIONS` that is up to a thousand reconcile
-  requests arriving together — the per-connection signal coalescing does not
-  smooth the FIRST wave, only repeats within it. That is the deliberate trade
-  this whole family makes (chatty-but-correct beats quiet-but-lossy), and the
-  numbers to watch are `pad_watchevents_midstream_resyncs_total` against
-  `pad_watchevents_sequence_resets_total`: their ratio is the fan-out, i.e.
-  how many clients one detection costs you. If a failover's reconcile burst is
-  a capacity problem for a deployment, the answer is fewer connections per
+  **What a failover now COSTS, since detecting it is not free.** A watch-bus
+  resubscription ends coverage for that instance's whole watch stream — there
+  is one replay buffer, not one per workspace — so every `/api/v1/events/stream`
+  subscriber on that instance is told mid-stream at once. Activity-stream
+  coverage is per-workspace, so a resubscription there ends only the affected
+  workspace's.
+
+  What that costs depends entirely on the client, and for the one client that
+  uses the watch stream today it is nearly nothing: `pad watch --stream` reacts
+  to `sync_required` by clearing its cursor and KEEPING THE CONNECTION OPEN
+  (`cmd/pad/cmd_watch.go`), so a failover produces no reconnect and no refetch
+  — the next notification simply starts a fresh coverage span. The cost to
+  watch out for is a future consumer that answers `sync_required` with a
+  refetch instead: for that client the announcement is one request per
+  connection, arriving together, since per-connection coalescing smooths
+  repeats WITHIN a wave and not the wave itself. That is the deliberate trade
+  this family makes — chatty-but-correct beats quiet-but-lossy — and if it
+  ever becomes a capacity problem the answer is fewer connections per
   instance, not a quieter bus.
 
   **Two gaps in that detection remain, and an operator should know both.** A
@@ -348,7 +362,7 @@ Alert on these instead:
 | `pad_watchevents_midstream_resyncs_total` | Watch-stream subscribers told MID-STREAM that they missed notifications, on a connection that stayed open. New in BUG-2730 |
 | `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber — that connection's buffer was full. Since BUG-2730 that subscriber is told (`sync_required`, mid-stream) rather than silently under-served, so a rise here produces a rise in `pad_watchevents_midstream_resyncs_total`, one client at a time |
-| `pad_watchevents_sequence_resets_total` | Watch replay coverage dropped, by reason. `epoch_change` — the shared counter's ID space changed generation. `counter_backward` — an ID arrived at or below the high-water mark with no generation change. `subscription_resumed` — a pub/sub connection dropped and re-subscribed, so whatever was published during the outage never arrived; expect these during a Redis failover and expect them to stop afterwards. `undecodable_message` — a message on the watch channel could not be parsed, so a notification whose ID cannot even be named was missed; expect zero, and suspect a namespace collision. The first two mean the ID space changed under this instance; the last two mean it did not and part of it was simply missed. Every reason also announces to live subscribers, so each moves `pad_watchevents_midstream_resyncs_total` once per subscriber connected at the time |
+| `pad_watchevents_sequence_resets_total` | Watch replay coverage dropped, by reason. `epoch_change` — the watch epoch token changed, so the IDs now come from a different sequence; the token is an opaque UUID here, not a numeric generation. `counter_backward` — an ID arrived at or below the high-water mark with the epoch unchanged. `subscription_resumed` — a pub/sub connection dropped and re-subscribed, so whatever was published during the outage never arrived; expect these during a Redis failover and expect them to stop afterwards. `undecodable_message` — a message on the watch channel could not be parsed. The instance cannot tell whether that was a notification it should have had or something foreign, and it stops vouching because it cannot tell; expect zero, and suspect a namespace collision. The first two mean the ID space changed under this instance; the last two mean it did not and part of it was simply missed. Each also announces to the watch subscribers connected at that moment, so each moves `pad_watchevents_midstream_resyncs_total` once per such subscriber. Note that the announcement counter is NOT a ratio against this one in aggregate: it also counts gaps and slow-subscriber drops, and it coalesces per connection, so only a reset observed in isolation lets you read the fan-out off the two |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch resume counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
 | `pad_event_midstream_resyncs_total` | Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open. New in BUG-2730, and the counter to watch when judging whether that fix is costing more resyncs than it is worth. It counts ANNOUNCEMENTS, not causes and not distinct clients: a reset that drops buffers moves it once per live subscriber (and that ratio against `pad_event_sequence_resets_total` is the fan-out); a burst of drops on ONE connection moves it once, because signals coalesce and are rate-limited per connection; and a coverage loss on a workspace with no buffer yet moves it while every cause counter stays flat, because there was no coverage to end but the subscribers still have a hole |
