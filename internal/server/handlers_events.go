@@ -215,7 +215,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			unreadableCursor = true
 			slog.Info("SSE resume carried an unreadable Last-Event-ID, sending sync_required",
 				"workspace", ws.Slug, "last_event_id", lastIDStr)
-			s.countResumeGap(true)
+			// NOT counted here. This runs before the admission check below,
+			// and a connection refused with 429 is never sent the
+			// sync_required this counter's population is defined as. The
+			// increment lives at the emission site instead — which is also
+			// where it was before the cursor parse moved above the subscribe.
 		} else {
 			lastID = parsed
 		}
@@ -294,6 +298,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// internal/watchevents closed the same window the same way; this bus now
 	// matches it.
 	if unreadableCursor {
+		s.countResumeGap(true)
 		if err := writeSSEResetCursorEvent(w, "sync_required", map[string]string{
 			"reason": "Your last event ID could not be read. Full sync required.",
 		}); err != nil {

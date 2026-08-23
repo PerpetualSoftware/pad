@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
@@ -233,4 +235,85 @@ func assertNoFrameWithEvent(t *testing.T, frames <-chan string, eventType string
 			return
 		}
 	}
+}
+
+// TestRefusedConnectionDoesNotCountASyncRequired is codex round 1's finding,
+// pinned. The counter's population is "sync_required signals SENT". Moving the
+// cursor parse above the subscribe (which is what closes the duplicate window)
+// put the unreadable-cursor increment on the wrong side of the admission
+// check, so a connection refused with 429 — which is never sent anything —
+// still moved it.
+//
+// The control leg is the second half: an unreadable cursor on a connection
+// that IS admitted must still count, or the fix would read as correct while
+// having simply deleted the increment.
+func TestRefusedConnectionDoesNotCountASyncRequired(t *testing.T) {
+	srv := testServerWithEvents(t)
+	m := metrics.New()
+	srv.SetMetrics(m)
+	srv.SetEventBus(events.New())
+	srv.SetSSELimits(0, 1, 0) // one connection per workspace
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	slug := createTestWorkspace(t, ts.URL, "Test")
+	url := ts.URL + "/api/v1/events?workspace=" + slug
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Holder occupies the workspace's only slot. Its cursor is readable, so
+	// it cannot contribute to the counter itself.
+	held := readRawSSEFrames(t, ctx, url, "")
+	waitForFrameWithEvent(t, held, "connected")
+
+	before := counterValue(t, m.EventResumeGapsTotal)
+
+	// Refused: the slot is taken. The unreadable cursor must not be counted,
+	// because nothing was sent to this client but a 429.
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	req.Header.Set("Last-Event-ID", "not-a-number")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want the connection refused with 429, got %d — the test is not exercising its case", resp.StatusCode)
+	}
+	if got := counterValue(t, m.EventResumeGapsTotal); got != before {
+		t.Errorf("a refused connection incremented the sync_required counter: %v -> %v", before, got)
+	}
+
+	// Control: free the slot, reconnect with the same unreadable cursor. This
+	// one IS admitted and IS sent sync_required, so it must count.
+	cancel()
+	waitUntilWorkspaceIdle(t, srv, slug)
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	frames := readRawSSEFrames(t, ctx2, url, "not-a-number")
+	waitForFrameWithEvent(t, frames, "sync_required")
+	if got := counterValue(t, m.EventResumeGapsTotal); got <= before {
+		t.Errorf("an admitted unreadable cursor did not increment the counter: %v -> %v", before, got)
+	}
+}
+
+// waitUntilWorkspaceIdle waits for the held connection's Unsubscribe to land.
+// Cancelling the request context returns from the client side immediately; the
+// handler's own teardown is what frees the slot.
+func waitUntilWorkspaceIdle(t *testing.T, srv *Server, slug string) {
+	t.Helper()
+	ws := workspaceIDForSlug(t, srv, slug)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.events.WorkspaceSubscriberCount(ws) == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the held connection never released its workspace slot")
 }
