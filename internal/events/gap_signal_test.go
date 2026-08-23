@@ -76,7 +76,7 @@ func TestDropIsReportedToTheObserver(t *testing.T) {
 	}
 	defer b.Unsubscribe(ch)
 
-	for range 64 {
+	for range subscriberChanDepth {
 		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 	}
 	if got := obs.dropped(); len(got) != 0 {
@@ -232,7 +232,7 @@ func TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 	defer b.Unsubscribe(fast)
 
 	// Contiguous ids so no coverage arm can fire and take credit.
-	for i := 1; i <= 64; i++ {
+	for i := 1; i <= subscriberChanDepth; i++ {
 		b.fanOutLocally(Event{ID: int64(i), Type: ItemUpdated, WorkspaceID: "ws-1"})
 		<-fast
 	}
@@ -240,7 +240,7 @@ func TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 		t.Fatal("a full-but-not-yet-overflowing channel raised the flag")
 	}
 
-	b.fanOutLocally(Event{ID: 65, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutLocally(Event{ID: subscriberChanDepth + 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	<-fast
 
 	if !raised(slowGaps) {
@@ -493,7 +493,7 @@ func TestActivityGapSignalCoalesces(t *testing.T) {
 	}
 
 	if !raised(gaps) {
-		t.Fatal("no gap signal after 200 events into a 64-deep channel")
+		t.Fatalf("no gap signal after 200 events into a %d-deep channel", subscriberChanDepth)
 	}
 	if raised(gaps) {
 		t.Error("more than one signal was queued; the channel must coalesce, not accumulate")
@@ -645,14 +645,14 @@ func TestRedisBusDropIsReportedPerSubscriber(t *testing.T) {
 	defer b.Unsubscribe(slowB)
 
 	// Fill both channels, then overflow both with ONE event.
-	for i := 1; i <= 64; i++ {
+	for i := 1; i <= subscriberChanDepth; i++ {
 		b.fanOutLocally(Event{ID: int64(i), Type: ItemUpdated, WorkspaceID: "ws-1"})
 	}
 	if got := obs.dropped(); len(got) != 0 {
 		t.Fatalf("drops reported before either channel overflowed: %v", got)
 	}
 
-	b.fanOutLocally(Event{ID: 65, Type: ItemUpdated, WorkspaceID: "ws-1"})
+	b.fanOutLocally(Event{ID: subscriberChanDepth + 1, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
 	got := obs.dropped()
 	if len(got) != 2 {

@@ -723,29 +723,27 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 	b, _ := newFlippedRedisBus(t)
 	channel := redisns.Default.Name(redisChannelSuffix) + "ws-1"
 
+	const n = 300
+
 	ps := b.client.Subscribe(context.Background(), channel)
 	defer func() { _ = ps.Close() }()
 	if _, err := ps.Receive(context.Background()); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	incoming := ps.Channel()
+	// SIZED ABOVE THE MESSAGE COUNT, so truncation is structurally impossible
+	// rather than merely unlikely (codex round 7). go-redis defaults this to
+	// 100 and drops past it, so publishing 300 through a 100-deep buffer makes
+	// the arrival count depend on how much CPU the reader gets — the exact
+	// defect this unit removes elsewhere. Draining early narrows that window;
+	// sizing the buffer closes it.
+	incoming := ps.Channel(redis.WithChannelSize(n * 2))
 
-	const n = 300
-
-	// THE READER STARTS FIRST, and that is not a stylistic choice (BUG-2742).
-	// ps.Channel() is bounded — go-redis buffers ~100 — so publishing all n
-	// before anything drains makes the arrival COUNT a function of how much
-	// CPU the reader gets, which is the exact defect that reddened CI four
-	// times in this package's sibling test. Draining concurrently means the
-	// reader is competing with the publishers rather than starting 300
-	// messages behind them.
-	//
-	// Honest limit: this is a large mitigation, not a guarantee. A reader
-	// starved for long enough can still fall 100 behind, and then this fails
-	// on arrival count again. Unlike the sibling test, the bound here belongs
-	// to go-redis rather than to us, so it cannot be made structurally
-	// impossible the same way — if this one ever does flake, the answer is to
-	// raise ChannelSize, not to lower the assertion.
+	// The reader also starts BEFORE the publishes rather than after them, so
+	// it is competing with the publishers instead of beginning n messages
+	// behind. With the buffer sized above n that is belt and braces, and it
+	// is kept because the two defend different things: the size stops the
+	// buffer truncating the sample, and starting early stops this test
+	// pretending a burst is consumed instantly.
 	//
 	// One reader, so the order it records IS arrival order.
 	ids := make([]int64, 0, n)
