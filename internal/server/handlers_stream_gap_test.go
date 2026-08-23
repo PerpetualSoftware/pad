@@ -107,19 +107,52 @@ func TestActivityStreamStaysQuietWithoutAGap(t *testing.T) {
 	frames := readRawSSEFrames(t, ctx, ts.URL+"/api/v1/events?workspace="+slug, "")
 	waitForFrameWithEvent(t, frames, "connected")
 
+	// FIRST, before anything else is published: a handler that announces a
+	// gap unconditionally at connect must fail here. Asserting this only
+	// after publishing would let such a frame slip past while the loop was
+	// looking for the event — which is exactly what happened when this leg
+	// was mutation-tested, so the ordering is load-bearing, not stylistic.
+	assertNoFrameWithEvent(t, frames, "sync_required", 300*time.Millisecond)
+
 	inner.Publish(events.Event{
 		Type:        events.ItemCreated,
 		WorkspaceID: workspaceIDForSlug(t, srv, slug),
 		Collection:  "tasks",
 	})
 
-	// The ordinary event must arrive — that is the proof this loop would have
-	// seen a sync_required had one been sent — and it must not be one.
-	frame := waitForFrameWithEvent(t, frames, events.ItemCreated)
+	// The ordinary event must arrive — that is the proof this loop CAN see a
+	// frame, so the absence asserted above is an absence and not a blind
+	// spot — and no gap may be announced alongside it.
+	frame := waitForFrameRefusing(t, frames, events.ItemCreated, "sync_required")
 	if strings.Contains(frame, "sync_required") {
 		t.Fatalf("an ordinary event was announced as a gap:\n%s", frame)
 	}
-	assertNoFrameWithEvent(t, frames, "sync_required", 300*time.Millisecond)
+}
+
+// waitForFrameRefusing is waitForFrameWithEvent with a forbidden type: it
+// fails if `refuse` arrives while waiting for `want`, instead of reading past
+// it. The plain version reads past everything, which makes it unusable for
+// asserting that something did NOT happen in a window that also contains
+// something that did.
+func waitForFrameRefusing(t *testing.T, frames <-chan string, want, refuse string) string {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				t.Fatalf("stream closed before a %q frame arrived", want)
+			}
+			if strings.Contains(f, "event: "+refuse) {
+				t.Fatalf("unexpected %q frame while waiting for %q:\n%s", refuse, want, f)
+			}
+			if strings.Contains(f, "event: "+want) {
+				return f
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for a %q frame", want)
+		}
+	}
 }
 
 // TestWatchStreamAnnouncesAGapMidStream is the same binding on the user-scoped
