@@ -408,13 +408,23 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 // `pubsub.Receive(subCtx)` deleted this fails 3/3 with
 // `got map[subscription_resumed:1]`.
 //
-// Codex round 3 argued the guard could not work, on the theory that the
-// initial confirmation would arrive before SetObserver and Subscribe are
-// called and so go unrecorded. It does not: go-redis does not deliver the
-// confirmation until the channel goroutine started by
-// ChannelWithSubscriptions reads it, which is after the constructor returns
-// and after newCutterBus attaches the observer. Settled by running the
-// mutation, not by arguing the timing.
+// ONE RESIDUAL, STATED BECAUSE IT IS REAL AND MEASURED RATHER THAN DISMISSED
+// (codex rounds 3 and 17 both raised it). The confirmation is recorded only if
+// it arrives after newCutterBus attaches the observer, and nothing ORDERS
+// those two — so in principle a mutated constructor could let it slip through
+// unobserved and this test would pass on broken code.
+//
+// It does not happen, and the asymmetry is why: the confirmation needs a round
+// trip through a TCP proxy to miniredis and back into a goroutine that has not
+// started yet, while SetObserver is two field writes on the goroutine that
+// just returned from the constructor. Measured with the mutation applied
+// rather than argued — 50/50 caught plain, and 30/30 caught under -race, which
+// perturbs scheduling hard enough to surface a genuine window.
+//
+// Closing it properly would need a construction-time observer seam, i.e.
+// widening production API for a test. The measurement is the better trade, and
+// it is recorded here so a future flake is read as this window opening rather
+// than as noise.
 func TestNoCoverageIsDroppedAtStartup(t *testing.T) {
 	b, _, _, obs := newCutterBus(t, 64)
 
