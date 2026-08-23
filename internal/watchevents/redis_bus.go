@@ -1173,6 +1173,22 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 // the drop would need a threshold, and a threshold is a deployment decision
 // rather than an implementation detail — the same reason BUG-2738 is not
 // fixed here.
+//
+// WHAT A FLOOD OF SUCH MESSAGES COSTS, since "out of threat model" is not the
+// same as "free" (codex round 10). Per message: one ERROR log, one metric
+// increment, one replay-buffer allocation, and one pass over the subscriber
+// map. Three of those four are self-bounding — the subscriber pass is a
+// non-blocking send onto a capacity-1 flag that is already raised, so it
+// collapses to nothing; the metric increment IS the alarm an operator would
+// want at full rate; and the receive loop is serial, so the allocations are
+// one at a time against a GC rather than a growing heap. The unbounded one is
+// LOG VOLUME, which is the residual: a flood writes one line per message, and
+// bounding it is the same threshold decision as above.
+//
+// Payload size is deliberately not capped here, because a cap at this layer
+// would not do anything: go-redis has already read the whole message into
+// memory before decodePayload sees it. Bounding that belongs to the Redis
+// deployment (proto-max-bulk-len) and to who holds PUBLISH.
 func (b *RedisBus) dropCoverage(reason string) {
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire with
 	// no bus lock held. See Observer.
