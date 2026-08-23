@@ -479,7 +479,7 @@ func New() *Metrics {
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
-		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there, i.e. Redis lost writes), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended).",
+		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there — usually a Redis failover to a replica that lost writes, and since BUG-2740 also a corrupted generation key having been repaired and reseeded from wall-clock seconds; read the key to tell them apart, a repaired one looks like a unix timestamp), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended).",
 	}, []string{"reason"})
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
