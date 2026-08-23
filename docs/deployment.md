@@ -412,10 +412,67 @@ Alert on these instead:
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch resume counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
 | `pad_event_midstream_resyncs_total` | Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open. New in BUG-2730, and the counter to watch when judging whether that fix is costing more resyncs than it is worth. It counts ANNOUNCEMENTS, not causes and not distinct clients: a reset that drops buffers moves it once per live subscriber (and that ratio against `pad_event_sequence_resets_total` is the fan-out); a burst of drops on ONE connection moves it once, because signals coalesce and are rate-limited per connection; and a coverage loss on a workspace with no buffer yet moves it while every cause counter stays flat, because there was no coverage to end but the subscribers still have a hole |
 | `pad_watchevents_midstream_resyncs_total` (see also, listed above) | Same meaning for the watch stream. Its causes are a slow-subscriber drop and a received sequence gap or reset; a gap announces to EVERY subscriber on the instance, so it can exceed all of its cause counters |
-| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase. `epoch_regressed` — a LOWER generation was seen, so this instance stopped vouching for its buffers. One alongside an `epoch_change` is a message that was in flight when the generation rotated; a RUN of them means the counter itself went backwards, i.e. Redis lost writes. `undecodable_message` — a message on these channels could not be parsed, so that workspace's coverage ended; expect zero, and suspect a namespace collision |
+| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase. `epoch_regressed` — a LOWER generation was seen, so this instance stopped vouching for its buffers. One alongside an `epoch_change` is a message that was in flight when the generation rotated; a RUN of them means the counter itself went backwards — usually Redis lost writes, and since BUG-2740 possibly a repaired generation key (see *A repaired generation counter*). `undecodable_message` — a message on these channels could not be parsed, so that workspace's coverage ended; expect zero, and suspect a namespace collision |
 | `pad_event_events_dropped_total` | Activity events not delivered to a live subscriber, by reason — today only `slow_subscriber` (that connection's 64-deep channel was full). Per-SUBSCRIBER: every subscriber that was keeping up received the event. Pairs with `pad_event_midstream_resyncs_total`, though not one-for-one in either direction — see that row. New in BUG-2730, along with the fix that stops the drop being silent, so a deploy that starts reporting these is not necessarily a regression — it may be the first time they were countable |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
+
+
+#### A repaired generation counter
+
+`event_epoch_gen` is a shared Redis key, and the same things that corrupt any
+shared key can corrupt it: a namespace collision with another installation, a
+hand-edit during an incident, a restore that mixed keyspaces. Since BUG-2740 a
+corrupted one is REPAIRED rather than fatal — before that, every phase-2
+publish consumed a sequence ID and then failed, permanently, because the branch
+that would have rotated the generation was the branch that could not run.
+
+Two operator-visible consequences, neither of which had documentation:
+
+- **A repair reseeds the generation from wall-clock SECONDS.** That is above
+  any counted history, so it normally reads as an ordinary `epoch_change`. It
+  is not guaranteed to be above a counter that a collision or a hand-edit had
+  pushed higher, so it can instead surface as `epoch_regressed` — which
+  otherwise means a failover to a replica that lost writes. **The tell is the
+  value**: read the key, and a repaired generation looks like a unix timestamp
+  (ten digits, around 1.7e9) rather than a small count of ID-space resets.
+  There is no repair-specific counter or log line, because the repair happens
+  inside a Lua script.
+- **Clients reconcile, and normally once.** A repair is an ID-space change
+  like any other, so receivers stop vouching for their buffers. It does not
+  loop, because the repaired key is valid and the next rotation increments it
+  normally. The exception is a repaired generation that lands BELOW the one a
+  receiver already holds: that instance discards the lower epoch as a
+  straggler for its 30-second window rather than adopting it, so the same
+  space can be disclaimed again when it is finally adopted. Bounded by that
+  window, and visible as `epoch_regressed` rather than `epoch_change`.
+
+**Two repairs CAN collide, and what catches it is not the epoch.** The seed is
+above any COUNTED history; it is not a monotonicity guarantee. Corrupt the key
+twice inside one second and both repairs seed the same value, so two genuinely
+different ID spaces carry the identical epoch — and an equal epoch means "same
+space" by design, so neither `epoch_change` nor `epoch_regressed` fires.
+
+The detection chain that does hold, stated so nobody has to rediscover it:
+
+> A merge requires IDs to be REUSED at a receiver. Reuse requires the sequence
+> counter to go BACKWARDS. A backwards counter is detected regardless of what
+> the epoch says — it is the `counter_backward` reason, which drops the
+> affected buffers and refuses cursors below the discarded high-water mark.
+
+So the guarantee is carried by a different detector than the epoch mechanism
+suggests. That is deliberate and it is tested end to end
+(`TestACollidingRepairIsCaughtBySequenceRatherThanEpoch`), because a future
+change that weakened `counter_backward` would remove a protection nothing else
+here advertises.
+
+Two cases that look similar and are not. A sequence counter set FORWARD — say
+to 50, so the next ID is 51 — is a jump inside ONE space: IDs stay unique and
+increasing, nothing is reused, and per-workspace IDs are non-consecutive by
+construction anyway. And a receiver that never held the colliding range has
+nothing to merge; what it experiences is a gap, which is the pre-existing
+undetectable-loss case tracked as BUG-2735.
+
 
 **`pad_watchevents_sequence_resets_total` has no released contract yet, and
 that is why BUG-2739 could change it freely.** The whole metric was introduced
@@ -552,7 +609,9 @@ format every deployed browser speaks. So this is a substantial mitigation and
 not a closure; the residual case and why it is deferred are at the end of this
 section.
 
-The fix gives each ID space an **epoch** — a monotonic generation number,
+The fix gives each ID space an **epoch** — a generation number (monotonic in
+normal operation; see *A repaired generation counter* below for the one case
+that is not),
 minted by Redis when the space is created and carried as a
 `<epoch>|<id>|<json>` prefix on every message published **by a phase-2
 instance**. Phase-1 instances publish the historical bare JSON and carry no
