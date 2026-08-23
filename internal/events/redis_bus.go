@@ -1464,19 +1464,18 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		select {
 		case sub.ch <- event:
 		default:
-			// A DROP HERE IS SILENT TO THE SUBSCRIBER, and BUG-2731
-			// deliberately did not change that — see BUG-2730, which owns it
-			// for both buses. Everything BUG-2731 made honest is per-WORKSPACE
-			// state evaluated when a client asks (cold start, stopped
-			// subscription, reconnect, ID-space reset); this is per-SUBSCRIBER
-			// state discovered mid-fan-out about a connection that is still
-			// open, so telling it needs a channel from the bus to one live
-			// consumer that neither bus has.
+			// A DROP HERE WAS SILENT TO THE SUBSCRIBER until BUG-2730, and
+			// the consequence is why it mattered: a later delivered event
+			// advances that client's Last-Event-ID PAST the dropped IDs,
+			// after which no replica will replay them, because every replica
+			// agrees the cursor is current.
 			//
-			// The consequence, so nobody reads this as harmless: a later
-			// delivered event advances that client's Last-Event-ID PAST the
-			// dropped IDs, after which no replica will replay them, because
-			// every replica agrees the cursor is current.
+			// Everything BUG-2731 made honest is per-WORKSPACE state
+			// evaluated when a client ASKS (cold start, stopped subscription,
+			// reconnect, ID-space reset). This is per-SUBSCRIBER state
+			// discovered mid-fan-out about a connection that is still open,
+			// so telling it needed a channel from the bus to one live
+			// consumer that neither bus had. It has one now.
 			slog.Warn("dropping event for slow subscriber", "type", event.Type, "workspace", event.WorkspaceID)
 			sub.signalGap()
 			dropped++

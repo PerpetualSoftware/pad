@@ -132,8 +132,10 @@ type Metrics struct {
 	// The watch stream's twin (WatchNotificationsDroppedTotal) has existed
 	// since BUG-2699; this one arrives with BUG-2730, which is also what made
 	// the drop honest — the affected subscriber is now told mid-stream. Read
-	// it alongside pad_event_resume_gaps_total: a rise here produces a rise
-	// there one client at a time, and that is the fix working, not a fault.
+	// it alongside pad_event_midstream_resyncs_total: a rise here produces a
+	// rise there one client at a time, and that is the fix working, not a
+	// fault. It does NOT move pad_event_resume_gaps_total, which stayed
+	// resume-only so existing alerts keep their meaning.
 	EventEventsDroppedTotal *prometheus.CounterVec
 
 	// EventMidstreamResyncsTotal and WatchMidstreamResyncsTotal count clients
@@ -435,7 +437,7 @@ func New() *Metrics {
 
 	eventEventsDroppedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_events_dropped_total",
-		Help: "Activity events not delivered to a live subscriber, by reason: slow_subscriber (that connection's 64-deep channel was full). Per-subscriber, not per-event. Since BUG-2730 each drop also sends that subscriber sync_required, so expect a matching rise in pad_event_resume_gaps_total.",
+		Help: "Activity events not delivered to a live subscriber, by reason: slow_subscriber (that connection's 64-deep channel was full). Per-subscriber, not per-event. Since BUG-2730 each drop also sends that subscriber sync_required mid-stream, so expect a matching rise in pad_event_midstream_resyncs_total; it does NOT move pad_event_resume_gaps_total, which stayed resume-only.",
 	}, []string{"reason"})
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
