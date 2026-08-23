@@ -128,9 +128,17 @@ type Event struct {
 // EventBus is the interface for pub/sub event distribution.
 // Implementations include MemoryBus (in-process) and RedisBus (cross-instance).
 type EventBus interface {
-	// Subscribe registers a new subscriber for the given workspace.
-	// Returns a buffered channel that will receive events for that workspace.
-	Subscribe(workspaceID string) chan Event
+	// Subscribe registers a new subscriber for the given workspace and
+	// returns its event channel and its GAP SIGNAL — see
+	// SubscribeIfAllowed for what the second one carries.
+	//
+	// It returns the gap channel even though this is the unbounded,
+	// no-replay primitive that no handler uses, and that is the point: an
+	// interface method whose subscribers CANNOT be told they missed
+	// something is a silent under-delivery waiting for its first production
+	// caller (codex round 5). Every way of registering a subscriber hands
+	// back the same two things.
+	Subscribe(workspaceID string) (chan Event, <-chan struct{})
 
 	// SubscribeIfAllowed atomically checks the per-workspace subscriber
 	// limit and, only if it is satisfied, subscribes in the same critical
@@ -523,13 +531,13 @@ func NewWithReplay(bufferSize int, maxAge time.Duration) *MemoryBus {
 
 // Subscribe registers a new subscriber for the given workspace.
 // Returns a buffered channel that will receive events for that workspace.
-func (b *MemoryBus) Subscribe(workspaceID string) chan Event {
+func (b *MemoryBus) Subscribe(workspaceID string) (chan Event, <-chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	sub := newSubscriber(workspaceID)
 	b.subscribers[sub.ch] = sub
-	return sub.ch
+	return sub.ch, sub.gaps
 }
 
 // SubscribeIfAllowed atomically checks limits and subscribes.

@@ -261,7 +261,7 @@ func TestTheDedupeTokenMakesARetriedPublishANoOp(t *testing.T) {
 // than through the anySubscription escape hatch.
 func liveGen(t *testing.T, b *RedisBus, workspaceID string) (chan Event, int64) {
 	t.Helper()
-	ch := b.Subscribe(workspaceID)
+	ch, _ := b.Subscribe(workspaceID)
 	t.Cleanup(func() { b.Unsubscribe(ch) })
 	return ch, b.currentSubGen(workspaceID)
 }
@@ -663,7 +663,7 @@ func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testi
 	// never run in production.
 	b, _ := newFlippedRedisBus(t)
 
-	ch := b.Subscribe("ws-1")
+	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})
@@ -859,7 +859,7 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	ch := b.Subscribe("ws-1")
+	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
@@ -958,9 +958,9 @@ func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
 
 	// Both are subscribed to the same workspace, as two replicas serving
 	// clients would be.
-	ch1 := phase1.Subscribe("ws-1")
+	ch1, _ := phase1.Subscribe("ws-1")
 	defer phase1.Unsubscribe(ch1)
-	ch2 := phase2.Subscribe("ws-1")
+	ch2, _ := phase2.Subscribe("ws-1")
 	defer phase2.Unsubscribe(ch2)
 
 	recv := func(t *testing.T, ch chan Event, who string) Event {
@@ -1095,7 +1095,7 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 			obs := &recordingObserver{}
 			b.SetObserver(obs)
 
-			ch := b.Subscribe("ws-1")
+			ch, _ := b.Subscribe("ws-1")
 			defer b.Unsubscribe(ch)
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 

@@ -33,7 +33,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	// A local subscriber is what starts the Redis-side subscription for
 	// this workspace, so the channel assertions below have something to
 	// observe.
-	ch := b.Subscribe("ws-1")
+	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
 
 	b.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})
@@ -152,7 +152,7 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	ch := b.Subscribe("ws-1")
+	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
 
 	b.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})

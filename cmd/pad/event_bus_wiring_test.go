@@ -76,7 +76,7 @@ func TestBothEventBusShapesReportToMetrics(t *testing.T) {
 		// through this bus's own subscription — because that is the only path
 		// that fills a Redis bus's replay buffer, and driving the fan-out
 		// directly would skip the decode this shape depends on.
-		ch := bus.Subscribe("ws-1")
+		ch, _ := bus.Subscribe("ws-1")
 		t.Cleanup(func() { bus.Unsubscribe(ch) })
 		bus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1"})
 

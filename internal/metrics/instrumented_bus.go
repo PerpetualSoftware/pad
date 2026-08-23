@@ -28,16 +28,10 @@ func NewInstrumentedBus(inner events.EventBus, m *Metrics) *InstrumentedBus {
 }
 
 // Subscribe delegates to the inner bus and increments the SSE connection gauge.
-func (b *InstrumentedBus) Subscribe(workspaceID string) chan events.Event {
-	ch := b.inner.Subscribe(workspaceID)
-
-	b.mu.Lock()
-	b.workspaces[ch] = workspaceID
-	b.mu.Unlock()
-
-	(*b.metrics.SSEConnectionsActive).Inc()
-	(*b.metrics.EventBusSubscribers).Set(float64(b.inner.SubscriberCount()))
-	return ch
+func (b *InstrumentedBus) Subscribe(workspaceID string) (chan events.Event, <-chan struct{}) {
+	ch, gaps := b.inner.Subscribe(workspaceID)
+	b.trackSubscription(ch, workspaceID)
+	return ch, gaps
 }
 
 // SubscribeIfAllowed delegates the atomic check-and-subscribe to the inner bus

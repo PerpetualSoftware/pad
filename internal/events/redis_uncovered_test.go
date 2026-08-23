@@ -33,7 +33,7 @@ func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	ch := b.Subscribe("ws-1")
+	ch, _ := b.Subscribe("ws-1")
 	defer b.Unsubscribe(ch)
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
@@ -124,8 +124,8 @@ func TestClosingALiveRedisBusReleasesEverything(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	one := b.Subscribe("ws-1")
-	two := b.Subscribe("ws-2")
+	one, _ := b.Subscribe("ws-1")
+	two, _ := b.Subscribe("ws-2")
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 	waitForSubscribers(t, mr, "pad:events:ws-2", true)
 

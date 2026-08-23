@@ -389,7 +389,7 @@ func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch b
 
 // Subscribe registers a local subscriber for the given workspace.
 // Starts a Redis subscription for the workspace if this is the first local subscriber.
-func (b *RedisBus) Subscribe(workspaceID string) chan Event {
+func (b *RedisBus) Subscribe(workspaceID string) (chan Event, <-chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -399,7 +399,7 @@ func (b *RedisBus) Subscribe(workspaceID string) chan Event {
 		b.startRedisSubscription(workspaceID)
 	}
 
-	return sub.ch
+	return sub.ch, sub.gaps
 }
 
 // addSubscriberLocked registers a channel for a workspace and bumps its local

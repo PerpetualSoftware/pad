@@ -556,10 +556,12 @@ type webhookDelivery struct {
 
 func newCopyFanoutObserver(t *testing.T, f *copyPreflightFixture) *copyFanoutObserver {
 	t.Helper()
+	chA, _ := f.bus.Subscribe(f.wsA.ID)
+	chB, _ := f.bus.Subscribe(f.wsB.ID)
 	o := &copyFanoutObserver{
 		t: t, f: f,
-		chA:   f.bus.Subscribe(f.wsA.ID),
-		chB:   f.bus.Subscribe(f.wsB.ID),
+		chA:   chA,
+		chB:   chB,
 		hooks: make(chan webhookDelivery, 32),
 	}
 	t.Cleanup(func() {

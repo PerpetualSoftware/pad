@@ -37,7 +37,7 @@ func publishN(b *MemoryBus, workspaceID string, n int) []int64 {
 // actually assigned.
 func publishTyped(b *MemoryBus, workspaceID string, types ...string) []int64 {
 	ids := make([]int64, 0, len(types))
-	ch := b.Subscribe(workspaceID)
+	ch, _ := b.Subscribe(workspaceID)
 	defer b.Unsubscribe(ch)
 	for _, typ := range types {
 		b.Publish(Event{Type: typ, WorkspaceID: workspaceID})
