@@ -237,10 +237,12 @@ func TestRedisBusReportsSequenceGap(t *testing.T) {
 	}
 }
 
-// TestRedisBusReportsSequenceResets covers both reset reasons, which are
-// detected in different functions (fanOutFromRedis for the epoch,
+// TestRedisBusReportsSequenceResets covers the two ID-SPACE reset reasons,
+// which are detected in different functions (fanOutFromRedis for the epoch,
 // fanOutLocally for the counter) and would be easy to wire one of and
-// call done.
+// call done. The other two — subscription_resumed and undecodable_message,
+// added by BUG-2739 — are detected on the receive loop and covered in
+// redis_reconnect_test.go, which needs a severable connection to reach them.
 func TestRedisBusReportsSequenceResets(t *testing.T) {
 	t.Parallel()
 

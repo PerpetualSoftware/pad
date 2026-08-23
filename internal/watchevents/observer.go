@@ -43,10 +43,23 @@ import "sync"
 // for implementers, because an exported seam whose safety depends on
 // callers reading a comment fails the first time somebody does not.
 //
-// The ONE thing an observer must not do is call a bus method that
-// REPORTS — SubscribeAndReplaySince can raise a resume gap — because
-// that is unbounded mutual recursion, which no lock discipline here can
-// prevent.
+// TWO things an observer must not do. Call a bus method that REPORTS —
+// SubscribeAndReplaySince can raise a resume gap — because that is
+// unbounded mutual recursion, which no lock discipline here can prevent.
+// And, when the callback is running on RedisBus's receive goroutine,
+// call Close: that method waits on the receive goroutine through
+// wg.Wait(), so it would be waiting on itself forever. Not a
+// lock-ordering problem and not fixable by one — the goroutine is the
+// resource being waited for.
+//
+// The second hazard is narrower than the first, and an implementer
+// cannot tell from inside which case it is in: reports raised on the
+// RECEIVE path carry it, while a ResumeGap raised by
+// SubscribeAndReplaySince runs on the CALLER's goroutine and MemoryBus
+// has no receive goroutine at all. Since the callback cannot distinguish
+// them, the rule is stated unconditionally. (Found by a lifecycle review
+// on BUG-2739; the contract named only the first, which reads as though
+// the second were allowed.)
 type Observer interface {
 	// NotificationDropped reports a notification this instance received but
 	// could not deliver to one of its own subscribers. reason is a bounded
@@ -74,10 +87,18 @@ type Observer interface {
 	// USER-VISIBLE, since it produces a resync.
 	ResumeGap()
 
-	// SequenceReset reports that the id space itself changed under this
-	// instance and the replay buffer was dropped. reason is bounded:
-	// "epoch_change" (the shared epoch key changed) or "counter_backwards"
-	// (an id arrived at or below the high-water mark).
+	// SequenceReset reports that this instance's replay coverage was
+	// dropped. reason is bounded: "epoch_change" (the shared epoch key
+	// changed — an opaque token here, not a numeric generation),
+	// "counter_backward" (an id arrived at or below the high-water mark
+	// with the epoch unchanged), "subscription_resumed" (go-redis
+	// reconnected and re-subscribed, so the outage's notifications never
+	// arrived) or "undecodable_message" (a message on the channel could
+	// not be parsed).
+	//
+	// The first two mean the ID SPACE changed under us; the last two mean it
+	// did not and we can no longer account for part of it. All end coverage,
+	// because the buffer cannot vouch for the span either way.
 	SequenceReset(reason string)
 
 	// ReceiveLoopExited reports that the single consumer of the shared
@@ -194,5 +215,22 @@ const (
 	DropReasonSlowSubscriber = "slow_subscriber"
 
 	ResetReasonEpochChange     = "epoch_change"
-	ResetReasonCounterBackward = "counter_backwards"
+	ResetReasonCounterBackward = "counter_backward"
+
+	// ResetReasonSubscriptionResumed means go-redis reconnected and
+	// re-subscribed: whatever was published while the connection was down
+	// never reached this instance. Expect these during a Redis failover and
+	// expect them to stop afterwards.
+	ResetReasonSubscriptionResumed = "subscription_resumed"
+
+	// ResetReasonUndecodableMessage means a message on the watch channel
+	// could not be parsed. Note what this does and does NOT establish: the
+	// instance knows only that something arrived on its channel that it could
+	// not read. It cannot tell whether that was a notification it should have
+	// had (so there is now a hole with an id it cannot name) or something
+	// foreign that was never ours. It stops vouching BECAUSE it cannot tell —
+	// the honest reading of an unreadable message is that coverage is no
+	// longer provable, not that a specific notification was lost. Expect
+	// zero; suspect a namespace collision.
+	ResetReasonUndecodableMessage = "undecodable_message"
 )

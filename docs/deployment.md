@@ -172,8 +172,11 @@ cross-tenant leak.
 >    its cold replay-buffer coverage check rather
 >    than an epoch comparison — a freshly namespaced bus has no old epoch to
 >    compare against. Expect a burst of client reconciliation as they reconnect
->    — an incremental `/changes` delta each, not a full page load;
->    that is the cutover being paid for, and it is bounded by the number of
+>    — for ACTIVITY-stream clients (the web UI) an incremental `/changes` delta
+>    each, not a full page load. WATCH-stream clients cost less: `pad watch
+>    --stream` answers `sync_required` by clearing its cursor and keeping the
+>    connection open, so it refetches nothing. Either way that is the cutover
+>    being paid for, and it is bounded by the number of
 >    reconnecting clients — each RESUME is counted, so a client that
 >    reconnects several times counts several times.
 >
@@ -228,14 +231,108 @@ reading the metrics below, and for anyone writing a third-party consumer:
   or this instance itself missed messages from Redis, which every subscriber on
   it shares.
 
-  **The second cause is detected differently on the two streams, and the
-  coverage is not yet equal.** The activity stream notices a pub/sub
-  resubscription and an undecodable message directly, and ends the affected
-  workspace's coverage. The watch stream notices neither: it learns of a hole
-  only when a LATER notification arrives with a non-contiguous ID, so a flap
-  that loses the newest notification with nothing published after it leaves a
-  connected CLI silently stale until something else is published. Porting the
-  activity stream's detection to the watch bus is tracked as BUG-2739.
+  **Both streams now detect a pub/sub resubscription and a message they could
+  not decode** (BUG-2739), and end the affected coverage when they do. Before
+  this the watch stream detected neither, and for a client HOLDING A STREAM
+  OPEN its only signal was a hole in the received ID sequence — which needs a
+  LATER notification to expose it, so a flap that lost the newest notification
+  on a stream that then went quiet left a connected CLI silently stale
+  indefinitely. Detecting the two conditions directly is what covers the case
+  ID arithmetic never reaches.
+
+  A RECONNECTING client was never in that position and still is not: a resume
+  asks the shared counter what the newest ID is rather than trusting the
+  instance's local view, so a cursor the instance cannot vouch for is refused
+  whether or not the instance ever noticed the flap. The gap this closes is
+  specifically the open-stream one.
+
+  **ID-sequence detection itself is watch-stream only, and that asymmetry is
+  by construction rather than an omission.** The watch stream has one channel
+  and one counter, so its IDs are consecutive and a hole is visible as a jump.
+  The activity stream's IDs come from a counter shared across workspaces, so
+  per-workspace holes are the NORMAL state and no arithmetic on them means
+  anything. That is why `pad_watchevents_sequence_gaps_total` has no
+  `pad_event_*` counterpart.
+
+  **What a failover now COSTS, since detecting it is not free.** A watch-bus
+  resubscription ends coverage for that instance's whole watch stream — there
+  is one replay buffer, not one per workspace — so every `/api/v1/events/stream`
+  subscriber on that instance is told mid-stream at once. Activity-stream
+  coverage is per-workspace, so a resubscription there ends only the affected
+  workspace's.
+
+  What that costs depends entirely on the client, and for the one client that
+  uses the watch stream today it is nearly nothing: `pad watch --stream` reacts
+  to `sync_required` by clearing its cursor and KEEPING THE CONNECTION OPEN
+  (`cmd/pad/cmd_watch.go`), so a failover produces no reconnect and no refetch
+  — the next notification simply starts a fresh coverage span. The cost to
+  watch out for is a future consumer that answers `sync_required` with a
+  refetch instead: for that client the announcement is one request per
+  connection, arriving together, since per-connection coalescing smooths
+  repeats WITHIN a wave and not the wave itself. That is the deliberate trade
+  this family makes — chatty-but-correct beats quiet-but-lossy — and if it
+  ever becomes a capacity problem the answer is fewer connections per
+  instance, not a quieter bus.
+
+  **What `undecodable_message` actually indicates.** Genuinely unreadable
+  input on the watch channel: a non-Pad publisher on the key, a wire format
+  from a mixed-version fleet mid-upgrade, or corruption. **It does NOT
+  usually mean two current Pad installations sharing a Redis** — those publish
+  the same wire format, so their messages DECODE, and the damage is
+  cross-feeding real notifications between installations while this counter
+  stays flat. That is the failure `PAD_REDIS_NAMESPACE` exists to prevent, and
+  it is both worse and quieter than the one this counter reports.
+
+  **Who can force a resync with it, and what a flood costs.** Anyone who can
+  `PUBLISH` onto the watch channel — which sounds worse than it is, since the
+  same access allows publishing FORGED notifications, so a channel writer is
+  outside the threat model already. Under a flood, what IS bounded: the
+  announcement, a non-blocking send onto a capacity-1 flag that is already
+  raised, so it collapses to nothing after the first; and heap GROWTH, since
+  each discarded replay buffer is garbage immediately and the receive loop is
+  serial. What is NOT bounded: per-message CPU and allocation — a fresh replay
+  buffer plus a pass over every subscriber, per malformed message, on the
+  single goroutine that also delivers real notifications, so a sustained flood
+  is receive-loop starvation as much as it is garbage collection. And log
+  volume, one ERROR line per message. Bounding either needs a rate threshold,
+  which is a deployment decision this code declines to make on your behalf.
+  Payload size is deliberately not capped in Pad, because go-redis has read the
+  whole message into memory before Pad sees it; bound it with Redis's
+  `proto-max-bulk-len` and with who holds `PUBLISH`.
+
+  **Two gaps in that detection remain, and an operator should know both.** A
+  message lost in transit with the connection intact — no flap, no decode
+  failure, just a message that never arrived (BUG-2735): on the watch stream a
+  LATER notification exposes it as an ID gap, while on the activity stream,
+  whose per-workspace IDs are non-consecutive by construction, nothing local
+  ever does. And a HALF-OPEN connection — a route that stopped carrying
+  traffic without closing, so nothing ever resubscribes and no message ever
+  arrives to be non-consecutive with (BUG-2738). Do not assume go-redis's
+  pub/sub health check covers the second: `PubSub.Ping` writes the command and
+  never reads a reply, so it reports healthy for as long as the socket accepts
+  writes. Detecting it needs application-level idle tracking, which needs a
+  threshold, which is a deployment decision rather than an implementation
+  detail.
+
+  **A third residual affects RESUMES rather than open streams** (BUG-2743): if
+  the watch counter restarts without the epoch rotating — evicted under
+  `maxmemory`, lost to a `FLUSHDB`, restored from a stale snapshot — the old
+  and new ID spaces overlap, and a `Last-Event-ID` inside that overlap cannot
+  be attributed to either. The instance refuses the cursors it can identify as
+  stale and serves the rest, so a client holding an old-space cursor in the
+  overlap can be handed new-space notifications as though they followed it.
+  Arithmetic on the IDs cannot close this — telling two sequences apart is
+  what the epoch token is for, and this is precisely the case the epoch does
+  not see. Rotating the epoch (see *Event ID-space migration*) is what makes a
+  deliberate counter reset safe.
+
+  A RECONNECTING client is largely covered on the watch stream anyway, because
+  a resume consults the shared counter rather than local state alone. Not
+  entirely: that check reads the counter at one instant, so a notification
+  published AFTER the read and missed is invisible to it — an at-most-once
+  pub/sub residual with no per-connection ack, documented on
+  `resumeOutrunsLocalView` and again in the CLI. What these two gaps reliably
+  leave stale is the client holding a stream OPEN.
 
 The second case is newer — before it, a held-open stream that missed events was
 never told, and a later delivered event advanced its cursor past the missing
@@ -310,7 +407,7 @@ Alert on these instead:
 | `pad_watchevents_midstream_resyncs_total` | Watch-stream subscribers told MID-STREAM that they missed notifications, on a connection that stayed open. New in BUG-2730 |
 | `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber — that connection's buffer was full. Since BUG-2730 that subscriber is told (`sync_required`, mid-stream) rather than silently under-served, so a rise here produces a rise in `pad_watchevents_midstream_resyncs_total`, one client at a time |
-| `pad_watchevents_sequence_resets_total` | The Redis counter or epoch changed; replay buffers dropped |
+| `pad_watchevents_sequence_resets_total` | Watch replay coverage dropped, by reason. `epoch_change` — the watch epoch token changed, so the IDs now come from a different sequence; the token is an opaque UUID here, not a numeric generation. `counter_backward` — an ID arrived at or below the high-water mark with the epoch unchanged. (This label was spelled `counter_backwards` while BUG-2739 was in development. If you are reading a dashboard that uses the plural, it was built against an unreleased build — see the note below.) `subscription_resumed` — a pub/sub connection dropped and re-subscribed, so whatever was published during the outage never arrived; expect these during a Redis failover and expect them to stop afterwards. `undecodable_message` — a message on the watch channel could not be parsed. The instance cannot tell whether that was a notification it should have had or something foreign, and it stops vouching because it cannot tell; expect zero, and suspect a namespace collision. The first two mean the ID space changed under this instance. `subscription_resumed` means it did not and something demonstrably went missing. `undecodable_message` means neither is established — only that coverage can no longer be proved. Each also announces to the watch subscribers connected at that moment, so each moves `pad_watchevents_midstream_resyncs_total` by AT MOST one per such subscriber — at most, because the signal is capacity-1 and coalescing, so a second cause firing before a client has acted on the first adds no announcement. For the same reason the announcement counter is not a ratio against this one in aggregate: it also counts gaps and slow-subscriber drops, and only a reset observed in isolation, against idle clients, lets you read the fan-out off these two counters |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch resume counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
 | `pad_event_midstream_resyncs_total` | Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open. New in BUG-2730, and the counter to watch when judging whether that fix is costing more resyncs than it is worth. It counts ANNOUNCEMENTS, not causes and not distinct clients: a reset that drops buffers moves it once per live subscriber (and that ratio against `pad_event_sequence_resets_total` is the fan-out); a burst of drops on ONE connection moves it once, because signals coalesce and are rate-limited per connection; and a coverage loss on a workspace with no buffer yet moves it while every cause counter stays flat, because there was no coverage to end but the subscribers still have a hole |
@@ -319,6 +416,36 @@ Alert on these instead:
 | `pad_event_events_dropped_total` | Activity events not delivered to a live subscriber, by reason — today only `slow_subscriber` (that connection's 64-deep channel was full). Per-SUBSCRIBER: every subscriber that was keeping up received the event. Pairs with `pad_event_midstream_resyncs_total`, though not one-for-one in either direction — see that row. New in BUG-2730, along with the fix that stops the drop being silent, so a deploy that starts reporting these is not necessarily a regression — it may be the first time they were countable |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
+
+**`pad_watchevents_sequence_resets_total` has no released contract yet, and
+that is why BUG-2739 could change it freely.** The whole metric was introduced
+after `v0.14.0` and no tagged release emits it, so nothing outside a
+development deployment can be alerting on it. Two things about it changed on
+that branch: the `counter_backward` label lost a trailing `s`, and the metric
+widened from "the ID space changed" to "replay coverage was dropped", which
+added the `subscription_resumed` and `undecodable_message` reasons. A
+reason-specific alert on `epoch_change` is unaffected; one on
+`counter_backward` must have its expression updated for the spelling, which is
+the whole reason this paragraph exists. An alert on the unlabelled total now
+counts more things, which is the metric doing what its name says rather than a
+regression. During a rolling deploy an instance on
+the older build reports neither new reason and keeps the old spelling — so a
+mixed fleet reports two shapes under one name for the rollout's length, which
+is acceptable precisely because no released version is in that fleet.
+
+**Re-derive that rather than trusting this paragraph**, because it is a claim
+about release state and release state changes without anyone editing this file:
+
+```
+git describe --tags --abbrev=0 origin/main      # the latest tag
+git log --reverse --format=%H -S pad_watchevents_sequence_resets_total \
+  -- internal/metrics/metrics.go | head -1      # the commit that introduced it
+git merge-base --is-ancestor <commit> <tag>     # non-zero exit => still unreleased
+```
+
+Once a release does ship this metric, the next change to it is a real contract
+break and needs versioned treatment instead of a note here.
+
 
 **Avoid an evicting `maxmemory-policy` for Pad's Redis.**
 `docker-compose.prod.yml` sets `noeviction` for this reason; the plain

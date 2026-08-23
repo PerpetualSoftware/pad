@@ -260,6 +260,25 @@ type RedisBus struct {
 	knownFrom      int64
 	lastAppendedID int64
 
+	// highWaterID is the highest id this instance has EVER appended in the
+	// current epoch, and it exists because lastAppendedID does not survive
+	// dropCoverage (BUG-2739, codex round 13).
+	//
+	// Backward-counter detection reads "did an id arrive at or below what we
+	// already hold", and dropCoverage answers 0 to that question — so a
+	// counter reset that happens DURING the outage that caused the drop
+	// arrives afterwards looking like an ordinary cold start, and
+	// counter_backward is never reported. That composite is not exotic: a
+	// Redis restarted from a stale snapshot drops every connection (the
+	// resubscription) and restores watchevents_seq to an older value (the
+	// reset), in one event.
+	//
+	// It changes no coverage decision — both roads reach knownFrom = n.ID
+	// over an emptied buffer — so this is purely the OPERATOR's signal, which
+	// docs/deployment.md leans on per migration phase. Reset only when the
+	// epoch changes, since ids from a new space are not comparable with it.
+	highWaterID int64
+
 	// epoch identifies the id space these ids belong to. A change means the
 	// counter was reset and the buffer describes a sequence that no longer
 	// exists — see redisWatchEpochSuffix and fanOutFromRedis.
@@ -336,9 +355,15 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *Red
 	// subscription is live. The window is small and entirely real.
 	//
 	// A failure here is logged rather than fatal: the receive loop's
-	// Channel() re-subscribes on reconnect, so a bus that missed its first
-	// confirmation still recovers — it just cannot promise it was listening
-	// from the moment it was constructed.
+	// ChannelWithSubscriptions() re-subscribes on reconnect, so a bus that
+	// missed its first confirmation still recovers — it just cannot promise
+	// it was listening from the moment it was constructed.
+	//
+	// THIS RECEIVE IS LOAD-BEARING FOR receiveMessages, which has no
+	// "skip the first confirmation" flag precisely because this consumes the
+	// initial one. Removing it makes every bus announce a hole at startup.
+	// See that function's comment, and TestNoCoverageIsDroppedAtStartup,
+	// which fails if this line goes away.
 	subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer subCancel()
 	if _, err := b.pubsub.Receive(subCtx); err != nil {
@@ -755,14 +780,64 @@ func (b *RedisBus) Close() {
 // receiveMessages is the single consumer of the shared Redis channel. Every
 // delivery on this instance — including for notifications this instance itself
 // published — comes through here.
+// IT USES ChannelWithSubscriptions, AND THE REASON DIFFERS FROM
+// internal/events' (BUG-2739).
+//
+// Against Channel: a plain message channel hides RESUBSCRIPTIONS. go-redis
+// reconnects transparently on a dropped connection — a Redis failover, a
+// network blip, a server restart — and hands back the messages that arrive
+// AFTER it recovers, saying nothing about the ones published while it was
+// down. This bus then learns of the hole only when a LATER notification
+// arrives with a non-contiguous id, so a flap that loses the newest
+// notification on a stream that then goes quiet leaves every connected client
+// silently stale, indefinitely.
+//
+// NO first-confirmation FLAG HERE, and that is the one place a port of
+// internal/events' loop would be wrong. That package's receive loop is handed
+// a fresh PubSub nobody has read from, so the INITIAL subscribe confirmation
+// arrives on its channel and has to be skipped. Ours does not:
+// NewRedisBusWithKeys calls b.pubsub.Receive before this goroutine starts, to
+// confirm the subscription is live before the constructor returns, and that
+// Receive consumes the initial confirmation. Verified rather than assumed —
+// with the constructor's Receive in place, this channel delivers zero
+// subscriptions at startup. So skipping "the first" would swallow the first
+// GENUINE resubscription, which is precisely the fault this loop exists to
+// catch, while looking like the package that got it right.
+//
+// TestNoCoverageIsDroppedAtStartup is the enforcement, not this comment: it
+// fails if the constructor's Receive is ever removed.
+//
+// The one case this over-reports is that Receive having FAILED (its 5s
+// timeout warn path) and go-redis subscribing afterwards. That window really
+// was uncovered — the constructor logs exactly that — so announcing a hole
+// for it is honest.
+//
+// AND ONE CASE IT UNDER-REPORTS, checked in the library rather than assumed:
+// the subscription confirmation goes through the SAME bounded channel as
+// messages (go-redis v9.22.0, initAllChan — `case *Subscription, *Message:`,
+// chanSize 100, chanSendTimeout 1 minute), so a confirmation can be DROPPED
+// under sustained load exactly like a message. Coverage still ends, by the
+// other road IN THE USUAL CASE: a full channel means messages are flowing,
+// so if the outage lost anything the next message consumed is non-contiguous
+// and the gap arm in fanOutLocally raises it. The operator then sees a
+// sequence gap rather than a subscription_resumed reset — a less specific
+// label for the same truth.
+//
+// NOT a guarantee, and the exceptions are worth naming rather than rounding
+// off. If nothing was published during the outage there is no hole to find,
+// which is fine — nothing was lost. If the drops continue through whatever
+// would have exposed the hole and the stream then goes quiet, nothing ever
+// does: that is BUG-2727's standing boundary, unchanged in both directions
+// by this work. A reconnecting client is covered either way, since
+// resumeOutrunsLocalView asks the shared counter rather than local state.
 func (b *RedisBus) receiveMessages() {
 	defer b.wg.Done()
-	ch := b.pubsub.Channel()
+	ch := b.pubsub.ChannelWithSubscriptions()
 	for {
 		select {
 		case <-b.ctx.Done():
 			return
-		case msg, ok := <-ch:
+		case raw, ok := <-ch:
 			if !ok {
 				// The subscription's message channel closed. go-redis
 				// (v9.22.0) closes it ONLY on pool.ErrClosed — the client
@@ -799,13 +874,72 @@ func (b *RedisBus) receiveMessages() {
 				b.reportReceiveLoopExited()
 				return
 			}
-			epoch, n, err := decodePayload(msg.Payload)
-			if err != nil {
-				slog.Error("watchevents: failed to decode notification from Redis",
-					"error", err, "channel", msg.Channel)
-				continue
+			switch msg := raw.(type) {
+			case *redis.Subscription:
+				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
+					// Unsubscribe confirmations. DEFENCE, AND NO TEST FAILS
+					// IF IT IS DELETED — measured, not assumed, and the
+					// reason is doubled: nothing in this bus produces one.
+					// It never calls pubsub.Unsubscribe, and PubSub.Close
+					// (go-redis v9.22.0) closes the connection without
+					// sending UNSUBSCRIBE at all, so no confirmation is
+					// emitted on the way out either. Kept because a Kind
+					// switch that names only the case it handles is a
+					// switch waiting to mis-handle the others, and because
+					// the alternative failure — a graceful stop
+					// incrementing an operator's failover counter — is
+					// silent.
+					continue
+				}
+				// A RESUBSCRIPTION: the connection dropped and came back, and
+				// whatever was published in between never reached us. See the
+				// function comment for why there is no "skip the first" here.
+				slog.Warn("watchevents: pub/sub resubscribed; dropping the replay buffer — "+
+					"resumes across the gap will report sync_required",
+					"channel", msg.Channel)
+				b.dropCoverage(ResetReasonSubscriptionResumed)
+
+			case *redis.Message:
+				epoch, n, err := decodePayload(msg.Payload)
+				if err != nil {
+					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS INSTANCE'S
+					// COVERAGE. Discarding it and carrying on was the original
+					// behaviour and left the buffer claiming a span it no
+					// longer had.
+					//
+					// WHAT WE KNOW is narrower than "a notification was
+					// lost": something arrived on our channel that we could
+					// not read. It may have been ours, or it may be foreign
+					// — another installation sharing this Redis without
+					// PAD_REDIS_NAMESPACE (BUG-2724), a probe, an older
+					// publisher. Coverage ends because we cannot TELL, which
+					// is a claim about our own evidence rather than about the
+					// stream.
+					//
+					// It is NOT enough that this bus's ids are consecutive by
+					// construction — one channel, one counter — so IF the
+					// message was ours the next notification's id would expose
+					// the miss through the gap arm below. That detection needs
+					// a LATER notification to arrive, and an unreadable NEWEST
+					// message on a stream that then goes quiet is exactly the
+					// case with no later one. (internal/events cannot lean on
+					// id arithmetic at all, since its per-workspace ids are
+					// non-consecutive by construction; it reaches the same
+					// drop by a different road.)
+					//
+					// knownFrom = 0 is the honest value because there is no id
+					// to raise it to — we cannot name what we may have missed,
+					// which is the same fact from the other side. Recovery is
+					// bounded by the next publish, which re-establishes
+					// coverage through the cold-start arm.
+					slog.Error("watchevents: failed to decode notification from Redis; "+
+						"dropping the replay buffer — resumes across it will report sync_required",
+						"error", err, "channel", msg.Channel)
+					b.dropCoverage(ResetReasonUndecodableMessage)
+					continue
+				}
+				b.fanOutFromRedis(epoch, n)
 			}
-			b.fanOutFromRedis(epoch, n)
 		}
 	}
 }
@@ -874,6 +1008,9 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 		b.replay = newReplayBuffer(b.replaySize)
 		b.lastAppendedID = 0
 		b.knownFrom = 0
+		// The new space's ids are not comparable with the old space's high
+		// water mark, so it goes with the epoch it belonged to.
+		b.highWaterID = 0
 		b.epochJustChanged = true
 		pending.reset(ResetReasonEpochChange)
 		// Every live subscriber's coverage just ended (BUG-2730). Ending it
@@ -899,6 +1036,30 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 
 	// Coverage bookkeeping before the append — see knownFrom's comment.
 	switch {
+	case b.lastAppendedID == 0 && !b.epochJustChanged && b.highWaterID > 0 && n.ID <= b.highWaterID:
+		// A COLD START THAT IS ACTUALLY A COUNTER RESET (codex round 13).
+		//
+		// lastAppendedID is 0 because dropCoverage zeroed it, not because
+		// this instance is new — and the id that arrived is at or below what
+		// we held before that drop, which is the counter having gone
+		// backwards. Without this arm the reset is indistinguishable from a
+		// cold start and counter_backward is never reported, even though the
+		// operator is looking at exactly the Redis incident that produces
+		// both at once.
+		//
+		// It reaches the same COVERAGE decision as the arm below —
+		// knownFrom = n.ID over an already-empty buffer — so this exists for
+		// the report and the signal, not to change what any client is told.
+		slog.Warn("watchevents: notification id went backwards across a coverage drop; "+
+			"the Redis sequence counter was reset during the outage",
+			"high_water", b.highWaterID, "got", n.ID)
+		// n.ID + 1, NOT n.ID — see the note on the arm below; the id space
+		// restarted, so a cursor at n.ID-1 may belong to the old one.
+		b.knownFrom = n.ID + 1
+		b.highWaterID = n.ID
+		pending.reset(ResetReasonCounterBackward)
+		b.signalAllLocked()
+
 	case b.lastAppendedID == 0:
 		// Cold start: this instance knows nothing before this id, so a client
 		// resuming from the id JUST BELOW it is contiguous with our view and
@@ -955,7 +1116,46 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			"Dropping the replay buffer — resumes from the previous id space will report sync_required",
 			"previous", b.lastAppendedID, "got", n.ID)
 		b.replay = newReplayBuffer(b.replaySize)
-		b.knownFrom = n.ID
+		// n.ID + 1, NOT n.ID (BUG-2739, codex round 21). The id space
+		// RESTARTED, so the two spaces overlap and a client presenting
+		// n.ID-1 may be holding the OLD sequence's n.ID-1 — a different
+		// notification entirely. knownFrom = n.ID admitted exactly that
+		// cursor and replayed the new space's ids as though they followed
+		// it, which is the corruption this arm exists to prevent, reached
+		// one line later.
+		//
+		// This is the SAME reasoning the cold-start arm applies after an
+		// epoch change, and for the same reason: an id space changed under
+		// us. The epoch arm had it and this one did not, which was a gap
+		// rather than a distinction — a counter evicted WITHOUT an epoch
+		// rotation is precisely the case the epoch cannot see, so it is the
+		// case that needed the guard most.
+		//
+		// The cost is one refused resume for a client genuinely at n.ID-1 of
+		// the NEW space, which it could only hold by having been served by
+		// another instance — the conservative direction, same trade the
+		// epoch arm already accepts.
+		//
+		// WHAT THIS DOES NOT CLOSE, because arithmetic on ids cannot
+		// (BUG-2743 tracks the complete fix). replaySince serves any cursor
+		// at or above knownFrom-1, so this admits n.ID itself — and if the
+		// OLD space also reached n.ID, that cursor is still ambiguous. The
+		// same is true of every old-space id up to the old high water mark,
+		// and of the epoch arm's identical +1. Closing it needs a boundary
+		// that remembers the OLD space's extent (refuse everything at or
+		// below it until the new space climbs past), not a larger constant
+		// here. That is a resume-semantics change touching the epoch path
+		// too, so it is its own unit.
+		//
+		// This arm is mitigation, and the epoch is the actual answer: an
+		// opaque token is the only thing that can say "different sequence"
+		// when the numbers cannot. See redisWatchEpochSuffix.
+		b.knownFrom = n.ID + 1
+		// The high water mark REBASES onto the new space here, and must:
+		// leaving it at the old space's peak would make every id of the
+		// restarted sequence look backward to the cold-start arm after any
+		// later dropCoverage, turning one reset into a run of false ones.
+		b.highWaterID = n.ID
 		pending.reset(ResetReasonCounterBackward)
 		b.signalAllLocked()
 
@@ -983,6 +1183,9 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 		b.signalAllLocked()
 	}
 	b.lastAppendedID = n.ID
+	if n.ID > b.highWaterID {
+		b.highWaterID = n.ID
+	}
 
 	b.replay.append(n)
 
@@ -999,6 +1202,82 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 			pending.drop(DropReasonSlowSubscriber)
 		}
 	}
+}
+
+// dropCoverage ends this instance's coverage of the watch stream, because
+// something happened that its replay buffer cannot account for: a pub/sub
+// resubscription, or a message it could not read (BUG-2739). The next resume
+// answers nil until the following notification re-establishes coverage
+// through fanOutLocally's cold-start arm.
+//
+// WHOLE-BUS, unlike internal/events' per-workspace dropWorkspaceCoverage, and
+// not by choice: this package keeps ONE replay buffer because there is exactly
+// one logical watch stream (see redisWatchChannelSuffix). There is no narrower
+// thing to drop.
+//
+// ALL THREE FIELDS RESET TOGETHER, and that is the trap. Dropping the buffer
+// and clearing knownFrom while leaving lastAppendedID at its pre-outage value
+// makes the NEXT notification look contiguous — no arm of fanOutLocally's
+// switch fires, so knownFrom is never re-established, stays 0, and
+// replaySince refuses EVERY resume on this instance from then on. It reads
+// correct and bricks resumes permanently.
+// TestCoverageIsReestablishedByTheNextNotification is what holds this, and it
+// is why the recovery case was written before the refusal case.
+//
+// highWaterID deliberately SURVIVES, because backward-counter detection needs
+// a mark that a coverage drop does not erase — see its field comment.
+//
+// epochJustChanged is deliberately NOT set: these conditions are a hole in our
+// view of the SAME id space, so the cold-start arm's ordinary knownFrom = n.ID
+// is correct. The +1 exists only for the ambiguity between two different id
+// spaces, where a client's cursor might belong to the old one.
+//
+// WHY NOT ASK THE SHARED COUNTER FIRST, which would tell us whether anything
+// was actually published during the outage and spare the buffer when nothing
+// was? Because the answer is unavailable exactly when it matters. A
+// resubscription means the Redis connection just failed; a counter read on
+// that path either fails (resumeOutrunsLocalView answers FALSE on a failed
+// read, by design, so the caller proceeds on local knowledge) or blocks the
+// single receive goroutine on network I/O, stalling delivery for every
+// subscriber on the instance. Ending coverage locally is the record that
+// survives Redis being unreadable, which is the whole point of keeping one.
+//
+// The cost of that choice, and the reason we drop at all when the resume path
+// and the gap arm each catch a real loss independently, are stated in
+// docs/deployment.md under "What a failover now COSTS" — they are operator
+// decisions and belong where operators read. The short version: both of those
+// other detections need something to HAPPEN (a reachable Redis, or a later
+// publish), and the live subscriber on a stream that then goes quiet has
+// neither. That client is what this function exists for.
+func (b *RedisBus) dropCoverage(reason string) {
+	// Registered FIRST so it runs LAST, after the Unlock — reports fire with
+	// no bus lock held. See Observer.
+	var pending pendingReports
+	defer func() { b.flush(&pending) }()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.replay = newReplayBuffer(b.replaySize)
+	b.lastAppendedID = 0
+	// DEFENCE IN DEPTH, AND NO TEST FAILS IF IT IS DELETED — said out loud
+	// rather than left for the next person to discover by mutation, which is
+	// how it was found here. With the buffer emptied on the line above,
+	// replayBuffer.since already answers nil to any sinceID > 0 (its
+	// count == 0 guard), and the next notification takes the cold-start arm
+	// and overwrites knownFrom anyway. So this line is unobservable today.
+	//
+	// Kept because without it dropCoverage's correctness would rest on
+	// another type's internal guard, in another file, for a reason unrelated
+	// to coverage — and because "we cover nothing" is the statement this
+	// function exists to make, in the three fields that say it.
+	b.knownFrom = 0
+	pending.reset(reason)
+	// Every live subscriber's coverage just ended (BUG-2730). Ending it makes
+	// the next RESUME honest and does nothing for a client still holding the
+	// stream open — which, for a flap that loses the newest notification on a
+	// stream that then goes quiet, is the only client there is.
+	b.signalAllLocked()
 }
 
 // signalAllLocked raises the gap flag for every live subscriber on this

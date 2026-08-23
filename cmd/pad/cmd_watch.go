@@ -562,10 +562,16 @@ func runWatchMonitor(ctx context.Context) error {
 // exactly what sync_required is telling the caller to do. EVICTION IS ONLY ONE
 // OF ITS CAUSES and has not been the only one since BUG-2731: the server also
 // sends it for an unreadable cursor, for coverage that never reached back that
-// far, for a lost subscription, and — since BUG-2736 — for a cursor issued by
-// a previous incarnation of the server process. The client's handling is the
-// same for all of them: the gap is
+// far, for a lost subscription, since BUG-2736 for a cursor issued by a
+// previous incarnation of the server process, and since BUG-2739 for a pub/sub
+// resubscription or a message the server could not decode. The client's
+// handling is the same for all of them: the gap is
 // too large to replay, stop trying.
+//
+// It is also delivered MID-STREAM since BUG-2730, on a connection that never
+// dropped. Clearing the cursor is the whole response there too — this loop
+// keeps the connection open and the next notification starts a fresh coverage
+// span — so a growing cause list costs this client nothing.
 func streamWatchEvents(resp *http.Response, lastEventID string) string {
 	scanner := bufio.NewScanner(resp.Body)
 	var eventType, data string
