@@ -482,6 +482,22 @@ type MemoryBus struct {
 	// oversight, is stated once in internal/idspace's package comment.
 	base int64
 
+	// afterSubscribeRegister is a TEST SEAM, nil in production. It runs
+	// inside SubscribeAndReplaySince's critical section, immediately after
+	// the subscriber is registered and before the replay is read.
+	//
+	// It exists because the guarantee that method makes — an event is in the
+	// replay OR on the channel, never both — is only observable when a
+	// publish is attempted BETWEEN those two steps, and nothing outside the
+	// bus can arrange that interleaving. A test hook that runs there can.
+	// internal/watchevents' RedisBus carries the same seam for the same
+	// reason.
+	//
+	// A hook that publishes must do so from another goroutine: b.mu is held
+	// here, so publishing inline would deadlock — which is itself the
+	// property under test.
+	afterSubscribeRegister func()
+
 	// Per-workspace replay buffers for Last-Event-ID support.
 	replayMu      sync.RWMutex
 	replayBuffers map[string]*replayBuffer
@@ -575,6 +591,9 @@ func (b *MemoryBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, m
 
 	sub := newSubscriber(workspaceID)
 	b.subscribers[sub.ch] = sub
+	if b.afterSubscribeRegister != nil {
+		b.afterSubscribeRegister()
+	}
 
 	if resuming {
 		missed = b.eventsSinceLocked(workspaceID, sinceID)
