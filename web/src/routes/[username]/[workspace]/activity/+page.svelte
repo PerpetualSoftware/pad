@@ -7,6 +7,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
+	import { agentNameOf } from '$lib/utils/agentActor';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -240,8 +241,17 @@
 		}
 	}
 
-	function getSourceLabel(source: string, actor: string, actorName?: string): { label: string; kind: string } {
-		if (actor === 'agent') return { label: 'agent', kind: 'agent' };
+	function getSourceLabel(
+		source: string,
+		actor: string,
+		actorName?: string,
+		metadata?: Record<string, unknown>
+	): { label: string; kind: string } {
+		// An agent's own name when it sent one, else the generic badge. The
+		// name is never merged with `actorName` — that is the human whose
+		// credentials the write rode on, and conflating the two is the
+		// mis-attribution this renders to end.
+		if (actor === 'agent') return { label: agentNameOf(metadata) ?? 'agent', kind: 'agent' };
 		if (actorName) return { label: actorName, kind: source === 'cli' ? 'cli' : 'user' };
 		if (source === 'cli') return { label: 'cli', kind: 'cli' };
 		return { label: 'web', kind: 'web' };
@@ -370,7 +380,7 @@
 							{@const itemRef = activity.item_ref || meta.item_ref}
 							{@const collSlug = activity.collection_slug || meta.collection_slug}
 							{@const fieldChanges = parseFieldChanges(meta.changes)}
-							{@const src = getSourceLabel(activity.source, activity.actor, activity.actor_name)}
+							{@const src = getSourceLabel(activity.source, activity.actor, activity.actor_name, meta)}
 							<div class="entry {borderClass(activity.source, activity.actor)}">
 								<span
 									class="entry-icon"

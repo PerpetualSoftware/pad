@@ -9,6 +9,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
+	import { agentActorLabel } from '$lib/utils/agentActor';
 	import OnboardingLaunchpad from '$lib/components/OnboardingLaunchpad.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
@@ -632,7 +633,7 @@
 						{@const changes = parseActivityChanges(activity.metadata)}
 						<div class="activity-row">
 							{#if activity.actor === 'agent'}
-								<span class="actor-badge agent">agent</span>
+								<span class="actor-badge agent">{agentActorLabel(activity.metadata, 'agent')}</span>
 							{:else if activity.actor_name}
 								<span class="actor-name">{activity.actor_name}</span>
 							{:else if activity.source === 'cli'}

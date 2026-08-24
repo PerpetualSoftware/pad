@@ -1,4 +1,5 @@
 import type { Activity } from '$lib/types';
+import { agentActorLabel } from '$lib/utils/agentActor';
 
 /**
  * The episode fold behind the activity page's Live view (IDEA-2755).
@@ -11,12 +12,12 @@ import type { Activity } from '$lib/types';
  *
  * Identity today is (actor kind + name, item). The server stamps
  * `metadata.agent` from the client's X-Pad-Agent header
- * (handlers_documents.go auditMeta) — every current seat sends the generic
- * client id "claude-code", so agent rows collapse to one "agent" label and
- * seats are distinguishable only by the disjoint items they work, which
- * multi-seat turf discipline already guarantees. The moment a seat sends
- * its own name in X-Pad-Agent, its label (and fold key) lights up here with
- * no further change — concept B's lanes want exactly that.
+ * (handlers_documents.go agentMeta), and this fold renders whatever is
+ * there verbatim — see `agentActor.ts` for where the name comes from and
+ * what it does not claim. An agent that names itself gets its own label
+ * and its own fold key; one that sends a generic client id gets that id;
+ * one that sends nothing collapses into the shared "agent" label, and its
+ * writes are then distinguishable only by the items they touch.
  *
  * LIVENESS is claimed only from evidence: an episode is `live` when its
  * newest event is younger than `liveMinutes`. The view never says "active
@@ -31,7 +32,7 @@ export interface Episode {
 	itemTitle?: string;
 	itemSlug?: string;
 	collectionSlug?: string;
-	/** Display label for the actor ("Dave", "agent", a seat name when stamped). */
+	/** Display label for the actor ("Dave", an agent's stamped name, or "agent"). */
 	actorLabel: string;
 	/** "agent" | "user" — drives the row's border treatment like the audit view. */
 	actorKind: string;
@@ -58,28 +59,9 @@ export interface FoldOptions {
 	now?: () => number;
 }
 
-/** Client ids that are tools, not seats — never shown as an actor name.
- *  SHIM with a retirement condition (CONVE-2757 rule 4): this list encodes
- *  one team's tooling and dies with IDEA-2750 part 1, when agents carry
- *  real display names via PAD_AGENT_NAME and the platform renders
- *  metadata.agent verbatim. */
-const GENERIC_AGENT_IDS = new Set(['claude-code', 'cli', 'agent']);
-
-function metaAgentName(metadata: string): string | undefined {
-	try {
-		const meta = JSON.parse(metadata) as Record<string, unknown>;
-		const name = meta.agent;
-		if (typeof name !== 'string' || name.length === 0) return undefined;
-		return GENERIC_AGENT_IDS.has(name) ? undefined : name;
-	} catch {
-		return undefined;
-	}
-}
-
 function actorKeyOf(a: Activity): { key: string; label: string; kind: string } {
-	const seat = metaAgentName(a.metadata);
 	if (a.actor === 'agent') {
-		const label = seat ?? 'agent';
+		const label = agentActorLabel(a.metadata, 'agent');
 		return { key: `agent:${label}`, label, kind: 'agent' };
 	}
 	const label = a.actor_name ?? (a.source === 'cli' ? 'cli' : 'web');

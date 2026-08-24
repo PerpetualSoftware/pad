@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { adminFetch } from '$lib/stores/admin.svelte';
+	import { agentNameFromMetadata } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
@@ -162,7 +163,17 @@
 		}
 	}
 
+	// An agent's write is authenticated with a HUMAN's credentials, so
+	// `actor_name` — joined from user_id — used to be the only thing this
+	// column showed for it: the agent's work rendered under the name of the
+	// person whose token it borrowed. Both facts are real and an audit
+	// surface needs both, so they render together rather than one replacing
+	// the other: the agent acted, that account is who it acted as. The name
+	// is self-declared (see agentActor.ts) and this column is the last place
+	// that should be implied otherwise, hence "via" rather than a merge.
 	function displayUser(entry: Activity): string {
+		const agent = entry.actor === 'agent' ? agentNameFromMetadata(entry.metadata) : undefined;
+		if (agent) return entry.actor_name ? `${agent} (via ${entry.actor_name})` : agent;
 		if (entry.actor_name) return entry.actor_name;
 		if (entry.actor === 'system') return 'System';
 		if (entry.user_id) return entry.user_id.length > 12 ? entry.user_id.slice(0, 12) + '\u2026' : entry.user_id;

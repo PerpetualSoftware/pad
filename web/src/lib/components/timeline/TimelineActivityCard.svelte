@@ -2,6 +2,7 @@
 	import type { Activity } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
+	import { agentNameOf } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
 
 	let { activity }: { activity: Activity } = $props();
@@ -37,7 +38,11 @@
 	}
 
 	function getActorLabel(a: Activity): string {
-		return a.actor === 'agent' ? 'Agent' : 'User';
+		if (a.actor !== 'agent') return 'User';
+		// The agent's own name when it sent one. `actor_name` below stays the
+		// human whose credentials the write rode on — the two are rendered
+		// side by side rather than merged, because they are different facts.
+		return agentNameOf(metadata) ?? 'Agent';
 	}
 
 	function getSourceLabel(source: string): string {
