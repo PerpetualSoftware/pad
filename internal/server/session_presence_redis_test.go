@@ -36,7 +36,7 @@ func TestRedisSessionPresence_VisibleAcrossInstances(t *testing.T) {
 	t.Parallel()
 	instanceB, instanceA, _ := newRedisPresencePair(t)
 
-	id := instanceB.Add("user-1", SessionIdentity{Label: "docapp", PID: 4242, Armed: true})
+	id := instanceB.Add("user-1", SessionIdentity{Label: "docapp", PID: 4242, Armed: true}, SessionOrigin{})
 
 	sessions := mustList(t, instanceA, "user-1")
 	if len(sessions) != 1 {
@@ -71,7 +71,7 @@ func TestMemorySessionPresence_NotVisibleAcrossInstances(t *testing.T) {
 	instanceB := NewMemorySessionPresence()
 	instanceA := NewMemorySessionPresence()
 
-	instanceB.Add("user-1", SessionIdentity{Label: "docapp", Armed: true})
+	instanceB.Add("user-1", SessionIdentity{Label: "docapp", Armed: true}, SessionOrigin{})
 
 	if got := len(mustList(t, instanceA, "user-1")); got != 0 {
 		t.Fatalf("in-memory presence is per-process by definition; instance A saw %d sessions", got)
@@ -87,7 +87,7 @@ func TestRedisSessionPresence_RemoveIsImmediateAndCrossInstance(t *testing.T) {
 	t.Parallel()
 	instanceB, instanceA, _ := newRedisPresencePair(t)
 
-	id := instanceB.Add("user-1", SessionIdentity{Armed: true})
+	id := instanceB.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 	if got := len(mustList(t, instanceA, "user-1")); got != 1 {
 		t.Fatalf("precondition: A should see 1 session, got %d", got)
 	}
@@ -108,7 +108,7 @@ func TestRedisSessionPresence_RemoveIsIdempotentAndSafeForUnknownIDs(t *testing.
 
 	p.Remove("user-1", "")
 	p.Remove("user-1", "never-added")
-	id := p.Add("user-1", SessionIdentity{Armed: true})
+	id := p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 	p.Remove("user-1", id)
 	p.Remove("user-1", id)
 
@@ -147,7 +147,7 @@ func TestRedisSessionPresence_CrashedInstanceEntriesExpire(t *testing.T) {
 	// client into every subsequent test in the package and into -count
 	// reruns.
 	t.Cleanup(crashed.Close)
-	crashed.Add("user-1", SessionIdentity{Armed: true})
+	crashed.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 
 	survivor := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(survivor.Close)
@@ -194,7 +194,7 @@ func TestRedisSessionPresence_RenewalKeepsALiveSessionListed(t *testing.T) {
 		renewals:      make(map[string]*renewal),
 	}
 	t.Cleanup(live.Close)
-	live.Add("user-1", SessionIdentity{Armed: true})
+	live.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 
 	// Let several renewals run, moving miniredis's clock less far than the
 	// TTL between them, so the session survives only if renewal works.
@@ -220,7 +220,7 @@ func TestRedisSessionPresence_OrderIsDeterministic(t *testing.T) {
 	p, reader, _ := newRedisPresencePair(t)
 
 	for i := 0; i < 5; i++ {
-		p.Add("user-1", SessionIdentity{Armed: true})
+		p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 	}
 
 	first := mustList(t, reader, "user-1")
@@ -251,7 +251,7 @@ func TestRedisSessionPresence_ScopedPerUser(t *testing.T) {
 	t.Parallel()
 	instanceB, instanceA, _ := newRedisPresencePair(t)
 
-	instanceB.Add("user-1", SessionIdentity{Armed: true})
+	instanceB.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 
 	if got := len(mustList(t, instanceA, "user-2")); got != 0 {
 		t.Fatalf("user-2 must not see user-1's sessions; got %d", got)
@@ -303,7 +303,7 @@ func TestRedisSessionPresence_RemoveWaitsForAnInFlightRenewal(t *testing.T) {
 		p.Close()
 	})
 
-	id := p.Add("user-1", SessionIdentity{Armed: true})
+	id := p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 	<-entered // a renewal is now parked immediately before its write
 
 	removed := make(chan struct{})

@@ -455,13 +455,14 @@ func NewRedisSessionPresenceWithKeys(client *redis.Client, keys redisns.Keys) *R
 // perform. The id is still the one watchNotificationVisible compares a
 // targeted push against, so a broadcast push reaches this connection
 // regardless.
-func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity) string {
+func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity, origin SessionOrigin) string {
 	id := uuid.NewString()
 	sess := LiveSession{
 		ID:          id,
 		Label:       ident.Label,
 		PID:         ident.PID,
 		Armed:       ident.Armed,
+		BearerAuth:  origin.BearerAuth,
 		ConnectedAt: time.Now().UTC(),
 	}
 	payload, err := json.Marshal(sess)

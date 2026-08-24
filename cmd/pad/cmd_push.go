@@ -48,10 +48,14 @@ func pushCmd() *cobra.Command {
     and session-targeted pushes reach your sessions on every instance:
     the notification bus and the session-presence registry are both
     shared, so a session connected to one server is visible and
-    addressable from any of them. Addressable is not the same as
-    delivered — a session still has to be accepting pushes, and still
-    has to have access to the item — so treat the reported count as
-    what was ADDRESSED, not as a receipt.
+    addressable from any of them. Addressable is still not the same as
+    delivered. The count does check that a session is accepting pushes
+    and that it can see the item (BUG-2725 — it applies the same
+    visibility predicate delivery applies), but it is taken before the
+    publish and nothing acknowledges receipt, so treat it as a
+    prediction rather than a receipt. It can also under-count: a session
+    past the per-user registry cap receives broadcasts while never
+    entering the registry.
 
     -m/--message is required and must not be blank; it is the
     instruction text the receiving agent acts on (load the item first,

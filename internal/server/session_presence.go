@@ -150,8 +150,82 @@ type LiveSession struct {
 	// key on false would make a mixed-version client guess whether
 	// absence means false or means "this server predates the field".
 	Armed bool `json:"armed"`
+	// BearerAuth is whether the request that OPENED this stream carried
+	// bearer/API-token auth rather than a session cookie (BUG-2725).
+	// Server-observed, never client-declared — it comes from
+	// SessionOrigin, not SessionIdentity, and the split between those two
+	// types is the trust boundary.
+	//
+	// WHY A REGISTRY FIELD IS ADMISSIBLE HERE WHEN A VISIBILITY SNAPSHOT
+	// IS NOT. Dave's day-49 ruling on this bug rejected storing each
+	// session's resolved visibility and required re-resolution at push
+	// time instead. That ruling is about STALENESS: membership,
+	// CollectionAccess and grants are DERIVED and REVOCABLE, so a value
+	// cached at Add goes wrong exactly when it matters most (access
+	// revoked mid-connection), which is why watchNotificationVisible
+	// re-reads per notification.
+	//
+	// Auth transport is a different kind of fact. It is a property of the
+	// connection itself, fixed by the request that opened it, and there
+	// is no operation that changes it for a live stream — a cookie
+	// session cannot become a bearer one without reconnecting, at which
+	// point Add runs again and mints a new id. It cannot go stale, so the
+	// ruling's reasoning does not reach it. Armed is the standing
+	// precedent: a per-connection fact living here and consulted by
+	// deliveredSessionCount.
+	//
+	// THE RULE FOR ANYONE EXTENDING THIS STRUCT: connection properties
+	// are admissible; derived authorization state is not. If the value
+	// can be revoked by an action taken elsewhere while the stream stays
+	// open, it does not belong in the registry — re-resolve it instead.
+	//
+	// Not omitempty, for the same reason Armed isn't: an explicit
+	// `"bearer_auth":false` is the honest answer for a cookie-opened
+	// stream, and omitting the key on false would make a mixed-version
+	// reader guess whether absence means false or means "this server
+	// predates the field". It must also survive json.Marshal round trips
+	// through Redis (RedisSessionPresence.Add persists this struct), so
+	// a `json:"-"` would silently drop it on exactly the multi-instance
+	// deployment that needs it most.
+	//
+	// ROLLING-UPGRADE WINDOW, bounded and deliberately not tri-stated
+	// (codex round 1, P2). A session record written by a pre-BUG-2725
+	// instance has no `bearer_auth` key and decodes as false, i.e. as
+	// cookie-opened. The blast radius is exactly one case — a platform
+	// ADMIN's bearer-opened stream registered before the upgrade, which
+	// is then granted the cookie-only admin bypass and counted as
+	// visible. For every non-admin the transport is not consulted at all,
+	// so nothing changes.
+	//
+	// That case degrades to EXACTLY the pre-fix behaviour (the count
+	// applied no visibility filter at all, so it counted that session
+	// too), it affects only sessions registered before the upgrade, and
+	// it self-heals when they reconnect — each reconnect mints a fresh id
+	// and a fresh record. A tri-state would make the window
+	// distinguishable at the cost of a wire-format change to fix a
+	// transient degradation that is never worse than the bug being fixed,
+	// so the window is documented rather than engineered away.
+	BearerAuth bool `json:"bearer_auth"`
 	// ConnectedAt is when the stream opened, UTC.
 	ConnectedAt time.Time `json:"connected_at"`
+}
+
+// SessionOrigin is what the SERVER observed about a connection when it
+// opened, as opposed to SessionIdentity, which is what the CLIENT
+// claimed about itself (PLAN-2558 S2's honesty-not-verification line).
+//
+// The two are separate types on purpose. SessionIdentity's doc comment
+// says nothing in it is checked against anything and warns against
+// building on it as if it were trustworthy; folding a server-derived,
+// security-relevant fact into that struct would quietly retract that
+// warning for one field and leave every reader to work out which fields
+// are which. A caller cannot forge anything in here — it is filled from
+// the request the server itself is holding.
+type SessionOrigin struct {
+	// BearerAuth mirrors LiveSession.BearerAuth: isBearerAuth of the
+	// request that opened the stream. See that field for why this one
+	// fact is admissible in the registry when resolved visibility is not.
+	BearerAuth bool
 }
 
 // SessionIdentity is what a connecting client tells the server about
@@ -222,8 +296,10 @@ type SessionPresence interface {
 	// Add registers a newly-opened stream for userID and returns the
 	// session's generated id, which the caller MUST pass to Remove.
 	// The identity is whatever the client claimed about itself, already
-	// sanitized — see SessionIdentity on why it is never trusted.
-	Add(userID string, ident SessionIdentity) string
+	// sanitized — see SessionIdentity on why it is never trusted. The
+	// origin is what the server observed about the connection instead,
+	// and is trustworthy for exactly that reason (BUG-2725).
+	Add(userID string, ident SessionIdentity, origin SessionOrigin) string
 	// Remove deregisters a session. It must be idempotent and must not
 	// panic on an unknown id — the stream handler calls it from a defer
 	// that also runs on paths where Add may not have been reached.
@@ -269,7 +345,7 @@ func NewMemorySessionPresence() *MemorySessionPresence {
 }
 
 // Add implements SessionPresence.
-func (p *MemorySessionPresence) Add(userID string, ident SessionIdentity) string {
+func (p *MemorySessionPresence) Add(userID string, ident SessionIdentity, origin SessionOrigin) string {
 	id := uuid.NewString()
 	// Stamp the time OUTSIDE the lock — time.Now can be comparatively
 	// slow on some platforms and there is no correctness reason to hold
@@ -279,6 +355,7 @@ func (p *MemorySessionPresence) Add(userID string, ident SessionIdentity) string
 		Label:       ident.Label,
 		PID:         ident.PID,
 		Armed:       ident.Armed,
+		BearerAuth:  origin.BearerAuth,
 		ConnectedAt: time.Now().UTC(),
 	}
 

@@ -63,7 +63,7 @@ func TestPresenceReportsFailedOps(t *testing.T) {
 	p.SetFailureObserver(obs.record)
 
 	// PREMISE: healthy operations report nothing.
-	id := p.Add("user-1", SessionIdentity{Label: "docapp"})
+	id := p.Add("user-1", SessionIdentity{Label: "docapp"}, SessionOrigin{})
 	if id == "" {
 		t.Fatal("premise failed: Add returned an empty session id")
 	}
@@ -91,7 +91,7 @@ func TestPresenceReportsFailedOps(t *testing.T) {
 
 	// A registration that cannot be written is the failure that leaves a
 	// live session invisible to the picker — the one with no other trace.
-	p.Add("user-2", SessionIdentity{Label: "other"})
+	p.Add("user-2", SessionIdentity{Label: "other"}, SessionOrigin{})
 	counts, _ = obs.counts()
 	if counts[PresenceOpRegister] == 0 {
 		t.Fatalf("a failed register reported no %s failure: %v", PresenceOpRegister, counts)
@@ -116,7 +116,7 @@ func TestPresenceReportsCorruptEntriesAsListFailures(t *testing.T) {
 		t.Parallel()
 		p, mr, client, obs := corruptEntryFixture(t)
 
-		id := p.Add("user-1", SessionIdentity{Label: "docapp"})
+		id := p.Add("user-1", SessionIdentity{Label: "docapp"}, SessionOrigin{})
 		if _, err := p.ListForUser("user-1"); err != nil {
 			t.Fatalf("premise failed: a healthy list errored: %v", err)
 		}
@@ -169,7 +169,7 @@ func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
 		obs := newRecordingPresenceObserver()
 		p.SetFailureObserver(obs.record)
 
-		if id := p.Add("user-1", SessionIdentity{Label: "docapp"}); id == "" {
+		if id := p.Add("user-1", SessionIdentity{Label: "docapp"}, SessionOrigin{}); id == "" {
 			t.Fatal("premise failed: Add returned an empty session id")
 		}
 		// PREMISE: renewals are running and succeeding, so the failures
@@ -206,7 +206,7 @@ func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
 		obs := newRecordingPresenceObserver()
 		p.SetFailureObserver(obs.record)
 
-		id := p.Add("user-1", SessionIdentity{Label: "docapp"})
+		id := p.Add("user-1", SessionIdentity{Label: "docapp"}, SessionOrigin{})
 		if id == "" {
 			t.Fatal("premise failed: Add returned an empty session id")
 		}
@@ -217,7 +217,7 @@ func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
 			t.Fatalf("premise failed: a healthy deregister reported %d failures %v", total, counts)
 		}
 
-		id2 := p.Add("user-1", SessionIdentity{Label: "docapp-2"})
+		id2 := p.Add("user-1", SessionIdentity{Label: "docapp-2"}, SessionOrigin{})
 		mr.Close()
 		p.Remove("user-1", id2)
 

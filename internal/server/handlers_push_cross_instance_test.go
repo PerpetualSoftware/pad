@@ -82,7 +82,7 @@ func TestPushToItem_TargetedAtSessionOnAnotherInstance(t *testing.T) {
 	// Redis. This is where the agent's stream is actually held.
 	presenceB := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(presenceB.Close)
-	sessionOnB := presenceB.Add(user.ID, SessionIdentity{Label: "docapp", Armed: true})
+	sessionOnB := presenceB.Add(user.ID, SessionIdentity{Label: "docapp", Armed: true}, SessionOrigin{})
 
 	rr := bearerJSON(t, srvA, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this", "target_session_id": sessionOnB})
@@ -129,7 +129,7 @@ func TestPushToItem_TargetedAtSessionOnAnotherInstance_MemoryRegistryDrops(t *te
 	// "Replica B" — an entirely separate in-memory registry, which is what
 	// a second process has.
 	presenceB := NewMemorySessionPresence()
-	sessionOnB := presenceB.Add(user.ID, SessionIdentity{Label: "docapp", Armed: true})
+	sessionOnB := presenceB.Add(user.ID, SessionIdentity{Label: "docapp", Armed: true}, SessionOrigin{})
 
 	rr := bearerJSON(t, srvA, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this", "target_session_id": sessionOnB})
@@ -160,16 +160,16 @@ func TestPushToItem_BroadcastCountsSessionsOnEveryInstance(t *testing.T) {
 	slug, item, tok, user := setupWatchTestUser(t, srvA)
 
 	// One session on the answering replica, two on another.
-	presenceA.Add(user.ID, SessionIdentity{Label: "local", Armed: true})
+	presenceA.Add(user.ID, SessionIdentity{Label: "local", Armed: true}, SessionOrigin{})
 	presenceB := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(presenceB.Close)
-	presenceB.Add(user.ID, SessionIdentity{Label: "remote-1", Armed: true})
-	presenceB.Add(user.ID, SessionIdentity{Label: "remote-2", Armed: true})
+	presenceB.Add(user.ID, SessionIdentity{Label: "remote-1", Armed: true}, SessionOrigin{})
+	presenceB.Add(user.ID, SessionIdentity{Label: "remote-2", Armed: true}, SessionOrigin{})
 
 	// An UNARMED session on B, which must NOT be counted: it cannot receive
 	// a push at all (watchNotificationVisible denies it), and counting it
 	// would trade one honesty gap for another.
-	presenceB.Add(user.ID, SessionIdentity{Label: "remote-unarmed", Armed: false})
+	presenceB.Add(user.ID, SessionIdentity{Label: "remote-unarmed", Armed: false}, SessionOrigin{})
 
 	rr := bearerJSON(t, srvA, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this"})
@@ -203,7 +203,7 @@ func TestListSessions_ShowsSessionsFromEveryInstance(t *testing.T) {
 
 	presenceB := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(presenceB.Close)
-	remoteID := presenceB.Add(user.ID, SessionIdentity{Label: "remote", Armed: true})
+	remoteID := presenceB.Add(user.ID, SessionIdentity{Label: "remote", Armed: true}, SessionOrigin{})
 
 	rr := bearerCall(t, srvA, "GET", "/api/v1/sessions", tok.Token, nil)
 	if rr.Code != http.StatusOK {
