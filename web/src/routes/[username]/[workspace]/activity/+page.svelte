@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -9,6 +10,7 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
 	import type { Activity, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -41,6 +43,31 @@
 	let filterAction = $state('');
 	let filterSource = $state('');
 	let filterCollection = $state('');
+
+	// View mode: episode cards (Live) vs the raw audit timeline. Persisted so
+	// the choice survives navigation.
+	// Server HTML and the client's hydration pass must agree, and the server
+	// cannot read localStorage — so BOTH default to 'live', and the stored
+	// choice applies in onMount, strictly after hydration. (`browser`, not
+	// `typeof localStorage`: Node 25 ships an experimental global
+	// localStorage, so the typeof probe stops discriminating SSR from the
+	// browser on the runtime this repo actually develops on.)
+	let view = $state<'live' | 'audit'>('live');
+	let viewRestored = false;
+
+	onMount(() => {
+		const stored = localStorage.getItem('pad-activity-view');
+		if (stored === 'audit' || stored === 'live') view = stored;
+		viewRestored = true;
+	});
+
+	$effect(() => {
+		// Persist only after the restore read, or the SSR default clobbers
+		// the stored choice before onMount can apply it.
+		if (browser && viewRestored) {
+			localStorage.setItem('pad-activity-view', view);
+		}
+	});
 
 	const PAGE_SIZE = 30;
 
@@ -241,6 +268,26 @@
 	<!-- Filters -->
 	<div class="filters-row">
 		<div class="filter-group">
+			<span class="filter-label">View</span>
+			<div class="view-toggle" role="group" aria-label="View mode">
+				<button
+					class="view-segment"
+					class:selected={view === 'live'}
+					onclick={() => (view = 'live')}
+				>
+					Live
+				</button>
+				<button
+					class="view-segment"
+					class:selected={view === 'audit'}
+					onclick={() => (view = 'audit')}
+				>
+					Audit
+				</button>
+			</div>
+		</div>
+
+		<div class="filter-group">
 			<label class="filter-label" for="filter-action">Action</label>
 			<select id="filter-action" class="filter-select" bind:value={filterAction}>
 				<option value="">All actions</option>
@@ -296,6 +343,9 @@
 				</div>
 			{/each}
 		</div>
+	{:else if view === 'live'}
+		<EpisodeFeed activities={filteredActivities} {wsSlug} {username} />
+		{@render loadMoreButton()}
 	{:else if filteredActivities.length === 0}
 		<EmptyState
 			icon="~"
@@ -376,19 +426,23 @@
 			{/each}
 		</div>
 
-		{#if hasMore && !filterCollection}
-			<div class="load-more-wrapper">
-				<button class="load-more-btn" onclick={loadMore} disabled={loadingMore}>
-					{#if loadingMore}
-						Loading...
-					{:else}
-						Load more activity
-					{/if}
-				</button>
-			</div>
-		{/if}
+		{@render loadMoreButton()}
 	{/if}
 </div>
+
+{#snippet loadMoreButton()}
+	{#if hasMore && !filterCollection}
+		<div class="load-more-wrapper">
+			<button class="load-more-btn" onclick={loadMore} disabled={loadingMore}>
+				{#if loadingMore}
+					Loading...
+				{:else}
+					Load more activity
+				{/if}
+			</button>
+		</div>
+	{/if}
+{/snippet}
 
 <style>
 	/* ── Page Layout ──────────────────────────────────────────────────── */
@@ -439,6 +493,31 @@
 	.filter-select:focus {
 		outline: none;
 		border-color: var(--accent-blue);
+	}
+	.view-toggle {
+		display: inline-flex;
+		gap: 2px;
+		background: var(--bg-tertiary);
+		border-radius: 8px;
+		padding: 2px;
+	}
+	.view-segment {
+		border: none;
+		background: transparent;
+		color: var(--text-secondary);
+		font-size: 12px;
+		font-weight: 600;
+		padding: 4px 12px;
+		border-radius: 6px;
+		cursor: pointer;
+		transition: background 0.15s, color 0.15s;
+	}
+	.view-segment:hover:not(.selected) {
+		color: var(--text-primary);
+	}
+	.view-segment.selected {
+		background: var(--accent-primary);
+		color: white;
 	}
 	.clear-filters {
 		background: none;
