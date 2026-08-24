@@ -147,6 +147,17 @@ var allowlistCoverage = map[string]allowlistClassification{
 			"workspace segment and the middleware gates it"},
 }
 
+// unverifiableByFixture names routed commands the harness cannot drive
+// far enough to issue a request, with the reason. Their
+// allowlistCoverage entry is then accepted on trust, so the set is kept
+// explicit and small — an entry here is an acknowledged hole, not a
+// pass.
+var unverifiableByFixture = map[string]string{
+	"library activate": "activation resolves a real library entry by title before it writes anything, and the " +
+		"fixture title is not one, so no request is issued. Driving it needs the library fixture, which this " +
+		"package does not have.",
+}
+
 // pathIsWorkspaceScoped reports whether a URL will run
 // RequireWorkspaceAccess — i.e. whether chi will bind a {slug} param
 // from it.
@@ -188,10 +199,29 @@ func pathIsWorkspaceScoped(urlPath string) bool {
 	if routesRegisteredOutsideWorkspaceMiddleware[tail] {
 		return false
 	}
-	// "/workspaces/deleted" is a STATIC sibling segment registered
-	// before the {slug} param route, so chi matches it exactly and the
-	// middleware never runs — workspace-global despite the prefix.
-	return seg != "" && seg != "deleted"
+	// A first segment that is a STATIC sibling route rather than a
+	// workspace slug means chi matched it exactly, before the {slug}
+	// param route, so the middleware never ran.
+	return seg != "" && !staticWorkspaceSiblingSegments[seg]
+}
+
+// staticWorkspaceSiblingSegments are the literal path segments
+// registered directly on /api/v1/workspaces, BESIDE the /{slug}
+// subrouter rather than inside it (server.go). chi matches a static
+// segment before a param one, so a URL like /api/v1/workspaces/import
+// never binds {slug} and never runs RequireWorkspaceAccess — despite
+// looking exactly like a workspace-scoped path.
+//
+// Only `deleted` is MCP-routed today; `import` and `reorder` are listed
+// because the guard's job is to be right about a route that becomes
+// routed LATER, and a missing entry here FAILS OPEN — it would wave a
+// genuinely unguarded route through on the strength of its path (codex
+// round 1 P2). Keep in sync with server.go's registrations beside the
+// /{slug} block.
+var staticWorkspaceSiblingSegments = map[string]bool{
+	"deleted": true,
+	"import":  true,
+	"reorder": true,
 }
 
 // routesRegisteredOutsideWorkspaceMiddleware are prefix/suffix pairs
@@ -302,7 +332,7 @@ func allRoutedCmdKeys() []string {
 func TestHTTPTransport_WorkspaceGlobalRoutesAreClassified(t *testing.T) {
 	t.Parallel()
 
-	var unclassified, misclassified []string
+	var unclassified, misclassified, undeclaredUnobservable, wronglyDeclared []string
 	observedAny := 0
 
 	for _, cmdKey := range allRoutedCmdKeys() {
@@ -310,14 +340,26 @@ func TestHTTPTransport_WorkspaceGlobalRoutesAreClassified(t *testing.T) {
 		entry, classified := allowlistCoverage[cmdKey]
 
 		if len(paths) == 0 {
-			// Unobservable: it refused the fixture or issued nothing.
-			// Classification is REQUIRED and cannot be verified.
+			// Unobservable with this fixture: the command refused it or
+			// dispatches nothing we can capture. Classification is
+			// required AND the unobservability must itself be declared —
+			// otherwise a classified route that quietly stops being
+			// exercised keeps its entry accepted forever, which is
+			// coverage that has silently become a comment (codex round 1
+			// P2 found exactly that for `library activate`).
 			if !classified {
 				unclassified = append(unclassified, cmdKey+" (issued no observable request — classification required)")
+				continue
+			}
+			if _, declared := unverifiableByFixture[cmdKey]; !declared {
+				undeclaredUnobservable = append(undeclaredUnobservable, cmdKey)
 			}
 			continue
 		}
 		observedAny++
+		if _, declared := unverifiableByFixture[cmdKey]; declared {
+			wronglyDeclared = append(wronglyDeclared, cmdKey)
+		}
 
 		global := []string{}
 		for _, p := range paths {
@@ -354,7 +396,20 @@ func TestHTTPTransport_WorkspaceGlobalRoutesAreClassified(t *testing.T) {
 
 	sort.Strings(unclassified)
 	sort.Strings(misclassified)
+	sort.Strings(undeclaredUnobservable)
+	sort.Strings(wronglyDeclared)
 
+	if len(undeclaredUnobservable) > 0 {
+		t.Errorf("routed commands whose classification could NOT be verified, and which are not declared "+
+			"unverifiable (TASK-2753). Their allowlistCoverage entry is being accepted on trust:\n  %s\n\n"+
+			"Either extend allowlistFixtureInput so the command actually dispatches, or add it to "+
+			"unverifiableByFixture with the reason it cannot be driven.", strings.Join(undeclaredUnobservable, "\n  "))
+	}
+	if len(wronglyDeclared) > 0 {
+		t.Errorf("commands declared unverifiableByFixture that DO now issue an observable request — "+
+			"delete the declaration so the classification is verified rather than trusted:\n  %s",
+			strings.Join(wronglyDeclared, "\n  "))
+	}
 	if len(unclassified) > 0 {
 		t.Errorf("workspace-GLOBAL routed commands with no OAuth allow-list classification (TASK-2753).\n\n"+
 			"These issue a URL with no {workspace} segment, so RequireWorkspaceAccess — the ONLY place the\n"+
@@ -424,6 +479,17 @@ func TestPathIsWorkspaceScoped(t *testing.T) {
 		{"/api/v1/workspaces", false, "the list route is workspace-global"},
 		{"/api/v1/workspaces/deleted", false,
 			"static sibling segment matched before the {slug} param route — the middleware never runs"},
+		{"/api/v1/workspaces/import", false,
+			"static sibling route outside the middleware; not MCP-routed today, but the guard must be right " +
+				"about it if it ever becomes routed (codex round 1 P2)"},
+		{"/api/v1/workspaces/reorder", false,
+			"same — static sibling, no {slug} bound, no consent gate"},
+		{"/api/v1/workspaces/docapp/restore", false,
+			"workspace restore is registered BESIDE the /{slug} subrouter because that middleware resolves " +
+				"only live workspaces; its path looks scoped and is not"},
+		{"/api/v1/workspaces/docapp/items/TASK-1/restore", true,
+			"item restore IS inside the middleware — the first version of the sibling check matched a loose " +
+				"URL suffix and wrongly caught this one too"},
 		{"/api/v1/search?q=x&workspace=docapp", false,
 			"a workspace QUERY PARAM is not a path segment; chi binds no {slug} and the handler must filter"},
 		{"/api/v1/audit-log", false, "platform-global"},
