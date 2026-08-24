@@ -809,15 +809,29 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 
 	// A JOINER VERIFIES RATHER THAN ASSUMES, and may take the establishment
 	// over once (codex round 2, P1). Waiting on someone else's record proves
-	// only that they FINISHED — not that they succeeded. They may have
-	// abandoned because the workspace had emptied in the instant before we
-	// registered, and a joiner that returned on that promise would hold a
-	// channel wired to nothing forever, since its own registration keeps
-	// wsCounts non-zero and no later caller establishes either.
+	// only that they FINISHED — not that they succeeded.
 	//
-	// Bounded at two passes on purpose: the second is a caller that has now
-	// registered, so the emptied-workspace race it lost cannot recur, and any
-	// remaining failure is one a third pass would not fix either.
+	// THE LOAD-BEARING FIX IS ELSEWHERE, and this is defence in depth: the
+	// abandon path retires its record in the SAME critical section as the
+	// decision, which makes the strand unreachable rather than recoverable. A
+	// joiner increments wsCounts under b.mu before the establisher's count
+	// check reads it, so a registered joiner prevents the abandon; and a joiner
+	// arriving after the check cannot find the record, because it is gone in
+	// that same section. Both halves are under one lock, so there is no
+	// interleave left.
+	//
+	// It is kept anyway because that is an ARGUMENT, not a measurement, and the
+	// failure it guards against is a permanently dead stream that looks alive.
+	// A retry costs one extra pass in a case that should never happen; being
+	// wrong costs a user their live updates with no signal. Measured
+	// accordingly: no mutation of the surrounding code makes a test reach this
+	// path, which is consistent with unreachable and is not proof of it — hence
+	// the log, so that if the argument is wrong, production says so instead of
+	// silently limping.
+	//
+	// Bounded at two passes: the second is a caller that has now registered, so
+	// the emptied-workspace race it lost cannot recur, and any remaining
+	// failure is one a third pass would not fix either.
 	for attempt := range 2 {
 		if attempt > 0 {
 			// Re-decide, and note that the record is created HERE, at the top
@@ -841,6 +855,8 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 			if !establish && pending == nil {
 				break
 			}
+			slog.Warn("events: finished waiting on a subscription establishment that left none behind; re-establishing",
+				"workspace", workspaceID)
 		}
 
 		switch {
