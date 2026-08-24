@@ -477,6 +477,12 @@ type RedisBus struct {
 	// so we subscribe/unsubscribe as local SSE clients come and go.
 	wsCounts map[string]int       // workspace → local subscriber count
 	wsSubs   map[string]*redisSub // workspace → active Redis subscription
+	// pendingSubs holds the in-flight establishment for a workspace that has
+	// no live subscription yet, so concurrent first subscribers share one
+	// (BUG-2747). An entry here and an entry in wsSubs are mutually exclusive
+	// in the steady state, but BOTH exist briefly: establishment installs
+	// wsSubs before it waits for the confirmation, and only then clears this.
+	pendingSubs map[string]*pendingSub
 
 	// subGen numbers subscriptions so a message can be matched to the one it
 	// arrived on. See fanOut for the race it closes.
@@ -487,6 +493,17 @@ type RedisBus struct {
 	replayBuffers map[string]*replayBuffer
 	replaySize    int
 
+	// confirmTimeout bounds how long Subscribe waits for Redis to acknowledge
+	// a new subscription before admitting its callers anyway (BUG-2747).
+	//
+	// A BOUND, NOT A DEADLINE TO MEET: the acknowledgement is one round trip
+	// on a connection that has just been dialled, so on a healthy Redis this
+	// expires never. It exists so that an unreachable or stalled Redis
+	// degrades to today's behaviour — admitted, no coverage claimed, and told
+	// to reconcile when the acknowledgement lands — instead of refusing
+	// connections and amplifying the outage.
+	confirmTimeout time.Duration
+
 	// afterSubscribeRegister is a TEST SEAM, nil in production. It runs
 	// inside SubscribeAndReplaySince's critical section, after the subscriber
 	// is registered and before the replay is read — the only point at which
@@ -496,6 +513,38 @@ type RedisBus struct {
 	// deadlock, which is itself the property under test. Mirrors the seam on
 	// MemoryBus and on watchevents.RedisBus.
 	afterSubscribeRegister func()
+
+	// afterSubscriptionConfirmed is a TEST SEAM, nil in production. It runs in
+	// establishSubscription after Redis has acknowledged the subscription and
+	// BEFORE the establishing caller re-acquires b.mu to read its replay —
+	// the one moment at which the workspace is receiving events while that
+	// caller's subscriber is registered but not yet ADMITTED.
+	//
+	// That gap is the only place the replay ceiling can be observed doing its
+	// job, so it is the only place a test can prove BOTH halves of what the
+	// split put at risk: that a resuming caller does not get an in-gap event
+	// twice, and that a FRESH caller — which reads no replay at all — still
+	// gets it once. b.mu is NOT held here, so a hook may publish inline.
+	afterSubscriptionConfirmed func()
+
+	// beforeUnconfirmedMark is a TEST SEAM, nil in production. It runs in
+	// markUnconfirmedAdmission BEFORE it takes b.mu, which is the only way to
+	// make the timer-versus-acknowledgement race deterministic: a hook that
+	// waits for the acknowledgement here reproduces, every time, the interleave
+	// where the select chose the timer but confirmSubscription has already run.
+	//
+	// REPETITION DOES NOT SUBSTITUTE FOR IT, measured rather than assumed.
+	// Against the mutation that removes the confirmClosed re-check, 500
+	// establishments per run caught it in 0 of 10 runs — a near-zero bound
+	// makes the timer win OUTRIGHT far more often than it ties, and winning
+	// outright is the ordinary timeout path. With this seam: 10 of 10.
+	beforeUnconfirmedMark func()
+
+	// beforeInstallSubscription is a TEST SEAM, nil in production. It runs in
+	// establishSubscription after the dial and BEFORE the lock that decides
+	// whether to install or abandon, so a test can make either abandon reason
+	// true at exactly the moment the decision is taken. Receives the workspace.
+	beforeInstallSubscription func(workspaceID string)
 
 	// publishEpoch selects the wire form this instance EMITS: the phase-2
 	// "<epoch>|<id>|<json>" prefix when true, the historical bare JSON body
@@ -550,6 +599,47 @@ type redisSub struct {
 	// opened for the workspace, so a message carrying a stale gen can be
 	// recognised as belonging to a subscription that has already ended.
 	gen int64
+
+	// confirmed is closed by receiveMessages when Redis acknowledges the
+	// SUBSCRIBE for this subscription (BUG-2747). Subscribe waits on it — up to
+	// confirmTimeout, after which it admits anyway and says so, see
+	// markUnconfirmedAdmission — and that wait is what makes the window between
+	// the SUBSCRIBE being written and it being registered unreachable by a
+	// client.
+	//
+	// SIGNALLED FROM INSIDE THE RECEIVE LOOP rather than by a Receive call
+	// placed ahead of it, and that is load-bearing rather than stylistic.
+	// receiveMessages treats its FIRST *redis.Subscription as this initial
+	// acknowledgement and skips it; every later one is a RESUBSCRIPTION and
+	// ends the workspace's coverage (BUG-2739). Consuming the first
+	// acknowledgement with a Receive before the loop starts — the shape
+	// internal/watchevents uses in its once-per-process constructor — would
+	// leave the loop treating the first GENUINE resubscription as the
+	// initial one and silently skipping it, un-fixing BUG-2739 from a diff
+	// that appears only to have added a wait.
+	confirmed chan struct{}
+	// confirmClosed guards confirmed against a second close. Guarded by b.mu.
+	confirmClosed bool
+
+	// unconfirmedAdmitted records that the confirmation did not arrive within
+	// the bus's bound and subscribers were admitted anyway. When the
+	// acknowledgement eventually lands, that span becomes a hole those
+	// subscribers sat through, so they are told to reconcile. Guarded by b.mu.
+	unconfirmedAdmitted bool
+}
+
+// pendingSub is the one-establisher-per-workspace record. Concurrent first
+// subscribers for the same workspace must not each open their own Redis
+// subscription — that is two connections, two receive loops and every event
+// delivered twice — so exactly one caller establishes and the rest wait here.
+//
+// Held in b.pendingSubs for the duration of establishment and removed when it
+// finishes, successfully or not.
+type pendingSub struct {
+	// done is closed when establishment has finished and the subscription is
+	// installed (or has definitively failed). Waiters read the replay buffer
+	// only after it closes.
+	done chan struct{}
 }
 
 // NewRedisBus creates a new Redis-backed EventBus.
@@ -571,33 +661,35 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch bool) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &RedisBus{
-		client:        client,
-		keys:          keys,
-		publishEpoch:  publishEpoch,
-		subscribers:   make(map[string]map[chan Event]*subscriber),
-		workspaceOf:   make(map[chan Event]string),
-		wsCounts:      make(map[string]int),
-		wsSubs:        make(map[string]*redisSub),
-		replayBuffers: make(map[string]*replayBuffer),
-		replaySize:    DefaultReplayBufferSize,
-		ctx:           ctx,
-		cancel:        cancel,
+		client:         client,
+		keys:           keys,
+		publishEpoch:   publishEpoch,
+		subscribers:    make(map[string]map[chan Event]*subscriber),
+		workspaceOf:    make(map[chan Event]string),
+		wsCounts:       make(map[string]int),
+		wsSubs:         make(map[string]*redisSub),
+		pendingSubs:    make(map[string]*pendingSub),
+		replayBuffers:  make(map[string]*replayBuffer),
+		replaySize:     DefaultReplayBufferSize,
+		confirmTimeout: defaultSubscribeConfirmTimeout,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 }
 
 // Subscribe registers a local subscriber for the given workspace.
-// Starts a Redis subscription for the workspace if this is the first local subscriber.
+// Starts a Redis subscription for the workspace if this is the first local
+// subscriber, and waits for Redis to acknowledge it before returning. The wait
+// is bounded: past confirmTimeout it returns anyway, counted and logged, and the
+// subscriber is told to reconcile when the acknowledgement lands.
+//
+// NO PRODUCTION CALLER, verified repo-wide: the SSE handler reaches
+// SubscribeIfAllowed or SubscribeAndReplaySince. It is interface surface and
+// test surface, routed through the same path as the other two so it cannot
+// drift into being the one door with the old semantics.
 func (b *RedisBus) Subscribe(workspaceID string) (chan Event, <-chan struct{}) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	sub := b.addSubscriberLocked(workspaceID)
-	if b.wsCounts[workspaceID] == 1 {
-		// First local subscriber for this workspace — subscribe to Redis channel
-		b.startRedisSubscription(workspaceID)
-	}
-
-	return sub.ch, sub.gaps
+	ch, _, gaps, _ := b.subscribeAndReplay(workspaceID, 0, 0)
+	return ch, gaps
 }
 
 // addSubscriberLocked registers a channel for a workspace and bumps its local
@@ -623,19 +715,8 @@ func (b *RedisBus) addSubscriberLocked(workspaceID string) *subscriber {
 // only. In multi-replica deployments the effective cap is multiplied by
 // the number of replicas — as is every other streaming limit Pad has.
 func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if maxPerWorkspace > 0 && b.wsCounts[workspaceID] >= maxPerWorkspace {
-		return nil, nil, false
-	}
-
-	sub := b.addSubscriberLocked(workspaceID)
-	if b.wsCounts[workspaceID] == 1 {
-		b.startRedisSubscription(workspaceID)
-	}
-
-	return sub.ch, sub.gaps, true
+	ch, _, gaps, ok := b.subscribeAndReplay(workspaceID, 0, maxPerWorkspace)
+	return ch, gaps, ok
 }
 
 // SubscribeAndReplaySince implements EventBus. See the interface for the
@@ -647,6 +728,38 @@ func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (
 // critical section (in the buffer, not on the new channel) or entirely after
 // it (on the channel, replay already read) — never both, never neither.
 func (b *RedisBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
+	return b.subscribeAndReplay(workspaceID, sinceID, maxPerWorkspace)
+}
+
+// subscribeAndReplay is the single body behind all three Subscribe* entry
+// points, so none of them can drift in how it establishes a subscription.
+//
+// IT SPANS TWO CRITICAL SECTIONS, WITH THE REDIS I/O BETWEEN THEM, and both
+// halves of that are the point (BUG-2747, BUG-2748).
+//
+//	section 1 — admission check, register the subscriber, capture the replay
+//	            ceiling, decide whether we establish this workspace's
+//	            subscription or wait on someone who already is
+//	off-lock  — dial, SUBSCRIBE, await Redis's acknowledgement
+//	section 2 — run the test seam, read the replay up to the ceiling
+//
+// THE CEILING IS WHAT PRESERVES THE REPLAY-XOR-CHANNEL GUARANTEE across the
+// split, and it is a generalisation of what the single critical section gave
+// for free rather than a new idea. The subscriber is live in the fan-out map
+// from the moment it is registered, so it receives everything published after
+// that instant on its CHANNEL; the replay's job is therefore everything
+// published BEFORE it, which is exactly the buffer's contents at registration.
+// Bounding the replay at the newest ID the buffer held then divides the two
+// spans at the same point the original code did, whether or not the wait
+// separates them.
+//
+// An earlier version instead SKIPPED fan-out to a not-yet-admitted subscriber
+// and let the replay read deliver the gap. It was wrong for the population
+// this whole fix is about: a fresh subscriber (sinceID == 0) reads no replay,
+// so events arriving in the gap were skipped by fan-out and never replayed —
+// dropped outright. Found by codex round 1; keeping the note because the
+// mechanism was locally coherent and the failure was one call path over.
+func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
 	// Reported on the way out with the lock released, and only for a caller
 	// that was actually resuming. See the MemoryBus twin.
 	var missed []Event
@@ -658,28 +771,165 @@ func (b *RedisBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, ma
 	}()
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if maxPerWorkspace > 0 && b.wsCounts[workspaceID] >= maxPerWorkspace {
 		// A refused connection is an admission event, not a resume this
 		// instance could not serve; clearing this keeps it out of the gap
 		// counter's population.
 		resuming = false
+		b.mu.Unlock()
 		return nil, nil, nil, false
 	}
 
 	sub := b.addSubscriberLocked(workspaceID)
-	if b.wsCounts[workspaceID] == 1 {
-		b.startRedisSubscription(workspaceID)
+
+	// Where the buffer stood at REGISTRATION, captured here rather than read in
+	// section 2.
+	//
+	// The BUFFER ITSELF is part of the mark, not just its position (codex round
+	// 3). An ID-space reset during the wait replaces the buffer wholesale, and
+	// a position in the old one describes nothing in the new one — while
+	// knownFrom may still accept an adjacent cursor, so the mismatch is not
+	// self-announcing. A nil buffer here is the same statement in its strongest
+	// form: this instance was not covering the workspace at all.
+	mark := registrationMark{buffer: b.replayBuffers[workspaceID]}
+	if mark.buffer != nil {
+		mark.appends = mark.buffer.appends
 	}
+
+	var establish bool
+	var pending *pendingSub
+	// PENDING IS CHECKED BEFORE WSSUBS, not after (codex round 1, P1). The two
+	// overlap on purpose — establishSubscription installs wsSubs and only then
+	// waits for the acknowledgement — so a subscriber arriving in that overlap
+	// finds a live-looking subscription that Redis has not confirmed. Reading
+	// wsSubs first admitted it immediately, into precisely the unconfirmed
+	// window this function exists to close.
+	if p, inFlight := b.pendingSubs[workspaceID]; inFlight {
+		pending = p
+	} else if _, live := b.wsSubs[workspaceID]; !live {
+		pending = &pendingSub{done: make(chan struct{})}
+		b.pendingSubs[workspaceID] = pending
+		establish = true
+	}
+	b.mu.Unlock()
+
+	// A JOINER VERIFIES RATHER THAN ASSUMES, and may take the establishment
+	// over once (codex round 2, P1). Waiting on someone else's record proves
+	// only that they FINISHED — not that they succeeded.
+	//
+	// THE LOAD-BEARING FIX IS ELSEWHERE, and this is defence in depth: the
+	// abandon path retires its record in the SAME critical section as the
+	// decision, which makes the strand unreachable rather than recoverable. A
+	// joiner increments wsCounts under b.mu before the establisher's count
+	// check reads it, so a registered joiner prevents the abandon; and a joiner
+	// arriving after the check cannot find the record, because it is gone in
+	// that same section. Both halves are under one lock, so there is no
+	// interleave left.
+	//
+	// It is kept anyway because that is an ARGUMENT, not a measurement, and the
+	// failure it guards against is a permanently dead stream that looks alive.
+	// A retry costs one extra pass in a case that should never happen; being
+	// wrong costs a user their live updates with no signal. Measured
+	// accordingly: no mutation of the surrounding code makes a test reach this
+	// path, which is consistent with unreachable and is not proof of it — hence
+	// the log, so that if the argument is wrong, production says so instead of
+	// silently limping.
+	//
+	// Bounded at two passes: the second is a caller that has now registered, so
+	// the emptied-workspace race it lost cannot recur, and any remaining
+	// failure is one a third pass would not fix either.
+	for attempt := range 2 {
+		if attempt > 0 {
+			// Re-decide, and note that the record is created HERE, at the top
+			// of an iteration that is going to use it — never as a trailing
+			// side-effect of the last check. A record left in the map with
+			// nobody establishing behind it is worse than the bug this loop
+			// fixes: the next caller joins it and waits forever.
+			b.mu.Lock()
+			_, live := b.wsSubs[workspaceID]
+			establish, pending = false, nil
+			if !live && b.ctx.Err() == nil {
+				if p, inFlight := b.pendingSubs[workspaceID]; inFlight {
+					pending = p
+				} else {
+					pending = &pendingSub{done: make(chan struct{})}
+					b.pendingSubs[workspaceID] = pending
+					establish = true
+				}
+			}
+			b.mu.Unlock()
+			if !establish && pending == nil {
+				break
+			}
+			slog.Warn("events: finished waiting on a subscription establishment that left none behind; re-establishing",
+				"workspace", workspaceID)
+		}
+
+		switch {
+		case establish:
+			b.establishSubscription(workspaceID, pending)
+		case pending != nil:
+			// Someone else is establishing the same workspace. Wait for them
+			// rather than opening a second connection and a second receive
+			// loop.
+			select {
+			case <-pending.done:
+			case <-b.ctx.Done():
+			}
+		default:
+			// Already live when we registered: nothing to establish and
+			// nothing to wait for.
+		}
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.afterSubscribeRegister != nil {
 		b.afterSubscribeRegister()
 	}
-
 	if resuming {
-		missed = b.eventsSinceLocked(workspaceID, sinceID)
+		missed = b.eventsSinceMarkLocked(workspaceID, sinceID, mark)
 	}
 	return sub.ch, missed, sub.gaps, true
+}
+
+// registrationMark records where a workspace's replay buffer stood when a
+// caller registered: which buffer, and how many appends it had taken.
+type registrationMark struct {
+	buffer  *replayBuffer
+	appends int64
+}
+
+// eventsSinceMarkLocked is eventsSinceLocked bounded ABOVE by where the buffer
+// stood when the caller registered, so its replay stops exactly where its own
+// channel starts. Callers must hold b.mu.
+//
+// BOUNDED BY POSITION, NOT BY ID. This bus's ids come from a counter shared
+// across workspaces, and a phase-1 publish assigns and publishes in two calls,
+// so arrival order and numeric order genuinely disagree. Cutting on id value
+// would both replay a straggler the caller already received and silently drop a
+// pre-registration event that happens to carry a higher id.
+//
+// THE BOUND IS APPLIED BEFORE THE CURSOR FILTER, not after (codex round 5). An
+// earlier version asked since() for the events above the cursor and then
+// dropped the last (appends - mark) of them — two different spaces. A
+// post-registration straggler whose id falls at or below the cursor is absent
+// from that filtered slice but still counted in the drop, so the count ate a
+// legitimate pre-registration event instead. Pre-mark [5 30 20], post-mark
+// [6 40], cursor 10: the caller was handed [30] and 20 vanished.
+func (b *RedisBus) eventsSinceMarkLocked(workspaceID string, sinceID int64, mark registrationMark) []Event {
+	rb, ok := b.replayBuffers[workspaceID]
+	if !ok || mark.buffer == nil || rb != mark.buffer {
+		// No coverage at registration, or a different buffer now: either way
+		// this instance cannot vouch for the caller's span.
+		return nil
+	}
+	// The buffer holds its last `count` appends, so the entries that were
+	// already there when the caller registered are the oldest
+	// mark.appends - (appends - count) of them. Negative means the whole of
+	// what it held then has since been evicted, which sinceBounded refuses.
+	keep := mark.appends - (rb.appends - int64(rb.count))
+	return rb.sinceBounded(sinceID, int(keep))
 }
 
 // Unsubscribe removes a local subscriber and closes its channel.
@@ -889,6 +1139,12 @@ func (b *RedisBus) Close() {
 		}
 		delete(b.subscribers, wsID)
 	}
+	// CLEARED ALONGSIDE THE SUBSCRIBERS IT COUNTS (codex round 2). Left
+	// populated, it is a count of channels this loop has just closed, and an
+	// establishment still in flight reads it as a reason to install a
+	// subscription for them. The ctx check there is the primary guard; this
+	// keeps the two structures from disagreeing in the first place.
+	clear(b.wsCounts)
 }
 
 // SubscriberCount returns the number of active local subscribers.
@@ -905,22 +1161,179 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 	return b.wsCounts[workspaceID]
 }
 
-// startRedisSubscription begins listening on a Redis channel for a workspace.
-// Must be called with b.mu held.
-func (b *RedisBus) startRedisSubscription(workspaceID string) {
+// establishSubscription opens a workspace's Redis subscription and does not
+// return until Redis has acknowledged it (or the bound expires).
+//
+// MUST BE CALLED WITHOUT b.mu HELD. That is the whole of BUG-2748: this
+// function's first statement dials a fresh TCP connection, runs go-redis's
+// initConn handshake on it and writes the SUBSCRIBE, and every byte of that
+// used to happen inside the bus's single global mutex — per workspace, since
+// each client.Subscribe mints a PubSub whose connection starts nil. A Redis
+// whose route blackholes packets stalled that dial for the client's
+// DialTimeout (5s by default, and NOT bounded by the context we pass), and
+// for that whole time no other workspace could subscribe, unsubscribe, close,
+// or receive a fanned-out event.
+//
+// Exactly one caller per workspace reaches here; the rest wait on pending.
+func (b *RedisBus) establishSubscription(workspaceID string, pending *pendingSub) {
 	channel := b.keys.Name(redisChannelSuffix) + workspaceID
 	pubsub := b.client.Subscribe(b.ctx, channel)
-
 	subCtx, subCancel := context.WithCancel(b.ctx)
-	b.subGen++
-	gen := b.subGen
-	b.wsSubs[workspaceID] = &redisSub{
-		pubsub: pubsub,
-		cancel: subCancel,
-		gen:    gen,
+
+	if b.beforeInstallSubscription != nil {
+		b.beforeInstallSubscription(workspaceID)
 	}
 
+	b.mu.Lock()
+	// TWO REASONS TO ABANDON, and both must retire the establishment record in
+	// THIS critical section (codex round 2, both P1s).
+	//
+	// Nobody left: everyone who wanted this workspace disconnected while we
+	// were dialling. Installing now would leave a receive loop and a Redis
+	// connection alive with nobody to deliver to, and nothing would ever tear
+	// them down — Unsubscribe only stops a subscription when it takes the count
+	// from one to zero, and the count is already zero.
+	//
+	// Bus closed: Close() cancels the context BEFORE it takes the lock and
+	// drains wsSubs, so an establishment that locks afterwards would install
+	// into a map Close has already emptied. The receive loop would exit on the
+	// cancelled context and neither subCancel nor pubsub.Close would ever run,
+	// leaking the PubSub and its health-check goroutine.
+	//
+	// RETIRING THE RECORD UNDER THIS SAME LOCK is what stops a joiner being
+	// stranded. Released separately, there is an interval in which we have
+	// decided to abandon and the record still says an establishment is coming:
+	// a subscriber arriving there registers, waits on a promise nobody will
+	// keep, and returns with a channel wired to nothing — permanently, because
+	// its own registration makes wsCounts non-zero so no later caller
+	// establishes either.
+	if b.wsCounts[workspaceID] == 0 || b.ctx.Err() != nil {
+		b.retirePendingLocked(workspaceID, pending)
+		b.mu.Unlock()
+		subCancel()
+		_ = pubsub.Close()
+		close(pending.done)
+		return
+	}
+	b.subGen++
+	gen := b.subGen
+	sub := &redisSub{
+		pubsub:    pubsub,
+		cancel:    subCancel,
+		gen:       gen,
+		confirmed: make(chan struct{}),
+	}
+	b.wsSubs[workspaceID] = sub
+	b.mu.Unlock()
+
+	// INSTALLED BEFORE THE LOOP STARTS, not after. fanOut drops any message
+	// for a workspace with no installed subscription of a matching gen, so
+	// starting the receive loop first would reopen a smaller version of the
+	// very window this function exists to close.
 	go b.receiveMessages(subCtx, pubsub, workspaceID, gen)
+
+	timer := time.NewTimer(b.confirmTimeout)
+	defer timer.Stop()
+	select {
+	case <-sub.confirmed:
+	case <-b.ctx.Done():
+	case <-timer.C:
+		b.markUnconfirmedAdmission(workspaceID, gen)
+	}
+
+	if b.afterSubscriptionConfirmed != nil {
+		b.afterSubscriptionConfirmed()
+	}
+
+	b.finishPending(workspaceID, pending)
+}
+
+// finishPending retires a workspace's establishment record and releases every
+// caller waiting on it.
+func (b *RedisBus) finishPending(workspaceID string, pending *pendingSub) {
+	b.mu.Lock()
+	b.retirePendingLocked(workspaceID, pending)
+	b.mu.Unlock()
+	close(pending.done)
+}
+
+// retirePendingLocked removes an establishment record if it is still the
+// current one. Callers must hold b.mu.
+//
+// The identity check matters: a record we abandoned may already have been
+// replaced by a later caller's, and deleting that one would let a third caller
+// start a second subscription for the same workspace.
+func (b *RedisBus) retirePendingLocked(workspaceID string, pending *pendingSub) {
+	if b.pendingSubs[workspaceID] == pending {
+		delete(b.pendingSubs, workspaceID)
+	}
+}
+
+// markUnconfirmedAdmission records that Redis did not acknowledge a
+// subscription within the bound, so its callers are being admitted without
+// this instance being able to say what the stream covers.
+//
+// ADMIT RATHER THAN REFUSE, deliberately. Before BUG-2747 every subscriber was
+// admitted into an unconfirmed subscription and told nothing, so admitting on
+// the failure path is not a regression — it is today's behaviour, now counted,
+// logged, and reconciled to the client when the acknowledgement lands. Refusing
+// instead would turn a Redis blip into failed SSE connections, which amplifies
+// an outage for no gain in honesty: the honesty is owed to the CLIENT, and
+// confirmSubscription is what pays it.
+func (b *RedisBus) markUnconfirmedAdmission(workspaceID string, gen int64) {
+	if b.beforeUnconfirmedMark != nil {
+		b.beforeUnconfirmedMark()
+	}
+	b.mu.Lock()
+	sub, ok := b.wsSubs[workspaceID]
+	// confirmClosed is checked under the same lock that closes it (codex round
+	// 1, P2). The timer and the acknowledgement can become ready together; if
+	// the timer won the select after confirmSubscription had already cleared
+	// the flag, this would set it again with nothing left to come and clear
+	// it — a subscriber counted as unconfirmed, never told to reconcile, and
+	// a workspace whose flag stays set until its NEXT resubscription.
+	if ok && sub.gen == gen && !sub.confirmClosed {
+		sub.unconfirmedAdmitted = true
+	} else {
+		ok = false
+	}
+	b.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	slog.Warn("events: Redis did not acknowledge the subscription in time; admitting subscribers without a coverage claim, they will be told to reconcile when it lands",
+		"workspace", workspaceID, "timeout", b.confirmTimeout)
+	b.reportSubscriptionUnconfirmed()
+}
+
+// confirmSubscription runs when Redis acknowledges a subscription, releasing
+// the callers waiting on it.
+//
+// If they were already admitted without it — the bound expired first — then
+// the span between is a hole those subscribers sat through, and they are told
+// so through the same channel BUG-2730 built for a mid-stream gap. The
+// acknowledgement is what makes the span's END knowable; before it arrives
+// there is nothing to report the size of.
+func (b *RedisBus) confirmSubscription(workspaceID string, gen int64) {
+	b.mu.Lock()
+	sub, ok := b.wsSubs[workspaceID]
+	if !ok || sub.gen != gen {
+		b.mu.Unlock()
+		return
+	}
+	late := sub.unconfirmedAdmitted
+	sub.unconfirmedAdmitted = false
+	if !sub.confirmClosed {
+		sub.confirmClosed = true
+		close(sub.confirmed)
+	}
+	b.mu.Unlock()
+
+	if late {
+		// Takes b.mu itself, hence outside the section above.
+		b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionUnconfirmed, gen)
+	}
 }
 
 // stopRedisSubscription cancels and cleans up the Redis subscription for a workspace.
@@ -1002,7 +1415,15 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 					continue
 				}
 				if !subscribed {
+					// THE INITIAL ACKNOWLEDGEMENT. Whoever is inside
+					// establishSubscription is waiting on this, and nothing is
+					// admitted until it lands (BUG-2747). Signalled here rather
+					// than by a Receive placed before this loop, because such a
+					// Receive would eat this message and leave the flag below
+					// to swallow the first genuine RESUBSCRIPTION instead —
+					// see redisSub.confirmed.
 					subscribed = true
+					b.confirmSubscription(workspaceID, gen)
 					continue
 				}
 				// A RESUBSCRIPTION: the connection dropped and came back, and
@@ -1411,6 +1832,37 @@ func (b *RedisBus) fanOutLocally(event Event) {
 // long is a bounded delay before a loud recovery, while being too short costs
 // an extra buffer drop — both loud, neither silent.
 const stragglerWindow = 30 * time.Second
+
+// defaultSubscribeConfirmTimeout bounds the wait for Redis to acknowledge a new
+// subscription (BUG-2747).
+//
+// IT BOUNDS THE ACKNOWLEDGEMENT, NOT THE WHOLE OF ESTABLISHMENT (codex round
+// 7). The dial and go-redis's HELLO/AUTH handshake happen inside
+// client.Subscribe, before this timer starts, and they are bounded by the
+// CLIENT's DialTimeout — 5s by default, and not by any context we pass. So a
+// stalled dial followed by this wait composes to roughly DialTimeout + this,
+// and anyone reasoning about worst-case connect latency needs both numbers.
+// BUG-2749 carries the same arithmetic for the admission slot that is held
+// across it.
+//
+// SHORT BECAUSE THE DISTRIBUTION HAS NO MIDDLE, not as a guess at how fast
+// Redis is. Establishment either completes in single-digit milliseconds or does
+// not complete at all, so past the top of the fast mode, waiting longer buys
+// nothing — it only holds an SSE admission slot, global and per-workspace, for a
+// client that may already be gone (BUG-2749).
+//
+// Measured on a containerised Redis over loopback, 300 establishments, timing
+// the whole of Subscribe (dial, HELLO/AUTH, SUBSCRIBE and the acknowledgement):
+// p50 388µs, p99 679µs, max 1.73ms idle; p50 693µs, p90 5.1ms, p99 12.1ms, max
+// 18.5ms with 24 busy loops on 8 cores. One second is ~54x the loaded maximum.
+// A real deployment adds network RTT to every sample, which moves the fast mode
+// by milliseconds and does not put anything in the middle.
+//
+// The cost of being too short is an admission this instance cannot describe the
+// coverage of — which since this change is counted, logged, and reconciled to
+// the client when the acknowledgement lands. That is the safe-and-noisy
+// direction; waiting is the silent one.
+const defaultSubscribeConfirmTimeout = time.Second
 
 // anySubscription opts out of the generation check for callers that are not a
 // receive loop — tests driving the fan-out directly. A real message always

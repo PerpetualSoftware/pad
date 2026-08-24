@@ -6,11 +6,12 @@ import (
 )
 
 type recordingObserver struct {
-	mu         sync.Mutex
-	resumeGaps []string
-	resets     []string
-	loopExits  int
-	drops      []string
+	mu          sync.Mutex
+	resumeGaps  []string
+	resets      []string
+	loopExits   int
+	drops       []string
+	unconfirmed int
 }
 
 func (o *recordingObserver) ResumeGap(workspaceID string) {
@@ -35,6 +36,18 @@ func (o *recordingObserver) EventDropped(reason string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.drops = append(o.drops, reason)
+}
+
+func (o *recordingObserver) SubscriptionUnconfirmed() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.unconfirmed++
+}
+
+func (o *recordingObserver) unconfirmedCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.unconfirmed
 }
 
 func (o *recordingObserver) gaps() []string {
@@ -175,3 +188,5 @@ func (o callbackObserver) SequenceReset(string) {}
 func (o callbackObserver) EventDropped(string) {}
 
 func (o callbackObserver) ReceiveLoopExited() {}
+
+func (o callbackObserver) SubscriptionUnconfirmed() {}

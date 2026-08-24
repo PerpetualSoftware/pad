@@ -227,6 +227,24 @@ type replayBuffer struct {
 	head   int // next write position
 	count  int // current number of events
 
+	// appends counts every append this buffer has ever taken, and it is a
+	// POSITION rather than an identifier (BUG-2747, codex round 3).
+	//
+	// A caller that registers and reads its replay in two separate critical
+	// sections needs to know where the buffer stood at the FIRST of them.
+	// lastAppendedID cannot answer that: this bus's IDs come from a shared
+	// counter and phase-1 publishes assign and publish in two calls, so
+	// arrival order and numeric order disagree. Against a numeric boundary a
+	// straggler arriving after registration is replayed as though it preceded
+	// it, and a pre-registration event that happens to carry a higher id is
+	// filtered out and never replayed at all — a duplicate and a silent
+	// omission from the same comparison.
+	//
+	// The buffer holds the last `count` appends, so ordinals
+	// (appends-count, appends] are what it still has, and the entries a caller
+	// must not be replayed are simply the final (appends - mark) of them.
+	appends int64
+
 	// knownFrom is the lowest event ID from which this buffer's coverage of
 	// its workspace can be VOUCHED FOR: the first ID appended since this
 	// instance began continuously receiving the workspace. Zero means
@@ -356,6 +374,7 @@ func (rb *replayBuffer) append(e Event) {
 		}
 	}
 	rb.lastAppendedID = e.ID
+	rb.appends++
 }
 
 // since returns all buffered events with ID > sinceID, in chronological order.
@@ -365,6 +384,30 @@ func (rb *replayBuffer) append(e Event) {
 // means "give me everything in the buffer" and is never a coverage question:
 // a fresh client is not resuming from a position, so there is no span to span.
 func (rb *replayBuffer) since(sinceID int64) []Event {
+	return rb.sinceBounded(sinceID, rb.count)
+}
+
+// sinceBounded is since restricted to the OLDEST keep entries — the buffer as
+// it stood at some earlier moment, for a caller that registered then and has
+// been receiving everything since on its own channel (BUG-2747).
+//
+// keep is a COUNT OF ENTRIES, and the coverage rules are shared with since()
+// rather than reimplemented, because the two must never disagree about what
+// "cannot vouch" means. The window is a prefix, so the buffer's oldest entry is
+// also the window's, and the eviction check is unchanged; only the newest end
+// moves.
+//
+// A keep of zero on a resume is a refusal, not "caught up": either the buffer
+// was empty when the caller registered, or everything it held then has since
+// been evicted. Both mean the caller's span is unaccounted for, and answering
+// with an empty slice would tell it that it was current.
+func (rb *replayBuffer) sinceBounded(sinceID int64, keep int) []Event {
+	if keep < 0 {
+		keep = 0
+	}
+	if keep > rb.count {
+		keep = rb.count
+	}
 	// COVERAGE CHECK (BUG-2731). A resume asking about IDs at or below what
 	// this buffer started covering cannot be answered honestly, and the
 	// pre-BUG-2731 code answered it anyway — with an empty-but-non-nil slice,
@@ -384,16 +427,21 @@ func (rb *replayBuffer) since(sinceID int64) []Event {
 		return nil
 	}
 
-	if rb.count == 0 {
+	if keep == 0 {
+		if sinceID > 0 {
+			return nil
+		}
 		return []Event{}
 	}
 
-	// Find the oldest event in the buffer
+	// Find the oldest event in the buffer. The window is a prefix, so this is
+	// also the window's oldest.
 	oldest := (rb.head - rb.count + rb.size) % rb.size
 	oldestID := rb.events[oldest].ID
 
-	// Find the newest event in the buffer.
-	newest := (rb.head - 1 + rb.size) % rb.size
+	// Find the newest event IN THE WINDOW, which is where the caller's replay
+	// span ends.
+	newest := (oldest + keep - 1) % rb.size
 	newestID := rb.events[newest].ID
 
 	// If sinceID is beyond the newest event we have, the ID came from a
@@ -412,7 +460,7 @@ func (rb *replayBuffer) since(sinceID int64) []Event {
 
 	// Collect events with ID > sinceID
 	var result []Event
-	for i := 0; i < rb.count; i++ {
+	for i := 0; i < keep; i++ {
 		idx := (oldest + i) % rb.size
 		if rb.events[idx].ID > sinceID {
 			result = append(result, rb.events[idx])

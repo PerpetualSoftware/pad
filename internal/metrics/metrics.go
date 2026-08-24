@@ -214,6 +214,13 @@ type Metrics struct {
 	//   not necessarily above a counter that a collision or a hand-edit had
 	//   pushed higher.
 	//
+	//   subscription_unconfirmed — a subscription was admitted before Redis
+	//   acknowledged the SUBSCRIBE, and the acknowledgement then arrived
+	//   (BUG-2747). It reaches this counter only when a buffer existed to drop,
+	//   which on that path is the uncommon case; the dependable counter for the
+	//   condition is pad_event_subscription_unconfirmed_total, and the two are
+	//   read together rather than as substitutes.
+	//
 	//   THERE IS NO REPAIR-SPECIFIC SIGNAL — the repair happens inside a Lua
 	//   script, which cannot log through slog and does not change this
 	//   counter's label. The tell is the VALUE: read the generation key, and
@@ -235,6 +242,30 @@ type Metrics struct {
 	// for a workspace leaves, so unlike the watch stream's twin it does NOT
 	// stay at zero — read it as a RATE against a stable subscriber count.
 	EventReceiveLoopExitsTotal prometheus.Counter
+
+	// EventSubscriptionUnconfirmedTotal counts activity-stream subscriptions
+	// admitted before Redis acknowledged the SUBSCRIBE, because the wait for
+	// that acknowledgement timed out (BUG-2747).
+	//
+	// EXPECT ZERO. It is a different signal from a sequence reset and is counted
+	// separately: nothing is known to have been lost, but a stream was admitted
+	// whose coverage this instance cannot describe. The two are not disjoint —
+	// when the acknowledgement finally lands, that path calls through to the
+	// coverage drop and so CAN also move pad_event_sequence_resets_total with
+	// reason subscription_unconfirmed, though only when a buffer existed to
+	// drop.
+	//
+	// IT COUNTS ESTABLISHMENTS, NOT CLIENTS. One increment is one workspace
+	// subscription that timed out, however many subscribers were waiting on it
+	// — all of them are told to reconcile when the acknowledgement lands, so
+	// the client-side fan-out is visible in
+	// pad_event_midstream_resyncs_total, not here.
+	//
+	// A non-zero rate says the SUBSCRIBE round trip is slow or stalling —
+	// the same Redis condition that makes BUG-2748's dial an availability
+	// hazard — so read it alongside connect latency rather than alongside
+	// pad_event_sequence_resets_total.
+	EventSubscriptionUnconfirmedTotal prometheus.Counter
 
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
@@ -479,12 +510,17 @@ func New() *Metrics {
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
-		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there — usually a Redis failover to a replica that lost writes, and since BUG-2740 also a corrupted generation key having been repaired and reseeded from wall-clock seconds; read the key to tell them apart, a repaired one looks like a unix timestamp), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended).",
+		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there — usually a Redis failover to a replica that lost writes, and since BUG-2740 also a corrupted generation key having been repaired and reseeded from wall-clock seconds; read the key to tell them apart, a repaired one looks like a unix timestamp), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended), subscription_unconfirmed (a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived; reaches this counter only when a buffer existed to drop — see pad_event_subscription_unconfirmed_total).",
 	}, []string{"reason"})
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_receive_loop_exits_total",
 		Help: "Times a workspace's activity subscription loop stopped. Expected at shutdown and when a workspace's last local subscriber leaves — read as a rate against a stable subscriber count.",
+	})
+
+	eventSubscriptionUnconfirmedTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_subscription_unconfirmed_total",
+		Help: "Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait timed out. Counts ESTABLISHMENTS, not clients — however many subscribers were waiting on one, it increments once. Expect zero. Nothing is known lost; the stream's coverage is simply undescribable until the acknowledgement lands, at which point every subscriber waiting on it is told to reconcile and pad_event_sequence_resets_total may also move with reason subscription_unconfirmed.",
 	})
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -505,6 +541,7 @@ func New() *Metrics {
 		watchMidstreamResyncsTotal,
 		eventSequenceResetsTotal,
 		eventReceiveLoopExitsTotal,
+		eventSubscriptionUnconfirmedTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -525,20 +562,21 @@ func New() *Metrics {
 	return &Metrics{
 		Registry: reg,
 
-		RedisUp:                        redisUp,
-		WatchNotificationsDroppedTotal: watchNotificationsDroppedTotal,
-		WatchSequenceGapsTotal:         watchSequenceGapsTotal,
-		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,
-		WatchResumeGapsTotal:           watchResumeGapsTotal,
-		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
-		EventResumeGapsTotal:           eventResumeGapsTotal,
-		EventEventsDroppedTotal:        eventEventsDroppedTotal,
-		EventMidstreamResyncsTotal:     eventMidstreamResyncsTotal,
-		WatchMidstreamResyncsTotal:     watchMidstreamResyncsTotal,
-		EventSequenceResetsTotal:       eventSequenceResetsTotal,
-		EventReceiveLoopExitsTotal:     eventReceiveLoopExitsTotal,
-		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,
-		SessionPresenceFailuresTotal:   sessionPresenceFailuresTotal,
+		RedisUp:                           redisUp,
+		WatchNotificationsDroppedTotal:    watchNotificationsDroppedTotal,
+		WatchSequenceGapsTotal:            watchSequenceGapsTotal,
+		WatchNotificationsMissedTotal:     watchNotificationsMissedTotal,
+		WatchResumeGapsTotal:              watchResumeGapsTotal,
+		WatchSequenceResetsTotal:          watchSequenceResetsTotal,
+		EventResumeGapsTotal:              eventResumeGapsTotal,
+		EventEventsDroppedTotal:           eventEventsDroppedTotal,
+		EventMidstreamResyncsTotal:        eventMidstreamResyncsTotal,
+		WatchMidstreamResyncsTotal:        watchMidstreamResyncsTotal,
+		EventSequenceResetsTotal:          eventSequenceResetsTotal,
+		EventReceiveLoopExitsTotal:        eventReceiveLoopExitsTotal,
+		EventSubscriptionUnconfirmedTotal: eventSubscriptionUnconfirmedTotal,
+		WatchReceiveLoopExitsTotal:        watchReceiveLoopExitsTotal,
+		SessionPresenceFailuresTotal:      sessionPresenceFailuresTotal,
 
 		HTTPRequestsTotal:          httpRequestsTotal,
 		HTTPRequestDuration:        httpRequestDuration,

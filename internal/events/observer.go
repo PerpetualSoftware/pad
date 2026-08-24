@@ -89,6 +89,33 @@ type Observer interface {
 	// deploy that starts reporting them is not necessarily a regression — it
 	// may be the first time they were countable.
 	EventDropped(reason string)
+
+	// SubscriptionUnconfirmed reports that a workspace's Redis subscription
+	// could not be CONFIRMED within the bus's bound, so the subscribers
+	// waiting on it were admitted anyway rather than refused (BUG-2747).
+	//
+	// It is not itself a coverage ending, and it is counted separately from
+	// SequenceReset: nothing has been lost that this instance knows of; what
+	// happened is that a stream was admitted whose coverage is UNKNOWN, because
+	// Redis had not acknowledged the SUBSCRIBE.
+	//
+	// THE TWO ARE NOT DISJOINT, and an earlier version of this comment said
+	// they were (codex round 3). When the acknowledgement eventually lands,
+	// that path calls dropWorkspaceCoverage, which reports SequenceReset with
+	// reason subscription_unconfirmed — though only when a buffer existed to
+	// drop, which on this path is the uncommon case. So this counter is the
+	// dependable one and that reason is corroboration.
+	//
+	// IT COUNTS ESTABLISHMENTS, NOT CLIENTS — also corrected from an earlier
+	// wording. One increment is one workspace subscription whose wait expired,
+	// however many subscribers were waiting on it; all of them are told to
+	// reconcile when the acknowledgement lands, so the client-side fan-out
+	// shows up in the midstream-resync counter rather than here.
+	//
+	// Expect zero. A non-zero rate means the SUBSCRIBE round trip is slow or
+	// stalling — the same Redis condition BUG-2748 makes an availability
+	// hazard.
+	SubscriptionUnconfirmed()
 }
 
 // Drop reasons. Bounded by construction so they are safe as metric labels.
@@ -152,6 +179,18 @@ const (
 	// transit. Either way the events behind it are lost; the counter is what
 	// says so.
 	ResetReasonUndecodableMessage = "undecodable_message"
+
+	// ResetReasonSubscriptionUnconfirmed means a subscription was admitted
+	// before Redis acknowledged the SUBSCRIBE, and the acknowledgement then
+	// arrived (BUG-2747). Everything published in between reached this
+	// instance not at all, so the span the admitted subscribers sat through
+	// is one their stream cannot account for.
+	//
+	// It reaches the reset counter only when a buffer existed to drop, which
+	// on this path is the uncommon case — see dropWorkspaceCoverage for the
+	// deliberate asymmetry between the metric and the client signal. The
+	// dependable counter for this condition is Observer.SubscriptionUnconfirmed.
+	ResetReasonSubscriptionUnconfirmed = "subscription_unconfirmed"
 )
 
 // observable is the shared, nil-safe Observer holder both bus implementations
@@ -192,6 +231,12 @@ func (o *observable) reportReset(reason string) {
 func (o *observable) reportReceiveLoopExited() {
 	if obs := o.observer(); obs != nil {
 		obs.ReceiveLoopExited()
+	}
+}
+
+func (o *observable) reportSubscriptionUnconfirmed() {
+	if obs := o.observer(); obs != nil {
+		obs.SubscriptionUnconfirmed()
 	}
 }
 
