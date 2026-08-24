@@ -135,6 +135,24 @@ describe('workspace dashboard — Recent Activity agent badge', () => {
 		expect(agentBadges()).toEqual(['agent']);
 	});
 
+	// Codex round 1 — see the twin case in activityPageAgentName for the
+	// reasoning and for the boundary this assertion does NOT cover (the CSS
+	// rule itself is unobservable under this vitest setup).
+	it('marks a stamped name as a name so the badge stops upper-casing it', async () => {
+		await mountWith([act({ metadata: JSON.stringify({ agent: 'Wren' }) })]);
+
+		const badge = host.querySelector('.activity-row .actor-badge.agent')!;
+		expect(badge.textContent!.trim()).toBe('Wren');
+		expect(badge.classList.contains('named')).toBe(true);
+	});
+
+	it('leaves the generic badge upper-cased as a category word', async () => {
+		await mountWith([act({ metadata: '{}' })]);
+
+		const badge = host.querySelector('.activity-row .actor-badge.agent')!;
+		expect(badge.classList.contains('named')).toBe(false);
+	});
+
 	it('leaves a human row on its own name and never reads the stamp', async () => {
 		await mountWith([act({ actor: 'user', actor_name: 'Dave', source: 'web' })]);
 

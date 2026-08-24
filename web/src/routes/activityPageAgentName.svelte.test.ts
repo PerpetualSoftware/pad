@@ -117,6 +117,30 @@ describe('activity page — Audit view', () => {
 		expect(host.querySelector('.actor-badge.agent')!.textContent!.trim()).toBe('agent');
 	});
 
+	// Codex round 1. The badge's base rule uppercases, so `Wren` and `wren`
+	// rendered identically — the verbatim contract broken in CSS rather than
+	// in code, and invisible to every textContent assertion above.
+	//
+	// BOUNDARY: this asserts the class the markup applies, not the pixels.
+	// Svelte component styles are not injected under this vitest setup
+	// (`document.querySelectorAll('style').length` is 0, so getComputedStyle
+	// resolves nothing), which leaves the one adjacent CSS rule —
+	// `.actor-badge.named { text-transform: none }` — outside what this suite
+	// can observe. The class is the half a refactor would actually drop.
+	it('marks a stamped name as a name so the badge stops upper-casing it', async () => {
+		await mountPage('audit', [act({ metadata: JSON.stringify({ agent: 'Wren' }) })]);
+
+		const badge = host.querySelector('.actor-badge.agent')!;
+		expect(badge.textContent!.trim()).toBe('Wren');
+		expect(badge.classList.contains('named')).toBe(true);
+	});
+
+	it('leaves the generic badge upper-cased as a category word', async () => {
+		await mountPage('audit', [act({ metadata: '{}' })]);
+
+		expect(host.querySelector('.actor-badge.agent')!.classList.contains('named')).toBe(false);
+	});
+
 	it('never reads the stamp for a human row', async () => {
 		// The badge for a human is keyed on actor_name/source, and an `agent`
 		// key can ride along on any row's shared metadata blob.

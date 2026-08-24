@@ -246,15 +246,24 @@
 		actor: string,
 		actorName?: string,
 		metadata?: Record<string, unknown>
-	): { label: string; kind: string } {
+	): { label: string; kind: string; named: boolean } {
 		// An agent's own name when it sent one, else the generic badge. The
 		// name is never merged with `actorName` — that is the human whose
 		// credentials the write rode on, and conflating the two is the
 		// mis-attribution this renders to end.
-		if (actor === 'agent') return { label: agentNameOf(metadata) ?? 'agent', kind: 'agent' };
-		if (actorName) return { label: actorName, kind: source === 'cli' ? 'cli' : 'user' };
-		if (source === 'cli') return { label: 'cli', kind: 'cli' };
-		return { label: 'web', kind: 'web' };
+		//
+		// `named` drives the badge's uppercasing off. "agent" / "cli" / "web"
+		// are CATEGORY words and read as chips; a stamped name is a name, and
+		// upper-casing it would collapse `Wren` and `wren` into the same
+		// pixels — breaking the verbatim contract in CSS rather than in code.
+		// The `user` kind has always opted out for exactly this reason.
+		if (actor === 'agent') {
+			const name = agentNameOf(metadata);
+			return { label: name ?? 'agent', kind: 'agent', named: name !== undefined };
+		}
+		if (actorName) return { label: actorName, kind: source === 'cli' ? 'cli' : 'user', named: true };
+		if (source === 'cli') return { label: 'cli', kind: 'cli', named: false };
+		return { label: 'web', kind: 'web', named: false };
 	}
 
 	function borderClass(source: string, actor: string): string {
@@ -422,7 +431,7 @@
 									{/if}
 								</div>
 								<div class="entry-meta">
-									<span class="actor-badge {src.kind}">{src.label}</span>
+									<span class="actor-badge {src.kind}" class:named={src.named}>{src.label}</span>
 									<span
 										class="entry-time"
 										title={new Date(activity.created_at).toLocaleString()}
@@ -716,6 +725,12 @@
 	.actor-badge.agent {
 		background: color-mix(in srgb, var(--accent-purple) 15%, transparent);
 		color: var(--accent-purple);
+	}
+	/* A name, not a category word — same reasoning as `.actor-badge.user`
+	   below, which has always opted out. See getSourceLabel's `named`. */
+	.actor-badge.named {
+		text-transform: none;
+		letter-spacing: normal;
 	}
 	.actor-badge.cli {
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
