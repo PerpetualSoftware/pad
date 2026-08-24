@@ -78,6 +78,22 @@ describe('TimelineActivityCard agent name', () => {
 		expect(getByText('Agent')).toBeTruthy();
 	});
 
+	// Codex round 2. The name is attacker-influenced: it is whatever a client
+	// put in X-Pad-Agent, and the server stores it without inspection. Svelte
+	// text interpolation escapes it today, so this passes as written — the
+	// point is that it would STOP passing if any of these render paths were
+	// rewritten to `{@html}`, which is the plausible way an "allow rich agent
+	// labels" change would arrive.
+	it('renders a name containing markup as text, never as elements', () => {
+		const payload = '<img src=x onerror="alert(1)">';
+		const { container, getByText } = render(TimelineActivityCard, {
+			activity: activity({ metadata: JSON.stringify({ agent: payload }) })
+		});
+
+		expect(container.querySelector('img')).toBeNull();
+		expect(getByText(payload)).toBeTruthy();
+	});
+
 	it('never reads the stamp for a non-agent actor', () => {
 		// Guards against keying the chip on metadata alone. A human's write can
 		// carry an `agent` key — the merge in agentMeta is textual and this

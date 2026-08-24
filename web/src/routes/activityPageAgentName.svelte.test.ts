@@ -141,6 +141,18 @@ describe('activity page — Audit view', () => {
 		expect(host.querySelector('.actor-badge.agent')!.classList.contains('named')).toBe(false);
 	});
 
+	// Codex round 2 — the same escaping claim at a second surface, because the
+	// two views build their labels through different code paths and a future
+	// `{@html}` would land in one of them, not both. See the twin case in
+	// timelineActivityAgentName for why this passes today.
+	it('renders a name containing markup as text, never as elements', async () => {
+		const payload = '<img src=x onerror="alert(1)">';
+		await mountPage('audit', [act({ metadata: JSON.stringify({ agent: payload }) })]);
+
+		expect(host.querySelector('img')).toBeNull();
+		expect(host.querySelector('.actor-badge.agent')!.textContent!.trim()).toBe(payload);
+	});
+
 	it('never reads the stamp for a human row', async () => {
 		// The badge for a human is keyed on actor_name/source, and an `agent`
 		// key can ride along on any row's shared metadata blob.

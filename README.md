@@ -130,7 +130,7 @@ Agents load relevant conventions automatically, and every agent action is attrib
 
 **Name your agents:**
 
-By default an agent's writes show up as a generic `agent`. Give it a name and that name appears instead — in the activity feed's Live and Audit views, on the dashboard's recent activity, on item timelines, and in the admin audit log. With more than one agent working a project, that is the difference between "something automated touched this" and knowing which one.
+An agent that identifies itself gets its name shown on its writes — in the activity feed's Live and Audit views, on the dashboard's recent activity, on item timeline *activity* entries, and in the admin audit log. With more than one agent working a project, that is the difference between "something automated touched this" and knowing which one.
 
 Pad takes the first of these it finds:
 
@@ -142,11 +142,15 @@ Pad takes the first of these it finds:
 # 2. Per-process, runtime-agnostic. Any harness can set it.
 export PAD_AGENT=reviewer
 
-# 3. Otherwise Pad detects the runtime it knows (Claude Code reports
-#    "claude-code"), and falls back to the generic "agent" if it can't.
+# 3. Otherwise Pad detects the runtimes it knows — Claude Code reports
+#    "claude-code" — and that detected id is used as the name.
 ```
 
-The name is rendered exactly as sent — Pad does not keep a list of approved names or rewrite what you choose.
+**If none of the three produce a name, the write is not marked as an agent's at all** — it is recorded as the person whose credentials it used, which is the case the caveat below is about. The generic `agent` label you may see on older entries is a write that identified itself before Pad stored names, or an event type that records the actor without the name (workspace membership changes, sign-ins).
+
+The name is rendered exactly as sent — Pad keeps no list of approved names, and does not re-case or rewrite what you choose.
+
+Not every entry can show it. Comments, version snapshots, and implementation-note/decision entries record only *that* an agent acted, because the name is not stored on those rows — they still read `Agent`. Activity entries are the ones that carry it.
 
 **What this does not claim.** The name is supplied by the client and self-declared, so it records honesty, not identity. From `ResolveAgentName`'s own contract in `internal/cli/agent_identity.go`:
 
