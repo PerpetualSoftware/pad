@@ -524,6 +524,10 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 	// The cap is a deliberate middle: unbounded goroutines would answer a Redis
 	// outage by opening one dial per workspace at once, which is the shape that
 	// turns a slow dependency into an outage of our own.
+	if b.afterIdleScan != nil {
+		b.afterIdleScan()
+	}
+
 	sem := make(chan struct{}, maxConcurrentCycles)
 	var wg sync.WaitGroup
 	for _, c := range due {
@@ -575,95 +579,103 @@ func nextTick(prev time.Time, interval time.Duration, now time.Time) time.Time {
 const maxConcurrentCycles = 8
 
 // cycleOne ends one workspace's coverage and re-establishes its subscription.
+//
+// EVERY VALIDATION, THE COVERAGE DROP AND THE TEARDOWN HAPPEN UNDER ONE LOCK,
+// and that is the fix for a false positive codex round 11 found — the property
+// this whole design cares about most, because a false positive costs a
+// coverage drop and a resync for every subscriber of a healthy workspace.
+//
+// The scan selects victims and releases the lock; this runs afterwards, and
+// "afterwards" can be a long time. The concurrency cap means a workspace can
+// wait behind several batches of slow replacement dials, and a GC or CPU pause
+// can leave a backlog of heartbeats undrained in the receive loop. In that
+// window the subscription can start receiving again — and the earlier version
+// cycled it anyway, because its re-checks covered generation, subscriber count
+// and bus liveness but never re-asked the question the scan had asked.
+//
+// The staleness re-check below is therefore not defensive tidying: it is the
+// difference between "idle when we looked" and "idle now", and the gap between
+// those two was widened by this unit's own concurrency cap.
 func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
-	// "ATTEMPTING TO REPLACE", not "replacing" (codex round 6). This line is
-	// emitted before the coverage drop and long before establishment, and the
-	// replacement genuinely may not happen — the bus can close, or the last
-	// subscriber can leave, while we dial. An operator correlating this log
-	// with pad_event_subscription_cycled_total would otherwise find the log
-	// without the counter and go looking for a bug that is not there.
-	slog.Warn("events: no traffic on this workspace's Redis subscription within the idle timeout; ending its replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
-		"workspace", c.workspaceID, "idle_timeout", idleTimeout)
-
-	// BEFORE THE TEARDOWN, because dropWorkspaceCoverage authenticates against
-	// the LIVE subscription's generation (see its generation check) and
-	// stopRedisSubscription deletes that entry. Reversed, the drop would find
-	// no wsSubs entry, return without dropping the buffer, and leave a stale
-	// buffer vouching for a span that ended when the route did — which is the
-	// exact defect this unit exists to remove.
-	b.dropWorkspaceCoverage(c.workspaceID, ResetReasonIdleTimeout, c.gen)
-
 	b.mu.Lock()
-	// RULE 3, SECOND READ — under the lock that performs the teardown. Between
-	// the scan and here, the last subscriber may have left (taking the
-	// subscription down with it), the workspace may have been re-established
-	// under a new generation, or the bus may have closed. Any of those means
-	// there is nothing of OURS left to cycle, and installing a fresh
-	// subscription would be a connection and a receive loop for nobody.
-	//
-	// WHAT THE MUTATION MATRIX SAYS ABOUT THIS LINE, recorded because the
-	// honest reading is not the flattering one. Removing the liveness term,
-	// the generation term, the count term, or ALL of them survives every test
-	// in this package. That is not a coverage gap to be filled with a cleverer
-	// test — it is the correct reading, and each term has a different reason:
-	//
-	//   - The COUNT and LIVENESS terms are redundant with
-	//     establishSubscription, which re-reads wsCounts under its own
-	//     deciding lock and abandons — retiring the record in that same
-	//     section — when the workspace has emptied (BUG-2749). Dropping them
-	//     costs a dial that is immediately thrown away, not a wrong outcome.
-	//     They are kept because they do not DEPEND on that coupling: a future
-	//     change to the abandon path would otherwise silently make this caller
-	//     install for nobody.
-	//   - The GENERATION term is unreachable while we hold the establishment
-	//     record at all, by rule 1's own mechanism: subscribeAndReplay checks
-	//     pendingSubs before wsSubs, so no other caller can establish this
-	//     workspace between the scan and here, and nothing else installs. It
-	//     is kept for the same reason every other gen check in this file is —
-	//     the cost of being wrong is tearing down a subscription that belongs
-	//     to someone else.
-	//
-	// Do not read the survivals as dead code to delete, and do not read them as
-	// tested defence in depth. They are a cheap second opinion whose absence is
-	// currently harmless.
 	sub, live := b.wsSubs[c.workspaceID]
-	if !live || sub.gen != c.gen || b.wsCounts[c.workspaceID] == 0 || b.ctx.Err() != nil {
+
+	// RULE 3, SECOND READ, plus the freshness re-check. Between the scan and
+	// here, the last subscriber may have left (taking the subscription down
+	// with it), the workspace may have been re-established under a new
+	// generation, the bus may have closed, or the connection may simply have
+	// started working again.
+	//
+	// WHAT THE MUTATION MATRIX SAYS ABOUT THE FIRST THREE TERMS, recorded
+	// because the honest reading is not the flattering one. Removing the
+	// liveness term, the generation term, the count term, or all of them
+	// survives every test in this package — establishSubscription re-reads
+	// wsCounts under its own deciding lock and abandons, retiring the record in
+	// that same section (BUG-2749), so dropping them costs a dial that is
+	// immediately thrown away rather than a wrong outcome. They are kept
+	// because they do not DEPEND on that coupling. The generation term is
+	// additionally unreachable while we hold the establishment record, by rule
+	// 1's own mechanism. Do not read those survivals as dead code to delete,
+	// and do not read them as tested defence in depth.
+	//
+	// The FRESHNESS term is different in kind: it is load-bearing, it has its
+	// own test, and removing it is detected.
+	switch {
+	case !live || sub.gen != c.gen || b.wsCounts[c.workspaceID] == 0 || b.ctx.Err() != nil:
 		b.retirePendingLocked(c.workspaceID, c.pending)
 		b.mu.Unlock()
 		close(c.pending.done)
 		return
+	case b.now().Sub(sub.lastSeen) < idleTimeout:
+		// It recovered while this cycle sat in the queue. Nothing to end and
+		// nothing to replace: leaving it alone is the whole point.
+		b.retirePendingLocked(c.workspaceID, c.pending)
+		b.mu.Unlock()
+		close(c.pending.done)
+		slog.Info("events: a workspace queued for an idle cycle started receiving again before its turn; leaving its subscription alone",
+			"workspace", c.workspaceID)
+		return
 	}
+
+	// LOGGED HERE, after the decision is final rather than before it, so the
+	// log cannot describe a cycle that then abandons. It still says ATTEMPTING
+	// to replace: establishSubscription can install nothing if the bus closes
+	// or the workspace empties while it dials, and an operator correlating this
+	// line with pad_event_subscription_cycled_total would otherwise find the
+	// log without the counter and go hunting a bug that is not there.
+	slog.Warn("events: no traffic on this workspace's Redis subscription within the idle timeout; ending its replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
+		"workspace", c.workspaceID, "idle_timeout", idleTimeout)
+
+	// The drop must precede the teardown, because it authenticates against the
+	// LIVE subscription's generation and stopRedisSubscription deletes that
+	// entry. Both now happen without releasing the lock in between, so there is
+	// no window in which coverage is ended for a workspace this function then
+	// decides not to cycle.
+	report := b.dropWorkspaceCoverageLocked(c.workspaceID, ResetReasonIdleTimeout, c.gen)
 	b.stopRedisSubscription(c.workspaceID)
 	b.mu.Unlock()
 
+	// Reported with the lock released: an Observer callback may call back into
+	// the bus (see the Observer interface for the one thing it may not do).
+	if report != "" {
+		b.reportReset(report)
+	}
+
 	// RULE 4: b.ctx, and a nil establisher. establishSubscription owns the
-	// record from here — it installs or abandons, and retires the record in
-	// the same critical section either way, so no joiner is stranded by a
-	// cycle any more than by a cancelled caller (BUG-2749).
+	// record from here — it installs or abandons, and retires the record in the
+	// same critical section either way, so no joiner is stranded by a cycle any
+	// more than by a cancelled caller (BUG-2749).
 	b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending)
 
-	// REPORTED AFTER ESTABLISHMENT, not before it (codex round 1, P3). While
-	// this cycle holds the workspace's establishment record, any caller that
-	// reaches Subscribe for the same workspace WAITS on it — including an
-	// Observer callback, which this package already treats as allowed to call
-	// back into the bus. Reporting from inside that window would let such a
-	// callback block on a record only this goroutine can retire.
-	//
-	// The narrower version of the same hazard is older than this code and is
-	// not fixed here: dropWorkspaceCoverage above reports SequenceReset while
-	// the record is held, exactly as confirmSubscription's late-acknowledgement
-	// path already did. See the Observer interface for the contract that
-	// bounds it.
-	//
-	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED (codex round 3, P3). The
-	// counter's documented meaning is "torn down AND replaced", and
-	// establishSubscription has two reasons to install nothing: the bus closed
-	// under us, or the workspace emptied while we dialled. Reporting
-	// unconditionally would count those as cycles, which is wrong in the
-	// direction that matters — an operator reading a non-zero rate concludes
-	// connections are being blackholed, and a shutdown would manufacture that
-	// signal. The teardown is still visible through the idle_timeout reset
-	// reason when a buffer existed to drop.
+	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED (codex round 3). The counter's
+	// documented meaning is "torn down AND replaced", and establishSubscription
+	// has two reasons to install nothing: the bus closed under us, or the
+	// workspace emptied while we dialled. Reporting unconditionally would count
+	// those as cycles, which is wrong in the direction that matters — an
+	// operator reading a non-zero rate concludes connections are being
+	// blackholed, and a shutdown would manufacture that signal. The teardown is
+	// still visible through the idle_timeout reset reason when a buffer existed
+	// to drop.
 	if gen, live := b.liveGen(c.workspaceID); live && gen != c.gen {
 		b.reportSubscriptionCycled()
 	}

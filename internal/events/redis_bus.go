@@ -596,6 +596,16 @@ type RedisBus struct {
 	// correct abandon. Receives the workspace.
 	afterRegisterBeforeEstablish func(workspaceID string)
 
+	// afterIdleScan is a TEST SEAM, nil in production. It runs in
+	// cycleIdleSubscriptions after the scan has selected its victims and
+	// RELEASED b.mu, and before any of them is cycled.
+	//
+	// POSITIONAL, like its siblings. That gap is the whole subject of the
+	// freshness re-check in cycleOne: in production it is widened by the
+	// concurrency cap and by GC pauses, and it is the only place a test can
+	// make a selected workspace start receiving again before its turn.
+	afterIdleScan func()
+
 	// beforeInstallSubscription is a TEST SEAM, nil in production. It runs in
 	// establishSubscription after the dial and BEFORE the lock that decides
 	// whether to install or abandon, so a test can make either abandon reason
@@ -1865,16 +1875,26 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 // any other workspace's channel, and dropping the rest would be a resync
 // charged to clients whose stream never broke.
 func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) {
-	var report string
-	defer func() {
-		if report != "" {
-			b.reportReset(report)
-		}
-	}()
-
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	report := b.dropWorkspaceCoverageLocked(workspaceID, reason, gen)
+	b.mu.Unlock()
+	if report != "" {
+		b.reportReset(report)
+	}
+}
 
+// dropWorkspaceCoverageLocked is dropWorkspaceCoverage with the lock already
+// held. It returns the reason to report, or "" for nothing to report; the
+// caller reports it AFTER releasing b.mu, because an Observer callback may call
+// back into the bus.
+//
+// SPLIT OUT SO A CALLER CAN MAKE THE DROP PART OF A LARGER ATOMIC DECISION
+// (BUG-2738, codex round 11). The idle cycle has to validate the subscription,
+// end its coverage and tear it down without releasing the lock in between —
+// otherwise a heartbeat arriving in one of those gaps makes it drop coverage
+// for a workspace that had just recovered.
+func (b *RedisBus) dropWorkspaceCoverageLocked(workspaceID, reason string, gen int64) string {
+	var report string
 	// THE GENERATION CHECK BELONGS HERE TOO, not only in fan-out (codex round
 	// 7). A receive loop can notice its connection died LONG after the
 	// workspace was unsubscribed and resubscribed under it: last viewer
@@ -1885,7 +1905,7 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 	// before its subscription began, and the reset counter names an incident
 	// that did not happen to it.
 	if sub, ok := b.wsSubs[workspaceID]; !ok || sub.gen != gen {
-		return
+		return report
 	}
 
 	if _, ok := b.replayBuffers[workspaceID]; !ok {
@@ -1907,7 +1927,7 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 		// (there was none) and the signal measures CLIENTS WHO MAY HAVE
 		// MISSED SOMETHING (there are some).
 		b.signalWorkspaceLocked(workspaceID)
-		return
+		return report
 	}
 	delete(b.replayBuffers, workspaceID)
 	// TELL THE SUBSCRIBERS THAT ARE STILL HOLDING THE STREAM OPEN (BUG-2730).
@@ -1921,6 +1941,7 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 	// directly above: no other workspace's channel is implicated.
 	b.signalWorkspaceLocked(workspaceID)
 	report = reason
+	return report
 }
 
 // signalWorkspaceLocked raises the gap flag for every live subscriber of one

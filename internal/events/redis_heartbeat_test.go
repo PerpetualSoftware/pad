@@ -864,6 +864,69 @@ func TestAStragglerCannotRefreshTheLivenessOfItsSuccessor(t *testing.T) {
 	}
 }
 
+// TestAWorkspaceThatRecoversBeforeItsTurnIsNotCycled is the false-positive
+// regression test, and false positives are the property this design cares
+// about most: cycling a healthy subscription drops its coverage and resyncs
+// every one of its subscribers for nothing.
+//
+// The scan selects victims and releases the lock; the cycles run afterwards,
+// and "afterwards" is not instant. The concurrency cap makes a workspace wait
+// behind earlier batches of replacement dials, and a GC or CPU pause can leave
+// a backlog of heartbeats undrained in the receive loop. A subscription can
+// therefore start receiving again between being selected and being cycled —
+// and the earlier version cycled it anyway, because its re-checks asked about
+// generation, subscriber count and bus liveness but never re-asked about
+// idleness (codex round 11).
+//
+// The gap this exercises was WIDENED by this unit's own concurrency cap, which
+// is what makes it a real production window rather than a theoretical one.
+func TestAWorkspaceThatRecoversBeforeItsTurnIsNotCycled(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(ch)
+	genBefore, ok := b.liveGen("ws-1")
+	if !ok {
+		t.Fatal("fixture: nothing installed")
+	}
+
+	// The recovery lands in the gap between selection and the cycle — the same
+	// place a heartbeat drained after a GC pause would land.
+	var fired atomic.Bool
+	b.afterIdleScan = func() {
+		if !fired.CompareAndSwap(false, true) {
+			return
+		}
+		b.mu.Lock()
+		if sub, live := b.wsSubs["ws-1"]; live {
+			sub.lastSeen = clock.now()
+		}
+		b.mu.Unlock()
+	}
+
+	clock.advance(DefaultIdleTimeout + time.Second)
+	b.cycleIdleSubscriptions()
+
+	if !fired.Load() {
+		t.Fatal("the seam never ran, so no workspace was ever selected; this test could not have discriminated")
+	}
+	if got := obs.cycledCount(); got != 0 {
+		t.Fatalf("a workspace that started receiving again before its turn was cycled %d times", got)
+	}
+	if reasons := obs.resetReasons(); len(reasons) != 0 {
+		t.Fatalf("a recovered workspace had its coverage dropped: %v", reasons)
+	}
+	if genAfter, _ := b.liveGen("ws-1"); genAfter != genBefore {
+		t.Fatalf("the connection was replaced (generation %d → %d) although it had started working again", genBefore, genAfter)
+	}
+	b.mu.Lock()
+	_, pending := b.pendingSubs["ws-1"]
+	b.mu.Unlock()
+	if pending {
+		t.Fatal("the abandoned cycle left its establishment record behind: the next subscriber waits on a promise nobody keeps")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Joint rules 1 and 3.
 // ---------------------------------------------------------------------------
