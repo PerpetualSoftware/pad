@@ -507,7 +507,11 @@ func (c *watchVisCache) forWorkspace(workspaceID string) watchAccessVisibility {
 	if v, ok := c.m[workspaceID]; ok {
 		return v
 	}
-	v := c.s.computeWatchAccessVisibility(c.bearerAuth, c.user, workspaceID)
+	// Error deliberately discarded — see filterWatchesByCurrentAccess.
+	// A failed resolve yields the deny-everything visibility, which is
+	// this path's correct failure mode and matches refreshUser's own
+	// fail-closed posture a few lines down.
+	v, _ := c.s.computeWatchAccessVisibility(c.bearerAuth, c.user, workspaceID)
 	c.m[workspaceID] = v
 	return v
 }

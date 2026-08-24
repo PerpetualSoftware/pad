@@ -608,7 +608,11 @@ func (s *Server) pushSessionVisibility(userID, workspaceID, collectionID, itemID
 			if user == nil || user.IsDisabled() {
 				return false, nil
 			}
-			return s.computeWatchAccessVisibility(bearerAuth, user, workspaceID).allows(collectionID, itemID), nil
+			vis, verr := s.computeWatchAccessVisibility(bearerAuth, user, workspaceID)
+			if verr != nil {
+				return false, verr
+			}
+			return vis.allows(collectionID, itemID), nil
 		},
 	}
 }

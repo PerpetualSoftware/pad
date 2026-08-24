@@ -54,7 +54,14 @@ func (s *Server) filterWatchesByCurrentAccess(r *http.Request, userID string, wa
 
 	out := make([]models.Watch, 0, len(watches))
 	for workspaceID, wsWatches := range byWorkspace {
-		vis := s.computeWatchAccessVisibility(bearerAuth, user, workspaceID)
+		// Error deliberately discarded: this caller's failure mode is the
+		// one computeWatchAccessVisibility's default serves. A store blip
+		// yields the deny-everything value, which drops the watches for
+		// that workspace for this call — the correct trade here, since
+		// delivering a fact to someone whose access could not be confirmed
+		// is worse than a briefly quiet nudge stream. The error exists for
+		// deliveredSessionCount, whose 0 skips a publish.
+		vis, _ := s.computeWatchAccessVisibility(bearerAuth, user, workspaceID)
 		for _, w := range wsWatches {
 			if vis.allows(w.ItemCollectionID, w.ItemID) {
 				out = append(out, w)
@@ -164,16 +171,42 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // sessions it counts. That bound is what retires the "N access checks
 // per push" cost objection permanently; it is enforced structurally in
 // deliveredSessionCount rather than argued.
-func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User, workspaceID string) watchAccessVisibility {
+// THE ERROR RETURN IS NOT DECORATION (codex round 2, P1 — the same
+// class round 1 caught one layer up). Every store failure below used to
+// be collapsed into an empty, deny-everything visibility. For the SSE
+// stream that is correct and stays the default: delivering a fact to
+// someone whose access could not be confirmed is the worse outcome
+// there, and that caller discards this error deliberately.
+//
+// deliveredSessionCount is a second caller with the OPPOSITE
+// consequence. Its 0 makes a targeted push SKIP the publish, so a DB
+// outage silently collapsing to "not visible" drops the instruction and
+// answers 200 — BUG-2698's defect, which round 1 removed from the
+// GetUser lookup and which lived on in all four store calls here.
+//
+// So the resolution and the POLICY are separated: this function reports
+// what happened, and each caller applies the disposition its own failure
+// mode calls for. The visibility returned alongside a non-nil error is
+// always the deny-everything value, so a caller that ignores the error
+// keeps exactly the old behaviour.
+//
+// Population (CONVE-18): four store calls in this function could fail —
+// GetWorkspaceMember, GuestVisibleResources, GetMemberCollectionAccess,
+// ListSystemCollectionIDs. All four now report. The last two were not
+// merely swallowed but discarded into `_`, which is how they escaped
+// round 1's sweep. Search boundary: this function only; the sibling
+// resolver computeSSEVisibility (handlers_events.go) has the same shape
+// and was NOT changed, because no counting caller reads it.
+func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User, workspaceID string) (watchAccessVisibility, error) {
 	if user.Role == "admin" && !bearerAuth {
-		return watchAccessVisibility{fullAccess: true}
+		return watchAccessVisibility{fullAccess: true}, nil
 	}
 
 	member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
 	if err != nil {
 		slog.Warn("watch-access: failed to resolve workspace membership, denying all in workspace",
 			"workspace_id", workspaceID, "user_id", user.ID, "error", err)
-		return watchAccessVisibility{} // fail closed
+		return watchAccessVisibility{}, err
 	}
 	if member != nil && member.CollectionAccess != "specific" {
 		// "all" access (or the legacy "" default) — unrestricted. Note
@@ -182,7 +215,7 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 		// member of this specific workspace legitimately sees it in
 		// full; the gate above only denies the platform-wide, not-a-
 		// member-here bypass.
-		return watchAccessVisibility{fullAccess: true}
+		return watchAccessVisibility{fullAccess: true}, nil
 	}
 
 	// From here: either a "specific"-access member, a non-member guest,
@@ -194,7 +227,7 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 	if gerr != nil {
 		slog.Warn("watch-access: failed to resolve grants, denying all in workspace",
 			"workspace_id", workspaceID, "user_id", user.ID, "error", gerr)
-		return watchAccessVisibility{} // fail closed
+		return watchAccessVisibility{}, gerr
 	}
 
 	fullCollSet := make(map[string]bool, len(fullCollIDs))
@@ -207,8 +240,18 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 		// computeSSEVisibility exactly. A pure guest (member == nil) has
 		// no such assignment; fullCollSet stays limited to their direct
 		// collection_grants from GuestVisibleResources above.
-		memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
-		sysColls, _ := s.store.ListSystemCollectionIDs(workspaceID)
+		memberColls, mcErr := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+		if mcErr != nil {
+			slog.Warn("watch-access: failed to resolve member collection access, denying all in workspace",
+				"workspace_id", workspaceID, "user_id", user.ID, "error", mcErr)
+			return watchAccessVisibility{}, mcErr
+		}
+		sysColls, scErr := s.store.ListSystemCollectionIDs(workspaceID)
+		if scErr != nil {
+			slog.Warn("watch-access: failed to list system collections, denying all in workspace",
+				"workspace_id", workspaceID, "error", scErr)
+			return watchAccessVisibility{}, scErr
+		}
 		for _, id := range memberColls {
 			fullCollSet[id] = true
 		}
@@ -225,5 +268,5 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 	return watchAccessVisibility{
 		visibleCollIDs: fullCollSet,
 		grantedItemIDs: grantedSet,
-	}
+	}, nil
 }
