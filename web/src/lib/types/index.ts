@@ -1329,7 +1329,10 @@ export interface View {
 export interface Activity {
 	id: string;
 	workspace_id: string;
-	item_id?: string;
+	/** The referenced item's UUID. Wire name is `document_id` (the audit
+	 *  trail predates the document→item rename; internal/models/activity.go
+	 *  serializes it as such) — there is no `item_id` on this payload. */
+	document_id?: string;
 	action: string;
 	actor: string;
 	actor_name?: string;
