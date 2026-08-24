@@ -1201,6 +1201,66 @@ func TestOneIdlePassCyclesEveryDueWorkspace(t *testing.T) {
 	}
 }
 
+// TestTheCadenceDoesNotDriftWithPassDuration pins the scheduling arithmetic.
+//
+// It exists because the mutation matrix said nothing else could: restoring the
+// sleep-after-work form survived every test in this package, since the only
+// way to see drift through the loop is to time it, and a timing assertion is a
+// flaky assertion. Separating the arithmetic out is what made it testable.
+//
+// The property that matters is the publisher's, and it is self-defeating when
+// it breaks: an instance whose passes are slow emits heartbeats further apart,
+// its own subscription sees them further apart, and it can cross its own 3T
+// threshold and cycle connections that were never wedged.
+func TestTheCadenceDoesNotDriftWithPassDuration(t *testing.T) {
+	const interval = 30 * time.Second
+	base := time.Unix(1_700_000_000, 0)
+
+	t.Run("a pass that takes most of the interval does not push the next one out", func(t *testing.T) {
+		prev := base
+		// The pass ran from base until base+25s; the next tick is still due at
+		// base+30s, not at base+55s.
+		got := nextTick(prev, interval, base.Add(25*time.Second))
+		if want := base.Add(interval); !got.Equal(want) {
+			t.Fatalf("nextTick = %v, want %v: the period has grown by the pass duration", got, want)
+		}
+	})
+
+	t.Run("the period stays constant across many slow passes", func(t *testing.T) {
+		prev := base
+		for i := 1; i <= 10; i++ {
+			now := prev.Add(20 * time.Second) // every pass takes 20s
+			prev = nextTick(prev, interval, now)
+			if want := base.Add(time.Duration(i) * interval); !prev.Equal(want) {
+				t.Fatalf("tick %d landed at %v, want %v: drift is accumulating", i, prev, want)
+			}
+		}
+	})
+
+	t.Run("an overrun of more than one interval resets rather than bursting", func(t *testing.T) {
+		prev := base
+		// The pass overran by five intervals. Firing the missed ticks back to
+		// back would mean five immediate heartbeat publishes, or five idle
+		// scans against a Redis already struggling enough to cause the overrun.
+		now := base.Add(5 * interval)
+		got := nextTick(prev, interval, now)
+		if want := now.Add(interval); !got.Equal(want) {
+			t.Fatalf("nextTick = %v, want %v: the schedule is replaying missed ticks instead of resetting", got, want)
+		}
+	})
+
+	t.Run("an overrun within one interval still catches up rather than resetting", func(t *testing.T) {
+		prev := base
+		// Only slightly late: keep the original cadence so a single slow pass
+		// does not permanently re-phase the schedule.
+		now := base.Add(interval + time.Second)
+		got := nextTick(prev, interval, now)
+		if want := base.Add(interval); !got.Equal(want) {
+			t.Fatalf("nextTick = %v, want %v: a single slightly-late pass re-phased the schedule", got, want)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Wiring (team CONVE-19: a direct-call test vouches for the component, not its
 // binding). Every test above calls publishHeartbeats/cycleIdleSubscriptions

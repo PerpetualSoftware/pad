@@ -202,7 +202,7 @@ func (b *RedisBus) tickForever(kick <-chan struct{}, work func()) {
 		interval := b.heartbeatInterval
 		b.mu.Unlock()
 
-		next = next.Add(interval)
+		next = nextTick(next, interval, time.Now())
 		if wait := time.Until(next); wait > 0 {
 			timer := time.NewTimer(wait)
 			select {
@@ -218,12 +218,25 @@ func (b *RedisBus) tickForever(kick <-chan struct{}, work func()) {
 				continue
 			case <-timer.C:
 			}
-		} else if wait < -interval {
-			next = time.Now()
 		}
 
-		// Checked again after the wait: a bus closed during the pass must not
-		// start another one.
+		// CHECKED AGAIN AFTER THE WAIT, and this is NOT redundant with the
+		// ctx.Done arm above even though removing either one alone survives
+		// every test (mutation matrix; team lesson: a pair that only dies
+		// together is a question, not a clearance). They cover disjoint
+		// moments and each is independently right:
+		//
+		//   - The select arm is the exit while WAITING, which is where this
+		//     goroutine spends essentially all of its life. Without it a closed
+		//     bus leaves both loops sleeping out a full interval before
+		//     noticing, every interval, forever.
+		//   - This check is the exit after the timer has already fired, so a
+		//     bus that closed DURING the previous pass does not start another
+		//     one. Without it, work() runs once more against a cancelled
+		//     context: the publish half writes to Redis on a dead ctx and the
+		//     idle half takes b.mu after Close has drained it.
+		//
+		// Removing BOTH is detected, by TestClosingTheBusStopsTheMaintenanceLoop.
 		if b.ctx.Err() != nil {
 			return
 		}
@@ -499,6 +512,32 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 	// WAITED ON, so one pass cannot overlap the next and so a direct caller —
 	// every test here — observes a finished pass rather than a started one.
 	wg.Wait()
+}
+
+// nextTick returns the deadline for the pass after one that was scheduled for
+// prev, given the configured interval and the current time.
+//
+// SEPARATED OUT SO THE ARITHMETIC CAN BE TESTED WITHOUT A CLOCK (mutation
+// matrix: restoring the drift survived every test, because the only way to
+// observe it in the loop is to time it, and a timing test is a flaky test).
+//
+// The schedule is deadline-based rather than sleep-after-work, because the
+// latter makes the real period T plus however long the pass took. For the
+// publisher that is self-defeating: an instance whose publishes are slow emits
+// heartbeats further apart, its own subscription sees them further apart, and
+// it can cross its own 3T threshold and cycle connections that were never
+// wedged — the slowness manufacturing the incident.
+//
+// When a pass overruns by more than a whole interval the schedule is RESET to
+// now rather than firing the missed ticks back to back. A burst of heartbeats
+// buys nothing, and a burst of idle scans would hammer a Redis that is already
+// struggling — which is precisely the condition that made the pass overrun.
+func nextTick(prev time.Time, interval time.Duration, now time.Time) time.Time {
+	next := prev.Add(interval)
+	if now.Sub(next) > interval {
+		return now.Add(interval)
+	}
+	return next
 }
 
 // maxConcurrentCycles bounds how many replacement dials one idle pass has in
