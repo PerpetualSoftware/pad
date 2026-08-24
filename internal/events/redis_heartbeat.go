@@ -496,7 +496,13 @@ const maxConcurrentCycles = 8
 
 // cycleOne ends one workspace's coverage and re-establishes its subscription.
 func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
-	slog.Warn("events: no traffic on this workspace's Redis subscription within the idle timeout; ending its replay coverage and replacing the connection, resumes across the silence will report sync_required",
+	// "ATTEMPTING TO REPLACE", not "replacing" (codex round 6). This line is
+	// emitted before the coverage drop and long before establishment, and the
+	// replacement genuinely may not happen — the bus can close, or the last
+	// subscriber can leave, while we dial. An operator correlating this log
+	// with pad_event_subscription_cycled_total would otherwise find the log
+	// without the counter and go looking for a bug that is not there.
+	slog.Warn("events: no traffic on this workspace's Redis subscription within the idle timeout; ending its replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
 		"workspace", c.workspaceID, "idle_timeout", idleTimeout)
 
 	// BEFORE THE TEARDOWN, because dropWorkspaceCoverage authenticates against

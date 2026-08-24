@@ -219,7 +219,14 @@ const (
 
 	// ResetReasonIdleTimeout means a workspace's Redis subscription received
 	// nothing at all for longer than the bus's idle timeout, so this instance
-	// stopped vouching for its buffer and replaced the connection (BUG-2738).
+	// STOPPED VOUCHING FOR ITS BUFFER (BUG-2738).
+	//
+	// IT DOES NOT SAY THE CONNECTION WAS REPLACED, and an earlier version of
+	// this comment claimed it did (codex round 6). This reason is emitted
+	// before the re-establishment is attempted, and the attempt can install
+	// nothing — the bus closes, or the last subscriber leaves while we dial.
+	// Observer.SubscriptionCycled is the one that means "replaced"; this one
+	// means "coverage ended".
 	//
 	// WHAT IT ESTABLISHES IS NOT THAT EVENTS WERE LOST, unlike
 	// subscription_resumed: nothing was observed going missing. What it says is
