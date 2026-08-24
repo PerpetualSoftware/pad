@@ -326,7 +326,15 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	// comment fetched here and hard-deleted before the activity query runs
 	// leaves its activity eligible again while the stale comment is still in
 	// memory, and both would render once (codex round 4). Two guards, two
-	// distinct failure modes; neither substitutes for the other.
+	// distinct failure modes; neither substitutes for the other. The same
+	// skew runs the other way too: a comment created between the two reads
+	// is in neither — its activity is excluded by the query, and the comment
+	// missed the earlier read (codex round 5). Before the exclusion that
+	// window showed a ghost "commented" card with no comment behind it; now
+	// it shows nothing, and the next fetch (or the comment.created SSE
+	// event) is consistent. Neither guard can close a gap that lives between
+	// two reads with no shared snapshot; TimelineEntry's doc states the
+	// class.
 	commentActivityIDs := make(map[string]bool)
 	for _, c := range comments {
 		if c.ActivityID != "" {
