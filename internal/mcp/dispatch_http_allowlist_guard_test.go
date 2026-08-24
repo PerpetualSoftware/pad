@@ -683,7 +683,7 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 		// workspaceScoped classification in this file silently becomes
 		// false, while the whole suite stays green — the guard would be
 		// asserting middleware coverage that no longer exists.
-		if !strings.Contains(inner, "r.Use(s.RequireWorkspaceAccess)") {
+		if !containsLiveCall(inner, "r.Use(s.RequireWorkspaceAccess)") {
 			t.Error("the /{slug} subrouter no longer applies RequireWorkspaceAccess.\n\n" +
 				"That middleware is the ONLY place the OAuth workspace allow-list is enforced, and this " +
 				"guard's entire workspaceScoped class means 'gated by it'. Without it, every scoped route " +
@@ -760,6 +760,36 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 			"workspace-scoped, so pathIsWorkspaceScoped would wave them through. Account for each:\n  %s",
 			strings.Join(unaccounted, "\n  "))
 	}
+}
+
+// containsLiveCall reports whether src contains needle on a line that
+// is not commented out.
+//
+// A plain substring scan is comment-blind, and that is not a nitpick:
+// the first version of the middleware assertion used one, and
+// commenting out r.Use(s.RequireWorkspaceAccess) — the exact deletion
+// it exists to catch — left the guard green, because the commented line
+// still contains the string. Verified by running that control.
+//
+// Deliberately line-based rather than a real parser: it only has to
+// tell live code from a comment, and the failure mode of getting it
+// wrong is a test that complains about code that is present, which is
+// loud rather than silent.
+func containsLiveCall(src, needle string) bool {
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if i := strings.Index(line, needle); i >= 0 {
+			// Also skip a trailing-comment occurrence.
+			if c := strings.Index(line, "//"); c >= 0 && c < i {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // braceBlock returns the chi router block starting at src, from the
@@ -856,7 +886,7 @@ func TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite(t *testing.T) {
 		}
 		found := false
 		for _, f := range forms {
-			if strings.Contains(body, f) {
+			if containsLiveCall(body, f) {
 				found = true
 				break
 			}
@@ -983,7 +1013,7 @@ func TestAllowlistCoverage_ExemptClaimsAreCheckedOrMarkedAsJudgment(t *testing.T
 					failed = true
 					break
 				}
-				if strings.Contains(body, "s.store.") && !strings.HasPrefix(strings.TrimSpace(c.reason), "JUDGMENT:") {
+				if containsLiveCall(body, "s.store.") && !strings.HasPrefix(strings.TrimSpace(c.reason), "JUDGMENT:") {
 					bad = append(bad, cmdKey+": "+name+" DOES touch the store, so \"structurally cannot leak\" is "+
 						"an argument, not a mechanism — prefix the reason with JUDGMENT: or reclassify")
 					failed = true
