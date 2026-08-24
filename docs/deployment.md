@@ -877,6 +877,20 @@ condition: compare it against TCP keepalive settings on that path before
 changing the interval, because a shorter interval treats the symptom and a
 longer one widens the window the detector exists to bound.
 
+**A residual an operator should know about, not fixed here.** When many
+workspaces are cycled at once — a NAT table flush, a firewall rule change, an
+overlay network dropping every long-lived flow — every connected subscriber of
+every affected workspace is told to resync in the same instant. The SSE
+connections stay open, so this is *not* a reconnect storm and the admission
+limits are not involved; what it produces is a burst of `/changes` requests
+against the database, coalesced per browser tab but with no jitter and no
+global budget. This is not new with the heartbeat: a Redis failover already
+signals every workspace at once through `subscription_resumed`. What is new is
+a second trigger of the same class. Tracked separately; if you run a large
+fleet, watch database load alongside
+`pad_event_sequence_resets_total` after any network event that could wedge many
+routes simultaneously. Tracked as BUG-2761.
+
 **Cost.** Each workspace has its own Redis subscription — and therefore its own
 connection — so liveness is genuinely per-workspace and there is no cheaper
 shared probe. An instance subscribed to N workspaces publishes N frames every

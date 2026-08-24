@@ -246,45 +246,43 @@ func TestTheHeartbeatFlipReachesTheRedisBus(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected a *events.RedisBus, got %T", bus)
 			}
-			// A subscription to publish heartbeats FOR, then a cadence short
-			// enough to observe. Heartbeats are scoped to the workspaces this
-			// instance subscribes to, so without this there is nothing to emit
-			// in either arm and the test would pass on both.
+			// A subscription to publish heartbeats FOR. Heartbeats are scoped
+			// to the workspaces this instance subscribes to, so without this
+			// there is nothing to emit in either arm and the test would pass on
+			// both.
 			ch, _, outcome := redisBus.Subscribe(context.Background(), "ws-1")
 			if outcome != events.SubscribeOK {
 				t.Fatalf("subscribe: %v", outcome)
 			}
 			t.Cleanup(func() { redisBus.Unsubscribe(ch) })
-			redisBus.SetMaintenanceCadenceForTest(10*time.Millisecond, time.Hour)
 
-			// A real event is the ORDERING BARRIER for the negative arm: it is
-			// published after several heartbeat intervals have elapsed, so if a
-			// phase-1 bus were emitting frames one would already be ahead of
-			// it. Without a barrier the negative arm would pass on any bus
-			// that was merely slow.
-			deadline := time.After(3 * time.Second)
-			timer := time.NewTimer(300 * time.Millisecond)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-deadline:
-			}
+			// DRIVEN DIRECTLY, NOT WAITED FOR. Shortening the cadence and
+			// sleeping made the negative arm a race against the scheduler: a
+			// phase-1 bus that is correctly silent and a phase-2 goroutine that
+			// merely has not run yet look identical, so the test could pass or
+			// fail for reasons unrelated to the flip. One synchronous pass
+			// removes the timing entirely.
+			redisBus.PublishHeartbeatsForTest()
+
+			// The barrier is then an ORDINARY event on the same channel: Redis
+			// delivers in publish order on one connection, so if a frame were
+			// emitted it is already ahead of this.
 			redisBus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1", ItemID: "item-7"})
 
+			deadline := time.After(5 * time.Second)
 			for {
 				select {
 				case msg := <-incoming:
-					got := strings.HasPrefix(msg.Payload, "hb|")
-					if got && !tc.wantHeartbeat {
-						t.Fatalf("EventsHeartbeat=%v published a liveness frame %q: every un-upgraded peer resyncs all its clients",
-							tc.heartbeat, msg.Payload)
-					}
-					if got {
+					if strings.HasPrefix(msg.Payload, "hb|") {
+						if !tc.wantHeartbeat {
+							t.Fatalf("EventsHeartbeat=%v published a liveness frame %q: every un-upgraded peer resyncs all its clients",
+								tc.heartbeat, msg.Payload)
+						}
 						return // phase 2: the frame reached Redis, which is the claim
 					}
 					if strings.Contains(msg.Payload, `"item_id":"item-7"`) {
 						if tc.wantHeartbeat {
-							t.Fatal("EventsHeartbeat=true published no liveness frame before the barrier event: the flip is not reaching the bus")
+							t.Fatal("EventsHeartbeat=true published no liveness frame ahead of the barrier event: the flip is not reaching the bus")
 						}
 						return // phase 1: the barrier arrived with no frame ahead of it
 					}

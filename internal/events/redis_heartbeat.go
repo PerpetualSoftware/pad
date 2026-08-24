@@ -222,13 +222,19 @@ func (b *RedisBus) tickForever(kick <-chan struct{}, work func()) {
 	}
 }
 
-// SetMaintenanceCadenceForTest is setMaintenanceCadence exported for tests in
-// OTHER packages — cmd/pad's wiring test needs a cadence it can observe, and
-// the alternative is waiting 30 seconds or trusting that the flip reached a
-// constructor it cannot see. Named so no production caller reaches for it.
-func (b *RedisBus) SetMaintenanceCadenceForTest(interval, idleTimeout time.Duration) {
-	b.setMaintenanceCadence(interval, idleTimeout)
-}
+// PublishHeartbeatsForTest runs one publish pass, for tests in OTHER packages.
+//
+// cmd/pad's wiring test needs to know whether the config flip reached this
+// bus's constructor, and driving the pass DIRECTLY is what makes that test
+// deterministic (codex round 7). Shortening the cadence and waiting instead
+// makes the negative arm — a phase-1 bus must publish nothing — a race against
+// the scheduler: under -race or a loaded CI box the goroutine may simply not
+// have run yet, which is indistinguishable from a bus that is correctly
+// silent. The loop's own wiring is covered inside this package, where the
+// unexported cadence setter is available.
+//
+// Named so no production caller reaches for it.
+func (b *RedisBus) PublishHeartbeatsForTest() { b.publishHeartbeats() }
 
 // setMaintenanceCadence changes T and the idle threshold on a running bus.
 //
