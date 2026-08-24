@@ -57,6 +57,9 @@ package mcp
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -258,17 +261,26 @@ var routesRegisteredOutsideWorkspaceMiddleware = map[string]bool{
 // pathRecorder stands in for the pad API router so a dispatch can
 // be driven for the URLs it ISSUES rather than for what it returns.
 //
-// It answers everything with an empty JSON object: the specials that do
-// read-modify-write need a parseable body to get past their prefetch
-// and on to the request that actually matters, and `{}` is the
-// smallest body that satisfies every shape they unmarshal into.
+// It answers everything with a MINIMAL BUT RESOLVABLE item, because
+// `{}` was not enough and the difference was a false green (codex round
+// 3 P2): the specials that do read-modify-write call resolveItemRef on
+// the prefetch, which requires a non-empty id and slug. With `{}` the
+// item-link drives died at the prefetch, the only URL observed was that
+// prefetch — which IS workspace-scoped — and the test passed while
+// never seeing the POST/DELETE it exists to classify. Measured after
+// the fix: `item block` went from 1 observed URL to 3, the last being
+// the /links write.
+//
+// If a future special needs more fields, it surfaces the same way: as a
+// command that stops issuing the request the guard wants to observe,
+// which the undeclared-unobservable leg reports rather than swallows.
 type pathRecorder struct{ paths []string }
 
 func (h *pathRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.paths = append(h.paths, r.URL.String())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{}`))
+	_, _ = w.Write([]byte(`{"id":"item-1","slug":"task-1","ref":"TASK-1","title":"t","workspace_id":"ws-1","fields":{}}`))
 }
 
 func guardUser() *models.User {
@@ -490,6 +502,153 @@ func TestAllowlistCoverage_EveryEntryStatesAReason(t *testing.T) {
 	if len(bare) > 0 {
 		t.Errorf("allowlistCoverage entries with no stated reason:\n  %s", strings.Join(bare, "\n  "))
 	}
+}
+
+// TestStaticWorkspaceSiblings_MatchServerRegistrations closes this
+// guard's own fail-open, which codex raised in two consecutive rounds
+// and which is the weakness that matters most: the sibling sets
+// duplicate routing knowledge from server.go, and a NEW route mounted
+// beside the /{slug} subrouter would be waved through as
+// middleware-gated purely because its URL looks scoped.
+//
+// So the duplication is made self-checking. This reads server.go's
+// /workspaces route block and extracts every route registered at that
+// level — BEFORE the nested r.Route("/{slug}") that applies
+// RequireWorkspaceAccess — and requires each to be accounted for.
+//
+// It is a source scan, which is unusual and worth being explicit
+// about: it can be defeated by an unusual registration style, and it
+// asserts what server.go SAYS rather than what chi DOES. Still strictly
+// better than a hand-maintained list nothing checks, because the
+// failure it prevents — someone adds a sibling route and never touches
+// this file — is exactly the one a hand list cannot survive.
+func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
+	t.Parallel()
+
+	src, err := os.ReadFile(filepath.Join("..", "server", "server.go"))
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(src)
+
+	start := strings.Index(text, `r.Route("/workspaces", func(r chi.Router) {`)
+	if start < 0 {
+		t.Fatal("could not find the /workspaces route block in server.go — this test's anchor is stale, " +
+			"and a stale anchor here silently stops checking anything")
+	}
+	end := strings.Index(text[start:], `r.Route("/{slug}", func(r chi.Router) {`)
+	if end < 0 {
+		t.Fatal("could not find the nested /{slug} subrouter — anchor stale")
+	}
+	block := text[start : start+end]
+
+	re := regexp.MustCompile(`r\.(?:Get|Post|Put|Patch|Delete)\("(/[^"]*)"`)
+	var unaccounted []string
+	for _, m := range re.FindAllStringSubmatch(block, -1) {
+		route := m[1]
+		switch {
+		case route == "/":
+			// The collection root: list + create, both already
+			// classified as workspace-global by observation.
+			continue
+		case strings.HasPrefix(route, "/{"):
+			tail := route
+			if i := strings.Index(route[1:], "/"); i >= 0 {
+				tail = route[1+i:]
+			}
+			if !routesRegisteredOutsideWorkspaceMiddleware[tail] {
+				unaccounted = append(unaccounted, route+
+					" (add tail "+tail+" to routesRegisteredOutsideWorkspaceMiddleware)")
+			}
+		default:
+			seg := strings.TrimPrefix(route, "/")
+			if i := strings.IndexByte(seg, '/'); i >= 0 {
+				seg = seg[:i]
+			}
+			if !staticWorkspaceSiblingSegments[seg] {
+				unaccounted = append(unaccounted, route+" (add "+seg+" to staticWorkspaceSiblingSegments)")
+			}
+		}
+	}
+	sort.Strings(unaccounted)
+	if len(unaccounted) > 0 {
+		t.Errorf("server.go registers routes BESIDE the /{slug} subrouter that this guard does not know about.\n\n"+
+			"RequireWorkspaceAccess does not run for them, so they carry no consent gate — but their URLs look\n"+
+			"workspace-scoped, so pathIsWorkspaceScoped would wave them through. Account for each:\n  %s",
+			strings.Join(unaccounted, "\n  "))
+	}
+}
+
+// TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite turns the
+// filtersAllowlist class from documentation into a checked claim (codex
+// round 3 P2: the two global classes passed identically, and a reason
+// saying "the handler filters" was verified only to be non-empty).
+//
+// Not proof the filter is CORRECT — that belongs to the handler's own
+// tests — but an entry can no longer claim a handler filters when that
+// handler contains no allow-list call at all, which is the failure a
+// reader of this map would never catch.
+func TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite(t *testing.T) {
+	t.Parallel()
+
+	forms := []string{
+		"TokenAllowedWorkspaceSet",
+		"TokenAllowedWorkspacesFromContext",
+		"tokenAllowedWorkspaceMatches",
+		"filterWorkspacesByTokenAllowlist",
+	}
+
+	checked := 0
+	var bad []string
+	for cmdKey, c := range allowlistCoverage {
+		if c.class != filtersAllowlist {
+			continue
+		}
+		file := firstGoFileMentioned(c.reason)
+		if file == "" {
+			bad = append(bad, cmdKey+": reason names no *.go file, so the claim points at nothing")
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join("..", "server", file))
+		if err != nil {
+			bad = append(bad, cmdKey+": reason names "+file+", which does not exist in internal/server")
+			continue
+		}
+		found := false
+		for _, f := range forms {
+			if strings.Contains(string(src), f) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			bad = append(bad, cmdKey+": reason names "+file+
+				", but that file contains no allow-list enforcement call")
+			continue
+		}
+		checked++
+	}
+	sort.Strings(bad)
+	if len(bad) > 0 {
+		t.Errorf("filtersAllowlist entries whose claim does not check out:\n  %s", strings.Join(bad, "\n  "))
+	}
+	if checked == 0 {
+		t.Error("no filtersAllowlist entry was actually checked — this test would pass vacuously")
+	}
+}
+
+// firstGoFileMentioned pulls the first *.go filename out of a reason
+// string, which is how a filtersAllowlist entry points at where it
+// filters.
+func firstGoFileMentioned(reason string) string {
+	for _, tok := range strings.FieldsFunc(reason, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '\t' || r == ',' || r == '(' || r == ')'
+	}) {
+		if strings.HasSuffix(tok, ".go") {
+			return tok
+		}
+	}
+	return ""
 }
 
 // TestPathIsWorkspaceScoped covers the classifier itself, including
