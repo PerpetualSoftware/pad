@@ -54,6 +54,28 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SubscriptionUnconfirmed()
 	obs.SubscriptionUnconfirmed()
 
+	// Same argument again for BUG-2738's pair, which arrived after the comment
+	// above and needs the same protection: idle_timeout is a reset REASON and
+	// SubscriptionCycled is its OWN counter, and they deliberately disagree —
+	// the reason only fires when a buffer existed to drop, the counter fires on
+	// every replacement. An adapter that folded the counter into the reset
+	// series, or mapped the new reason onto an existing one, would satisfy a
+	// total-only assertion while destroying exactly that distinction.
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 2)
 	// The reason must land on a LABELLED series, not on the bare counter: an
 	// adapter that dropped the label would satisfy a total-only assertion and
@@ -73,6 +95,11 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 		map[string]string{"reason": events.ResetReasonSubscriptionUnconfirmed}, 0)
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonUndecodableMessage}, 5)
+	assertCounter(t, m, "pad_event_sequence_resets_total",
+		map[string]string{"reason": events.ResetReasonIdleTimeout}, 6)
+	assertCounter(t, m, "pad_event_subscription_cycled_total", nil, 7)
+	// The counter must not leak into the reset series either, the same half
+	// that a merged-counter adapter would pass without.
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)
 }
 

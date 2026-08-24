@@ -977,14 +977,30 @@ func TestAHeartbeatConsumesNoEventID(t *testing.T) {
 		t.Fatalf("fixture: reading %s: %v", seqKey, err)
 	}
 
-	for range 5 {
+	// A REAL BARRIER. The first version of this test "waited" on a predicate
+	// that returned true unconditionally, which is not a wait at all — it read
+	// the counter with the publishes possibly still in flight, so a heartbeat
+	// that DID consume an id could land afterwards and the test would still
+	// pass. Observing the frames arrive is the barrier (codex round 4, P3).
+	//
+	// Subscribed HERE, after the fixture event, so the channel carries only the
+	// frames under test.
+	raw := rawSubscriber(t, mr.Addr(), b.channelFor("ws-1"))
+
+	const beats = 5
+	for range beats {
 		b.publishHeartbeats()
 	}
-	waitFor(t, "the heartbeats to be delivered", func() bool {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return true
-	})
+	for i := range beats {
+		select {
+		case payload := <-raw:
+			if !isHeartbeat(payload) {
+				t.Fatalf("frame %d was %q, not a heartbeat: something else was published and this test is measuring the wrong thing", i, payload)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only %d of %d heartbeats arrived; the counter below would be read with publishes still in flight", i, beats)
+		}
+	}
 
 	after, err := mr.Get(seqKey)
 	if err != nil {

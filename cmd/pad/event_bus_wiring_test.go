@@ -198,3 +198,109 @@ func TestThePublishEpochFlipReachesTheRedisBus(t *testing.T) {
 		}
 	})
 }
+
+// TestTheHeartbeatFlipReachesTheRedisBus is the same claim for BUG-2738's
+// phase-2 flip, and it needs its own test for the same reason the epoch one
+// does: internal/events proves a bus constructed with publishHeartbeat=true
+// emits liveness frames and runs idle detection, and every one of those tests
+// passes if newObservedEventBus hardcodes `false` here — the deployment would
+// simply never detect a wedged connection, which is indistinguishable from a
+// deployment that has none.
+//
+// Both directions are asserted because a helper that ignored its config and
+// hardcoded EITHER value would pass a one-directional test.
+//
+// Asserted on the FRAME rather than on a cycle, deliberately: publishing is
+// observable in one interval on a test cadence, while a cycle needs the idle
+// threshold to elapse. They are one switch (see config.EventsHeartbeat), so
+// the frame is a faithful proxy — and the detector's own gate is pinned in
+// internal/events by TestAQuietWorkspaceIsNotCycledOnPhase1 and its
+// counterfactual.
+func TestTheHeartbeatFlipReachesTheRedisBus(t *testing.T) {
+	channel := redisns.Default.Name("events:") + "ws-1"
+
+	for _, tc := range []struct {
+		name          string
+		heartbeat     bool
+		wantHeartbeat bool
+	}{
+		{name: "phase 1", heartbeat: false, wantHeartbeat: false},
+		{name: "phase 2", heartbeat: true, wantHeartbeat: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			t.Cleanup(func() { _ = client.Close() })
+
+			ps := client.Subscribe(context.Background(), channel)
+			t.Cleanup(func() { _ = ps.Close() })
+			if _, err := ps.Receive(context.Background()); err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			incoming := ps.Channel()
+
+			bus := newObservedEventBus(&config.Config{EventsHeartbeat: tc.heartbeat}, client, redisns.Default, metrics.New())
+			t.Cleanup(bus.Close)
+
+			redisBus, ok := bus.(*events.RedisBus)
+			if !ok {
+				t.Fatalf("expected a *events.RedisBus, got %T", bus)
+			}
+			// A subscription to publish heartbeats FOR, then a cadence short
+			// enough to observe. Heartbeats are scoped to the workspaces this
+			// instance subscribes to, so without this there is nothing to emit
+			// in either arm and the test would pass on both.
+			ch, _, outcome := redisBus.Subscribe(context.Background(), "ws-1")
+			if outcome != events.SubscribeOK {
+				t.Fatalf("subscribe: %v", outcome)
+			}
+			t.Cleanup(func() { redisBus.Unsubscribe(ch) })
+			redisBus.SetMaintenanceCadenceForTest(10*time.Millisecond, time.Hour)
+
+			// A real event is the ORDERING BARRIER for the negative arm: it is
+			// published after several heartbeat intervals have elapsed, so if a
+			// phase-1 bus were emitting frames one would already be ahead of
+			// it. Without a barrier the negative arm would pass on any bus
+			// that was merely slow.
+			deadline := time.After(3 * time.Second)
+			timer := time.NewTimer(300 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-deadline:
+			}
+			redisBus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1", ItemID: "item-7"})
+
+			for {
+				select {
+				case msg := <-incoming:
+					got := strings.HasPrefix(msg.Payload, "hb|")
+					if got && !tc.wantHeartbeat {
+						t.Fatalf("EventsHeartbeat=%v published a liveness frame %q: every un-upgraded peer resyncs all its clients",
+							tc.heartbeat, msg.Payload)
+					}
+					if got {
+						return // phase 2: the frame reached Redis, which is the claim
+					}
+					if strings.Contains(msg.Payload, `"item_id":"item-7"`) {
+						if tc.wantHeartbeat {
+							t.Fatal("EventsHeartbeat=true published no liveness frame before the barrier event: the flip is not reaching the bus")
+						}
+						return // phase 1: the barrier arrived with no frame ahead of it
+					}
+				case <-deadline:
+					t.Fatal("timed out waiting for the barrier event")
+				}
+			}
+		})
+	}
+
+	t.Run("in-process shape ignores it", func(t *testing.T) {
+		bus := newObservedEventBus(&config.Config{EventsHeartbeat: true}, nil, redisns.Default, metrics.New())
+		t.Cleanup(bus.Close)
+		bus.Publish(events.Event{Type: events.ItemCreated, WorkspaceID: "ws-1"})
+		if got := bus.EventsSince("ws-1", 0); len(got) != 1 {
+			t.Fatalf("the in-process bus must publish normally regardless of the flip, got %d events", len(got))
+		}
+	})
+}

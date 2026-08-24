@@ -763,12 +763,23 @@ func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch, 
 		ctx:                ctx,
 		cancel:             cancel,
 	}
-	// The loop is started unconditionally; each half decides for itself whether
-	// it has anything to do. Idle detection is gated on publishHeartbeat rather
-	// than running from phase 1 — see cycleIdleSubscriptions for why a
-	// phase-1 detector cycles healthy quiet workspaces. Ended by Close through
-	// b.ctx.
-	go b.maintenanceLoop()
+	// NOT STARTED AT ALL ON PHASE 1 (codex round 4, P3). Both halves are gated
+	// on publishHeartbeat and would be guaranteed no-ops there, so the loop
+	// would be two goroutines and two timers per process waking every 30s for
+	// the life of a deployment that has asked for none of it — and the DEFAULT
+	// deployment is phase 1. The flag is constructor-only, so this decision can
+	// be taken once and cannot go stale.
+	//
+	// The in-function gates stay regardless: they are the correctness ones
+	// (see cycleIdleSubscriptions for what a phase-1 detector does to a quiet
+	// workspace), and direct callers — the tests — reach them without a loop.
+	if publishHeartbeat {
+		go b.maintenanceLoop()
+	} else {
+		// Nothing will ever run, so the teardown signal is already true; a
+		// caller waiting on it must not hang.
+		close(b.maintenanceStopped)
+	}
 	return b
 }
 

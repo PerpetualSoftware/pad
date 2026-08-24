@@ -150,6 +150,14 @@ func (b *RedisBus) tickForever(kick <-chan struct{}, work func()) {
 	}
 }
 
+// SetMaintenanceCadenceForTest is setMaintenanceCadence exported for tests in
+// OTHER packages — cmd/pad's wiring test needs a cadence it can observe, and
+// the alternative is waiting 30 seconds or trusting that the flip reached a
+// constructor it cannot see. Named so no production caller reaches for it.
+func (b *RedisBus) SetMaintenanceCadenceForTest(interval, idleTimeout time.Duration) {
+	b.setMaintenanceCadence(interval, idleTimeout)
+}
+
 // setMaintenanceCadence changes T and the idle threshold on a running bus.
 //
 // IT EXISTS SO THE WIRING CAN BE TESTED AT THE CADENCE, not only the halves at
