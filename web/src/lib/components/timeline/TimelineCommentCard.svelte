@@ -4,6 +4,7 @@
 	import type { AttachmentResolver } from '$lib/markdown/attachments';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 	import ReactionPicker from './ReactionPicker.svelte';
+	import { agentNameOfComment } from '$lib/utils/agentActor';
 
 	interface Props {
 		comment: Comment;
@@ -130,8 +131,20 @@
 		return Array.from(map.values());
 	}
 
-	function getActorLabel(createdBy: string): string {
-		return createdBy === 'agent' ? 'Agent' : 'User';
+	// The agent's own name when it sent one (TASK-2760). `author` below stays
+	// the human whose credentials the write rode on — the two render side by
+	// side rather than merged, because they are different facts. Keyed on the
+	// actor kind first: a name is only read for an agent's comment.
+	function getActorLabel(c: Comment): string {
+		if (c.created_by !== 'agent') return 'User';
+		return agentNameOfComment(c) ?? 'Agent';
+	}
+
+	// A declared name is rendered verbatim (no uppercase transform, so
+	// `claude-code` stays `claude-code`); the generic labels keep the badge's
+	// small-caps styling.
+	function isNamedAgent(c: Comment): boolean {
+		return c.created_by === 'agent' && agentNameOfComment(c) !== undefined;
 	}
 
 	function getActorBadgeClass(createdBy: string): string {
@@ -186,7 +199,12 @@
 
 <div class="comment-card {getBorderClass(comment.created_by)}">
 	<div class="comment-header">
-		<span class="author-badge {getActorBadgeClass(comment.created_by)}">{getActorLabel(comment.created_by)}</span>
+		<!-- The label clips (see .actor-label), so it carries its full value in
+		     a title. <bdi> isolates a self-declared name so a bidi control in it
+		     cannot reorder the author / source / timestamp that follow. -->
+		<span class="author-badge {getActorBadgeClass(comment.created_by)}" class:author-named={isNamedAgent(comment)}
+			><bdi class="actor-label" title={getActorLabel(comment)}>{getActorLabel(comment)}</bdi></span
+		>
 		{#if comment.author}
 			<span class="author-name">{comment.author}</span>
 		{/if}
@@ -298,7 +316,9 @@
 				{@const replyReactionGroups = groupReactions(reply.reactions)}
 				<div class="reply-card {getBorderClass(reply.created_by)}">
 					<div class="reply-header">
-						<span class="author-badge {getActorBadgeClass(reply.created_by)}">{getActorLabel(reply.created_by)}</span>
+						<span class="author-badge {getActorBadgeClass(reply.created_by)}" class:author-named={isNamedAgent(reply)}
+							><bdi class="actor-label" title={getActorLabel(reply)}>{getActorLabel(reply)}</bdi></span
+						>
 						{#if reply.author}
 							<span class="author-name">{reply.author}</span>
 						{/if}
@@ -424,6 +444,25 @@
 	.author-agent {
 		background: color-mix(in srgb, var(--accent-purple, #a855f7) 15%, transparent);
 		color: var(--accent-purple, #a855f7);
+	}
+
+	/* A declared agent name is verbatim: the badge's uppercase transform would
+	   turn `claude-code` into `CLAUDE-CODE`, which reads as a different value. */
+	.author-badge.author-named {
+		text-transform: none;
+		letter-spacing: normal;
+	}
+
+	/* An agent's label is arbitrary client-supplied text. The bound stops one
+	   very long name from widening a card that lives in a pane whose width is
+	   not the card's to negotiate; 24ch matches the activity card and the
+	   activity page's badge, where the number's reasoning is written out. */
+	.actor-label {
+		display: inline-block;
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		vertical-align: bottom;
 	}
 
 	.author-name {

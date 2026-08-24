@@ -347,6 +347,9 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			CreatedAt: c.CreatedAt,
 			Actor:     c.CreatedBy,
 			ActorName: c.Author,
+			// Derived from the nested comment (see TimelineEntry.AgentName);
+			// the store's join is the only writer of the value being copied.
+			AgentName: c.AgentName,
 			Source:    c.Source,
 			Comment:   &comments[i],
 		}

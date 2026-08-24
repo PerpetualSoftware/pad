@@ -1253,6 +1253,15 @@ export interface Comment {
 	updated_at: string;
 	item_title?: string;
 	item_slug?: string;
+	/**
+	 * The agent's self-declared display name, joined from the `commented`
+	 * activity this comment links to (TASK-2760). Present on comments the
+	 * list endpoints return (timeline, comments) — top-level AND nested
+	 * replies — and absent when the writer sent no name. Only meaningful
+	 * when `created_by === 'agent'`; render it through the rules in
+	 * `$lib/utils/agentActor.ts` (verbatim, isolated, a leaf never a fragment).
+	 */
+	agent_name?: string;
 	replies?: Comment[];
 	reactions?: Reaction[];
 }
@@ -1283,6 +1292,13 @@ export interface TimelineEntry {
 	created_at: string;
 	actor: string;
 	actor_name?: string;
+	/**
+	 * Comment-kind entries only: a copy of `comment.agent_name`, surfaced at
+	 * entry level to match the `actor_name` idiom. Activity entries carry
+	 * their name inside `activity.metadata` and deliberately do not get a
+	 * second copy here (TASK-2760).
+	 */
+	agent_name?: string;
 	source: string;
 	comment?: Comment;
 	activity?: Activity;

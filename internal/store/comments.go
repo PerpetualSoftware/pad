@@ -183,13 +183,63 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 	return &c, nil
 }
 
+// commentListCols / commentAgentJoin / scanComments are the ONE read path
+// for comment lists (ListComments and ListCommentsBeforeTime), so every list
+// surface — the comments endpoint, `pad item comments`, the item timeline —
+// carries the same shape, including Comment.AgentName.
+//
+// The LEFT JOIN is how a comment learns which agent wrote it. The name is
+// stamped only on the `commented` activity the comment's activity_id points
+// at (handlers_comments.go links them at create), and the timeline drops that
+// activity from its payload because the comment card stands in for it. Doing
+// the join HERE, on the comment row, makes the lookup exact by construction:
+// the alternative — matching comments to activities inside the timeline
+// handler — reads the two through separately paginated windows, so it misses
+// at page edges and whenever other activity crowds the linked row out, and
+// its failure mode is the same agent's name present on one page and absent on
+// the next, indistinguishable from "no name was sent" (TASK-2760 recon).
+//
+// `a.metadata` is selected raw and parsed in Go (models.AgentNameFromMetadata)
+// rather than via json_extract / ->>, which differ between SQLite and
+// Postgres; and it is scanned through sql.NullString, not COALESCE'd, because
+// on Postgres the column is jsonb and COALESCE(jsonb, ”) would try to parse
+// ” as JSON. NULL (no linked activity) and an empty/stampless blob both read
+// as "no name".
+const commentListCols = `c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
+		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
+		       c.created_at, c.updated_at, a.metadata`
+
+const commentAgentJoin = `LEFT JOIN activities a ON a.id = c.activity_id`
+
+func scanComments(rows *sql.Rows) ([]models.Comment, error) {
+	var comments []models.Comment
+	for rows.Next() {
+		var c models.Comment
+		var createdAt, updatedAt string
+		var activityMeta sql.NullString
+		if err := rows.Scan(
+			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
+			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
+			&createdAt, &updatedAt, &activityMeta,
+		); err != nil {
+			return nil, fmt.Errorf("scan comment: %w", err)
+		}
+		c.CreatedAt = parseTime(createdAt)
+		c.UpdatedAt = parseTime(updatedAt)
+		if activityMeta.Valid {
+			c.AgentName = models.AgentNameFromMetadata(activityMeta.String)
+		}
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
 // ListComments returns all comments for an item, ordered chronologically.
 func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
-		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
-		       c.created_at, c.updated_at
+		SELECT `+commentListCols+`
 		FROM comments c
+		`+commentAgentJoin+`
 		WHERE c.item_id = ?
 		ORDER BY c.created_at ASC`), itemID)
 	if err != nil {
@@ -197,22 +247,7 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 	}
 	defer rows.Close()
 
-	var comments []models.Comment
-	for rows.Next() {
-		var c models.Comment
-		var createdAt, updatedAt string
-		if err := rows.Scan(
-			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
-			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
-			&createdAt, &updatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan comment: %w", err)
-		}
-		c.CreatedAt = parseTime(createdAt)
-		c.UpdatedAt = parseTime(updatedAt)
-		comments = append(comments, c)
-	}
-	return comments, rows.Err()
+	return scanComments(rows)
 }
 
 // ListCommentsBeforeTime returns comments for an item created before the given time,
@@ -224,23 +259,22 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 // bind parameter (SQLSTATE 22021). See BUG-1086.
 func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Comment, error) {
 	ts := before.Format(time.RFC3339)
-	const selectCols = `c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
-		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
-		       c.created_at, c.updated_at`
 	const orderLimit = `ORDER BY c.created_at DESC, c.id DESC LIMIT ?`
 
 	var rows *sql.Rows
 	var err error
 	if beforeID == "" {
 		rows, err = s.db.Query(s.q(`
-			SELECT `+selectCols+`
+			SELECT `+commentListCols+`
 			FROM comments c
+			`+commentAgentJoin+`
 			WHERE c.item_id = ? AND c.created_at < ?
 			`+orderLimit), itemID, ts, limit)
 	} else {
 		rows, err = s.db.Query(s.q(`
-			SELECT `+selectCols+`
+			SELECT `+commentListCols+`
 			FROM comments c
+			`+commentAgentJoin+`
 			WHERE c.item_id = ? AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))
 			`+orderLimit), itemID, ts, ts, beforeID, limit)
 	}
@@ -249,22 +283,7 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 	}
 	defer rows.Close()
 
-	var comments []models.Comment
-	for rows.Next() {
-		var c models.Comment
-		var createdAt, updatedAt string
-		if err := rows.Scan(
-			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
-			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
-			&createdAt, &updatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan comment: %w", err)
-		}
-		c.CreatedAt = parseTime(createdAt)
-		c.UpdatedAt = parseTime(updatedAt)
-		comments = append(comments, c)
-	}
-	return comments, rows.Err()
+	return scanComments(rows)
 }
 
 // DeleteComment removes a comment by ID.

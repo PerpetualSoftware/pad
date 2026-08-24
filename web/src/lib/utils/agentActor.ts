@@ -7,10 +7,14 @@
  * `X-Pad-Agent`. The server stamps it into the activity's metadata as
  * `agent` (`handlers_documents.go::agentMeta`), reached from
  * `logActivityWithMetaReturningID` — so **workspace activity rows are the
- * only thing in the data model that carries it**. Comments, versions,
- * items, structured note/decision entries and SSE events all record the
- * actor KIND ("agent" / "user") and no name; a surface holding one of
- * those has nothing to render here and says "agent" as it always did.
+ * only thing in the data model that STORES it**. A comment reaches it
+ * indirectly: the store's comment list queries LEFT JOIN the `commented`
+ * activity the comment links to and surface the name as `comment.agent_name`
+ * (TASK-2760) — the same stamp, read through the row that stands in for the
+ * activity on the timeline. Versions, items, structured note/decision
+ * entries and SSE events record the actor KIND ("agent" / "user") and no
+ * name; a surface holding one of those has nothing to render here and says
+ * "agent" as it always did.
  *
  * VERBATIM IS THE WHOLE CONTRACT. Whatever an agent sent is what a reader
  * sees — no allow-list, no normalization, no title-casing. Pad does not
@@ -61,9 +65,22 @@ export function agentNameFromMetadata(metadata: string | undefined | null): stri
 
 /** {@link agentNameFromMetadata} for callers holding the parsed object. */
 export function agentNameOf(metadata: Record<string, unknown> | undefined | null): string | undefined {
-	const name = metadata?.agent;
+	return agentNameValue(metadata?.agent);
+}
+
+/**
+ * The name a comment carries directly (`comment.agent_name`, joined server-side
+ * from its linked activity — see the file comment), or undefined when there is
+ * none. Same contract as {@link agentNameOf}: a comment's name is the same
+ * self-declared stamp, arriving as a field instead of inside a metadata blob.
+ */
+export function agentNameOfComment(comment: { agent_name?: unknown } | undefined | null): string | undefined {
+	return agentNameValue(comment?.agent_name);
+}
+
+function agentNameValue(name: unknown): string | undefined {
 	// A non-string cannot occur through agentMeta (it marshals map[string]string),
-	// but this parses untrusted JSON off the wire, so it is checked rather than
+	// but this reads untrusted JSON off the wire, so it is checked rather than
 	// assumed — an object here would otherwise render as "[object Object]".
 	if (typeof name !== 'string' || name.length === 0) return undefined;
 	return name;
