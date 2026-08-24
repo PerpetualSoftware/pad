@@ -236,6 +236,22 @@ type Metrics struct {
 	// stay at zero — read it as a RATE against a stable subscriber count.
 	EventReceiveLoopExitsTotal prometheus.Counter
 
+	// EventSubscriptionUnconfirmedTotal counts activity-stream subscriptions
+	// admitted before Redis acknowledged the SUBSCRIBE, because the wait for
+	// that acknowledgement timed out (BUG-2747).
+	//
+	// EXPECT ZERO. It is not the same signal as a sequence reset and does not
+	// share that counter: nothing is known to have been lost, but a stream was
+	// admitted whose coverage this instance cannot describe. Every increment
+	// is at least one client that will be told to reconcile once the
+	// acknowledgement lands.
+	//
+	// A non-zero rate says the SUBSCRIBE round trip is slow or stalling —
+	// the same Redis condition that makes BUG-2748's dial an availability
+	// hazard — so read it alongside connect latency rather than alongside
+	// pad_event_sequence_resets_total.
+	EventSubscriptionUnconfirmedTotal prometheus.Counter
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -487,6 +503,11 @@ func New() *Metrics {
 		Help: "Times a workspace's activity subscription loop stopped. Expected at shutdown and when a workspace's last local subscriber leaves — read as a rate against a stable subscriber count.",
 	})
 
+	eventSubscriptionUnconfirmedTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_subscription_unconfirmed_total",
+		Help: "Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait timed out. Expect zero. Not a sequence reset — nothing is known lost, but the stream's coverage is undescribable until the acknowledgement lands, at which point the affected clients are told to reconcile.",
+	})
+
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
 		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew RISK a live session being unlisted and untargetable, deregister risks a DEAD one staying listed, list returns 503, prune is benign. A failure means an error was reported; Redis can fail after applying.",
@@ -505,6 +526,7 @@ func New() *Metrics {
 		watchMidstreamResyncsTotal,
 		eventSequenceResetsTotal,
 		eventReceiveLoopExitsTotal,
+		eventSubscriptionUnconfirmedTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -525,20 +547,21 @@ func New() *Metrics {
 	return &Metrics{
 		Registry: reg,
 
-		RedisUp:                        redisUp,
-		WatchNotificationsDroppedTotal: watchNotificationsDroppedTotal,
-		WatchSequenceGapsTotal:         watchSequenceGapsTotal,
-		WatchNotificationsMissedTotal:  watchNotificationsMissedTotal,
-		WatchResumeGapsTotal:           watchResumeGapsTotal,
-		WatchSequenceResetsTotal:       watchSequenceResetsTotal,
-		EventResumeGapsTotal:           eventResumeGapsTotal,
-		EventEventsDroppedTotal:        eventEventsDroppedTotal,
-		EventMidstreamResyncsTotal:     eventMidstreamResyncsTotal,
-		WatchMidstreamResyncsTotal:     watchMidstreamResyncsTotal,
-		EventSequenceResetsTotal:       eventSequenceResetsTotal,
-		EventReceiveLoopExitsTotal:     eventReceiveLoopExitsTotal,
-		WatchReceiveLoopExitsTotal:     watchReceiveLoopExitsTotal,
-		SessionPresenceFailuresTotal:   sessionPresenceFailuresTotal,
+		RedisUp:                           redisUp,
+		WatchNotificationsDroppedTotal:    watchNotificationsDroppedTotal,
+		WatchSequenceGapsTotal:            watchSequenceGapsTotal,
+		WatchNotificationsMissedTotal:     watchNotificationsMissedTotal,
+		WatchResumeGapsTotal:              watchResumeGapsTotal,
+		WatchSequenceResetsTotal:          watchSequenceResetsTotal,
+		EventResumeGapsTotal:              eventResumeGapsTotal,
+		EventEventsDroppedTotal:           eventEventsDroppedTotal,
+		EventMidstreamResyncsTotal:        eventMidstreamResyncsTotal,
+		WatchMidstreamResyncsTotal:        watchMidstreamResyncsTotal,
+		EventSequenceResetsTotal:          eventSequenceResetsTotal,
+		EventReceiveLoopExitsTotal:        eventReceiveLoopExitsTotal,
+		EventSubscriptionUnconfirmedTotal: eventSubscriptionUnconfirmedTotal,
+		WatchReceiveLoopExitsTotal:        watchReceiveLoopExitsTotal,
+		SessionPresenceFailuresTotal:      sessionPresenceFailuresTotal,
 
 		HTTPRequestsTotal:          httpRequestsTotal,
 		HTTPRequestDuration:        httpRequestDuration,

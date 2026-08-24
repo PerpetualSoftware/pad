@@ -1,0 +1,390 @@
+package events
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+)
+
+// subscribeDelayProxy sits between the bus and Redis and holds the SUBSCRIBE
+// command IN TRANSIT, widening the window BUG-2747 lives in from microseconds
+// to something a test can be deterministic about.
+//
+// IT MUST DELAY THE COMMAND IN FLIGHT, NOT THE CLIENT'S WRITE, and the
+// difference is what makes this instrument discriminate at all. go-redis writes
+// SUBSCRIBE synchronously inside client.Subscribe, so a delay applied to the
+// write is paid by the unfixed code too — Subscribe would return late there as
+// well, the publish would land after registration, and the test would pass
+// against the very defect it exists to catch. Parking the bytes in the proxy
+// lets the client's write return at once, which is exactly the production
+// shape: the command is gone, and Redis has not seen it yet.
+//
+// Publishes are untouched — they travel on the pooled connection and carry no
+// "subscribe" token — so a publish issued in the window reaches Redis FIRST,
+// which is the whole defect.
+type subscribeDelayProxy struct {
+	ln    net.Listener
+	delay time.Duration
+	// held counts SUBSCRIBE commands actually parked, so a test can assert its
+	// own premise rather than passing because the instrument never armed.
+	held atomic.Int64
+}
+
+func newSubscribeDelayProxy(t *testing.T, backend string, delay time.Duration) *subscribeDelayProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	p := &subscribeDelayProxy{ln: ln, delay: delay}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			server, err := net.Dial("tcp", backend)
+			if err != nil {
+				_ = client.Close()
+				return
+			}
+			go p.forward(client, server)
+			go func() { _, _ = io.Copy(client, server) }()
+		}
+	}()
+	return p
+}
+
+func (p *subscribeDelayProxy) addr() string { return p.ln.Addr().String() }
+
+// forward copies client → server, parking the first chunk that carries a
+// SUBSCRIBE.
+func (p *subscribeDelayProxy) forward(client, server net.Conn) {
+	defer func() { _ = server.Close() }()
+	buf := make([]byte, 4096)
+	parked := false
+	for {
+		n, err := client.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if !parked && bytes.Contains(bytes.ToLower(chunk), []byte("\r\n$9\r\nsubscribe\r\n")) {
+				parked = true
+				p.held.Add(1)
+				time.Sleep(p.delay)
+			}
+			if _, werr := server.Write(chunk); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// TestSubscribeDoesNotReturnBeforeRedisHasRegisteredIt is BUG-2747's
+// regression test.
+//
+// The bus has NO LOCAL FAN-OUT — every event, including one this very process
+// publishes, goes out to Redis and comes back through the subscription — so a
+// publish that reaches Redis before the SUBSCRIBE does reaches nobody at all.
+// A fresh subscriber (sinceID == 0) is the population that cannot detect it:
+// its buffer's coverage starts at the first event that DOES arrive, so the
+// hole is below everything the buffer ever claimed.
+//
+// Fails without the fix: Subscribe returns while the SUBSCRIBE is still in
+// flight, and the publish below is swallowed.
+func TestSubscribeDoesNotReturnBeforeRedisHasRegisteredIt(t *testing.T) {
+	mr := miniredis.RunT(t)
+	proxy := newSubscribeDelayProxy(t, mr.Addr(), 300*time.Millisecond)
+	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+
+	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("SubscribeIfAllowed refused a connection with no limit set")
+	}
+	defer b.Unsubscribe(ch)
+
+	// PREMISE OF THE TEST, asserted rather than assumed: if the delay never
+	// armed, the window was never widened and a pass below means nothing.
+	if held := proxy.held.Load(); held == 0 {
+		t.Fatal("the SUBSCRIBE was never delayed; this test cannot discriminate")
+	}
+
+	// Published the instant Subscribe returns. The claim under test is that
+	// this instant is already past registration.
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("an event published after Subscribe returned was lost: the subscription was not yet registered with Redis")
+	}
+}
+
+// TestConcurrentFirstSubscribersShareOneRedisSubscription pins the wall the
+// confirmation wait opens: two callers arriving for the same workspace with no
+// live subscription must not each establish one.
+//
+// Two subscriptions would mean two connections, two receive loops and every
+// event fanned out TWICE — and the second loop's first acknowledgement would
+// read as a resubscription, ending the workspace's coverage for no reason.
+func TestConcurrentFirstSubscribersShareOneRedisSubscription(t *testing.T) {
+	mr := miniredis.RunT(t)
+	proxy := newSubscribeDelayProxy(t, mr.Addr(), 200*time.Millisecond)
+	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+
+	const callers = 4
+	var wg sync.WaitGroup
+	chans := make([]chan Event, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+			if !ok {
+				t.Errorf("caller %d was refused", i)
+				return
+			}
+			chans[i] = ch
+		}()
+	}
+	wg.Wait()
+
+	// One establishment, therefore one Redis subscriber for the channel.
+	if n := mr.PubSubNumSub("pad:events:ws-1")["pad:events:ws-1"]; n != 1 {
+		t.Fatalf("Redis reports %d subscribers on the channel, want 1 — concurrent first subscribers each opened their own", n)
+	}
+	b.mu.Lock()
+	pending := len(b.pendingSubs)
+	b.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("establishment record was not retired: %d pending", pending)
+	}
+
+	// And every caller is genuinely on the one subscription.
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+	for i, ch := range chans {
+		if ch == nil {
+			t.Fatalf("caller %d never got a channel", i)
+		}
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("caller %d did not receive the event", i)
+		}
+		b.Unsubscribe(ch)
+	}
+}
+
+// TestSubscribeDoesNotHoldTheBusLockAcrossTheRedisDial is BUG-2748's
+// regression test.
+//
+// THE DIAL MUST HANG, NOT FAIL. A refused connection returns immediately and
+// would pass against the unfixed code, which is why a closed port is the wrong
+// instrument here.
+func TestSubscribeDoesNotHoldTheBusLockAcrossTheRedisDial(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	release := make(chan struct{})
+	var stalls atomic.Int64
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if stalls.Add(1) > 1 { // the first dial is the bus's own client setup
+			select {
+			case <-release:
+			case <-time.After(5 * time.Second):
+			}
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: dial})
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+	b.confirmTimeout = 500 * time.Millisecond
+
+	// A workspace with a healthy, already-established subscription, whose
+	// stream operations are the thing that must not be held hostage.
+	close(release)
+	quiet, _ := b.Subscribe("ws-quiet")
+	release = make(chan struct{})
+	stalls.Store(1)
+
+	stalled := make(chan struct{})
+	go func() {
+		ch, _ := b.Subscribe("ws-stalled")
+		b.Unsubscribe(ch)
+		close(stalled)
+	}()
+
+	// Give the stalled dial time to be underway. Before the fix it is holding
+	// b.mu at this point and everything below blocks behind it.
+	time.Sleep(150 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		b.Unsubscribe(quiet)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("an unrelated workspace's Unsubscribe blocked behind a stalled Redis dial: the dial is still inside b.mu")
+	}
+
+	close(release)
+	select {
+	case <-stalled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stalled subscribe never completed")
+	}
+}
+
+// TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands covers the
+// failure path: Redis does not acknowledge in time, callers are admitted
+// anyway, and the span they sat through is reconciled to them rather than
+// merely logged.
+//
+// Admitting rather than refusing is deliberate — before this fix EVERY
+// subscriber was admitted into an unconfirmed subscription and told nothing —
+// but an admitted stream whose coverage is unknown must not go on looking
+// current, so the acknowledgement carries the mid-stream signal BUG-2730 built.
+func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) {
+	mr := miniredis.RunT(t)
+	proxy := newSubscribeDelayProxy(t, mr.Addr(), 400*time.Millisecond)
+	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	// Shorter than the delay, so the wait gives up first.
+	b.confirmTimeout = 50 * time.Millisecond
+
+	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("an unconfirmed subscription must ADMIT, not refuse")
+	}
+	defer b.Unsubscribe(ch)
+
+	if got := obs.unconfirmedCount(); got != 1 {
+		t.Fatalf("SubscriptionUnconfirmed reported %d times, want 1", got)
+	}
+
+	// The acknowledgement lands late; the subscriber is told to reconcile.
+	select {
+	case <-gaps:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a subscriber admitted before the acknowledgement was never told to reconcile when it arrived")
+	}
+
+	// Control: the same signal does not fire for a subscription that was
+	// confirmed before admission.
+	b.confirmTimeout = defaultSubscribeConfirmTimeout
+	before := obs.unconfirmedCount()
+	ch2, gaps2, _ := b.SubscribeIfAllowed("ws-2", 0)
+	defer b.Unsubscribe(ch2)
+	if got := obs.unconfirmedCount(); got != before {
+		t.Fatalf("a confirmed subscription reported SubscriptionUnconfirmed (%d -> %d)", before, got)
+	}
+	select {
+	case <-gaps2:
+		t.Fatal("a confirmed subscription must not tell its subscriber to reconcile")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered pins the
+// guarantee the confirmation wait put at risk.
+//
+// SubscribeAndReplaySince used to register the subscriber and read the replay
+// in ONE critical section, so an event was in the buffer or on the channel and
+// never both. Waiting for the acknowledgement splits that into two sections
+// with Redis I/O between them, and an event fanning out in the gap would land
+// in both — the duplicate window BUG-2730 closed, reopened from the other end.
+// subscriber.pendingAdmission is what prevents it, and this is the test that
+// says so.
+func TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+
+	// Establish coverage and take a cursor inside it.
+	seed, _ := b.Subscribe("ws-1")
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+	drain(t, seed, 1)
+	buffered := b.EventsSince("ws-1", 0)
+	if len(buffered) != 1 {
+		t.Fatalf("seed publish did not reach the buffer: %d events", len(buffered))
+	}
+	cursor := buffered[0].ID
+
+	// A publish landing inside the resuming subscriber's critical section.
+	var once sync.Once
+	b.mu.Lock()
+	b.afterSubscribeRegister = func() {
+		once.Do(func() {
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+			}()
+			<-done
+		})
+	}
+	b.mu.Unlock()
+
+	ch, missed, _, ok := b.SubscribeAndReplaySince("ws-1", cursor, 0)
+	if !ok {
+		t.Fatal("resume was refused")
+	}
+	defer b.Unsubscribe(ch)
+
+	seen := map[int64]int{}
+	for _, e := range missed {
+		seen[e.ID]++
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case e := <-ch:
+			seen[e.ID]++
+			for id, n := range seen {
+				if n > 1 {
+					t.Fatalf("event %d arrived %d times: it was in the replay AND on the channel", id, n)
+				}
+			}
+		case <-deadline:
+			b.Unsubscribe(seed)
+			return
+		}
+	}
+}

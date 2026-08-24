@@ -49,3 +49,10 @@ func (o *EventsObserver) ReceiveLoopExited() {
 func (o *EventsObserver) EventDropped(reason string) {
 	o.m.EventEventsDroppedTotal.WithLabelValues(reason).Inc()
 }
+
+// SubscriptionUnconfirmed is unlabelled on purpose. The workspace is the only
+// dimension the bus could offer and it is the cardinality bomb ResumeGap's
+// comment describes; the reason is always the same one.
+func (o *EventsObserver) SubscriptionUnconfirmed() {
+	o.m.EventSubscriptionUnconfirmedTotal.Inc()
+}
