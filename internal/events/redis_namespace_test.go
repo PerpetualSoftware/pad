@@ -248,9 +248,13 @@ func waitForSubscriberCount(t *testing.T, mr *miniredis.Miniredis, channel strin
 // failed on a loaded runner roughly one time in a hundred, which is a defect
 // detector nobody can act on.
 //
-// BUG-2747 CLOSED IT: Subscribe now returns only once Redis has acknowledged
-// the subscription, so waiting here is belt-and-braces rather than a covered-up
-// window, and every caller's premise holds for a reason the bus enforces. The
+// BUG-2747 CLOSED IT, with one honest qualification: Subscribe now waits for
+// Redis to acknowledge the subscription before returning, so waiting here is
+// belt-and-braces rather than a covered-up window. The qualification is that
+// the wait is BOUNDED — past confirmTimeout it admits anyway rather than
+// refusing a connection over a Redis blip — so a caller's premise holds unless
+// that bound expired, in which case the bus counts it, logs it, and tells the
+// subscriber to reconcile. Not "always"; "unless it says otherwise". The
 // window itself is exercised on purpose in redis_subscribe_confirm_test.go,
 // which widens it with a proxy instead of hoping to lose the race.
 func pollSubscriberCount(mr *miniredis.Miniredis, channel string, satisfied func(int) bool) (int, bool) {

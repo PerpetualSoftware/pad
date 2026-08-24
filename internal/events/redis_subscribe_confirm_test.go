@@ -738,6 +738,13 @@ func TestCloseDuringEstablishmentDoesNotLeakTheSubscription(t *testing.T) {
 // at once: a pre-registration event carrying a HIGHER id is filtered out and
 // never replayed, and a straggler arriving AFTER registration with a lower id
 // is replayed even though it also went to the caller's channel.
+//
+// WHAT THIS TEST DOES NOT PROVE, stated because an earlier version of this
+// comment claimed it did: it appends straight to the buffer, so no subscriber
+// and no fan-out channel exist here and it says nothing about the
+// replay-XOR-channel property. That is
+// TestAJoinersReplayStopsWhereItsChannelStarts. What this one pins is the
+// boundary arithmetic, in cases a live test cannot construct on demand.
 func TestTheReplayCeilingIsAPositionNotAnID(t *testing.T) {
 	b := &RedisBus{
 		subscribers:   map[string]map[chan Event]*subscriber{},
@@ -780,6 +787,100 @@ func TestTheReplayCeilingIsAPositionNotAnID(t *testing.T) {
 	}
 	if got[15] != 0 {
 		t.Errorf("event 15 arrived after the caller registered, so it went to its channel and must not also be replayed, got %d", got[15])
+	}
+}
+
+// TestAPostRegistrationStragglerBelowTheCursorDoesNotEatAnEarlierEvent is codex
+// round 5's P1, and it is the same two-spaces mistake the ID-valued ceiling made,
+// committed again inside the fix for it.
+//
+// Bounding by counting entries off the END of what since() returned mixes two
+// spaces: since() has already dropped events at or below the cursor, so a
+// post-registration straggler with a low id is missing from that slice while
+// still being counted in the number to drop. The count then eats a legitimate
+// pre-registration event instead. The bound has to be applied to the BUFFER,
+// before the cursor filter, which is what sinceBounded does.
+func TestAPostRegistrationStragglerBelowTheCursorDoesNotEatAnEarlierEvent(t *testing.T) {
+	b := &RedisBus{
+		subscribers:   map[string]map[chan Event]*subscriber{},
+		workspaceOf:   map[chan Event]string{},
+		wsCounts:      map[string]int{},
+		wsSubs:        map[string]*redisSub{},
+		pendingSubs:   map[string]*pendingSub{},
+		replayBuffers: map[string]*replayBuffer{},
+		replaySize:    DefaultReplayBufferSize,
+	}
+	rb := newReplayBuffer(b.replaySize)
+	b.replayBuffers["ws-1"] = rb
+
+	// Pre-registration.
+	rb.append(Event{ID: 5, WorkspaceID: "ws-1"})
+	rb.append(Event{ID: 30, WorkspaceID: "ws-1"})
+	rb.append(Event{ID: 20, WorkspaceID: "ws-1"})
+	mark := registrationMark{buffer: rb, appends: rb.appends}
+
+	// Post-registration: one BELOW the cursor, one above.
+	rb.append(Event{ID: 6, WorkspaceID: "ws-1"})
+	rb.append(Event{ID: 40, WorkspaceID: "ws-1"})
+
+	b.mu.Lock()
+	missed := b.eventsSinceMarkLocked("ws-1", 10, mark)
+	b.mu.Unlock()
+
+	got := map[int64]int{}
+	for _, e := range missed {
+		got[e.ID]++
+	}
+	if got[30] != 1 || got[20] != 1 {
+		t.Errorf("both pre-registration events above the cursor must be replayed exactly once, got 30:%d 20:%d", got[30], got[20])
+	}
+	if got[40] != 0 || got[6] != 0 {
+		t.Errorf("post-registration events went to the caller's channel and must not be replayed, got 40:%d 6:%d", got[40], got[6])
+	}
+}
+
+// TestAnEvictedRegistrationSpanIsRefusedRatherThanPartiallyServed covers the
+// residual an earlier round accepted and this bound closes.
+//
+// If enough events arrive during the wait to evict everything the buffer held
+// at registration, the caller's span is gone. Serving what is left would be a
+// partial replay presented as a complete one; refusing sends sync_required,
+// which is true.
+func TestAnEvictedRegistrationSpanIsRefusedRatherThanPartiallyServed(t *testing.T) {
+	b := &RedisBus{
+		subscribers:   map[string]map[chan Event]*subscriber{},
+		workspaceOf:   map[chan Event]string{},
+		wsCounts:      map[string]int{},
+		wsSubs:        map[string]*redisSub{},
+		pendingSubs:   map[string]*pendingSub{},
+		replayBuffers: map[string]*replayBuffer{},
+		replaySize:    4,
+	}
+	rb := newReplayBuffer(b.replaySize)
+	b.replayBuffers["ws-1"] = rb
+
+	rb.append(Event{ID: 1, WorkspaceID: "ws-1"})
+	rb.append(Event{ID: 2, WorkspaceID: "ws-1"})
+	mark := registrationMark{buffer: rb, appends: rb.appends}
+
+	// Control: before eviction, the span is served.
+	b.mu.Lock()
+	served := b.eventsSinceMarkLocked("ws-1", 1, mark)
+	b.mu.Unlock()
+	if len(served) != 1 || served[0].ID != 2 {
+		t.Fatalf("the pre-registration span must be served while it is still held, got %v", served)
+	}
+
+	// Five more appends into a 4-deep ring evicts everything held at
+	// registration.
+	for id := int64(3); id <= 7; id++ {
+		rb.append(Event{ID: id, WorkspaceID: "ws-1"})
+	}
+	b.mu.Lock()
+	after := b.eventsSinceMarkLocked("ws-1", 1, mark)
+	b.mu.Unlock()
+	if after != nil {
+		t.Fatalf("a registration span that has been evicted cannot be vouched for, got %d events", len(after))
 	}
 }
 

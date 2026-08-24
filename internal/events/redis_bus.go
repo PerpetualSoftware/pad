@@ -601,9 +601,10 @@ type redisSub struct {
 	gen int64
 
 	// confirmed is closed by receiveMessages when Redis acknowledges the
-	// SUBSCRIBE for this subscription (BUG-2747). Subscribe waits on it
-	// before admitting anyone, which is what makes the window between the
-	// SUBSCRIBE being written and it being registered unreachable by a
+	// SUBSCRIBE for this subscription (BUG-2747). Subscribe waits on it — up to
+	// confirmTimeout, after which it admits anyway and says so, see
+	// markUnconfirmedAdmission — and that wait is what makes the window between
+	// the SUBSCRIBE being written and it being registered unreachable by a
 	// client.
 	//
 	// SIGNALLED FROM INSIDE THE RECEIVE LOOP rather than by a Receive call
@@ -678,7 +679,9 @@ func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch b
 
 // Subscribe registers a local subscriber for the given workspace.
 // Starts a Redis subscription for the workspace if this is the first local
-// subscriber, and does not return until that subscription is live.
+// subscriber, and waits for Redis to acknowledge it before returning. The wait
+// is bounded: past confirmTimeout it returns anyway, counted and logged, and the
+// subscriber is told to reconcile when the acknowledgement lands.
 //
 // NO PRODUCTION CALLER, verified repo-wide: the SSE handler reaches
 // SubscribeIfAllowed or SubscribeAndReplaySince. It is interface surface and
@@ -906,6 +909,14 @@ type registrationMark struct {
 // so arrival order and numeric order genuinely disagree. Cutting on id value
 // would both replay a straggler the caller already received and silently drop a
 // pre-registration event that happens to carry a higher id.
+//
+// THE BOUND IS APPLIED BEFORE THE CURSOR FILTER, not after (codex round 5). An
+// earlier version asked since() for the events above the cursor and then
+// dropped the last (appends - mark) of them — two different spaces. A
+// post-registration straggler whose id falls at or below the cursor is absent
+// from that filtered slice but still counted in the drop, so the count ate a
+// legitimate pre-registration event instead. Pre-mark [5 30 20], post-mark
+// [6 40], cursor 10: the caller was handed [30] and 20 vanished.
 func (b *RedisBus) eventsSinceMarkLocked(workspaceID string, sinceID int64, mark registrationMark) []Event {
 	rb, ok := b.replayBuffers[workspaceID]
 	if !ok || mark.buffer == nil || rb != mark.buffer {
@@ -913,21 +924,12 @@ func (b *RedisBus) eventsSinceMarkLocked(workspaceID string, sinceID int64, mark
 		// this instance cannot vouch for the caller's span.
 		return nil
 	}
-	events := b.eventsSinceLocked(workspaceID, sinceID)
-	if events == nil {
-		return nil
-	}
-	// The buffer holds its last `count` appends, so the entries appended AFTER
-	// the caller registered are the final (appends - mark.appends) of whatever
-	// since() returned — it may trim from the front, never from the back.
-	after := rb.appends - mark.appends
-	if after <= 0 {
-		return events
-	}
-	if after >= int64(len(events)) {
-		return events[:0]
-	}
-	return events[:int64(len(events))-after]
+	// The buffer holds its last `count` appends, so the entries that were
+	// already there when the caller registered are the oldest
+	// mark.appends - (appends - count) of them. Negative means the whole of
+	// what it held then has since been evicted, which sinceBounded refuses.
+	keep := mark.appends - (rb.appends - int64(rb.count))
+	return rb.sinceBounded(sinceID, int(keep))
 }
 
 // Unsubscribe removes a local subscriber and closes its channel.
