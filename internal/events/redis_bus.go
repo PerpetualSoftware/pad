@@ -518,6 +518,16 @@ type RedisBus struct {
 	// values moved, not a queue of changes.
 	maintenanceKick chan struct{}
 
+	// maintenanceStopped is closed when maintenanceLoop returns.
+	//
+	// IT EXISTS BECAUSE THE LOOP'S TEARDOWN IS OTHERWISE UNOBSERVABLE, which
+	// makes it untestable and therefore unprotected. Close drains wsSubs, so a
+	// loop that ignored b.ctx entirely would find no workspaces and publish
+	// nothing — indistinguishable from a loop that stopped, while it went on
+	// waking every interval for the life of the process. Same reason
+	// Observer.ReceiveLoopExited exists for the receive goroutines.
+	maintenanceStopped chan struct{}
+
 	// publishHeartbeat selects whether this instance EMITS liveness frames:
 	// PHASE 2 of the heartbeat rollout. Receiving instances recognise and
 	// ignore them from the release that introduced this field, so emission is
@@ -728,23 +738,24 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch, publishHeartbeat bool) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &RedisBus{
-		client:            client,
-		keys:              keys,
-		publishEpoch:      publishEpoch,
-		publishHeartbeat:  publishHeartbeat,
-		subscribers:       make(map[string]map[chan Event]*subscriber),
-		workspaceOf:       make(map[chan Event]string),
-		wsCounts:          make(map[string]int),
-		wsSubs:            make(map[string]*redisSub),
-		pendingSubs:       make(map[string]*pendingSub),
-		replayBuffers:     make(map[string]*replayBuffer),
-		replaySize:        DefaultReplayBufferSize,
-		confirmTimeout:    defaultSubscribeConfirmTimeout,
-		heartbeatInterval: DefaultHeartbeatInterval,
-		idleTimeout:       DefaultIdleTimeout,
-		maintenanceKick:   make(chan struct{}, 1),
-		ctx:               ctx,
-		cancel:            cancel,
+		client:             client,
+		keys:               keys,
+		publishEpoch:       publishEpoch,
+		publishHeartbeat:   publishHeartbeat,
+		subscribers:        make(map[string]map[chan Event]*subscriber),
+		workspaceOf:        make(map[chan Event]string),
+		wsCounts:           make(map[string]int),
+		wsSubs:             make(map[string]*redisSub),
+		pendingSubs:        make(map[string]*pendingSub),
+		replayBuffers:      make(map[string]*replayBuffer),
+		replaySize:         DefaultReplayBufferSize,
+		confirmTimeout:     defaultSubscribeConfirmTimeout,
+		heartbeatInterval:  DefaultHeartbeatInterval,
+		idleTimeout:        DefaultIdleTimeout,
+		maintenanceKick:    make(chan struct{}, 1),
+		maintenanceStopped: make(chan struct{}),
+		ctx:                ctx,
+		cancel:             cancel,
 	}
 	// IDLE DETECTION RUNS ON EVERY INSTANCE FROM PHASE 1, including ones that
 	// publish no heartbeats: it detects off whatever traffic the deployment

@@ -100,6 +100,7 @@ func (b *RedisBus) now() time.Time {
 // goroutine. Re-reading under b.mu each pass costs one uncontended lock per
 // interval and makes the field genuinely what its comment says it is.
 func (b *RedisBus) maintenanceLoop() {
+	defer close(b.maintenanceStopped)
 	for {
 		b.mu.Lock()
 		interval := b.heartbeatInterval
@@ -238,7 +239,13 @@ type idleCycle struct {
 //  3. CYCLING A WORKSPACE NOBODY WANTS. wsCounts may reach zero between the
 //     tick's read and the cycle. RULE: re-check under the SAME lock that
 //     performs the teardown — the deregister-before-arbitration ordering
-//     BUG-2749 established, applied to a new caller.
+//     BUG-2749 established, applied to a new caller. THESE CHECKS ARE AN
+//     OPTIMISATION RATHER THAN A CORRECTNESS GUARD, and the mutation matrix is
+//     what says so rather than an argument: removing the whole second read
+//     survives every test here, because establishSubscription's own abandon
+//     path already refuses to install for an empty workspace and retires the
+//     record in the same critical section. What the checks buy is a dial not
+//     paid for. See cycleOne for the per-term reading.
 //
 //  4. NO REQUEST CONTEXT TO ESTABLISH ON. RULE: the re-establishment runs on
 //     b.ctx, which establishSubscription's cancellation path already tolerates
@@ -257,9 +264,38 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 			continue // rule 1
 		}
 		if b.wsCounts[ws] == 0 {
-			continue // rule 3, first read
+			// RULE 3, FIRST READ. Also an optimisation rather than a guard, and
+			// for a sharper reason than the second read's: reaching zero takes
+			// the subscription down with it (Unsubscribe's count-to-zero branch
+			// calls stopRedisSubscription), so a workspace at zero has no
+			// wsSubs entry and this loop never sees it. Removing this line
+			// survives every test. Kept as a cheap statement of the intended
+			// precondition rather than as a load-bearing check.
+			continue
 		}
-		if sub.lastSeen.IsZero() || now.Sub(sub.lastSeen) < idleTimeout {
+		// NO `lastSeen.IsZero()` SKIP HERE, and its absence is deliberate.
+		// Treating an unstamped subscription as "not idle" reads as a safe
+		// belt-and-braces guard next to rule 2, and is the exact opposite: it
+		// would make a subscription that has NEVER received anything
+		// permanently uncyclable — which is the BUG-2747 unconfirmed
+		// admission, the one case the plan singles out as mattering most.
+		// A route that wedges before the acknowledgement arrives would then be
+		// undetectable forever, in the population already having the worst
+		// time. The install-time stamp (rule 2) is what makes a zero value
+		// unreachable for an installed subscription; a guard here would only
+		// mask it. Found by the mutation matrix: with the skip present,
+		// removing the install stamp survived every test; with it gone, that
+		// mutation is caught.
+		//
+		// RE-ADDING THE SKIP IS ITSELF UNDETECTABLE, and that is the correct
+		// reading rather than a coverage gap: rule 2 makes a zero lastSeen
+		// unreachable, so the branch would never be taken — until the day rule
+		// 2 regressed, which is the day it would hide the regression. An
+		// unreachable guard that only acts when a real one has already broken
+		// is worse than no guard, because it converts a caught defect into a
+		// silent one. This comment is the enforcement; there is no test that
+		// can be.
+		if now.Sub(sub.lastSeen) < idleTimeout {
 			continue
 		}
 		// Minting the record HERE is what makes rule 1 hold in the other
@@ -299,6 +335,32 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	// under a new generation, or the bus may have closed. Any of those means
 	// there is nothing of OURS left to cycle, and installing a fresh
 	// subscription would be a connection and a receive loop for nobody.
+	//
+	// WHAT THE MUTATION MATRIX SAYS ABOUT THIS LINE, recorded because the
+	// honest reading is not the flattering one. Removing the liveness term,
+	// the generation term, the count term, or ALL of them survives every test
+	// in this package. That is not a coverage gap to be filled with a cleverer
+	// test — it is the correct reading, and each term has a different reason:
+	//
+	//   - The COUNT and LIVENESS terms are redundant with
+	//     establishSubscription, which re-reads wsCounts under its own
+	//     deciding lock and abandons — retiring the record in that same
+	//     section — when the workspace has emptied (BUG-2749). Dropping them
+	//     costs a dial that is immediately thrown away, not a wrong outcome.
+	//     They are kept because they do not DEPEND on that coupling: a future
+	//     change to the abandon path would otherwise silently make this caller
+	//     install for nobody.
+	//   - The GENERATION term is unreachable while we hold the establishment
+	//     record at all, by rule 1's own mechanism: subscribeAndReplay checks
+	//     pendingSubs before wsSubs, so no other caller can establish this
+	//     workspace between the scan and here, and nothing else installs. It
+	//     is kept for the same reason every other gen check in this file is —
+	//     the cost of being wrong is tearing down a subscription that belongs
+	//     to someone else.
+	//
+	// Do not read the survivals as dead code to delete, and do not read them as
+	// tested defence in depth. They are a cheap second opinion whose absence is
+	// currently harmless.
 	sub, live := b.wsSubs[c.workspaceID]
 	if !live || sub.gen != c.gen || b.wsCounts[c.workspaceID] == 0 || b.ctx.Err() != nil {
 		b.retirePendingLocked(c.workspaceID, c.pending)

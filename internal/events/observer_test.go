@@ -51,6 +51,12 @@ func (o *recordingObserver) SubscriptionCycled() {
 	o.cycled++
 }
 
+func (o *recordingObserver) loopExitCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.loopExits
+}
+
 func (o *recordingObserver) cycledCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()

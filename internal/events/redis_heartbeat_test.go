@@ -193,7 +193,16 @@ func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
 	b.cycleIdleSubscriptions()
 	armed.Store(false)
 
-	<-joinerDone
+	// BOUNDED, and the bound is part of the instrument. An implementation that
+	// drops coverage without re-establishing never reaches the seam at all, so
+	// the joiner is never spawned and this channel never closes — an unbounded
+	// receive would turn that mutation into a hung test run rather than a
+	// named failure, which is not a detection anyone can act on.
+	select {
+	case <-joinerDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cycle never established a replacement, so no joiner ever ran: this is drop-only, not drop-and-cycle")
+	}
 	if joinerOutcome != SubscribeOK {
 		t.Fatalf("the joiner was refused across the cycle: outcome %v", joinerOutcome)
 	}
@@ -407,6 +416,17 @@ func TestAnIdleSubscriptionEndsItsCoverageAndReplacesItsConnection(t *testing.T)
 		t.Fatalf("the connection was not replaced (generation still %d): coverage was dropped from behind the same dead socket, which is a resync loop, not a recovery", genAfter)
 	}
 
+	// THE OLD CONNECTION MUST ALSO BE GONE, and a generation check alone does
+	// not say so: establishSubscription overwrites wsSubs, so an implementation
+	// that installed a replacement WITHOUT tearing the old one down would pass
+	// every assertion above while leaking a PubSub, its connection and its
+	// receive goroutine on every cycle — forever, since nothing else will ever
+	// tear them down. The wedged route is exactly the case where they never
+	// die on their own.
+	waitFor(t, "the cycled subscription's receive loop to exit", func() bool {
+		return obs.loopExitCount() >= 1
+	})
+
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 	select {
 	case <-ch:
@@ -578,6 +598,54 @@ func TestAHeartbeatKeepsAQuietWorkspaceOutOfTheDetector(t *testing.T) {
 	}
 	if genAfter, _ := b.liveGen("ws-1"); genAfter != genBefore {
 		t.Fatalf("the connection was replaced (generation %d → %d) while heartbeats were arriving", genBefore, genAfter)
+	}
+}
+
+// TestAStragglerCannotRefreshTheLivenessOfItsSuccessor pins the generation
+// check on the liveness stamp.
+//
+// stopRedisSubscription only SIGNALS a receive loop; it never joins it. So a
+// goroutine belonging to a subscription that has already been replaced can
+// reach the stamp afterwards — and if it did, its dying frames would keep the
+// REPLACEMENT looking alive. On a wedged route that is the worst possible
+// direction for the error: the buffered tail of the dead connection would
+// suppress the detector for the new one.
+func TestAStragglerCannotRefreshTheLivenessOfItsSuccessor(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, false)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(ch)
+	staleGen, ok := b.liveGen("ws-1")
+	if !ok {
+		t.Fatal("fixture: nothing installed")
+	}
+
+	clock.advance(DefaultIdleTimeout + time.Second)
+	b.cycleIdleSubscriptions()
+
+	freshGen, ok := b.liveGen("ws-1")
+	if !ok {
+		t.Fatal("fixture: no replacement subscription")
+	}
+	if freshGen == staleGen {
+		t.Fatal("fixture: nothing was replaced, so there is no straggler to simulate")
+	}
+
+	b.mu.Lock()
+	before := b.wsSubs["ws-1"].lastSeen
+	b.mu.Unlock()
+
+	// The straggler arrives: a frame stamped against the generation that no
+	// longer exists.
+	clock.advance(time.Hour)
+	b.stampLastSeen("ws-1", staleGen)
+
+	b.mu.Lock()
+	after := b.wsSubs["ws-1"].lastSeen
+	b.mu.Unlock()
+	if !after.Equal(before) {
+		t.Fatalf("a frame from generation %d refreshed generation %d's liveness (%v → %v): a dead connection's tail can suppress the detector for its replacement",
+			staleGen, freshGen, before, after)
 	}
 }
 
@@ -861,8 +929,13 @@ func TestTheMaintenanceLoopRunsBothHalves(t *testing.T) {
 }
 
 // TestClosingTheBusStopsTheMaintenanceLoop pins the teardown half of that
-// wiring: a loop that outlived its bus would go on publishing to Redis after
-// Close.
+// wiring.
+//
+// ASSERTED ON THE GOROUTINE, NOT ON REDIS TRAFFIC, and the first version of
+// this test got that wrong. Close drains wsSubs, so a loop that ignored b.ctx
+// entirely would find no workspaces and publish nothing — silence after Close
+// is therefore evidence of nothing at all, and the test passed against a loop
+// that went on waking every interval for the life of the process.
 func TestClosingTheBusStopsTheMaintenanceLoop(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -876,28 +949,16 @@ func TestClosingTheBusStopsTheMaintenanceLoop(t *testing.T) {
 	select {
 	case <-raw:
 	case <-time.After(5 * time.Second):
-		t.Fatal("fixture: the loop never published, so stopping it proves nothing")
+		t.Fatal("fixture: the loop never ran, so stopping it proves nothing")
 	}
 
 	b.Unsubscribe(ch)
 	b.Close()
 
-	// Drain whatever was already in flight, then require silence.
-	deadline := time.After(500 * time.Millisecond)
-drain:
-	for {
-		select {
-		case <-raw:
-		case <-deadline:
-			break drain
-		}
-	}
 	select {
-	case payload := <-raw:
-		if isHeartbeat(payload) {
-			t.Fatalf("the maintenance loop is still publishing %q after Close", payload)
-		}
-	case <-time.After(200 * time.Millisecond):
+	case <-b.maintenanceStopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the maintenance loop is still running after Close: it will wake every interval for the life of the process")
 	}
 }
 
