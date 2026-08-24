@@ -110,16 +110,6 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func (b *RedisBus) liveGen(workspaceID string) (int64, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	sub, ok := b.wsSubs[workspaceID]
-	if !ok {
-		return 0, false
-	}
-	return sub.gen, true
-}
-
 // ---------------------------------------------------------------------------
 // THE JOINT (BUG-2738). The idle detector is a THIRD actor in a region whose
 // invariants were all designed around request goroutines plus Close. This is
@@ -1098,6 +1088,62 @@ func TestPhase2CyclesTheSameWorkspace(t *testing.T) {
 	if got := obs.cycledCount(); got != 1 {
 		t.Fatalf("SubscriptionCycled fired %d times on phase 2, want 1: the phase gate has disabled the detector outright", got)
 	}
+}
+
+// TestClosingTheBusDuringACycleInstallsNothing covers codex round 3's P2.
+//
+// Close cancels b.ctx and drains wsSubs, but it does NOT join the maintenance
+// goroutines — deliberately, because a heartbeat publish against a wedged
+// Redis is bounded by go-redis's own timeouts and joining would let a dead
+// network hold shutdown open. What must hold instead is that a cycle already
+// past its own ctx check cannot leave anything behind: establishSubscription
+// re-checks b.ctx under its deciding lock and abandons, closing the PubSub and
+// retiring the record in that same section, and the dial itself dies with
+// b.ctx (BUG-2749's mergeCancellation) except under TLS, where DialTimeout
+// bounds it instead.
+//
+// The seam runs after the dial and before that decision, which is exactly
+// where the race lives.
+func TestClosingTheBusDuringACycleInstallsNothing(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+
+	var armed, reached atomic.Bool
+	armed.Store(true)
+	b.beforeInstallSubscription = func(string) {
+		if !armed.Load() || !reached.CompareAndSwap(false, true) {
+			return
+		}
+		b.Close()
+	}
+
+	clock.advance(DefaultIdleTimeout + time.Second)
+	b.cycleIdleSubscriptions()
+	armed.Store(false)
+
+	if !reached.Load() {
+		t.Fatal("the cycle never reached an establishment; this test could not have discriminated")
+	}
+
+	b.mu.Lock()
+	_, live := b.wsSubs["ws-1"]
+	_, pending := b.pendingSubs["ws-1"]
+	b.mu.Unlock()
+
+	if live {
+		t.Fatal("a Redis subscription was installed after Close: its receive loop and connection outlive the bus, and nothing will ever tear them down")
+	}
+	if pending {
+		t.Fatal("an establishment record survived Close: any later subscriber for this workspace waits on a promise nobody keeps")
+	}
+	// The metric means "torn down AND replaced". A shutdown replaced nothing,
+	// and counting it would manufacture exactly the signal an operator reads as
+	// "connections to Redis are being blackholed".
+	if got := obs.cycledCount(); got != 0 {
+		t.Fatalf("SubscriptionCycled fired %d times for a cycle that installed nothing because the bus was closing", got)
+	}
+	_ = ch
 }
 
 // TestClosingTheBusStopsTheMaintenanceLoop pins the teardown half of that

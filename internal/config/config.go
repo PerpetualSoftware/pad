@@ -166,9 +166,9 @@ type Config struct {
 	// coverage, dropping that workspace's replay buffer AND telling every one
 	// of its live subscribers to resync. Every 30 seconds. For every workspace.
 	// For as long as the deployment is mixed. Phase 1: roll the new binary
-	// everywhere with this false; it recognises and ignores the frame, and
-	// already runs idle detection off whatever traffic exists. Phase 2: set it
-	// true and roll again.
+	// everywhere with this false; it recognises and ignores the frame, and does
+	// nothing else — no publishing and no detection. Phase 2: set it true and
+	// roll again, which turns both on together.
 	//
 	// PUBLISHING AND DETECTING ARE ONE SWITCH. An instance detects off its own
 	// frames — it publishes to the channels it subscribes to and receives them

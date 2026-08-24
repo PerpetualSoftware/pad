@@ -223,6 +223,22 @@ func (b *RedisBus) publishHeartbeats() {
 	}
 }
 
+// liveGen reports the generation of the workspace's installed subscription, and
+// whether there is one at all.
+//
+// Distinct from currentSubGen, which answers zero for both "no subscription"
+// and a genuine zero — a distinction the cycle needs, because "nothing was
+// installed" and "something was installed" are the two outcomes it reports on.
+func (b *RedisBus) liveGen(workspaceID string) (int64, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	sub, ok := b.wsSubs[workspaceID]
+	if !ok {
+		return 0, false
+	}
+	return sub.gen, true
+}
+
 // idleCycle is one workspace selected for cycling, with the establishment
 // record its selection minted.
 type idleCycle struct {
@@ -437,5 +453,17 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	// the record is held, exactly as confirmSubscription's late-acknowledgement
 	// path already did. See the Observer interface for the contract that
 	// bounds it.
-	b.reportSubscriptionCycled()
+	//
+	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED (codex round 3, P3). The
+	// counter's documented meaning is "torn down AND replaced", and
+	// establishSubscription has two reasons to install nothing: the bus closed
+	// under us, or the workspace emptied while we dialled. Reporting
+	// unconditionally would count those as cycles, which is wrong in the
+	// direction that matters — an operator reading a non-zero rate concludes
+	// connections are being blackholed, and a shutdown would manufacture that
+	// signal. The teardown is still visible through the idle_timeout reset
+	// reason when a buffer existed to drop.
+	if gen, live := b.liveGen(c.workspaceID); live && gen != c.gen {
+		b.reportSubscriptionCycled()
+	}
 }

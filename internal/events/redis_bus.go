@@ -1299,6 +1299,21 @@ func (b *RedisBus) eventsSinceLocked(workspaceID string, sinceID int64) []Event 
 }
 
 // Close shuts down all Redis subscriptions and closes local subscriber channels.
+//
+// IT DOES NOT JOIN THE MAINTENANCE GOROUTINES (BUG-2738, codex round 3), and
+// that is a choice rather than an omission. Their publish half makes
+// synchronous Redis calls bounded by go-redis's own Dial/Read/WriteTimeout —
+// exactly the calls that stall on the wedged route this whole feature exists
+// to detect — so joining them would let a dead network hold shutdown open for
+// as long as those timeouts take. maintenanceStopped is available for a caller
+// that genuinely wants to wait; nothing in production does.
+//
+// What holds instead is that a cycle already past its own ctx check cannot
+// leave anything behind: establishSubscription re-checks b.ctx under its
+// deciding lock and abandons there, closing the PubSub and retiring the record
+// in the same critical section, and the dial dies with b.ctx through
+// mergeCancellation (except under TLS, where DialTimeout bounds it — see that
+// function). Pinned by TestClosingTheBusDuringACycleInstallsNothing.
 func (b *RedisBus) Close() {
 	b.cancel() // signal all subscription goroutines to stop
 
