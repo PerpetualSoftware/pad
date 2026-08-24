@@ -583,7 +583,12 @@ func TestAnUnconfirmedAdmissionIsNotCycledAsIdle(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	b := NewRedisBusWithKeys(client, redisns.Default, false, false)
+	// PHASE 2, because the detector only runs there — flipping the gate in
+	// codex round 1 silently un-covered this test, which the mutation matrix
+	// caught: removing the install-time stamp went from DETECTED back to
+	// SURVIVED, because a phase-1 bus never scans and this was the only test
+	// that could see the zero value.
+	b := NewRedisBusWithKeys(client, redisns.Default, false, true)
 	clock := &testClock{t: time.Now()}
 	b.nowFunc = clock.now
 	b.confirmTimeout = 50 * time.Millisecond
