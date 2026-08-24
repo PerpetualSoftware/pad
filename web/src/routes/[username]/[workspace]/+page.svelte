@@ -639,13 +639,13 @@
 								     and upper-casing it would make `Wren` and `wren` identical —
 								     breaking the verbatim contract in CSS. Humans already get this
 								     treatment (the .actor-name span below is never transformed). -->
-								<span
+								<bdi
 									class="actor-badge agent"
 									class:named={agentName}
-									title={agentName}>{agentName ?? 'agent'}</span
+									title={agentName}>{agentName ?? 'agent'}</bdi
 								>
 							{:else if activity.actor_name}
-								<span class="actor-name">{activity.actor_name}</span>
+								<bdi class="actor-name">{activity.actor_name}</bdi>
 							{:else if activity.source === 'cli'}
 								<span class="actor-badge cli">cli</span>
 							{/if}

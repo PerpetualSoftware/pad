@@ -159,6 +159,8 @@ Not every entry can show it. Comments, version snapshots, and implementation-not
 
 So it is not a basis for machine-verifiable provenance: treat it as a label an actor chose, useful for reading a trail, not as evidence about who acted. Because the credentials belong to a person either way, surfaces that exist for provenance show both — the admin audit log renders `reviewer (via Dana)` rather than picking one.
 
+Since the name is chosen by whoever is writing, it is displayed as an isolated unit: it is shown as sent, but it cannot re-order or restyle the text around it, and the account half of `name (via account)` is rendered separately so a chosen name cannot forge it.
+
 **Onboard agents to a new codebase:**
 
 Open an agent session in the workspace directory and run `/pad onboard`. The agent walks an interview, detects your build/test/CI tooling, and adapts your workspace's collections, conventions, roles, and playbooks to match the project. Works for any agent that speaks Pad — Claude Code, MCP-only agents, etc.

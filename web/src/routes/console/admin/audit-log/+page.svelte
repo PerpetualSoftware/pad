@@ -189,13 +189,30 @@
 	// the other: the agent acted, that account is who it acted as. The name
 	// is self-declared (see agentActor.ts) and this column is the last place
 	// that should be implied otherwise, hence "via" rather than a merge.
-	function displayUser(entry: Activity, meta: Record<string, any> | null): string {
+	//
+	// Returns the PARTS, never a joined string. The agent half is
+	// attacker-chosen text and the human half is not, so building
+	// `${agent} (via ${human})` would let a writer pick a name that forges the
+	// construction (`admin (via root)`), or that carries a bidi control
+	// character and visually reorders the suffix it was appended to — the
+	// audited party editing how the audit reads. Kept apart, the template can
+	// isolate each one, which bounds a hostile name to its own element instead
+	// of letting it rewrite its neighbours (codex round 8).
+	function displayUser(
+		entry: Activity,
+		meta: Record<string, any> | null
+	): { agent?: string; account?: string } {
 		const agent = entry.actor === 'agent' ? agentNameOf(meta) : undefined;
-		if (agent) return entry.actor_name ? `${agent} (via ${entry.actor_name})` : agent;
-		if (entry.actor_name) return entry.actor_name;
-		if (entry.actor === 'system') return 'System';
-		if (entry.user_id) return entry.user_id.length > 12 ? entry.user_id.slice(0, 12) + '\u2026' : entry.user_id;
-		return 'Unknown';
+		if (agent) return { agent, account: entry.actor_name || undefined };
+		if (entry.actor_name) return { account: entry.actor_name };
+		if (entry.actor === 'system') return { account: 'System' };
+		if (entry.user_id) {
+			return {
+				account:
+					entry.user_id.length > 12 ? entry.user_id.slice(0, 12) + '\u2026' : entry.user_id
+			};
+		}
+		return { account: 'Unknown' };
 	}
 
 	async function loadEntries(append = false) {
@@ -300,11 +317,22 @@
 				<tbody>
 					{#each entries as entry (entry.id)}
 						{@const meta = parseMetadata(entry.metadata)}
+						{@const who = displayUser(entry, meta)}
 						<tr>
 							<td class="time-cell" title={new Date(entry.created_at).toISOString()}>
 								{relativeTime(entry.created_at)}
 							</td>
-							<td>{displayUser(entry, meta)}</td>
+							<td class="user-cell">
+								<!-- <bdi> per name: an agent's is self-declared text and may
+								     contain bidi controls; isolation stops it reordering the
+								     " (via " literal or the account name beside it. -->
+								{#if who.agent}
+									<bdi class="agent-name" title={who.agent}>{who.agent}</bdi>
+									{#if who.account}<span class="via"
+											>(via <bdi>{who.account}</bdi>)</span
+										>{/if}
+								{:else}<bdi>{who.account}</bdi>{/if}
+							</td>
 							<td>
 								<Chip size="sm" color={actionColor(entry.action)}>
 									{formatAction(entry.action)}
@@ -403,6 +431,25 @@
 	}
 	.time-cell {
 		white-space: nowrap;
+	}
+	/* Bounded for the same reason .details-cell is: an agent name is arbitrary
+	   client-supplied text, and one very long or combining-heavy name must not
+	   be able to widen the table for everyone reading it. The full value stays
+	   on the title attribute. */
+	.user-cell {
+		max-width: 260px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.agent-name {
+		font-weight: 600;
+	}
+	/* Visually distinct from the self-declared half, so a name that spells out
+	   "(via someone)" cannot pass itself off as this part of the cell. */
+	.via {
+		color: var(--text-muted);
+		font-size: 0.85em;
 	}
 	.details-cell {
 		max-width: 300px;

@@ -105,6 +105,36 @@ describe('console audit log — agent attribution', () => {
 		expect(userCells()).not.toEqual(['Dave']);
 	});
 
+	// Codex round 8. The agent half of this cell is attacker-chosen text and
+	// the account half is not, so the two must not be concatenated into one
+	// string: a writer could pick a name that forges the "(via …)" suffix, or
+	// that carries U+202E and visually reorders the suffix appended after it.
+	// The audited party would then be editing how the audit reads.
+	it('keeps a forged "(via …)" inside the self-declared half', async () => {
+		await mountWith([row({ metadata: JSON.stringify({ agent: 'admin (via root)' }) })]);
+
+		// Exactly one real "via" element, and it names the actual account.
+		const via = host.querySelectorAll('.user-cell .via');
+		expect(via).toHaveLength(1);
+		expect(via[0].textContent!.trim()).toBe('(via Dave)');
+		// The forgery is text inside the agent's own element, not structure.
+		expect(host.querySelector('.user-cell .agent-name')!.textContent).toBe('admin (via root)');
+	});
+
+	it('isolates each name so a bidi control cannot reorder its neighbours', async () => {
+		// U+202E RIGHT-TO-LEFT OVERRIDE reorders everything after it until the
+		// end of its isolate. <bdi> is what makes "until the end" mean "this
+		// name", rather than the rest of the cell.
+		await mountWith([row({ metadata: JSON.stringify({ agent: 'wren‮gnimalb' }) })]);
+
+		const agentEl = host.querySelector('.user-cell .agent-name')!;
+		expect(agentEl.tagName).toBe('BDI');
+		expect(host.querySelector('.user-cell .via bdi')!.tagName).toBe('BDI');
+		// The account name is in its own isolate, so it is still a whole,
+		// separately-ordered value no matter what the agent name contains.
+		expect(host.querySelector('.user-cell .via bdi')!.textContent).toBe('Dave');
+	});
+
 	it('renders a generic-looking client id verbatim', async () => {
 		//'wren' alone does not discriminate: reinstating the retired
 		// GENERIC_AGENT_IDS filter left this file green until this case

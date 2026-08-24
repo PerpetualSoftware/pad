@@ -68,7 +68,7 @@
 {#snippet card(ep: Episode, live: boolean)}
 	<div class="episode-card" class:agent={ep.actorKind === 'agent'} class:earlier={!live}>
 		<div class="ep-main">
-			<span class="ep-actor" title={ep.actorLabel}>{ep.actorLabel}</span>
+			<bdi class="ep-actor" title={ep.actorLabel}>{ep.actorLabel}</bdi>
 			<span class="ep-verb">{episodeVerb(ep.actions)}</span>
 			{#if ep.itemRef}
 				{#if ep.itemSlug && ep.collectionSlug}

@@ -431,10 +431,10 @@
 									{/if}
 								</div>
 								<div class="entry-meta">
-									<span
+									<bdi
 										class="actor-badge {src.kind}"
 										class:named={src.named}
-										title={src.named ? src.label : undefined}>{src.label}</span
+										title={src.named ? src.label : undefined}>{src.label}</bdi
 									>
 									<span
 										class="entry-time"

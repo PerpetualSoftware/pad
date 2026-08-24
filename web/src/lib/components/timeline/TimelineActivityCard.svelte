@@ -64,10 +64,10 @@
 		<Chip
 			size="sm"
 			color={activity.actor === 'agent' ? 'var(--accent-purple)' : 'var(--status-blue)'}
-			>{getActorLabel(activity)}</Chip
+			><bdi class="actor-label">{getActorLabel(activity)}</bdi></Chip
 		>
 		{#if activity.actor_name}
-			<span class="actor-name">{activity.actor_name}</span>
+			<bdi class="actor-name">{activity.actor_name}</bdi>
 		{/if}
 		<span class="action-label {getActionClass(activity.action)}">{getActionLabel(activity.action)}</span>
 		{#if activity.action === 'moved' && metadata.from_collection && metadata.to_collection}
@@ -130,6 +130,18 @@
 		font-size: 0.85em;
 		color: var(--text-primary);
 		font-weight: 500;
+	}
+
+	/* An agent's label is arbitrary client-supplied text. <bdi> keeps a bidi
+	   control character inside it from reordering the rest of the row, and the
+	   bound stops one very long name from widening a card that lives in a pane
+	   whose width is not the card's to negotiate. */
+	.actor-label {
+		display: inline-block;
+		max-width: 18ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		vertical-align: bottom;
 	}
 
 	.action-label {
