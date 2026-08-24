@@ -471,21 +471,23 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // once-per-account-deletion path (option (b) on the TASK-2719 trail, where (a)
 // full-scan and (c) a side-table were weighed).
 //
-// RESIDUAL WINDOW, stated rather than discovered in an audit (codex round 1):
-// the candidate read is one snapshot inside the deletion transaction, so a row
-// emitted CONCURRENTLY can commit after it and keep the id. On both dialects
-// the paths that would CREATE such a row mostly serialize away — SQLite has
-// one writer at a time, and on Postgres any mutation that FK-references the
-// dying user (a new assignment, membership, authored comment) blocks on the
-// pending DELETE FROM users via its KEY SHARE check and then fails. What
-// survives is the narrow case that re-freezes an EXISTING reference without
-// re-checking it — e.g. a concurrent title update on an item still assigned to
-// the dying user, whose snapshot emit does not touch the users row — committed
-// inside the deletion's own window. Post-commit, the FK cascades have nulled
-// the live references, so new emits are clean. That escape is bounded by
-// TASK-2714's retention exactly like every pre-scrub payload was; closing it
-// outright would take a table lock on a once-per-account path, which is the
-// disproportion this note exists to record.
+// RESIDUAL WINDOW, stated rather than discovered in an audit (codex rounds 1
+// and 2): the candidate read is one snapshot inside the deletion transaction,
+// so a row emitted CONCURRENTLY can commit after it and keep the id. SQLite's
+// single writer serializes the whole race away. On Postgres three paths stay
+// open, all bounded by TASK-2714's retention exactly like every pre-scrub
+// payload was: (a) a mutation that re-freezes an EXISTING reference without
+// re-checking it — a title update on an item still assigned to the dying user
+// touches no users row and sails through; (b) a new FK-checked reference whose
+// KEY SHARE landed BEFORE the deletion reached DELETE FROM users — the
+// deletion is what waits in that ordering, and the emit commits first (with
+// SET NULL FKs the deletion then still succeeds); (c) attachments.uploaded_by
+// has NO foreign key at all (migrations 047/026), so an in-flight upload can
+// emit attachment.added naming the user even after the users row is gone —
+// new emits post-commit are NOT structurally clean, that column just carries
+// whatever the request handler resolved before the account died. Closing any
+// of these outright would take a table lock on a once-per-account path, which
+// is the disproportion this note exists to record.
 //
 // READ FULLY, THEN WRITE. Both halves run on the one deletion transaction, and
 // issuing tx.Exec while a tx.Query cursor is open is the BUG-2409 shape — a
