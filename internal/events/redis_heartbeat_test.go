@@ -1060,6 +1060,99 @@ func TestAnUnrelatedSubscriptionIsNotCountedAsThisCyclesReplacement(t *testing.T
 	_ = first
 }
 
+// TestAProbeDoesNotCreditTheSubscriptionThatReplacedItsTarget closes the
+// residual codex round 15 named: the generation binding on lastProbeOK had no
+// deterministic test, only the reasoning that it mirrors stampLastSeen.
+//
+// publishHeartbeats snapshots the workspaces, publishes off the lock — for as
+// long as go-redis's timeouts allow — and stamps afterwards. If the
+// subscription it was sent for is replaced in that window, stamping "whatever
+// occupies this workspace now" credits a probe to a subscription that never
+// received one. The consequence is not academic: the replacement then looks
+// recently probed, so a later run of failing probes can cycle it on the
+// strength of a probe that was never sent to it.
+func TestAProbeDoesNotCreditTheSubscriptionThatReplacedItsTarget(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(ch)
+	oldGen, ok := b.liveGen("ws-1")
+	if !ok {
+		t.Fatal("fixture: nothing installed")
+	}
+
+	// Replace the subscription in the window between the publish and the stamp,
+	// then record what the REPLACEMENT starts life with.
+	var replaced atomic.Bool
+	var newGen int64
+	var atInstall time.Time
+	b.afterProbePublish = func(workspaceID string) {
+		if workspaceID != "ws-1" || !replaced.CompareAndSwap(false, true) {
+			return
+		}
+		// RETRIED UNTIL THE GENERATION MOVES, and the retry is what makes this
+		// deterministic. The heartbeat that was just published is on its way
+		// back through miniredis on another goroutine; if it lands between the
+		// forced-stale write and the scan it refreshes lastSeen, the workspace
+		// is not due, and no replacement happens. Measured before the loop
+		// existed: the test failed 2 runs in 3.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			b.mu.Lock()
+			if sub, live := b.wsSubs[workspaceID]; live {
+				sub.lastSeen = clock.now().Add(-10 * DefaultIdleTimeout)
+				sub.lastProbeOK = clock.now()
+			}
+			b.mu.Unlock()
+			b.cycleIdleSubscriptions()
+
+			b.mu.Lock()
+			sub, live := b.wsSubs[workspaceID]
+			if live {
+				newGen, atInstall = sub.gen, sub.lastProbeOK
+			}
+			b.mu.Unlock()
+			if live && newGen != oldGen {
+				break
+			}
+			if time.Now().After(deadline) {
+				return // the fixture check below reports it
+			}
+		}
+
+		// THE CLOCK MUST MOVE HERE or this test cannot discriminate, which the
+		// mutation matrix said before this line existed: the replacement's
+		// install stamp and a wrongly-credited probe are both "now", so on a
+		// frozen clock they are the same value and removing the generation
+		// binding survives. Advancing makes the buggy write land strictly
+		// later than the install stamp, which is the whole assertion.
+		clock.advance(time.Second)
+	}
+
+	clock.advance(time.Second)
+	b.publishHeartbeats()
+
+	if !replaced.Load() {
+		t.Fatal("the replacement never happened; this test could not have discriminated")
+	}
+	if newGen == 0 || newGen == oldGen {
+		t.Fatalf("fixture: the subscription was not replaced (old %d, new %d)", oldGen, newGen)
+	}
+
+	// COMPARED AGAINST WHAT THE REPLACEMENT WAS INSTALLED WITH, not against the
+	// probe's timestamp. Both are "now" on this clock, so a naive comparison
+	// cannot tell an install stamp from a wrongly-credited probe — the first
+	// version of this test could not, and failed on the install stamp while
+	// claiming a credit had happened.
+	b.mu.Lock()
+	credited := b.wsSubs["ws-1"].lastProbeOK
+	b.mu.Unlock()
+	if !credited.Equal(atInstall) {
+		t.Fatalf("generation %d's lastProbeOK moved from %v to %v after a probe sent to generation %d: it can now be cycled on the strength of a probe it never received",
+			newGen, atInstall, credited, oldGen)
+	}
+}
+
 // TestASuccessfulProbeStillAllowsCycling is the counterfactual: the premise
 // check must suspend detection when we cannot probe, not disable it. Without
 // this pair, "no cycles" is satisfied by a detector that has stopped working.

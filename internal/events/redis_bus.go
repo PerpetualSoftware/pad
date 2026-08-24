@@ -596,6 +596,16 @@ type RedisBus struct {
 	// correct abandon. Receives the workspace.
 	afterRegisterBeforeEstablish func(workspaceID string)
 
+	// afterProbePublish is a TEST SEAM, nil in production. It runs in
+	// publishHeartbeats after a heartbeat has been published for one workspace
+	// and BEFORE its lastProbeOK is stamped. Receives the workspace.
+	//
+	// POSITIONAL: that gap is exactly where a slow publish lets the
+	// subscription it was sent for be replaced, and stamping the replacement
+	// would credit it with a probe it never received. It is the only place a
+	// test can make that interleave happen on purpose.
+	afterProbePublish func(workspaceID string)
+
 	// afterIdleScan is a TEST SEAM, nil in production. It runs in
 	// cycleIdleSubscriptions after the scan has selected its victims and
 	// RELEASED b.mu, and before any of them is cycled.

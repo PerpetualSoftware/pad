@@ -368,6 +368,10 @@ func (b *RedisBus) publishHeartbeats() {
 			b.reportHeartbeatPublishFailed()
 			continue
 		}
+		if b.afterProbePublish != nil {
+			b.afterProbePublish(ws)
+		}
+
 		b.mu.Lock()
 		if sub, ok := b.wsSubs[ws]; ok && sub.gen == p.gen {
 			sub.lastProbeOK = b.now()
