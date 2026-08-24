@@ -88,6 +88,17 @@ describe('admin user activity — agent name', () => {
 		expect(host.querySelector('.activity-agent')).toBeNull();
 	});
 
+	// A named fixture alone does not discriminate: reinstating the retired
+	// GENERIC_AGENT_IDS filter in the shared helper left this whole file green
+	// until this case existed, because nothing here used a value the filter
+	// would have swallowed. Same omission the feed and audit-log suites had —
+	// I repeated it when adding this file later.
+	it('renders a generic-looking client id verbatim', async () => {
+		await mountWith([event({ metadata: JSON.stringify({ agent: 'claude-code' }) })]);
+
+		expect(host.querySelector('.activity-agent')!.textContent).toBe('claude-code');
+	});
+
 	it('isolates the name so a bidi control cannot reorder the row', async () => {
 		await mountWith([event({ metadata: JSON.stringify({ agent: 'wren‮gnimalb' }) })]);
 
@@ -148,5 +159,11 @@ describe('admin user overview — agent name', () => {
 		await mountOverview([event({ actor: 'user' })]);
 
 		expect(host.querySelector('.recent-agent')).toBeNull();
+	});
+
+	it('renders a generic-looking client id verbatim', async () => {
+		await mountOverview([event({ metadata: JSON.stringify({ agent: 'claude-code' }) })]);
+
+		expect(host.querySelector('.recent-agent')!.textContent).toBe('claude-code');
 	});
 });
