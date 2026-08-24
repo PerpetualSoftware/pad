@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -423,7 +424,6 @@ func TestAHeartbeatIsRecognisedByPrefixNotByExactPayload(t *testing.T) {
 		heartbeatPayload,
 		heartbeatPrefix + "2",
 		heartbeatPrefix + "2|instance-a|1699999999",
-		heartbeatPrefix,
 	} {
 		kind, _, _, err := decodePayload(payload)
 		if err != nil {
@@ -431,6 +431,43 @@ func TestAHeartbeatIsRecognisedByPrefixNotByExactPayload(t *testing.T) {
 		}
 		if kind != payloadHeartbeat {
 			t.Fatalf("decodePayload(%q) kind = %v, want payloadHeartbeat", payload, kind)
+		}
+	}
+}
+
+// TestAPayloadWearingThePrefixStillEndsCoverage is the other half of the frame
+// contract, and the one codex round 5 asked for.
+//
+// The prefix buys forward compatibility, but it must not become a hole in the
+// loud path: before this feature, EVERY payload this instance could not read
+// ended the workspace's coverage and moved undecodable_message, the counter
+// whose documented job is "suspect a namespace collision". A foreign or buggy
+// publisher whose bytes happen to begin with "hb|" must not slip through that
+// signal.
+//
+// So: a disciplined frame (version, then narrow tokens, under a length cap) is
+// ignored; anything else wearing the prefix goes back to being a decode
+// failure. Note the asymmetry this deliberately does NOT close — a frame that
+// arrives has still proved the socket carries traffic, whoever sent it, so
+// liveness cannot be forged in the first place. There is no coverage claim
+// inside a heartbeat to fake.
+func TestAPayloadWearingThePrefixStillEndsCoverage(t *testing.T) {
+	for _, payload := range []string{
+		"hb|",           // no version
+		"hb|x",          // version is not a number
+		"hb|1|<script>", // token outside the narrow charset
+		"hb|1|" + strings.Repeat("a", heartbeatMaxLen), // over the cap
+		`hb|{"type":"item.created"}`,                   // something else entirely
+	} {
+		if isHeartbeat(payload) {
+			t.Fatalf("isHeartbeat(%q) = true: a payload this instance did not publish is being silently ignored instead of ending coverage", payload)
+		}
+		kind, _, _, err := decodePayload(payload)
+		if kind == payloadHeartbeat {
+			t.Fatalf("decodePayload(%q) classified it as a heartbeat", payload)
+		}
+		if err == nil {
+			t.Fatalf("decodePayload(%q) returned no error: it will be treated as an event rather than ending coverage", payload)
 		}
 	}
 }
@@ -1008,6 +1045,51 @@ func TestAHeartbeatConsumesNoEventID(t *testing.T) {
 	}
 	if before != after {
 		t.Fatalf("heartbeats consumed event IDs: %s went %s → %s", seqKey, before, after)
+	}
+}
+
+// TestOneIdlePassCyclesEveryDueWorkspace pins that a pass is not serialised
+// behind one slow workspace, and that the bound does not drop any.
+//
+// The failure that puts many workspaces on the due list at once is a Redis
+// failover, so "several at a time" is the ordinary case rather than the
+// exotic one. Serial recovery would make the pass take N x a dial timeout with
+// the last workspaces still reporting themselves uncovered throughout.
+func TestOneIdlePassCyclesEveryDueWorkspace(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	// More workspaces than the concurrency cap, so the pass has to come back
+	// for a second batch and nothing may be dropped between them.
+	const workspaces = maxConcurrentCycles + 5
+	before := make(map[string]int64, workspaces)
+	for i := range workspaces {
+		ws := fmt.Sprintf("ws-%d", i)
+		ch, _, outcome := b.Subscribe(context.Background(), ws)
+		if outcome != SubscribeOK {
+			t.Fatalf("%s: %v", ws, outcome)
+		}
+		defer b.Unsubscribe(ch)
+		gen, ok := b.liveGen(ws)
+		if !ok {
+			t.Fatalf("%s: nothing installed", ws)
+		}
+		before[ws] = gen
+	}
+
+	clock.advance(DefaultIdleTimeout + time.Second)
+	b.cycleIdleSubscriptions()
+
+	if got := obs.cycledCount(); got != workspaces {
+		t.Fatalf("SubscriptionCycled fired %d times, want %d: a pass dropped workspaces past the concurrency cap", got, workspaces)
+	}
+	for ws, was := range before {
+		now, ok := b.liveGen(ws)
+		if !ok {
+			t.Fatalf("%s has no subscription after the pass", ws)
+		}
+		if now == was {
+			t.Fatalf("%s was never cycled (generation still %d)", ws, was)
+		}
 	}
 }
 

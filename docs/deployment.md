@@ -846,6 +846,15 @@ the ID-space migration apply, for the same reasons:
   pre-phase-1 binary still cannot classify the frame. Roll every instance to
   phase 1 (new binary, flip off), let it finish, *then* downgrade the binary.
 
+**The frame is validated, not just prefix-matched.** A liveness frame is
+`hb|<version>` plus optional short tokens, under a length cap. Anything else
+that happens to begin with `hb|` is treated exactly as any other unreadable
+payload: that workspace's coverage ends and
+`pad_event_sequence_resets_total{reason="undecodable_message"}` moves, which is
+the signal that says *suspect a namespace collision*. A forged frame cannot
+fake liveness in any case — liveness means "this socket carried traffic", and a
+frame that arrives demonstrates that whoever sent it.
+
 There is no Redis or database migration in either direction, and the frames are
 never persisted: a heartbeat consumes no event ID, carries no epoch, is never
 buffered or replayed, never reaches a subscriber, and is never counted as an

@@ -57,8 +57,8 @@ const (
 // phases — see config.EventsHeartbeat.
 //
 // A PREFIX RATHER THAN AN EXACT PAYLOAD, so a later version of the frame can
-// carry fields without needing a third roll: anything after the prefix is
-// reserved and ignored. A phase-1 binary already ignores it whatever it says.
+// carry fields without needing a third roll: a phase-1 binary already ignores
+// a v2 frame it knows nothing about.
 //
 // It cannot be confused with either event form. decodePayload classifies on
 // this prefix BEFORE it splits or unmarshals anything, and no epoch generation
@@ -72,8 +72,57 @@ const heartbeatPrefix = "hb|"
 // redisEpochGenSuffix is a generation and not a wall clock).
 const heartbeatPayload = heartbeatPrefix + "1"
 
+// heartbeatMaxLen bounds a frame this package will accept as one of its own.
+// A liveness frame carries a version and, at most, a few short tokens; anything
+// larger is something else wearing the prefix.
+const heartbeatMaxLen = 64
+
 // isHeartbeat reports whether a payload is a bus-internal liveness frame.
-func isHeartbeat(payload string) bool { return strings.HasPrefix(payload, heartbeatPrefix) }
+//
+// THE SHAPE IS VALIDATED, NOT JUST THE PREFIX (codex round 5, P2), and the
+// first draft got this wrong in a way worth recording. Accepting any "hb|…"
+// created a silently-ignored class on the workspace event channel where
+// previously EVERY unreadable payload ended coverage loudly and moved
+// undecodable_message — the counter whose documented job is "suspect a
+// namespace collision". A foreign or buggy publisher whose payload happened to
+// start with "hb|" would have slipped through that signal without a trace.
+//
+// What is NOT a problem, and was considered: a forged frame cannot fake
+// liveness. Liveness here means "this socket carried traffic", and a frame
+// that ARRIVES demonstrates exactly that whoever sent it — which is why
+// stampLastSeen fires for undecodable frames too. There is no claim about
+// event coverage in a heartbeat to forge.
+//
+// So the rule is conservative in the direction that keeps the loud path loud:
+// "hb|" then a decimal version, then optional "|"-separated tokens from a
+// narrow charset, under a length cap. A disciplined future frame still needs
+// no third roll; arbitrary bytes wearing the prefix go back to being a
+// coverage-ending decode failure.
+func isHeartbeat(payload string) bool {
+	if len(payload) > heartbeatMaxLen || !strings.HasPrefix(payload, heartbeatPrefix) {
+		return false
+	}
+	fields := strings.Split(payload[len(heartbeatPrefix):], "|")
+	if fields[0] == "" {
+		return false
+	}
+	for _, r := range fields[0] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	for _, f := range fields[1:] {
+		for _, r := range f {
+			switch {
+			case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			case r == '.' || r == '_' || r == '-' || r == ':':
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
 
 // now reads the bus's clock. The seam is nil in every real construction; tests
 // set it so an idle threshold can be crossed without sleeping through one.
@@ -126,26 +175,49 @@ func (b *RedisBus) maintenanceLoop() {
 // Each loop gets its OWN kick channel: a single shared one would be consumed
 // by whichever goroutine happened to be waiting, leaving the other serving out
 // a cadence that had already changed.
+// SCHEDULED FROM A DEADLINE, NOT FROM THE END OF THE LAST PASS (codex round 5,
+// P2). Restarting the timer after work() makes the real period T plus however
+// long the pass took, and for the PUBLISHER that is self-defeating: an instance
+// whose publishes are slow emits heartbeats further apart, its own subscription
+// sees them further apart, and it can cross its own 3T threshold and cycle
+// connections that were never wedged. The slowness would manufacture the
+// incident.
+//
+// When a pass overruns badly the schedule is reset to now rather than firing
+// the missed ticks back-to-back: there is no value in a burst of heartbeats,
+// and a burst of idle scans would hammer a Redis that is already struggling.
 func (b *RedisBus) tickForever(kick <-chan struct{}, work func()) {
+	next := time.Now()
 	for {
 		b.mu.Lock()
 		interval := b.heartbeatInterval
 		b.mu.Unlock()
 
-		timer := time.NewTimer(interval)
-		select {
-		case <-b.ctx.Done():
-			timer.Stop()
-			return
-		case <-kick:
-			// The cadence changed under us; drop this wait and re-read it
-			// rather than serving out an interval that is no longer the
-			// configured one.
-			timer.Stop()
-			continue
-		case <-timer.C:
+		next = next.Add(interval)
+		if wait := time.Until(next); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-b.ctx.Done():
+				timer.Stop()
+				return
+			case <-kick:
+				// The cadence changed under us; drop this wait, re-read it, and
+				// re-base the schedule so the new interval starts now rather
+				// than from a deadline computed under the old one.
+				timer.Stop()
+				next = time.Now()
+				continue
+			case <-timer.C:
+			}
+		} else if wait < -interval {
+			next = time.Now()
 		}
 
+		// Checked again after the wait: a bus closed during the pass must not
+		// start another one.
+		if b.ctx.Err() != nil {
+			return
+		}
 		work()
 	}
 }
@@ -382,10 +454,45 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 	}
 	b.mu.Unlock()
 
+	// BOUNDED-PARALLEL, NOT SERIAL (codex round 5, P2). Each cycle re-dials,
+	// and a dial against a struggling Redis is bounded by go-redis's own
+	// timeouts rather than by anything here — so a serial pass makes recovery
+	// take N x that timeout, and the workspaces at the end of the map wait the
+	// longest while still reporting themselves uncovered. The failure that puts
+	// many workspaces on this list at once is precisely a Redis failover, so
+	// the serial case is the common one, not the exotic one.
+	//
+	// Each entry already owns its own establishment record, minted under the
+	// lock above, so they are independent by construction: rule 1 keeps any
+	// other caller off a workspace being cycled, and two entries never name the
+	// same one.
+	//
+	// The cap is a deliberate middle: unbounded goroutines would answer a Redis
+	// outage by opening one dial per workspace at once, which is the shape that
+	// turns a slow dependency into an outage of our own.
+	sem := make(chan struct{}, maxConcurrentCycles)
+	var wg sync.WaitGroup
 	for _, c := range due {
-		b.cycleOne(c, idleTimeout)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c idleCycle) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			b.cycleOne(c, idleTimeout)
+		}(c)
 	}
+	// WAITED ON, so one pass cannot overlap the next and so a direct caller —
+	// every test here — observes a finished pass rather than a started one.
+	wg.Wait()
 }
+
+// maxConcurrentCycles bounds how many replacement dials one idle pass has in
+// flight. Eight because the work is entirely network-bound and the point is to
+// stop N sequential dial timeouts from serialising recovery, not to saturate
+// anything: at the 30s cadence this is eight concurrent connects at most once
+// per interval, against a Redis that is by definition already in trouble when
+// the number is large.
+const maxConcurrentCycles = 8
 
 // cycleOne ends one workspace's coverage and re-establishes its subscription.
 func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
