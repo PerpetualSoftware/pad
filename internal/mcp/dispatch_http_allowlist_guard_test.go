@@ -274,12 +274,37 @@ var routesRegisteredOutsideWorkspaceMiddleware = map[string]bool{
 // If a future special needs more fields, it surfaces the same way: as a
 // command that stops issuing the request the guard wants to observe,
 // which the undeclared-unobservable leg reports rather than swallows.
-type pathRecorder struct{ paths []string }
+type pathRecorder struct {
+	paths []string
+	// calls carries METHOD + path. The path alone was not enough: a
+	// drive that dies partway still issues intermediate GETs whose URL
+	// matches what a write-path assertion was looking for (codex round
+	// 4 P1 — `item unblock` passed on its GET .../links prefetch while
+	// never issuing the DELETE).
+	calls []string
+}
 
 func (h *pathRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.paths = append(h.paths, r.URL.String())
+	h.calls = append(h.calls, r.Method+" "+r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	// Path-aware, because one body cannot serve both prefetches. The
+	// un-* commands LIST an item's links and then delete the matching
+	// one, so a links GET must return a decodable array containing a
+	// match or the drive stops there — which is exactly how the DELETE
+	// family was passing on its list prefetch (codex round 4 P1).
+	//
+	// Both item prefetches resolve to id "item-1", so source and target
+	// are the same id here; one entry per link type covers every spec.
+	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/links") {
+		_, _ = w.Write([]byte(`[` +
+			`{"id":"link-blocks","source_id":"item-1","target_id":"item-1","link_type":"blocks"},` +
+			`{"id":"link-implements","source_id":"item-1","target_id":"item-1","link_type":"implements"},` +
+			`{"id":"link-supersedes","source_id":"item-1","target_id":"item-1","link_type":"supersedes"},` +
+			`{"id":"link-split","source_id":"item-1","target_id":"item-1","link_type":"split_from"}]`))
+		return
+	}
 	_, _ = w.Write([]byte(`{"id":"item-1","slug":"task-1","ref":"TASK-1","title":"t","workspace_id":"ws-1","fields":{}}`))
 }
 
@@ -321,6 +346,31 @@ func observedPaths(t *testing.T, cmdKey string) []string {
 			_, _ = d.dispatchCreateItemLink(context.Background(), allowlistFixtureInput(), guardUser(), spec)
 		}
 		return rec.paths
+	}
+	return nil
+}
+
+// observedCalls is observedPaths with the METHOD kept, for assertions
+// that must distinguish a write from the reads issued on the way to it.
+func observedCalls(t *testing.T, cmdKey string) []string {
+	t.Helper()
+	rec := &pathRecorder{}
+	d := &HTTPHandlerDispatcher{
+		Handler:      rec,
+		UserResolver: func(context.Context) *models.User { return guardUser() },
+	}
+	if spec, ok := itemLinkSpecs[cmdKey]; ok {
+		switch cmdKey {
+		case "item unblock", "item unimplements", "item unsupersede", "item unsplit":
+			_, _ = d.dispatchDeleteItemLink(context.Background(), allowlistFixtureInput(), guardUser(), spec)
+		default:
+			_, _ = d.dispatchCreateItemLink(context.Background(), allowlistFixtureInput(), guardUser(), spec)
+		}
+		return rec.calls
+	}
+	if fn, ok := d.specialRoutes()[cmdKey]; ok {
+		_, _ = fn(context.Background(), allowlistFixtureInput(), guardUser())
+		return rec.calls
 	}
 	return nil
 }
@@ -518,21 +568,50 @@ func TestAllowlistCoverage_EveryEntryStatesAReason(t *testing.T) {
 // path.
 func TestItemLinkDrives_ReachTheirWriteRequest(t *testing.T) {
 	t.Parallel()
-	for _, cmdKey := range []string{"item block", "item blocked-by", "item implements", "item unblock"} {
-		paths := observedPaths(t, cmdKey)
+
+	// METHOD matters, not just the path. A delete drive lists the
+	// item's links first, so `GET /items/{ref}/links` is issued on the
+	// way to the DELETE — and a path-only assertion accepts it, which
+	// is precisely how the first version of this test passed for
+	// `item unblock` without the DELETE ever happening.
+	//
+	// Every link command is covered, not a sample: the whole family
+	// shares one URL builder, so a partial list would leave the
+	// unchecked half free to regress silently.
+	wantMethod := func(cmdKey string) string {
+		switch cmdKey {
+		case "item unblock", "item unimplements", "item unsupersede", "item unsplit":
+			return "DELETE"
+		default:
+			return "POST"
+		}
+	}
+
+	if len(itemLinkSpecs) == 0 {
+		t.Fatal("itemLinkSpecs is empty — this test would pass vacuously")
+	}
+	for cmdKey := range itemLinkSpecs {
+		calls := observedCalls(t, cmdKey)
+		want := wantMethod(cmdKey) + " "
 		reached := false
-		for _, p := range paths {
-			if strings.Contains(p, "/links") {
+		for _, c := range calls {
+			// Method is what discriminates; the shapes differ by verb.
+			// Create POSTs to /items/{ref}/links, delete DELETEs to
+			// /links/{linkID} — so a suffix match would be wrong for
+			// half the family, while GET .../links (the delete's own
+			// list prefetch) is excluded by the method alone.
+			if strings.HasPrefix(c, want) && strings.Contains(c, "/links") {
 				reached = true
 				break
 			}
 		}
 		if !reached {
-			t.Errorf("%s never issued its /links request — observed %v.\n"+
-				"The drive is dying at the item prefetch, so the guard is classifying that prefetch "+
-				"instead of the write it exists to classify. Check what pathRecorder returns: the "+
-				"read-modify-write specials call resolveItemRef and need a non-empty id and slug.",
-				cmdKey, paths)
+			t.Errorf("%s never issued its %s.../links request — observed %v.\n"+
+				"The drive is dying before the write, so the guard is classifying an intermediate "+
+				"prefetch instead of the request it exists to classify. Check what pathRecorder "+
+				"returns: the read-modify-write specials call resolveItemRef and need a non-empty "+
+				"id and slug.",
+				cmdKey, wantMethod(cmdKey), calls)
 		}
 	}
 }
