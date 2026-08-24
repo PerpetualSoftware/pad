@@ -504,6 +504,39 @@ func TestAllowlistCoverage_EveryEntryStatesAReason(t *testing.T) {
 	}
 }
 
+// TestItemLinkDrives_ReachTheirWriteRequest pins the fix for codex
+// round 3's false green, because the fix alone was not self-defending:
+// reverting the recorder to `{}` still passed every other assertion
+// here. Measured, not assumed — that revert was run as a control and
+// SURVIVED, which is what this test exists to stop.
+//
+// The mechanism: the link specials prefetch the item first, and that
+// prefetch is workspace-scoped. So a drive that dies at the prefetch
+// still observes a scoped URL and classifies clean, while the
+// POST/DELETE the guard is actually meant to classify is never seen.
+// Observing "a path" is therefore not enough; it has to be the WRITE
+// path.
+func TestItemLinkDrives_ReachTheirWriteRequest(t *testing.T) {
+	t.Parallel()
+	for _, cmdKey := range []string{"item block", "item blocked-by", "item implements", "item unblock"} {
+		paths := observedPaths(t, cmdKey)
+		reached := false
+		for _, p := range paths {
+			if strings.Contains(p, "/links") {
+				reached = true
+				break
+			}
+		}
+		if !reached {
+			t.Errorf("%s never issued its /links request — observed %v.\n"+
+				"The drive is dying at the item prefetch, so the guard is classifying that prefetch "+
+				"instead of the write it exists to classify. Check what pathRecorder returns: the "+
+				"read-modify-write specials call resolveItemRef and need a non-empty id and slug.",
+				cmdKey, paths)
+		}
+	}
+}
+
 // TestStaticWorkspaceSiblings_MatchServerRegistrations closes this
 // guard's own fail-open, which codex raised in two consecutive rounds
 // and which is the weakness that matters most: the sibling sets
