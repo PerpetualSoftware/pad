@@ -7,6 +7,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
+	import { agentNameOf } from '$lib/utils/agentActor';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -240,11 +241,29 @@
 		}
 	}
 
-	function getSourceLabel(source: string, actor: string, actorName?: string): { label: string; kind: string } {
-		if (actor === 'agent') return { label: 'agent', kind: 'agent' };
-		if (actorName) return { label: actorName, kind: source === 'cli' ? 'cli' : 'user' };
-		if (source === 'cli') return { label: 'cli', kind: 'cli' };
-		return { label: 'web', kind: 'web' };
+	function getSourceLabel(
+		source: string,
+		actor: string,
+		actorName?: string,
+		metadata?: Record<string, unknown>
+	): { label: string; kind: string; named: boolean } {
+		// An agent's own name when it sent one, else the generic badge. The
+		// name is never merged with `actorName` — that is the human whose
+		// credentials the write rode on, and conflating the two is the
+		// mis-attribution this renders to end.
+		//
+		// `named` drives the badge's uppercasing off. "agent" / "cli" / "web"
+		// are CATEGORY words and read as chips; a stamped name is a name, and
+		// upper-casing it would collapse `Wren` and `wren` into the same
+		// pixels — breaking the verbatim contract in CSS rather than in code.
+		// The `user` kind has always opted out for exactly this reason.
+		if (actor === 'agent') {
+			const name = agentNameOf(metadata);
+			return { label: name ?? 'agent', kind: 'agent', named: name !== undefined };
+		}
+		if (actorName) return { label: actorName, kind: source === 'cli' ? 'cli' : 'user', named: true };
+		if (source === 'cli') return { label: 'cli', kind: 'cli', named: false };
+		return { label: 'web', kind: 'web', named: false };
 	}
 
 	function borderClass(source: string, actor: string): string {
@@ -370,7 +389,7 @@
 							{@const itemRef = activity.item_ref || meta.item_ref}
 							{@const collSlug = activity.collection_slug || meta.collection_slug}
 							{@const fieldChanges = parseFieldChanges(meta.changes)}
-							{@const src = getSourceLabel(activity.source, activity.actor, activity.actor_name)}
+							{@const src = getSourceLabel(activity.source, activity.actor, activity.actor_name, meta)}
 							<div class="entry {borderClass(activity.source, activity.actor)}">
 								<span
 									class="entry-icon"
@@ -412,7 +431,11 @@
 									{/if}
 								</div>
 								<div class="entry-meta">
-									<span class="actor-badge {src.kind}">{src.label}</span>
+									<bdi
+										class="actor-badge {src.kind}"
+										class:named={src.named}
+										title={src.named ? src.label : undefined}>{src.label}</bdi
+									>
 									<span
 										class="entry-time"
 										title={new Date(activity.created_at).toLocaleString()}
@@ -706,6 +729,31 @@
 	.actor-badge.agent {
 		background: color-mix(in srgb, var(--accent-purple) 15%, transparent);
 		color: var(--accent-purple);
+	}
+	/* A name, not a category word — same reasoning as `.actor-badge.user`
+	   below, which has always opted out. See getSourceLabel's `named`.
+
+	   Bounded because the badge is `flex-shrink: 0` and a name is arbitrary
+	   text — an agent's is whatever went in X-Pad-Agent, a person's is
+	   whatever they set — not one of the four fixed words this badge used to
+	   hold. Unbounded, one long name pushes the timestamp off the row.
+
+	   24ch is a judgement, not a measurement: it comfortably fits ordinary
+	   full names ("Alexandra Whitfield" is 19) while still bounding the
+	   pathological case. It is a LAYOUT bound and says nothing about which
+	   names are valid — nothing is rejected or altered, and the full value is
+	   on the title attribute. What it does NOT cover: `title` is not reachable
+	   by touch and awkward by keyboard, so a clipped name is effectively
+	   unreadable on a phone. Raising the bound trades that against the
+	   overflow it exists to prevent; a real disclosure affordance would be the
+	   actual fix and is not this unit's. */
+	.actor-badge.named {
+		text-transform: none;
+		letter-spacing: normal;
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.actor-badge.cli {
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);

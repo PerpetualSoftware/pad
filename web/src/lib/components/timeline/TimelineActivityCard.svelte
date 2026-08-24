@@ -2,6 +2,7 @@
 	import type { Activity } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
+	import { agentNameOf } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
 
 	let { activity }: { activity: Activity } = $props();
@@ -37,7 +38,11 @@
 	}
 
 	function getActorLabel(a: Activity): string {
-		return a.actor === 'agent' ? 'Agent' : 'User';
+		if (a.actor !== 'agent') return 'User';
+		// The agent's own name when it sent one. `actor_name` below stays the
+		// human whose credentials the write rode on — the two are rendered
+		// side by side rather than merged, because they are different facts.
+		return agentNameOf(metadata) ?? 'Agent';
 	}
 
 	function getSourceLabel(source: string): string {
@@ -52,13 +57,19 @@
 
 <div class="card">
 	<div class="row">
+		<!-- The label DOES clip (see .actor-label), so it carries its full value
+		     in a title. An earlier round removed this attribute on the grounds
+		     that the chip never clipped; a later round added the width bound and
+		     made that premise false. -->
 		<Chip
 			size="sm"
 			color={activity.actor === 'agent' ? 'var(--accent-purple)' : 'var(--status-blue)'}
-			>{getActorLabel(activity)}</Chip
+			><bdi class="actor-label" title={getActorLabel(activity)}
+				>{getActorLabel(activity)}</bdi
+			></Chip
 		>
 		{#if activity.actor_name}
-			<span class="actor-name">{activity.actor_name}</span>
+			<bdi class="actor-name">{activity.actor_name}</bdi>
 		{/if}
 		<span class="action-label {getActionClass(activity.action)}">{getActionLabel(activity.action)}</span>
 		{#if activity.action === 'moved' && metadata.from_collection && metadata.to_collection}
@@ -121,6 +132,20 @@
 		font-size: 0.85em;
 		color: var(--text-primary);
 		font-weight: 500;
+	}
+
+	/* An agent's label is arbitrary client-supplied text. <bdi> keeps a bidi
+	   control character inside it from reordering the rest of the row, and the
+	   bound stops one very long name from widening a card that lives in a pane
+	   whose width is not the card's to negotiate. 24ch matches the activity
+	   page's badge, where the number's reasoning and its limits are written
+	   out. */
+	.actor-label {
+		display: inline-block;
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		vertical-align: bottom;
 	}
 
 	.action-label {

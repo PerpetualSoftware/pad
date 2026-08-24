@@ -1,4 +1,5 @@
 import type { Activity } from '$lib/types';
+import { agentNameFromMetadata } from '$lib/utils/agentActor';
 
 /**
  * The episode fold behind the activity page's Live view (IDEA-2755).
@@ -11,12 +12,12 @@ import type { Activity } from '$lib/types';
  *
  * Identity today is (actor kind + name, item). The server stamps
  * `metadata.agent` from the client's X-Pad-Agent header
- * (handlers_documents.go auditMeta) — every current seat sends the generic
- * client id "claude-code", so agent rows collapse to one "agent" label and
- * seats are distinguishable only by the disjoint items they work, which
- * multi-seat turf discipline already guarantees. The moment a seat sends
- * its own name in X-Pad-Agent, its label (and fold key) lights up here with
- * no further change — concept B's lanes want exactly that.
+ * (handlers_documents.go agentMeta), and this fold renders whatever is
+ * there verbatim — see `agentActor.ts` for where the name comes from and
+ * what it does not claim. An agent that names itself gets its own label
+ * and its own fold key; one that sends a generic client id gets that id;
+ * one that sends nothing collapses into the shared "agent" label, and its
+ * writes are then distinguishable only by the items they touch.
  *
  * LIVENESS is claimed only from evidence: an episode is `live` when its
  * newest event is younger than `liveMinutes`. The view never says "active
@@ -31,7 +32,7 @@ export interface Episode {
 	itemTitle?: string;
 	itemSlug?: string;
 	collectionSlug?: string;
-	/** Display label for the actor ("Dave", "agent", a seat name when stamped). */
+	/** Display label for the actor ("Dave", an agent's stamped name, or "agent"). */
 	actorLabel: string;
 	/** "agent" | "user" — drives the row's border treatment like the audit view. */
 	actorKind: string;
@@ -58,32 +59,26 @@ export interface FoldOptions {
 	now?: () => number;
 }
 
-/** Client ids that are tools, not seats — never shown as an actor name.
- *  SHIM with a retirement condition (CONVE-2757 rule 4): this list encodes
- *  one team's tooling and dies with IDEA-2750 part 1, when agents carry
- *  real display names via PAD_AGENT_NAME and the platform renders
- *  metadata.agent verbatim. */
-const GENERIC_AGENT_IDS = new Set(['claude-code', 'cli', 'agent']);
-
-function metaAgentName(metadata: string): string | undefined {
-	try {
-		const meta = JSON.parse(metadata) as Record<string, unknown>;
-		const name = meta.agent;
-		if (typeof name !== 'string' || name.length === 0) return undefined;
-		return GENERIC_AGENT_IDS.has(name) ? undefined : name;
-	} catch {
-		return undefined;
-	}
-}
-
+/**
+ * The fold key must distinguish "this actor" from "an actor we have no name
+ * for", and the LABEL cannot do that job: an agent may legitimately send
+ * `agent` in X-Pad-Agent, and a person's display name may be `cli`, so a key
+ * built from the label alone silently merges a named actor with the nameless
+ * ones. The name is client-supplied text, so treating it as a distinct
+ * namespace rather than a value in the same one is the only version that
+ * cannot collide. (Both halves matter: the user branch had the same defect
+ * for a person named `cli` or `web` — CONVE-18.)
+ */
 function actorKeyOf(a: Activity): { key: string; label: string; kind: string } {
-	const seat = metaAgentName(a.metadata);
 	if (a.actor === 'agent') {
-		const label = seat ?? 'agent';
-		return { key: `agent:${label}`, label, kind: 'agent' };
+		const name = agentNameFromMetadata(a.metadata);
+		return { key: name ? `agent:named:${name}` : 'agent:anon', label: name ?? 'agent', kind: 'agent' };
 	}
-	const label = a.actor_name ?? (a.source === 'cli' ? 'cli' : 'web');
-	return { key: `user:${label}`, label, kind: 'user' };
+	if (a.actor_name) {
+		return { key: `user:named:${a.actor_name}`, label: a.actor_name, kind: 'user' };
+	}
+	const label = a.source === 'cli' ? 'cli' : 'web';
+	return { key: `user:anon:${label}`, label, kind: 'user' };
 }
 
 /**

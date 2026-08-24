@@ -9,6 +9,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
+	import { agentNameFromMetadata } from '$lib/utils/agentActor';
 	import OnboardingLaunchpad from '$lib/components/OnboardingLaunchpad.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
@@ -630,11 +631,21 @@
 				<div class="activity-list">
 					{#each dashboard.recent_activity.slice(0, 10) as activity, i (i)}
 						{@const changes = parseActivityChanges(activity.metadata)}
+						{@const agentName = agentNameFromMetadata(activity.metadata)}
 						<div class="activity-row">
 							{#if activity.actor === 'agent'}
-								<span class="actor-badge agent">agent</span>
+								<!-- `named` drops the badge's uppercasing: the generic "agent" is a
+								     CATEGORY word and reads as a chip, but a stamped name is a name,
+								     and upper-casing it would make `Wren` and `wren` identical —
+								     breaking the verbatim contract in CSS. Humans already get this
+								     treatment (the .actor-name span below is never transformed). -->
+								<bdi
+									class="actor-badge agent"
+									class:named={agentName}
+									title={agentName}>{agentName ?? 'agent'}</bdi
+								>
 							{:else if activity.actor_name}
-								<span class="actor-name">{activity.actor_name}</span>
+								<bdi class="actor-name">{activity.actor_name}</bdi>
 							{:else if activity.source === 'cli'}
 								<span class="actor-badge cli">cli</span>
 							{/if}
@@ -1302,6 +1313,19 @@
 	.actor-badge.agent {
 		background: color-mix(in srgb, var(--accent-purple) 15%, transparent);
 		color: var(--accent-purple);
+	}
+	/* A stamped agent name is a name, not a category word — see the markup.
+	   Bounded because the badge is `flex-shrink: 0` and the name is arbitrary
+	   client-supplied text, not one of the fixed words this badge used to
+	   hold. 24ch matches the activity page's badge, where the reasoning for
+	   the number and what it does not cover is written out. */
+	.actor-badge.named {
+		text-transform: none;
+		letter-spacing: normal;
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.actor-badge.cli {
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);

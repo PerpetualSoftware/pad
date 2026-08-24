@@ -126,7 +126,40 @@ pad item create convention "Run tests before completing tasks" \
   --field priority=must
 ```
 
-Agents load relevant conventions automatically. All agent actions are attributed in the activity feed, so you always know what the AI changed.
+Agents load relevant conventions automatically, and every agent action is attributed in the activity feed — so you can see what the AI changed rather than finding it later in a diff.
+
+**Name your agents:**
+
+An agent that identifies itself gets its name shown on its writes — in the activity feed's Live and Audit views, on the dashboard's recent activity, on item timeline *activity* entries, and in the admin console's audit log and per-user activity views. With more than one agent working a project, that is the difference between "something automated touched this" and knowing which one.
+
+Pad takes the first of these it finds:
+
+```bash
+# 1. Per-workspace, committed with the project — the deliberate choice.
+#    In .pad.toml:
+#      agent_name = "reviewer"
+
+# 2. Per-process, runtime-agnostic. Any harness can set it.
+export PAD_AGENT=reviewer
+
+# 3. Otherwise Pad detects the runtimes it knows — Claude Code reports
+#    "claude-code" — and that detected id is used as the name.
+```
+
+**If none of the three produce a name, the write is not marked as an agent's at all** — it is recorded as the person whose credentials it used, which is the case the caveat below is about. The generic `agent` label you may see on older entries is a write that identified itself before Pad stored names, or an event type that records the actor without the name (workspace membership changes, sign-ins).
+
+The name is rendered exactly as sent — Pad keeps no list of approved names, and does not re-case or rewrite what you choose.
+
+Not every entry can show it. Comments, version snapshots, and implementation-note/decision entries record only *that* an agent acted, because the name is not stored on those rows — they still read `Agent`. Activity entries are the ones that carry it.
+
+**What this does not claim.** The name is supplied by the client and self-declared, so it records honesty, not identity. From `ResolveAgentName`'s own contract in `internal/cli/agent_identity.go`:
+
+> - an agent that omits it is indistinguishable from the human whose credentials it is using;
+> - a human running `! pad ...` inside an agent's terminal inherits that terminal's environment and will be attributed to the agent.
+
+So it is not a basis for machine-verifiable provenance: treat it as a label an actor chose, useful for reading a trail, not as evidence about who acted. Because the credentials belong to a person either way, surfaces that exist for provenance show both — the admin audit log renders `reviewer (via Dana)` rather than picking one.
+
+Since the name is chosen by whoever is writing, it is displayed as an isolated unit: it is shown as sent, but it cannot re-order or restyle the text around it, and the account half of `name (via account)` is rendered separately so a chosen name cannot forge it.
 
 **Onboard agents to a new codebase:**
 

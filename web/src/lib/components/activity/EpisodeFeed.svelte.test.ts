@@ -154,4 +154,57 @@ describe('EpisodeFeed', () => {
 		expect(checkpoint!.textContent).toContain('latest: Checkpoint: wiring the fold');
 		expect(checkpoint!.textContent).not.toContain('second line stays hidden');
 	});
+
+	// TASK-2759. foldEpisodes computes the label; this asserts the FEED renders
+	// it (CONVE-19 — a correct fold the card never reads would pass every test
+	// in activityEpisodes.test.ts).
+	//
+	// Both events are on the SAME item, deliberately: that is what makes the
+	// card count discriminating. Two different items would produce two cards
+	// however the actors were keyed, so the earlier version of this test proved
+	// only that labels render (codex round 10). Same item, same window, two
+	// names — a fold that ignored the name would yield ONE card.
+	it('renders each agent under its own stamped name', async () => {
+		mountFeed([
+			act(1, { metadata: '{"agent":"wren"}' }),
+			act(2, { metadata: '{"agent":"rook"}' }),
+		]);
+		await settle();
+
+		expect(host.querySelectorAll('.episode-card')).toHaveLength(2);
+		const labels = [...host.querySelectorAll('.ep-actor')].map((el) => el.textContent);
+		expect(labels.sort()).toEqual(['rook', 'wren']);
+	});
+
+	// Named agents alone do not discriminate: reinstating the retired
+	// GENERIC_AGENT_IDS filter left this file green until this case existed,
+	// because nothing here used a value the filter would have swallowed.
+	it('renders a generic-looking client id verbatim', async () => {
+		mountFeed([act(1, { metadata: '{"agent":"claude-code"}' })]);
+		await settle();
+
+		expect(host.querySelector('.ep-actor')!.textContent).toBe('claude-code');
+	});
+
+	// Codex round 11. The label element must stay a <bdi>: an agent name is
+	// self-declared text and a bidi control inside it would otherwise reorder
+	// the verb and item title that follow it on the card's line. Swapping the
+	// element back to a <span> passes every text assertion above.
+	it('isolates the actor label so a bidi control cannot reorder the card', async () => {
+		mountFeed([act(1, { metadata: '{"agent":"wren\u202egnimalb"}' })]);
+		await settle();
+
+		const el = host.querySelector('.ep-actor')!;
+		expect(el.tagName).toBe('BDI');
+		expect(el.textContent).toBe('wren\u202egnimalb');
+	});
+
+	it('renders the generic label for an agent that stamped no name', async () => {
+		// `act`'s default metadata is '{}' — the pre-BUG-2542 shape, and the
+		// shape any agent that never sends the header still produces.
+		mountFeed([act(1)]);
+		await settle();
+
+		expect(host.querySelector('.ep-actor')!.textContent).toBe('agent');
+	});
 });
