@@ -157,23 +157,21 @@ describe('EpisodeFeed', () => {
 
 	// TASK-2759. foldEpisodes computes the label; this asserts the FEED renders
 	// it (CONVE-19 — a correct fold the card never reads would pass every test
-	// in activityEpisodes.test.ts). Two named agents on separate items also
-	// prove the fold key follows the name: a filtered or blanked label would
-	// merge them into one card, so the count is the counterfactual.
+	// in activityEpisodes.test.ts).
+	//
+	// Both events are on the SAME item, deliberately: that is what makes the
+	// card count discriminating. Two different items would produce two cards
+	// however the actors were keyed, so the earlier version of this test proved
+	// only that labels render (codex round 10). Same item, same window, two
+	// names — a fold that ignored the name would yield ONE card.
 	it('renders each agent under its own stamped name', async () => {
-		const onOtherItem = {
-			document_id: 'item-other',
-			item_ref: 'BUG-7',
-			item_title: 'Other thing',
-			item_slug: 'other-thing',
-			collection_slug: 'bugs',
-		};
 		mountFeed([
 			act(1, { metadata: '{"agent":"wren"}' }),
-			act(2, { metadata: '{"agent":"rook"}', ...onOtherItem }),
+			act(2, { metadata: '{"agent":"rook"}' }),
 		]);
 		await settle();
 
+		expect(host.querySelectorAll('.episode-card')).toHaveLength(2);
 		const labels = [...host.querySelectorAll('.ep-actor')].map((el) => el.textContent);
 		expect(labels.sort()).toEqual(['rook', 'wren']);
 	});

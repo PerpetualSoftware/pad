@@ -57,14 +57,16 @@
 
 <div class="card">
 	<div class="row">
-		<!-- No `title` here, deliberately. This row wraps and the chip never
-		     clips, so a tooltip would repeat text already fully visible —
-		     which assistive technology may then announce twice. Titles belong
-		     on the badges and the episode label, which DO clip. -->
+		<!-- The label DOES clip (see .actor-label), so it carries its full value
+		     in a title. An earlier round removed this attribute on the grounds
+		     that the chip never clipped; a later round added the width bound and
+		     made that premise false. -->
 		<Chip
 			size="sm"
 			color={activity.actor === 'agent' ? 'var(--accent-purple)' : 'var(--status-blue)'}
-			><bdi class="actor-label">{getActorLabel(activity)}</bdi></Chip
+			><bdi class="actor-label" title={getActorLabel(activity)}
+				>{getActorLabel(activity)}</bdi
+			></Chip
 		>
 		{#if activity.actor_name}
 			<bdi class="actor-name">{activity.actor_name}</bdi>
