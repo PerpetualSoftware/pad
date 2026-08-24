@@ -648,16 +648,38 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 		t.Fatal("could not find the /workspaces route block in server.go — this test's anchor is stale, " +
 			"and a stale anchor here silently stops checking anything")
 	}
-	end := strings.Index(text[start:], `r.Route("/{slug}", func(r chi.Router) {`)
-	if end < 0 {
-		t.Fatal("could not find the nested /{slug} subrouter — anchor stale")
+	// Take the WHOLE /workspaces block by brace depth, then CUT OUT the
+	// nested /{slug} subrouter. The earlier version stopped at the
+	// subrouter instead, so any sibling registered AFTER it was
+	// invisible — and pathIsWorkspaceScoped would then treat it as
+	// middleware-protected, which is the fail-open this test exists to
+	// remove (codex round 5 P1).
+	block, ok := braceBlock(text[start:])
+	if !ok {
+		t.Fatal("could not bound the /workspaces route block — anchor stale")
 	}
-	block := text[start : start+end]
+	if i := strings.Index(block, `r.Route("/{slug}", func(r chi.Router) {`); i >= 0 {
+		inner, innerOK := braceBlock(block[i:])
+		if !innerOK {
+			t.Fatal("could not bound the nested /{slug} subrouter — anchor stale")
+		}
+		block = block[:i] + block[i+len(inner):]
+	} else {
+		t.Fatal("could not find the nested /{slug} subrouter inside the /workspaces block — anchor stale")
+	}
 
-	re := regexp.MustCompile(`r\.(?:Get|Post|Put|Patch|Delete)\("(/[^"]*)"`)
+	// Handle/Method/HandleFunc too, not just the verb helpers — a
+	// sibling registered through one of those would otherwise be
+	// invisible (codex round 5 P1). Method/MethodFunc take the verb
+	// first, so the pattern allows a leading argument.
+	re := regexp.MustCompile(`r\.(?:Get|Post|Put|Patch|Delete|Head|Options|Handle|HandleFunc)\("(/[^"]*)"|` +
+		`r\.(?:Method|MethodFunc)\([^,]+,\s*"(/[^"]*)"`)
 	var unaccounted []string
 	for _, m := range re.FindAllStringSubmatch(block, -1) {
 		route := m[1]
+		if route == "" {
+			route = m[2] // the Method/MethodFunc alternative
+		}
 		switch {
 		case route == "/":
 			// The collection root: list + create, both already
@@ -689,6 +711,47 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 			"workspace-scoped, so pathIsWorkspaceScoped would wave them through. Account for each:\n  %s",
 			strings.Join(unaccounted, "\n  "))
 	}
+}
+
+// braceBlock returns the chi router block starting at src, from the
+// opening brace of its `func(r chi.Router) {` through the matching
+// close, inclusive.
+//
+// IT ANCHORS ON THE func LITERAL, NOT ON THE FIRST BRACE, and that is
+// not a detail: a route pattern is full of braces, so
+// `r.Route("/{slug}", func(r chi.Router) {` opens with the `{` of
+// `{slug}` — a literal that closes one character later. Anchoring on
+// the first brace therefore returned a zero-length "block", the
+// subrouter cut removed nothing, and every route INSIDE the middleware
+// was reported as an unclassified sibling. The first version of this
+// helper carried a comment asserting string-literal braces were not a
+// problem here. They were exactly the problem.
+//
+// Route patterns balance ({slug} is one of each) so they do not break
+// the depth count once scanning starts past the func literal.
+func braceBlock(src string) (string, bool) {
+	marker := strings.Index(src, "func(r chi.Router) {")
+	if marker < 0 {
+		return "", false
+	}
+	open := strings.IndexByte(src[marker:], '{')
+	if open < 0 {
+		return "", false
+	}
+	open += marker
+	depth := 0
+	for i := open; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[:i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 // TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite turns the
