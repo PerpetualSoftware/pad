@@ -23,6 +23,32 @@ import (
 // ReceiveTimeout(ctx, 0)). Probed against a TCP proxy that silently stopped
 // forwarding: no reconnect in 24 seconds. Do not replace this with a Ping.
 //
+// WHAT THIS DETECTS AND WHAT IT DOES NOT, stated as precisely as the mechanism
+// actually supports (codex round 10, which was asked to refute the claim rather
+// than to look for defects, and partly succeeded). All three limits below were
+// checked against go-redis v9.22.0 rather than reasoned about:
+//
+//   - IT IS A RECEIVE-SIDE DETECTOR, not a round-trip health check. What it
+//     measures is whether frames ARRIVE on this workspace's subscription. A
+//     subscription that receives fine but whose outbound direction is broken
+//     looks healthy here — correctly, since nothing is being lost.
+//
+//   - IT DOES NOT COVER THE PUBLISH PATH, and cannot: PUBLISH travels on the
+//     client's connPool while a subscription holds a connection from the
+//     separate pubSubPool (redis.go:363, :1956). Those are different sockets
+//     with different fates, so a wedged publish path is invisible to this, and
+//     a reconnect of one repairs nothing about the other. An instance whose
+//     publishes fail loses ITS OWN events for everyone; that is a different
+//     failure needing a different signal.
+//
+//   - REPLACEMENT IS ATTEMPTED, NOT GUARANTEED. If the network path is still
+//     blackholed when the cycle re-dials, the replacement cannot receive
+//     either, and the detector fires again on the next pass. That is the
+//     honest behaviour — coverage stays ended, so nothing is claimed falsely —
+//     but "delivery resumes" is a statement about the network, not about this
+//     code. See BUG-2764 for a case where the replacement can fail silently
+//     even on a healthy path.
+//
 // WHAT MAKES THE THRESHOLD ANSWERABLE. "Is this workspace quiet, or is the
 // route dead?" cannot be answered from traffic, because it depends on the
 // deployment's publish rate and no constant is right for every one of them.

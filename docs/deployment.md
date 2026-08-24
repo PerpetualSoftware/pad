@@ -873,6 +873,28 @@ line, alongside `id_space_phase`. The two migrations are independent — any
 combination is valid. An unparseable `PAD_EVENTS_HEARTBEAT` is ignored and logs
 a warning naming the value.
 
+**What this covers, and what it does not.** It is a *receive-side* detector,
+not a round-trip health check. It measures whether frames arrive on a
+workspace's subscription, so:
+
+- A subscription whose *outbound* direction is broken but which still receives
+  looks healthy — correctly, since nothing is being lost.
+- The **PUBLISH path is not covered and cannot be.** `PUBLISH` travels on the
+  client's ordinary connection pool while a subscription holds a connection
+  from a separate pub/sub pool; those are different sockets with different
+  fates, and a reconnect of one repairs nothing about the other. An instance
+  whose publish path is wedged loses its own events for every other instance,
+  and this feature will not tell you.
+- **The replacement is attempted, not guaranteed.** If the path is still
+  blackholed when the cycle re-dials, the new connection cannot receive either
+  and the detector fires again on the next pass. Coverage stays ended
+  throughout, so nothing is ever falsely claimed — but delivery resuming is a
+  statement about your network, not about Pad. One case where the replacement
+  can fail on a *healthy* path is tracked as BUG-2764: go-redis discards the
+  error from the initial `SUBSCRIBE`, so a failed subscribe yields a connection
+  that looks live and is subscribed to nothing. The detector cycles it again on
+  the next pass, which is why this self-heals on phase 2 and does not on phase 1.
+
 **What to watch.** `pad_event_subscription_cycled_total` — expect zero. Read it
 rather than the `idle_timeout` reset label, which only moves when there was a
 buffer to drop and therefore misses the early-wedge case. A non-zero rate is a
