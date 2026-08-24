@@ -200,7 +200,11 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// notification actually set one.
 	var sessionID string
 	if s.sessionPresence != nil {
-		sessionID = s.sessionPresence.Add(user.ID, ident)
+		// The origin is read from THIS request, which is the only place
+		// the connection's transport is knowable — deliveredSessionCount
+		// runs on a different request entirely and cannot recover it
+		// (BUG-2725).
+		sessionID = s.sessionPresence.Add(user.ID, ident, SessionOrigin{BearerAuth: isBearerAuth(r)})
 		defer s.sessionPresence.Remove(user.ID, sessionID)
 	}
 
@@ -470,9 +474,15 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 // cache reset" here IS "per tick" there; this is not a narrower cadence
 // than the thing it mirrors).
 type watchVisCache struct {
-	s    *Server
-	r    *http.Request
-	user *models.User
+	s *Server
+	// bearerAuth is THIS connection's auth transport, read once from the
+	// request that opened the stream (BUG-2725 replaced the retained
+	// *http.Request with it). Immutable for the connection's life — the
+	// request that opened it was bearer or it was cookie, and no reval
+	// tick can change that — which is exactly why reset() does not
+	// recompute it while it does recompute everything else.
+	bearerAuth bool
+	user       *models.User
 	// deny, once true, makes forWorkspace return a deny-all
 	// watchAccessVisibility{} for every workspace without even calling
 	// computeWatchAccessVisibility — set by refreshUser when the user
@@ -485,7 +495,7 @@ type watchVisCache struct {
 }
 
 func newWatchVisCache(s *Server, r *http.Request, user *models.User) *watchVisCache {
-	c := &watchVisCache{s: s, r: r, user: user, m: make(map[string]watchAccessVisibility)}
+	c := &watchVisCache{s: s, bearerAuth: isBearerAuth(r), user: user, m: make(map[string]watchAccessVisibility)}
 	c.refreshUser()
 	return c
 }
@@ -497,7 +507,7 @@ func (c *watchVisCache) forWorkspace(workspaceID string) watchAccessVisibility {
 	if v, ok := c.m[workspaceID]; ok {
 		return v
 	}
-	v := c.s.computeWatchAccessVisibility(c.r, c.user, workspaceID)
+	v := c.s.computeWatchAccessVisibility(c.bearerAuth, c.user, workspaceID)
 	c.m[workspaceID] = v
 	return v
 }

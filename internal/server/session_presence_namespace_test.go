@@ -32,7 +32,7 @@ func TestPresenceHonoursTheNamespace(t *testing.T) {
 	p := NewRedisSessionPresenceWithKeys(client, keys)
 	t.Cleanup(p.Close)
 
-	id := p.Add("user-1", SessionIdentity{Label: "docapp"})
+	id := p.Add("user-1", SessionIdentity{Label: "docapp"}, SessionOrigin{})
 	if id == "" {
 		t.Fatal("premise failed: Add returned an empty session id")
 	}
@@ -73,7 +73,7 @@ func TestPresenceDefaultKeepsHistoricalKeys(t *testing.T) {
 	p := NewRedisSessionPresence(client)
 	t.Cleanup(p.Close)
 
-	id := p.Add("user-1", SessionIdentity{Label: "docapp"})
+	id := p.Add("user-1", SessionIdentity{Label: "docapp"}, SessionOrigin{})
 	if id == "" {
 		t.Fatal("premise failed: Add returned an empty session id")
 	}

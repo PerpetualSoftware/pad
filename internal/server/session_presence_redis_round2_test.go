@@ -107,7 +107,7 @@ func TestRedisSessionPresence_StalledRedisDoesNotHangShutdown(t *testing.T) {
 	}
 
 	added := make(chan string, 1)
-	go func() { added <- p.Add("user-1", SessionIdentity{Armed: true}) }()
+	go func() { added <- p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{}) }()
 
 	// Close races the IN-FLIGHT Add rather than waiting for it, because
 	// that is the scenario the finding described: the WaitGroup counter is
@@ -202,7 +202,7 @@ func TestRedisSessionPresence_UndecodableEntryIsAnError(t *testing.T) {
 	p := NewRedisSessionPresence(client)
 	t.Cleanup(p.Close)
 
-	id := p.Add("user-1", SessionIdentity{Armed: true})
+	id := p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 
 	// CONTROL FIRST: a well-formed registry lists cleanly. Without this the
 	// assertion below would also pass for an implementation that errored on
@@ -273,7 +273,7 @@ func TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal(t *testing
 		p.waitForDrain(5 * time.Second)
 	})
 
-	p.Add("user-1", SessionIdentity{Armed: true})
+	p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 	<-entered // a renewal is parked and nothing will release it
 
 	closed := make(chan struct{})
@@ -366,7 +366,7 @@ func TestRedisSessionPresence_RemoveAfterCloseStillWaits(t *testing.T) {
 		},
 	}
 
-	id := p.Add("user-1", SessionIdentity{Armed: true})
+	id := p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 	<-entered
 
 	closeDone := make(chan struct{})
@@ -452,7 +452,7 @@ func TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop(t *testing.
 		p.waitForDrain(5 * time.Second)
 	})
 
-	id := p.Add("user-1", SessionIdentity{Armed: true})
+	id := p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 	<-entered // parked, and nothing will release it
 
 	removed := make(chan struct{})
@@ -542,7 +542,7 @@ func TestRedisSessionPresence_RenewalRestoresAVanishedEntry(t *testing.T) {
 	t.Cleanup(p.Close)
 	ctx := t.Context()
 
-	id := p.Add("user-1", SessionIdentity{Label: "docapp", Armed: true})
+	id := p.Add("user-1", SessionIdentity{Label: "docapp", Armed: true}, SessionOrigin{})
 
 	// Evict it the way Redis would under memory pressure: entry and index
 	// member both gone, with the session still connected.
@@ -724,7 +724,7 @@ func TestRedisSessionPresence_RenewLoopUsesTheRateLimitedWarning(t *testing.T) {
 		renewals:      make(map[string]*renewal),
 	}
 	t.Cleanup(p.Close)
-	p.Add("user-1", SessionIdentity{Armed: true})
+	p.Add("user-1", SessionIdentity{Armed: true}, SessionOrigin{})
 
 	// Kill Redis out from under the renewal loop.
 	mr.Close()

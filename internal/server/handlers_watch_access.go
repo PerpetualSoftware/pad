@@ -26,10 +26,11 @@ import (
 // (handlers_events.go's computeSSEVisibility), which only ever resolves
 // visibility for the ONE workspace it's subscribed to.
 //
-// r is threaded through to computeWatchAccessVisibility for the
-// bearer-vs-cookie admin check (TASK-2533 codex round 2 finding 2) —
-// see that function's doc comment for why this call site can no longer
-// treat "userID is always the caller" as a reason to skip it.
+// r supplies the bearer-vs-cookie admin check (TASK-2533 codex round 2
+// finding 2) — see computeWatchAccessVisibility's doc comment for why
+// this call site can no longer treat "userID is always the caller" as a
+// reason to skip it. BUG-2725 replaced the *http.Request parameter on
+// that function with a plain bool, so the transport is read here, once.
 func (s *Server) filterWatchesByCurrentAccess(r *http.Request, userID string, watches []models.Watch) []models.Watch {
 	if len(watches) == 0 {
 		return watches
@@ -47,9 +48,13 @@ func (s *Server) filterWatchesByCurrentAccess(r *http.Request, userID string, wa
 		byWorkspace[w.WorkspaceID] = append(byWorkspace[w.WorkspaceID], w)
 	}
 
+	// One transport read for the whole call: r is a single request, so
+	// every watch it filters shares its auth transport.
+	bearerAuth := isBearerAuth(r)
+
 	out := make([]models.Watch, 0, len(watches))
 	for workspaceID, wsWatches := range byWorkspace {
-		vis := s.computeWatchAccessVisibility(r, user, workspaceID)
+		vis := s.computeWatchAccessVisibility(bearerAuth, user, workspaceID)
 		for _, w := range wsWatches {
 			if vis.allows(w.ItemCollectionID, w.ItemID) {
 				out = append(out, w)
@@ -140,8 +145,27 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // exemption from that reasoning; this now mirrors computeSSEVisibility's
 // bearer-vs-cookie distinction exactly, so admin access to watch/nudge
 // delivery has no bespoke ACL argument of its own left to defend.
-func (s *Server) computeWatchAccessVisibility(r *http.Request, user *models.User, workspaceID string) watchAccessVisibility {
-	if user.Role == "admin" && !isBearerAuth(r) {
+// BEARER-VS-COOKIE IS THE ONLY PER-CONNECTION INPUT, and BUG-2725 is why
+// it arrives as a bool rather than as the *http.Request it used to be.
+//
+// Every other input below is per-USER: platform role, workspace
+// membership, CollectionAccess, guest grants, system collections. They
+// resolve identically for every stream a given user holds. `bearerAuth`
+// is the single exception — it is a property of the individual
+// connection, fixed when that connection opened.
+//
+// That distinction is load-bearing for deliveredSessionCount
+// (handlers_push.go), which must reproduce this predicate for sessions
+// it is not serving. With an *http.Request parameter it could only ever
+// pass the PUSHER's request, silently answering for the wrong
+// connection. With a bool it can pass each target session's own
+// recorded transport — and, because this is the only varying input, it
+// needs AT MOST TWO resolutions per workspace no matter how many
+// sessions it counts. That bound is what retires the "N access checks
+// per push" cost objection permanently; it is enforced structurally in
+// deliveredSessionCount rather than argued.
+func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User, workspaceID string) watchAccessVisibility {
+	if user.Role == "admin" && !bearerAuth {
 		return watchAccessVisibility{fullAccess: true}
 	}
 

@@ -303,7 +303,8 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	// (MemorySessionPresence.Add, RedisSessionPresence.Add), so a
 	// reconnecting client never returns under a previous id on either.
 	deliveredSessionsUnknown := false
-	deliveredSessions, presenceErr := deliveredSessionCount(s.sessionPresence, userID, targetSessionID)
+	deliveredSessions, presenceErr := deliveredSessionCount(s.sessionPresence, userID, targetSessionID,
+		s.pushSessionVisibility(userID, workspaceID, item.CollectionID, item.ID))
 	if presenceErr != nil {
 		// PRESENCE GATES A TARGETED PUSH BUT ONLY COUNTS A BROADCAST, and
 		// that asymmetry is exactly why an unreadable registry gets two
@@ -408,7 +409,44 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // BUG-2698 filed, arriving through the fix for it. A nil registry still
 // yields (0, nil): that is a server built without presence, which is a
 // known configuration rather than an unknown state.
-func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string) (int, error) {
+// ITEM VISIBILITY (BUG-2725). The three filters above were only three
+// of delivery's FOUR gates. watchNotificationVisible checks
+// vis.allows(CollectionID, ItemID) FIRST, before armed and before
+// TargetUserID, and this function did not — so it counted sessions
+// whose stream would drop the notification on visibility. Broadcast
+// over-reported; a TARGETED push was worse, since the publish-skip below
+// reads this count: the gate passed, the push went out, the stream
+// dropped it, and the response said delivered_sessions: 1. An
+// instruction lost behind a success.
+//
+// Dave ruled (day-49) that visibility is RE-RESOLVED here rather than
+// snapshotted into the registry, for the reason watchNotificationVisible
+// re-reads it per notification: membership and grants are revocable, and
+// a value cached at connect goes wrong exactly when revocation is what
+// makes it matter.
+//
+// THE COST OBJECTION IS RETIRED STRUCTURALLY, NOT ARGUED. "Re-resolve
+// per counted session" reads like N access checks per push. It is at
+// most TWO, and visibleFor is what makes that true by construction
+// rather than by careful calling. The enumeration behind the bound
+// (receipt, so a successor can re-derive it instead of trusting it):
+// computeWatchAccessVisibility's inputs are platform role, workspace
+// membership, CollectionAccess, GuestVisibleResources,
+// GetMemberCollectionAccess, ListSystemCollectionIDs — all per-USER,
+// identical for every session this function counts, since it only ever
+// counts one user's own sessions — plus bearerAuth, which is
+// per-CONNECTION and the sole varying input. One varying boolean means
+// at most two distinct answers, so visibleFor memoizes both and the
+// loop cannot ask for a third however many sessions it walks.
+//
+// WHAT THIS STILL DOES NOT FIX, stated rather than implied: the
+// UNDER-count. A stream past maxSessionsPerUser (session_presence_redis.go)
+// receives broadcasts while never entering the registry, so it is
+// invisible here no matter how exactly this predicate is reproduced.
+// delivered_sessions remains an ESTIMATE with error in both directions,
+// and every consumer-facing description of it says so. Dave's ruling
+// scoped this unit to the over-side.
+func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string, visibleFor *sessionVisibility) (int, error) {
 	if presence == nil {
 		return 0, nil
 	}
@@ -424,9 +462,97 @@ func deliveredSessionCount(presence SessionPresence, userID, targetSessionID str
 		if targetSessionID != "" && sess.ID != targetSessionID {
 			continue
 		}
+		// Ordered LAST among the filters deliberately: it is the only one
+		// that can cost a store round trip, and armed/target reject most
+		// non-matching sessions for free. The ORDER is an optimization;
+		// the SET of filters is the contract.
+		if !visibleFor.allows(sess.BearerAuth) {
+			continue
+		}
 		count++
 	}
 	return count, nil
+}
+
+// sessionVisibility answers "would a stream on this transport, held by
+// this user, see this notification's item?" — and answers it at most
+// twice, once per possible transport, however many times it is asked
+// (BUG-2725).
+//
+// The memo is the point, not an optimization detail. It is what makes
+// deliveredSessionCount's ≤2-resolutions bound a property of the type
+// rather than a discipline the caller has to maintain: a future edit
+// that moves the allows() call, adds a second loop, or counts sessions
+// twice cannot turn this into N resolutions.
+//
+// A nil *sessionVisibility allows everything. That is for callers with
+// no notification in hand (there are none on the push path today) and
+// for tests exercising the armed/target filters in isolation; it is
+// deliberately NOT the behaviour any production call site gets, and
+// there is a test asserting the push handler passes a real one.
+type sessionVisibility struct {
+	// resolve is called at most once per distinct transport.
+	resolve func(bearerAuth bool) bool
+	cached  [2]bool
+	done    [2]bool
+}
+
+func (v *sessionVisibility) allows(bearerAuth bool) bool {
+	if v == nil || v.resolve == nil {
+		return true
+	}
+	i := 0
+	if bearerAuth {
+		i = 1
+	}
+	if !v.done[i] {
+		v.cached[i] = v.resolve(bearerAuth)
+		v.done[i] = true
+	}
+	return v.cached[i]
+}
+
+// resolutions reports how many distinct transports have actually been
+// resolved. Exists for the test that pins the ≤2 bound — an assertion
+// that the bound HOLDS is worth more than a comment claiming it does,
+// and this is the only way to observe it from outside.
+func (v *sessionVisibility) resolutions() int {
+	if v == nil {
+		return 0
+	}
+	n := 0
+	for _, d := range v.done {
+		if d {
+			n++
+		}
+	}
+	return n
+}
+
+// pushSessionVisibility builds the re-resolving predicate
+// deliveredSessionCount applies, reproducing watchNotificationVisible's
+// FIRST gate exactly: the same computeWatchAccessVisibility, the same
+// allows(collectionID, itemID), for the same user, in the notification's
+// own workspace.
+//
+// The user is re-fetched rather than taken from the pushing request's
+// context, mirroring watchVisCache.refreshUser: a disabled or deleted
+// user's streams must not be counted as reachable. It FAILS CLOSED on a
+// fetch error for the same reason that function does — over-counting is
+// the defect being fixed here, so an unresolvable user resolves to "not
+// visible" rather than to "count it anyway".
+func (s *Server) pushSessionVisibility(userID, workspaceID, collectionID, itemID string) *sessionVisibility {
+	return &sessionVisibility{
+		resolve: func(bearerAuth bool) bool {
+			user, err := s.store.GetUser(userID)
+			if err != nil || user == nil || user.IsDisabled() {
+				slog.Warn("push: could not resolve pushing user for visibility, counting no sessions",
+					"user_id", userID, "error", err)
+				return false
+			}
+			return s.computeWatchAccessVisibility(bearerAuth, user, workspaceID).allows(collectionID, itemID)
+		},
+	}
 }
 
 // pushPublishUnconfirmedCode is the error code for a push whose publish
