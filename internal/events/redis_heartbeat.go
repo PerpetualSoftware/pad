@@ -529,17 +529,34 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 		}
 		// THE PREMISE HAS TO HOLD BEFORE THE CONCLUSION IS DRAWN. Silence only
 		// means "the receive path is dead" if we actually managed to send
-		// something into it; see redisSub.lastProbeOK.
+		// something into it AFTER the silence began; see redisSub.lastProbeOK.
 		//
-		// CHECKED HERE AND AGAIN IN cycleOne, and removing either one alone
-		// survives the tests while removing both is detected. Checked rather
-		// than assumed, per the team lesson that a pair dying only together is
-		// a question: they cover different moments. This one keeps a
+		// EXPRESSED AS AN ORDERING, not as an age, and the honest reason is
+		// weaker than the one this comment first gave. Codex round 16 argued
+		// an age-based form ("has a probe succeeded within the threshold")
+		// failed to suspend detection where this one would; the mutation
+		// matrix then declined to confirm it — reverting to the age form, and
+		// even removing cycleOne's copy too, breaks no test, and no case could
+		// be constructed that separates them. On any healthy path the two
+		// stamps advance TOGETHER, because a probe whose frame arrives sets
+		// both; they diverge only on the wedge, where both forms cycle.
+		//
+		// It is kept because it says exactly what the rule means — we have
+		// sent something into this subscription more recently than anything
+		// came out of it — and is never weaker. Not because it was shown to
+		// fix a reachable defect. A fresh subscription has the two equal, so it
+		// is never cycled before its first successful probe.
+		//
+		// CHECKED HERE AND AGAIN IN cycleOne. Removing either alone leaves the
+		// tests green, and so does removing both, for the reason above; the
+		// pair is justified by what it expresses, not by the matrix.
+		//
+		// The two placements still cover different moments: this one keeps a
 		// workspace off the due list at all, so no establishment record is
-		// minted and no joiner is made to wait; cycleOne's covers the probe
-		// starting to fail AFTER selection, which the concurrency cap makes a
-		// real window. Neither subsumes the other.
-		if now.Sub(sub.lastProbeOK) >= idleTimeout {
+		// minted and no joiner is made to wait, while cycleOne's covers the
+		// probe failing AFTER selection — a window the concurrency cap makes
+		// real. Neither subsumes the other.
+		if !sub.lastProbeOK.After(sub.lastSeen) {
 			continue
 		}
 		// Minting the record HERE is what makes rule 1 hold in the other
@@ -672,10 +689,12 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 		b.mu.Unlock()
 		close(c.pending.done)
 		return
-	case b.now().Sub(sub.lastProbeOK) >= idleTimeout:
-		// The probe started failing while this cycle sat in the queue. Same
-		// reasoning as the scan's check: with no successful probe we have no
-		// evidence about the receive path, so tearing it down would be a guess.
+	case !sub.lastProbeOK.After(sub.lastSeen):
+		// The probe started failing, or something arrived, while this cycle sat
+		// in the queue. Same ordering rule as the scan's check: with no
+		// successful probe SINCE the last thing we received, we have no
+		// evidence about the receive path, so tearing it down would be a
+		// guess.
 		b.retirePendingLocked(c.workspaceID, c.pending)
 		b.mu.Unlock()
 		close(c.pending.done)
@@ -727,6 +746,14 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	// same critical section either way, so no joiner is stranded by a cycle any
 	// more than by a cancelled caller (BUG-2749).
 	installed := b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending)
+	if !installed {
+		// THE OUTCOME IS LOGGED, not only the attempt (codex round 16). The
+		// line above says "attempting"; without this an on-call correlating it
+		// with pad_event_subscription_cycled_total finds a log with no counter
+		// and no explanation, on the one path where that is expected.
+		slog.Warn("events: the idle cycle installed no replacement subscription; the workspace was left uncovered because the bus is closing or it lost its last subscriber",
+			"workspace", c.workspaceID)
+	}
 
 	if b.afterCycleEstablish != nil {
 		b.afterCycleEstablish(c.workspaceID)

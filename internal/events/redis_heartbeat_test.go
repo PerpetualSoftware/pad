@@ -1153,6 +1153,63 @@ func TestAProbeDoesNotCreditTheSubscriptionThatReplacedItsTarget(t *testing.T) {
 	}
 }
 
+// TestAFailedProbeAfterASuccessfulOneStillSuspendsDetection pins the premise
+// check across a probe that succeeds and then starts failing.
+//
+// WHAT THIS DOES AND DOES NOT ESTABLISH, stated because the first version of
+// this comment claimed more. Codex round 16 argued the age-based premise
+// ("has a probe succeeded within the threshold") failed to suspend detection
+// where the ordering rule ("has a probe succeeded since anything last
+// arrived") would, and the rule was rewritten on that argument. The mutation
+// matrix then refused to confirm it: reverting to the age-based form — and
+// even removing cycleOne's copy as well — leaves this test green, and no case
+// I could construct separates the two.
+//
+// The reason is that on any healthy path lastSeen and lastProbeOK advance
+// TOGETHER: a probe that succeeds and whose frame arrives stamps both. They
+// diverge only when a probe succeeds and its frame does NOT arrive, which is
+// the wedge, and both formulations cycle there. So the ordering rule is kept
+// because it states the intent exactly — "we have sent something into this
+// subscription more recently than anything came out of it" — and is never
+// weaker, NOT because it was demonstrated to fix a reachable defect.
+//
+// What this test does pin, and what the matrix confirms it pins, is the
+// property both formulations share and neither had before: a probe that has
+// started failing stops the detector drawing conclusions from silence.
+func TestAFailedProbeAfterASuccessfulOneStillSuspendsDetection(t *testing.T) {
+	b, mr, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(ch)
+	genBefore, _ := b.liveGen("ws-1")
+
+	// A successful probe first, so the stamp is RECENT by any age-based
+	// measure — which is exactly what made the old rule pass this case.
+	clock.advance(time.Second)
+	b.publishHeartbeats()
+	if obs.probeFailureCount() != 0 {
+		t.Fatal("fixture: the first probe was supposed to succeed")
+	}
+
+	// Now the route wedges and the probe starts failing. Age says the earlier
+	// success is still fresh; ordering says we have learned nothing since.
+	mr.Close()
+	clock.advance(DefaultIdleTimeout - time.Second)
+	b.publishHeartbeats()
+	if obs.probeFailureCount() == 0 {
+		t.Fatal("fixture: the second probe was supposed to fail")
+	}
+	clock.advance(2 * time.Second)
+	b.cycleIdleSubscriptions()
+
+	if got := obs.cycledCount(); got != 0 {
+		t.Fatalf("a subscription was cycled %d times although the most recent probe failed: detection is drawing conclusions from silence it can no longer test", got)
+	}
+	if genAfter, _ := b.liveGen("ws-1"); genAfter != genBefore {
+		t.Fatalf("the connection was replaced (generation %d → %d) on the strength of a probe that never went out", genBefore, genAfter)
+	}
+}
+
 // TestASuccessfulProbeStillAllowsCycling is the counterfactual: the premise
 // check must suspend detection when we cannot probe, not disable it. Without
 // this pair, "no cycles" is satisfied by a detector that has stopped working.

@@ -245,9 +245,13 @@ type Metrics struct {
 	EventSequenceResetsTotal *prometheus.CounterVec
 
 	// EventReceiveLoopExitsTotal counts a workspace's Redis subscription loop
-	// stopping. Expected at shutdown and whenever the last local subscriber
-	// for a workspace leaves, so unlike the watch stream's twin it does NOT
-	// stay at zero — read it as a RATE against a stable subscriber count.
+	// stopping. Expected at shutdown, whenever the last local subscriber for a
+	// workspace leaves, AND on every idle cycle (BUG-2738) — a cycle stops the
+	// old loop while its subscribers are still connected, which is a case this
+	// comment did not previously admit. So unlike the watch stream's twin it
+	// does NOT stay at zero: read it as a RATE against a stable subscriber
+	// count, and expect it to track pad_event_subscription_cycled_total during
+	// a connectivity incident.
 	EventReceiveLoopExitsTotal prometheus.Counter
 
 	// EventSubscriptionUnconfirmedTotal counts activity-stream subscriptions
@@ -573,7 +577,7 @@ func New() *Metrics {
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_receive_loop_exits_total",
-		Help: "Times a workspace's activity subscription loop stopped. Expected at shutdown and when a workspace's last local subscriber leaves — read as a rate against a stable subscriber count.",
+		Help: "Times a workspace's activity subscription loop stopped. Expected at shutdown, when a workspace's last local subscriber leaves, and on every idle cycle (BUG-2738) — a cycle stops the old loop while its subscribers are still connected. Read as a rate against a stable subscriber count; during a connectivity incident expect it to track pad_event_subscription_cycled_total.",
 	})
 
 	eventSubscriptionUnconfirmedTotal := prometheus.NewCounter(prometheus.CounterOpts{
