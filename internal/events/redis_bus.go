@@ -1836,6 +1836,15 @@ const stragglerWindow = 30 * time.Second
 // defaultSubscribeConfirmTimeout bounds the wait for Redis to acknowledge a new
 // subscription (BUG-2747).
 //
+// IT BOUNDS THE ACKNOWLEDGEMENT, NOT THE WHOLE OF ESTABLISHMENT (codex round
+// 7). The dial and go-redis's HELLO/AUTH handshake happen inside
+// client.Subscribe, before this timer starts, and they are bounded by the
+// CLIENT's DialTimeout — 5s by default, and not by any context we pass. So a
+// stalled dial followed by this wait composes to roughly DialTimeout + this,
+// and anyone reasoning about worst-case connect latency needs both numbers.
+// BUG-2749 carries the same arithmetic for the admission slot that is held
+// across it.
+//
 // SHORT BECAUSE THE DISTRIBUTION HAS NO MIDDLE, not as a guess at how fast
 // Redis is. Establishment either completes in single-digit milliseconds or does
 // not complete at all, so past the top of the fast mode, waiting longer buys

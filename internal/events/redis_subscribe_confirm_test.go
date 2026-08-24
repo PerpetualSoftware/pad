@@ -195,6 +195,16 @@ func TestConcurrentFirstSubscribersShareOneRedisSubscription(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatalf("caller %d did not receive the event", i)
 		}
+		// EXACTLY ONCE, not merely at least once (codex round 7). Two
+		// establishments mean two receive loops fanning the same event out
+		// twice; reading one and moving on would leave the duplicate sitting
+		// in the channel undetected, and the subscriber-count assertion above
+		// is topology rather than the behaviour anyone cares about.
+		select {
+		case dup := <-ch:
+			t.Fatalf("caller %d received a second copy of the event (%d): the workspace has more than one subscription", i, dup.ID)
+		case <-time.After(250 * time.Millisecond):
+		}
 		b.Unsubscribe(ch)
 	}
 }
@@ -642,6 +652,16 @@ func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 // nobody will keep, and returns holding a channel wired to nothing — and
 // PERMANENTLY, because its own registration makes wsCounts non-zero so no
 // later caller establishes either. A dead stream that looks alive.
+//
+// IT FABRICATES THE STATE ON PURPOSE, and that is worth stating rather than
+// hiding (codex round 7). It empties the maps directly instead of calling
+// Unsubscribe because the establishing caller is blocked inside Subscribe and
+// its channel does not exist yet — nobody can unsubscribe it. That is the same
+// reason the retry it exercises is DEFENCE IN DEPTH: with the record retired in
+// the same critical section as the decision, a joiner cannot reach this state
+// through the public surface at all. So this pins the recovery path, not a
+// reachable defect, and it is the honest way to have any coverage of a path
+// whose unreachability is an argument rather than a measurement.
 func TestAJoinerIsNotStrandedByAnAbandonedEstablishment(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})

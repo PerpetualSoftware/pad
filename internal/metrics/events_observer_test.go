@@ -46,6 +46,14 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.ReceiveLoopExited()
 	obs.ReceiveLoopExited()
 
+	// Counted on its OWN counter, not folded into the reset series. The two
+	// answer different questions — a reset says coverage ended, this says a
+	// stream was admitted whose coverage is undescribable — and an adapter that
+	// merged them would satisfy a total-only assertion while destroying the
+	// distinction an operator acts on (BUG-2747).
+	obs.SubscriptionUnconfirmed()
+	obs.SubscriptionUnconfirmed()
+
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 2)
 	// The reason must land on a LABELLED series, not on the bare counter: an
 	// adapter that dropped the label would satisfy a total-only assertion and
@@ -58,6 +66,11 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 		map[string]string{"reason": events.ResetReasonCounterBackward}, 2)
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonEpochRegressed}, 1)
+	assertCounter(t, m, "pad_event_subscription_unconfirmed_total", nil, 2)
+	// ...and it did NOT leak into the reset series, which is the half a
+	// merged-counter adapter would still pass without.
+	assertCounter(t, m, "pad_event_sequence_resets_total",
+		map[string]string{"reason": events.ResetReasonSubscriptionUnconfirmed}, 0)
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonUndecodableMessage}, 5)
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)
