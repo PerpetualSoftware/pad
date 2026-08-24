@@ -717,6 +717,29 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 			}
 		}
 	}
+	// A SUB-ROUTED static sibling is a shape this guard was not built
+	// for, and guessing about it fails OPEN: routes under
+	// r.Route("/deleted", ...) would live outside RequireWorkspaceAccess
+	// while pathIsWorkspaceScoped — which only inspects the first
+	// segment — would call them middleware-protected (codex round 7 P1).
+	//
+	// None exist today. Rather than build speculative handling for a
+	// shape with no instances, the guard REFUSES: if one appears, this
+	// fails and whoever added it has to teach the classifier about it.
+	// Fail-closed on an unmodelled shape beats a silent wrong answer.
+	// Search past the block's OWN opening line, which is itself an
+	// r.Route("/workspaces", ...) and would otherwise match.
+	inner := block
+	if nl := strings.IndexByte(inner, '\n'); nl >= 0 {
+		inner = inner[nl:]
+	}
+	if m := regexp.MustCompile(`r\.Route\("(/[^{"][^"]*)"`).FindStringSubmatch(inner); m != nil {
+		t.Errorf("server.go now sub-routes a static sibling at %q inside /workspaces. Routes beneath it are "+
+			"OUTSIDE RequireWorkspaceAccess, but pathIsWorkspaceScoped only inspects the first path segment "+
+			"and would treat them as gated. Teach the classifier about this shape before adding routes under it.",
+			m[1])
+	}
+
 	sort.Strings(unaccounted)
 	if len(unaccounted) > 0 {
 		t.Errorf("server.go registers routes BESIDE the /{slug} subrouter that this guard does not know about.\n\n"+
@@ -843,6 +866,21 @@ func TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite(t *testing.T) {
 // firstHandlerMentioned pulls the first handleXxx identifier out of a
 // reason string, which is how a filtersAllowlist entry says WHERE it
 // filters.
+func handlersMentioned(reason string) []string {
+	var out []string
+	for _, tok := range strings.FieldsFunc(reason, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '\t' || r == ',' || r == '(' || r == ')' || r == '\u2192'
+	}) {
+		if strings.HasSuffix(tok, ".go") {
+			continue
+		}
+		if strings.HasPrefix(tok, "handle") && len(tok) > len("handle") {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
 func firstHandlerMentioned(reason string) string {
 	for _, tok := range strings.FieldsFunc(reason, func(r rune) bool {
 		return r == ' ' || r == '\n' || r == '\t' || r == ',' || r == '(' || r == ')' || r == '\u2192'
@@ -921,17 +959,29 @@ func TestAllowlistCoverage_ExemptClaimsAreCheckedOrMarkedAsJudgment(t *testing.T
 				bad = append(bad, cmdKey+": reason names "+file+", which does not exist in internal/server")
 				continue
 			}
-			body, ok := functionBody(string(src), fn)
-			if !ok {
-				bad = append(bad, cmdKey+": reason names "+fn+", which is not defined in "+file)
+			// EVERY handler the reason names, not just the first: the
+			// library exemption cites two, and checking one let changes
+			// to the other bypass the guard entirely (codex round 7 P2).
+			failed := false
+			for _, name := range handlersMentioned(c.reason) {
+				body, ok := functionBody(string(src), name)
+				if !ok {
+					bad = append(bad, cmdKey+": reason names "+name+", which is not defined in "+file)
+					failed = true
+					break
+				}
+				if strings.Contains(body, "s.store.") && !strings.HasPrefix(strings.TrimSpace(c.reason), "JUDGMENT:") {
+					bad = append(bad, cmdKey+": "+name+" DOES touch the store, so \"structurally cannot leak\" is "+
+						"an argument, not a mechanism — prefix the reason with JUDGMENT: or reclassify")
+					failed = true
+					break
+				}
+				checkedMechanically++
+			}
+			if failed {
 				continue
 			}
-			if strings.Contains(body, "s.store.") && !strings.HasPrefix(strings.TrimSpace(c.reason), "JUDGMENT:") {
-				bad = append(bad, cmdKey+": "+fn+" DOES touch the store, so \"structurally cannot leak\" is an "+
-					"argument, not a mechanism — prefix the reason with JUDGMENT: or reclassify")
-				continue
-			}
-			checkedMechanically++
+			_ = fn
 			continue
 		}
 		if !strings.HasPrefix(strings.TrimSpace(c.reason), "JUDGMENT:") {
