@@ -81,8 +81,17 @@ const (
 	// the allow-list itself. The reason names where.
 	filtersAllowlist
 	// exempt: workspace-global URL that structurally cannot leak
-	// workspace data. The reason must say WHY, because this is the
-	// class a future reader is most likely to reach for wrongly.
+	// workspace data.
+	//
+	// THIS IS THE CLASS THAT CAN HIDE A LEAK, because "cannot leak" is
+	// an argument rather than a mechanism, and a future handler could
+	// evade the guard simply by choosing it (codex round 6 P1). Two
+	// mitigations, both below: an exempt entry naming a handler has
+	// that handler checked for store access — a handler that touches
+	// the store is not structurally safe and must justify itself — and
+	// an entry that cannot be checked that way must open its reason
+	// with JUDGMENT: so it is visibly a human call rather than a
+	// verified fact.
 	exempt
 )
 
@@ -123,23 +132,27 @@ var allowlistCoverage = map[string]allowlistClassification{
 
 	// --- Workspace-global, structurally exempt ---
 	"library list": {exempt,
-		"GET /convention-library and /playbook-library serve compiled-in static content — ZERO s.store. calls " +
-			"in either handler, so there is no workspace data to scope. Verified by grep, not assumed"},
+		"handlers_convention_library.go handleConventionLibrary (and its playbook twin) serve compiled-in " +
+			"static content. MECHANICALLY CHECKED: zero s.store. calls, so there is no workspace data to scope"},
 	"library get": {exempt,
-		"GET /library/entry serves compiled-in static library content — ZERO s.store. calls in the handler, " +
-			"so there is no workspace data to scope. Verified by grep, not assumed"},
+		"handlers_library_entry.go handleLibraryEntry serves compiled-in static library content. " +
+			"MECHANICALLY CHECKED: zero s.store. calls"},
 	"workspace audit-log": {exempt,
-		"GET /audit-log REFUSES outright for any allow-listed token — handlers_audit.go returns 403 when " +
-			"TokenAllowedWorkspaceSet is non-nil. Classified exempt rather than filtersAllowlist because it does " +
-			"not narrow the response, it declines to serve one at all"},
+		"JUDGMENT: handlers_audit.go handleAuditLog reads the store, but REFUSES outright for any allow-listed " +
+			"token — 403 when TokenAllowedWorkspaceSet is non-nil. Exempt rather than filtersAllowlist because it " +
+			"does not narrow the response, it declines to serve one; the judgment is that deny-all is a stronger " +
+			"guarantee than filtering, not a weaker one"},
 	"auth whoami": {exempt,
-		"GET /auth/me returns the CALLER'S OWN profile. Not workspace data, and the allow-list scopes workspaces"},
+		"JUDGMENT: GET /auth/me reads the store, but only for the CALLER'S OWN profile. That is not workspace " +
+			"data, and a workspace allow-list scopes workspaces — so the exemption rests on what the endpoint " +
+			"MEANS, not on it being inert"},
 	"workspace claim": {exempt,
-		"POST /oauth/claim is the endpoint that ADDS a workspace to the allow-list. Gating it on the allow-list would make " +
-			"claiming impossible — it is the consent-widening mechanism itself. Its own gates are workspace membership, a " +
-			"secret-derived 6-digit code, and a uniform 404 that prevents probing"},
+		"JUDGMENT: POST /oauth/claim reads the store, and is the endpoint that ADDS a workspace to the " +
+			"allow-list. Gating it on the allow-list would make claiming impossible — it IS the consent-widening " +
+			"mechanism. Its own gates are workspace membership, a secret-derived 6-digit code, and a uniform 404 " +
+			"that prevents probing"},
 	"workspace create": {exempt,
-		"POST /workspaces cannot DISCLOSE anything: it mints a new workspace rather than reading an existing one, so no " +
+		"JUDGMENT: POST /workspaces reads and writes the store, but cannot DISCLOSE anything: it mints a new workspace rather than reading an existing one, so no " +
 			"data the allow-list protects is reachable through it. The consent model already has a dedicated capability " +
 			"for this — the connection's may_create_workspaces checkbox — and when it is set, " +
 			"maybeAutoAddCreatorConnection adds the new workspace to the allow-list (added_by='agent-create', " +
@@ -874,6 +887,66 @@ func firstGoFileMentioned(reason string) string {
 		}
 	}
 	return ""
+}
+
+// TestAllowlistCoverage_ExemptClaimsAreCheckedOrMarkedAsJudgment
+// narrows the one class that could hide a leak (codex round 6 P1).
+//
+// `exempt` means "structurally cannot leak workspace data", which for
+// the static-content handlers is a MECHANICAL fact — they make no store
+// calls at all — and for the rest is a judgment about semantics that no
+// test can settle. Conflating the two lets a judgment ride as if it
+// were verified.
+//
+// So: an exempt entry naming a handler gets that handler checked for
+// store access. One that touches the store is not structurally safe by
+// construction and must instead be argued, which means marking it. And
+// an entry with no handler to check must open with JUDGMENT:, so a
+// reader can see at a glance which exemptions rest on a person's
+// reasoning.
+func TestAllowlistCoverage_ExemptClaimsAreCheckedOrMarkedAsJudgment(t *testing.T) {
+	t.Parallel()
+
+	checkedMechanically := 0
+	var bad []string
+	for cmdKey, c := range allowlistCoverage {
+		if c.class != exempt {
+			continue
+		}
+		file := firstGoFileMentioned(c.reason)
+		fn := firstHandlerMentioned(c.reason)
+		if file != "" && fn != "" {
+			src, err := os.ReadFile(filepath.Join("..", "server", file))
+			if err != nil {
+				bad = append(bad, cmdKey+": reason names "+file+", which does not exist in internal/server")
+				continue
+			}
+			body, ok := functionBody(string(src), fn)
+			if !ok {
+				bad = append(bad, cmdKey+": reason names "+fn+", which is not defined in "+file)
+				continue
+			}
+			if strings.Contains(body, "s.store.") && !strings.HasPrefix(strings.TrimSpace(c.reason), "JUDGMENT:") {
+				bad = append(bad, cmdKey+": "+fn+" DOES touch the store, so \"structurally cannot leak\" is an "+
+					"argument, not a mechanism — prefix the reason with JUDGMENT: or reclassify")
+				continue
+			}
+			checkedMechanically++
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(c.reason), "JUDGMENT:") {
+			bad = append(bad, cmdKey+": exempt with no handler to check — open the reason with JUDGMENT: "+
+				"so the exemption is visibly a human call rather than a verified fact")
+		}
+	}
+	sort.Strings(bad)
+	if len(bad) > 0 {
+		t.Errorf("exempt entries that are neither mechanically checked nor marked as judgment:\n  %s",
+			strings.Join(bad, "\n  "))
+	}
+	if checkedMechanically == 0 {
+		t.Error("no exempt entry was mechanically checked — this test would pass vacuously")
+	}
 }
 
 // TestPathIsWorkspaceScoped covers the classifier itself, including
