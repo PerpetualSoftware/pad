@@ -154,4 +154,36 @@ describe('EpisodeFeed', () => {
 		expect(checkpoint!.textContent).toContain('latest: Checkpoint: wiring the fold');
 		expect(checkpoint!.textContent).not.toContain('second line stays hidden');
 	});
+
+	// TASK-2759. foldEpisodes computes the label; this asserts the FEED renders
+	// it (CONVE-19 — a correct fold the card never reads would pass every test
+	// in activityEpisodes.test.ts). Two named agents on separate items also
+	// prove the fold key follows the name: a filtered or blanked label would
+	// merge them into one card, so the count is the counterfactual.
+	it('renders each agent under its own stamped name', async () => {
+		const onOtherItem = {
+			document_id: 'item-other',
+			item_ref: 'BUG-7',
+			item_title: 'Other thing',
+			item_slug: 'other-thing',
+			collection_slug: 'bugs',
+		};
+		mountFeed([
+			act(1, { metadata: '{"agent":"wren"}' }),
+			act(2, { metadata: '{"agent":"rook"}', ...onOtherItem }),
+		]);
+		await settle();
+
+		const labels = [...host.querySelectorAll('.ep-actor')].map((el) => el.textContent);
+		expect(labels.sort()).toEqual(['rook', 'wren']);
+	});
+
+	it('renders the generic label for an agent that stamped no name', async () => {
+		// `act`'s default metadata is '{}' — the pre-BUG-2542 shape, and the
+		// shape any agent that never sends the header still produces.
+		mountFeed([act(1)]);
+		await settle();
+
+		expect(host.querySelector('.ep-actor')!.textContent).toBe('agent');
+	});
 });
