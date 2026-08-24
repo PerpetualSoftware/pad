@@ -52,7 +52,7 @@ func newFlippedRedisBus(t *testing.T) (*RedisBus, *miniredis.Miniredis) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	b := NewRedisBusWithKeys(client, redisns.Default, true)
+	b := NewRedisBusWithKeys(client, redisns.Default, true, false)
 	t.Cleanup(b.Close)
 	return b, mr
 }
@@ -69,7 +69,7 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 
 	t.Run("prefixed", func(t *testing.T) {
 		body, _ := json.Marshal(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-		epoch, ev, err := decodePayload("7|77|" + string(body))
+		_, epoch, ev, err := decodePayload("7|77|" + string(body))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -87,7 +87,7 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 	})
 
 	t.Run("bare, which is what every phase-1 publisher emits", func(t *testing.T) {
-		epoch, ev, err := decodePayload(string(bare))
+		_, epoch, ev, err := decodePayload(string(bare))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -106,7 +106,7 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 		if !strings.Contains(string(body), "|") {
 			t.Fatal("fixture: the body must contain pipes for this case to mean anything")
 		}
-		epoch, ev, err := decodePayload(string(body))
+		_, epoch, ev, err := decodePayload(string(body))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -136,7 +136,7 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 			"bare, negative id": string(mustMarshalEvent(t, Event{ID: -7, Type: ItemUpdated, WorkspaceID: "ws-1"})),
 			"prefix without id": "7|" + string(body),
 		} {
-			if _, _, err := decodePayload(payload); err == nil {
+			if _, _, _, err := decodePayload(payload); err == nil {
 				t.Errorf("%s: want an error, got none", name)
 			}
 		}
@@ -152,7 +152,7 @@ func TestPhaseTwoPublishesThePrefixedFormAndPhaseOneDoesNot(t *testing.T) {
 
 		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7", Title: "carried"})
 
-		epoch, ev, err := decodePayload(next())
+		_, epoch, ev, err := decodePayload(next())
 		if err != nil {
 			t.Fatalf("a flipped instance must emit a decodable payload: %v", err)
 		}
@@ -174,7 +174,7 @@ func TestPhaseTwoPublishesThePrefixedFormAndPhaseOneDoesNot(t *testing.T) {
 		mr := miniredis.RunT(t)
 		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		t.Cleanup(func() { _ = client.Close() })
-		b := NewRedisBusWithKeys(client, redisns.Default, false)
+		b := NewRedisBusWithKeys(client, redisns.Default, false, false)
 		t.Cleanup(b.Close)
 
 		next := listen(t, client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
@@ -493,7 +493,7 @@ func TestAPhaseOneRestartClearsAStaleEpoch(t *testing.T) {
 	seqKey := redisns.Default.Name(redisSeqSuffix)
 
 	// Phase 2 first: it is what writes an epoch at all.
-	flipped := NewRedisBusWithKeys(client, redisns.Default, true)
+	flipped := NewRedisBusWithKeys(client, redisns.Default, true, false)
 	t.Cleanup(flipped.Close)
 	flipped.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
@@ -503,7 +503,7 @@ func TestAPhaseOneRestartClearsAStaleEpoch(t *testing.T) {
 	}
 
 	// Roll back to phase 1, then lose the counter.
-	phase1 := NewRedisBusWithKeys(client, redisns.Default, false)
+	phase1 := NewRedisBusWithKeys(client, redisns.Default, false, false)
 	t.Cleanup(phase1.Close)
 	mr.Del(seqKey)
 
@@ -759,7 +759,7 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 					collected <- fmt.Errorf("the pubsub channel closed after %d of %d messages", len(ids), n)
 					return
 				}
-				_, ev, err := decodePayload(msg.Payload)
+				_, _, ev, err := decodePayload(msg.Payload)
 				if err != nil {
 					collected <- fmt.Errorf("message %d: %w", len(ids), err)
 					return
@@ -869,7 +869,7 @@ func TestACorruptedEpochKeyIsRotatedRatherThanEmitted(t *testing.T) {
 		}
 		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
 
-		epoch, _, err := decodePayload(next())
+		_, epoch, _, err := decodePayload(next())
 		if err != nil {
 			t.Fatalf("epoch %q: the publisher must emit a decodable payload, got %v", corrupt, err)
 		}
@@ -889,7 +889,7 @@ func TestACorruptedEpochKeyIsRotatedRatherThanEmitted(t *testing.T) {
 		t.Fatalf("read epoch: %v", err)
 	}
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	_, _, _ = decodePayload(next())
+	_, _, _, _ = decodePayload(next())
 	after, err := mr.Get(epochKey)
 	if err != nil {
 		t.Fatalf("read epoch: %v", err)
@@ -1003,7 +1003,7 @@ func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
 	newBus := func(publishEpoch bool) *RedisBus {
 		client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		t.Cleanup(func() { _ = client.Close() })
-		b := NewRedisBusWithKeys(client, redisns.Default, publishEpoch)
+		b := NewRedisBusWithKeys(client, redisns.Default, publishEpoch, false)
 		t.Cleanup(b.Close)
 		return b
 	}
@@ -1337,7 +1337,7 @@ func TestAWrongTypedEpochKeyIsRecoveredToo(t *testing.T) {
 	// never entered. Found by the mutation matrix: without this publish the
 	// test passed with the TYPE check deleted.
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	if _, _, err := decodePayload(next()); err != nil {
+	if _, _, _, err := decodePayload(next()); err != nil {
 		t.Fatalf("fixture: the first publish must succeed, got %v", err)
 	}
 
@@ -1356,7 +1356,7 @@ func TestAWrongTypedEpochKeyIsRecoveredToo(t *testing.T) {
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})
 
-	epoch, ev, err := decodePayload(next())
+	_, epoch, ev, err := decodePayload(next())
 	if err != nil {
 		t.Fatalf("the publish must survive a wrong-typed epoch key: %v", err)
 	}

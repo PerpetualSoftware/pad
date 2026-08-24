@@ -56,3 +56,10 @@ func (o *EventsObserver) EventDropped(reason string) {
 func (o *EventsObserver) SubscriptionUnconfirmed() {
 	o.m.EventSubscriptionUnconfirmedTotal.Inc()
 }
+
+// SubscriptionCycled is unlabelled for the same reason SubscriptionUnconfirmed
+// is: the workspace is the only dimension on offer and it is the cardinality
+// bomb ResumeGap's comment describes.
+func (o *EventsObserver) SubscriptionCycled() {
+	o.m.EventSubscriptionCycledTotal.Inc()
+}

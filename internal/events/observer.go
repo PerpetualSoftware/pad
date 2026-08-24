@@ -116,6 +116,28 @@ type Observer interface {
 	// stalling — the same Redis condition BUG-2748 makes an availability
 	// hazard.
 	SubscriptionUnconfirmed()
+
+	// SubscriptionCycled reports that a workspace's Redis subscription received
+	// NOTHING — no event, no heartbeat, no acknowledgement — for longer than
+	// the bus's idle timeout, so its connection was torn down and replaced
+	// (BUG-2738).
+	//
+	// IT IS COUNTED SEPARATELY FROM SequenceReset FOR A REASON THAT IS NOT
+	// STYLISTIC. An idle cycle calls dropWorkspaceCoverage, which reports
+	// SequenceReset with reason idle_timeout — but ONLY when a buffer existed
+	// to drop, and the case this detector exists for is disproportionately the
+	// case with no buffer: a route that wedged early, on a quiet workspace,
+	// having delivered nothing this instance could buffer. Reading cycles off
+	// the reset counter alone would therefore under-report exactly the
+	// incidents it was built to find. This counter is the dependable one; the
+	// idle_timeout reset label is corroboration.
+	//
+	// Expect zero. A non-zero rate means connections between this instance and
+	// Redis are being silently blackholed — a NAT idle timeout, a stateful
+	// firewall, an overlay network dropping long-lived flows. Compare against
+	// TCP keepalive settings on the path before tuning the interval, because
+	// tuning the interval treats the symptom.
+	SubscriptionCycled()
 }
 
 // Drop reasons. Bounded by construction so they are safe as metric labels.
@@ -191,6 +213,22 @@ const (
 	// deliberate asymmetry between the metric and the client signal. The
 	// dependable counter for this condition is Observer.SubscriptionUnconfirmed.
 	ResetReasonSubscriptionUnconfirmed = "subscription_unconfirmed"
+
+	// ResetReasonIdleTimeout means a workspace's Redis subscription received
+	// nothing at all for longer than the bus's idle timeout, so this instance
+	// stopped vouching for its buffer and replaced the connection (BUG-2738).
+	//
+	// WHAT IT ESTABLISHES IS NOT THAT EVENTS WERE LOST, unlike
+	// subscription_resumed: nothing was observed going missing. What it says is
+	// that the socket stopped proving it works, and a socket that cannot be
+	// proved cannot back a coverage claim. On a phase-2 deployment the silence
+	// includes this instance's own heartbeats, which is what makes it
+	// diagnostic rather than a guess about how busy the workspace is.
+	//
+	// It reaches this counter only when a buffer existed to drop. Read
+	// Observer.SubscriptionCycled for the dependable count — the no-buffer case
+	// is over-represented here for the reason recorded there.
+	ResetReasonIdleTimeout = "idle_timeout"
 )
 
 // observable is the shared, nil-safe Observer holder both bus implementations
@@ -237,6 +275,12 @@ func (o *observable) reportReceiveLoopExited() {
 func (o *observable) reportSubscriptionUnconfirmed() {
 	if obs := o.observer(); obs != nil {
 		obs.SubscriptionUnconfirmed()
+	}
+}
+
+func (o *observable) reportSubscriptionCycled() {
+	if obs := o.observer(); obs != nil {
+		obs.SubscriptionCycled()
 	}
 }
 

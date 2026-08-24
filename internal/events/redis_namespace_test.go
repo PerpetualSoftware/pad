@@ -28,7 +28,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	b := NewRedisBusWithKeys(client, keys, false)
+	b := NewRedisBusWithKeys(client, keys, false, false)
 	t.Cleanup(b.Close)
 
 	// A local subscriber is what starts the Redis-side subscription for
@@ -65,7 +65,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	// buffers.
 	// Driven through the flipped publish path, because that is the only path
 	// that writes them.
-	flipped := NewRedisBusWithKeys(client, keys, true)
+	flipped := NewRedisBusWithKeys(client, keys, true, false)
 	t.Cleanup(flipped.Close)
 	flipped.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})
 

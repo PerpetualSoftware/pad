@@ -143,6 +143,43 @@ type Config struct {
 	// docs/deployment.md for the full procedure in both directions.
 	EventsPublishEpoch bool `toml:"events_publish_epoch"`
 
+	// EventsHeartbeat turns on PHASE 2 of the activity-bus heartbeat rollout
+	// (BUG-2738): this instance PUBLISHES a bus-internal liveness frame on each
+	// workspace channel it is subscribed to, every 30s.
+	//
+	// WHY A HEARTBEAT AT ALL. A half-open Redis connection — no FIN, no RST,
+	// just a route that stopped working — leaves an instance blocked on a read
+	// forever while its replay buffer goes on looking complete, so every resume
+	// is answered "caught up" from a coverage window that ended when the route
+	// did. go-redis cannot see it: its pub/sub health check writes a PING and
+	// never reads the reply. Idle detection can, but only if silence is
+	// diagnostic — and on a quiet workspace it is not. Publishing our own
+	// traffic replaces "is this workspace quiet or is the route dead?" with
+	// "did our heartbeat arrive?", which is answerable on every deployment.
+	//
+	// IT IS A TWO-PHASE FLIP, AND THE ORDER IS NOT OPTIONAL — for the same
+	// mechanical reason as EventsPublishEpoch, but with a WORSE failure if you
+	// get it wrong. The frame must travel on the workspace's EVENT channel,
+	// because that is the connection whose liveness is in question. An instance
+	// running an OLDER binary cannot classify it: it falls through to the event
+	// decoder, fails, and — since BUG-2739 — treats the failure as a hole in
+	// coverage, dropping that workspace's replay buffer AND telling every one
+	// of its live subscribers to resync. Every 30 seconds. For every workspace.
+	// For as long as the deployment is mixed. Phase 1: roll the new binary
+	// everywhere with this false; it recognises and ignores the frame, and
+	// already runs idle detection off whatever traffic exists. Phase 2: set it
+	// true and roll again.
+	//
+	// Rolling BACK is safe and immediate: set the EFFECTIVE value false and
+	// roll. Peers ignore the frame throughout, and the detector falls back to
+	// detecting off ordinary traffic. The same two wrinkles as
+	// EventsPublishEpoch apply — unsetting the environment variable is not the
+	// same as setting it false, because config.toml's value stands when the
+	// variable is absent; and downgrading PAST phase 1 is a second step in the
+	// reverse order, because a pre-phase-1 binary still cannot classify the
+	// frame. See docs/deployment.md for the procedure in both directions.
+	EventsHeartbeat bool `toml:"events_heartbeat"`
+
 	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
 	// pointer so an absent `[push]` table stays nil and Save() (via the
 	// omitempty tag) never writes an empty table into everyone's
@@ -404,6 +441,29 @@ func Load() (*Config, error) {
 			// right BEHAVIOUR — a typo must not flip a migration whose wrong
 			// direction loses events — but it must not be silent.
 			slog.Warn("PAD_EVENTS_PUBLISH_EPOCH is not a boolean and was ignored; this instance keeps its current event ID-space phase",
+				"value", v)
+		}
+	}
+	if v := os.Getenv("PAD_EVENTS_HEARTBEAT"); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil {
+			cfg.EventsHeartbeat = on
+		} else {
+			// LOUD, and note that the SAFE DIRECTION IS THE OPPOSITE OF
+			// PAD_EVENTS_PUBLISH_EPOCH's (BUG-2738). There, leaving the flip
+			// OFF was the data-LOSING direction and the guard existed to stop
+			// a typo carrying a deployment FORWARD into a phase its peers
+			// could not read. Here OFF is the SAFE direction: an instance that
+			// publishes no heartbeat merely detects off ordinary traffic,
+			// while one that publishes into a mixed fleet resyncs every client
+			// of every un-upgraded instance every 30 seconds. So the ignore is
+			// the conservative outcome in both cases and the reasoning is
+			// inverted — do not copy the epoch flag's rationale onto this one.
+			//
+			// It must still be LOUD for the epoch flag's reason, which does
+			// carry over: an operator who typed "yes" believes phase 2 is on,
+			// the value is ignored, and a silent ignore makes that
+			// indistinguishable from a phase-1 deployment in every metric.
+			slog.Warn("PAD_EVENTS_HEARTBEAT is not a boolean and was ignored; this instance keeps its current heartbeat phase",
 				"value", v)
 		}
 	}

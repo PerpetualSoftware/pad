@@ -504,6 +504,34 @@ type RedisBus struct {
 	// connections and amplifying the outage.
 	confirmTimeout time.Duration
 
+	// heartbeatInterval is T and idleTimeout is 3T: how often this instance
+	// publishes a liveness frame per subscribed workspace, and how long a
+	// subscription may receive nothing at all before its coverage ends and its
+	// connection is replaced (BUG-2738). Tunables with the ruled defaults; see
+	// DefaultHeartbeatInterval and cycleIdleSubscriptions.
+	heartbeatInterval time.Duration
+	idleTimeout       time.Duration
+
+	// maintenanceKick wakes maintenanceLoop when the cadence above changes, so
+	// a new interval takes effect at once instead of after the old one expires.
+	// Buffered depth 1 and written non-blockingly: it is a signal that the
+	// values moved, not a queue of changes.
+	maintenanceKick chan struct{}
+
+	// publishHeartbeat selects whether this instance EMITS liveness frames:
+	// PHASE 2 of the heartbeat rollout. Receiving instances recognise and
+	// ignore them from the release that introduced this field, so emission is
+	// the half that is gated — see config.EventsHeartbeat for why the order is
+	// not optional. Constructor parameter with no default, the same shape as
+	// publishEpoch, so every call site states which phase it is in.
+	publishHeartbeat bool
+
+	// nowFunc overrides the clock behind idle detection. Nil in every real
+	// construction; tests set it so a 90s threshold can be crossed without
+	// sleeping through one. Distinct from nowUnix, which seams a different
+	// clock for a different reason (BUG-2740's generation repair).
+	nowFunc func() time.Time
+
 	// afterSubscribeRegister is a TEST SEAM, nil in production. It runs
 	// inside SubscribeAndReplaySince's critical section, after the subscriber
 	// is registered and before the replay is read — the only point at which
@@ -628,6 +656,17 @@ type redisSub struct {
 	// recognised as belonging to a subscription that has already ended.
 	gen int64
 
+	// lastSeen is when this subscription last received ANYTHING from Redis:
+	// an event, a heartbeat, or a subscription confirmation. Guarded by b.mu.
+	//
+	// WHAT IS BEING MEASURED IS WHETHER THE SOCKET CARRIES TRAFFIC, not
+	// whether the workspace is busy — which is why every inbound frame stamps
+	// it rather than only the ones that turn into events, and why it is
+	// stamped at INSTALL time too. A zero value would read as 1970 and cycle a
+	// subscription that has simply not been given the chance to receive
+	// anything yet; see cycleIdleSubscriptions' rule 2.
+	lastSeen time.Time
+
 	// confirmed is closed by receiveMessages when Redis acknowledges the
 	// SUBSCRIBE for this subscription (BUG-2747). Subscribe waits on it — up to
 	// confirmTimeout, after which it admits anyway and says so, see
@@ -673,7 +712,7 @@ type pendingSub struct {
 // NewRedisBus creates a new Redis-backed EventBus.
 // The provided redis.Client should already be configured and connected.
 func NewRedisBus(client *redis.Client) *RedisBus {
-	return NewRedisBusWithKeys(client, redisns.Default, false)
+	return NewRedisBusWithKeys(client, redisns.Default, false, false)
 }
 
 // NewRedisBusWithKeys is NewRedisBus with an explicit key namespace
@@ -686,23 +725,34 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // site states which phase of the rollout it is in and none can flip a bus that
 // is already publishing. See config.EventsPublishEpoch for the order the two
 // phases must be rolled in.
-func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch bool) *RedisBus {
+func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch, publishHeartbeat bool) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &RedisBus{
-		client:         client,
-		keys:           keys,
-		publishEpoch:   publishEpoch,
-		subscribers:    make(map[string]map[chan Event]*subscriber),
-		workspaceOf:    make(map[chan Event]string),
-		wsCounts:       make(map[string]int),
-		wsSubs:         make(map[string]*redisSub),
-		pendingSubs:    make(map[string]*pendingSub),
-		replayBuffers:  make(map[string]*replayBuffer),
-		replaySize:     DefaultReplayBufferSize,
-		confirmTimeout: defaultSubscribeConfirmTimeout,
-		ctx:            ctx,
-		cancel:         cancel,
+	b := &RedisBus{
+		client:            client,
+		keys:              keys,
+		publishEpoch:      publishEpoch,
+		publishHeartbeat:  publishHeartbeat,
+		subscribers:       make(map[string]map[chan Event]*subscriber),
+		workspaceOf:       make(map[chan Event]string),
+		wsCounts:          make(map[string]int),
+		wsSubs:            make(map[string]*redisSub),
+		pendingSubs:       make(map[string]*pendingSub),
+		replayBuffers:     make(map[string]*replayBuffer),
+		replaySize:        DefaultReplayBufferSize,
+		confirmTimeout:    defaultSubscribeConfirmTimeout,
+		heartbeatInterval: DefaultHeartbeatInterval,
+		idleTimeout:       DefaultIdleTimeout,
+		maintenanceKick:   make(chan struct{}, 1),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
+	// IDLE DETECTION RUNS ON EVERY INSTANCE FROM PHASE 1, including ones that
+	// publish no heartbeats: it detects off whatever traffic the deployment
+	// already carries, which on a busy workspace is enough on its own. Phase 2
+	// is what makes a QUIET workspace's silence diagnostic. Ended by Close
+	// through b.ctx.
+	go b.maintenanceLoop()
+	return b
 }
 
 // Subscribe registers a local subscriber for the given workspace.
@@ -1368,7 +1418,14 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	// still non-zero and the subscription is installed for them, which is the
 	// hand-off the filing asked about — expressed as a count rather than as a
 	// transfer of ownership.
-	if ctx.Err() != nil {
+	// A NIL ESTABLISHER IS THE BUS ESTABLISHING FOR ITSELF (BUG-2738, rule 4).
+	// The idle detector re-establishes on b.ctx with no subscriber
+	// registration of its own, so there is nothing to deregister — and b.ctx
+	// is never cancelled until Close, at which point the count/closed check
+	// below is what abandons. Guarding the nil here rather than handing the
+	// detector a synthetic subscriber keeps wsCounts meaning "clients", which
+	// is what every arbitration in this file reads it as.
+	if establisher != nil && ctx.Err() != nil {
 		b.unsubscribeLocked(establisher.ch)
 	}
 	if b.wsCounts[workspaceID] == 0 || b.ctx.Err() != nil {
@@ -1382,9 +1439,17 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	b.subGen++
 	gen := b.subGen
 	sub := &redisSub{
-		pubsub:    pubsub,
-		cancel:    subCancel,
-		gen:       gen,
+		pubsub: pubsub,
+		cancel: subCancel,
+		gen:    gen,
+		// STAMPED AT INSTALL, not left at the zero value (BUG-2738, rule 2 of
+		// cycleIdleSubscriptions). A zero time reads as 1970, so a subscription
+		// that has simply not received anything yet would be older than any
+		// threshold and the idle detector would cycle it on its next tick —
+		// hardest in exactly the case BUG-2747 exists for, an unconfirmed
+		// admission where no acknowledgement ever arrives to stamp it. The
+		// clock starts when the socket does.
+		lastSeen:  b.now(),
 		confirmed: make(chan struct{}),
 	}
 	b.wsSubs[workspaceID] = sub
@@ -1619,9 +1684,13 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 // (Receive → ReceiveTimeout(ctx, 0)).
 //
 // So an instance behind a wedged route sits there receiving nothing while its
-// buffer keeps looking valid. Detecting that needs application-level idle
-// tracking, which is BUG-2730's family and its own decision, because it needs
-// a threshold. Do not assume the health check covers it.
+// buffer keeps looking valid. THAT IS NOW COVERED, but NOT by anything in this
+// function's choice of channel constructor: BUG-2738 added application-level
+// idle tracking on top. Every inbound frame stamps sub.lastSeen below, and
+// cycleIdleSubscriptions ends coverage and replaces the connection when the
+// stamp goes stale. Do not assume the health check covers it; it still does
+// not, and a future change that drops the stamping silently un-fixes BUG-2738
+// while leaving this loop looking untouched.
 func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string, gen int64) {
 	defer b.reportReceiveLoopExited()
 
@@ -1635,6 +1704,17 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 			if !ok {
 				return
 			}
+			// STAMPED FOR EVERY FRAME, ahead of the type switch and ahead of
+			// any decode (BUG-2738). What idle detection measures is whether
+			// the SOCKET carries traffic, so a frame that turns out to be
+			// undecodable, or to name another workspace, or to be a
+			// resubscription notice, is still proof the route works — and each
+			// of those paths `continue`s, so stamping inside the switch would
+			// miss them. A message we could not read means coverage is broken,
+			// which dropWorkspaceCoverage handles; it does NOT mean the
+			// connection is dead, and cycling it would be the wrong remedy.
+			b.stampLastSeen(workspaceID, gen)
+
 			switch msg := raw.(type) {
 			case *redis.Subscription:
 				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
@@ -1659,7 +1739,17 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 				b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
 
 			case *redis.Message:
-				epoch, event, err := decodePayload(msg.Payload)
+				kind, epoch, event, err := decodePayload(msg.Payload)
+				if kind == payloadHeartbeat {
+					// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
+					// has already done its whole job by arriving — the stamp
+					// above is the entire effect. It consumes no id, drops no
+					// buffer, reaches no subscriber and moves no counter, so an
+					// instance that publishes none is still a correct receiver
+					// for one that does. That is what makes the two-phase roll
+					// zero-loss.
+					continue
+				}
 				if err != nil {
 					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS WORKSPACE'S
 					// COVERAGE (codex round 11). Dropping it and carrying on
@@ -1797,6 +1887,23 @@ func (b *RedisBus) signalAllLocked() {
 	}
 }
 
+// stampLastSeen records that this workspace's subscription just received
+// something from Redis.
+//
+// GENERATION-CHECKED like every other bookkeeping write keyed by workspace: a
+// receive loop can outlive its subscription (stopRedisSubscription only
+// signals it, never joins it), and a straggler frame from a dead generation
+// must not refresh the liveness of the one that replaced it. Without this
+// check a wedged old loop's final buffered frames could keep a NEW subscription
+// looking alive.
+func (b *RedisBus) stampLastSeen(workspaceID string, gen int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if sub, ok := b.wsSubs[workspaceID]; ok && sub.gen == gen {
+		sub.lastSeen = b.now()
+	}
+}
+
 // currentSubGen reports the generation of the workspace's live subscription,
 // or 0 if it has none. Test seam: a real message carries its generation down
 // from receiveMessages, and a test driving the fan-out directly needs a way to
@@ -1922,6 +2029,17 @@ const (
 	floorKeep
 )
 
+// payloadKind distinguishes the frames that arrive on a workspace's event
+// channel. A heartbeat is BUS-INTERNAL: never an event, never buffered, never
+// replayed, never fanned out, and never counted. It exists only so that
+// silence on a socket becomes diagnostic (BUG-2738).
+type payloadKind int
+
+const (
+	payloadEvent payloadKind = iota
+	payloadHeartbeat
+)
+
 // decodePayload parses the "<epoch>|<id>|<json>" wire form publishScript emits,
 // and ALSO accepts a bare JSON body with no prefix.
 //
@@ -1943,43 +2061,58 @@ const (
 // The leading '{' check is what stops a JSON body that happens to contain two
 // '|' characters from being mistaken for a prefixed payload — an epoch is
 // never a JSON object.
-func decodePayload(payload string) (int64, Event, error) {
+func decodePayload(payload string) (payloadKind, int64, Event, error) {
+	// CLASSIFIED BEFORE ANYTHING IS SPLIT OR UNMARSHALLED, and the ORDER is
+	// what makes the frame safe (BUG-2738). "hb|1" has one separator and would
+	// otherwise fall through to the bare-JSON branch and fail to unmarshal;
+	// a future two-field frame would split into three and fail to parse an
+	// epoch. Either way it would reach the caller as an error, and an error
+	// here ends the workspace's coverage — so a liveness probe would
+	// manufacture the resync it exists to prevent.
+	//
+	// THE KIND IS RETURNED RATHER THAN HANDLED AT THE CALL SITE so that no
+	// future caller of this decoder can reintroduce that. The wire format is
+	// this function's to know.
+	if isHeartbeat(payload) {
+		return payloadHeartbeat, 0, Event{}, nil
+	}
+
 	if parts := strings.SplitN(payload, "|", 3); len(parts) == 3 && !strings.HasPrefix(parts[0], "{") {
 		epochPart, idPart, body := parts[0], parts[1], parts[2]
 		epoch, err := strconv.ParseInt(epochPart, 10, 64)
 		if err != nil {
-			return 0, Event{}, fmt.Errorf("payload epoch prefix %q is not an integer: %w", epochPart, err)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload epoch prefix %q is not an integer: %w", epochPart, err)
 		}
 		if epoch <= 0 {
 			// Zero is this package's sentinel for "no ID-space information",
 			// so a message may not carry it as a real generation — otherwise a
 			// malformed publisher could make every receiver stop reconciling
 			// while looking perfectly healthy.
-			return 0, Event{}, fmt.Errorf("payload epoch prefix %d is not a positive generation", epoch)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload epoch prefix %d is not a positive generation", epoch)
 		}
 		id, err := strconv.ParseInt(idPart, 10, 64)
 		if err != nil {
-			return 0, Event{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
 		}
 		var event Event
 		if err := json.Unmarshal([]byte(body), &event); err != nil {
-			return 0, Event{}, fmt.Errorf("payload body is not an Event: %w", err)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload body is not an Event: %w", err)
 		}
 		event.ID = id
 		if err := requirePositiveID(event.ID); err != nil {
-			return 0, Event{}, err
+			return payloadEvent, 0, Event{}, err
 		}
-		return epoch, event, nil
+		return payloadEvent, epoch, event, nil
 	}
 
 	var event Event
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return 0, Event{}, fmt.Errorf("payload is neither <epoch>|<id>|<json> nor a bare Event: %w", err)
+		return payloadEvent, 0, Event{}, fmt.Errorf("payload is neither <epoch>|<id>|<json> nor a bare Event: %w", err)
 	}
 	if err := requirePositiveID(event.ID); err != nil {
-		return 0, Event{}, err
+		return payloadEvent, 0, Event{}, err
 	}
-	return 0, event, nil
+	return payloadEvent, 0, event, nil
 }
 
 // requirePositiveID is applied to BOTH wire forms, and being applied to both

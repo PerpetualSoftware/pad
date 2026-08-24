@@ -267,6 +267,28 @@ type Metrics struct {
 	// pad_event_sequence_resets_total.
 	EventSubscriptionUnconfirmedTotal prometheus.Counter
 
+	// EventSubscriptionCycledTotal counts workspace subscriptions torn down and
+	// replaced because they received NOTHING — no event, no heartbeat, no
+	// acknowledgement — for longer than the bus's idle timeout (BUG-2738).
+	//
+	// WHAT IT DETECTS IS A HALF-OPEN CONNECTION: no FIN, no RST, just a route
+	// that stopped working. go-redis cannot see one (its pub/sub health check
+	// writes a PING and never reads the reply), so before this existed such an
+	// instance sat receiving nothing while its replay buffer went on looking
+	// complete and every resume was answered "caught up".
+	//
+	// READ THIS ONE RATHER THAN THE idle_timeout RESET LABEL. A cycle reports
+	// that label only when a buffer existed to drop, and the incidents this
+	// detector exists for skew hard toward having none — a route that wedged
+	// early, on a quiet workspace, with nothing yet buffered.
+	//
+	// EXPECT ZERO. A non-zero rate means connections to Redis are being
+	// silently blackholed: a NAT idle timeout, a stateful firewall, an overlay
+	// network dropping long-lived flows. Check TCP keepalive on the path before
+	// touching the interval — a shorter interval hides the cause and a longer
+	// one widens the silent window.
+	EventSubscriptionCycledTotal prometheus.Counter
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -510,7 +532,7 @@ func New() *Metrics {
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
-		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there — usually a Redis failover to a replica that lost writes, and since BUG-2740 also a corrupted generation key having been repaired and reseeded from wall-clock seconds; read the key to tell them apart, a repaired one looks like a unix timestamp), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended), subscription_unconfirmed (a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived; reaches this counter only when a buffer existed to drop — see pad_event_subscription_unconfirmed_total).",
+		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there — usually a Redis failover to a replica that lost writes, and since BUG-2740 also a corrupted generation key having been repaired and reseeded from wall-clock seconds; read the key to tell them apart, a repaired one looks like a unix timestamp), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended), subscription_unconfirmed (a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived; reaches this counter only when a buffer existed to drop — see pad_event_subscription_unconfirmed_total), idle_timeout (a subscription received nothing at all — no event, no heartbeat, no acknowledgement — for longer than the idle timeout, so this instance stopped vouching for its buffer and replaced the connection; it establishes that the socket stopped proving it works, NOT that events were observed going missing, and like subscription_unconfirmed it reaches this counter only when a buffer existed to drop — read pad_event_subscription_cycled_total instead).",
 	}, []string{"reason"})
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
@@ -521,6 +543,11 @@ func New() *Metrics {
 	eventSubscriptionUnconfirmedTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_subscription_unconfirmed_total",
 		Help: "Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait timed out. Counts ESTABLISHMENTS, not clients — however many subscribers were waiting on one, it increments once. Expect zero. Nothing is known lost; the stream's coverage is simply undescribable until the acknowledgement lands, at which point every subscriber waiting on it is told to reconcile and pad_event_sequence_resets_total may also move with reason subscription_unconfirmed.",
+	})
+
+	eventSubscriptionCycledTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_subscription_cycled_total",
+		Help: "Activity-stream workspace subscriptions torn down and replaced because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout (BUG-2738). Detects a HALF-OPEN connection, which go-redis's pub/sub health check cannot see because it writes a PING without reading the reply. Expect zero. Read THIS rather than pad_event_sequence_resets_total{reason=\"idle_timeout\"}, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — NAT idle timeout, stateful firewall, overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval.",
 	})
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -542,6 +569,7 @@ func New() *Metrics {
 		eventSequenceResetsTotal,
 		eventReceiveLoopExitsTotal,
 		eventSubscriptionUnconfirmedTotal,
+		eventSubscriptionCycledTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -575,6 +603,7 @@ func New() *Metrics {
 		EventSequenceResetsTotal:          eventSequenceResetsTotal,
 		EventReceiveLoopExitsTotal:        eventReceiveLoopExitsTotal,
 		EventSubscriptionUnconfirmedTotal: eventSubscriptionUnconfirmedTotal,
+		EventSubscriptionCycledTotal:      eventSubscriptionCycledTotal,
 		WatchReceiveLoopExitsTotal:        watchReceiveLoopExitsTotal,
 		SessionPresenceFailuresTotal:      sessionPresenceFailuresTotal,
 

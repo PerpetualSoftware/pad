@@ -700,8 +700,20 @@ func serveCmd() *cobra.Command {
 				if cfg.EventsPublishEpoch {
 					phase = 2
 				}
+				// The heartbeat rollout is logged for the SAME reason and is a
+				// SEPARATE, independently-flipped migration (BUG-2738): an
+				// instance can be on id-space phase 2 and heartbeat phase 1 or
+				// any other combination. pad_event_subscription_cycled_total
+				// reads differently per phase — on heartbeat phase 1 a QUIET
+				// workspace's wedged route is undetectable, so a zero there
+				// means less than it does on phase 2.
+				heartbeatPhase := 1
+				if cfg.EventsHeartbeat {
+					heartbeatPhase = 2
+				}
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB,
-					"namespace", redisKeys.Namespace(), "id_space_phase", phase)
+					"namespace", redisKeys.Namespace(), "id_space_phase", phase,
+					"heartbeat_phase", heartbeatPhase)
 			} else {
 				eventBus = newObservedEventBus(cfg, nil, redisKeys, m)
 				slog.Info("Event bus using in-memory (single instance)")
@@ -1346,7 +1358,7 @@ func humanBytes(n int64) string {
 // internal/idspace), so it ignores the field.
 func newObservedEventBus(cfg *config.Config, rc *redis.Client, redisKeys redisns.Keys, m *metrics.Metrics) events.EventBus {
 	if rc != nil {
-		bus := events.NewRedisBusWithKeys(rc, redisKeys, cfg.EventsPublishEpoch)
+		bus := events.NewRedisBusWithKeys(rc, redisKeys, cfg.EventsPublishEpoch, cfg.EventsHeartbeat)
 		bus.SetObserver(metrics.NewEventsObserver(m))
 		return bus
 	}
