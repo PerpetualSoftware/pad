@@ -676,6 +676,19 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 		if !innerOK {
 			t.Fatal("could not bound the nested /{slug} subrouter — anchor stale")
 		}
+		// THE CLASSIFIER'S FOUNDATION, checked rather than assumed
+		// (codex round 8 P1). Everything pathIsWorkspaceScoped returns
+		// true for is "safe" ONLY because this subrouter applies
+		// RequireWorkspaceAccess. Delete that one line and every
+		// workspaceScoped classification in this file silently becomes
+		// false, while the whole suite stays green — the guard would be
+		// asserting middleware coverage that no longer exists.
+		if !strings.Contains(inner, "r.Use(s.RequireWorkspaceAccess)") {
+			t.Error("the /{slug} subrouter no longer applies RequireWorkspaceAccess.\n\n" +
+				"That middleware is the ONLY place the OAuth workspace allow-list is enforced, and this " +
+				"guard's entire workspaceScoped class means 'gated by it'. Without it, every scoped route " +
+				"is unguarded and every classification here is wrong.")
+		}
 		block = block[:i] + block[i+len(inner):]
 	} else {
 		t.Fatal("could not find the nested /{slug} subrouter inside the /workspaces block — anchor stale")
