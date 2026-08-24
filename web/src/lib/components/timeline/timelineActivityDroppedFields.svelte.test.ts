@@ -17,7 +17,7 @@ function activity(overrides: Partial<Activity> = {}): Activity {
 	return {
 		id: 'act-1',
 		workspace_id: 'ws-1',
-		item_id: 'item-1',
+		document_id: 'item-1',
 		action: 'moved',
 		actor: 'user',
 		actor_name: 'Dave',
