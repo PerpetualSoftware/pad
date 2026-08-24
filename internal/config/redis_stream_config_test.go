@@ -249,9 +249,20 @@ func TestEventsHeartbeatIgnoresANonBooleanValue(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.EventsHeartbeat {
-		t.Error("an unparseable value must leave the flip off; turning it on starts a resync storm on every un-upgraded instance")
+		t.Error("an unparseable value must not turn the flip on; publishing into a mixed fleet resyncs every client of every un-upgraded instance")
 	}
 }
+
+// The precise contract, stated because the sentence above is easy to read as
+// something stronger than it is (codex round 9): an unparseable value is
+// IGNORED, not read as false. From a default config that leaves the flip off,
+// which is what the test above checks. From a config file that set it true it
+// leaves it TRUE — deliberately, and the same as the epoch flag: a typo must
+// not move a migration in either direction, and silently rolling an operator
+// back to phase 1 would disable detection on a fleet that had opted in without
+// anything saying so. The warning is what tells them. The file-true case is
+// asserted in TestEventsHeartbeatPrecedenceBetweenEnvAndFile; this comment
+// exists so nobody "fixes" the ignore into a fail-closed reset.
 
 // The default MUST be off, for the reason above: phase 2 emits a frame older
 // instances treat as a hole in coverage, so defaulting it on would break a

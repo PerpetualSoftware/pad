@@ -735,6 +735,19 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // shared with the watch bus and the presence registry so all three
 // keyspaces carry the same namespace or none.
 //
+// TWO INDEPENDENT ROLLOUT FLAGS, in this order, and they are NOT
+// interchangeable despite being adjacent booleans of the same type — the
+// hazard being that a maintenance edit swaps or drops one silently
+// (codex round 9). publishEpoch is BUG-2736's ID-space migration; publishHeartbeat
+// is BUG-2738's half-open-connection detection. Any combination is valid and
+// each has its own phase in the startup log.
+//
+// publishHeartbeat turns on PHASE 2 of the heartbeat rollout: this instance
+// publishes a bus-internal liveness frame per subscribed workspace AND runs
+// idle detection. Those are one switch on purpose — an instance detects off
+// its own frames, so detecting without publishing cycles healthy quiet
+// workspaces; see cycleIdleSubscriptions and config.EventsHeartbeat.
+//
 // publishEpoch selects the wire form this instance EMITS (BUG-2736). It is a
 // constructor parameter with no default rather than a setter, so every call
 // site states which phase of the rollout it is in and none can flip a bus that

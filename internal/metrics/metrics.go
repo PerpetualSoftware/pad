@@ -181,7 +181,14 @@ type Metrics struct {
 	WatchMidstreamResyncsTotal prometheus.Counter
 
 	// EventSequenceResetsTotal counts activity-stream coverage resets by
-	// reason. Five reasons, listed below in the order they were added.
+	// reason. SEVEN reasons, listed below in the order they were added.
+	//
+	// If you add another, the count in this line is the first thing to go
+	// stale and the last thing anyone reads — it was already wrong by two when
+	// BUG-2738 landed. The authoritative list is the Help string on the
+	// counter's construction, which is what an operator actually sees, plus
+	// the enumeration in internal/events/observer.go and the table in
+	// docs/deployment.md. Those three move together.
 	//
 	//   subscription_resumed — a pub/sub connection dropped and resubscribed,
 	//   so ONE workspace's replay buffer was dropped and resumes across the
