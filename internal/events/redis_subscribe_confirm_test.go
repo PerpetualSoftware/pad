@@ -328,11 +328,16 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 //
 // SubscribeAndReplaySince used to register the subscriber and read the replay
 // in ONE critical section, so an event was in the buffer or on the channel and
-// never both. Waiting for the acknowledgement splits that into two sections
-// with Redis I/O between them, and an event fanning out in the gap would land
-// in both — the duplicate window BUG-2730 closed, reopened from the other end.
-// subscriber.pendingAdmission is what prevents it, and this is the test that
-// says so.
+// never both. Waiting for the acknowledgement splits that into two sections,
+// and an event fanning out in between would land in BOTH — the duplicate
+// window BUG-2730 closed, reopened from the other end.
+//
+// THE WINDOW IS NARROW AND SPECIFIC, which is why this drives it through a
+// seam rather than racing it: it opens once Redis has acknowledged the
+// subscription (so events actually arrive) and closes when the establishing
+// caller re-acquires b.mu to read its replay. Only the caller that ESTABLISHES
+// the workspace's subscription passes through it — a later subscriber finds
+// the subscription live and keeps its single critical section.
 func TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -341,7 +346,9 @@ func TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	// Establish coverage and take a cursor inside it.
+	// A prior incarnation of the workspace, so the resuming subscriber below
+	// has a real cursor to resume from. Dropped again before the real test, so
+	// the subscriber under test is the one that ESTABLISHES.
 	seed, _ := b.Subscribe("ws-1")
 	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
 	drain(t, seed, 1)
@@ -350,45 +357,59 @@ func TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered(t *testing.T) {
 		t.Fatalf("seed publish did not reach the buffer: %d events", len(buffered))
 	}
 	cursor := buffered[0].ID
+	b.Unsubscribe(seed)
+	waitForSubscribers(t, mr, "pad:events:ws-1", false)
 
-	// A publish landing inside the resuming subscriber's critical section.
-	var once sync.Once
-	b.mu.Lock()
-	b.afterSubscribeRegister = func() {
-		once.Do(func() {
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-			}()
-			<-done
-		})
+	// Published inside the window, from the establishing caller's own
+	// goroutine — b.mu is not held at the seam, and the publish must be fully
+	// applied (buffer + fan-out) before the replay read that follows.
+	var armed atomic.Bool
+	published := make(chan struct{})
+	b.afterSubscriptionConfirmed = func() {
+		if !armed.CompareAndSwap(false, true) {
+			return
+		}
+		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+		// Wait for it to come back through Redis and be appended, so the
+		// replay read below cannot simply be too early to see it.
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if got := b.EventsSince("ws-1", 0); len(got) > 0 {
+				close(published)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Error("the in-window publish never reached the replay buffer")
+		close(published)
 	}
-	b.mu.Unlock()
 
 	ch, missed, _, ok := b.SubscribeAndReplaySince("ws-1", cursor, 0)
 	if !ok {
 		t.Fatal("resume was refused")
 	}
 	defer b.Unsubscribe(ch)
+	<-published
+
+	if !armed.Load() {
+		t.Fatal("the seam never ran; this test could not have discriminated")
+	}
 
 	seen := map[int64]int{}
 	for _, e := range missed {
 		seen[e.ID]++
 	}
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case e := <-ch:
-			seen[e.ID]++
-			for id, n := range seen {
-				if n > 1 {
-					t.Fatalf("event %d arrived %d times: it was in the replay AND on the channel", id, n)
-				}
-			}
-		case <-deadline:
-			b.Unsubscribe(seed)
-			return
+	if len(seen) == 0 {
+		t.Fatal("the in-window event was in neither the replay nor anywhere else")
+	}
+
+	// Anything now arriving on the channel that was ALSO in the replay is the
+	// double delivery.
+	select {
+	case e := <-ch:
+		if seen[e.ID] > 0 {
+			t.Fatalf("event %d was in the replay AND on the channel", e.ID)
 		}
+	case <-time.After(500 * time.Millisecond):
 	}
 }

@@ -514,6 +514,19 @@ type RedisBus struct {
 	// MemoryBus and on watchevents.RedisBus.
 	afterSubscribeRegister func()
 
+	// afterSubscriptionConfirmed is a TEST SEAM, nil in production. It runs in
+	// establishSubscription after Redis has acknowledged the subscription and
+	// BEFORE the establishing caller re-acquires b.mu to read its replay —
+	// the one moment at which the workspace is receiving events while that
+	// caller's subscriber is registered but not yet ADMITTED.
+	//
+	// That gap is the only place subscriber.pendingAdmission can be observed
+	// doing its job, so it is the only place a test can prove
+	// SubscribeAndReplaySince's replay-XOR-channel guarantee survived being
+	// split across the confirmation wait. b.mu is NOT held here, so a hook may
+	// publish inline.
+	afterSubscriptionConfirmed func()
+
 	// publishEpoch selects the wire form this instance EMITS: the phase-2
 	// "<epoch>|<id>|<json>" prefix when true, the historical bare JSON body
 	// when false. Receiving accepts both regardless — see decodePayload and
@@ -1057,6 +1070,10 @@ func (b *RedisBus) establishSubscription(workspaceID string, pending *pendingSub
 	case <-b.ctx.Done():
 	case <-timer.C:
 		b.markUnconfirmedAdmission(workspaceID, gen)
+	}
+
+	if b.afterSubscriptionConfirmed != nil {
+		b.afterSubscriptionConfirmed()
 	}
 
 	b.finishPending(workspaceID, pending)
