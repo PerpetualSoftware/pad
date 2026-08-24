@@ -540,6 +540,12 @@ type RedisBus struct {
 	// outright is the ordinary timeout path. With this seam: 10 of 10.
 	beforeUnconfirmedMark func()
 
+	// beforeInstallSubscription is a TEST SEAM, nil in production. It runs in
+	// establishSubscription after the dial and BEFORE the lock that decides
+	// whether to install or abandon, so a test can make either abandon reason
+	// true at exactly the moment the decision is taken. Receives the workspace.
+	beforeInstallSubscription func(workspaceID string)
+
 	// publishEpoch selects the wire form this instance EMITS: the phase-2
 	// "<epoch>|<id>|<json>" prefix when true, the historical bare JSON body
 	// when false. Receiving accepts both regardless — see decodePayload and
@@ -801,15 +807,56 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 	}
 	b.mu.Unlock()
 
-	switch {
-	case establish:
-		b.establishSubscription(workspaceID, pending)
-	case pending != nil:
-		// Someone else is establishing the same workspace. Wait for them
-		// rather than opening a second connection and a second receive loop.
-		select {
-		case <-pending.done:
-		case <-b.ctx.Done():
+	// A JOINER VERIFIES RATHER THAN ASSUMES, and may take the establishment
+	// over once (codex round 2, P1). Waiting on someone else's record proves
+	// only that they FINISHED — not that they succeeded. They may have
+	// abandoned because the workspace had emptied in the instant before we
+	// registered, and a joiner that returned on that promise would hold a
+	// channel wired to nothing forever, since its own registration keeps
+	// wsCounts non-zero and no later caller establishes either.
+	//
+	// Bounded at two passes on purpose: the second is a caller that has now
+	// registered, so the emptied-workspace race it lost cannot recur, and any
+	// remaining failure is one a third pass would not fix either.
+	for attempt := range 2 {
+		if attempt > 0 {
+			// Re-decide, and note that the record is created HERE, at the top
+			// of an iteration that is going to use it — never as a trailing
+			// side-effect of the last check. A record left in the map with
+			// nobody establishing behind it is worse than the bug this loop
+			// fixes: the next caller joins it and waits forever.
+			b.mu.Lock()
+			_, live := b.wsSubs[workspaceID]
+			establish, pending = false, nil
+			if !live && b.ctx.Err() == nil {
+				if p, inFlight := b.pendingSubs[workspaceID]; inFlight {
+					pending = p
+				} else {
+					pending = &pendingSub{done: make(chan struct{})}
+					b.pendingSubs[workspaceID] = pending
+					establish = true
+				}
+			}
+			b.mu.Unlock()
+			if !establish && pending == nil {
+				break
+			}
+		}
+
+		switch {
+		case establish:
+			b.establishSubscription(workspaceID, pending)
+		case pending != nil:
+			// Someone else is establishing the same workspace. Wait for them
+			// rather than opening a second connection and a second receive
+			// loop.
+			select {
+			case <-pending.done:
+			case <-b.ctx.Done():
+			}
+		default:
+			// Already live when we registered: nothing to establish and
+			// nothing to wait for.
 		}
 	}
 
@@ -1056,6 +1103,12 @@ func (b *RedisBus) Close() {
 		}
 		delete(b.subscribers, wsID)
 	}
+	// CLEARED ALONGSIDE THE SUBSCRIBERS IT COUNTS (codex round 2). Left
+	// populated, it is a count of channels this loop has just closed, and an
+	// establishment still in flight reads it as a reason to install a
+	// subscription for them. The ctx check there is the primary guard; this
+	// keeps the two structures from disagreeing in the first place.
+	clear(b.wsCounts)
 }
 
 // SubscriberCount returns the number of active local subscribers.
@@ -1091,18 +1144,39 @@ func (b *RedisBus) establishSubscription(workspaceID string, pending *pendingSub
 	pubsub := b.client.Subscribe(b.ctx, channel)
 	subCtx, subCancel := context.WithCancel(b.ctx)
 
+	if b.beforeInstallSubscription != nil {
+		b.beforeInstallSubscription(workspaceID)
+	}
+
 	b.mu.Lock()
-	if b.wsCounts[workspaceID] == 0 {
-		// Everyone who wanted this workspace disconnected while we were
-		// dialling. Installing the subscription now would leave a receive
-		// loop and a Redis connection alive with nobody to deliver to, and
-		// nothing would ever tear them down: Unsubscribe only stops a
-		// subscription when it takes the count from one to zero, and the
-		// count is already zero.
+	// TWO REASONS TO ABANDON, and both must retire the establishment record in
+	// THIS critical section (codex round 2, both P1s).
+	//
+	// Nobody left: everyone who wanted this workspace disconnected while we
+	// were dialling. Installing now would leave a receive loop and a Redis
+	// connection alive with nobody to deliver to, and nothing would ever tear
+	// them down — Unsubscribe only stops a subscription when it takes the count
+	// from one to zero, and the count is already zero.
+	//
+	// Bus closed: Close() cancels the context BEFORE it takes the lock and
+	// drains wsSubs, so an establishment that locks afterwards would install
+	// into a map Close has already emptied. The receive loop would exit on the
+	// cancelled context and neither subCancel nor pubsub.Close would ever run,
+	// leaking the PubSub and its health-check goroutine.
+	//
+	// RETIRING THE RECORD UNDER THIS SAME LOCK is what stops a joiner being
+	// stranded. Released separately, there is an interval in which we have
+	// decided to abandon and the record still says an establishment is coming:
+	// a subscriber arriving there registers, waits on a promise nobody will
+	// keep, and returns with a channel wired to nothing — permanently, because
+	// its own registration makes wsCounts non-zero so no later caller
+	// establishes either.
+	if b.wsCounts[workspaceID] == 0 || b.ctx.Err() != nil {
+		b.retirePendingLocked(workspaceID, pending)
 		b.mu.Unlock()
 		subCancel()
 		_ = pubsub.Close()
-		b.finishPending(workspaceID, pending)
+		close(pending.done)
 		return
 	}
 	b.subGen++
@@ -1142,11 +1216,21 @@ func (b *RedisBus) establishSubscription(workspaceID string, pending *pendingSub
 // caller waiting on it.
 func (b *RedisBus) finishPending(workspaceID string, pending *pendingSub) {
 	b.mu.Lock()
+	b.retirePendingLocked(workspaceID, pending)
+	b.mu.Unlock()
+	close(pending.done)
+}
+
+// retirePendingLocked removes an establishment record if it is still the
+// current one. Callers must hold b.mu.
+//
+// The identity check matters: a record we abandoned may already have been
+// replaced by a later caller's, and deleting that one would let a third caller
+// start a second subscription for the same workspace.
+func (b *RedisBus) retirePendingLocked(workspaceID string, pending *pendingSub) {
 	if b.pendingSubs[workspaceID] == pending {
 		delete(b.pendingSubs, workspaceID)
 	}
-	b.mu.Unlock()
-	close(pending.done)
 }
 
 // markUnconfirmedAdmission records that Redis did not acknowledge a

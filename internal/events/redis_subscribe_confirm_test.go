@@ -632,3 +632,98 @@ func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 		}
 	}
 }
+
+// TestAJoinerIsNotStrandedByAnAbandonedEstablishment covers codex round 2's
+// second P1.
+//
+// establishSubscription abandons when the workspace emptied while it was
+// dialling. If the establishment record outlives that decision by even an
+// instant, a subscriber arriving in the gap registers, waits on a promise
+// nobody will keep, and returns holding a channel wired to nothing — and
+// PERMANENTLY, because its own registration makes wsCounts non-zero so no
+// later caller establishes either. A dead stream that looks alive.
+func TestAJoinerIsNotStrandedByAnAbandonedEstablishment(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+
+	// Force the abandon: drop the establisher's own registration out from under
+	// it while it is dialling, so its count check finds an empty workspace.
+	var abandoned atomic.Bool
+	b.beforeInstallSubscription = func(workspaceID string) {
+		if !abandoned.CompareAndSwap(false, true) {
+			return
+		}
+		b.mu.Lock()
+		for ch, ws := range b.workspaceOf {
+			if ws == workspaceID {
+				delete(b.workspaceOf, ch)
+				delete(b.subscribers[workspaceID], ch)
+				b.wsCounts[workspaceID]--
+			}
+		}
+		b.mu.Unlock()
+	}
+
+	ch, _ := b.Subscribe("ws-1")
+	if !abandoned.Load() {
+		t.Fatal("the abandon was never forced; this test could not have discriminated")
+	}
+	defer b.Unsubscribe(ch)
+
+	// Whatever happened to the first caller, a subscriber that ends up holding
+	// a channel must be connected to Redis.
+	next, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("the next subscriber was refused")
+	}
+	defer b.Unsubscribe(next)
+
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+	select {
+	case <-next:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a subscriber returned with a channel wired to nothing: it waited on an establishment that had already abandoned, and nothing re-established")
+	}
+}
+
+// TestCloseDuringEstablishmentDoesNotLeakTheSubscription covers codex round 2's
+// first P1.
+//
+// Close cancels the context BEFORE it takes the lock and drains wsSubs, so an
+// establishment that locks afterwards used to install into a map Close had
+// already emptied. The receive loop then exits on the cancelled context and
+// nothing ever runs subCancel or pubsub.Close — the PubSub and its health-check
+// goroutine outlive the bus.
+//
+// Asserted through Redis rather than through goroutine counting: a leaked
+// PubSub is a connection still subscribed to the channel after the bus is gone.
+func TestCloseDuringEstablishmentDoesNotLeakTheSubscription(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+
+	var closedMidFlight atomic.Bool
+	b.beforeInstallSubscription = func(string) {
+		if !closedMidFlight.CompareAndSwap(false, true) {
+			return
+		}
+		b.Close()
+	}
+
+	ch, _ := b.Subscribe("ws-1")
+	_ = ch
+	if !closedMidFlight.Load() {
+		t.Fatal("Close never ran mid-establishment; this test could not have discriminated")
+	}
+
+	// Nothing may still be listening on the workspace's channel.
+	if n, ok := pollSubscriberCount(mr, "pad:events:ws-1", func(n int) bool { return n == 0 }); !ok {
+		t.Fatalf("after Close, %d connection(s) remain subscribed to the workspace channel: an establishment in flight installed into a closed bus and nothing tore it down", n)
+	}
+}
