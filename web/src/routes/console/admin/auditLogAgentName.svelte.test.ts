@@ -70,6 +70,13 @@ function userCells(): string[] {
 	);
 }
 
+/** The details column — fourth cell, after time / user / action. */
+function detailCells(): string[] {
+	return [...host.querySelectorAll('tbody tr')].map(
+		(tr) => tr.querySelectorAll('td')[3]?.textContent?.trim() ?? ''
+	);
+}
+
 beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
@@ -131,6 +138,40 @@ describe('console audit log — agent attribution', () => {
 		await mountWith([row({ actor: 'user' })]);
 
 		expect(userCells()).toEqual(['Dave']);
+	});
+
+	// Codex round 6. Hoisting the row's parse out of formatMetadata left its
+	// try/catch wrapped around nothing, so a formatter that throws on
+	// well-formed JSON — `String(data.keys)` cannot convert `{"toString":null}`
+	// to a primitive — would take the whole page down instead of rendering an
+	// em dash. These drive the Details column, which no test here touched, and
+	// they fail against the narrowed guard.
+	it('renders an em dash when a formatter throws on well-formed metadata', async () => {
+		await mountWith([
+			row({
+				actor: 'user',
+				action: 'settings_changed',
+				metadata: '{"keys":{"toString":null}}'
+			})
+		]);
+
+		expect(detailCells()).toEqual(['—']);
+		// The row still rendered at all — the counterfactual is a blank table.
+		expect(userCells()).toEqual(['Dave']);
+	});
+
+	it('formats a known action from the shared parse', async () => {
+		// Proves the hoisted object actually reaches formatMetadata, not just
+		// displayUser: a hoist that passed the wrong value would em-dash here.
+		await mountWith([
+			row({
+				actor: 'user',
+				action: 'role_changed',
+				metadata: JSON.stringify({ old_role: 'editor', new_role: 'admin' })
+			})
+		]);
+
+		expect(detailCells()).toEqual(['editor → admin']);
 	});
 
 	it('leaves the existing System and user-id fallbacks intact', async () => {

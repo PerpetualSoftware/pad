@@ -118,7 +118,13 @@
 
 	function formatMetadata(data: Record<string, any> | null, action: string): string {
 		if (!data) return '\u2014';
-		{
+		// The try still wraps the FORMATTERS, not just the parse it used to
+		// share with. Hoisting the parse out narrowed this guard to nothing,
+		// and the branches below can genuinely throw on well-formed JSON —
+		// `String(data.keys)` on `{"keys":{"toString":null}}` cannot convert
+		// to a primitive. That used to render an em dash; it must not take
+		// the whole audit page down instead (codex round 6).
+		try {
 			switch (action) {
 				case 'role_changed':
 					if (data.old_role && data.new_role) return `${data.old_role} \u2192 ${data.new_role}`;
@@ -170,6 +176,8 @@
 			if (keys.length === 0) return '\u2014';
 			const parts = keys.slice(0, 3).map((k) => `${k}: ${data[k]}`);
 			return parts.join(', ');
+		} catch {
+			return '\u2014';
 		}
 	}
 
