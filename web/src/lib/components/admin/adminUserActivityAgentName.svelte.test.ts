@@ -19,6 +19,7 @@ vi.mock('$lib/stores/admin.svelte', () => ({
 }));
 
 const { default: UserActivityTab } = await import('./UserActivityTab.svelte');
+const { default: UserOverviewTab } = await import('./UserOverviewTab.svelte');
 
 function event(over: Record<string, unknown> = {}) {
 	return {
@@ -100,5 +101,52 @@ describe('admin user activity — agent name', () => {
 
 		expect(host.querySelector('.activity-agent')).toBeNull();
 		expect(host.textContent).toContain('via cli');
+	});
+});
+
+/**
+ * The overview tab renders the same rows through its own markup and its own
+ * filter (writes only), so it is a second binding, not a second view of the
+ * first — CONVE-19. It reads the same endpoint, plus a metrics call.
+ */
+async function mountOverview(events: Record<string, unknown>[]): Promise<void> {
+	adminFetchMock.mockImplementation((path: string) =>
+		path.includes('/metrics')
+			? Promise.resolve({})
+			: Promise.resolve({ events, next_offset: null })
+	);
+	app = mount(UserOverviewTab, {
+		target: host,
+		props: { user: { id: 'u1' } as never, active: true }
+	}) as Record<string, unknown>;
+	flushSync();
+	for (let i = 0; i < 6; i++) {
+		await Promise.resolve();
+		await tick();
+	}
+	flushSync();
+}
+
+describe('admin user overview — agent name', () => {
+	it('names the agent behind a write', async () => {
+		await mountOverview([event()]);
+
+		const el = host.querySelector('.recent-agent')!;
+		expect(el).not.toBeNull();
+		expect(el.tagName).toBe('BDI');
+		expect(el.textContent).toBe('wren');
+	});
+
+	it('renders nothing extra when the row carries no name', async () => {
+		await mountOverview([event({ metadata: '{}' })]);
+
+		expect(host.querySelector('.recent-agent')).toBeNull();
+		expect(host.textContent).toContain('via cli');
+	});
+
+	it('never reads the stamp for a non-agent row', async () => {
+		await mountOverview([event({ actor: 'user' })]);
+
+		expect(host.querySelector('.recent-agent')).toBeNull();
 	});
 });

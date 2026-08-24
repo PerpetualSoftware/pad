@@ -54,6 +54,34 @@ describe('agentNameFromMetadata', () => {
 		const raw = '{"agent":"rook","changes":"status"}';
 		expect(agentNameFromMetadata(raw)).toBe(agentNameOf(JSON.parse(raw)));
 	});
+});
+
+// Four of the five surfaces call this one, not the string form, because they
+// already hold the parsed metadata. Equivalence with agentNameFromMetadata was
+// the only thing pinning it, which covers the shared path and not this
+// function's own edges — most of them only existed incidentally inside
+// component tests (codex round 14).
+describe('agentNameOf', () => {
+	it('returns the name from a parsed object', () => {
+		expect(agentNameOf({ agent: 'wren', changes: 'status' })).toBe('wren');
+	});
+
+	it.each([
+		['no agent key', { changes: 'status' }],
+		['an empty name', { agent: '' }],
+		['a null name', { agent: null }],
+		['a numeric name', { agent: 123 }],
+		['an object name', { agent: { name: 'wren' } }],
+		['an empty object', {}],
+		['undefined', undefined],
+		['null', null]
+	])('returns undefined for %s', (_case, meta) => {
+		expect(agentNameOf(meta as Record<string, unknown> | undefined | null)).toBeUndefined();
+	});
+
+	it('does not filter a generic-looking id', () => {
+		expect(agentNameOf({ agent: 'claude-code' })).toBe('claude-code');
+	});
 
 	it('takes the last value when the stamp was spliced onto existing metadata', () => {
 		// agentMeta merges by string splice (handlers_documents.go:287), so a
