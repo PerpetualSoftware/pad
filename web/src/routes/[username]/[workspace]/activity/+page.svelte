@@ -733,15 +733,24 @@
 	/* A name, not a category word — same reasoning as `.actor-badge.user`
 	   below, which has always opted out. See getSourceLabel's `named`.
 
-	   Bounded because the badge is `flex-shrink: 0` and an agent name is
-	   arbitrary client-supplied text (whatever went in X-Pad-Agent), not one
-	   of the four fixed words this badge used to hold. Unbounded, one long
-	   name pushes the timestamp off the row. The full value stays reachable
-	   via the title attribute. */
+	   Bounded because the badge is `flex-shrink: 0` and a name is arbitrary
+	   text — an agent's is whatever went in X-Pad-Agent, a person's is
+	   whatever they set — not one of the four fixed words this badge used to
+	   hold. Unbounded, one long name pushes the timestamp off the row.
+
+	   24ch is a judgement, not a measurement: it comfortably fits ordinary
+	   full names ("Alexandra Whitfield" is 19) while still bounding the
+	   pathological case. It is a LAYOUT bound and says nothing about which
+	   names are valid — nothing is rejected or altered, and the full value is
+	   on the title attribute. What it does NOT cover: `title` is not reachable
+	   by touch and awkward by keyboard, so a clipped name is effectively
+	   unreadable on a phone. Raising the bound trades that against the
+	   overflow it exists to prevent; a real disclosure affordance would be the
+	   actual fix and is not this unit's. */
 	.actor-badge.named {
 		text-transform: none;
 		letter-spacing: normal;
-		max-width: 16ch;
+		max-width: 24ch;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

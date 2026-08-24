@@ -94,6 +94,19 @@ describe('TimelineActivityCard agent name', () => {
 		expect(getByText(payload)).toBeTruthy();
 	});
 
+	// Codex round 11 — the element, not just the text. The chip's label sits
+	// inline before the action label and timestamp, so a bidi control in a
+	// self-declared name would reorder them if the label were not isolated.
+	it('isolates the actor label so a bidi control cannot reorder the row', () => {
+		const { container } = render(TimelineActivityCard, {
+			activity: activity({ metadata: JSON.stringify({ agent: 'wren\u202egnimalb' }) })
+		});
+
+		const el = container.querySelector('.actor-label')!;
+		expect(el.tagName).toBe('BDI');
+		expect(el.textContent).toBe('wren\u202egnimalb');
+	});
+
 	it('never reads the stamp for a non-agent actor', () => {
 		// Guards against keying the chip on metadata alone. A human's write can
 		// carry an `agent` key — the merge in agentMeta is textual and this

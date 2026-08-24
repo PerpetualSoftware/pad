@@ -199,11 +199,13 @@
 		font-weight: 700;
 		color: var(--text-primary);
 		white-space: nowrap;
-		/* An actor label is now arbitrary client-supplied text for agents
-		   (whatever went in X-Pad-Agent) as well as for people. `nowrap`
-		   without a bound lets one long name push the rest of the card's
-		   line out; the full value stays in the title attribute. */
-		max-width: 20ch;
+		/* An actor label is arbitrary text for agents (whatever went in
+		   X-Pad-Agent) as well as for people. `nowrap` without a bound lets
+		   one long name push the rest of the card's line out; the full value
+		   stays in the title attribute. 24ch matches the activity page's
+		   badge, where the number's reasoning and its limits are written
+		   out. */
+		max-width: 24ch;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}

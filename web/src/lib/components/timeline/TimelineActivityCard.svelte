@@ -137,10 +137,12 @@
 	/* An agent's label is arbitrary client-supplied text. <bdi> keeps a bidi
 	   control character inside it from reordering the rest of the row, and the
 	   bound stops one very long name from widening a card that lives in a pane
-	   whose width is not the card's to negotiate. */
+	   whose width is not the card's to negotiate. 24ch matches the activity
+	   page's badge, where the number's reasoning and its limits are written
+	   out. */
 	.actor-label {
 		display: inline-block;
-		max-width: 18ch;
+		max-width: 24ch;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		vertical-align: bottom;

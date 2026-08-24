@@ -157,6 +157,16 @@ describe('activity page — Audit view', () => {
 		expect(host.querySelector('.actor-badge.agent')!.textContent!.trim()).toBe(payload);
 	});
 
+	// Codex round 11 — the badge element itself carries the isolation, since
+	// it sits inline with the verb, item ref and timestamp on the row.
+	it('isolates the badge so a bidi control cannot reorder the row', async () => {
+		await mountPage('audit', [act({ metadata: JSON.stringify({ agent: 'wren\u202egnimalb' }) })]);
+
+		const badge = host.querySelector('.actor-badge.agent')!;
+		expect(badge.tagName).toBe('BDI');
+		expect(badge.textContent!.trim()).toBe('wren\u202egnimalb');
+	});
+
 	it('never reads the stamp for a human row', async () => {
 		// The badge for a human is keyed on actor_name/source, and an `agent`
 		// key can ride along on any row's shared metadata blob.

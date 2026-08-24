@@ -161,6 +161,16 @@ describe('workspace dashboard — Recent Activity agent badge', () => {
 		expect(badge.classList.contains('named')).toBe(false);
 	});
 
+	// Codex round 11 — same claim at this binding: the badge element is the
+	// isolate, and a <span> would satisfy every text assertion above.
+	it('isolates the badge so a bidi control cannot reorder the row', async () => {
+		await mountWith([act({ metadata: JSON.stringify({ agent: 'wren\u202egnimalb' }) })]);
+
+		const badge = host.querySelector('.activity-row .actor-badge.agent')!;
+		expect(badge.tagName).toBe('BDI');
+		expect(badge.textContent!.trim()).toBe('wren\u202egnimalb');
+	});
+
 	it('leaves a human row on its own name and never reads the stamp', async () => {
 		await mountWith([act({ actor: 'user', actor_name: 'Dave', source: 'web' })]);
 

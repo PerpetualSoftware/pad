@@ -1317,11 +1317,12 @@
 	/* A stamped agent name is a name, not a category word — see the markup.
 	   Bounded because the badge is `flex-shrink: 0` and the name is arbitrary
 	   client-supplied text, not one of the fixed words this badge used to
-	   hold; the full value stays reachable via the title attribute. */
+	   hold. 24ch matches the activity page's badge, where the reasoning for
+	   the number and what it does not cover is written out. */
 	.actor-badge.named {
 		text-transform: none;
 		letter-spacing: normal;
-		max-width: 16ch;
+		max-width: 24ch;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
