@@ -337,13 +337,22 @@ func (b *RedisBus) publishHeartbeats() {
 		b.mu.Unlock()
 		return
 	}
-	workspaces := make([]string, 0, len(b.wsSubs))
-	for ws := range b.wsSubs {
-		workspaces = append(workspaces, ws)
+	// THE GENERATION IS PART OF THE SNAPSHOT (codex round 14). The publish
+	// below happens off the lock and can take as long as go-redis's timeouts
+	// allow, during which this workspace's subscription may be torn down and
+	// replaced — by a cycle, or by its last subscriber leaving and a new one
+	// arriving. Stamping "whatever occupies this workspace now" would then
+	// credit a probe to a subscription that never received one, and the next
+	// pass's failures could cycle it while it looked recently probed. Same
+	// hazard stampLastSeen already guards against, on the same map.
+	probes := make([]idleProbe, 0, len(b.wsSubs))
+	for ws, sub := range b.wsSubs {
+		probes = append(probes, idleProbe{workspaceID: ws, gen: sub.gen})
 	}
 	b.mu.Unlock()
 
-	for _, ws := range workspaces {
+	for _, p := range probes {
+		ws := p.workspaceID
 		channel := b.keys.Name(redisChannelSuffix) + ws
 		if err := b.client.Publish(b.ctx, channel, heartbeatPayload).Err(); err != nil {
 			// Logged and dropped, never retried: retrying here would only make
@@ -360,7 +369,7 @@ func (b *RedisBus) publishHeartbeats() {
 			continue
 		}
 		b.mu.Lock()
-		if sub, ok := b.wsSubs[ws]; ok {
+		if sub, ok := b.wsSubs[ws]; ok && sub.gen == p.gen {
 			sub.lastProbeOK = b.now()
 		}
 		b.mu.Unlock()
@@ -381,6 +390,14 @@ func (b *RedisBus) liveGen(workspaceID string) (int64, bool) {
 		return 0, false
 	}
 	return sub.gen, true
+}
+
+// idleProbe is one workspace selected for a heartbeat, with the generation of
+// the subscription the probe is FOR. The generation travels with it so a slow
+// publish cannot credit a subscription that replaced the one it was sent for.
+type idleProbe struct {
+	workspaceID string
+	gen         int64
 }
 
 // idleCycle is one workspace selected for cycling, with the establishment

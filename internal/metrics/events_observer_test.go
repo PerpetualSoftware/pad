@@ -90,6 +90,22 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SubscriptionCycled()
 	obs.SubscriptionCycled()
 
+	// A THIRD count distinct from both its neighbours. These three say
+	// different things and an operator acts on the difference: cycled means a
+	// connection was replaced, idle_timeout means coverage ended, and this one
+	// means DETECTION IS DEGRADED because the probe never went out. An adapter
+	// that merged any pair of them would satisfy a total-only assertion while
+	// destroying exactly that distinction.
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 2)
 	// The reason must land on a LABELLED series, not on the bare counter: an
 	// adapter that dropped the label would satisfy a total-only assertion and
@@ -114,6 +130,7 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonIdleTimeout}, 6)
 	assertCounter(t, m, "pad_event_subscription_cycled_total", nil, 7)
+	assertCounter(t, m, "pad_event_heartbeat_publish_failures_total", nil, 9)
 	// The counter must not leak into the reset series either, the same half
 	// that a merged-counter adapter would pass without.
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)

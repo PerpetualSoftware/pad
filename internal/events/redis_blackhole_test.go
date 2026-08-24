@@ -1,8 +1,8 @@
 package events
 
 import (
+	"bytes"
 	"context"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -29,11 +29,16 @@ import (
 //
 // New connections keep working, so the replacement subscription can succeed
 // and the test can assert RECOVERY rather than only detection.
+type proxiedConn struct {
+	dark     *atomic.Bool
+	isPubSub *atomic.Bool
+}
+
 type blackholeProxy struct {
 	ln      net.Listener
 	backend string
 	mu      sync.Mutex
-	dark    []*atomic.Bool
+	conns   []proxiedConn
 }
 
 func newBlackholeProxy(t *testing.T, backend string) *blackholeProxy {
@@ -66,11 +71,36 @@ func newBlackholeProxy(t *testing.T, backend string) *blackholeProxy {
 			// is called are the ones that go silent, permanently; anything
 			// dialled afterwards is healthy.
 			dark := &atomic.Bool{}
+			isPubSub := &atomic.Bool{}
 			p.mu.Lock()
-			p.dark = append(p.dark, dark)
+			p.conns = append(p.conns, proxiedConn{dark: dark, isPubSub: isPubSub})
 			p.mu.Unlock()
 
-			go func() { _, _ = io.Copy(server, client) }() // outbound stays alive
+			// OUTBOUND ALWAYS FLOWS, and the connection is CLASSIFIED as it
+			// does. go-redis puts PUBLISH on its ordinary connection pool and
+			// each subscription on a connection from a separate pub/sub pool;
+			// darkening both would break the probe as well as the delivery,
+			// and the test could then pass on an implementation that treats a
+			// failed probe as evidence of a dead peer — the exact defect the
+			// premise check exists to prevent (codex round 14). Only a
+			// connection that has carried a SUBSCRIBE goes dark.
+			go func() {
+				buf := make([]byte, 4096)
+				for {
+					n, err := client.Read(buf)
+					if n > 0 {
+						if bytes.Contains(bytes.ToLower(buf[:n]), []byte("subscribe")) {
+							isPubSub.Store(true)
+						}
+						if _, werr := server.Write(buf[:n]); werr != nil {
+							return
+						}
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
 			go func() {
 				defer func() { _ = client.Close(); _ = server.Close() }()
 				buf := make([]byte, 4096)
@@ -103,8 +133,10 @@ func (p *blackholeProxy) addr() string { return p.ln.Addr().String() }
 func (p *blackholeProxy) blackhole() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, d := range p.dark {
-		d.Store(true)
+	for _, c := range p.conns {
+		if c.isPubSub.Load() {
+			c.dark.Store(true)
+		}
 	}
 }
 
@@ -161,6 +193,16 @@ func TestAWedgedRouteIsDetectedEndToEnd(t *testing.T) {
 	b.setMaintenanceCadence(50*time.Millisecond, 200*time.Millisecond)
 
 	deadline := time.Now().Add(20 * time.Second)
+	// THE PROBE MUST KEEP SUCCEEDING while nothing comes back — that pairing IS
+	// the half-open case, and without asserting it this test would also pass on
+	// an implementation that cycles because it could not publish at all
+	// (codex round 14). Only the subscription's connection is darkened, so the
+	// publish path stays healthy and this stays at zero.
+	defer func() {
+		if got := obs.probeFailureCount(); got != 0 {
+			t.Fatalf("%d heartbeat publishes failed: this run exercised the cannot-probe path, not a half-open route", got)
+		}
+	}()
 	for obs.cycledCount() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("a wedged route was never detected in 20s (probe failures: %d): go-redis cannot see this and neither can we",
