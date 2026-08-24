@@ -1191,6 +1191,20 @@ func TestAFailedProbeAfterASuccessfulOneStillSuspendsDetection(t *testing.T) {
 		t.Fatal("fixture: the first probe was supposed to succeed")
 	}
 
+	// AND ITS FRAME MUST LAND BEFORE REDIS IS KILLED. Without this barrier the
+	// test depends on an unsynchronised delivery and is FLAKY — it passed
+	// locally and failed in CI. If the frame never arrives, lastSeen stays at
+	// the install stamp, the successful probe is then legitimately "after the
+	// last arrival", and the workspace is cycled for the right reason under a
+	// test asserting it should not be. Waiting for lastSeen to move makes the
+	// premise the test is named for actually hold.
+	waitFor(t, "the first heartbeat to be delivered back", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		sub, live := b.wsSubs["ws-1"]
+		return live && !sub.lastSeen.Before(sub.lastProbeOK)
+	})
+
 	// Now the route wedges and the probe starts failing. Age says the earlier
 	// success is still fresh; ordering says we have learned nothing since.
 	mr.Close()
