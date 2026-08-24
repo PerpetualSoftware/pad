@@ -240,14 +240,19 @@ func waitForSubscriberCount(t *testing.T, mr *miniredis.Miniredis, channel strin
 // a sub-millisecond-to-milliseconds affair, and this number exists so a test
 // that will never see a subscriber fails instead of hanging.
 //
-// WHAT WAITING HERE DELIBERATELY STOPS TESTING, so that nobody re-discovers
-// it as a gap: every caller of this helper is no longer exercising the window
-// between subscribing and being registered, and a publish inside that window
-// is lost for good. That window is REAL IN PRODUCTION, where nothing waits —
-// see BUG-2747, which also records that internal/watchevents closes the same
-// window in its constructor and this bus does not. It is tracked there rather
-// than by leaving tests that fail on a loaded runner roughly one time in a
-// hundred, which is a defect detector nobody can act on.
+// WHAT WAITING HERE USED TO BE HIDING, kept because the reasoning is worth
+// having and the conclusion has changed: every caller of this helper stopped
+// exercising the window between subscribing and being registered, and that
+// window was REAL IN PRODUCTION, where nothing waited — a publish inside it
+// was lost for good. It was tracked as BUG-2747 rather than left as tests that
+// failed on a loaded runner roughly one time in a hundred, which is a defect
+// detector nobody can act on.
+//
+// BUG-2747 CLOSED IT: Subscribe now returns only once Redis has acknowledged
+// the subscription, so waiting here is belt-and-braces rather than a covered-up
+// window, and every caller's premise holds for a reason the bus enforces. The
+// window itself is exercised on purpose in redis_subscribe_confirm_test.go,
+// which widens it with a proxy instead of hoping to lose the race.
 func pollSubscriberCount(mr *miniredis.Miniredis, channel string, satisfied func(int) bool) (int, bool) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
