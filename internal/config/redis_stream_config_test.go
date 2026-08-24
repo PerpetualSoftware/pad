@@ -227,9 +227,10 @@ func TestEventsHeartbeatEnvMapping(t *testing.T) {
 // phase 1 published a wire form nothing could misread, and the hazard was a
 // typo carrying a deployment FORWARD into a phase its peers could not parse.
 //
-// Here OFF is the SAFE direction. An instance that publishes no heartbeat
-// merely detects idleness off ordinary traffic — degraded on a quiet
-// workspace, harmless everywhere. An instance that publishes into a MIXED
+// Here OFF is the SAFE direction. An instance that publishes no heartbeat does
+// no idle detection at all — exactly the behaviour that existed before this
+// feature, so the worst case of a wrong OFF is that a wedged route goes
+// unnoticed, which is where every deployment already was. An instance that publishes into a MIXED
 // fleet makes every un-upgraded peer fail to decode the frame, drop that
 // workspace's replay buffer, and tell every one of its live subscribers to
 // resync — every 30 seconds, per workspace, for the length of the roll. The

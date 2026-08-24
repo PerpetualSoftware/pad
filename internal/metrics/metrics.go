@@ -282,11 +282,14 @@ type Metrics struct {
 	// detector exists for skew hard toward having none — a route that wedged
 	// early, on a quiet workspace, with nothing yet buffered.
 	//
-	// EXPECT ZERO. A non-zero rate means connections to Redis are being
-	// silently blackholed: a NAT idle timeout, a stateful firewall, an overlay
-	// network dropping long-lived flows. Check TCP keepalive on the path before
-	// touching the interval — a shorter interval hides the cause and a longer
-	// one widens the silent window.
+	// EXPECT ZERO — structurally so on heartbeat phase 1, where the detector
+	// does not run, so a zero there says nothing about whether a route has
+	// wedged; read heartbeat_phase off the startup log first. On phase 2, a
+	// non-zero rate means connections to Redis are being silently blackholed: a
+	// NAT idle timeout, a stateful firewall, an overlay network dropping
+	// long-lived flows. Check TCP keepalive on the path before touching the
+	// interval — a shorter interval hides the cause and a longer one widens the
+	// silent window.
 	EventSubscriptionCycledTotal prometheus.Counter
 
 	// SessionPresenceFailuresTotal counts failed presence operations by
@@ -547,7 +550,7 @@ func New() *Metrics {
 
 	eventSubscriptionCycledTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_subscription_cycled_total",
-		Help: "Activity-stream workspace subscriptions torn down and replaced because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout (BUG-2738). Detects a HALF-OPEN connection, which go-redis's pub/sub health check cannot see because it writes a PING without reading the reply. Expect zero. Read THIS rather than pad_event_sequence_resets_total{reason=\"idle_timeout\"}, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — NAT idle timeout, stateful firewall, overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval.",
+		Help: "Activity-stream workspace subscriptions torn down and replaced because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout (BUG-2738). Detects a HALF-OPEN connection, which go-redis's pub/sub health check cannot see because it writes a PING without reading the reply. Expect zero — and structurally zero on heartbeat phase 1, where the detector does not run at all, so a zero there says nothing about whether a route has wedged (read heartbeat_phase off the startup log). Read THIS rather than pad_event_sequence_resets_total{reason=\"idle_timeout\"}, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — NAT idle timeout, stateful firewall, overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval.",
 	})
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{

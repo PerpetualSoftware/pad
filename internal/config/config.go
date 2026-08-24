@@ -170,9 +170,16 @@ type Config struct {
 	// already runs idle detection off whatever traffic exists. Phase 2: set it
 	// true and roll again.
 	//
+	// PUBLISHING AND DETECTING ARE ONE SWITCH. An instance detects off its own
+	// frames — it publishes to the channels it subscribes to and receives them
+	// back — so a phase-1 instance does no idle detection at all. Splitting
+	// them was tried and is wrong: with neither heartbeat nor events, a healthy
+	// QUIET workspace crosses the threshold every 90-120s and is cycled, which
+	// is a resync storm on the default configuration.
+	//
 	// Rolling BACK is safe and immediate: set the EFFECTIVE value false and
-	// roll. Peers ignore the frame throughout, and the detector falls back to
-	// detecting off ordinary traffic. The same two wrinkles as
+	// roll. Peers ignore the frame throughout, and detection stops with it —
+	// back to the pre-BUG-2738 behaviour, not to a worse one. The same two wrinkles as
 	// EventsPublishEpoch apply — unsetting the environment variable is not the
 	// same as setting it false, because config.toml's value stands when the
 	// variable is absent; and downgrading PAST phase 1 is a second step in the
@@ -453,9 +460,10 @@ func Load() (*Config, error) {
 			// OFF was the data-LOSING direction and the guard existed to stop
 			// a typo carrying a deployment FORWARD into a phase its peers
 			// could not read. Here OFF is the SAFE direction: an instance that
-			// publishes no heartbeat merely detects off ordinary traffic,
-			// while one that publishes into a mixed fleet resyncs every client
-			// of every un-upgraded instance every 30 seconds. So the ignore is
+			// publishes no heartbeat does no detection at all, which is the
+			// behaviour that existed before this feature, while one that
+			// publishes into a mixed fleet resyncs every client of every
+			// un-upgraded instance every 30 seconds. So the ignore is
 			// the conservative outcome in both cases and the reasoning is
 			// inverted — do not copy the epoch flag's rationale onto this one.
 			//

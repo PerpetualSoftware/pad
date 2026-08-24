@@ -3,6 +3,7 @@ package events
 import (
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -83,16 +84,28 @@ func (b *RedisBus) now() time.Time {
 	return time.Now()
 }
 
-// maintenanceLoop publishes heartbeats and cycles idle subscriptions.
+// maintenanceLoop runs the two halves of BUG-2738's machinery.
 //
-// ONE TICKER FOR BOTH, at T. The detector's threshold is 3T, so running it at
-// the publisher's cadence costs at most one extra interval of latency and
-// saves a second timer; see DefaultIdleTimeout.
+// TWO GOROUTINES, NOT ONE LOOP DOING BOTH, and the separation is the whole
+// point rather than tidiness (codex round 1, P1). publishHeartbeats makes N
+// SYNCHRONOUS Redis publishes, one per subscribed workspace. Against the
+// failure this feature exists to detect — a route that has stopped carrying
+// traffic — those publishes are exactly the ones that block, and go-redis
+// bounds them by its own Dial/Read/WriteTimeout rather than by any context we
+// could pass. Sharing a goroutine would therefore let a stalled publisher
+// delay idle detection for as long as those timeouts take, on the very
+// instance whose connections have wedged: the detector would sleep through the
+// incident it was built to find, and the more workspaces an instance carried
+// the longer it would sleep.
+//
+// A stalled publisher is not otherwise a problem — it produces silence, which
+// is precisely what the detector reads. It only had to stop being the
+// detector's problem too.
 //
 // Started by the constructor and ended by Close through b.ctx. Both halves are
-// separately callable, and the tests drive them directly — which is why
-// TestTheMaintenanceLoopActuallyRunsBothHalves exists: a direct-call test
-// vouches for the function, not for its wiring (team CONVE-19).
+// separately callable and the tests drive them directly, which is why the
+// wiring has its own test: a direct-call test vouches for the function, not
+// for its binding (team CONVE-19).
 // A TIMER RE-READ EACH PASS, NOT A TICKER CONSTRUCTED ONCE. A ticker would
 // capture heartbeatInterval at goroutine start, which makes the field
 // write-once-at-construction in practice while looking like an ordinary
@@ -101,6 +114,19 @@ func (b *RedisBus) now() time.Time {
 // interval and makes the field genuinely what its comment says it is.
 func (b *RedisBus) maintenanceLoop() {
 	defer close(b.maintenanceStopped)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); b.tickForever(b.heartbeatKick, b.publishHeartbeats) }()
+	go func() { defer wg.Done(); b.tickForever(b.idleKick, b.cycleIdleSubscriptions) }()
+	wg.Wait()
+}
+
+// tickForever runs work on the configured interval until the bus closes.
+//
+// Each loop gets its OWN kick channel: a single shared one would be consumed
+// by whichever goroutine happened to be waiting, leaving the other serving out
+// a cadence that had already changed.
+func (b *RedisBus) tickForever(kick <-chan struct{}, work func()) {
 	for {
 		b.mu.Lock()
 		interval := b.heartbeatInterval
@@ -111,7 +137,7 @@ func (b *RedisBus) maintenanceLoop() {
 		case <-b.ctx.Done():
 			timer.Stop()
 			return
-		case <-b.maintenanceKick:
+		case <-kick:
 			// The cadence changed under us; drop this wait and re-read it
 			// rather than serving out an interval that is no longer the
 			// configured one.
@@ -120,8 +146,7 @@ func (b *RedisBus) maintenanceLoop() {
 		case <-timer.C:
 		}
 
-		b.publishHeartbeats()
-		b.cycleIdleSubscriptions()
+		work()
 	}
 }
 
@@ -142,9 +167,11 @@ func (b *RedisBus) setMaintenanceCadence(interval, idleTimeout time.Duration) {
 	b.heartbeatInterval = interval
 	b.idleTimeout = idleTimeout
 	b.mu.Unlock()
-	select {
-	case b.maintenanceKick <- struct{}{}:
-	default:
+	for _, kick := range []chan struct{}{b.heartbeatKick, b.idleKick} {
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -258,6 +285,27 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 
 	var due []idleCycle
 	b.mu.Lock()
+	// DETECTION IS GATED ON PUBLISHING, and getting this wrong is the defect
+	// codex round 1 found in the first draft of this unit (P2, and it is a P1
+	// in effect). Idle detection ran on every instance from phase 1, justified
+	// in a comment as "detecting off whatever traffic the deployment already
+	// carries" — which is true only of a BUSY workspace. On a QUIET one, phase
+	// 1 has no traffic to detect off and no heartbeat either, so a perfectly
+	// healthy subscription crosses the threshold every 90-120s and is cycled:
+	// coverage dropped, every live subscriber told to resync, forever, on the
+	// DEFAULT configuration every deployment lands in first. That is the exact
+	// load-posture inversion this family keeps having to avoid, shipped as the
+	// default.
+	//
+	// An instance detects off its OWN frames — it publishes to the workspace
+	// channels it subscribes to and receives them back — so it never depends
+	// on peers having flipped. Publishing and detecting are therefore one
+	// capability with one switch, and phase 1 is exactly "recognise the frame
+	// so a phase-2 peer costs you nothing".
+	if !b.publishHeartbeat {
+		b.mu.Unlock()
+		return
+	}
 	idleTimeout := b.idleTimeout
 	for ws, sub := range b.wsSubs {
 		if _, inFlight := b.pendingSubs[ws]; inFlight {
@@ -371,11 +419,23 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	b.stopRedisSubscription(c.workspaceID)
 	b.mu.Unlock()
 
-	b.reportSubscriptionCycled()
-
 	// RULE 4: b.ctx, and a nil establisher. establishSubscription owns the
 	// record from here — it installs or abandons, and retires the record in
 	// the same critical section either way, so no joiner is stranded by a
 	// cycle any more than by a cancelled caller (BUG-2749).
 	b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending)
+
+	// REPORTED AFTER ESTABLISHMENT, not before it (codex round 1, P3). While
+	// this cycle holds the workspace's establishment record, any caller that
+	// reaches Subscribe for the same workspace WAITS on it — including an
+	// Observer callback, which this package already treats as allowed to call
+	// back into the bus. Reporting from inside that window would let such a
+	// callback block on a record only this goroutine can retire.
+	//
+	// The narrower version of the same hazard is older than this code and is
+	// not fixed here: dropWorkspaceCoverage above reports SequenceReset while
+	// the record is held, exactly as confirmSubscription's late-acknowledgement
+	// path already did. See the Observer interface for the contract that
+	// bounds it.
+	b.reportSubscriptionCycled()
 }

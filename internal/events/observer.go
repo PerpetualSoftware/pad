@@ -132,11 +132,14 @@ type Observer interface {
 	// incidents it was built to find. This counter is the dependable one; the
 	// idle_timeout reset label is corroboration.
 	//
-	// Expect zero. A non-zero rate means connections between this instance and
-	// Redis are being silently blackholed — a NAT idle timeout, a stateful
-	// firewall, an overlay network dropping long-lived flows. Compare against
-	// TCP keepalive settings on the path before tuning the interval, because
-	// tuning the interval treats the symptom.
+	// Expect zero — and note that on heartbeat phase 1 it is zero STRUCTURALLY,
+	// because the detector does not run at all there, so a zero says nothing
+	// about whether any route has wedged. On phase 2, a non-zero rate means
+	// connections between this instance and Redis are being silently
+	// blackholed — a NAT idle timeout, a stateful firewall, an overlay network
+	// dropping long-lived flows. Compare against TCP keepalive settings on the
+	// path before tuning the interval, because tuning the interval treats the
+	// symptom.
 	SubscriptionCycled()
 }
 
@@ -221,9 +224,10 @@ const (
 	// WHAT IT ESTABLISHES IS NOT THAT EVENTS WERE LOST, unlike
 	// subscription_resumed: nothing was observed going missing. What it says is
 	// that the socket stopped proving it works, and a socket that cannot be
-	// proved cannot back a coverage claim. On a phase-2 deployment the silence
-	// includes this instance's own heartbeats, which is what makes it
-	// diagnostic rather than a guess about how busy the workspace is.
+	// proved cannot back a coverage claim. The silence includes this instance's
+	// own heartbeats, which is what makes it diagnostic rather than a guess
+	// about how busy the workspace is — and is why the detector only runs on
+	// heartbeat phase 2. On phase 1 this reason is structurally never emitted.
 	//
 	// It reaches this counter only when a buffer existed to drop. Read
 	// Observer.SubscriptionCycled for the dependable count — the no-buffer case
@@ -231,6 +235,17 @@ const (
 	ResetReasonIdleTimeout = "idle_timeout"
 )
 
+// THE ONE THING AN OBSERVER CALLBACK MUST NOT DO is call a Subscribe path on
+// the bus that is reporting to it.
+//
+// Callbacks run synchronously, and several of the paths that report — a late
+// subscription acknowledgement, an idle-fired cycle — do so while holding that
+// workspace's establishment record. A Subscribe arriving there waits on a
+// record only the reporting goroutine can retire, and the reporting goroutine
+// is waiting on the callback: neither moves again. Publishing, reading, and
+// unsubscribing from a callback are all fine and are exercised by this
+// package's tests; subscribing is the one door that is closed.
+//
 // observable is the shared, nil-safe Observer holder both bus implementations
 // embed. Reporting before SetObserver is called — every bus in every test that
 // does not opt in — is a no-op.

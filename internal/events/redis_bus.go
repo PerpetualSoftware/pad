@@ -512,11 +512,16 @@ type RedisBus struct {
 	heartbeatInterval time.Duration
 	idleTimeout       time.Duration
 
-	// maintenanceKick wakes maintenanceLoop when the cadence above changes, so
-	// a new interval takes effect at once instead of after the old one expires.
-	// Buffered depth 1 and written non-blockingly: it is a signal that the
-	// values moved, not a queue of changes.
-	maintenanceKick chan struct{}
+	// heartbeatKick and idleKick wake their loops when the cadence above
+	// changes, so a new interval takes effect at once instead of after the old
+	// one expires. Buffered depth 1 and written non-blockingly: each is a
+	// signal that the values moved, not a queue of changes.
+	//
+	// ONE PER LOOP because the two run in separate goroutines (see
+	// maintenanceLoop); a shared channel would be consumed by whichever was
+	// waiting and leave the other on the stale cadence.
+	heartbeatKick chan struct{}
+	idleKick      chan struct{}
 
 	// maintenanceStopped is closed when maintenanceLoop returns.
 	//
@@ -752,16 +757,17 @@ func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch, 
 		confirmTimeout:     defaultSubscribeConfirmTimeout,
 		heartbeatInterval:  DefaultHeartbeatInterval,
 		idleTimeout:        DefaultIdleTimeout,
-		maintenanceKick:    make(chan struct{}, 1),
+		heartbeatKick:      make(chan struct{}, 1),
+		idleKick:           make(chan struct{}, 1),
 		maintenanceStopped: make(chan struct{}),
 		ctx:                ctx,
 		cancel:             cancel,
 	}
-	// IDLE DETECTION RUNS ON EVERY INSTANCE FROM PHASE 1, including ones that
-	// publish no heartbeats: it detects off whatever traffic the deployment
-	// already carries, which on a busy workspace is enough on its own. Phase 2
-	// is what makes a QUIET workspace's silence diagnostic. Ended by Close
-	// through b.ctx.
+	// The loop is started unconditionally; each half decides for itself whether
+	// it has anything to do. Idle detection is gated on publishHeartbeat rather
+	// than running from phase 1 — see cycleIdleSubscriptions for why a
+	// phase-1 detector cycles healthy quiet workspaces. Ended by Close through
+	// b.ctx.
 	go b.maintenanceLoop()
 	return b
 }

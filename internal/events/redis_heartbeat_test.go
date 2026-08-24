@@ -146,7 +146,7 @@ func (b *RedisBus) liveGen(workspaceID string) (int64, bool) {
 //     wired to nothing, and — because its own registration keeps wsCounts
 //     non-zero — no later caller would establish either.
 func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
-	b, _, clock, _ := newHeartbeatBus(t, false)
+	b, _, clock, _ := newHeartbeatBus(t, true)
 
 	first, _, outcome := b.Subscribe(context.Background(), "ws-1")
 	if outcome != SubscribeOK {
@@ -366,7 +366,7 @@ func TestAnEventIsNotMistakenForAHeartbeat(t *testing.T) {
 // "coverage dropped" from "connection replaced"; without it a drop-only
 // implementation passes.
 func TestAnIdleSubscriptionEndsItsCoverageAndReplacesItsConnection(t *testing.T) {
-	b, _, clock, obs := newHeartbeatBus(t, false)
+	b, _, clock, obs := newHeartbeatBus(t, true)
 
 	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
@@ -442,7 +442,7 @@ func TestAnIdleSubscriptionEndsItsCoverageAndReplacesItsConnection(t *testing.T)
 // older than any threshold and is cycled on the detector's first pass —
 // forever, since each replacement is equally fresh.
 func TestAFreshlySubscribedWorkspaceIsNotCycled(t *testing.T) {
-	b, _, _, obs := newHeartbeatBus(t, false)
+	b, _, _, obs := newHeartbeatBus(t, true)
 
 	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
@@ -516,7 +516,7 @@ func TestAnUnconfirmedAdmissionIsNotCycledAsIdle(t *testing.T) {
 // continues), and the detector would then cycle a healthy socket on top of a
 // coverage drop it had already reported.
 func TestAnyInboundFrameKeepsASubscriptionAlive(t *testing.T) {
-	b, mr, clock, obs := newHeartbeatBus(t, false)
+	b, mr, clock, obs := newHeartbeatBus(t, true)
 
 	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
@@ -567,7 +567,7 @@ func TestAnyInboundFrameKeepsASubscriptionAlive(t *testing.T) {
 // publishing them: on a workspace with no events at all, our own frame is what
 // makes the silence diagnostic rather than ambiguous.
 func TestAHeartbeatKeepsAQuietWorkspaceOutOfTheDetector(t *testing.T) {
-	b, mr, clock, obs := newHeartbeatBus(t, false)
+	b, mr, clock, obs := newHeartbeatBus(t, true)
 
 	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
@@ -611,7 +611,7 @@ func TestAHeartbeatKeepsAQuietWorkspaceOutOfTheDetector(t *testing.T) {
 // direction for the error: the buffered tail of the dead connection would
 // suppress the detector for the new one.
 func TestAStragglerCannotRefreshTheLivenessOfItsSuccessor(t *testing.T) {
-	b, _, clock, _ := newHeartbeatBus(t, false)
+	b, _, clock, _ := newHeartbeatBus(t, true)
 
 	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
@@ -666,7 +666,7 @@ func TestAStragglerCannotRefreshTheLivenessOfItsSuccessor(t *testing.T) {
 // The seam runs after the install and before the wait, which is the only point
 // at which this state is observable.
 func TestAnIdleCycleRefusesWhileAnEstablishmentIsInFlight(t *testing.T) {
-	b, _, clock, obs := newHeartbeatBus(t, false)
+	b, _, clock, obs := newHeartbeatBus(t, true)
 
 	var reached atomic.Bool
 	var pendingSeen, liveSeen atomic.Bool
@@ -732,7 +732,7 @@ func TestAnIdleCycleRefusesWhileAnEstablishmentIsInFlight(t *testing.T) {
 // defer, so it runs after it), which is exactly the gap between cycleOne's drop
 // and its second read.
 func TestAnIdleCycleAbandonsAWorkspaceEmptiedUnderIt(t *testing.T) {
-	b, _, clock, _ := newHeartbeatBus(t, false)
+	b, _, clock, _ := newHeartbeatBus(t, true)
 
 	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 
@@ -915,7 +915,7 @@ func TestTheMaintenanceLoopRunsBothHalves(t *testing.T) {
 	})
 
 	t.Run("it cycles", func(t *testing.T) {
-		b, _, clock, obs := newHeartbeatBus(t, false)
+		b, _, clock, obs := newHeartbeatBus(t, true)
 		ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 		defer b.Unsubscribe(ch)
 
@@ -926,6 +926,64 @@ func TestTheMaintenanceLoopRunsBothHalves(t *testing.T) {
 			return obs.cycledCount() > 0
 		})
 	})
+}
+
+// TestAQuietWorkspaceIsNotCycledOnPhase1 is the regression test for the defect
+// codex round 1 found in this unit's first draft, and it is the one most worth
+// keeping.
+//
+// Idle detection originally ran on EVERY instance from phase 1, on the
+// reasoning that it could detect off whatever traffic the deployment already
+// carried. That reasoning holds only for a BUSY workspace. A quiet one on
+// phase 1 has no events AND no heartbeat, so a perfectly healthy subscription
+// crossed the threshold every 90-120s and was cycled — replay coverage
+// dropped and every live subscriber told to resync, indefinitely, on the
+// DEFAULT configuration that every deployment lands in before it flips
+// anything. A resync storm shipped as the default, by the feature whose whole
+// purpose is to avoid inverting the load posture.
+//
+// Fails without the phase gate: this bus is silent for ten thresholds.
+func TestAQuietWorkspaceIsNotCycledOnPhase1(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, false)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-quiet")
+	defer b.Unsubscribe(ch)
+	genBefore, ok := b.liveGen("ws-quiet")
+	if !ok {
+		t.Fatal("fixture: nothing installed")
+	}
+
+	for range 10 {
+		clock.advance(DefaultIdleTimeout + time.Second)
+		b.cycleIdleSubscriptions()
+	}
+
+	if got := obs.cycledCount(); got != 0 {
+		t.Fatalf("a healthy, quiet workspace was cycled %d times on phase 1: this is a resync storm on the default configuration", got)
+	}
+	if reasons := obs.resetReasons(); len(reasons) != 0 {
+		t.Fatalf("a healthy, quiet workspace had its coverage dropped on phase 1: %v", reasons)
+	}
+	if genAfter, _ := b.liveGen("ws-quiet"); genAfter != genBefore {
+		t.Fatalf("the connection was replaced (generation %d → %d) although nothing was wrong with it", genBefore, genAfter)
+	}
+}
+
+// TestPhase2CyclesTheSameWorkspace is the counterfactual to the test above: the
+// gate must silence phase 1, not the detector. Without this pair, "no cycles"
+// is satisfied by a detector that never works at all.
+func TestPhase2CyclesTheSameWorkspace(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-quiet")
+	defer b.Unsubscribe(ch)
+
+	clock.advance(DefaultIdleTimeout + time.Second)
+	b.cycleIdleSubscriptions()
+
+	if got := obs.cycledCount(); got != 1 {
+		t.Fatalf("SubscriptionCycled fired %d times on phase 2, want 1: the phase gate has disabled the detector outright", got)
+	}
 }
 
 // TestClosingTheBusStopsTheMaintenanceLoop pins the teardown half of that

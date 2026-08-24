@@ -420,7 +420,7 @@ Alert on these instead:
 | `pad_watchevents_midstream_resyncs_total` (see also, listed above) | Same meaning for the watch stream. Its causes are a slow-subscriber drop and a received sequence gap or reset; a gap announces to EVERY subscriber on the instance, so it can exceed all of its cause counters |
 | `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase. `epoch_regressed` — a LOWER generation was seen, so this instance stopped vouching for its buffers. One alongside an `epoch_change` is a message that was in flight when the generation rotated; a RUN of them means the counter itself went backwards — usually Redis lost writes, and since BUG-2740 possibly a repaired generation key (see *A repaired generation counter*). `undecodable_message` — a message on these channels could not be parsed, so that workspace's coverage ended; expect zero, and suspect a namespace collision. `subscription_unconfirmed` — a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived, so the span in between is one that stream cannot account for; it reaches THIS counter only when a buffer existed to drop, so read `pad_event_subscription_unconfirmed_total` for the dependable count. `idle_timeout` — a subscription received nothing at all (no event, no heartbeat, no acknowledgement) for longer than the idle timeout, so this instance stopped vouching for its buffer and replaced the connection; unlike `subscription_resumed` it does NOT establish that events went missing, only that the socket stopped proving it works, and like `subscription_unconfirmed` it reaches this counter only when a buffer existed to drop — read `pad_event_subscription_cycled_total` instead |
 | `pad_event_events_dropped_total` | Activity events not delivered to a live subscriber, by reason — today only `slow_subscriber` (that connection's 64-deep channel was full). Per-SUBSCRIBER: every subscriber that was keeping up received the event. Pairs with `pad_event_midstream_resyncs_total`, though not one-for-one in either direction — see that row. New in BUG-2730, along with the fix that stops the drop being silent, so a deploy that starts reporting these is not necessarily a regression — it may be the first time they were countable |
-| `pad_event_subscription_cycled_total` | Activity-stream workspace subscriptions torn down and replaced because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout. Detects a **half-open connection**: no FIN, no RST, just a route that stopped working, which go-redis cannot see because its pub/sub health check writes a PING and never reads the reply. **Expect zero.** Read this rather than `pad_event_sequence_resets_total{reason="idle_timeout"}`, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — a NAT idle timeout, a stateful firewall, an overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval. On heartbeat phase 1 a zero here means LESS than it does on phase 2: without our own traffic, a quiet workspace's wedged route is still undetectable — read `heartbeat_phase` off the startup log before drawing a conclusion |
+| `pad_event_subscription_cycled_total` | Activity-stream workspace subscriptions torn down and replaced because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout. Detects a **half-open connection**: no FIN, no RST, just a route that stopped working, which go-redis cannot see because its pub/sub health check writes a PING and never reads the reply. **Expect zero.** Read this rather than `pad_event_sequence_resets_total{reason="idle_timeout"}`, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — a NAT idle timeout, a stateful firewall, an overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval. **On heartbeat phase 1 this counter is structurally zero** — detection is part of phase 2, so a zero there says nothing at all about whether any route has wedged. Read `heartbeat_phase` off the startup log before drawing any conclusion from it |
 | `pad_event_subscription_unconfirmed_total` | Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait for it timed out (BUG-2747). **Expect zero.** Counts ESTABLISHMENTS, not clients — one workspace subscription that timed out increments it once however many subscribers were waiting on it. Nothing is known to have been lost; what it says is that a stream was admitted whose coverage this instance cannot describe, and that every subscriber waiting on it will be told to reconcile when the acknowledgement lands. A non-zero rate means the SUBSCRIBE round trip is slow or stalling — read it alongside SSE connect latency rather than alongside `pad_event_sequence_resets_total` |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
@@ -798,16 +798,22 @@ every **30 seconds** (T), and cycles a subscription that has received nothing fo
 frame is not a cycle. Detection latency is therefore in the 90–120s range: the
 scan runs on the same cadence as the publisher, which adds up to one interval.
 
-Idle detection runs on **every** instance from phase 1, off whatever traffic the
-deployment already carries. Phase 2 is what makes a *quiet* workspace's silence
-diagnostic.
+**Detection is part of phase 2, not phase 1.** Publishing and detecting are one
+capability with one switch, because an instance detects off its *own* frames —
+it publishes to the workspace channels it subscribes to and receives them back,
+so it never depends on peers having flipped. A phase-1 instance therefore
+detects nothing; it only recognises the frame so that a phase-2 peer costs it
+nothing. Splitting them was tried and is wrong: with no heartbeat and no
+events, a perfectly healthy *quiet* workspace crosses the threshold every
+90–120s and gets cycled, which is a resync storm on the default configuration
+every deployment lands in first.
 
 **It rolls out in two phases, and the order is not optional.**
 
 | Phase | What you do | What instances publish | What they do with a frame |
 |-------|-------------|------------------------|---------------------------|
-| 1 | Roll the new binary everywhere. Leave `PAD_EVENTS_HEARTBEAT` unset. | No heartbeats | Recognise and ignore it |
-| 2 | Set `PAD_EVENTS_HEARTBEAT=true` and roll again. | One frame per subscribed workspace per 30s | Recognise and ignore it |
+| 1 | Roll the new binary everywhere. Leave `PAD_EVENTS_HEARTBEAT` unset. | No heartbeats | Recognise and ignore it. **No idle detection.** |
+| 2 | Set `PAD_EVENTS_HEARTBEAT=true` and roll again. | One frame per subscribed workspace per 30s | Recognise and ignore it. **Idle detection active.** |
 
 **What happens if you run them out of order.** The frame has to travel on the
 workspace's *event* channel, because that channel's connection is the thing
@@ -828,7 +834,8 @@ exists for.
 
 **Rolling back to phase 1** is safe and takes effect immediately: make the
 effective value **false** and roll. Peers ignore the frame throughout, and idle
-detection falls back to detecting off ordinary traffic. The same two wrinkles as
+detection stops with it — you are back to the pre-BUG-2738 behaviour, which is
+a wedged route going unnoticed, not a worse one. The same two wrinkles as
 the ID-space migration apply, for the same reasons:
 
 - **Setting the value to false is not the same as unsetting the environment
