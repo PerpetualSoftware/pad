@@ -117,7 +117,7 @@ var allowlistCoverage = map[string]allowlistClassification{
 			"handler ran, so the middleware cannot gate it and the handler must. Returns the same 404 as not-restorable so " +
 			"a token cannot probe which slugs exist"},
 	"item search": {filtersAllowlist,
-		"handlers_search.go — BOTH branches: the no-workspace fan-out via filterWorkspacesByTokenAllowlist, and the named-" +
+		"handlers_search.go handleSearch — BOTH branches: the no-workspace fan-out via filterWorkspacesByTokenAllowlist, and the named-" +
 			"workspace branch via tokenAllowedWorkspaceMatches, which returns empty rather than 403 so the token cannot " +
 			"confirm the workspace exists (BUG-2102)"},
 
@@ -726,16 +726,31 @@ func TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite(t *testing.T) {
 			bad = append(bad, cmdKey+": reason names "+file+", which does not exist in internal/server")
 			continue
 		}
+		// Scan the NAMED HANDLER, not the whole file (codex round 4
+		// P2). A file-wide substring match would let an unfiltered
+		// handler pass by living next door to a filtered one — and
+		// handlers_workspaces.go contains both kinds, so that is not
+		// hypothetical here.
+		fn := firstHandlerMentioned(c.reason)
+		if fn == "" {
+			bad = append(bad, cmdKey+": reason names "+file+
+				" but no handler function, so the claim cannot be located")
+			continue
+		}
+		body, ok := functionBody(string(src), fn)
+		if !ok {
+			bad = append(bad, cmdKey+": reason names "+fn+", which is not defined in "+file)
+			continue
+		}
 		found := false
 		for _, f := range forms {
-			if strings.Contains(string(src), f) {
+			if strings.Contains(body, f) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			bad = append(bad, cmdKey+": reason names "+file+
-				", but that file contains no allow-list enforcement call")
+			bad = append(bad, cmdKey+": "+fn+" in "+file+" contains no allow-list enforcement call")
 			continue
 		}
 		checked++
@@ -747,6 +762,41 @@ func TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite(t *testing.T) {
 	if checked == 0 {
 		t.Error("no filtersAllowlist entry was actually checked — this test would pass vacuously")
 	}
+}
+
+// firstHandlerMentioned pulls the first handleXxx identifier out of a
+// reason string, which is how a filtersAllowlist entry says WHERE it
+// filters.
+func firstHandlerMentioned(reason string) string {
+	for _, tok := range strings.FieldsFunc(reason, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '\t' || r == ',' || r == '(' || r == ')' || r == '\u2192'
+	}) {
+		// Exclude the FILE name, which also starts with "handle".
+		if strings.HasSuffix(tok, ".go") {
+			continue
+		}
+		if strings.HasPrefix(tok, "handle") && len(tok) > len("handle") {
+			return tok
+		}
+	}
+	return ""
+}
+
+// functionBody returns the source of the named method, from its
+// declaration to the next top-level func. Crude on purpose — it only
+// needs to bound a substring search, and a wrong bound fails loudly by
+// not finding the call rather than quietly by finding somebody else's.
+func functionBody(src, name string) (string, bool) {
+	decl := ") " + name + "("
+	i := strings.Index(src, decl)
+	if i < 0 {
+		return "", false
+	}
+	rest := src[i:]
+	if j := strings.Index(rest[1:], "\nfunc "); j >= 0 {
+		return rest[:j+1], true
+	}
+	return rest, true
 }
 
 // firstGoFileMentioned pulls the first *.go filename out of a reason
