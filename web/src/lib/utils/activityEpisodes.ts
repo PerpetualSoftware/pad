@@ -1,5 +1,5 @@
 import type { Activity } from '$lib/types';
-import { agentActorLabel } from '$lib/utils/agentActor';
+import { agentNameFromMetadata } from '$lib/utils/agentActor';
 
 /**
  * The episode fold behind the activity page's Live view (IDEA-2755).
@@ -61,7 +61,7 @@ export interface FoldOptions {
 
 function actorKeyOf(a: Activity): { key: string; label: string; kind: string } {
 	if (a.actor === 'agent') {
-		const label = agentActorLabel(a.metadata, 'agent');
+		const label = agentNameFromMetadata(a.metadata) ?? 'agent';
 		return { key: `agent:${label}`, label, kind: 'agent' };
 	}
 	const label = a.actor_name ?? (a.source === 'cli' ? 'cli' : 'web');

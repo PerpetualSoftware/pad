@@ -57,10 +57,13 @@
 
 <div class="card">
 	<div class="row">
+		<!-- title carries the full name: the label is arbitrary client-supplied
+		     text for agents, and this row wraps rather than clipping, so the
+		     attribute is for the case where a reader needs the exact value. -->
 		<Chip
 			size="sm"
 			color={activity.actor === 'agent' ? 'var(--accent-purple)' : 'var(--status-blue)'}
-			>{getActorLabel(activity)}</Chip
+			title={getActorLabel(activity)}>{getActorLabel(activity)}</Chip
 		>
 		{#if activity.actor_name}
 			<span class="actor-name">{activity.actor_name}</span>

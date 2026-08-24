@@ -431,7 +431,11 @@
 									{/if}
 								</div>
 								<div class="entry-meta">
-									<span class="actor-badge {src.kind}" class:named={src.named}>{src.label}</span>
+									<span
+										class="actor-badge {src.kind}"
+										class:named={src.named}
+										title={src.named ? src.label : undefined}>{src.label}</span
+									>
 									<span
 										class="entry-time"
 										title={new Date(activity.created_at).toLocaleString()}
@@ -727,10 +731,20 @@
 		color: var(--accent-purple);
 	}
 	/* A name, not a category word — same reasoning as `.actor-badge.user`
-	   below, which has always opted out. See getSourceLabel's `named`. */
+	   below, which has always opted out. See getSourceLabel's `named`.
+
+	   Bounded because the badge is `flex-shrink: 0` and an agent name is
+	   arbitrary client-supplied text (whatever went in X-Pad-Agent), not one
+	   of the four fixed words this badge used to hold. Unbounded, one long
+	   name pushes the timestamp off the row. The full value stays reachable
+	   via the title attribute. */
 	.actor-badge.named {
 		text-transform: none;
 		letter-spacing: normal;
+		max-width: 16ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.actor-badge.cli {
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);

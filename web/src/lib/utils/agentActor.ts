@@ -58,18 +58,13 @@ export function agentNameOf(metadata: Record<string, unknown> | undefined | null
 	return name;
 }
 
-/**
- * The label for an agent actor: its stamped name, or `fallback` when the
- * row carries none.
- *
- * The fallback stays the caller's, because each surface already has its
- * own vocabulary for the nameless case ("agent" in the feed's lowercase
- * badges, "Agent" in the timeline's chips) and this change is not the
- * place to unify them.
+/*
+ * There is deliberately no `label(metadata, fallback)` wrapper. One existed
+ * and had a single caller: every other site already holds the parsed
+ * metadata and reaches for `agentNameOf`, and each supplies its own
+ * fallback anyway — surfaces disagree on the nameless case ("agent" in the
+ * feed's lowercase badges, "Agent" in the timeline's chips), so the wrapper
+ * saved a `?? 'agent'` and cost an inconsistency in how five call sites
+ * looked. Two functions, one difference between them: do you have the JSON
+ * string or the parsed object.
  */
-export function agentActorLabel(
-	metadata: string | undefined | null,
-	fallback: string
-): string {
-	return agentNameFromMetadata(metadata) ?? fallback;
-}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { agentActorLabel, agentNameFromMetadata, agentNameOf } from './agentActor';
+import { agentNameFromMetadata, agentNameOf } from './agentActor';
 
 /**
  * The helper's whole contract is "verbatim, or nothing" — so the cases that
@@ -65,15 +65,7 @@ describe('agentNameFromMetadata', () => {
 	});
 });
 
-describe('agentActorLabel', () => {
-	it('returns the stamped name when there is one', () => {
-		expect(agentActorLabel('{"agent":"wren"}', 'agent')).toBe('wren');
-	});
-
-	it("returns the caller's own fallback when there is not", () => {
-		// The fallback is deliberately not shared: surfaces disagree on its
-		// casing ("agent" in the feed's badges, "Agent" in timeline chips).
-		expect(agentActorLabel('{}', 'agent')).toBe('agent');
-		expect(agentActorLabel('{}', 'Agent')).toBe('Agent');
-	});
-});
+// The `agentActorLabel(metadata, fallback)` wrapper these last cases covered
+// was removed in codex round 3: one caller, and it hid the `?? fallback` that
+// every other site wrote inline. Each surface's own fallback is asserted where
+// that surface is tested, which is where the casing difference actually lives.

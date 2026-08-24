@@ -639,7 +639,11 @@
 								     and upper-casing it would make `Wren` and `wren` identical —
 								     breaking the verbatim contract in CSS. Humans already get this
 								     treatment (the .actor-name span below is never transformed). -->
-								<span class="actor-badge agent" class:named={agentName}>{agentName ?? 'agent'}</span>
+								<span
+									class="actor-badge agent"
+									class:named={agentName}
+									title={agentName}>{agentName ?? 'agent'}</span
+								>
 							{:else if activity.actor_name}
 								<span class="actor-name">{activity.actor_name}</span>
 							{:else if activity.source === 'cli'}
@@ -1310,10 +1314,17 @@
 		background: color-mix(in srgb, var(--accent-purple) 15%, transparent);
 		color: var(--accent-purple);
 	}
-	/* A stamped agent name is a name, not a category word — see the markup. */
+	/* A stamped agent name is a name, not a category word — see the markup.
+	   Bounded because the badge is `flex-shrink: 0` and the name is arbitrary
+	   client-supplied text, not one of the fixed words this badge used to
+	   hold; the full value stays reachable via the title attribute. */
 	.actor-badge.named {
 		text-transform: none;
 		letter-spacing: normal;
+		max-width: 16ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.actor-badge.cli {
 		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
