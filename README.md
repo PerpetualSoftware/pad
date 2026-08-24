@@ -126,7 +126,34 @@ pad item create convention "Run tests before completing tasks" \
   --field priority=must
 ```
 
-Agents load relevant conventions automatically. All agent actions are attributed in the activity feed, so you always know what the AI changed.
+Agents load relevant conventions automatically, and every agent action is attributed in the activity feed — so you can see what the AI changed rather than finding it later in a diff.
+
+**Name your agents:**
+
+By default an agent's writes show up as a generic `agent`. Give it a name and that name appears instead — in the activity feed's Live and Audit views, on the dashboard's recent activity, on item timelines, and in the admin audit log. With more than one agent working a project, that is the difference between "something automated touched this" and knowing which one.
+
+Pad takes the first of these it finds:
+
+```bash
+# 1. Per-workspace, committed with the project — the deliberate choice.
+#    In .pad.toml:
+#      agent_name = "reviewer"
+
+# 2. Per-process, runtime-agnostic. Any harness can set it.
+export PAD_AGENT=reviewer
+
+# 3. Otherwise Pad detects the runtime it knows (Claude Code reports
+#    "claude-code"), and falls back to the generic "agent" if it can't.
+```
+
+The name is rendered exactly as sent — Pad does not keep a list of approved names or rewrite what you choose.
+
+**What this does not claim.** The name is supplied by the client and self-declared, so it records honesty, not identity. From `ResolveAgentName`'s own contract in `internal/cli/agent_identity.go`:
+
+> - an agent that omits it is indistinguishable from the human whose credentials it is using;
+> - a human running `! pad ...` inside an agent's terminal inherits that terminal's environment and will be attributed to the agent.
+
+So it is not a basis for machine-verifiable provenance: treat it as a label an actor chose, useful for reading a trail, not as evidence about who acted. Because the credentials belong to a person either way, surfaces that exist for provenance show both — the admin audit log renders `reviewer (via Dana)` rather than picking one.
 
 **Onboard agents to a new codebase:**
 
