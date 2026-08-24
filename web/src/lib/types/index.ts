@@ -1254,8 +1254,9 @@ export interface Comment {
 	item_title?: string;
 	item_slug?: string;
 	/**
-	 * The agent's self-declared display name, joined from the `commented`
-	 * activity this comment links to (TASK-2760). Present on comments the
+	 * The agent's self-declared display name, joined from the activity this
+	 * comment links to — a `commented` row, or the `updated` row of an item
+	 * update that carried the comment (TASK-2760). Present on comments the
 	 * list endpoints return (timeline, comments) — top-level AND nested
 	 * replies — and absent when the writer sent no name. Only meaningful
 	 * when `created_by === 'agent'`; render it through the rules in

@@ -314,15 +314,25 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		versionTimes[v.CreatedAt.Unix()] = true
 	}
 
-	// Activities a comment links to are NOT filtered here. They used to be —
-	// a set of the fetched comments' activity_ids, skipped below — and that
-	// was wrong in exactly the way it looked right: comments and activities
-	// arrive through separately bounded windows, so an activity whose comment
-	// sat outside the comment window slipped through as a standalone
-	// "commented" card. ListDocumentActivityBeforeTime now excludes linked
-	// rows at the query, where the check is exact whatever either window
-	// holds (TASK-2760, codex round 2). A page-local guard kept alongside it
-	// would be dead code that reads as load-bearing, so there is none.
+	// Activities the fetched comments link to, skipped below. This is NOT the
+	// mechanism that keeps a comment-linked activity off the timeline —
+	// ListDocumentActivityBeforeTime excludes those at the query, which is
+	// the only place the check is exact: comments and activities arrive
+	// through separately bounded windows, and a guard built from the
+	// comments in hand cannot see an activity whose comment fell outside the
+	// comment window (TASK-2760, codex round 2). What this set covers is the
+	// read skew between the two queries: the sources are read at separate
+	// instants with no shared snapshot (see TimelineEntry's doc), so a
+	// comment fetched here and hard-deleted before the activity query runs
+	// leaves its activity eligible again while the stale comment is still in
+	// memory, and both would render once (codex round 4). Two guards, two
+	// distinct failure modes; neither substitutes for the other.
+	commentActivityIDs := make(map[string]bool)
+	for _, c := range comments {
+		if c.ActivityID != "" {
+			commentActivityIDs[c.ActivityID] = true
+		}
+	}
 
 	var entries []models.TimelineEntry
 
@@ -359,13 +369,17 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	}
 
 	// Add activity entries (with dedup: skip "updated" if a version exists at
-	// same second). Comment-linked activities never reach this loop — see the
-	// note at the top of the function.
+	// same second, and skip activities a fetched comment links to — the
+	// read-skew guard described at the top of the function).
 	for i := range activities {
 		a := activities[i]
 
 		// Skip "read" and "searched" actions — not useful in item timeline.
 		if a.Action == "read" || a.Action == "searched" {
+			continue
+		}
+
+		if commentActivityIDs[a.ID] {
 			continue
 		}
 

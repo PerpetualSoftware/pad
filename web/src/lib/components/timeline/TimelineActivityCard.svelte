@@ -143,6 +143,7 @@
 	.actor-label {
 		display: inline-block;
 		max-width: 24ch;
+		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		vertical-align: bottom;
