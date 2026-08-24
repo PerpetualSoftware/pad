@@ -637,15 +637,6 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 		return
 	}
 
-	// LOGGED HERE, after the decision is final rather than before it, so the
-	// log cannot describe a cycle that then abandons. It still says ATTEMPTING
-	// to replace: establishSubscription can install nothing if the bus closes
-	// or the workspace empties while it dials, and an operator correlating this
-	// line with pad_event_subscription_cycled_total would otherwise find the
-	// log without the counter and go hunting a bug that is not there.
-	slog.Warn("events: no traffic on this workspace's Redis subscription within the idle timeout; ending its replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
-		"workspace", c.workspaceID, "idle_timeout", idleTimeout)
-
 	// The drop must precede the teardown, because it authenticates against the
 	// LIVE subscription's generation and stopRedisSubscription deletes that
 	// entry. Both now happen without releasing the lock in between, so there is
@@ -654,6 +645,22 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	report := b.dropWorkspaceCoverageLocked(c.workspaceID, ResetReasonIdleTimeout, c.gen)
 	b.stopRedisSubscription(c.workspaceID)
 	b.mu.Unlock()
+
+	// LOGGED AFTER THE UNLOCK, and after the decision is final (codex rounds 6
+	// and 12). Two separate reasons, both learned the hard way:
+	//
+	//   - After the DECISION, so the log cannot describe a cycle that then
+	//     abandons. It still says ATTEMPTING to replace, because
+	//     establishSubscription can install nothing if the bus closes or the
+	//     workspace empties while it dials — an operator correlating this line
+	//     with pad_event_subscription_cycled_total would otherwise find the log
+	//     without the counter and go hunting a bug that is not there.
+	//   - After the UNLOCK, because slog runs the installed handler
+	//     synchronously and b.mu is the lock every fan-out and every Subscribe
+	//     on this instance contends for. A slow or custom handler would stall
+	//     all of them, and one that called back into the bus would deadlock.
+	slog.Warn("events: no traffic on this workspace's Redis subscription within the idle timeout; ending its replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
+		"workspace", c.workspaceID, "idle_timeout", idleTimeout)
 
 	// Reported with the lock released: an Observer callback may call back into
 	// the bus (see the Observer interface for the one thing it may not do).

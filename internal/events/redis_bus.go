@@ -1701,8 +1701,20 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 		return
 	}
 	sub.cancel()
-	sub.pubsub.Close()
 	delete(b.wsSubs, workspaceID)
+
+	// CLOSED OFF THE LOCK (codex round 12). PubSub.Close takes go-redis's own
+	// mutex, which its health check can be holding across reconnect work — so
+	// closing here would put a network-bound wait inside b.mu, and b.mu is the
+	// lock every fan-out and every Subscribe on this instance contends for.
+	// The idle detector made that matter: teardown used to happen only when a
+	// workspace lost its last subscriber, and now happens on every cycle.
+	//
+	// Fire-and-forget is safe because nothing references this PubSub any more:
+	// the map entry is gone and the receive loop has already been signalled by
+	// cancel() above, which is what actually stops delivery. Close only
+	// releases the connection.
+	go func(ps *redis.PubSub) { _ = ps.Close() }(sub.pubsub)
 
 	// WHEN WE STOP RECEIVING, THE HONEST STATE IS NO BUFFER, NOT A STALE
 	// CONTIGUOUS ONE (BUG-2731). This is the invariant a future optimization
