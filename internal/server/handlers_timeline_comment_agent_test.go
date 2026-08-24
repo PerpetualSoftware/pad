@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -158,5 +159,50 @@ func TestListComments_CarriesAgentName(t *testing.T) {
 	}
 	if got[named.ID] != "wren" || got[human.ID] != "" || len(got) != 2 {
 		t.Errorf("agent names = %v, want %s→wren, %s→\"\"", got, named.ID, human.ID)
+	}
+}
+
+// Codex round 2 on TASK-2760, driven end to end. The comment sources and the
+// activity source are windowed separately (perSource = limit*3 each), so a
+// comment can fall outside the comment window while the activity it links to
+// sits inside the activity window. The handler's in-memory guard cannot see
+// that comment, so only the query-level exclusion keeps the activity from
+// rendering as a standalone "commented" card. The one-second sleep is
+// load-bearing: timestamps are second-precision, and the comment must sort
+// strictly older than the rows that crowd it out.
+func TestTimeline_LinkedActivityNeverLeaksAtCommentWindowEdge(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	item := timelineItemWithStructured(t, srv, ws, "", "")
+
+	early := postComment(t, srv, ws, item.Slug, "wren", "early")
+	if early.ActivityID == "" {
+		t.Fatal("comment has no linked activity")
+	}
+	time.Sleep(1100 * time.Millisecond)
+
+	// limit=3 → each source window is 9 rows. Nine comments newer than
+	// `early` push it out of the comment window; eight of them are replies
+	// written straight to the store with no activity, so the activity window
+	// stays small enough to still hold early's activity — and they nest
+	// under the parent, so they do not push the merged page past limit.
+	parent := postComment(t, srv, ws, item.Slug, "", "parent")
+	for i := 0; i < 8; i++ {
+		if _, err := srv.store.CreateComment(item.WorkspaceID, item.ID, "", models.CommentCreate{
+			Body: "reply", CreatedBy: "user", Source: "web", ParentID: parent.ID,
+		}); err != nil {
+			t.Fatalf("create reply %d: %v", i, err)
+		}
+	}
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "limit=3")
+	if commentEntryByID(resp.Entries, early.ID) != nil {
+		t.Fatal("premise broken: the early comment is still inside the comment window; the test proves nothing")
+	}
+	for _, e := range resp.Entries {
+		if e.Kind == "activity" && e.ID == early.ActivityID {
+			t.Fatalf("early comment's activity %s rendered as a standalone card while the comment was outside the window", early.ActivityID)
+		}
 	}
 }

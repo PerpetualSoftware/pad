@@ -49,31 +49,25 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	ts := now()
 	cutoff := time.Now().UTC().Add(-ActivityDebounceCooldown).Format(time.RFC3339)
 
-	// Look for a recent activity to coalesce with. A row a comment links to
-	// (comments.activity_id) is never a merge target: the comment reads its
-	// agent name from that row's metadata, and a merge overlays the incoming
-	// `agent` and bumps created_at — so without this exclusion a later update
-	// by a different agent under the same credentials would silently
-	// re-attribute an earlier comment (TASK-2760, codex round 3). Once a
-	// comment has linked an activity, that row is frozen; a later update
-	// looks past it — to an older unlinked row still inside the window, or
-	// to a fresh row. Same item-scoped probe as the timeline's.
-	//
-	// The exclusion is checked TWICE: here, to choose a candidate, and again
-	// inside the UPDATE itself (mergeIntoUnlinkedActivity), because a comment
-	// can link the candidate between this read and that write (codex round
-	// 6). The UPDATE's predicate is evaluated under the row write, so the
-	// merge either lands on a still-unlinked row or touches nothing — and a
-	// zero-row merge falls through to a fresh insert. What this does NOT
-	// close is the opposite order — an update that completes before the
-	// comment links its row at all — which is BUG-2716's transaction.
+	// Look for a recent activity to coalesce with — the newest match. If a
+	// comment links that row (comments.activity_id), the merge below REFUSES
+	// it and a fresh row is written instead: the comment reads its agent
+	// name from the row's metadata, and a merge overlays the incoming `agent`
+	// and bumps created_at, so a later update by a different agent under the
+	// same credentials would otherwise silently re-attribute an earlier
+	// comment (TASK-2760, codex round 3). A linked row therefore ENDS a
+	// coalescing run; the next update starts a new one. The refusal lives in
+	// the UPDATE's own predicate and nowhere else, because a comment can link
+	// the row between this read and that write (codex round 6) — a check
+	// here would be a second guard that only looks load-bearing. What this
+	// does NOT close is the opposite order, an update that completes before
+	// the comment links its row at all: BUG-2716's transaction.
 	var existingID, existingMeta string
 	err := s.db.QueryRow(s.q(`
-		SELECT id, metadata FROM activities a
-		WHERE a.document_id = ? AND a.action = ? AND a.created_at >= ?
-			AND ((a.user_id IS NOT NULL AND a.user_id = ?) OR (a.user_id IS NULL AND ? = ''))
-			AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id)
-		ORDER BY a.created_at DESC LIMIT 1
+		SELECT id, metadata FROM activities
+		WHERE document_id = ? AND action = ? AND created_at >= ?
+			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
+		ORDER BY created_at DESC LIMIT 1
 	`), a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta)
 
 	if err == sql.ErrNoRows {
@@ -93,7 +87,8 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 		return existingID, err
 	}
 	if !mergedOK {
-		// Linked since the read above — frozen now. Start a fresh row.
+		// Comment-linked (before the read above, or since) — frozen. A
+		// fresh row starts the next run.
 		return s.CreateActivity(a)
 	}
 	return existingID, nil

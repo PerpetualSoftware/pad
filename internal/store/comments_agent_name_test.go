@@ -332,10 +332,25 @@ func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 	}
 
 	// Control: with no comment on the newest row, the next update still
-	// coalesces — the exclusion is scoped to linked rows, not a debounce switch.
+	// coalesces — the refusal is scoped to linked rows, not a debounce switch.
 	third := update("rook")
 	if third != second {
 		t.Errorf("unlinked recent update did not merge: got %s, want %s", third, second)
+	}
+
+	// A linked row ENDS the run rather than being looked past: with an older
+	// unlinked row still inside the window (`third`) and a newer linked one,
+	// the next update starts a fresh row — it does not reach back and merge
+	// into the older one, which would bump that row's time forward over the
+	// comment and fold a later change into an earlier entry.
+	if _, err := s.CreateComment(item.WorkspaceID, item.ID, user.ID, models.CommentCreate{
+		Body: "and this", Author: "Dave", CreatedBy: "agent", Source: "cli", ActivityID: third,
+	}); err != nil {
+		t.Fatalf("create second comment: %v", err)
+	}
+	fourth := update("wren")
+	if fourth == third || fourth == first {
+		t.Errorf("update after a linked newest row reused %s; want a fresh row (linked=%s, older=%s)", fourth, third, first)
 	}
 }
 
