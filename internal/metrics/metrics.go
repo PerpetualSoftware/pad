@@ -306,6 +306,25 @@ type Metrics struct {
 	// silent window.
 	EventSubscriptionCycledTotal prometheus.Counter
 
+	// EventHeartbeatPublishFailuresTotal counts liveness heartbeats this
+	// instance could not publish (BUG-2738).
+	//
+	// READ IT AS "DETECTION IS DEGRADED", not as "a peer is broken". While it
+	// fires, idle detection for the affected workspaces is SUSPENDED — silence
+	// cannot be read as evidence of a dead receive path when the probe that
+	// would have produced the traffic never went out — so a healthy-looking
+	// pad_event_subscription_cycled_total means less than usual.
+	//
+	// PUBLISH and pub/sub use different connection pools, so this points at the
+	// OUTBOUND path: pool exhaustion, a wedged outbound route, or Redis
+	// refusing writes. An instance in this state is also failing to deliver its
+	// own events to every other instance, which is a bigger problem than the
+	// one this feature exists to find — read it alongside publish latency and
+	// pool saturation rather than alongside the cycle counter.
+	//
+	// EXPECT ZERO.
+	EventHeartbeatPublishFailuresTotal prometheus.Counter
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -567,6 +586,11 @@ func New() *Metrics {
 		Help: "Activity-stream workspace subscriptions torn down and replaced because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout (BUG-2738). Detects a HALF-OPEN connection, which go-redis's pub/sub health check cannot see because it writes a PING without reading the reply. Counts REPLACEMENTS, not teardowns: a cycle that installed nothing because the bus was closing or the workspace emptied does not increment it. Expect zero — and structurally zero on heartbeat phase 1, where the detector does not run at all, so a zero there says nothing about whether a route has wedged (read heartbeat_phase off the startup log). Read THIS rather than pad_event_sequence_resets_total{reason=\"idle_timeout\"}, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — NAT idle timeout, stateful firewall, overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval.",
 	})
 
+	eventHeartbeatPublishFailuresTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_heartbeat_publish_failures_total",
+		Help: "Liveness heartbeats this instance could not publish (BUG-2738). Read as DETECTION DEGRADED, not as a peer being broken: while it fires, idle detection for those workspaces is suspended, because silence cannot be read as evidence of a dead receive path when the probe never went out. PUBLISH and pub/sub use different connection pools, so this points at the OUTBOUND path — pool exhaustion, a wedged outbound route, or Redis refusing writes. Such an instance is also failing to deliver its own events to every other instance. Expect zero.",
+	})
+
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
 		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew RISK a live session being unlisted and untargetable, deregister risks a DEAD one staying listed, list returns 503, prune is benign. A failure means an error was reported; Redis can fail after applying.",
@@ -587,6 +611,7 @@ func New() *Metrics {
 		eventReceiveLoopExitsTotal,
 		eventSubscriptionUnconfirmedTotal,
 		eventSubscriptionCycledTotal,
+		eventHeartbeatPublishFailuresTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -607,22 +632,23 @@ func New() *Metrics {
 	return &Metrics{
 		Registry: reg,
 
-		RedisUp:                           redisUp,
-		WatchNotificationsDroppedTotal:    watchNotificationsDroppedTotal,
-		WatchSequenceGapsTotal:            watchSequenceGapsTotal,
-		WatchNotificationsMissedTotal:     watchNotificationsMissedTotal,
-		WatchResumeGapsTotal:              watchResumeGapsTotal,
-		WatchSequenceResetsTotal:          watchSequenceResetsTotal,
-		EventResumeGapsTotal:              eventResumeGapsTotal,
-		EventEventsDroppedTotal:           eventEventsDroppedTotal,
-		EventMidstreamResyncsTotal:        eventMidstreamResyncsTotal,
-		WatchMidstreamResyncsTotal:        watchMidstreamResyncsTotal,
-		EventSequenceResetsTotal:          eventSequenceResetsTotal,
-		EventReceiveLoopExitsTotal:        eventReceiveLoopExitsTotal,
-		EventSubscriptionUnconfirmedTotal: eventSubscriptionUnconfirmedTotal,
-		EventSubscriptionCycledTotal:      eventSubscriptionCycledTotal,
-		WatchReceiveLoopExitsTotal:        watchReceiveLoopExitsTotal,
-		SessionPresenceFailuresTotal:      sessionPresenceFailuresTotal,
+		RedisUp:                            redisUp,
+		WatchNotificationsDroppedTotal:     watchNotificationsDroppedTotal,
+		WatchSequenceGapsTotal:             watchSequenceGapsTotal,
+		WatchNotificationsMissedTotal:      watchNotificationsMissedTotal,
+		WatchResumeGapsTotal:               watchResumeGapsTotal,
+		WatchSequenceResetsTotal:           watchSequenceResetsTotal,
+		EventResumeGapsTotal:               eventResumeGapsTotal,
+		EventEventsDroppedTotal:            eventEventsDroppedTotal,
+		EventMidstreamResyncsTotal:         eventMidstreamResyncsTotal,
+		WatchMidstreamResyncsTotal:         watchMidstreamResyncsTotal,
+		EventSequenceResetsTotal:           eventSequenceResetsTotal,
+		EventReceiveLoopExitsTotal:         eventReceiveLoopExitsTotal,
+		EventSubscriptionUnconfirmedTotal:  eventSubscriptionUnconfirmedTotal,
+		EventSubscriptionCycledTotal:       eventSubscriptionCycledTotal,
+		EventHeartbeatPublishFailuresTotal: eventHeartbeatPublishFailuresTotal,
+		WatchReceiveLoopExitsTotal:         watchReceiveLoopExitsTotal,
+		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,
 
 		HTTPRequestsTotal:          httpRequestsTotal,
 		HTTPRequestDuration:        httpRequestDuration,

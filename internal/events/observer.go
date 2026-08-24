@@ -141,6 +141,24 @@ type Observer interface {
 	// path before tuning the interval, because tuning the interval treats the
 	// symptom.
 	SubscriptionCycled()
+
+	// HeartbeatPublishFailed reports that this instance could not publish a
+	// liveness heartbeat for one workspace (BUG-2738).
+	//
+	// IT IS THE DETECTOR SAYING IT CANNOT SEE, not a finding about any peer.
+	// While it is firing, idle detection for that workspace is SUSPENDED —
+	// silence cannot be read as evidence when we could not ask — so a non-zero
+	// rate here means half-open detection is degraded or off for those
+	// workspaces, however healthy pad_event_subscription_cycled_total looks.
+	//
+	// PUBLISH and pub/sub use different connection pools, so this is a signal
+	// about the OUTBOUND path specifically: pool exhaustion, a wedged outbound
+	// route, or Redis refusing writes. An instance in this state is also
+	// failing to deliver its own events to every other instance, which is a
+	// larger problem than the one this feature exists to find.
+	//
+	// Expect zero.
+	HeartbeatPublishFailed()
 }
 
 // Drop reasons. Bounded by construction so they are safe as metric labels.
@@ -303,6 +321,12 @@ func (o *observable) reportSubscriptionUnconfirmed() {
 func (o *observable) reportSubscriptionCycled() {
 	if obs := o.observer(); obs != nil {
 		obs.SubscriptionCycled()
+	}
+}
+
+func (o *observable) reportHeartbeatPublishFailed() {
+	if obs := o.observer(); obs != nil {
+		obs.HeartbeatPublishFailed()
 	}
 }
 

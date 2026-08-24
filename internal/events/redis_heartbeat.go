@@ -346,14 +346,24 @@ func (b *RedisBus) publishHeartbeats() {
 	for _, ws := range workspaces {
 		channel := b.keys.Name(redisChannelSuffix) + ws
 		if err := b.client.Publish(b.ctx, channel, heartbeatPayload).Err(); err != nil {
-			// Logged and dropped, never retried. A heartbeat that does not
-			// reach Redis is indistinguishable to the receiver from one that
-			// was never sent, and the receiver's own threshold is what turns
-			// that into a decision — retrying here would only make a wedged
-			// publish path look healthier than it is.
-			slog.Warn("events: failed to publish a liveness heartbeat; this workspace's subscription will be cycled if the silence reaches the idle timeout",
+			// Logged and dropped, never retried: retrying here would only make
+			// a wedged publish path look healthier than it is.
+			//
+			// AND DELIBERATELY NOT STAMPED. lastProbeOK stays where it was, so
+			// the detector stops treating this workspace's silence as evidence
+			// — see that field. A failure to PROBE is not a finding about the
+			// peer, and counting it as one tears down healthy connections
+			// whenever this instance's outbound path is the broken one.
+			slog.Warn("events: failed to publish a liveness heartbeat; this workspace's idle detection is suspended until a probe succeeds, because silence cannot be read as a finding when we could not ask",
 				"channel", channel, "error", err)
+			b.reportHeartbeatPublishFailed()
+			continue
 		}
+		b.mu.Lock()
+		if sub, ok := b.wsSubs[ws]; ok {
+			sub.lastProbeOK = b.now()
+		}
+		b.mu.Unlock()
 	}
 }
 
@@ -496,6 +506,21 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 		if now.Sub(sub.lastSeen) < idleTimeout {
 			continue
 		}
+		// THE PREMISE HAS TO HOLD BEFORE THE CONCLUSION IS DRAWN. Silence only
+		// means "the receive path is dead" if we actually managed to send
+		// something into it; see redisSub.lastProbeOK.
+		//
+		// CHECKED HERE AND AGAIN IN cycleOne, and removing either one alone
+		// survives the tests while removing both is detected. Checked rather
+		// than assumed, per the team lesson that a pair dying only together is
+		// a question: they cover different moments. This one keeps a
+		// workspace off the due list at all, so no establishment record is
+		// minted and no joiner is made to wait; cycleOne's covers the probe
+		// starting to fail AFTER selection, which the concurrency cap makes a
+		// real window. Neither subsumes the other.
+		if now.Sub(sub.lastProbeOK) >= idleTimeout {
+			continue
+		}
 		// Minting the record HERE is what makes rule 1 hold in the other
 		// direction too: from this moment a subscriber arriving for this
 		// workspace joins the establishment we are about to run instead of
@@ -626,6 +651,14 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 		b.mu.Unlock()
 		close(c.pending.done)
 		return
+	case b.now().Sub(sub.lastProbeOK) >= idleTimeout:
+		// The probe started failing while this cycle sat in the queue. Same
+		// reasoning as the scan's check: with no successful probe we have no
+		// evidence about the receive path, so tearing it down would be a guess.
+		b.retirePendingLocked(c.workspaceID, c.pending)
+		b.mu.Unlock()
+		close(c.pending.done)
+		return
 	case b.now().Sub(sub.lastSeen) < idleTimeout:
 		// It recovered while this cycle sat in the queue. Nothing to end and
 		// nothing to replace: leaving it alone is the whole point.
@@ -672,7 +705,11 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	// record from here — it installs or abandons, and retires the record in the
 	// same critical section either way, so no joiner is stranded by a cycle any
 	// more than by a cancelled caller (BUG-2749).
-	b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending)
+	installed := b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending)
+
+	if b.afterCycleEstablish != nil {
+		b.afterCycleEstablish(c.workspaceID)
+	}
 
 	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED (codex round 3). The counter's
 	// documented meaning is "torn down AND replaced", and establishSubscription
@@ -683,7 +720,14 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	// blackholed, and a shutdown would manufacture that signal. The teardown is
 	// still visible through the idle_timeout reset reason when a buffer existed
 	// to drop.
-	if gen, live := b.liveGen(c.workspaceID); live && gen != c.gen {
+	//
+	// TAKEN FROM THE ESTABLISHMENT ITSELF, not inferred from the live
+	// generation afterwards (codex round 13). Inference is wrong in both
+	// directions: if this cycle installed nothing and an unrelated caller
+	// established the workspace before the check, that caller's subscription
+	// was counted as this cycle's replacement; and a real replacement that
+	// immediately lost its last subscriber was missed.
+	if installed {
 		b.reportSubscriptionCycled()
 	}
 }

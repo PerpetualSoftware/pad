@@ -606,6 +606,16 @@ type RedisBus struct {
 	// make a selected workspace start receiving again before its turn.
 	afterIdleScan func()
 
+	// afterCycleEstablish is a TEST SEAM, nil in production. It runs in
+	// cycleOne after establishSubscription returns and BEFORE the cycle decides
+	// whether to count a replacement.
+	//
+	// POSITIONAL: that is the one point at which an UNRELATED caller's fresh
+	// subscription can be mistaken for this cycle's replacement, which is the
+	// misattribution the explicit installed result exists to prevent. Receives
+	// the workspace.
+	afterCycleEstablish func(workspaceID string)
+
 	// beforeInstallSubscription is a TEST SEAM, nil in production. It runs in
 	// establishSubscription after the dial and BEFORE the lock that decides
 	// whether to install or abandon, so a test can make either abandon reason
@@ -691,6 +701,24 @@ type redisSub struct {
 	// subscription that has simply not been given the chance to receive
 	// anything yet; see cycleIdleSubscriptions' rule 2.
 	lastSeen time.Time
+
+	// lastProbeOK is when this instance last SUCCEEDED in publishing a
+	// heartbeat for this workspace. Guarded by b.mu.
+	//
+	// IT IS THE DETECTOR'S PREMISE, not bookkeeping (codex round 13). Idle
+	// detection reasons "we published a frame and nothing came back, so the
+	// receive path is dead". That inference is only valid if the publish
+	// actually happened. PUBLISH travels on the client's connPool while the
+	// subscription holds a connection from the separate pubSubPool, so a
+	// publish-side failure — pool exhaustion, a wedged outbound path — says
+	// nothing whatever about whether this subscription can receive. Without
+	// this field the detector reads its own inability to probe as evidence
+	// that the peer is dead, and tears down a healthy connection on a schedule.
+	//
+	// Stamped at install for the same reason lastSeen is: a zero value would
+	// permanently disqualify a subscription from ever being cycled, which
+	// fails in the opposite and quieter direction.
+	lastProbeOK time.Time
 
 	// confirmed is closed by receiveMessages when Redis acknowledges the
 	// SUBSCRIBE for this subscription (BUG-2747). Subscribe waits on it — up to
@@ -1352,13 +1380,25 @@ func (b *RedisBus) Close() {
 	b.cancel() // signal all subscription goroutines to stop
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	// COLLECTED UNDER THE LOCK, CLOSED AFTER IT (codex round 13). Same reason
+	// stopRedisSubscription hands its close off: PubSub.Close takes go-redis's
+	// mutex, which the health check can hold across reconnect work, so closing
+	// here would block shutdown inside the lock that every fan-out and every
+	// Subscribe contends for — with subscriber channels still open behind it.
+	// Round 12 fixed the cycle path and left this one, which is the same defect
+	// on the path that runs once per process.
+	closing := make([]*redis.PubSub, 0, len(b.wsSubs))
 	for wsID, sub := range b.wsSubs {
 		sub.cancel()
-		sub.pubsub.Close()
+		closing = append(closing, sub.pubsub)
 		delete(b.wsSubs, wsID)
 	}
+	defer func() {
+		for _, ps := range closing {
+			_ = ps.Close()
+		}
+	}()
+	defer b.mu.Unlock()
 
 	for wsID, byWorkspace := range b.subscribers {
 		for ch := range byWorkspace {
@@ -1406,7 +1446,12 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 // could subscribe, unsubscribe, close, or receive a fanned-out event.
 //
 // Exactly one caller per workspace reaches here; the rest wait on pending.
-func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string, establisher *subscriber, pending *pendingSub) {
+// Returns whether a subscription was actually INSTALLED. The idle cycle needs
+// that answer and cannot infer it: reading the live generation afterwards
+// misattributes an unrelated caller's fresh subscription as this cycle's
+// replacement, and misses a real replacement that has already lost its last
+// subscriber (codex round 13).
+func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string, establisher *subscriber, pending *pendingSub) (installed bool) {
 	channel := b.keys.Name(redisChannelSuffix) + workspaceID
 	// DIALLED ON THE CALLER'S CONTEXT *AND* THE BUS'S, so a client that leaves
 	// mid-dial stops paying for it (BUG-2749) without taking away Close()'s
@@ -1500,7 +1545,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 		subCancel()
 		_ = pubsub.Close()
 		close(pending.done)
-		return
+		return false
 	}
 	b.subGen++
 	gen := b.subGen
@@ -1515,8 +1560,9 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 		// hardest in exactly the case BUG-2747 exists for, an unconfirmed
 		// admission where no acknowledgement ever arrives to stamp it. The
 		// clock starts when the socket does.
-		lastSeen:  b.now(),
-		confirmed: make(chan struct{}),
+		lastSeen:    b.now(),
+		lastProbeOK: b.now(),
+		confirmed:   make(chan struct{}),
 	}
 	b.wsSubs[workspaceID] = sub
 	b.mu.Unlock()
@@ -1572,7 +1618,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 			}
 			b.finishPending(workspaceID, pending)
 		}()
-		return
+		return true
 	case <-timer.C:
 		b.markUnconfirmedAdmission(workspaceID, gen)
 	}
@@ -1583,6 +1629,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	}
 
 	b.finishPending(workspaceID, pending)
+	return true
 }
 
 // mergeCancellation returns a context that ends when EITHER input does.

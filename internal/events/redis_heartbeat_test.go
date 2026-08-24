@@ -70,6 +70,7 @@ func (o resetHookObserver) EventDropped(string)         {}
 func (o resetHookObserver) ReceiveLoopExited()          {}
 func (o resetHookObserver) SubscriptionUnconfirmed()    {}
 func (o resetHookObserver) SubscriptionCycled()         {}
+func (o resetHookObserver) HeartbeatPublishFailed()     {}
 func (o resetHookObserver) SequenceReset(reason string) { o.onReset(reason) }
 
 func (b *RedisBus) channelFor(workspaceID string) string {
@@ -95,6 +96,30 @@ func rawSubscriber(t *testing.T, addr, channel string) <-chan string {
 		}
 	}()
 	return out
+}
+
+// wedge simulates the failure this whole unit exists to detect: the outbound
+// probe keeps SUCCEEDING and nothing ever comes back.
+//
+// It has to be simulated rather than produced, because miniredis is a working
+// Redis — a heartbeat published against it is delivered straight back to our
+// own subscription and the workspace never looks idle. So the test advances
+// the clock past the threshold (nothing arrived) and stamps lastProbeOK as a
+// successful publish pass would (the probe went out). That pair IS a half-open
+// route: writes accepted, reads dead.
+//
+// Without the stamp these tests would exercise the "we could not even probe"
+// case instead, where the detector deliberately does nothing — which is how
+// the premise check announced itself when it landed: every cycling test went
+// red at once.
+func wedge(t *testing.T, b *RedisBus, clock *testClock, d time.Duration) {
+	t.Helper()
+	clock.advance(d)
+	b.mu.Lock()
+	for _, sub := range b.wsSubs {
+		sub.lastProbeOK = clock.now()
+	}
+	b.mu.Unlock()
 }
 
 // waitFor polls until cond holds, so a test asserts an outcome rather than a
@@ -180,7 +205,7 @@ func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
 		})
 	}
 
-	clock.advance(2 * DefaultIdleTimeout)
+	wedge(t, b, clock, 2*DefaultIdleTimeout)
 	b.cycleIdleSubscriptions()
 	armed.Store(false)
 
@@ -330,7 +355,7 @@ func TestAResumingJoinerIsToldSyncRequiredAcrossACycle(t *testing.T) {
 		})
 	}
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 	armed.Store(false)
 
@@ -595,7 +620,7 @@ func TestAnIdleSubscriptionEndsItsCoverageAndReplacesItsConnection(t *testing.T)
 
 	genBefore, _ := b.liveGen("ws-1")
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 
 	if got := obs.cycledCount(); got != 1 {
@@ -835,7 +860,7 @@ func TestAStragglerCannotRefreshTheLivenessOfItsSuccessor(t *testing.T) {
 		t.Fatal("fixture: nothing installed")
 	}
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 
 	freshGen, ok := b.liveGen("ws-1")
@@ -904,7 +929,7 @@ func TestAWorkspaceThatRecoversBeforeItsTurnIsNotCycled(t *testing.T) {
 		b.mu.Unlock()
 	}
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 
 	if !fired.Load() {
@@ -924,6 +949,131 @@ func TestAWorkspaceThatRecoversBeforeItsTurnIsNotCycled(t *testing.T) {
 	b.mu.Unlock()
 	if pending {
 		t.Fatal("the abandoned cycle left its establishment record behind: the next subscriber waits on a promise nobody keeps")
+	}
+}
+
+// TestAFailedProbeSuspendsDetectionRatherThanCyclingBlindly is codex round
+// 13's P2, and it is the mirror image of the failure this feature exists to
+// find.
+//
+// The detector's inference is "we published a frame into this subscription and
+// nothing came back, so the receive path is dead". That is only valid if the
+// publish actually happened. PUBLISH travels on the client's connPool while
+// the subscription holds a connection from the separate pubSubPool, so a
+// publish-side failure — pool exhaustion, a wedged outbound route, Redis
+// refusing writes — says nothing whatever about whether the subscription can
+// receive.
+//
+// Without the premise check the detector read its own inability to probe as
+// evidence that the peer was dead, and tore down healthy connections on a
+// schedule: a resync for every subscriber of every workspace, every 90
+// seconds, for as long as the outbound path stayed broken. Exactly the load
+// inversion this unit already had to fix twice.
+func TestAFailedProbeSuspendsDetectionRatherThanCyclingBlindly(t *testing.T) {
+	b, mr, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(ch)
+	genBefore, ok := b.liveGen("ws-1")
+	if !ok {
+		t.Fatal("fixture: nothing installed")
+	}
+
+	// Kill Redis so the PUBLISH fails. The subscription's own connection is
+	// irrelevant to the assertion — what is under test is that we do not draw
+	// a conclusion from silence we could not have broken.
+	mr.Close()
+
+	clock.advance(DefaultIdleTimeout + time.Second)
+	b.publishHeartbeats()
+	if got := obs.probeFailureCount(); got == 0 {
+		t.Fatal("the probe did not fail; this test could not have discriminated")
+	}
+	b.cycleIdleSubscriptions()
+
+	if got := obs.cycledCount(); got != 0 {
+		t.Fatalf("a subscription was cycled %d times on the strength of silence we caused ourselves", got)
+	}
+	if reasons := obs.resetReasons(); len(reasons) != 0 {
+		t.Fatalf("coverage was ended without a successful probe: %v", reasons)
+	}
+	if genAfter, _ := b.liveGen("ws-1"); genAfter != genBefore {
+		t.Fatalf("the connection was replaced (generation %d → %d) although we never managed to probe it", genBefore, genAfter)
+	}
+}
+
+// TestAnUnrelatedSubscriptionIsNotCountedAsThisCyclesReplacement pins the
+// explicit installation result (codex round 13's P3).
+//
+// The counter means "torn down AND replaced". Reading the live generation
+// after establishment infers that, and infers it wrongly in both directions:
+// a cycle that installed NOTHING, followed by an unrelated caller establishing
+// the workspace before the check, counted that caller's subscription as this
+// cycle's replacement. On a busy instance the two are milliseconds apart.
+func TestAnUnrelatedSubscriptionIsNotCountedAsThisCyclesReplacement(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	first, _, _ := b.Subscribe(context.Background(), "ws-1")
+
+	// Force the cycle's establishment to abandon: empty the workspace while it
+	// is dialling, so its count check finds nobody.
+	var emptied atomic.Bool
+	b.beforeInstallSubscription = func(workspaceID string) {
+		if !emptied.CompareAndSwap(false, true) {
+			return
+		}
+		b.mu.Lock()
+		for ch, ws := range b.workspaceOf {
+			if ws == workspaceID {
+				delete(b.workspaceOf, ch)
+				delete(b.subscribers[workspaceID], ch)
+				b.wsCounts[workspaceID]--
+			}
+		}
+		b.mu.Unlock()
+	}
+
+	// Then let an unrelated caller establish the workspace in the window
+	// between the abandon and the cycle's decision — the exact interleave the
+	// generation inference could not tell apart.
+	var arrived atomic.Bool
+	b.afterCycleEstablish = func(workspaceID string) {
+		if !arrived.CompareAndSwap(false, true) {
+			return
+		}
+		next, _, outcome := b.SubscribeIfAllowed(context.Background(), workspaceID, 0)
+		if outcome == SubscribeOK {
+			t.Cleanup(func() { b.Unsubscribe(next) })
+		}
+	}
+
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
+	b.cycleIdleSubscriptions()
+
+	if !emptied.Load() || !arrived.Load() {
+		t.Fatalf("the interleave was not reached (emptied=%v arrived=%v); this test could not have discriminated",
+			emptied.Load(), arrived.Load())
+	}
+	if got := obs.cycledCount(); got != 0 {
+		t.Fatalf("SubscriptionCycled fired %d times for a cycle that installed nothing: an unrelated caller's subscription was counted as its replacement", got)
+	}
+	_ = first
+}
+
+// TestASuccessfulProbeStillAllowsCycling is the counterfactual: the premise
+// check must suspend detection when we cannot probe, not disable it. Without
+// this pair, "no cycles" is satisfied by a detector that has stopped working.
+func TestASuccessfulProbeStillAllowsCycling(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(ch)
+
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
+	b.cycleIdleSubscriptions()
+
+	if got := obs.cycledCount(); got != 1 {
+		t.Fatalf("SubscriptionCycled fired %d times, want 1: the premise check has disabled the detector outright", got)
 	}
 }
 
@@ -961,7 +1111,7 @@ func TestAnIdleCycleRefusesWhileAnEstablishmentIsInFlight(t *testing.T) {
 
 		// Make it look maximally idle at the one moment it is also mid-
 		// establishment.
-		clock.advance(10 * DefaultIdleTimeout)
+		wedge(t, b, clock, 10*DefaultIdleTimeout)
 		b.cycleIdleSubscriptions()
 	}
 
@@ -1031,7 +1181,7 @@ func TestAnIdleCycleAbandonsAWorkspaceEmptiedUnderIt(t *testing.T) {
 		b.Unsubscribe(ch)
 	}})
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 
 	if !fired.Load() {
@@ -1237,7 +1387,7 @@ func TestOneIdlePassCyclesEveryDueWorkspace(t *testing.T) {
 		mu.Unlock()
 	}
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 
 	mu.Lock()
@@ -1352,17 +1502,34 @@ func TestTheMaintenanceLoopRunsBothHalves(t *testing.T) {
 		}
 	})
 
-	t.Run("it cycles", func(t *testing.T) {
-		b, _, clock, obs := newHeartbeatBus(t, true)
+	t.Run("it runs the idle half", func(t *testing.T) {
+		b, _, _, _ := newHeartbeatBus(t, true)
 		ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 		defer b.Unsubscribe(ch)
 
-		clock.advance(10 * DefaultIdleTimeout)
+		// ASSERTED ON THE CALL, NOT ON A CYCLE, and that is forced by the
+		// instrument rather than chosen for convenience. miniredis is a
+		// WORKING Redis: the loop's publisher half succeeds, the frame comes
+		// straight back on our own subscription, and the workspace is
+		// legitimately never idle — which is the mechanism doing exactly what
+		// it should. Producing a real cycle through the loop would need a
+		// blackholed socket, which is what TestAWedgedRouteIsDetectedEndToEnd
+		// uses a proxy for.
+		//
+		// What this subtest is for is the WIRING: that the loop calls the idle
+		// half at all. The seam fires inside cycleIdleSubscriptions on every
+		// pass, so it answers precisely that and nothing more.
+		called := make(chan struct{})
+		var once sync.Once
+		b.afterIdleScan = func() { once.Do(func() { close(called) }) }
+
 		b.setMaintenanceCadence(5*time.Millisecond, DefaultIdleTimeout)
 
-		waitFor(t, "the maintenance loop to cycle an idle subscription", func() bool {
-			return obs.cycledCount() > 0
-		})
+		select {
+		case <-called:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the maintenance loop never ran the idle half: cycleIdleSubscriptions is correct but nothing calls it")
+		}
 	})
 }
 
@@ -1392,7 +1559,7 @@ func TestAQuietWorkspaceIsNotCycledOnPhase1(t *testing.T) {
 	}
 
 	for range 10 {
-		clock.advance(DefaultIdleTimeout + time.Second)
+		wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 		b.cycleIdleSubscriptions()
 	}
 
@@ -1416,7 +1583,7 @@ func TestPhase2CyclesTheSameWorkspace(t *testing.T) {
 	ch, _, _ := b.Subscribe(context.Background(), "ws-quiet")
 	defer b.Unsubscribe(ch)
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 
 	if got := obs.cycledCount(); got != 1 {
@@ -1452,7 +1619,7 @@ func TestClosingTheBusDuringACycleInstallsNothing(t *testing.T) {
 		b.Close()
 	}
 
-	clock.advance(DefaultIdleTimeout + time.Second)
+	wedge(t, b, clock, DefaultIdleTimeout+time.Second)
 	b.cycleIdleSubscriptions()
 	armed.Store(false)
 

@@ -63,3 +63,9 @@ func (o *EventsObserver) SubscriptionUnconfirmed() {
 func (o *EventsObserver) SubscriptionCycled() {
 	o.m.EventSubscriptionCycledTotal.Inc()
 }
+
+// HeartbeatPublishFailed is unlabelled for the same cardinality reason as its
+// neighbours.
+func (o *EventsObserver) HeartbeatPublishFailed() {
+	o.m.EventHeartbeatPublishFailuresTotal.Inc()
+}
