@@ -231,6 +231,120 @@ func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
 	}
 }
 
+// TestAResumingJoinerIsToldSyncRequiredAcrossACycle answers codex round 2's P2
+// with the case that discriminates.
+//
+// The concern raised was that a subscriber arriving DURING a cycle gets no gap
+// signal — dropWorkspaceCoverage signals only the subscribers present when it
+// runs. That is true, and for a RESUMING caller it is not the mechanism that
+// protects it: the registration MARK is. It registers while the workspace has
+// no buffer at all, so its mark cannot match the buffer that exists by the
+// time it reads, and eventsSinceMarkLocked answers nil — the strongest form of
+// "this instance cannot vouch". Its caller then reports a resume gap and the
+// SSE layer answers sync_required.
+//
+// MUTATION-CONFIRMED, and the first two attempts at this test were not.
+// Replacing eventsSinceMarkLocked with the unmarked eventsSinceLocked fails
+// here with the joiner handed the post-cycle event as though it followed its
+// cursor — which is the defect this asserts against. Note that deleting the
+// `mark.buffer == nil` term ALONE survives: inside that function the keep
+// arithmetic already reduces to zero for a nil mark, so that term is redundant
+// with its neighbour rather than load-bearing. The mark being CONSULTED AT ALL
+// is what matters.
+//
+// A FRESH caller (sinceID == 0) is deliberately NOT signalled, and that is not
+// an oversight: it holds no prior position, so there is no span it could be
+// missing. It is also admitted only after the replacement subscription is
+// acknowledged — it waits on the cycle's establishment record, which
+// finishPending closes after the confirmation — and on the unconfirmed path it
+// is told to reconcile when the acknowledgement eventually lands. Signalling
+// it anyway would be a resync demanded of a client with nothing to reconcile,
+// which is the load inversion this unit has already had to fix once.
+func TestAResumingJoinerIsToldSyncRequiredAcrossACycle(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	first, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(first)
+
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+	var seen Event
+	select {
+	case seen = <-first:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fixture: no event, so there is no cursor to resume from")
+	}
+
+	var joinerMissed []Event
+	var joinerOutcome SubscribeOutcome
+	var joinerCh chan Event
+	joinerDone := make(chan struct{})
+	var once sync.Once
+	var armed atomic.Bool
+	armed.Store(true)
+	b.beforeInstallSubscription = func(workspaceID string) {
+		if !armed.Load() {
+			return
+		}
+		once.Do(func() {
+			go func() {
+				defer close(joinerDone)
+				joinerCh, joinerMissed, _, joinerOutcome =
+					b.SubscribeAndReplaySince(context.Background(), workspaceID, seen.ID, 0)
+			}()
+			waitFor(t, "the resuming joiner to register mid-cycle", func() bool {
+				b.mu.Lock()
+				defer b.mu.Unlock()
+				return b.wsCounts[workspaceID] >= 2
+			})
+		})
+	}
+
+	// A BUFFER MUST EXIST AGAIN BEFORE THE JOINER READS ITS REPLAY, or this
+	// test proves nothing. Mutation-checked: without this, the cycle leaves no
+	// buffer at all, eventsSinceMarkLocked returns nil from its FIRST term
+	// (`!ok`), and removing the mark check entirely still passes — the test
+	// would be asserting the empty case rather than the one it is named for.
+	// Publishing here puts a FRESH buffer in place, so the only thing that can
+	// still answer nil is the mark not matching it.
+	b.afterSubscriptionConfirmed = func() {
+		if !armed.Load() {
+			return
+		}
+		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+		waitFor(t, "the post-cycle event to rebuild the workspace's buffer", func() bool {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			return b.replayBuffers["ws-1"] != nil
+		})
+	}
+
+	clock.advance(DefaultIdleTimeout + time.Second)
+	b.cycleIdleSubscriptions()
+	armed.Store(false)
+
+	select {
+	case <-joinerDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the resuming joiner never returned")
+	}
+
+	b.mu.Lock()
+	rebuilt := b.replayBuffers["ws-1"] != nil
+	b.mu.Unlock()
+	if !rebuilt {
+		t.Fatal("fixture: no buffer was rebuilt before the joiner read its replay, so this test could not have discriminated")
+	}
+	if joinerOutcome != SubscribeOK {
+		t.Fatalf("the resuming joiner was refused: %v", joinerOutcome)
+	}
+	defer b.Unsubscribe(joinerCh)
+
+	if joinerMissed != nil {
+		t.Fatalf("a caller resuming from %d across a cycle was answered with %d replayed events instead of sync_required: it was told it was caught up across a span this instance cannot vouch for",
+			seen.ID, len(joinerMissed))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1: recognise and ignore.
 // ---------------------------------------------------------------------------
