@@ -136,10 +136,14 @@ var allowlistCoverage = map[string]allowlistClassification{
 			"claiming impossible — it is the consent-widening mechanism itself. Its own gates are workspace membership, a " +
 			"secret-derived 6-digit code, and a uniform 404 that prevents probing"},
 	"workspace create": {exempt,
-		"POST /workspaces mints a NEW workspace, which is not on the token's allow-list, so the token cannot then read, " +
-			"enumerate or write it — no disclosure is possible. Whether CREATION is inside the consent an allow-list " +
-			"expresses is a separate contract question, filed as IDEA-2756 for a ruling. If that ruling is 'refuse', this " +
-			"entry becomes filtersAllowlist"},
+		"POST /workspaces cannot DISCLOSE anything: it mints a new workspace rather than reading an existing one, so no " +
+			"data the allow-list protects is reachable through it. The consent model already has a dedicated capability " +
+			"for this — the connection's may_create_workspaces checkbox — and when it is set, " +
+			"maybeAutoAddCreatorConnection adds the new workspace to the allow-list (added_by='agent-create', " +
+			"PLAN-1519/TASK-1521) so the agent can use what it just made. NOTE the flag gates only that AUTO-ADD, not " +
+			"the creation itself; with it unset the create still succeeds and the workspace simply never joins the " +
+			"allow-list. Whether that should instead REFUSE is IDEA-2756 (codex round 2 corrected this entry's original " +
+			"reasoning, which wrongly claimed no capability existed)"},
 
 	// --- specialRoutes: observed via the recording handler ---
 	"library activate": {workspaceScoped,
@@ -202,7 +206,17 @@ func pathIsWorkspaceScoped(urlPath string) bool {
 	// A first segment that is a STATIC sibling route rather than a
 	// workspace slug means chi matched it exactly, before the {slug}
 	// param route, so the middleware never ran.
-	return seg != "" && !staticWorkspaceSiblingSegments[seg]
+	//
+	// Only when the static segment is the WHOLE path, though: chi's
+	// static route is registered as an exact pattern, so
+	// /workspaces/import matches it while /workspaces/import/items/X
+	// falls through to the {slug} route with slug="import" — where the
+	// middleware DOES run (codex round 2 P2). Treating the latter as
+	// global would be wrong in the safe direction, but wrong.
+	if seg != "" && tail == "" && staticWorkspaceSiblingSegments[seg] {
+		return false
+	}
+	return seg != ""
 }
 
 // staticWorkspaceSiblingSegments are the literal path segments
@@ -441,6 +455,11 @@ func TestAllowlistCoverage_HasNoStaleEntries(t *testing.T) {
 			stale = append(stale, cmdKey)
 		}
 	}
+	for cmdKey := range unverifiableByFixture {
+		if !routed[cmdKey] {
+			stale = append(stale, cmdKey+" (unverifiableByFixture)")
+		}
+	}
 	sort.Strings(stale)
 	if len(stale) > 0 {
 		t.Errorf("allowlistCoverage classifies commands that are no longer HTTP-routed — delete them:\n  %s",
@@ -457,6 +476,14 @@ func TestAllowlistCoverage_EveryEntryStatesAReason(t *testing.T) {
 	for cmdKey, c := range allowlistCoverage {
 		if strings.TrimSpace(c.reason) == "" {
 			bare = append(bare, cmdKey)
+		}
+	}
+	// unverifiableByFixture holds ACKNOWLEDGED HOLES, so it owes the
+	// same discipline as the map it excuses — an unreasoned hole is
+	// indistinguishable from an oversight (codex round 2 P2).
+	for cmdKey, reason := range unverifiableByFixture {
+		if strings.TrimSpace(reason) == "" {
+			bare = append(bare, cmdKey+" (unverifiableByFixture)")
 		}
 	}
 	sort.Strings(bare)
@@ -484,6 +511,9 @@ func TestPathIsWorkspaceScoped(t *testing.T) {
 				"about it if it ever becomes routed (codex round 1 P2)"},
 		{"/api/v1/workspaces/reorder", false,
 			"same — static sibling, no {slug} bound, no consent gate"},
+		{"/api/v1/workspaces/import/items/TASK-1", true,
+			"a static sibling name DEEPER in the path is just a workspace slug: chi's static route is an exact " +
+				"pattern, so this falls through to {slug}=import where the middleware does run (codex round 2 P2)"},
 		{"/api/v1/workspaces/docapp/restore", false,
 			"workspace restore is registered BESIDE the /{slug} subrouter because that middleware resolves " +
 				"only live workspaces; its path looks scoped and is not"},
