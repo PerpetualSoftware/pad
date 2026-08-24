@@ -119,12 +119,6 @@ func TestSubscribeDoesNotReturnBeforeRedisHasRegisteredIt(t *testing.T) {
 	}
 	defer b.Unsubscribe(ch)
 
-	// PREMISE OF THE TEST, asserted rather than assumed: if the delay never
-	// armed, the window was never widened and a pass below means nothing.
-	if held := proxy.held.Load(); held == 0 {
-		t.Fatal("the SUBSCRIBE was never delayed; this test cannot discriminate")
-	}
-
 	// Published the instant Subscribe returns. The claim under test is that
 	// this instant is already past registration.
 	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
@@ -133,6 +127,16 @@ func TestSubscribeDoesNotReturnBeforeRedisHasRegisteredIt(t *testing.T) {
 	case <-ch:
 	case <-time.After(3 * time.Second):
 		t.Fatal("an event published after Subscribe returned was lost: the subscription was not yet registered with Redis")
+	}
+
+	// PREMISE, asserted last on purpose. Checked BEFORE the publish it would
+	// race the unfixed code, which returns from Subscribe while the command is
+	// still on its way into the proxy — so the test would fail complaining
+	// about its own instrument instead of reporting the defect. Here it can
+	// only fire when delivery SUCCEEDED without the window ever being widened,
+	// which is the vacuous pass it exists to prevent.
+	if held := proxy.held.Load(); held == 0 {
+		t.Fatal("the SUBSCRIBE was never delayed; this test could not have discriminated")
 	}
 }
 
