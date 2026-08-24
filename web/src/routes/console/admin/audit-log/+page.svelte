@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { adminFetch } from '$lib/stores/admin.svelte';
-	import { agentNameFromMetadata } from '$lib/utils/agentActor';
+	import { agentNameOf } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
@@ -103,10 +103,22 @@
 		});
 	}
 
-	function formatMetadata(metadata: string | undefined, action: string): string {
-		if (!metadata) return '\u2014';
+	/** One parse per row, shared by every consumer below — the row's metadata
+	 *  is read by both the User and Details columns, and parsing it twice on a
+	 *  table that grows through "Load more" is pure waste. Returns null when
+	 *  there is nothing parseable, which both callers treat as "no data". */
+	function parseMetadata(metadata: string | undefined): Record<string, any> | null {
+		if (!metadata) return null;
 		try {
-			const data = JSON.parse(metadata);
+			return JSON.parse(metadata);
+		} catch {
+			return null;
+		}
+	}
+
+	function formatMetadata(data: Record<string, any> | null, action: string): string {
+		if (!data) return '\u2014';
+		{
 			switch (action) {
 				case 'role_changed':
 					if (data.old_role && data.new_role) return `${data.old_role} \u2192 ${data.new_role}`;
@@ -158,8 +170,6 @@
 			if (keys.length === 0) return '\u2014';
 			const parts = keys.slice(0, 3).map((k) => `${k}: ${data[k]}`);
 			return parts.join(', ');
-		} catch {
-			return '\u2014';
 		}
 	}
 
@@ -171,8 +181,8 @@
 	// the other: the agent acted, that account is who it acted as. The name
 	// is self-declared (see agentActor.ts) and this column is the last place
 	// that should be implied otherwise, hence "via" rather than a merge.
-	function displayUser(entry: Activity): string {
-		const agent = entry.actor === 'agent' ? agentNameFromMetadata(entry.metadata) : undefined;
+	function displayUser(entry: Activity, meta: Record<string, any> | null): string {
+		const agent = entry.actor === 'agent' ? agentNameOf(meta) : undefined;
 		if (agent) return entry.actor_name ? `${agent} (via ${entry.actor_name})` : agent;
 		if (entry.actor_name) return entry.actor_name;
 		if (entry.actor === 'system') return 'System';
@@ -281,17 +291,18 @@
 				</thead>
 				<tbody>
 					{#each entries as entry (entry.id)}
+						{@const meta = parseMetadata(entry.metadata)}
 						<tr>
 							<td class="time-cell" title={new Date(entry.created_at).toISOString()}>
 								{relativeTime(entry.created_at)}
 							</td>
-							<td>{displayUser(entry)}</td>
+							<td>{displayUser(entry, meta)}</td>
 							<td>
 								<Chip size="sm" color={actionColor(entry.action)}>
 									{formatAction(entry.action)}
 								</Chip>
 							</td>
-							<td class="details-cell">{formatMetadata(entry.metadata, entry.action)}</td>
+							<td class="details-cell">{formatMetadata(meta, entry.action)}</td>
 							<td class="ip-cell">{entry.ip_address || '\u2014'}</td>
 						</tr>
 					{/each}
