@@ -125,6 +125,15 @@ func TestListCommentsBeforeTime_AgentNameSurvivesActivityWindow(t *testing.T) {
 	s, item := agentNameFixture(t)
 
 	c := commentWithActivity(t, s, item, `{"agent":"wren"}`, "early", "")
+	// Timestamps are RFC3339 (second precision), so everything this test
+	// writes lands in ONE second and the window's ORDER BY breaks the tie on
+	// random ids — the commented row would then sit inside the window by
+	// luck (it did, under Postgres, on the first full run). Backdate it so
+	// the order is strict and the premise below is a fact, not a coin flip.
+	if _, err := s.db.Exec(s.q(`UPDATE activities SET created_at = ? WHERE id = ?`),
+		time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), c.ActivityID); err != nil {
+		t.Fatalf("backdate activity: %v", err)
+	}
 	for i := 0; i < 6; i++ {
 		if _, err := s.CreateActivity(models.Activity{
 			WorkspaceID: item.WorkspaceID, DocumentID: item.ID,
