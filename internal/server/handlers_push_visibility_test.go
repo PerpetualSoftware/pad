@@ -307,9 +307,9 @@ func TestPushSessionVisibility_ResolvesAtMostTwice(t *testing.T) {
 	t.Parallel()
 
 	calls := 0
-	vis := &sessionVisibility{resolve: func(bearerAuth bool) bool {
+	vis := &sessionVisibility{resolve: func(bearerAuth bool) (bool, error) {
 		calls++
-		return true
+		return true, nil
 	}}
 
 	presence := NewMemorySessionPresence()

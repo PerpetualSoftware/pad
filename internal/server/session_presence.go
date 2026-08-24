@@ -187,6 +187,24 @@ type LiveSession struct {
 	// through Redis (RedisSessionPresence.Add persists this struct), so
 	// a `json:"-"` would silently drop it on exactly the multi-instance
 	// deployment that needs it most.
+	//
+	// ROLLING-UPGRADE WINDOW, bounded and deliberately not tri-stated
+	// (codex round 1, P2). A session record written by a pre-BUG-2725
+	// instance has no `bearer_auth` key and decodes as false, i.e. as
+	// cookie-opened. The blast radius is exactly one case — a platform
+	// ADMIN's bearer-opened stream registered before the upgrade, which
+	// is then granted the cookie-only admin bypass and counted as
+	// visible. For every non-admin the transport is not consulted at all,
+	// so nothing changes.
+	//
+	// That case degrades to EXACTLY the pre-fix behaviour (the count
+	// applied no visibility filter at all, so it counted that session
+	// too), it affects only sessions registered before the upgrade, and
+	// it self-heals when they reconnect — each reconnect mints a fresh id
+	// and a fresh record. A tri-state would make the window
+	// distinguishable at the cost of a wire-format change to fix a
+	// transient degradation that is never worse than the bug being fixed,
+	// so the window is documented rather than engineered away.
 	BearerAuth bool `json:"bearer_auth"`
 	// ConnectedAt is when the stream opened, UTC.
 	ConnectedAt time.Time `json:"connected_at"`

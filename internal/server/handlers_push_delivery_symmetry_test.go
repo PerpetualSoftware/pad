@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -177,17 +178,16 @@ func TestPushDeliverySymmetry_CountAgreesWithWhatTheStreamReceives(t *testing.T)
 	}
 }
 
-// TestPushSessionVisibility_FailsClosedOnUnresolvableUser covers the
-// resolver's fail-closed branch directly.
+// TestPushSessionVisibility_MissingUserIsNotVisible covers the
+// resolver's "definitively gone" branch: a user who does not exist
+// resolves to not-visible, with NO error.
 //
 // It is tested here rather than through the handler because the branch
-// is not reachable that way: RequireAuth rejects a deleted or disabled
-// caller long before handlePushToItem runs, so no request can produce
-// it. That makes this defence in depth — and the reason to pin it
-// anyway is that over-counting is the defect being fixed, so if the
-// branch ever DOES become reachable it must not resolve to "count it
-// anyway".
-func TestPushSessionVisibility_FailsClosedOnUnresolvableUser(t *testing.T) {
+// is not reachable that way — RequireAuth rejects a deleted or disabled
+// caller long before handlePushToItem runs. Defence in depth, pinned
+// because the distinction it sits next to is the one codex round 1
+// caught: absence is an answer, unreadability is not.
+func TestPushSessionVisibility_MissingUserIsNotVisible(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)
 	slug := createWSWithCollections(t, srv)
@@ -198,9 +198,59 @@ func TestPushSessionVisibility_FailsClosedOnUnresolvableUser(t *testing.T) {
 
 	vis := srv.pushSessionVisibility("no-such-user-id", ws.ID, "some-collection", "some-item")
 	for _, bearer := range []bool{true, false} {
-		if vis.allows(bearer) {
-			t.Fatalf("bearerAuth=%v: an unresolvable user resolved to VISIBLE; the fail-closed "+
-				"branch must count no sessions rather than count them all", bearer)
+		visible, err := vis.allows(bearer)
+		if err != nil {
+			t.Fatalf("bearerAuth=%v: a user who is definitively absent is an ANSWER, not an "+
+				"unreadable store — it must not surface as an error: %v", bearer, err)
 		}
+		if visible {
+			t.Fatalf("bearerAuth=%v: a nonexistent user resolved to VISIBLE; their streams "+
+				"cannot receive anything, so they must not be counted", bearer)
+		}
+	}
+}
+
+// TestDeliveredSessionCount_PropagatesVisibilityError is the codex
+// round-1 P1 regression, and it FAILS against the first version of this
+// fix, which swallowed the error and returned false.
+//
+// Why it matters more than it looks: deliveredSessionCount's 0 is
+// load-bearing. handlePushToItem skips the publish for a TARGETED push
+// when the count is 0, so a store blip resolving to "not visible" would
+// drop the instruction and answer 200 — precisely the defect BUG-2698
+// filed, arriving a second time through BUG-2725's fix. The count must
+// say "I could not find out", which the existing registry-unreadable
+// branch already turns into a 503.
+//
+// The control leg is the same call with a resolver that succeeds: it
+// must count normally, so the propagation cannot be satisfied by a
+// version that simply errors always.
+func TestDeliveredSessionCount_PropagatesVisibilityError(t *testing.T) {
+	t.Parallel()
+
+	presence := NewMemorySessionPresence()
+	presence.Add("u1", SessionIdentity{Armed: true}, SessionOrigin{BearerAuth: true})
+	presence.Add("u1", SessionIdentity{Armed: true}, SessionOrigin{BearerAuth: false})
+
+	boom := errors.New("store unavailable")
+	failing := &sessionVisibility{resolve: func(bool) (bool, error) { return false, boom }}
+
+	count, err := deliveredSessionCount(presence, "u1", "", failing)
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the visibility error to propagate, got count=%d err=%v. Swallowing it "+
+			"into a 0 makes a targeted push skip its publish and report success", count, err)
+	}
+	if count != 0 {
+		t.Fatalf("an errored count must not also report a number, got %d", count)
+	}
+
+	working := &sessionVisibility{resolve: func(bool) (bool, error) { return true, nil }}
+	count, err = deliveredSessionCount(presence, "u1", "", working)
+	if err != nil {
+		t.Fatalf("control leg: a succeeding resolver must not error: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("control leg: expected both sessions counted, got %d — a fix that errors "+
+			"unconditionally would satisfy the leg above and break every push", count)
 	}
 }
