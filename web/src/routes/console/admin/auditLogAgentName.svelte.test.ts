@@ -98,6 +98,15 @@ describe('console audit log — agent attribution', () => {
 		expect(userCells()).not.toEqual(['Dave']);
 	});
 
+	it('renders a generic-looking client id verbatim', async () => {
+		//'wren' alone does not discriminate: reinstating the retired
+		// GENERIC_AGENT_IDS filter left this file green until this case
+		// existed, because no fixture used a value the filter would swallow.
+		await mountWith([row({ metadata: JSON.stringify({ agent: 'claude-code' }) })]);
+
+		expect(userCells()).toEqual(['claude-code (via Dave)']);
+	});
+
 	it('renders the agent alone when no account name resolved', async () => {
 		await mountWith([row({ actor_name: undefined })]);
 

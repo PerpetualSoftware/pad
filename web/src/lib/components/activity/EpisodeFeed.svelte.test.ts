@@ -178,6 +178,16 @@ describe('EpisodeFeed', () => {
 		expect(labels.sort()).toEqual(['rook', 'wren']);
 	});
 
+	// Named agents alone do not discriminate: reinstating the retired
+	// GENERIC_AGENT_IDS filter left this file green until this case existed,
+	// because nothing here used a value the filter would have swallowed.
+	it('renders a generic-looking client id verbatim', async () => {
+		mountFeed([act(1, { metadata: '{"agent":"claude-code"}' })]);
+		await settle();
+
+		expect(host.querySelector('.ep-actor')!.textContent).toBe('claude-code');
+	});
+
 	it('renders the generic label for an agent that stamped no name', async () => {
 		// `act`'s default metadata is '{}' — the pre-BUG-2542 shape, and the
 		// shape any agent that never sends the header still produces.
