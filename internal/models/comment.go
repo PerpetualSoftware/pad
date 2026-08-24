@@ -25,9 +25,11 @@ type Comment struct {
 	ItemTitle string `json:"item_title,omitempty"`
 	ItemSlug  string `json:"item_slug,omitempty"`
 	// AgentName is the display name the writing agent declared (the
-	// X-Pad-Agent header), read off the `commented` activity this comment's
-	// ActivityID points at — comments themselves never store it; workspace
-	// activity rows are the only carrier (TASK-2759 / TASK-2760). Its ONLY
+	// X-Pad-Agent header), read off the activity this comment's ActivityID
+	// points at — the `commented` row a comment or reply logs, or the
+	// `updated` row of an item update that carried the comment. Comments
+	// themselves never store it; workspace activity rows are the only
+	// carrier (TASK-2759 / TASK-2760). Its ONLY
 	// writer is the LEFT JOIN in the store's list queries (scanComments in
 	// comments.go), so it is empty on a comment read any other way
 	// (GetComment, the create/update read-back) and on a comment whose

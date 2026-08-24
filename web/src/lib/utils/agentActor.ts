@@ -8,10 +8,11 @@
  * `agent` (`handlers_documents.go::agentMeta`), reached from
  * `logActivityWithMetaReturningID` — so **workspace activity rows are the
  * only thing in the data model that STORES it**. A comment reaches it
- * indirectly: the store's comment list queries LEFT JOIN the `commented`
- * activity the comment links to and surface the name as `comment.agent_name`
- * (TASK-2760) — the same stamp, read through the row that stands in for the
- * activity on the timeline. Versions, items, structured note/decision
+ * indirectly: the store's comment list queries LEFT JOIN the activity the
+ * comment links to (a `commented` row, or the `updated` row of an item
+ * update that carried the comment) and surface the name as
+ * `comment.agent_name` (TASK-2760) — the same stamp, read through the row
+ * the comment card stands in for on the timeline. Versions, items, structured note/decision
  * entries and SSE events record the actor KIND ("agent" / "user") and no
  * name; a surface holding one of those has nothing to render here and says
  * "agent" as it always did.

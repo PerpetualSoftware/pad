@@ -189,10 +189,15 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 // carries the same shape, including Comment.AgentName.
 //
 // The LEFT JOIN is how a comment learns which agent wrote it. The name is
-// stamped only on the `commented` activity the comment's activity_id points
-// at (handlers_comments.go links them at create), and the timeline drops that
-// activity from its payload because the comment card stands in for it. Doing
-// the join HERE, on the comment row, makes the lookup exact by construction:
+// stamped only on the activity the comment's activity_id points at — the
+// `commented` row a comment or reply logs (handlers_comments.go), or the
+// `updated` row of an item update that carried the comment
+// (handlers_items.go) — and the timeline drops that activity from its
+// payload because the comment card stands in for it. The join is scoped to
+// the comment's own item as well as the id: nothing in the schema forbids a
+// comment pointing at another item's activity, and a name read across items
+// would be wrong with no way to see it. Doing the join HERE, on the comment
+// row, makes the lookup exact by construction:
 // the alternative — matching comments to activities inside the timeline
 // handler — reads the two through separately paginated windows, so it misses
 // at page edges and whenever other activity crowds the linked row out, and
@@ -209,7 +214,7 @@ const commentListCols = `c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.u
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at, a.metadata`
 
-const commentAgentJoin = `LEFT JOIN activities a ON a.id = c.activity_id`
+const commentAgentJoin = `LEFT JOIN activities a ON a.id = c.activity_id AND a.document_id = c.item_id`
 
 func scanComments(rows *sql.Rows) ([]models.Comment, error) {
 	var comments []models.Comment

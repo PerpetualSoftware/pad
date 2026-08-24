@@ -49,13 +49,21 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	ts := now()
 	cutoff := time.Now().UTC().Add(-ActivityDebounceCooldown).Format(time.RFC3339)
 
-	// Look for a recent activity to coalesce with.
+	// Look for a recent activity to coalesce with. A row a comment links to
+	// (comments.activity_id) is never a merge target: the comment reads its
+	// agent name from that row's metadata, and a merge overlays the incoming
+	// `agent` and bumps created_at — so without this exclusion a later update
+	// by a different agent under the same credentials would silently
+	// re-attribute an earlier comment (TASK-2760, codex round 3). Once a
+	// comment has linked an activity, that row is frozen; the next update
+	// starts a fresh row instead. Same item-scoped probe as the timeline's.
 	var existingID, existingMeta string
 	err := s.db.QueryRow(s.q(`
-		SELECT id, metadata FROM activities
-		WHERE document_id = ? AND action = ? AND created_at >= ?
-			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
-		ORDER BY created_at DESC LIMIT 1
+		SELECT id, metadata FROM activities a
+		WHERE a.document_id = ? AND a.action = ? AND a.created_at >= ?
+			AND ((a.user_id IS NOT NULL AND a.user_id = ?) OR (a.user_id IS NULL AND ? = ''))
+			AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id)
+		ORDER BY a.created_at DESC LIMIT 1
 	`), a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta)
 
 	if err == sql.ErrNoRows {
@@ -462,7 +470,7 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
 	const selectCols = `a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')`
-	const notCommentLinked = `AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id)`
+	const notCommentLinked = `AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id)`
 	const orderLimit = `ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
 
 	var rows *sql.Rows

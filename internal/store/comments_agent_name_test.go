@@ -238,3 +238,103 @@ func TestListDocumentActivityBeforeTime_ExcludesCommentLinkedRows(t *testing.T) 
 		}
 	}
 }
+
+// Codex round 3 on TASK-2760, two findings with one root: the join keyed on
+// activity id alone, and nothing in the schema says a comment's activity
+// belongs to the comment's item.
+func TestListComments_AgentNameNeverReadAcrossItems(t *testing.T) {
+	s, item := agentNameFixture(t)
+	other := createTestItem(t, s, item.WorkspaceID, item.CollectionID, "Other", "")
+
+	foreignActivity, err := s.CreateActivity(models.Activity{
+		WorkspaceID: other.WorkspaceID, DocumentID: other.ID,
+		Action: "commented", Actor: "agent", Source: "cli", Metadata: `{"agent":"wren"}`,
+	})
+	if err != nil {
+		t.Fatalf("create activity: %v", err)
+	}
+	crossLinked, err := s.CreateComment(item.WorkspaceID, item.ID, "", models.CommentCreate{
+		Body: "points at another item's activity", CreatedBy: "agent", Source: "cli", ActivityID: foreignActivity,
+	})
+	if err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+
+	got, err := s.ListComments(item.ID)
+	if err != nil {
+		t.Fatalf("ListComments: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != crossLinked.ID {
+		t.Fatalf("comments = %+v, want just the cross-linked one", got)
+	}
+	if got[0].AgentName != "" {
+		t.Errorf("agent name %q read from ANOTHER item's activity — the join must be item-scoped", got[0].AgentName)
+	}
+
+	// And the other item's timeline still sees its own activity: the
+	// exclusion is item-scoped the same way, so a foreign link cannot hide it.
+	acts, err := s.ListDocumentActivityBeforeTime(other.ID, time.Now().Add(time.Hour), "", 50)
+	if err != nil {
+		t.Fatalf("ListDocumentActivityBeforeTime: %v", err)
+	}
+	found := false
+	for _, a := range acts {
+		found = found || a.ID == foreignActivity
+	}
+	if !found {
+		t.Errorf("other item's activity %s hidden by a comment on a different item", foreignActivity)
+	}
+}
+
+// Codex round 3 on TASK-2760: an item update that carries a comment links the
+// comment to its `updated` activity, and `updated` activities are debounced —
+// a later update by the same user merges INTO the most recent row, overlaying
+// its `agent` and bumping created_at. Two agents under one set of credentials
+// (the common shape: teammates on one account) would silently re-attribute
+// an earlier comment to the later agent. A comment-linked row must therefore
+// never be a merge target; the control leg pins that unlinked rows still are.
+func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
+	s, item := agentNameFixture(t)
+	user, err := s.CreateUser(models.UserCreate{Email: "shared@test.com", Name: "Dave", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	update := func(agent string) string {
+		id, err := s.CreateActivityDebounced(models.Activity{
+			WorkspaceID: item.WorkspaceID, DocumentID: item.ID, UserID: user.ID,
+			Action: "updated", Actor: "agent", Source: "cli",
+			Metadata: `{"agent":"` + agent + `","changes":"status: open → done"}`,
+		})
+		if err != nil {
+			t.Fatalf("debounced update (%s): %v", agent, err)
+		}
+		return id
+	}
+
+	first := update("wren")
+	if _, err := s.CreateComment(item.WorkspaceID, item.ID, user.ID, models.CommentCreate{
+		Body: "why I closed it", Author: "Dave", CreatedBy: "agent", Source: "cli", ActivityID: first,
+	}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+
+	second := update("rook")
+	if second == first {
+		t.Fatalf("second update merged into the comment-linked activity %s", first)
+	}
+
+	comments, err := s.ListComments(item.ID)
+	if err != nil {
+		t.Fatalf("ListComments: %v", err)
+	}
+	if len(comments) != 1 || comments[0].AgentName != "wren" {
+		t.Errorf("comment attribution after a later update = %+v, want still %q", comments, "wren")
+	}
+
+	// Control: with no comment on the newest row, the next update still
+	// coalesces — the exclusion is scoped to linked rows, not a debounce switch.
+	third := update("rook")
+	if third != second {
+		t.Errorf("unlinked recent update did not merge: got %s, want %s", third, second)
+	}
+}
