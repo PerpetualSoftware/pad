@@ -81,6 +81,12 @@ func TestListComments_AgentNameFromLinkedActivity(t *testing.T) {
 	if got := agentNamesByID(all); !equalStringMaps(got, want) {
 		t.Errorf("ListComments agent names = %v, want %v", got, want)
 	}
+	// The join must not disturb the query's own contract: chronological.
+	for i := 1; i < len(all); i++ {
+		if all[i].CreatedAt.Before(all[i-1].CreatedAt) {
+			t.Errorf("ListComments order broken at %d: %v before %v", i, all[i].CreatedAt, all[i-1].CreatedAt)
+		}
+	}
 
 	page, err := s.ListCommentsBeforeTime(item.ID, time.Now().Add(time.Hour), "", 50)
 	if err != nil {
@@ -91,6 +97,24 @@ func TestListComments_AgentNameFromLinkedActivity(t *testing.T) {
 	}
 	if got := agentNamesByID(page); !equalStringMaps(got, want) {
 		t.Errorf("ListCommentsBeforeTime agent names = %v, want %v", got, want)
+	}
+	// Newest-first, and the LIMIT still binds with the join in place.
+	for i := 1; i < len(page); i++ {
+		if page[i].CreatedAt.After(page[i-1].CreatedAt) {
+			t.Errorf("ListCommentsBeforeTime order broken at %d: %v after %v", i, page[i].CreatedAt, page[i-1].CreatedAt)
+		}
+	}
+	limited, err := s.ListCommentsBeforeTime(item.ID, time.Now().Add(time.Hour), "", 3)
+	if err != nil {
+		t.Fatalf("ListCommentsBeforeTime (limit 3): %v", err)
+	}
+	if len(limited) != 3 {
+		t.Errorf("ListCommentsBeforeTime limit 3 returned %d rows", len(limited))
+	}
+	for _, c := range limited {
+		if c.AgentName != want[c.ID] {
+			t.Errorf("limited page: %s agent name = %q, want %q", c.ID, c.AgentName, want[c.ID])
+		}
 	}
 
 	// The cursor branch is a separate query string; drive it too.

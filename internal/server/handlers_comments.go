@@ -340,17 +340,27 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	}
 	input.ParentID = commentID
 
+	// Log the `commented` activity and link it, exactly as handleCreateComment
+	// does for a top-level comment. Until TASK-2760 replies emitted no
+	// activity row, which was harmless while the row was only a feed entry —
+	// but the activity is the ONLY carrier of the writing agent's name
+	// (agentMeta stamps X-Pad-Agent into its metadata), and the comment list
+	// queries read the name through this link. A reply with no linked
+	// activity therefore rendered under a generic "Agent" chip no matter what
+	// the client sent. The timeline still shows one card per reply: it
+	// suppresses every activity a fetched comment links to, replies included.
+	// Same forced ordering and the same BUG-2716 orphan window as the
+	// top-level path. This helper also bumps last_write_at (PLAN-1542 /
+	// TASK-1543), which the explicit TouchUserWrite here used to do.
+	if activityID, err := s.logActivityWithMetaReturningID(workspaceID, parentComment.ItemID, "commented", r, ""); err == nil && activityID != "" {
+		input.ActivityID = activityID
+	}
+
 	comment, err := s.store.CreateComment(workspaceID, parentComment.ItemID, currentUserID(r), input)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-
-	// Comment replies don't go through logActivity (no "commented" activity
-	// row is emitted for replies — see handleCreateComment for the non-reply
-	// path that does). Bump last_write_at explicitly so engagement metrics
-	// reflect reply authorship too (PLAN-1542 / TASK-1543).
-	s.store.TouchUserWrite(r.Context(), currentUserID(r))
 
 	// Resolve the item's collection slug for SSE filtering
 	replyCollSlug := ""

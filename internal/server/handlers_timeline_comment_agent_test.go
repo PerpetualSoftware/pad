@@ -15,14 +15,23 @@ import (
 // (CONVE-19). Each has a control leg: the same request without the header
 // must yield no name, or a hardcoded value would pass.
 
-func postComment(t *testing.T, srv *Server, ws, itemSlug, agent, body, parentID string) models.Comment {
+func postComment(t *testing.T, srv *Server, ws, itemSlug, agent, body string) models.Comment {
 	t.Helper()
-	payload := map[string]any{"body": body}
-	if parentID != "" {
-		payload["parent_id"] = parentID
-	}
 	rr := doAttributionRequest(t, srv, agent, "POST",
-		"/api/v1/workspaces/"+ws+"/items/"+itemSlug+"/comments", payload)
+		"/api/v1/workspaces/"+ws+"/items/"+itemSlug+"/comments", map[string]any{"body": body})
+	var c models.Comment
+	decodeAttributionBody(t, rr, &c)
+	return c
+}
+
+// postReply uses the dedicated reply route — the one the web UI calls — not
+// the top-level route with a parent_id. Codex round 1: the reply route wrote
+// no `commented` activity, so a reply had nothing to carry the name through,
+// and a test driving the top-level route would never have seen that.
+func postReply(t *testing.T, srv *Server, ws, parentID, agent, body string) models.Comment {
+	t.Helper()
+	rr := doAttributionRequest(t, srv, agent, "POST",
+		"/api/v1/workspaces/"+ws+"/comments/"+parentID+"/replies", map[string]any{"body": body})
 	var c models.Comment
 	decodeAttributionBody(t, rr, &c)
 	return c
@@ -53,7 +62,7 @@ func TestTimeline_CommentEntryCarriesAgentName(t *testing.T) {
 			ws := createTestWorkspaceViaAPI(t, srv)
 			item := timelineItemWithStructured(t, srv, ws, "", "")
 
-			c := postComment(t, srv, ws, item.Slug, tc.agent, "hello", "")
+			c := postComment(t, srv, ws, item.Slug, tc.agent, "hello")
 
 			resp := fetchTimeline(t, srv, ws, item.Slug, "")
 			entry := commentEntryByID(resp.Entries, c.ID)
@@ -96,8 +105,11 @@ func TestTimeline_ReplyCarriesAgentName(t *testing.T) {
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := timelineItemWithStructured(t, srv, ws, "", "")
 
-	parent := postComment(t, srv, ws, item.Slug, "", "question", "")
-	reply := postComment(t, srv, ws, item.Slug, "rook", "answer", parent.ID)
+	parent := postComment(t, srv, ws, item.Slug, "", "question")
+	reply := postReply(t, srv, ws, parent.ID, "rook", "answer")
+	if reply.ActivityID == "" {
+		t.Fatal("reply route wrote no commented activity — the name has no row to live on")
+	}
 
 	resp := fetchTimeline(t, srv, ws, item.Slug, "")
 	entry := commentEntryByID(resp.Entries, parent.ID)
@@ -113,6 +125,13 @@ func TestTimeline_ReplyCarriesAgentName(t *testing.T) {
 	if got := entry.Comment.Replies[0]; got.ID != reply.ID || got.AgentName != "rook" {
 		t.Errorf("nested reply = %+v, want id %s with agent_name %q", got, reply.ID, "rook")
 	}
+	// The reply's new activity row must be suppressed like the parent's —
+	// one card per reply, not a card plus a "commented" activity entry.
+	for _, e := range resp.Entries {
+		if e.Kind == "activity" && e.ID == reply.ActivityID {
+			t.Errorf("the reply's linked activity %s leaked into the payload", reply.ActivityID)
+		}
+	}
 }
 
 // The comments endpoint shares the store read path, so it carries the same
@@ -123,8 +142,8 @@ func TestListComments_CarriesAgentName(t *testing.T) {
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := timelineItemWithStructured(t, srv, ws, "", "")
 
-	named := postComment(t, srv, ws, item.Slug, "wren", "by agent", "")
-	human := postComment(t, srv, ws, item.Slug, "", "by human", "")
+	named := postComment(t, srv, ws, item.Slug, "wren", "by agent")
+	human := postComment(t, srv, ws, item.Slug, "", "by human")
 
 	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items/"+item.Slug+"/comments", nil)
 	if rr.Code != http.StatusOK {
