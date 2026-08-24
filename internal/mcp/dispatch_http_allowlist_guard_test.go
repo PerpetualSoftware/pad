@@ -49,7 +49,39 @@ package mcp
 //     verified. The test says which case it hit.
 //   - routesRegisteredOutsideWorkspaceMiddleware is hand-maintained,
 //     because nothing in a URL reveals whether its route was mounted
-//     under the middleware. That list is this guard's own soft spot.
+//     under the middleware. TestStaticWorkspaceSiblings_MatchServerRegistrations
+//     keeps it honest by reading server.go, within the grammar below.
+//
+// RECOGNIZED REGISTRATION GRAMMAR, AND THE FAIL-CLOSED CONTRACT.
+//
+// The server.go scan recognizes exactly these forms, which are the ones
+// this codebase uses:
+//
+//   - r.Get / r.Post / r.Put / r.Patch / r.Delete / r.Head / r.Options
+//     / r.Handle / r.HandleFunc, with a LITERAL path string;
+//   - r.Method / r.MethodFunc, verb first, with a literal path string;
+//   - one nested r.Route("/{slug}", ...) subrouter, which must apply
+//     RequireWorkspaceAccess.
+//
+// THE CONTRACT: routes registered via forms this scanner does not
+// recognize — r.With(...).Get, r.Mount, a path held in a variable, a
+// helper that registers on the router's behalf, or a static sibling
+// that gains its own sub-router — FAIL THIS TEST until the scanner is
+// taught them.
+//
+// That is deliberate and it is the guard's whole safety argument. This
+// test cannot verify a shape it cannot parse, and the alternative to
+// failing is assuming such a route is middleware-gated, which is a
+// fail-OPEN in a consent guard. So if a future style migration turns
+// this red, READ IT AS THE GUARD ASKING TO BE TAUGHT, not as the guard
+// being wrong: extend the grammar (and the sets it feeds) rather than
+// loosening the assertion or exempting the new form.
+//
+// Coverage is therefore bounded by the grammar, not by the reviewer's
+// imagination — an adversarial reviewer will always name one more
+// registration style, and teaching the scanner to TRUST more shapes
+// buys coverage of styles nobody writes at the cost of the fail-closed
+// posture that makes the rest sound.
 //   - Scope is the HTTP transport only. The local stdio ExecDispatcher
 //     shells out under ~/.pad/credentials.json and carries no OAuth
 //     allow-list at all, so no allow-listed credential exists there.
