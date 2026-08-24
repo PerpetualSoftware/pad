@@ -28,6 +28,17 @@
  * NOT" section of ResolveAgentName's doc comment for the two ways it can
  * be wrong. Nothing rendered from this function is evidence about who
  * acted; it is a label the actor chose.
+ *
+ * WHICH MAKES IT A LEAF, NEVER A FRAGMENT. Because the actor authors this
+ * value, any string a surface BUILDS around it hands the author influence
+ * over the parts they did not write — a name can spell out the connective
+ * text ("admin (via root)") or carry a bidi control that reorders whatever
+ * was appended after it. So every surface renders it as its own isolated
+ * element (<bdi>) and composes with siblings in markup rather than by
+ * concatenation; the console audit log's `displayUser` is the worked
+ * example, and returns parts for exactly this reason. That is not a
+ * softening of the verbatim rule above: isolation alters no characters and
+ * rejects no names, it just refuses to let one value redraw another.
  */
 
 /**

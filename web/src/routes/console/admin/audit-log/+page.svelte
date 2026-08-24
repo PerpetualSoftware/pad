@@ -198,6 +198,16 @@
 	// audited party editing how the audit reads. Kept apart, the template can
 	// isolate each one, which bounds a hostile name to its own element instead
 	// of letting it rewrite its neighbours (codex round 8).
+	//
+	// This is not a rendering quirk, it is ResolveAgentName's documented
+	// attribution-honesty problem arriving through the renderer. That contract
+	// (internal/cli/agent_identity.go, "WHAT THIS IS NOT") says the header
+	// records honesty rather than identity, because the actor authors it. A
+	// surface that COMPOSES with an authored value inherits that: it hands the
+	// author influence over the parts they did not write. So the rule for any
+	// future edit here — including a new column, a tooltip, an export or a
+	// search-result summary — is that a self-declared value is a leaf, never a
+	// fragment something else is built around.
 	function displayUser(
 		entry: Activity,
 		meta: Record<string, any> | null
