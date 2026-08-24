@@ -231,19 +231,40 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// THE REQUEST'S CONTEXT GOES INTO THE SUBSCRIBE, so a client that hangs up
+	// during establishment stops holding the admission slot acquired above
+	// (BUG-2749). Establishing a workspace's Redis subscription dials and then
+	// waits for the acknowledgement, and both used to run to completion for a
+	// connection that was already gone.
 	var ch chan events.Event
 	var missed []events.Event
 	var gaps <-chan struct{}
-	var subscribed bool
+	var outcome events.SubscribeOutcome
 	if lastID > 0 {
-		ch, missed, gaps, subscribed = s.events.SubscribeAndReplaySince(ws.ID, lastID, s.sseMaxPerWorkspace)
+		ch, missed, gaps, outcome = s.events.SubscribeAndReplaySince(r.Context(), ws.ID, lastID, s.sseMaxPerWorkspace)
 	} else {
-		ch, gaps, subscribed = s.events.SubscribeIfAllowed(ws.ID, s.sseMaxPerWorkspace)
+		ch, gaps, outcome = s.events.SubscribeIfAllowed(r.Context(), ws.ID, s.sseMaxPerWorkspace)
 	}
-	if !subscribed {
+	switch outcome {
+	case events.SubscribeOK:
+	case events.SubscribeWorkspaceLimit:
 		slog.Warn("SSE connection limit reached", "workspace", ws.Slug, "refused_by", "per_workspace",
 			"ws_current", s.events.WorkspaceSubscriberCount(ws.ID), "ws_max", s.sseMaxPerWorkspace)
 		writeStreamLimitExceeded(w)
+		return
+	case events.SubscribeCancelled:
+		// NOT a refusal, and deliberately not written to as one. There is
+		// nobody left to read a 429, the connection was never established, and
+		// counting a departure against the per-workspace limit would put a
+		// client that simply left into the one signal used to tune that limit.
+		// The deferred admission release above is the whole point of the path.
+		slog.Debug("SSE client disconnected during subscription establishment",
+			"workspace", ws.Slug)
+		return
+	default:
+		slog.Error("SSE subscribe returned an unknown outcome; refusing rather than guessing",
+			"workspace", ws.Slug, "outcome", outcome.String())
+		writeError(w, http.StatusInternalServerError, "internal_error", "Subscription failed")
 		return
 	}
 	defer s.events.Unsubscribe(ch)

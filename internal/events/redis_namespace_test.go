@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	// A local subscriber is what starts the Redis-side subscription for
 	// this workspace, so the channel assertions below have something to
 	// observe.
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 	// This test only reads KEYS, which the publish writes whether or not
 	// anyone is listening — so it does not NEED the wait. It is here because
@@ -158,7 +159,7 @@ func TestRedisBusDefaultKeepsHistoricalKeys(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 	// Not needed for the key assertions below; present so the pattern a
 	// reader copies from here is the safe one. See the twin above.

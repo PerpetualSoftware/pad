@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -294,7 +295,7 @@ func TestRestoreItemVersionEmitsItemUpdatedSSE(t *testing.T) {
 	}
 
 	// Subscribe right before the restore so the next item_updated is the restore's.
-	ch, _ := bus.Subscribe(ws.ID)
+	ch, _, _ := bus.Subscribe(context.Background(), ws.ID)
 	defer bus.Unsubscribe(ch)
 
 	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+it.Slug+"/versions/"+versionID+"/restore", nil)
@@ -397,7 +398,7 @@ func TestRestoreVersionHandlerAckLossReconciledEndToEnd(t *testing.T) {
 		return nil
 	}
 
-	ch, _ := ebus.Subscribe(ws.ID)
+	ch, _, _ := ebus.Subscribe(context.Background(), ws.ID)
 	defer ebus.Unsubscribe(ch)
 
 	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+it.Slug+"/versions/"+versionID+"/restore", nil)

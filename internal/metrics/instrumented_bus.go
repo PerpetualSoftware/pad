@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"sync"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
@@ -30,22 +31,31 @@ func NewInstrumentedBus(inner events.EventBus, m *Metrics) *InstrumentedBus {
 }
 
 // Subscribe delegates to the inner bus and increments the SSE connection gauge.
-func (b *InstrumentedBus) Subscribe(workspaceID string) (chan events.Event, <-chan struct{}) {
-	ch, gaps := b.inner.Subscribe(workspaceID)
+func (b *InstrumentedBus) Subscribe(ctx context.Context, workspaceID string) (chan events.Event, <-chan struct{}, events.SubscribeOutcome) {
+	ch, gaps, outcome := b.inner.Subscribe(ctx, workspaceID)
+	if outcome != events.SubscribeOK {
+		return nil, nil, outcome
+	}
 	b.trackSubscription(ch, workspaceID)
-	return ch, gaps
+	return ch, gaps, outcome
 }
 
 // SubscribeIfAllowed delegates the atomic check-and-subscribe to the inner bus
 // and updates Prometheus gauges on success.
-func (b *InstrumentedBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan events.Event, <-chan struct{}, bool) {
-	ch, gaps, ok := b.inner.SubscribeIfAllowed(workspaceID, maxPerWorkspace)
-	if !ok {
-		return nil, nil, false
+//
+// EVERY NON-OK OUTCOME IS TREATED THE SAME HERE, deliberately: SubscribeOK is
+// the only one that hands back a channel, so it is the only one this wrapper
+// has anything to track. Distinguishing a limit refusal from a cancellation is
+// the HANDLER's job (BUG-2749) — this type counts subscriptions, and there is
+// no subscription in either case.
+func (b *InstrumentedBus) SubscribeIfAllowed(ctx context.Context, workspaceID string, maxPerWorkspace int) (chan events.Event, <-chan struct{}, events.SubscribeOutcome) {
+	ch, gaps, outcome := b.inner.SubscribeIfAllowed(ctx, workspaceID, maxPerWorkspace)
+	if outcome != events.SubscribeOK {
+		return nil, nil, outcome
 	}
 
 	b.trackSubscription(ch, workspaceID)
-	return ch, gaps, true
+	return ch, gaps, outcome
 }
 
 // SubscribeAndReplaySince delegates the atomic check-subscribe-and-replay to
@@ -54,14 +64,14 @@ func (b *InstrumentedBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace
 // The gap channel and the replay set pass through untouched: both are the
 // inner bus's own knowledge (BUG-2730), and this wrapper exists to count
 // subscriptions, not to have an opinion about coverage.
-func (b *InstrumentedBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan events.Event, []events.Event, <-chan struct{}, bool) {
-	ch, missed, gaps, ok := b.inner.SubscribeAndReplaySince(workspaceID, sinceID, maxPerWorkspace)
-	if !ok {
-		return nil, nil, nil, false
+func (b *InstrumentedBus) SubscribeAndReplaySince(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (chan events.Event, []events.Event, <-chan struct{}, events.SubscribeOutcome) {
+	ch, missed, gaps, outcome := b.inner.SubscribeAndReplaySince(ctx, workspaceID, sinceID, maxPerWorkspace)
+	if outcome != events.SubscribeOK {
+		return nil, nil, nil, outcome
 	}
 
 	b.trackSubscription(ch, workspaceID)
-	return ch, missed, gaps, true
+	return ch, missed, gaps, outcome
 }
 
 // trackSubscription records the channel's workspace and bumps the gauges, so

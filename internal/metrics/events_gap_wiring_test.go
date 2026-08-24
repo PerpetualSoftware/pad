@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
@@ -16,8 +17,8 @@ func TestInstrumentedBusPassesTheGapChannelThrough(t *testing.T) {
 	defer inner.Close()
 	b := NewInstrumentedBus(inner, New())
 
-	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, gaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != events.SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -50,8 +51,8 @@ func TestInstrumentedBusForwardsTheReplay(t *testing.T) {
 	b.Publish(events.Event{Type: events.ItemUpdated, WorkspaceID: "ws-1", ItemID: "two"})
 	cursor := b.EventsSince("ws-1", 0)[0].ID
 
-	ch, missed, gaps, ok := b.SubscribeAndReplaySince("ws-1", cursor, 0)
-	if !ok {
+	ch, missed, gaps, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-1", cursor, 0)
+	if outcome != events.SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)

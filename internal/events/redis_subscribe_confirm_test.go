@@ -113,8 +113,8 @@ func TestSubscribeDoesNotReturnBeforeRedisHasRegisteredIt(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("SubscribeIfAllowed refused a connection with no limit set")
 	}
 	defer b.Unsubscribe(ch)
@@ -163,8 +163,8 @@ func TestConcurrentFirstSubscribersShareOneRedisSubscription(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-			if !ok {
+			ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+			if outcome != SubscribeOK {
 				t.Errorf("caller %d was refused", i)
 				return
 			}
@@ -242,13 +242,13 @@ func TestSubscribeDoesNotHoldTheBusLockAcrossTheRedisDial(t *testing.T) {
 	// A workspace with a healthy, already-established subscription, whose
 	// stream operations are the thing that must not be held hostage.
 	close(release)
-	quiet, _ := b.Subscribe("ws-quiet")
+	quiet, _, _ := b.Subscribe(context.Background(), "ws-quiet")
 	release = make(chan struct{})
 	stalls.Store(1)
 
 	stalled := make(chan struct{})
 	go func() {
-		ch, _ := b.Subscribe("ws-stalled")
+		ch, _, _ := b.Subscribe(context.Background(), "ws-stalled")
 		b.Unsubscribe(ch)
 		close(stalled)
 	}()
@@ -300,8 +300,8 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 	// Shorter than the delay, so the wait gives up first.
 	b.confirmTimeout = 50 * time.Millisecond
 
-	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, gaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("an unconfirmed subscription must ADMIT, not refuse")
 	}
 	defer b.Unsubscribe(ch)
@@ -321,7 +321,7 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 	// confirmed before admission.
 	b.confirmTimeout = defaultSubscribeConfirmTimeout
 	before := obs.unconfirmedCount()
-	ch2, gaps2, _ := b.SubscribeIfAllowed("ws-2", 0)
+	ch2, gaps2, _ := b.SubscribeIfAllowed(context.Background(), "ws-2", 0)
 	defer b.Unsubscribe(ch2)
 	if got := obs.unconfirmedCount(); got != before {
 		t.Fatalf("a confirmed subscription reported SubscriptionUnconfirmed (%d -> %d)", before, got)
@@ -385,8 +385,8 @@ func TestAJoinersReplayStopsWhereItsChannelStarts(t *testing.T) {
 		// The joiner registers here. pendingSubs still holds this
 		// establishment, so it waits rather than returning.
 		go func() {
-			ch, missed, _, ok := b.SubscribeAndReplaySince("ws-1", cursor, 0)
-			if !ok {
+			ch, missed, _, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-1", cursor, 0)
+			if outcome != SubscribeOK {
 				t.Error("the joiner was refused")
 			}
 			joined <- joinResult{ch: ch, missed: missed}
@@ -399,7 +399,7 @@ func TestAJoinersReplayStopsWhereItsChannelStarts(t *testing.T) {
 		waitForBufferedCount(t, b, "ws-1", 3)
 	}
 
-	establisher, _ := b.Subscribe("ws-1")
+	establisher, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(establisher)
 	if !armed.Load() {
 		t.Fatal("the seam never ran; this test could not have discriminated")
@@ -495,8 +495,8 @@ func TestAFreshSubscriberReceivesAnEventPublishedDuringEstablishment(t *testing.
 		close(buffered)
 	}
 
-	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("SubscribeIfAllowed refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -534,7 +534,7 @@ func TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement(t *testin
 	// The establishing caller, left in flight.
 	first := make(chan chan Event, 1)
 	go func() {
-		ch, _ := b.Subscribe("ws-1")
+		ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 		first <- ch
 	}()
 
@@ -555,8 +555,8 @@ func TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement(t *testin
 		time.Sleep(time.Millisecond)
 	}
 
-	second, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	second, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("the second subscriber was refused")
 	}
 	defer b.Unsubscribe(second)
@@ -614,7 +614,7 @@ func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 		}
 	}
 
-	ch, gaps := b.Subscribe("ws-1")
+	ch, gaps, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 
 	// PREMISE: the acknowledgement really did beat the mark, or the interleave
@@ -688,7 +688,7 @@ func TestAJoinerIsNotStrandedByAnAbandonedEstablishment(t *testing.T) {
 		b.mu.Unlock()
 	}
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	if !abandoned.Load() {
 		t.Fatal("the abandon was never forced; this test could not have discriminated")
 	}
@@ -696,8 +696,8 @@ func TestAJoinerIsNotStrandedByAnAbandonedEstablishment(t *testing.T) {
 
 	// Whatever happened to the first caller, a subscriber that ends up holding
 	// a channel must be connected to Redis.
-	next, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	next, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("the next subscriber was refused")
 	}
 	defer b.Unsubscribe(next)
@@ -736,7 +736,7 @@ func TestCloseDuringEstablishmentDoesNotLeakTheSubscription(t *testing.T) {
 		b.Close()
 	}
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	_ = ch
 	if !closedMidFlight.Load() {
 		t.Fatal("Close never ran mid-establishment; this test could not have discriminated")

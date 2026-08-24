@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -125,6 +126,51 @@ type Event struct {
 	Count int    `json:"count,omitempty"`
 }
 
+// SubscribeOutcome says how a Subscribe* call ended. It replaces the ok bool
+// those methods used to return, and it is an enum rather than an extra error
+// or a second bool because the distinction it carries is one a caller must not
+// be able to collapse by accident (BUG-2749).
+//
+// A REFUSAL AND A DEPARTURE ARE NOT THE SAME EVENT. The SSE handler answers a
+// refusal with 429 and logs it against the per-workspace limit; doing that for
+// a caller whose context was cancelled would write a limit refusal into the
+// logs and counters for a client that simply left, poisoning the one signal
+// anyone would use to tune those limits. Returning ok=false for both is what
+// made that conflation easy to write, so the shape no longer offers it: there
+// is no false to return, and a switch over this type has to name the case.
+type SubscribeOutcome int
+
+const (
+	// SubscribeOK means the subscriber is registered and its channel is live.
+	// It is the ONLY outcome for which the returned channel is non-nil, and
+	// therefore the only one whose caller owes an Unsubscribe.
+	SubscribeOK SubscribeOutcome = iota
+
+	// SubscribeWorkspaceLimit means maxPerWorkspace was already met, so no
+	// subscriber was registered. This is the old ok=false.
+	SubscribeWorkspaceLimit
+
+	// SubscribeCancelled means the CALLER's context ended before the
+	// subscription could be handed back, so any registration made along the
+	// way has been undone. Nothing is owed to the caller and nothing should
+	// be reported against it: it is not a refusal, not a resume this instance
+	// failed to serve, and not evidence about Redis.
+	SubscribeCancelled
+)
+
+func (o SubscribeOutcome) String() string {
+	switch o {
+	case SubscribeOK:
+		return "ok"
+	case SubscribeWorkspaceLimit:
+		return "workspace_limit"
+	case SubscribeCancelled:
+		return "cancelled"
+	default:
+		return "unknown"
+	}
+}
+
 // EventBus is the interface for pub/sub event distribution.
 // Implementations include MemoryBus (in-process) and RedisBus (cross-instance).
 type EventBus interface {
@@ -138,12 +184,18 @@ type EventBus interface {
 	// something is a silent under-delivery waiting for its first production
 	// caller (codex round 5). Every way of registering a subscriber hands
 	// back the same two things.
-	Subscribe(workspaceID string) (chan Event, <-chan struct{})
+	// ctx is the CALLER's lifetime, not the bus's. When it ends before the
+	// subscription is handed back, any registration made along the way is
+	// undone and the outcome is SubscribeCancelled — this is what stops a
+	// departed client's admission slot being held for the whole of
+	// establishment (BUG-2749).
+	Subscribe(ctx context.Context, workspaceID string) (chan Event, <-chan struct{}, SubscribeOutcome)
 
 	// SubscribeIfAllowed atomically checks the per-workspace subscriber
 	// limit and, only if it is satisfied, subscribes in the same critical
-	// section.  Returns (ch, true) on success or (nil, false) when the
-	// limit would be exceeded.  Pass 0 to disable it.
+	// section.  Returns SubscribeOK with a live channel, or
+	// SubscribeWorkspaceLimit and a nil channel when the limit would be
+	// exceeded.  Pass 0 to disable it.
 	//
 	// There is deliberately NO global limit here any more (BUG-2726). Pad
 	// serves two SSE endpoints backed by two different buses, and a held
@@ -168,7 +220,7 @@ type EventBus interface {
 	// closed, so a consumer may select on it for the subscription's whole
 	// life without the select spinning once the subscription ends; the event
 	// channel closing is the end-of-life signal.
-	SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, bool)
+	SubscribeIfAllowed(ctx context.Context, workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, SubscribeOutcome)
 
 	// SubscribeAndReplaySince atomically checks the per-workspace limit,
 	// registers the subscriber, and captures the buffered events above
@@ -187,7 +239,7 @@ type EventBus interface {
 	// sync_required. Callers must only interpret a nil missed that way when
 	// they actually passed a resuming cursor: sinceID <= 0 means "not
 	// resuming" and always yields a nil missed with nothing wrong.
-	SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (ch chan Event, missed []Event, gaps <-chan struct{}, ok bool)
+	SubscribeAndReplaySince(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (ch chan Event, missed []Event, gaps <-chan struct{}, outcome SubscribeOutcome)
 
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Event)
@@ -602,17 +654,32 @@ func NewWithReplay(bufferSize int, maxAge time.Duration) *MemoryBus {
 
 // Subscribe registers a new subscriber for the given workspace.
 // Returns a buffered channel that will receive events for that workspace.
-func (b *MemoryBus) Subscribe(workspaceID string) (chan Event, <-chan struct{}) {
+//
+// THE CONTEXT CANNOT BE OBSERVED MID-FLIGHT HERE, AND THAT IS NOT A GAP. This
+// bus does no I/O and never waits: it registers under one lock and returns, so
+// there is no window for a cancellation to arrive during. The check is
+// therefore at ENTRY only, and it exists so the two implementations agree on
+// what an already-dead caller gets back — a handler branch that only the Redis
+// build can reach is a branch nothing tests (BUG-2749).
+func (b *MemoryBus) Subscribe(ctx context.Context, workspaceID string) (chan Event, <-chan struct{}, SubscribeOutcome) {
+	if ctx.Err() != nil {
+		return nil, nil, SubscribeCancelled
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	sub := newSubscriber(workspaceID)
 	b.subscribers[sub.ch] = sub
-	return sub.ch, sub.gaps
+	return sub.ch, sub.gaps, SubscribeOK
 }
 
 // SubscribeIfAllowed atomically checks limits and subscribes.
-func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, bool) {
+func (b *MemoryBus) SubscribeIfAllowed(ctx context.Context, workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, SubscribeOutcome) {
+	if ctx.Err() != nil {
+		return nil, nil, SubscribeCancelled
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -624,20 +691,26 @@ func (b *MemoryBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) 
 			}
 		}
 		if count >= maxPerWorkspace {
-			return nil, nil, false
+			return nil, nil, SubscribeWorkspaceLimit
 		}
 	}
 
 	sub := newSubscriber(workspaceID)
 	b.subscribers[sub.ch] = sub
-	return sub.ch, sub.gaps, true
+	return sub.ch, sub.gaps, SubscribeOK
 }
 
 // SubscribeAndReplaySince implements EventBus. See the interface for the
 // guarantee; the mechanism here is the lock order Publish documents — b.mu
 // exclusively, then b.replayMu, so no publish can be between its append and
 // its fan-out while this runs.
-func (b *MemoryBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
+func (b *MemoryBus) SubscribeAndReplaySince(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, SubscribeOutcome) {
+	if ctx.Err() != nil {
+		// Before the deferred resume-gap report is armed, deliberately: a
+		// caller that has gone is not a resume this instance failed to serve.
+		return nil, nil, nil, SubscribeCancelled
+	}
+
 	// Counted on the way out, with no lock held, and only for a caller that
 	// was actually resuming — mirroring EventsSince, whose own report this
 	// path bypasses because it reads the buffer directly.
@@ -664,7 +737,7 @@ func (b *MemoryBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, m
 			// subscription that never happened: a refused connection is an
 			// admission event, not a resume this instance could not serve.
 			resuming = false
-			return nil, nil, nil, false
+			return nil, nil, nil, SubscribeWorkspaceLimit
 		}
 	}
 
@@ -677,7 +750,7 @@ func (b *MemoryBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, m
 	if resuming {
 		missed = b.eventsSinceLocked(workspaceID, sinceID)
 	}
-	return sub.ch, missed, sub.gaps, true
+	return sub.ch, missed, sub.gaps, SubscribeOK
 }
 
 // Unsubscribe removes a subscriber and closes its channel.

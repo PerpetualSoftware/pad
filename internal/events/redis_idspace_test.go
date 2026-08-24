@@ -262,7 +262,7 @@ func TestTheDedupeTokenMakesARetriedPublishANoOp(t *testing.T) {
 // than through the anySubscription escape hatch.
 func liveGen(t *testing.T, b *RedisBus, workspaceID string) (chan Event, int64) {
 	t.Helper()
-	ch, _ := b.Subscribe(workspaceID)
+	ch, _, _ := b.Subscribe(context.Background(), workspaceID)
 	t.Cleanup(func() { b.Unsubscribe(ch) })
 	return ch, b.currentSubGen(workspaceID)
 }
@@ -664,7 +664,7 @@ func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testi
 	// never run in production.
 	b, mr := newFlippedRedisBus(t)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 	// Subscribe() returns before Redis has REGISTERED the subscription. It
 	// does write the SUBSCRIBE command synchronously, but it does not wait
@@ -907,7 +907,7 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 	// See TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath:
 	// publishing before the subscription is registered loses the event for
@@ -1011,9 +1011,9 @@ func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
 
 	// Both are subscribed to the same workspace, as two replicas serving
 	// clients would be.
-	ch1, _ := phase1.Subscribe("ws-1")
+	ch1, _, _ := phase1.Subscribe(context.Background(), "ws-1")
 	defer phase1.Unsubscribe(ch1)
-	ch2, _ := phase2.Subscribe("ws-1")
+	ch2, _, _ := phase2.Subscribe(context.Background(), "ws-1")
 	defer phase2.Unsubscribe(ch2)
 	// BOTH must be registered before anything is published: this test's whole
 	// claim is that each replica sees the other's events, and a publish that
@@ -1155,7 +1155,7 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 			obs := &recordingObserver{}
 			b.SetObserver(obs)
 
-			ch, _ := b.Subscribe("ws-1")
+			ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 			defer b.Unsubscribe(ch)
 			// Registration before the first publish — see BUG-2742 and the
 			// note on TestAPrefixedPayloadReachesReconciliation...
