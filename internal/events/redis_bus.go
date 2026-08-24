@@ -520,11 +520,11 @@ type RedisBus struct {
 	// the one moment at which the workspace is receiving events while that
 	// caller's subscriber is registered but not yet ADMITTED.
 	//
-	// That gap is the only place subscriber.pendingAdmission can be observed
-	// doing its job, so it is the only place a test can prove
-	// SubscribeAndReplaySince's replay-XOR-channel guarantee survived being
-	// split across the confirmation wait. b.mu is NOT held here, so a hook may
-	// publish inline.
+	// That gap is the only place the replay ceiling can be observed doing its
+	// job, so it is the only place a test can prove BOTH halves of what the
+	// split put at risk: that a resuming caller does not get an in-gap event
+	// twice, and that a FRESH caller — which reads no replay at all — still
+	// gets it once. b.mu is NOT held here, so a hook may publish inline.
 	afterSubscriptionConfirmed func()
 
 	// publishEpoch selects the wire form this instance EMITS: the phase-2
@@ -715,17 +715,28 @@ func (b *RedisBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, ma
 // IT SPANS TWO CRITICAL SECTIONS, WITH THE REDIS I/O BETWEEN THEM, and both
 // halves of that are the point (BUG-2747, BUG-2748).
 //
-//	section 1 — admission check, register the subscriber (unadmitted), decide
-//	            whether we establish this workspace's subscription or wait on
-//	            someone who already is
+//	section 1 — admission check, register the subscriber, capture the replay
+//	            ceiling, decide whether we establish this workspace's
+//	            subscription or wait on someone who already is
 //	off-lock  — dial, SUBSCRIBE, await Redis's acknowledgement
-//	section 2 — run the test seam, read the replay, admit
+//	section 2 — run the test seam, read the replay up to the ceiling
 //
-// The replay-XOR-channel guarantee survives the split because the subscriber
-// is registered but NOT ADMITTED across it: fan-out skips an unadmitted
-// subscriber's channel while still appending to the workspace's buffer, so an
-// event landing between the sections is in the replay and nowhere else, and
-// section 2's read is what delivers it. See subscriber.pendingAdmission.
+// THE CEILING IS WHAT PRESERVES THE REPLAY-XOR-CHANNEL GUARANTEE across the
+// split, and it is a generalisation of what the single critical section gave
+// for free rather than a new idea. The subscriber is live in the fan-out map
+// from the moment it is registered, so it receives everything published after
+// that instant on its CHANNEL; the replay's job is therefore everything
+// published BEFORE it, which is exactly the buffer's contents at registration.
+// Bounding the replay at the newest ID the buffer held then divides the two
+// spans at the same point the original code did, whether or not the wait
+// separates them.
+//
+// An earlier version instead SKIPPED fan-out to a not-yet-admitted subscriber
+// and let the replay read deliver the gap. It was wrong for the population
+// this whole fix is about: a fresh subscriber (sinceID == 0) reads no replay,
+// so events arriving in the gap were skipped by fan-out and never replayed —
+// dropped outright. Found by codex round 1; keeping the note because the
+// mechanism was locally coherent and the failure was one call path over.
 func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
 	// Reported on the way out with the lock released, and only for a caller
 	// that was actually resuming. See the MemoryBus twin.
@@ -749,20 +760,31 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 
 	sub := b.addSubscriberLocked(workspaceID)
 
+	// The replay ceiling, captured at REGISTRATION rather than read in section
+	// 2. covered is false when this instance held no buffer for the workspace
+	// at that moment, which is the strongest form of "cannot vouch" there is —
+	// and it must be remembered, because establishment may create one in the
+	// gap and section 2 would otherwise mistake it for coverage we had.
+	rb, covered := b.replayBuffers[workspaceID]
+	var ceiling int64
+	if covered {
+		ceiling = rb.lastAppendedID
+	}
+
 	var establish bool
 	var pending *pendingSub
-	if _, live := b.wsSubs[workspaceID]; !live {
-		// Unadmitted only while we are going to wait. The already-live path
-		// below leaves the flag clear and keeps its single critical section,
-		// which is both the common case and the one that must not get slower.
-		sub.pendingAdmission = true
-		if p, inFlight := b.pendingSubs[workspaceID]; inFlight {
-			pending = p
-		} else {
-			pending = &pendingSub{done: make(chan struct{})}
-			b.pendingSubs[workspaceID] = pending
-			establish = true
-		}
+	// PENDING IS CHECKED BEFORE WSSUBS, not after (codex round 1, P1). The two
+	// overlap on purpose — establishSubscription installs wsSubs and only then
+	// waits for the acknowledgement — so a subscriber arriving in that overlap
+	// finds a live-looking subscription that Redis has not confirmed. Reading
+	// wsSubs first admitted it immediately, into precisely the unconfirmed
+	// window this function exists to close.
+	if p, inFlight := b.pendingSubs[workspaceID]; inFlight {
+		pending = p
+	} else if _, live := b.wsSubs[workspaceID]; !live {
+		pending = &pendingSub{done: make(chan struct{})}
+		b.pendingSubs[workspaceID] = pending
+		establish = true
 	}
 	b.mu.Unlock()
 
@@ -784,10 +806,34 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 		b.afterSubscribeRegister()
 	}
 	if resuming {
-		missed = b.eventsSinceLocked(workspaceID, sinceID)
+		missed = b.eventsSinceCeilingLocked(workspaceID, sinceID, covered, ceiling)
 	}
-	sub.pendingAdmission = false
 	return sub.ch, missed, sub.gaps, true
+}
+
+// eventsSinceCeilingLocked is eventsSinceLocked bounded ABOVE by what the
+// buffer held when the caller registered, so the replay stops exactly where
+// the caller's own channel starts. Callers must hold b.mu.
+//
+// covered says whether a buffer existed at registration. A buffer that appeared
+// afterwards describes a span beginning after this caller's cursor, so it
+// cannot answer the cursor's question and must not be allowed to look like it
+// can.
+func (b *RedisBus) eventsSinceCeilingLocked(workspaceID string, sinceID int64, covered bool, ceiling int64) []Event {
+	if !covered {
+		return nil
+	}
+	events := b.eventsSinceLocked(workspaceID, sinceID)
+	if events == nil {
+		return nil
+	}
+	bounded := events[:0]
+	for _, e := range events {
+		if e.ID <= ceiling {
+			bounded = append(bounded, e)
+		}
+	}
+	return bounded
 }
 
 // Unsubscribe removes a local subscriber and closes its channel.
@@ -1104,7 +1150,13 @@ func (b *RedisBus) finishPending(workspaceID string, pending *pendingSub) {
 func (b *RedisBus) markUnconfirmedAdmission(workspaceID string, gen int64) {
 	b.mu.Lock()
 	sub, ok := b.wsSubs[workspaceID]
-	if ok && sub.gen == gen {
+	// confirmClosed is checked under the same lock that closes it (codex round
+	// 1, P2). The timer and the acknowledgement can become ready together; if
+	// the timer won the select after confirmSubscription had already cleared
+	// the flag, this would set it again with nothing left to come and clear
+	// it — a subscriber counted as unconfirmed, never told to reconcile, and
+	// a workspace whose flag stays set until its NEXT resubscription.
+	if ok && sub.gen == gen && !sub.confirmClosed {
 		sub.unconfirmedAdmitted = true
 	} else {
 		ok = false
@@ -1368,13 +1420,6 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 // costs nothing and cannot deadlock.
 func (b *RedisBus) signalWorkspaceLocked(workspaceID string) {
 	for _, sub := range b.subscribers[workspaceID] {
-		if sub.pendingAdmission {
-			// Nothing has been claimed to this subscriber yet — its caller is
-			// still inside Subscribe and its replay read is still ahead of it,
-			// so there is no position for it to distrust (BUG-2747). It will
-			// be told about anything real by the replay it is about to read.
-			continue
-		}
 		sub.signalGap()
 	}
 }
@@ -1385,9 +1430,6 @@ func (b *RedisBus) signalWorkspaceLocked(workspaceID string) {
 func (b *RedisBus) signalAllLocked() {
 	for _, byWorkspace := range b.subscribers {
 		for _, sub := range byWorkspace {
-			if sub.pendingAdmission {
-				continue // see signalWorkspaceLocked
-			}
 			sub.signalGap()
 		}
 	}
@@ -1934,17 +1976,6 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 	rb.append(event)
 
 	for _, sub := range b.subscribers[event.WorkspaceID] {
-		if sub.pendingAdmission {
-			// REGISTERED BUT NOT ADMITTED (BUG-2747): its caller is still
-			// inside Subscribe waiting on the SUBSCRIBE confirmation, and
-			// will read the replay buffer — which this event has just been
-			// appended to, four lines up — before returning. Delivering here
-			// as well would hand it the same event twice, breaking
-			// SubscribeAndReplaySince's replay-XOR-channel guarantee at the
-			// one seam the confirmation wait opens. Skipping is not a drop
-			// and must not be counted as one.
-			continue
-		}
 		select {
 		case sub.ch <- event:
 		default:

@@ -440,26 +440,6 @@ type subscriber struct {
 	// Never closed by the bus's fan-out paths; Unsubscribe/Close own its
 	// lifetime alongside ch, so the two are always retired together.
 	gaps chan struct{}
-
-	// pendingAdmission means this subscriber is REGISTERED but not yet
-	// ADMITTED: RedisBus counts it (so it holds the workspace's subscription
-	// open and counts against the per-workspace limit) while its own caller
-	// is still inside Subscribe, waiting for the Redis SUBSCRIBE to be
-	// confirmed (BUG-2747).
-	//
-	// THE ZERO VALUE IS ADMITTED, DELIBERATELY. Every other construction path
-	// — MemoryBus, and RedisBus's own already-live fast path — registers and
-	// admits inside one critical section and must be unaffected by this
-	// field's existence; making the flag opt-in means they are, by
-	// construction rather than by every call site remembering to clear it.
-	//
-	// While it is set, fan-out neither delivers to this subscriber's channel
-	// nor raises its gap flag. That is what preserves
-	// SubscribeAndReplaySince's guarantee across the two critical sections
-	// the confirmation wait splits it into: an event fanning out in between
-	// lands in the replay buffer ONLY, and the replay read that follows picks
-	// it up — never both. Guarded by the owning bus's lock.
-	pendingAdmission bool
 }
 
 // signalGap raises this subscriber's gap flag without blocking.//

@@ -323,22 +323,23 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 	}
 }
 
-// TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered pins the
-// guarantee the confirmation wait put at risk.
+// TestAJoinersReplayStopsWhereItsChannelStarts pins the replay ceiling.
 //
-// SubscribeAndReplaySince used to register the subscriber and read the replay
-// in ONE critical section, so an event was in the buffer or on the channel and
-// never both. Waiting for the acknowledgement splits that into two sections,
-// and an event fanning out in between would land in BOTH — the duplicate
+// WHO ACTUALLY NEEDS IT, since the answer is not obvious and I got it wrong
+// once: NOT the establishing caller. Establishing means the workspace had no
+// live subscription, and losing the last subscriber deletes the buffer, so the
+// establisher always registers with no coverage and its replay is nil — there
+// is nothing there to duplicate. The exposed caller is a JOINER: one that
+// arrives while somebody else's establishment is still in flight, after that
+// establishment has been acknowledged and events have begun landing in a
+// freshly created buffer.
+//
+// Such a joiner is registered in the fan-out map, so it receives everything
+// published from that instant on its CHANNEL, and it then reads a replay. Both
+// spans come out of the same buffer, and only the ceiling divides them. Without
+// it the joiner is handed the post-registration events twice — the duplicate
 // window BUG-2730 closed, reopened from the other end.
-//
-// THE WINDOW IS NARROW AND SPECIFIC, which is why this drives it through a
-// seam rather than racing it: it opens once Redis has acknowledged the
-// subscription (so events actually arrive) and closes when the establishing
-// caller re-acquires b.mu to read its replay. Only the caller that ESTABLISHES
-// the workspace's subscription passes through it — a later subscriber finds
-// the subscription live and keeps its single critical section.
-func TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered(t *testing.T) {
+func TestAJoinersReplayStopsWhereItsChannelStarts(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
@@ -346,70 +347,215 @@ func TestAnEventDuringEstablishmentIsReplayedNotDoubleDelivered(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	// A prior incarnation of the workspace, so the resuming subscriber below
-	// has a real cursor to resume from. Dropped again before the real test, so
-	// the subscriber under test is the one that ESTABLISHES.
-	seed, _ := b.Subscribe("ws-1")
-	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
-	drain(t, seed, 1)
-	buffered := b.EventsSince("ws-1", 0)
-	if len(buffered) != 1 {
-		t.Fatalf("seed publish did not reach the buffer: %d events", len(buffered))
+	type joinResult struct {
+		ch     chan Event
+		missed []Event
 	}
-	cursor := buffered[0].ID
-	b.Unsubscribe(seed)
-	waitForSubscribers(t, mr, "pad:events:ws-1", false)
+	joined := make(chan joinResult, 1)
 
-	// Published inside the window, from the establishing caller's own
-	// goroutine — b.mu is not held at the seam, and the publish must be fully
-	// applied (buffer + fan-out) before the replay read that follows.
 	var armed atomic.Bool
-	published := make(chan struct{})
 	b.afterSubscriptionConfirmed = func() {
 		if !armed.CompareAndSwap(false, true) {
 			return
 		}
+		// E0 establishes the buffer's coverage floor, and is the position the
+		// joiner resumes FROM. It has to exist: the buffer's knownFrom is set
+		// by its first append, so without E0 there is no positive cursor below
+		// the events the replay is supposed to carry, and the replay comes back
+		// empty for a reason that has nothing to do with the ceiling.
+		b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+		waitForBufferedCount(t, b, "ws-1", 1)
+		cursor := b.EventsSince("ws-1", 0)[0].ID
+
+		// E1 — published and buffered BEFORE the joiner registers, so it is
+		// squarely in the joiner's replay span.
 		b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-		// Wait for it to come back through Redis and be appended, so the
-		// replay read below cannot simply be too early to see it.
+		waitForBufferedCount(t, b, "ws-1", 2)
+
+		// The joiner registers here. pendingSubs still holds this
+		// establishment, so it waits rather than returning.
+		go func() {
+			ch, missed, _, ok := b.SubscribeAndReplaySince("ws-1", cursor, 0)
+			if !ok {
+				t.Error("the joiner was refused")
+			}
+			joined <- joinResult{ch: ch, missed: missed}
+		}()
+		waitForWorkspaceSubscribers(t, b, "ws-1", 2)
+
+		// E2 — published AFTER the joiner registered, so it belongs to the
+		// joiner's channel and must not appear in its replay.
+		b.Publish(Event{Type: ItemArchived, WorkspaceID: "ws-1"})
+		waitForBufferedCount(t, b, "ws-1", 3)
+	}
+
+	establisher, _ := b.Subscribe("ws-1")
+	defer b.Unsubscribe(establisher)
+	if !armed.Load() {
+		t.Fatal("the seam never ran; this test could not have discriminated")
+	}
+
+	res := <-joined
+	defer b.Unsubscribe(res.ch)
+
+	// PREMISE: the replay must be non-empty, or the ceiling has nothing to cut
+	// and a pass below proves nothing.
+	if len(res.missed) == 0 {
+		t.Fatal("the joiner's replay was empty; this test could not have discriminated")
+	}
+
+	replayed := map[int64]bool{}
+	for _, e := range res.missed {
+		replayed[e.ID] = true
+	}
+
+	select {
+	case e := <-res.ch:
+		if replayed[e.ID] {
+			t.Fatalf("event %d was in the joiner's replay AND on its channel", e.ID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the joiner never received the event published after it registered")
+	}
+}
+
+// waitForBufferedCount blocks until the workspace's replay buffer holds n
+// events, so a test can sequence publishes rather than race them.
+func waitForBufferedCount(t *testing.T, b *RedisBus, workspaceID string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(b.EventsSince(workspaceID, 0)) >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s buffered fewer than %d events within the deadline", workspaceID, n)
+}
+
+// waitForWorkspaceSubscribers blocks until n local subscribers are registered
+// for the workspace — registration, not admission, which is the moment the
+// ceiling is captured.
+func waitForWorkspaceSubscribers(t *testing.T, b *RedisBus, workspaceID string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if b.WorkspaceSubscriberCount(workspaceID) >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s has %d local subscribers, want %d", workspaceID, b.WorkspaceSubscriberCount(workspaceID), n)
+}
+
+// TestAFreshSubscriberReceivesAnEventPublishedDuringEstablishment is the other
+// half of the ceiling's job, and the one an earlier design got wrong.
+//
+// A fresh subscriber (sinceID == 0) reads NO REPLAY — SubscribeIfAllowed does
+// not even return one. So any mechanism that withholds in-gap events from its
+// channel on the theory that the replay will deliver them drops those events
+// outright, for exactly the population BUG-2747 is about. The first version of
+// this fix did that; codex round 1 found it.
+func TestAFreshSubscriberReceivesAnEventPublishedDuringEstablishment(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+
+	var armed atomic.Bool
+	buffered := make(chan struct{})
+	b.afterSubscriptionConfirmed = func() {
+		if !armed.CompareAndSwap(false, true) {
+			return
+		}
+		b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+		// Wait until it has been applied, so the subscriber below is genuinely
+		// returning AFTER the in-gap event rather than racing it.
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
 			if got := b.EventsSince("ws-1", 0); len(got) > 0 {
-				close(published)
+				close(buffered)
 				return
 			}
 			time.Sleep(time.Millisecond)
 		}
-		t.Error("the in-window publish never reached the replay buffer")
-		close(published)
+		t.Error("the in-gap publish never reached the replay buffer")
+		close(buffered)
 	}
 
-	ch, missed, _, ok := b.SubscribeAndReplaySince("ws-1", cursor, 0)
+	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
 	if !ok {
-		t.Fatal("resume was refused")
+		t.Fatal("SubscribeIfAllowed refused")
 	}
 	defer b.Unsubscribe(ch)
-	<-published
+	<-buffered
 
 	if !armed.Load() {
 		t.Fatal("the seam never ran; this test could not have discriminated")
 	}
 
-	seen := map[int64]int{}
-	for _, e := range missed {
-		seen[e.ID]++
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a fresh subscriber never received an event published while its subscription was being established: it was withheld from the channel and there is no replay to deliver it")
 	}
-	if len(seen) == 0 {
-		t.Fatal("the in-window event was in neither the replay nor anywhere else")
+}
+
+// TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement covers the
+// overlap between pendingSubs and wsSubs.
+//
+// establishSubscription installs wsSubs BEFORE it waits for the
+// acknowledgement, so for that interval the workspace has a live-looking
+// subscription Redis has not confirmed. A second subscriber that reads wsSubs
+// first is admitted straight into the unconfirmed window — the defect this
+// whole change exists to close, reached through the fix's own seam. Found by
+// codex round 1.
+func TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement(t *testing.T) {
+	mr := miniredis.RunT(t)
+	proxy := newSubscribeDelayProxy(t, mr.Addr(), 300*time.Millisecond)
+	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+
+	// The establishing caller, left in flight.
+	first := make(chan chan Event, 1)
+	go func() {
+		ch, _ := b.Subscribe("ws-1")
+		first <- ch
+	}()
+
+	// Wait until wsSubs is installed but the acknowledgement has not landed —
+	// the overlap itself.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		b.mu.Lock()
+		sub, live := b.wsSubs["ws-1"]
+		confirmed := live && sub.confirmClosed
+		b.mu.Unlock()
+		if live && !confirmed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("never observed the install-before-acknowledgement overlap; this test could not have discriminated")
+		}
+		time.Sleep(time.Millisecond)
 	}
 
-	// Anything now arriving on the channel that was ALSO in the replay is the
-	// double delivery.
-	select {
-	case e := <-ch:
-		if seen[e.ID] > 0 {
-			t.Fatalf("event %d was in the replay AND on the channel", e.ID)
-		}
-	case <-time.After(500 * time.Millisecond):
+	second, _, ok := b.SubscribeIfAllowed("ws-1", 0)
+	if !ok {
+		t.Fatal("the second subscriber was refused")
 	}
+	defer b.Unsubscribe(second)
+
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+	select {
+	case <-second:
+	case <-time.After(3 * time.Second):
+		t.Fatal("an event published after the second subscriber was admitted was lost: it was let in before Redis acknowledged the subscription")
+	}
+	b.Unsubscribe(<-first)
 }
