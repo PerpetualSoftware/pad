@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 func TestSubscribeAndPublish(t *testing.T) {
 	bus := New()
 
-	ch, _ := bus.Subscribe("ws-1")
+	ch, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	defer bus.Unsubscribe(ch)
 
 	bus.Publish(Event{
@@ -38,8 +39,8 @@ func TestSubscribeAndPublish(t *testing.T) {
 func TestWorkspaceIsolation(t *testing.T) {
 	bus := New()
 
-	ch1, _ := bus.Subscribe("ws-1")
-	ch2, _ := bus.Subscribe("ws-2")
+	ch1, _, _ := bus.Subscribe(context.Background(), "ws-1")
+	ch2, _, _ := bus.Subscribe(context.Background(), "ws-2")
 	defer bus.Unsubscribe(ch1)
 	defer bus.Unsubscribe(ch2)
 
@@ -69,9 +70,9 @@ func TestWorkspaceIsolation(t *testing.T) {
 func TestMultipleSubscribers(t *testing.T) {
 	bus := New()
 
-	ch1, _ := bus.Subscribe("ws-1")
-	ch2, _ := bus.Subscribe("ws-1")
-	ch3, _ := bus.Subscribe("ws-1")
+	ch1, _, _ := bus.Subscribe(context.Background(), "ws-1")
+	ch2, _, _ := bus.Subscribe(context.Background(), "ws-1")
+	ch3, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	defer bus.Unsubscribe(ch1)
 	defer bus.Unsubscribe(ch2)
 	defer bus.Unsubscribe(ch3)
@@ -94,7 +95,7 @@ func TestMultipleSubscribers(t *testing.T) {
 func TestUnsubscribe(t *testing.T) {
 	bus := New()
 
-	ch, _ := bus.Subscribe("ws-1")
+	ch, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	if bus.SubscriberCount() != 1 {
 		t.Fatalf("expected 1 subscriber, got %d", bus.SubscriberCount())
 	}
@@ -114,7 +115,7 @@ func TestUnsubscribe(t *testing.T) {
 func TestUnsubscribeIdempotent(t *testing.T) {
 	bus := New()
 
-	ch, _ := bus.Subscribe("ws-1")
+	ch, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	bus.Unsubscribe(ch)
 	// Second unsubscribe should not panic
 	bus.Unsubscribe(ch)
@@ -123,7 +124,7 @@ func TestUnsubscribeIdempotent(t *testing.T) {
 func TestSlowConsumerDropsEvents(t *testing.T) {
 	bus := New()
 
-	ch, _ := bus.Subscribe("ws-1")
+	ch, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	defer bus.Unsubscribe(ch)
 
 	// Overfill the channel buffer, so the drop path runs.
@@ -153,7 +154,7 @@ done:
 func TestTimestampAutoSet(t *testing.T) {
 	bus := New()
 
-	ch, _ := bus.Subscribe("ws-1")
+	ch, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	defer bus.Unsubscribe(ch)
 
 	before := time.Now().UnixMilli()
@@ -171,7 +172,7 @@ func TestTimestampAutoSet(t *testing.T) {
 func TestTimestampPreserved(t *testing.T) {
 	bus := New()
 
-	ch, _ := bus.Subscribe("ws-1")
+	ch, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	defer bus.Unsubscribe(ch)
 
 	ts := int64(1234567890)
@@ -197,7 +198,7 @@ func TestConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			channels[idx], _ = bus.Subscribe("ws-1")
+			channels[idx], _, _ = bus.Subscribe(context.Background(), "ws-1")
 		}(i)
 	}
 	wg.Wait()
@@ -239,9 +240,9 @@ func TestWorkspaceSubscriberCount(t *testing.T) {
 	}
 
 	// Subscribe to ws-1
-	ch1, _ := bus.Subscribe("ws-1")
-	ch2, _ := bus.Subscribe("ws-1")
-	ch3, _ := bus.Subscribe("ws-2")
+	ch1, _, _ := bus.Subscribe(context.Background(), "ws-1")
+	ch2, _, _ := bus.Subscribe(context.Background(), "ws-1")
+	ch3, _, _ := bus.Subscribe(context.Background(), "ws-2")
 
 	if got := bus.WorkspaceSubscriberCount("ws-1"); got != 2 {
 		t.Fatalf("expected 2 for ws-1, got %d", got)
@@ -278,7 +279,7 @@ func TestPublishNoSubscribers(t *testing.T) {
 
 func TestEventIDsAreMonotonic(t *testing.T) {
 	bus := New()
-	ch, _ := bus.Subscribe("ws-1")
+	ch, _, _ := bus.Subscribe(context.Background(), "ws-1")
 	defer bus.Unsubscribe(ch)
 
 	for i := 0; i < 10; i++ {

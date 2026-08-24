@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -25,12 +26,12 @@ func TestDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	slow, slowGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	slow, slowGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
-	fast, fastGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	fast, fastGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(slow)
@@ -70,8 +71,8 @@ func TestDropIsReportedToTheObserver(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -133,8 +134,8 @@ func TestSubscribeAndReplayIsAtomic(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	ch, missed, _, ok := b.SubscribeAndReplaySince("ws-1", cursor, 0)
-	if !ok {
+	ch, missed, _, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-1", cursor, 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -171,8 +172,8 @@ func TestTwoStepSubscribeThenReplayDuplicates(t *testing.T) {
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-1"})
 	cursor := b.EventsSince("ws-1", 0)[0].ID
 
-	ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -220,12 +221,12 @@ func drainContains(t *testing.T, ch chan Event, itemID string) bool {
 func TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	slow, slowGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	slow, slowGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
-	fast, fastGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	fast, fastGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(slow)
@@ -260,12 +261,12 @@ func TestRedisBusDropSignalsOnlyTheSubscriberItHappenedTo(t *testing.T) {
 func TestCoverageDropSignalsOnlyThatWorkspace(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	affected, affectedGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	affected, affectedGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
-	bystander, bystanderGaps, ok := b.SubscribeIfAllowed("ws-2", 0)
-	if !ok {
+	bystander, bystanderGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-2", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(affected)
@@ -296,12 +297,12 @@ func TestCoverageDropSignalsOnlyThatWorkspace(t *testing.T) {
 func TestIDSpaceResetSignalsEveryWorkspace(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	one, oneGaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	one, oneGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
-	two, twoGaps, ok := b.SubscribeIfAllowed("ws-2", 0)
-	if !ok {
+	two, twoGaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-2", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(one)
@@ -336,8 +337,8 @@ func TestCoverageDropWithNoBufferStillSignals(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, gaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -404,8 +405,8 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 			b := New()
 			defer b.Close()
 
-			ch, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-			if !ok {
+			ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+			if outcome != SubscribeOK {
 				t.Fatal("subscribe refused")
 			}
 			defer b.Unsubscribe(ch)
@@ -478,8 +479,8 @@ func TestActivityGapSignalCoalesces(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, gaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -507,7 +508,7 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 	// A holder first: this bus builds a workspace's replay buffer as part of
 	// COVERING it, and a resume against a workspace it has never covered is
 	// answered "cannot vouch" — correctly, and not what this test is about.
-	holder, _ := b.Subscribe("ws-1")
+	holder, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(holder)
 
 	b.fanOutLocally(Event{ID: 10, Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "before-1"})
@@ -531,8 +532,8 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	ch, missed, gaps, ok := b.SubscribeAndReplaySince("ws-1", 10, 0)
-	if !ok {
+	ch, missed, gaps, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-1", 10, 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -566,18 +567,18 @@ func TestResumeIsSubjectToTheWorkspaceLimit(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	first, _, ok := b.SubscribeIfAllowed("ws-1", 1)
-	if !ok {
+	first, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 1)
+	if outcome != SubscribeOK {
 		t.Fatal("the first subscribe was refused")
 	}
 	defer b.Unsubscribe(first)
 
-	if _, _, _, ok := b.SubscribeAndReplaySince("ws-1", 1, 1); ok {
+	if _, _, _, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-1", 1, 1); outcome != SubscribeWorkspaceLimit {
 		t.Error("a resuming client was admitted past the per-workspace limit")
 	}
 	// Control: the same call succeeds when there is room, so the refusal above
 	// is the limit and not the method being broken.
-	if _, _, _, ok := b.SubscribeAndReplaySince("ws-1", 1, 2); !ok {
+	if _, _, _, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-1", 1, 2); outcome != SubscribeOK {
 		t.Error("a resuming client was refused with room to spare")
 	}
 }
@@ -593,8 +594,8 @@ func TestAtomicResumeReportsAnUnservableSpan(t *testing.T) {
 	b.SetObserver(obs)
 
 	// A cursor for a workspace this process has never published to.
-	ch, missed, _, ok := b.SubscribeAndReplaySince("ws-unknown", b.base+9999, 0)
-	if !ok {
+	ch, missed, _, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-unknown", b.base+9999, 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch)
@@ -609,8 +610,8 @@ func TestAtomicResumeReportsAnUnservableSpan(t *testing.T) {
 	// this leg the report could fire on every subscribe and still pass.
 	obs2 := &recordingObserver{}
 	b.SetObserver(obs2)
-	ch2, _, _, ok := b.SubscribeAndReplaySince("ws-unknown", 0, 0)
-	if !ok {
+	ch2, _, _, outcome := b.SubscribeAndReplaySince(context.Background(), "ws-unknown", 0, 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(ch2)
@@ -629,12 +630,12 @@ func TestRedisBusDropIsReportedPerSubscriber(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	slowA, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	slowA, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
-	slowB, _, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	slowB, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	defer b.Unsubscribe(slowA)
@@ -669,8 +670,8 @@ func TestGapChannelOutlivesUnsubscribe(t *testing.T) {
 	b := New()
 	defer b.Close()
 
-	ch, gaps, ok := b.SubscribeIfAllowed("ws-1", 0)
-	if !ok {
+	ch, gaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeOK {
 		t.Fatal("subscribe refused")
 	}
 	b.Unsubscribe(ch)
@@ -692,14 +693,15 @@ func TestGapChannelOutlivesUnsubscribe(t *testing.T) {
 func TestEverySubscribeAPIReturnsAGapChannel(t *testing.T) {
 	for name, sub := range map[string]func(b *MemoryBus) (chan Event, <-chan struct{}){
 		"Subscribe": func(b *MemoryBus) (chan Event, <-chan struct{}) {
-			return b.Subscribe("ws-1")
+			ch, gaps, _ := b.Subscribe(context.Background(), "ws-1")
+			return ch, gaps
 		},
 		"SubscribeIfAllowed": func(b *MemoryBus) (chan Event, <-chan struct{}) {
-			ch, gaps, _ := b.SubscribeIfAllowed("ws-1", 0)
+			ch, gaps, _ := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
 			return ch, gaps
 		},
 		"SubscribeAndReplaySince": func(b *MemoryBus) (chan Event, <-chan struct{}) {
-			ch, _, gaps, _ := b.SubscribeAndReplaySince("ws-1", 0, 0)
+			ch, _, gaps, _ := b.SubscribeAndReplaySince(context.Background(), "ws-1", 0, 0)
 			return ch, gaps
 		},
 	} {

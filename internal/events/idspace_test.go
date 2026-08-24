@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"sync"
 	"testing"
 )
@@ -37,7 +38,7 @@ func publishN(b *MemoryBus, workspaceID string, n int) []int64 {
 // actually assigned.
 func publishTyped(b *MemoryBus, workspaceID string, types ...string) []int64 {
 	ids := make([]int64, 0, len(types))
-	ch, _ := b.Subscribe(workspaceID)
+	ch, _, _ := b.Subscribe(context.Background(), workspaceID)
 	defer b.Unsubscribe(ch)
 	for _, typ := range types {
 		b.Publish(Event{Type: typ, WorkspaceID: workspaceID})

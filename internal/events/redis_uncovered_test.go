@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
@@ -68,21 +69,21 @@ func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 func TestRedisBusSubscriptionAccounting(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	first, _, ok := b.SubscribeIfAllowed("ws-1", 2)
-	if !ok {
+	first, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 2)
+	if outcome != SubscribeOK {
 		t.Fatal("the first subscriber must be admitted")
 	}
-	second, _, ok := b.SubscribeIfAllowed("ws-1", 2)
-	if !ok {
+	second, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 2)
+	if outcome != SubscribeOK {
 		t.Fatal("the second subscriber must be admitted")
 	}
-	if _, _, ok := b.SubscribeIfAllowed("ws-1", 2); ok {
+	if _, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 2); outcome != SubscribeWorkspaceLimit {
 		t.Fatal("the third subscriber must be refused at a limit of 2")
 	}
 
 	// A different workspace is accounted separately.
-	other, _, ok := b.SubscribeIfAllowed("ws-2", 2)
-	if !ok {
+	other, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-2", 2)
+	if outcome != SubscribeOK {
 		t.Fatal("a different workspace must have its own budget")
 	}
 	defer b.Unsubscribe(other)
@@ -100,8 +101,8 @@ func TestRedisBusSubscriptionAccounting(t *testing.T) {
 	if got := b.WorkspaceSubscriberCount("ws-1"); got != 1 {
 		t.Fatalf("after one unsubscribe, WorkspaceSubscriberCount(ws-1) = %d, want 1", got)
 	}
-	third, _, ok := b.SubscribeIfAllowed("ws-1", 2)
-	if !ok {
+	third, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 2)
+	if outcome != SubscribeOK {
 		t.Fatal("the freed slot must be reusable")
 	}
 	defer b.Unsubscribe(third)
@@ -124,8 +125,8 @@ func TestClosingALiveRedisBusReleasesEverything(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	one, _ := b.Subscribe("ws-1")
-	two, _ := b.Subscribe("ws-2")
+	one, _, _ := b.Subscribe(context.Background(), "ws-1")
+	two, _, _ := b.Subscribe(context.Background(), "ws-2")
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 	waitForSubscribers(t, mr, "pad:events:ws-2", true)
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -253,7 +254,7 @@ func TestUpdateCollection_PublishesCollectionUpdatedEvent(t *testing.T) {
 	var coll models.Collection
 	parseJSON(t, createRR, &coll)
 
-	ch, _ := srv.events.Subscribe(ws.ID)
+	ch, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
@@ -315,7 +316,7 @@ func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
 	parseJSON(t, createRR, &coll)
 	oldSlug := coll.Slug
 
-	ch, _ := srv.events.Subscribe(ws.ID)
+	ch, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+oldSlug, map[string]interface{}{
@@ -398,7 +399,7 @@ func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	}
 
 	t.Run("migration touching an item sets items_changed", func(t *testing.T) {
-		ch, _ := srv.events.Subscribe(ws.ID)
+		ch, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
 		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
@@ -428,7 +429,7 @@ func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	})
 
 	t.Run("migration matching ZERO items still sets items_changed (no row-count leak)", func(t *testing.T) {
-		ch, _ := srv.events.Subscribe(ws.ID)
+		ch, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
 		// Rename an option value that NO item currently has → 0 rows migrated.
@@ -450,7 +451,7 @@ func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	})
 
 	t.Run("settings-only update leaves items_changed false", func(t *testing.T) {
-		ch, _ := srv.events.Subscribe(ws.ID)
+		ch, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
 		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{

@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -86,7 +87,7 @@ func TestAResubscriptionEndsThisInstancesCoverage(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
@@ -178,7 +179,7 @@ func TestAReconnectOnAnIdleWorkspaceIsNotAReset(t *testing.T) {
 
 	// Subscribed, but nothing has ever been published here, so there is no
 	// replay buffer for this workspace.
-	ch, _ := b.Subscribe("ws-idle")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-idle")
 	defer b.Unsubscribe(ch)
 	waitForSubscribers(t, mr, "pad:events:ws-idle", true)
 
@@ -261,7 +262,7 @@ func TestTheReceiveLoopExitIsReported(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	waitForSubscribers(t, mr, "pad:events:ws-1", true)
 
 	// Control: a live subscription's loop has not exited.
@@ -295,14 +296,14 @@ func TestAStaleGoroutineCannotDropTheReplacementBuffer(t *testing.T) {
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	oldGen := b.currentSubGen("ws-1")
 
 	// Everyone leaves: subscription torn down, buffer gone.
 	b.Unsubscribe(ch)
 
 	// A viewer returns and the workspace starts buffering again.
-	ch2, _ := b.Subscribe("ws-1")
+	ch2, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch2)
 	newGen := b.currentSubGen("ws-1")
 	if newGen == oldGen {

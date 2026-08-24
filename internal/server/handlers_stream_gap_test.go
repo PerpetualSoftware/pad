@@ -37,14 +37,19 @@ type gapEventBus struct {
 	gaps chan struct{}
 }
 
-func (b *gapEventBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan events.Event, <-chan struct{}, bool) {
-	ch, _, ok := b.EventBus.SubscribeIfAllowed(workspaceID, maxPerWorkspace)
-	return ch, b.gaps, ok
+// The context is FORWARDED, not replaced with a Background (BUG-2749). This
+// double sits between the handler and the real bus, so swallowing the
+// request's context here would make every cancellation test in this package
+// pass for the wrong reason: the inner bus would never see the cancellation
+// the handler is being asserted to propagate.
+func (b *gapEventBus) SubscribeIfAllowed(ctx context.Context, workspaceID string, maxPerWorkspace int) (chan events.Event, <-chan struct{}, events.SubscribeOutcome) {
+	ch, _, outcome := b.EventBus.SubscribeIfAllowed(ctx, workspaceID, maxPerWorkspace)
+	return ch, b.gaps, outcome
 }
 
-func (b *gapEventBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan events.Event, []events.Event, <-chan struct{}, bool) {
-	ch, missed, _, ok := b.EventBus.SubscribeAndReplaySince(workspaceID, sinceID, maxPerWorkspace)
-	return ch, missed, b.gaps, ok
+func (b *gapEventBus) SubscribeAndReplaySince(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (chan events.Event, []events.Event, <-chan struct{}, events.SubscribeOutcome) {
+	ch, missed, _, outcome := b.EventBus.SubscribeAndReplaySince(ctx, workspaceID, sinceID, maxPerWorkspace)
+	return ch, missed, b.gaps, outcome
 }
 
 // gapWatchBus is the same seam for the user-scoped watch stream.

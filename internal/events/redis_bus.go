@@ -540,11 +540,39 @@ type RedisBus struct {
 	// outright is the ordinary timeout path. With this seam: 10 of 10.
 	beforeUnconfirmedMark func()
 
+	// afterRegisterBeforeEstablish is a TEST SEAM, nil in production. It runs
+	// in subscribeAndReplay after section 1 has registered the subscriber and
+	// (if this caller is the establisher) created the establishment record,
+	// and BEFORE the establish loop runs.
+	//
+	// POSITIONAL, like its siblings (BUG-2749). It exists to place a
+	// cancellation in the one window where the caller OWNS an establishment
+	// record it has not yet begun — the window in which an early return
+	// strands every later subscriber for that workspace. A test that cannot
+	// land a cancellation exactly here cannot tell that regression from a
+	// correct abandon. Receives the workspace.
+	afterRegisterBeforeEstablish func(workspaceID string)
+
 	// beforeInstallSubscription is a TEST SEAM, nil in production. It runs in
 	// establishSubscription after the dial and BEFORE the lock that decides
 	// whether to install or abandon, so a test can make either abandon reason
 	// true at exactly the moment the decision is taken. Receives the workspace.
 	beforeInstallSubscription func(workspaceID string)
+
+	// afterInstallSubscription is a TEST SEAM, nil in production. It runs in
+	// establishSubscription once the subscription is INSTALLED and its receive
+	// loop started, and BEFORE the acknowledgement wait begins.
+	//
+	// ITS VALUE IS ENTIRELY POSITIONAL (BUG-2749), the same way
+	// afterSubscribeRegister's is. The two cancellation cases this unit has to
+	// separate — before the install and during the wait — differ only in where
+	// the caller's context dies relative to this exact point, and a test that
+	// cannot place a cancellation on the far side of it is testing whichever
+	// case the scheduler happened to produce. If the install and the wait are
+	// ever restructured, this call moves with that boundary or the tests named
+	// for the after-install case silently stop exercising it. Receives the
+	// workspace.
+	afterInstallSubscription func(workspaceID string)
 
 	// publishEpoch selects the wire form this instance EMITS: the phase-2
 	// "<epoch>|<id>|<json>" prefix when true, the historical bare JSON body
@@ -680,16 +708,19 @@ func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch b
 // Subscribe registers a local subscriber for the given workspace.
 // Starts a Redis subscription for the workspace if this is the first local
 // subscriber, and waits for Redis to acknowledge it before returning. The wait
-// is bounded: past confirmTimeout it returns anyway, counted and logged, and the
-// subscriber is told to reconcile when the acknowledgement lands.
+// is bounded twice over: past confirmTimeout it returns anyway, counted and
+// logged, with the subscriber told to reconcile when the acknowledgement
+// lands; and if ctx ends first it returns SubscribeCancelled having undone its
+// registration, leaving the rest of the wait to run for any joiners
+// (BUG-2749).
 //
 // NO PRODUCTION CALLER, verified repo-wide: the SSE handler reaches
 // SubscribeIfAllowed or SubscribeAndReplaySince. It is interface surface and
 // test surface, routed through the same path as the other two so it cannot
 // drift into being the one door with the old semantics.
-func (b *RedisBus) Subscribe(workspaceID string) (chan Event, <-chan struct{}) {
-	ch, _, gaps, _ := b.subscribeAndReplay(workspaceID, 0, 0)
-	return ch, gaps
+func (b *RedisBus) Subscribe(ctx context.Context, workspaceID string) (chan Event, <-chan struct{}, SubscribeOutcome) {
+	ch, _, gaps, outcome := b.subscribeAndReplay(ctx, workspaceID, 0, 0)
+	return ch, gaps, outcome
 }
 
 // addSubscriberLocked registers a channel for a workspace and bumps its local
@@ -714,9 +745,9 @@ func (b *RedisBus) addSubscriberLocked(workspaceID string) *subscriber {
 // NOTE: the limit is enforced against local (per-pod) subscriber counts
 // only. In multi-replica deployments the effective cap is multiplied by
 // the number of replicas — as is every other streaming limit Pad has.
-func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, bool) {
-	ch, _, gaps, ok := b.subscribeAndReplay(workspaceID, 0, maxPerWorkspace)
-	return ch, gaps, ok
+func (b *RedisBus) SubscribeIfAllowed(ctx context.Context, workspaceID string, maxPerWorkspace int) (chan Event, <-chan struct{}, SubscribeOutcome) {
+	ch, _, gaps, outcome := b.subscribeAndReplay(ctx, workspaceID, 0, maxPerWorkspace)
+	return ch, gaps, outcome
 }
 
 // SubscribeAndReplaySince implements EventBus. See the interface for the
@@ -727,8 +758,8 @@ func (b *RedisBus) SubscribeIfAllowed(workspaceID string, maxPerWorkspace int) (
 // to live channels. So an event is either fully applied before this call's
 // critical section (in the buffer, not on the new channel) or entirely after
 // it (on the channel, replay already read) — never both, never neither.
-func (b *RedisBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
-	return b.subscribeAndReplay(workspaceID, sinceID, maxPerWorkspace)
+func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, SubscribeOutcome) {
+	return b.subscribeAndReplay(ctx, workspaceID, sinceID, maxPerWorkspace)
 }
 
 // subscribeAndReplay is the single body behind all three Subscribe* entry
@@ -759,7 +790,22 @@ func (b *RedisBus) SubscribeAndReplaySince(workspaceID string, sinceID int64, ma
 // so events arriving in the gap were skipped by fan-out and never replayed —
 // dropped outright. Found by codex round 1; keeping the note because the
 // mechanism was locally coherent and the failure was one call path over.
-func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, bool) {
+func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, SubscribeOutcome) {
+	if ctx.Err() != nil {
+		// Checked before the deferred resume-gap report is armed: a caller
+		// that has already gone is not a resume this instance failed to serve.
+		//
+		// THIS IS THE ONLY EARLY EXIT, deliberately. An earlier draft paired it
+		// with a cancellation break at the top of the establish loop, which
+		// the mutation matrix could only detect when BOTH were removed — and
+		// codex round 2 then found why: the loop-top one could exit while
+		// still owning an unretired establishment record, stranding the next
+		// subscriber forever. It is gone. Past this point a cancelled caller
+		// is unwound by the code that owns the thing being unwound, never by
+		// jumping over it.
+		return nil, nil, nil, SubscribeCancelled
+	}
+
 	// Reported on the way out with the lock released, and only for a caller
 	// that was actually resuming. See the MemoryBus twin.
 	var missed []Event
@@ -777,7 +823,7 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 		// counter's population.
 		resuming = false
 		b.mu.Unlock()
-		return nil, nil, nil, false
+		return nil, nil, nil, SubscribeWorkspaceLimit
 	}
 
 	sub := b.addSubscriberLocked(workspaceID)
@@ -813,6 +859,10 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 	}
 	b.mu.Unlock()
 
+	if b.afterRegisterBeforeEstablish != nil {
+		b.afterRegisterBeforeEstablish(workspaceID)
+	}
+
 	// A JOINER VERIFIES RATHER THAN ASSUMES, and may take the establishment
 	// over once (codex round 2, P1). Waiting on someone else's record proves
 	// only that they FINISHED — not that they succeeded.
@@ -839,6 +889,35 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 	// the emptied-workspace race it lost cannot recur, and any remaining
 	// failure is one a third pass would not fix either.
 	for attempt := range 2 {
+		// NO CANCELLATION CHECK AT THE TOP OF THIS LOOP, and its absence is
+		// load-bearing (BUG-2749, codex round 2 P1).
+		//
+		// An earlier version broke out of the loop here when the caller's
+		// context had ended. On attempt 0 that is a STRAND: section 1 may
+		// already have created this workspace's establishment record and named
+		// us the establisher, and breaking here leaves that record in
+		// pendingSubs with nobody behind it — never retired, its done channel
+		// never closed. The next subscriber for the workspace joins it and
+		// waits forever, and because its own registration keeps wsCounts
+		// non-zero, no later caller establishes either. That is exactly the
+		// permanent silently-dead stream the establishment record exists to
+		// prevent, reintroduced by a guard meant to save a dial.
+		//
+		// A cancelled establisher therefore goes THROUGH establishSubscription,
+		// which is the only code that knows how to put the record down: it
+		// deregisters the departed establisher and abandons-and-retires in one
+		// critical section, or installs for whatever joiners arrived. The dial
+		// it pays for is on the caller's context and aborts at once.
+		//
+		// Retries are guarded instead where the decision is actually made —
+		// see the ctx.Err() term in the re-decide below, which stops a
+		// departed caller MINTING a fresh record rather than abandoning one it
+		// already owns. That term is an OPTIMISATION, not a correctness
+		// guard, and the mutation matrix is what says so: removing it survives
+		// every test here, because a departed caller that does mint a second
+		// record still establishes, still deregisters itself in the deciding
+		// section, and still abandons and retires. It saves a pointless dial
+		// on a path that should already be rare, and nothing more.
 		if attempt > 0 {
 			// Re-decide, and note that the record is created HERE, at the top
 			// of an iteration that is going to use it — never as a trailing
@@ -848,7 +927,7 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 			b.mu.Lock()
 			_, live := b.wsSubs[workspaceID]
 			establish, pending = false, nil
-			if !live && b.ctx.Err() == nil {
+			if !live && b.ctx.Err() == nil && ctx.Err() == nil {
 				if p, inFlight := b.pendingSubs[workspaceID]; inFlight {
 					pending = p
 				} else {
@@ -867,7 +946,7 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 
 		switch {
 		case establish:
-			b.establishSubscription(workspaceID, pending)
+			b.establishSubscription(ctx, workspaceID, sub, pending)
 		case pending != nil:
 			// Someone else is establishing the same workspace. Wait for them
 			// rather than opening a second connection and a second receive
@@ -875,11 +954,29 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 			select {
 			case <-pending.done:
 			case <-b.ctx.Done():
+			case <-ctx.Done():
 			}
 		default:
 			// Already live when we registered: nothing to establish and
 			// nothing to wait for.
 		}
+	}
+
+	// CANCELLATION IS DEREGISTRATION, and everything else falls out of that
+	// (BUG-2749). wsCounts already answers "is anyone still here"; a caller
+	// whose context ended is someone who is not, so the fix is to stop being
+	// counted rather than to add machinery that hands establishment over.
+	//
+	// Unsubscribe is safe to call even when establishSubscription already did
+	// it under its own deciding lock — it returns early on a channel it no
+	// longer holds — so neither path has to know what the other did. And when
+	// this IS the removal that takes the workspace to zero, its existing
+	// count-to-zero branch stops the Redis subscription, so an establishment
+	// completed for a caller who left does not outlive them.
+	if ctx.Err() != nil {
+		b.Unsubscribe(sub.ch)
+		resuming = false
+		return nil, nil, nil, SubscribeCancelled
 	}
 
 	b.mu.Lock()
@@ -890,7 +987,7 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 	if resuming {
 		missed = b.eventsSinceMarkLocked(workspaceID, sinceID, mark)
 	}
-	return sub.ch, missed, sub.gaps, true
+	return sub.ch, missed, sub.gaps, SubscribeOK
 }
 
 // registrationMark records where a workspace's replay buffer stood when a
@@ -937,7 +1034,22 @@ func (b *RedisBus) eventsSinceMarkLocked(workspaceID string, sinceID int64, mark
 func (b *RedisBus) Unsubscribe(ch chan Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.unsubscribeLocked(ch)
+}
 
+// unsubscribeLocked is Unsubscribe's body, split out so a caller that is
+// already inside a critical section can deregister a subscriber without
+// releasing the lock (BUG-2749: establishSubscription must apply a departed
+// establisher's removal in the SAME section that reads wsCounts to decide
+// whether to abandon).
+//
+// IT IS IDEMPOTENT BY THE workspaceOf LOOKUP, which is what lets the
+// cancellation path call Unsubscribe unconditionally afterwards without
+// either side tracking what the other did — a second call finds no entry and
+// returns before it can double-close the channel.
+//
+// Callers must hold b.mu.
+func (b *RedisBus) unsubscribeLocked(ch chan Event) {
 	wsID, ok := b.workspaceOf[ch]
 	if !ok {
 		return
@@ -1162,7 +1274,9 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 }
 
 // establishSubscription opens a workspace's Redis subscription and does not
-// return until Redis has acknowledged it (or the bound expires).
+// return until Redis has acknowledged it, the bound expires, or the CALLER's
+// context ends — in which case the remainder of the wait is handed to a
+// goroutine and this returns at once (BUG-2749).
 //
 // MUST BE CALLED WITHOUT b.mu HELD. That is the whole of BUG-2748: this
 // function's first statement dials a fresh TCP connection, runs go-redis's
@@ -1170,14 +1284,47 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 // used to happen inside the bus's single global mutex — per workspace, since
 // each client.Subscribe mints a PubSub whose connection starts nil. A Redis
 // whose route blackholes packets stalled that dial for the client's
-// DialTimeout (5s by default, and NOT bounded by the context we pass), and
-// for that whole time no other workspace could subscribe, unsubscribe, close,
-// or receive a fanned-out event.
+// DialTimeout (5s by default; since BUG-2749 the CALLER's context can cut that
+// short on a plaintext connection, but not under TLS — see
+// defaultSubscribeConfirmTimeout), and for that whole time no other workspace
+// could subscribe, unsubscribe, close, or receive a fanned-out event.
 //
 // Exactly one caller per workspace reaches here; the rest wait on pending.
-func (b *RedisBus) establishSubscription(workspaceID string, pending *pendingSub) {
+func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string, establisher *subscriber, pending *pendingSub) {
 	channel := b.keys.Name(redisChannelSuffix) + workspaceID
-	pubsub := b.client.Subscribe(b.ctx, channel)
+	// DIALLED ON THE CALLER'S CONTEXT *AND* THE BUS'S, so a client that leaves
+	// mid-dial stops paying for it (BUG-2749) without taking away Close()'s
+	// ability to interrupt the same dial (codex round 2 P2).
+	//
+	// Passing only the caller's context regressed shutdown: b.ctx used to be
+	// what cut a stalled dial short when the bus closed, and a caller who
+	// stays connected through a shutdown would have left the dial running to
+	// DialTimeout with nothing able to stop it. Either ending is a reason to
+	// abandon, so the dial waits on both.
+	dialCtx, cancelDial := mergeCancellation(ctx, b.ctx)
+	defer cancelDial()
+	//
+	// WHAT THIS DOES AND DOES NOT BOUND, checked in go-redis v9.22.0 rather
+	// than inferred from its doc comment — which says Subscribe "does not wait
+	// on a response from Redis" and so reads as though no dial happens here at
+	// all. It does: Client.Subscribe -> PubSub.Subscribe -> subscribe ->
+	// conn(ctx) dials when there is no connection yet, then writes the
+	// SUBSCRIBE command. Only the REPLY is unawaited.
+	//
+	//   - Plaintext: dialConn derives its attempt context from the one passed
+	//     in (internal/pool/pool.go, "Apply DialTimeout per attempt, but never
+	//     extend an existing earlier deadline") and the default dialer is
+	//     net.Dialer.DialContext, which honours it. Cancellation aborts the
+	//     dial.
+	//   - TLS: the same dialer returns tls.DialWithDialer(netDialer, ...)
+	//     (options.go), which takes NO context. Under TLS the dial is bounded
+	//     by DialTimeout alone and cancellation cannot shorten it.
+	//
+	// So on a TLS deployment this shrinks the held slot from (dial + confirm
+	// bound) to (dial), not to zero. That residual is real and is why the
+	// cancellation check below is repeated after the dial rather than assumed
+	// to have fired during it.
+	pubsub := b.client.Subscribe(dialCtx, channel)
 	subCtx, subCancel := context.WithCancel(b.ctx)
 
 	if b.beforeInstallSubscription != nil {
@@ -1207,6 +1354,23 @@ func (b *RedisBus) establishSubscription(workspaceID string, pending *pendingSub
 	// keep, and returns with a channel wired to nothing — permanently, because
 	// its own registration makes wsCounts non-zero so no later caller
 	// establishes either.
+	// THE ESTABLISHER'S OWN DEPARTURE IS APPLIED BEFORE THE COUNT IS READ, in
+	// this same section (BUG-2749). The count below is the arbiter for "is
+	// anyone still here", and while we were dialling the answer may have
+	// become no — but only if the caller that opened this establishment stops
+	// being counted first. Removing it after the read would install a
+	// subscription and a receive loop for nobody; removing it in a separate
+	// section would let a joiner arrive in between and be counted against a
+	// decision already taken.
+	//
+	// Note what this deliberately does NOT do: it does not abandon because the
+	// establisher left. If joiners registered while we dialled, wsCounts is
+	// still non-zero and the subscription is installed for them, which is the
+	// hand-off the filing asked about — expressed as a count rather than as a
+	// transfer of ownership.
+	if ctx.Err() != nil {
+		b.unsubscribeLocked(establisher.ch)
+	}
 	if b.wsCounts[workspaceID] == 0 || b.ctx.Err() != nil {
 		b.retirePendingLocked(workspaceID, pending)
 		b.mu.Unlock()
@@ -1232,20 +1396,82 @@ func (b *RedisBus) establishSubscription(workspaceID string, pending *pendingSub
 	// very window this function exists to close.
 	go b.receiveMessages(subCtx, pubsub, workspaceID, gen)
 
+	if b.afterInstallSubscription != nil {
+		b.afterInstallSubscription(workspaceID)
+	}
+
 	timer := time.NewTimer(b.confirmTimeout)
-	defer timer.Stop()
 	select {
 	case <-sub.confirmed:
 	case <-b.ctx.Done():
+	case <-ctx.Done():
+		// A CANCELLED ESTABLISHER OWES ITS JOINERS THE REST OF THE WAIT, and
+		// this is the one thing it genuinely does owe them (BUG-2749).
+		//
+		// Not the connection: that is installed above with its receive loop
+		// running, and wsCounts already decides its fate. What cannot simply
+		// be dropped is the WAIT, because finishPending is what releases the
+		// joiners and the acknowledgement is what makes their stream
+		// honest. Returning here and closing pending.done inline would admit
+		// every joiner into a subscription Redis has not acknowledged, telling
+		// them nothing — which is precisely the defect BUG-2747 exists to
+		// close, re-created for the joiner population at the seam between the
+		// two designs.
+		//
+		// So the REMAINDER of the wait moves to a goroutine and finishes
+		// exactly as this caller would have: same three arms, same
+		// markUnconfirmedAdmission on the bound, same finishPending. Only the
+		// caller's context is dropped, because the caller is who left.
+		//
+		// It is bounded by confirmTimeout and needs no reaper: if the departing
+		// establisher was the last subscriber, its Unsubscribe stops the
+		// subscription, and this waiter then falls through to the bound and
+		// finds no wsSubs entry — markUnconfirmedAdmission's gen/liveness guard
+		// makes that a no-op rather than a spurious count.
+		go func() {
+			defer timer.Stop()
+			select {
+			case <-sub.confirmed:
+			case <-b.ctx.Done():
+			case <-timer.C:
+				b.markUnconfirmedAdmission(workspaceID, gen)
+			}
+			if b.afterSubscriptionConfirmed != nil {
+				b.afterSubscriptionConfirmed()
+			}
+			b.finishPending(workspaceID, pending)
+		}()
+		return
 	case <-timer.C:
 		b.markUnconfirmedAdmission(workspaceID, gen)
 	}
+	timer.Stop()
 
 	if b.afterSubscriptionConfirmed != nil {
 		b.afterSubscriptionConfirmed()
 	}
 
 	b.finishPending(workspaceID, pending)
+}
+
+// mergeCancellation returns a context that ends when EITHER input does.
+//
+// It exists because the dial has two legitimate reasons to be abandoned that
+// live in different places: the caller going away (BUG-2749) and the bus
+// closing (BUG-2748's teardown). Deriving from one and ignoring the other
+// silently drops half the shutdown story, which is how the second one was lost
+// in this unit's first draft.
+//
+// The returned cancel must be called to release the AfterFunc registration on
+// the second context; not calling it keeps that registration alive for as long
+// as the second context does.
+func mergeCancellation(primary, also context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(primary)
+	stop := context.AfterFunc(also, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // finishPending retires a workspace's establishment record and releases every
@@ -1839,11 +2065,19 @@ const stragglerWindow = 30 * time.Second
 // IT BOUNDS THE ACKNOWLEDGEMENT, NOT THE WHOLE OF ESTABLISHMENT (codex round
 // 7). The dial and go-redis's HELLO/AUTH handshake happen inside
 // client.Subscribe, before this timer starts, and they are bounded by the
-// CLIENT's DialTimeout — 5s by default, and not by any context we pass. So a
-// stalled dial followed by this wait composes to roughly DialTimeout + this,
-// and anyone reasoning about worst-case connect latency needs both numbers.
-// BUG-2749 carries the same arithmetic for the admission slot that is held
-// across it.
+// CLIENT's DialTimeout — 5s by default. So a stalled dial followed by this
+// wait composes to roughly DialTimeout + this, and anyone reasoning about
+// worst-case connect latency needs both numbers.
+//
+// AMENDED BY BUG-2749 on the context half, which this comment used to state
+// flatly as "not by any context we pass". Since that unit the dial runs on the
+// CALLER's context, and go-redis derives its per-attempt dial deadline from it
+// — so on plaintext a caller that goes away no longer waits out DialTimeout.
+// Under TLS it still does: the default dialer hands a TLS connection to
+// tls.DialWithDialer, which takes no context at all. The composed worst case
+// above is therefore unchanged for a client that STAYS, and unchanged for a
+// TLS deployment whose client leaves; it shrinks only for a departing client
+// on a plaintext connection. See BUG-2754 for the TLS half.
 //
 // SHORT BECAUSE THE DISTRIBUTION HAS NO MIDDLE, not as a guess at how fast
 // Redis is. Establishment either completes in single-digit milliseconds or does

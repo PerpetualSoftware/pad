@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -345,7 +346,7 @@ func TestBulkItems_EmitsCollectionScopedBatchEvent(t *testing.T) {
 	if err != nil || wsRow == nil {
 		t.Fatalf("resolve workspace: %v", err)
 	}
-	ch, _ := srv.events.Subscribe(wsRow.ID)
+	ch, _, _ := srv.events.Subscribe(context.Background(), wsRow.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open","priority":"low"}`)
@@ -414,7 +415,7 @@ func TestBulkItems_CollectionMoveNotifiesBothScopes(t *testing.T) {
 
 	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open"}`)
 
-	ch, _ := srv.events.Subscribe(wsRow.ID)
+	ch, _, _ := srv.events.Subscribe(context.Background(), wsRow.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{

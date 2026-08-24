@@ -471,7 +471,7 @@ func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
 	epochKey := redisns.Default.Name(redisEpochSuffix)
 	ctx := context.Background()
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 
 	waitFor := func(n int) {

@@ -556,8 +556,8 @@ type webhookDelivery struct {
 
 func newCopyFanoutObserver(t *testing.T, f *copyPreflightFixture) *copyFanoutObserver {
 	t.Helper()
-	chA, _ := f.bus.Subscribe(f.wsA.ID)
-	chB, _ := f.bus.Subscribe(f.wsB.ID)
+	chA, _, _ := f.bus.Subscribe(context.Background(), f.wsA.ID)
+	chB, _, _ := f.bus.Subscribe(context.Background(), f.wsB.ID)
 	o := &copyFanoutObserver{
 		t: t, f: f,
 		chA:   chA,

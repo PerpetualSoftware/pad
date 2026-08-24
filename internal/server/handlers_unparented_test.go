@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -187,7 +188,7 @@ func TestCreateWithParentPublishesFreshSequence(t *testing.T) {
 	if err != nil || ws == nil {
 		t.Fatalf("workspace: %v", err)
 	}
-	ch, _ := srv.events.Subscribe(ws.ID)
+	ch, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]any{
@@ -221,7 +222,7 @@ func TestStructuralLinkHandlersPublishFreshSourceEvent(t *testing.T) {
 	if err != nil || ws == nil {
 		t.Fatalf("workspace: %v", err)
 	}
-	ch, _ := srv.events.Subscribe(ws.ID)
+	ch, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
 	defer srv.events.Unsubscribe(ch)
 
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+source.Slug+"/links", map[string]any{

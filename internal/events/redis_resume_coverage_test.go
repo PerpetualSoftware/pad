@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -24,7 +25,7 @@ func newTestRedisBus(t *testing.T) *RedisBus {
 func TestBufferIsDroppedWhenTheWorkspaceSubscriptionStops(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	// Events arrive from Redis while we are covering the workspace.
 	b.fanOutLocally(Event{ID: 98, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	b.fanOutLocally(Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
@@ -54,7 +55,7 @@ func TestBufferIsDroppedWhenTheWorkspaceSubscriptionStops(t *testing.T) {
 func TestAStragglerAfterUnsubscribeDoesNotRebuildTheBuffer(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	b.fanOutLocally(Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	b.Unsubscribe(ch)
 
@@ -70,7 +71,7 @@ func TestAStragglerAfterUnsubscribeDoesNotRebuildTheBuffer(t *testing.T) {
 	// And the negative control that keeps this honest: once the workspace is
 	// genuinely subscribed again, coverage restarts and resumes from the new
 	// first-seen id onward are served normally.
-	ch2, _ := b.Subscribe("ws-1")
+	ch2, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch2)
 	b.fanOutLocally(Event{ID: 600, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
@@ -95,9 +96,9 @@ func TestAStragglerAfterUnsubscribeDoesNotRebuildTheBuffer(t *testing.T) {
 func TestBufferSurvivesWhileAnyLocalSubscriberRemains(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	ch1, _ := b.Subscribe("ws-1")
+	ch1, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch1)
-	ch2, _ := b.Subscribe("ws-1")
+	ch2, _, _ := b.Subscribe(context.Background(), "ws-1")
 
 	b.fanOutLocally(Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
 	b.Unsubscribe(ch2)
@@ -119,7 +120,7 @@ func TestBufferSurvivesWhileAnyLocalSubscriberRemains(t *testing.T) {
 func TestAStragglerFromAnEndedSubscriptionCannotVouchForTheNewOne(t *testing.T) {
 	b := newTestRedisBus(t)
 
-	ch, _ := b.Subscribe("ws-1")
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	oldGen := b.currentSubGen("ws-1")
 	b.fanOutFromRedis(oldGen, 0, Event{ID: 100, Type: ItemUpdated, WorkspaceID: "ws-1"})
 
@@ -127,7 +128,7 @@ func TestAStragglerFromAnEndedSubscriptionCannotVouchForTheNewOne(t *testing.T) 
 	b.Unsubscribe(ch)
 
 	// A new client arrives and the workspace is subscribed again.
-	ch2, _ := b.Subscribe("ws-1")
+	ch2, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch2)
 	newGen := b.currentSubGen("ws-1")
 	if newGen == oldGen {
