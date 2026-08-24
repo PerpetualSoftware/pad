@@ -338,3 +338,59 @@ func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 		t.Errorf("unlinked recent update did not merge: got %s, want %s", third, second)
 	}
 }
+
+// Codex round 6 on TASK-2760: the debounce's read-then-write is two
+// statements, and a comment can link the chosen row between them. The write
+// itself must refuse a linked row — this drives the write directly with the
+// row already linked, the state the race produces, since the interleaving
+// cannot be scheduled from a test. The control leg pins that an unlinked row
+// is still written, so the predicate is a freeze and not a disabled merge.
+func TestMergeIntoUnlinkedActivity_RefusesLinkedRow(t *testing.T) {
+	s, item := agentNameFixture(t)
+	mk := func(meta string) string {
+		id, err := s.CreateActivity(models.Activity{
+			WorkspaceID: item.WorkspaceID, DocumentID: item.ID,
+			Action: "updated", Actor: "agent", Source: "cli", Metadata: meta,
+		})
+		if err != nil {
+			t.Fatalf("create activity: %v", err)
+		}
+		return id
+	}
+	metaOf := func(id string) string {
+		var m string
+		if err := s.db.QueryRow(s.q(`SELECT metadata FROM activities WHERE id = ?`), id).Scan(&m); err != nil {
+			t.Fatalf("read metadata: %v", err)
+		}
+		return m
+	}
+
+	linked := mk(`{"agent":"wren"}`)
+	if _, err := s.CreateComment(item.WorkspaceID, item.ID, "", models.CommentCreate{
+		Body: "linked", CreatedBy: "agent", Source: "cli", ActivityID: linked,
+	}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	written, err := s.mergeIntoUnlinkedActivity(linked, `{"agent":"rook"}`, now())
+	if err != nil {
+		t.Fatalf("merge into linked: %v", err)
+	}
+	if written {
+		t.Error("merge reported written against a comment-linked row")
+	}
+	if got := models.AgentNameFromMetadata(metaOf(linked)); got != "wren" {
+		t.Errorf("linked row's agent after refused merge = %q, want %q", got, "wren")
+	}
+
+	unlinked := mk(`{"agent":"wren"}`)
+	written, err = s.mergeIntoUnlinkedActivity(unlinked, `{"agent":"rook"}`, now())
+	if err != nil {
+		t.Fatalf("merge into unlinked: %v", err)
+	}
+	if !written {
+		t.Error("control: merge into an unlinked row reported not written")
+	}
+	if got := models.AgentNameFromMetadata(metaOf(unlinked)); got != "rook" {
+		t.Errorf("control: unlinked row's agent after merge = %q, want %q", got, "rook")
+	}
+}

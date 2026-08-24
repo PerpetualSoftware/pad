@@ -55,8 +55,18 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// `agent` and bumps created_at — so without this exclusion a later update
 	// by a different agent under the same credentials would silently
 	// re-attribute an earlier comment (TASK-2760, codex round 3). Once a
-	// comment has linked an activity, that row is frozen; the next update
-	// starts a fresh row instead. Same item-scoped probe as the timeline's.
+	// comment has linked an activity, that row is frozen; a later update
+	// looks past it — to an older unlinked row still inside the window, or
+	// to a fresh row. Same item-scoped probe as the timeline's.
+	//
+	// The exclusion is checked TWICE: here, to choose a candidate, and again
+	// inside the UPDATE itself (mergeIntoUnlinkedActivity), because a comment
+	// can link the candidate between this read and that write (codex round
+	// 6). The UPDATE's predicate is evaluated under the row write, so the
+	// merge either lands on a still-unlinked row or touches nothing — and a
+	// zero-row merge falls through to a fresh insert. What this does NOT
+	// close is the opposite order — an update that completes before the
+	// comment links its row at all — which is BUG-2716's transaction.
 	var existingID, existingMeta string
 	err := s.db.QueryRow(s.q(`
 		SELECT id, metadata FROM activities a
@@ -78,10 +88,36 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// Merge metadata: accumulate "changes" strings from both old and new.
 	merged := mergeActivityMeta(existingMeta, a.Metadata)
 
-	_, err = s.db.Exec(s.q(`
-		UPDATE activities SET metadata = ?, created_at = ? WHERE id = ?
-	`), merged, ts, existingID)
-	return existingID, err
+	mergedOK, err := s.mergeIntoUnlinkedActivity(existingID, merged, ts)
+	if err != nil {
+		return existingID, err
+	}
+	if !mergedOK {
+		// Linked since the read above — frozen now. Start a fresh row.
+		return s.CreateActivity(a)
+	}
+	return existingID, nil
+}
+
+// mergeIntoUnlinkedActivity applies a debounce merge to one activity row in a
+// single statement whose predicate refuses a row any comment links to. It
+// reports whether the row was written: false means a comment linked it after
+// the caller chose it, and the caller must not treat it as merged. See the
+// comment in CreateActivityDebounced for why the check lives in the UPDATE.
+func (s *Store) mergeIntoUnlinkedActivity(id, metadata, ts string) (bool, error) {
+	res, err := s.db.Exec(s.q(`
+		UPDATE activities SET metadata = ?, created_at = ?
+		WHERE id = ?
+		  AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = activities.id AND c.item_id = activities.document_id)
+	`), metadata, ts, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // mergeActivityMeta combines two activity metadata JSON strings, accumulating
