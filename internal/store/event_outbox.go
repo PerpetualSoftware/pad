@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -315,11 +316,20 @@ type itemEventPayload struct {
 //
 // THE RULE APPLIED, stated as the rule rather than as a proxy for it: remove
 // DIRECTLY IDENTIFYING personal data — a human name, an email address — and
-// keep opaque identifiers and row state. assigned_user_id stays: a binding
-// predicate filters on it, and after the account is gone it is a dangling
-// reference to nobody rather than a way to identify anyone. The name and email
-// are denormalized lookups a consumer can resolve for itself if it is
-// entitled to.
+// keep opaque identifiers and row state. assigned_user_id stays AT EMIT TIME:
+// a binding predicate filters on it, and while the account exists it is the
+// row's own state. The name and email are denormalized lookups a consumer can
+// resolve for itself if it is entitled to.
+//
+// SUPERSEDED AT DELETION TIME (TASK-2719, Dave's ruling day-49). This comment
+// originally kept assigned_user_id unconditionally, reasoning that after the
+// account is gone it is "a dangling reference to nobody rather than a way to
+// identify anyone". That engineering call LOST to the account-deletion ruling:
+// "delete my account" means prompt erasure of the frozen user id too, so
+// ScrubOutboxUserRefsTx (called from DeleteAccountAtomic) removes it — and
+// every other frozen user-id key — from already-written payloads. Emit-time
+// keep and deletion-time scrub are both in force; the deletion ruling is the
+// winner wherever they would disagree.
 //
 // Deliberately NOT scrubbed: collection_*/ref and the parent fields, which are
 // derived metadata rather than identity — predicates address items by
@@ -345,6 +355,181 @@ func scrubItemPII(item *models.Item) *models.Item {
 	clone.AssignedUserName = ""
 	clone.AssignedUserEmail = ""
 	return &clone
+}
+
+// outboxUserRefKeys are the payload keys that can hold a bare user id, per the
+// frozen-user-id population enumerated on TASK-2719 (CONVE-18):
+//
+//	assigned_user_id — item snapshots: single (itemEventPayload embeds
+//	                   models.Item) and batch (bulkItemEventPayload members).
+//	user_id          — comment snapshots (models.Comment) and member payloads
+//	                   (memberEventPayload).
+//	uploaded_by      — attachment snapshots (models.Attachment).
+//
+// The other families carry no user id: ref_only is ids of non-user subjects,
+// and the batch header is op + item ids (member snapshots join it only at fold
+// time, from member rows scrubbed here in their own right).
+//
+// BOUNDARY, stated so the next reader knows what this deliberately does not
+// reach: the scrub matches these keys at any JSON depth, but an item's
+// `fields` value is a JSON-ENCODED STRING and the walk does not enter it — a
+// legacy stray assigned_user_id INSIDE the blob survives, exactly as it
+// survives on the live row (DeleteAccountAtomic's de-identify list does not
+// rewrite fields blobs either). Same-posture-as-live-rows is the contract.
+var outboxUserRefKeys = map[string]bool{
+	"assigned_user_id": true,
+	"user_id":          true,
+	"uploaded_by":      true,
+}
+
+// scrubUserRefsFromPayload returns the payload with every user-ref key whose
+// value IS the given user id removed, and whether anything changed.
+//
+// KEY-SCOPED AND VALUE-MATCHED, both deliberately. Key-scoped so an unrelated
+// field that happens to hold a uuid is never touched; value-matched so a
+// payload naming a DIFFERENT user is returned byte-identical — the negative
+// control the tests pin. Removal rather than emptying: every model behind
+// these keys unmarshals an absent key to its zero value, and an absent key
+// reads as "scrubbed" where an empty string reads as ambiguous data.
+//
+// An unchanged payload is returned as the ORIGINAL bytes. A changed one is
+// re-marshalled, which normalizes key order at the rewritten levels; numeric
+// literals survive verbatim via json.Number, so the rewrite cannot corrupt a
+// seq (or any future int64) by way of float64.
+func scrubUserRefsFromPayload(payload []byte, userID string) ([]byte, bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return nil, false, fmt.Errorf("outbox: parse payload for scrub: %w", err)
+	}
+	if !scrubUserRefsInNode(doc, userID) {
+		return payload, false, nil
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return nil, false, fmt.Errorf("outbox: re-marshal scrubbed payload: %w", err)
+	}
+	return out, true, nil
+}
+
+func scrubUserRefsInNode(node any, userID string) bool {
+	changed := false
+	switch v := node.(type) {
+	case map[string]any:
+		for k, val := range v {
+			if outboxUserRefKeys[k] {
+				if s, ok := val.(string); ok && s == userID {
+					delete(v, k)
+					changed = true
+					continue
+				}
+			}
+			if scrubUserRefsInNode(val, userID) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, e := range v {
+			if scrubUserRefsInNode(e, userID) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// ScrubOutboxUserRefsTx erases a deleted account's user id from every frozen
+// outbox payload and from the subject_id column, on the caller's transaction.
+// The account-deletion counterpart of scrubItemPII's emit-time scrub — see the
+// SUPERSEDED note there for the ruling that reversed emit-time's
+// assigned_user_id decision (TASK-2719).
+//
+// UNIFORM OVER DISPATCHED AND UNDISPATCHED ROWS, deleting neither (lead
+// ruling, TASK-2719): erasure is this scrub's job and row LIFECYCLE is
+// retention's (TASK-2714) — deleting an undispatched row would break the
+// outbox durability guarantee for zero erasure gain over scrubbing it. A
+// scrubbed member row degrades from a delta to a resync signal ("a membership
+// changed in this workspace at this seq"), which stays parseable:
+// memberEventPayload unmarshals an absent user_id to "", and the drain treats
+// payloads as opaque bytes.
+//
+// Candidate rows are found by `subject_id = ?` (indexed — catches every member
+// row, whose subject IS the user) OR a payload substring prefilter. The CAST
+// is load-bearing: payload is JSONB on Postgres and TEXT on SQLite, and LIKE
+// on jsonb is not a thing. A uuid carries no LIKE metacharacters and is
+// specific enough that false positives are rare — and harmless, because the Go
+// rewrite is a no-op when no matching key holds the id. The scan is bounded by
+// TASK-2714's retention window, not the table's lifetime; its cost inside the
+// deletion transaction is accepted un-measured for a once-per-account-deletion
+// path (option (b) on the TASK-2719 trail, where (a) full-scan and (c) a
+// side-table were weighed).
+//
+// READ FULLY, THEN WRITE. Both halves run on the one deletion transaction, and
+// issuing tx.Exec while a tx.Query cursor is open is the BUG-2409 shape — a
+// deadlock on SQLite's single-connection transactions. The collect-then-close
+// ordering is a precondition, not a style choice.
+func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
+	if userID == "" {
+		// An empty id would value-match nothing but LIKE-match every row —
+		// a full-table parse for a caller bug. Refuse instead.
+		return fmt.Errorf("outbox: scrub user refs: no user id")
+	}
+	rows, err := tx.Query(s.q(`
+		SELECT id, payload FROM event_outbox
+		WHERE subject_id = ? OR CAST(payload AS TEXT) LIKE ?
+	`), userID, "%"+userID+"%")
+	if err != nil {
+		return fmt.Errorf("outbox: scrub user refs: find rows: %w", err)
+	}
+	type candidate struct {
+		id      string
+		payload string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.payload); err != nil {
+			rows.Close()
+			return fmt.Errorf("outbox: scrub user refs: scan row: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("outbox: scrub user refs: iterate rows: %w", err)
+	}
+	rows.Close()
+
+	for _, c := range candidates {
+		scrubbed, changed, err := scrubUserRefsFromPayload([]byte(c.payload), userID)
+		if err != nil {
+			// A payload this transaction cannot parse is one the scrub cannot
+			// honestly claim to have erased — fail the deletion rather than
+			// skip the row silently.
+			return fmt.Errorf("outbox: scrub user refs: row %s: %w", c.id, err)
+		}
+		if !changed {
+			continue
+		}
+		if _, err := tx.Exec(s.q(`
+			UPDATE event_outbox SET payload = ? WHERE id = ?
+		`), string(scrubbed), c.id); err != nil {
+			return fmt.Errorf("outbox: scrub user refs: rewrite row %s: %w", c.id, err)
+		}
+	}
+
+	// The COLUMN half: member rows carry the user id as their subject —
+	// indexed, outside the JSON, and missed by anything that only rewrites
+	// payloads (TASK-2719 recon; ratified in scope by the lead). Value
+	// equality is the precise predicate: item/comment/attachment subjects are
+	// their own row ids, never a user's.
+	if _, err := tx.Exec(s.q(`
+		UPDATE event_outbox SET subject_id = NULL WHERE subject_id = ?
+	`), userID); err != nil {
+		return fmt.Errorf("outbox: scrub user refs: clear subject ids: %w", err)
+	}
+	return nil
 }
 
 // emitItemEventTx writes one item-subject event to the outbox on the caller's

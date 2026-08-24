@@ -1017,6 +1017,16 @@ func (s *Store) DeleteAccountAtomic(userID string, ownedWorkspaceSlugs []string)
 		}
 	}
 
+	// 2b. Erase the user's id from frozen outbox payloads and subject_ids.
+	// The de-identify list above reaches LIVE rows only; outbox payloads froze
+	// the id at emit time and would otherwise keep it legible — in workspaces
+	// the user didn't own — until TASK-2714's retention window closes on the
+	// row. Dave's ruling on TASK-2719: "delete my account" means prompt
+	// erasure, not a bounded window.
+	if err := s.ScrubOutboxUserRefsTx(tx, userID); err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+
 	// 3. Delete rows the user owns or that are transient/audit. CASCADE cleans
 	// the dependents: member_collection_access (off workspace_members),
 	// share_link_views (off deleted share_links), oauth_connection_workspaces
