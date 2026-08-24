@@ -559,3 +559,76 @@ func TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement(t *testin
 	}
 	b.Unsubscribe(<-first)
 }
+
+// TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed pins codex round 1's
+// P2 — the interleave where establishSubscription's select chose the timer but
+// the acknowledgement had already landed and confirmSubscription had already
+// cleared the flag. Without a re-check under the lock that closes it, the flag
+// is set again with nothing left to come and clear it: the subscriber is
+// counted as unconfirmed and is never told to reconcile, because the
+// acknowledgement it would have ridden on has been and gone.
+//
+// DRIVEN BY A SEAM, NOT BY REPETITION, and the numbers are why. The race needs
+// the timer and the acknowledgement ready together; a near-zero bound makes the
+// timer win OUTRIGHT almost every time instead, which is the ordinary timeout
+// path and proves nothing. Measured against the mutation: 500 establishments per
+// run caught it in 0 of 10 runs. A one-in-ten detector reads as coverage and
+// is not.
+func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	b := NewRedisBus(client)
+	t.Cleanup(b.Close)
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
+	// Expires immediately, so the timer branch is the one taken.
+	b.confirmTimeout = time.Nanosecond
+
+	// ...and then hold the mark until the acknowledgement has definitively
+	// landed, which is the interleave under test.
+	var raced atomic.Bool
+	b.beforeUnconfirmedMark = func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			b.mu.Lock()
+			sub, live := b.wsSubs["ws-1"]
+			done := live && sub.confirmClosed
+			b.mu.Unlock()
+			if done {
+				raced.Store(true)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	ch, gaps := b.Subscribe("ws-1")
+	defer b.Unsubscribe(ch)
+
+	// PREMISE: the acknowledgement really did beat the mark, or the interleave
+	// under test never happened.
+	if !raced.Load() {
+		t.Fatal("the acknowledgement never landed before the mark; this test could not have discriminated")
+	}
+
+	b.mu.Lock()
+	sub, live := b.wsSubs["ws-1"]
+	strandedFlag := live && sub.unconfirmedAdmitted
+	b.mu.Unlock()
+	if strandedFlag {
+		t.Fatal("a subscription whose acknowledgement had already landed was left marked unconfirmed: nothing remains to clear it or to tell the subscriber")
+	}
+
+	// The observable consequence of the stranded flag, stated as behaviour
+	// rather than as internal state: the subscriber is reported unconfirmed and
+	// then never signalled.
+	if obs.unconfirmedCount() > 0 {
+		select {
+		case <-gaps:
+		case <-time.After(2 * time.Second):
+			t.Fatal("reported an unconfirmed admission but never told the subscriber to reconcile")
+		}
+	}
+}

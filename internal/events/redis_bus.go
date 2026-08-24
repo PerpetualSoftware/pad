@@ -527,6 +527,19 @@ type RedisBus struct {
 	// gets it once. b.mu is NOT held here, so a hook may publish inline.
 	afterSubscriptionConfirmed func()
 
+	// beforeUnconfirmedMark is a TEST SEAM, nil in production. It runs in
+	// markUnconfirmedAdmission BEFORE it takes b.mu, which is the only way to
+	// make the timer-versus-acknowledgement race deterministic: a hook that
+	// waits for the acknowledgement here reproduces, every time, the interleave
+	// where the select chose the timer but confirmSubscription has already run.
+	//
+	// REPETITION DOES NOT SUBSTITUTE FOR IT, measured rather than assumed.
+	// Against the mutation that removes the confirmClosed re-check, 500
+	// establishments per run caught it in 0 of 10 runs — a near-zero bound
+	// makes the timer win OUTRIGHT far more often than it ties, and winning
+	// outright is the ordinary timeout path. With this seam: 10 of 10.
+	beforeUnconfirmedMark func()
+
 	// publishEpoch selects the wire form this instance EMITS: the phase-2
 	// "<epoch>|<id>|<json>" prefix when true, the historical bare JSON body
 	// when false. Receiving accepts both regardless — see decodePayload and
@@ -1148,6 +1161,9 @@ func (b *RedisBus) finishPending(workspaceID string, pending *pendingSub) {
 // an outage for no gain in honesty: the honesty is owed to the CLIENT, and
 // confirmSubscription is what pays it.
 func (b *RedisBus) markUnconfirmedAdmission(workspaceID string, gen int64) {
+	if b.beforeUnconfirmedMark != nil {
+		b.beforeUnconfirmedMark()
+	}
 	b.mu.Lock()
 	sub, ok := b.wsSubs[workspaceID]
 	// confirmClosed is checked under the same lock that closes it (codex round
