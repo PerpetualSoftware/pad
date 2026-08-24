@@ -132,8 +132,10 @@ var allowlistCoverage = map[string]allowlistClassification{
 
 	// --- Workspace-global, structurally exempt ---
 	"library list": {exempt,
-		"handlers_convention_library.go handleConventionLibrary (and its playbook twin) serve compiled-in " +
-			"static content. MECHANICALLY CHECKED: zero s.store. calls, so there is no workspace data to scope"},
+		"handlers_convention_library.go handleConventionLibrary and handlers_playbook_library.go " +
+			"handlePlaybookLibrary serve compiled-in static content. MECHANICALLY CHECKED: both named " +
+			"explicitly, both scanned, zero s.store. calls in either — an earlier version said \"and its " +
+			"playbook twin\", which read as coverage while checking only the first handler (codex round 9 P1)"},
 	"library get": {exempt,
 		"handlers_library_entry.go handleLibraryEntry serves compiled-in static library content. " +
 			"MECHANICALLY CHECKED: zero s.store. calls"},
@@ -909,6 +911,19 @@ func TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite(t *testing.T) {
 // firstHandlerMentioned pulls the first handleXxx identifier out of a
 // reason string, which is how a filtersAllowlist entry says WHERE it
 // filters.
+// isHandlerIdent distinguishes a handler IDENTIFIER (handleListWorkspaces)
+// from the English word "handler", which reasons in this file use
+// freely — and which the first version happily matched, so a reason
+// discussing handlers failed for naming a function that does not exist.
+func isHandlerIdent(tok string) bool {
+	const p = "handle"
+	if len(tok) <= len(p) || !strings.HasPrefix(tok, p) {
+		return false
+	}
+	c := tok[len(p)]
+	return c >= 'A' && c <= 'Z'
+}
+
 func handlersMentioned(reason string) []string {
 	var out []string
 	for _, tok := range strings.FieldsFunc(reason, func(r rune) bool {
@@ -917,7 +932,7 @@ func handlersMentioned(reason string) []string {
 		if strings.HasSuffix(tok, ".go") {
 			continue
 		}
-		if strings.HasPrefix(tok, "handle") && len(tok) > len("handle") {
+		if isHandlerIdent(tok) {
 			out = append(out, tok)
 		}
 	}
@@ -932,7 +947,7 @@ func firstHandlerMentioned(reason string) string {
 		if strings.HasSuffix(tok, ".go") {
 			continue
 		}
-		if strings.HasPrefix(tok, "handle") && len(tok) > len("handle") {
+		if isHandlerIdent(tok) {
 			return tok
 		}
 	}
@@ -954,6 +969,36 @@ func functionBody(src, name string) (string, bool) {
 		return rest[:j+1], true
 	}
 	return rest, true
+}
+
+// filesMentioned returns every *.go filename in a reason. A claim can
+// legitimately span two files — the library exemption names one handler
+// in each — and resolving handlers against only the first silently
+// un-checks the rest.
+func filesMentioned(reason string) []string {
+	var out []string
+	for _, tok := range strings.FieldsFunc(reason, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '\t' || r == ',' || r == '(' || r == ')'
+	}) {
+		if strings.HasSuffix(tok, ".go") {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// findHandlerBody locates a handler in any of the named files.
+func findHandlerBody(files []string, name string) (string, bool) {
+	for _, f := range files {
+		src, err := os.ReadFile(filepath.Join("..", "server", f))
+		if err != nil {
+			continue
+		}
+		if body, ok := functionBody(string(src), name); ok {
+			return body, true
+		}
+	}
+	return "", false
 }
 
 // firstGoFileMentioned pulls the first *.go filename out of a reason
@@ -994,22 +1039,19 @@ func TestAllowlistCoverage_ExemptClaimsAreCheckedOrMarkedAsJudgment(t *testing.T
 		if c.class != exempt {
 			continue
 		}
-		file := firstGoFileMentioned(c.reason)
+		files := filesMentioned(c.reason)
 		fn := firstHandlerMentioned(c.reason)
-		if file != "" && fn != "" {
-			src, err := os.ReadFile(filepath.Join("..", "server", file))
-			if err != nil {
-				bad = append(bad, cmdKey+": reason names "+file+", which does not exist in internal/server")
-				continue
-			}
-			// EVERY handler the reason names, not just the first: the
-			// library exemption cites two, and checking one let changes
-			// to the other bypass the guard entirely (codex round 7 P2).
+		if len(files) > 0 && fn != "" {
+			// EVERY handler the reason names, resolved across EVERY file
+			// it names. Checking one handler, or resolving against one
+			// file, both let the rest bypass the guard while the entry
+			// still reads as checked (codex rounds 7 and 9).
 			failed := false
 			for _, name := range handlersMentioned(c.reason) {
-				body, ok := functionBody(string(src), name)
+				body, ok := findHandlerBody(files, name)
 				if !ok {
-					bad = append(bad, cmdKey+": reason names "+name+", which is not defined in "+file)
+					bad = append(bad, cmdKey+": reason names "+name+", which is not defined in any of "+
+						strings.Join(files, ", "))
 					failed = true
 					break
 				}
