@@ -1831,13 +1831,27 @@ func (b *RedisBus) fanOutLocally(event Event) {
 // an extra buffer drop — both loud, neither silent.
 const stragglerWindow = 30 * time.Second
 
-// defaultSubscribeConfirmTimeout bounds the wait for Redis to acknowledge a
-// new subscription (BUG-2747). Generous on purpose: it is one round trip on a
-// connection that has just been dialled, so on a healthy Redis it never
-// expires, and its only job is to stop an unreachable Redis from holding SSE
-// connects open indefinitely. It deliberately matches go-redis's own default
-// DialTimeout, which is the other bound on the same path.
-const defaultSubscribeConfirmTimeout = 5 * time.Second
+// defaultSubscribeConfirmTimeout bounds the wait for Redis to acknowledge a new
+// subscription (BUG-2747).
+//
+// SHORT BECAUSE THE DISTRIBUTION HAS NO MIDDLE, not as a guess at how fast
+// Redis is. Establishment either completes in single-digit milliseconds or does
+// not complete at all, so past the top of the fast mode, waiting longer buys
+// nothing — it only holds an SSE admission slot, global and per-workspace, for a
+// client that may already be gone (BUG-2749).
+//
+// Measured on a containerised Redis over loopback, 300 establishments, timing
+// the whole of Subscribe (dial, HELLO/AUTH, SUBSCRIBE and the acknowledgement):
+// p50 388µs, p99 679µs, max 1.73ms idle; p50 693µs, p90 5.1ms, p99 12.1ms, max
+// 18.5ms with 24 busy loops on 8 cores. One second is ~54x the loaded maximum.
+// A real deployment adds network RTT to every sample, which moves the fast mode
+// by milliseconds and does not put anything in the middle.
+//
+// The cost of being too short is an admission this instance cannot describe the
+// coverage of — which since this change is counted, logged, and reconciled to
+// the client when the acknowledgement lands. That is the safe-and-noisy
+// direction; waiting is the silent one.
+const defaultSubscribeConfirmTimeout = time.Second
 
 // anySubscription opts out of the generation check for callers that are not a
 // receive loop — tests driving the fan-out directly. A real message always
