@@ -795,8 +795,12 @@ Publishing our own frame replaces it with "did our heartbeat arrive?", which is
 answerable everywhere. The instance publishes one frame per subscribed workspace
 every **30 seconds** (T), and cycles a subscription that has received nothing for
 **90 seconds** (3T). Three intervals rather than two so a single lost or late
-frame is not a cycle. Detection latency is therefore in the 90–120s range: the
-scan runs on the same cadence as the publisher, which adds up to one interval.
+frame is not a cycle. Detection latency measured from the last frame that got
+through is 90–120s — the scan runs on its own 30s cadence, which adds up to one
+interval on top of the threshold. Measured from the moment the route actually
+died it is wider, roughly 60–120s: the publisher runs on an independent
+schedule, so the last frame through may have been sent anywhere in the interval
+before the fault.
 
 **Detection is part of phase 2, not phase 1.** Publishing and detecting are one
 capability with one switch, because an instance detects off its *own* frames —

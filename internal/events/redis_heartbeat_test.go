@@ -137,7 +137,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 //     wired to nothing, and — because its own registration keeps wsCounts
 //     non-zero — no later caller would establish either.
 func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
-	b, _, clock, _ := newHeartbeatBus(t, true)
+	b, mr, clock, _ := newHeartbeatBus(t, true)
 
 	first, _, outcome := b.Subscribe(context.Background(), "ws-1")
 	if outcome != SubscribeOK {
@@ -210,14 +210,35 @@ func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
 		t.Fatal("the subscription was never replaced; this test did not exercise a cycle")
 	}
 
-	// The only assertion that proves the joiner's channel is behind a LIVE
-	// subscription rather than a torn-down one.
+	// EXACTLY ONE REDIS SUBSCRIPTION, which the delivery assertion below does
+	// NOT establish on its own (codex round 8). If the cycle had torn wsSubs
+	// down WITHOUT first minting the establishment record, the joiner would
+	// have found neither a live subscription nor a pending one, appointed
+	// itself establisher, and opened a SECOND connection and receive loop for
+	// this workspace — and every subscriber would still have received the event
+	// below, once per channel, because fan-out is per subscriber. The only
+	// thing that separates one subscription from two is counting them.
+	channel := b.channelFor("ws-1")
+	waitFor(t, "the cycled subscription to settle to exactly one", func() bool {
+		return mr.PubSubNumSub(channel)[channel] == 1
+	})
+
+	// And the joiner's channel is behind a LIVE subscription rather than a
+	// torn-down one.
 	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
 	for name, ch := range map[string]chan Event{"joiner": joinerCh, "first subscriber": first} {
 		select {
 		case <-ch:
 		case <-time.After(3 * time.Second):
 			t.Fatalf("%s received nothing after the cycle: its channel is behind a subscription that no longer exists", name)
+		}
+		// Delivered ONCE. Two receive loops on one channel deliver every event
+		// twice, which is the other half of the two-subscription failure and is
+		// invisible to a test that only checks something arrived.
+		select {
+		case dup := <-ch:
+			t.Fatalf("%s received the event twice (%+v): there is more than one receive loop on this workspace", name, dup)
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }
@@ -472,6 +493,44 @@ func TestAPayloadWearingThePrefixStillEndsCoverage(t *testing.T) {
 	}
 }
 
+// TestAPrefixedGarbagePayloadEndsCoverageEndToEnd is the half the classifier
+// test cannot reach (codex round 8): asserting that decodePayload returns an
+// error says nothing about whether receiveMessages ACTS on it. This drives the
+// real Redis receive path and asserts the coverage drop and its reset reason.
+func TestAPrefixedGarbagePayloadEndsCoverageEndToEnd(t *testing.T) {
+	b, mr, _, obs := newHeartbeatBus(t, true)
+
+	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
+	defer b.Unsubscribe(ch)
+
+	// A buffer to drop — dropWorkspaceCoverage reports no reset without one.
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fixture: no event, so there is no coverage to end")
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+	// Wears the prefix, is not a frame this instance could have published.
+	if err := client.Publish(context.Background(), b.channelFor("ws-1"), "hb|<script>").Err(); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	waitFor(t, "the prefixed garbage to end this workspace's coverage", func() bool {
+		for _, r := range obs.resetReasons() {
+			if r == ResetReasonUndecodableMessage {
+				return true
+			}
+		}
+		return false
+	})
+	if got := b.EventsSince("ws-1", 1); got != nil {
+		t.Fatalf("coverage survived a payload this instance did not publish: EventsSince answered %d events", len(got))
+	}
+}
+
 // TestAnEventIsNotMistakenForAHeartbeat is the counterfactual to the test
 // above: the classification must not swallow real traffic. A bare JSON body
 // and a prefixed one both still decode as events.
@@ -507,7 +566,7 @@ func TestAnEventIsNotMistakenForAHeartbeat(t *testing.T) {
 // "coverage dropped" from "connection replaced"; without it a drop-only
 // implementation passes.
 func TestAnIdleSubscriptionEndsItsCoverageAndReplacesItsConnection(t *testing.T) {
-	b, _, clock, obs := newHeartbeatBus(t, true)
+	b, mr, clock, obs := newHeartbeatBus(t, true)
 
 	ch, _, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
@@ -564,8 +623,18 @@ func TestAnIdleSubscriptionEndsItsCoverageAndReplacesItsConnection(t *testing.T)
 	// receive goroutine on every cycle — forever, since nothing else will ever
 	// tear them down. The wedged route is exactly the case where they never
 	// die on their own.
+	//
+	// COUNTED AT REDIS, not inferred from the loop exiting (codex round 8).
+	// stopRedisSubscription does two things — sub.cancel() and pubsub.Close()
+	// — and the receive loop exits on the FIRST of them alone, so waiting for
+	// the exit alone would still pass against a version that cancelled the loop
+	// and left the connection and its health check open.
 	waitFor(t, "the cycled subscription's receive loop to exit", func() bool {
 		return obs.loopExitCount() >= 1
+	})
+	channel := b.channelFor("ws-1")
+	waitFor(t, "the old Redis subscription to be closed", func() bool {
+		return mr.PubSubNumSub(channel)[channel] == 1
 	})
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
@@ -1076,8 +1145,47 @@ func TestOneIdlePassCyclesEveryDueWorkspace(t *testing.T) {
 		before[ws] = gen
 	}
 
+	// A RENDEZVOUS, because counting outcomes cannot tell serial from parallel
+	// (codex round 8): a serial pass also cycles all of them and would have
+	// passed the assertions below unchanged. Each establishment blocks here
+	// until a second one joins it; under a serial implementation the first
+	// waits alone, times out, and maxConcurrent never exceeds 1.
+	var mu sync.Mutex
+	concurrent, maxConcurrent := 0, 0
+	reached := make(chan struct{})
+	var once sync.Once
+	b.beforeInstallSubscription = func(string) {
+		mu.Lock()
+		concurrent++
+		if concurrent > maxConcurrent {
+			maxConcurrent = concurrent
+		}
+		n := concurrent
+		mu.Unlock()
+		if n >= 2 {
+			once.Do(func() { close(reached) })
+		}
+		select {
+		case <-reached:
+		case <-time.After(time.Second):
+		}
+		mu.Lock()
+		concurrent--
+		mu.Unlock()
+	}
+
 	clock.advance(DefaultIdleTimeout + time.Second)
 	b.cycleIdleSubscriptions()
+
+	mu.Lock()
+	peak := maxConcurrent
+	mu.Unlock()
+	if peak < 2 {
+		t.Fatalf("peak concurrent establishments was %d: the pass is serialised, so recovery takes one dial timeout per workspace", peak)
+	}
+	if peak > maxConcurrentCycles {
+		t.Fatalf("peak concurrent establishments was %d, above the cap of %d: a Redis outage would be answered with one dial per workspace at once", peak, maxConcurrentCycles)
+	}
 
 	if got := obs.cycledCount(); got != workspaces {
 		t.Fatalf("SubscriptionCycled fired %d times, want %d: a pass dropped workspaces past the concurrency cap", got, workspaces)

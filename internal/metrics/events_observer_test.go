@@ -39,6 +39,20 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
+	// The comment above claimed "every reason this bus can emit" while this one
+	// was missing (codex round 8). Production emits it from
+	// confirmSubscription's late-acknowledgement path, so the mapping was
+	// unexercised — and the zero-assertion further down proved only that the
+	// dedicated counter does not leak INTO this series, which is a different
+	// claim.
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
 
 	obs.ReceiveLoopExited()
 	obs.ReceiveLoopExited()
@@ -89,10 +103,12 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonEpochRegressed}, 1)
 	assertCounter(t, m, "pad_event_subscription_unconfirmed_total", nil, 2)
-	// ...and it did NOT leak into the reset series, which is the half a
-	// merged-counter adapter would still pass without.
+	// ...and the two stay SEPARATE. The counts differ on purpose — 2 on the
+	// dedicated counter, 8 on the reset reason — so an adapter that merged them
+	// cannot satisfy both, which a zero-versus-nonzero pair could not establish
+	// once the reason itself started being emitted here.
 	assertCounter(t, m, "pad_event_sequence_resets_total",
-		map[string]string{"reason": events.ResetReasonSubscriptionUnconfirmed}, 0)
+		map[string]string{"reason": events.ResetReasonSubscriptionUnconfirmed}, 8)
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonUndecodableMessage}, 5)
 	assertCounter(t, m, "pad_event_sequence_resets_total",

@@ -41,9 +41,18 @@ const (
 	// coverage ends and its connection is cycled.
 	//
 	// Three intervals rather than two so that a single lost or late heartbeat
-	// is not a cycle. The detector runs on the same ticker as the publisher,
-	// so the observed latency to detection is in [3T, 4T): the scan granularity
-	// adds up to one interval on top of the threshold itself.
+	// is not a cycle.
+	//
+	// THE LATENCY ARITHMETIC, corrected after the loops were split (codex
+	// round 8; the earlier wording described a shared ticker that no longer
+	// exists). Measured FROM lastSeen, detection lands in [3T, 4T) — the scan
+	// runs on its own T-cadence, so it adds up to one interval on top of the
+	// threshold. Measured from FAULT ONSET it is wider and less tidy, roughly
+	// [2T, 4T): the publisher has its own independent phase, so the last frame
+	// to get through may have been sent anywhere in the interval before the
+	// route died. A pass that overruns widens both ends further. Quote the
+	// from-lastSeen figure when reasoning about the code and the from-onset
+	// one when telling an operator how long an incident hides.
 	DefaultIdleTimeout = 3 * DefaultHeartbeatInterval
 )
 
