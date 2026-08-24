@@ -445,11 +445,24 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 // ListDocumentActivityBeforeTime returns activities for a document created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 //
+// Activities a comment links to (comments.activity_id) are EXCLUDED here, at
+// query time. The timeline shows such an activity through its comment's card,
+// never as its own entry — and the only correct place to drop it is the query:
+// comments and activities are read through separately bounded windows over
+// one cursor, so an activity can land inside its window while the comment
+// that links it falls outside the comment window, and a handler that only
+// suppresses activities whose comment it happens to hold then emits a
+// standalone "commented" card for it (TASK-2760, codex round 2). Excluding at
+// the source makes the suppression exact regardless of either window, and
+// frees the window's slots for rows that will actually render. The lookup is
+// a point probe on idx_comments_activity, present on both dialects.
+//
 // When beforeID is empty (first page / no cursor), the secondary id tie-breaker
 // is omitted. See ListCommentsBeforeTime for the rationale (BUG-1086).
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
 	const selectCols = `a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')`
+	const notCommentLinked = `AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id)`
 	const orderLimit = `ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
 
 	var rows *sql.Rows
@@ -460,6 +473,7 @@ func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Ti
 			FROM activities a
 			LEFT JOIN users u ON a.user_id = u.id
 			WHERE a.document_id = ? AND a.created_at < ?
+			`+notCommentLinked+`
 			`+orderLimit), documentID, ts, limit)
 	} else {
 		rows, err = s.db.Query(s.q(`
@@ -467,6 +481,7 @@ func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Ti
 			FROM activities a
 			LEFT JOIN users u ON a.user_id = u.id
 			WHERE a.document_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))
+			`+notCommentLinked+`
 			`+orderLimit), documentID, ts, ts, beforeID, limit)
 	}
 	if err != nil {

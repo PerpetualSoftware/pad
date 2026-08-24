@@ -198,3 +198,43 @@ func equalStringMaps(a, b map[string]string) bool {
 	}
 	return true
 }
+
+// Codex round 2 on TASK-2760: the timeline handler suppressed a comment's
+// linked activity only when the comment was in the SAME page — comments and
+// activities being paginated separately, an activity could be fetched while
+// its comment was not, and render as a standalone "commented" card. The
+// activity query now excludes comment-linked rows itself, so the outcome does
+// not depend on which comments happened to be fetched alongside.
+func TestListDocumentActivityBeforeTime_ExcludesCommentLinkedRows(t *testing.T) {
+	s, item := agentNameFixture(t)
+
+	linked := commentWithActivity(t, s, item, `{"agent":"wren"}`, "linked", "")
+	loose, err := s.CreateActivity(models.Activity{
+		WorkspaceID: item.WorkspaceID, DocumentID: item.ID,
+		Action: "updated", Actor: "user", Source: "web", Metadata: `{"changes":"status"}`,
+	})
+	if err != nil {
+		t.Fatalf("create activity: %v", err)
+	}
+
+	future := time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		name     string
+		beforeID string
+	}{{"no cursor", ""}, {"cursor", "g"}} {
+		got, err := s.ListDocumentActivityBeforeTime(item.ID, future, tc.beforeID, 50)
+		if err != nil {
+			t.Fatalf("%s: ListDocumentActivityBeforeTime: %v", tc.name, err)
+		}
+		ids := map[string]bool{}
+		for _, a := range got {
+			ids[a.ID] = true
+		}
+		if ids[linked.ActivityID] {
+			t.Errorf("%s: comment-linked activity %s returned; it must be excluded at the query", tc.name, linked.ActivityID)
+		}
+		if !ids[loose] {
+			t.Errorf("%s: unlinked activity %s missing — the exclusion must not over-reach", tc.name, loose)
+		}
+	}
+}

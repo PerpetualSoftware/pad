@@ -314,13 +314,15 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		versionTimes[v.CreatedAt.Unix()] = true
 	}
 
-	// Build a set of activity IDs that are linked to comments (to show as combined cards).
-	commentActivityIDs := make(map[string]bool)
-	for _, c := range comments {
-		if c.ActivityID != "" {
-			commentActivityIDs[c.ActivityID] = true
-		}
-	}
+	// Activities a comment links to are NOT filtered here. They used to be —
+	// a set of the fetched comments' activity_ids, skipped below — and that
+	// was wrong in exactly the way it looked right: comments and activities
+	// arrive through separately bounded windows, so an activity whose comment
+	// sat outside the comment window slipped through as a standalone
+	// "commented" card. ListDocumentActivityBeforeTime now excludes linked
+	// rows at the query, where the check is exact whatever either window
+	// holds (TASK-2760, codex round 2). A page-local guard kept alongside it
+	// would be dead code that reads as load-bearing, so there is none.
 
 	var entries []models.TimelineEntry
 
@@ -356,18 +358,14 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		entries = append(entries, entry)
 	}
 
-	// Add activity entries (with dedup: skip "updated" if a version exists at same second,
-	// and skip activities that are linked to a comment since they'll be shown as combined cards).
+	// Add activity entries (with dedup: skip "updated" if a version exists at
+	// same second). Comment-linked activities never reach this loop — see the
+	// note at the top of the function.
 	for i := range activities {
 		a := activities[i]
 
 		// Skip "read" and "searched" actions — not useful in item timeline.
 		if a.Action == "read" || a.Action == "searched" {
-			continue
-		}
-
-		// Skip activities that already have a linked comment — they're shown via the comment card.
-		if commentActivityIDs[a.ID] {
 			continue
 		}
 
