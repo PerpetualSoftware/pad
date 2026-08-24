@@ -150,7 +150,7 @@ export PAD_AGENT=reviewer
 
 The name is rendered exactly as sent — Pad keeps no list of approved names, and does not re-case or rewrite what you choose.
 
-Not every entry can show it. Comments, version snapshots, and implementation-note/decision entries record only *that* an agent acted, because the name is not stored on those rows — they still read `Agent`. Activity entries are the ones that carry it.
+Not every entry can show it. Activity entries store it, and comments (replies included) read it through the activity each one links to — so a comment written by an agent that sent a name shows that name in its chip, next to the person whose credentials it used. Version snapshots and implementation-note/decision entries record only *that* an agent acted, because nothing links them to a named row — they still read `Agent`.
 
 **What this does not claim.** The name is supplied by the client and self-declared, so it records honesty, not identity. From `ResolveAgentName`'s own contract in `internal/cli/agent_identity.go`:
 

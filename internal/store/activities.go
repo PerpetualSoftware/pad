@@ -49,7 +49,19 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	ts := now()
 	cutoff := time.Now().UTC().Add(-ActivityDebounceCooldown).Format(time.RFC3339)
 
-	// Look for a recent activity to coalesce with.
+	// Look for a recent activity to coalesce with — the newest match. If a
+	// comment links that row (comments.activity_id), the merge below REFUSES
+	// it and a fresh row is written instead: the comment reads its agent
+	// name from the row's metadata, and a merge overlays the incoming `agent`
+	// and bumps created_at, so a later update by a different agent under the
+	// same credentials would otherwise silently re-attribute an earlier
+	// comment (TASK-2760, codex round 3). A linked row therefore ENDS a
+	// coalescing run; the next update starts a new one. The refusal lives in
+	// the UPDATE's own predicate and nowhere else, because a comment can link
+	// the row between this read and that write (codex round 6) — a check
+	// here would be a second guard that only looks load-bearing. What this
+	// does NOT close is the opposite order, an update that completes before
+	// the comment links its row at all: BUG-2716's transaction.
 	var existingID, existingMeta string
 	err := s.db.QueryRow(s.q(`
 		SELECT id, metadata FROM activities
@@ -70,10 +82,37 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// Merge metadata: accumulate "changes" strings from both old and new.
 	merged := mergeActivityMeta(existingMeta, a.Metadata)
 
-	_, err = s.db.Exec(s.q(`
-		UPDATE activities SET metadata = ?, created_at = ? WHERE id = ?
-	`), merged, ts, existingID)
-	return existingID, err
+	mergedOK, err := s.mergeIntoUnlinkedActivity(existingID, merged, ts)
+	if err != nil {
+		return existingID, err
+	}
+	if !mergedOK {
+		// Comment-linked (before the read above, or since) — frozen. A
+		// fresh row starts the next run.
+		return s.CreateActivity(a)
+	}
+	return existingID, nil
+}
+
+// mergeIntoUnlinkedActivity applies a debounce merge to one activity row in a
+// single statement whose predicate refuses a row any comment links to. It
+// reports whether the row was written: false means a comment linked it after
+// the caller chose it, and the caller must not treat it as merged. See the
+// comment in CreateActivityDebounced for why the check lives in the UPDATE.
+func (s *Store) mergeIntoUnlinkedActivity(id, metadata, ts string) (bool, error) {
+	res, err := s.db.Exec(s.q(`
+		UPDATE activities SET metadata = ?, created_at = ?
+		WHERE id = ?
+		  AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = activities.id AND c.item_id = activities.document_id)
+	`), metadata, ts, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // mergeActivityMeta combines two activity metadata JSON strings, accumulating
@@ -445,11 +484,24 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 // ListDocumentActivityBeforeTime returns activities for a document created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 //
+// Activities a comment links to (comments.activity_id) are EXCLUDED here, at
+// query time. The timeline shows such an activity through its comment's card,
+// never as its own entry — and the only correct place to drop it is the query:
+// comments and activities are read through separately bounded windows over
+// one cursor, so an activity can land inside its window while the comment
+// that links it falls outside the comment window, and a handler that only
+// suppresses activities whose comment it happens to hold then emits a
+// standalone "commented" card for it (TASK-2760, codex round 2). Excluding at
+// the source makes the suppression exact regardless of either window, and
+// frees the window's slots for rows that will actually render. The lookup is
+// a point probe on idx_comments_activity, present on both dialects.
+//
 // When beforeID is empty (first page / no cursor), the secondary id tie-breaker
 // is omitted. See ListCommentsBeforeTime for the rationale (BUG-1086).
 func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Time, beforeID string, limit int) ([]models.Activity, error) {
 	ts := before.Format(time.RFC3339)
 	const selectCols = `a.id, COALESCE(a.workspace_id, ''), COALESCE(a.document_id, ''), a.action, a.actor, a.source, a.metadata, COALESCE(a.user_id, ''), a.created_at, COALESCE(u.name, ''), COALESCE(a.ip_address, ''), COALESCE(a.user_agent, '')`
+	const notCommentLinked = `AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = a.id AND c.item_id = a.document_id)`
 	const orderLimit = `ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
 
 	var rows *sql.Rows
@@ -460,6 +512,7 @@ func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Ti
 			FROM activities a
 			LEFT JOIN users u ON a.user_id = u.id
 			WHERE a.document_id = ? AND a.created_at < ?
+			`+notCommentLinked+`
 			`+orderLimit), documentID, ts, limit)
 	} else {
 		rows, err = s.db.Query(s.q(`
@@ -467,6 +520,7 @@ func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Ti
 			FROM activities a
 			LEFT JOIN users u ON a.user_id = u.id
 			WHERE a.document_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?))
+			`+notCommentLinked+`
 			`+orderLimit), documentID, ts, ts, beforeID, limit)
 	}
 	if err != nil {

@@ -594,6 +594,14 @@ func PrintActivityTable(activities []models.Activity) {
 }
 
 // PrintCommentTable prints comments in a formatted table.
+// PrintCommentTable deliberately does NOT render Comment.AgentName (TASK-2760).
+// The name is self-declared client text; the web surfaces isolate it in its
+// own element so a bidi control or lookalike cannot redraw the author,
+// source or timestamp beside it, and a terminal line has no such element —
+// composing the name into this attribution string is exactly the fragment
+// shape agentActor.ts forbids. `--format json` carries the field verbatim
+// for agents and scripts; a terminal-safe rendering (control-character
+// stripping, a fixed-width column) is IDEA-2766's, not this function's.
 func PrintCommentTable(comments []models.Comment) {
 	if len(comments) == 0 {
 		fmt.Println("No comments.")

@@ -1699,7 +1699,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)
 
 	// If a comment was attached to this update (e.g. explaining a status change),
-	// create a comment linked to the activity entry.
+	// create a comment linked to the activity entry. The comment reads its
+	// agent name through that link (TASK-2760); between the activity write
+	// above and the link below the row is still unlinked, so a concurrent
+	// update under the same user can debounce-merge into it and overlay the
+	// agent stamp the comment will then carry. Same non-atomic window as
+	// BUG-2716, which is where the one-transaction fix is tracked.
 	if input.Comment != nil && strings.TrimSpace(*input.Comment) != "" {
 		commentInput := models.CommentCreate{
 			Body:       strings.TrimSpace(*input.Comment),

@@ -314,7 +314,27 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		versionTimes[v.CreatedAt.Unix()] = true
 	}
 
-	// Build a set of activity IDs that are linked to comments (to show as combined cards).
+	// Activities the fetched comments link to, skipped below. This is NOT the
+	// mechanism that keeps a comment-linked activity off the timeline —
+	// ListDocumentActivityBeforeTime excludes those at the query, which is
+	// the only place the check is exact: comments and activities arrive
+	// through separately bounded windows, and a guard built from the
+	// comments in hand cannot see an activity whose comment fell outside the
+	// comment window (TASK-2760, codex round 2). What this set covers is the
+	// read skew between the two queries: the sources are read at separate
+	// instants with no shared snapshot (see TimelineEntry's doc), so a
+	// comment fetched here and hard-deleted before the activity query runs
+	// leaves its activity eligible again while the stale comment is still in
+	// memory, and both would render once (codex round 4). Two guards, two
+	// distinct failure modes; neither substitutes for the other. The same
+	// skew runs the other way too: a comment created between the two reads
+	// is in neither — its activity is excluded by the query, and the comment
+	// missed the earlier read (codex round 5). Before the exclusion that
+	// window showed a ghost "commented" card with no comment behind it; now
+	// it shows nothing, and the next fetch (or the comment.created SSE
+	// event) is consistent. Neither guard can close a gap that lives between
+	// two reads with no shared snapshot; TimelineEntry's doc states the
+	// class.
 	commentActivityIDs := make(map[string]bool)
 	for _, c := range comments {
 		if c.ActivityID != "" {
@@ -347,14 +367,18 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			CreatedAt: c.CreatedAt,
 			Actor:     c.CreatedBy,
 			ActorName: c.Author,
+			// Derived from the nested comment (see TimelineEntry.AgentName);
+			// the store's join is the only writer of the value being copied.
+			AgentName: c.AgentName,
 			Source:    c.Source,
 			Comment:   &comments[i],
 		}
 		entries = append(entries, entry)
 	}
 
-	// Add activity entries (with dedup: skip "updated" if a version exists at same second,
-	// and skip activities that are linked to a comment since they'll be shown as combined cards).
+	// Add activity entries (with dedup: skip "updated" if a version exists at
+	// same second, and skip activities a fetched comment links to — the
+	// read-skew guard described at the top of the function).
 	for i := range activities {
 		a := activities[i]
 
@@ -363,7 +387,6 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			continue
 		}
 
-		// Skip activities that already have a linked comment — they're shown via the comment card.
 		if commentActivityIDs[a.ID] {
 			continue
 		}

@@ -24,6 +24,20 @@ type Comment struct {
 	// Populated by joins (not stored)
 	ItemTitle string `json:"item_title,omitempty"`
 	ItemSlug  string `json:"item_slug,omitempty"`
+	// AgentName is the display name the writing agent declared (the
+	// X-Pad-Agent header), read off the activity this comment's ActivityID
+	// points at — the `commented` row a comment or reply logs, or the
+	// `updated` row of an item update that carried the comment. Comments
+	// themselves never store it; workspace activity rows are the only
+	// carrier (TASK-2759 / TASK-2760). Its ONLY
+	// writer is the LEFT JOIN in the store's list queries (scanComments in
+	// comments.go), so it is empty on a comment read any other way
+	// (GetComment, the create/update read-back) and on a comment whose
+	// activity carries no stamp — a human's write, a pre-BUG-2542 row, an
+	// agent that sent no header. It is populated whatever CreatedBy says;
+	// the client decides whether the actor kind makes it meaningful.
+	// Self-declared, so it records what the client said, not who acted.
+	AgentName string `json:"agent_name,omitempty"`
 
 	// Populated by handlers for threaded views
 	Replies   []Comment  `json:"replies,omitempty"`

@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Item-level actions (existing)
 var ValidActions = []string{
@@ -137,11 +140,21 @@ type AuditLogParams struct {
 // one after another. Nothing is lost: the blob is authoritative and the next
 // fetch is consistent.
 type TimelineEntry struct {
-	ID        string                  `json:"id"`
-	Kind      string                  `json:"kind"` // "comment", "activity", "version", "note", "decision"
-	CreatedAt time.Time               `json:"created_at"`
-	Actor     string                  `json:"actor"`
-	ActorName string                  `json:"actor_name,omitempty"`
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"` // "comment", "activity", "version", "note", "decision"
+	CreatedAt time.Time `json:"created_at"`
+	Actor     string    `json:"actor"`
+	ActorName string    `json:"actor_name,omitempty"`
+	// AgentName is set on "comment" entries only, and is DERIVED: it is a
+	// copy of Comment.AgentName, surfaced at entry level to match the
+	// actor_name idiom (ActorName is likewise a copy of Comment.Author for
+	// comment entries), so a client reads entry-level attribution the same
+	// way for every kind. The nested comment's value is the authoritative
+	// one — it is what the store's join wrote. Activity entries deliberately
+	// do NOT get it: their name already lives in Activity.Metadata, and a
+	// second copy there would be a second source that can drift (TASK-2760,
+	// lead ruling on the trail).
+	AgentName string                  `json:"agent_name,omitempty"`
 	Source    string                  `json:"source"`
 	Comment   *Comment                `json:"comment,omitempty"`
 	Activity  *Activity               `json:"activity,omitempty"`
@@ -154,4 +167,27 @@ type TimelineEntry struct {
 type TimelineResponse struct {
 	Entries []TimelineEntry `json:"entries"`
 	HasMore bool            `json:"has_more"`
+}
+
+// AgentNameFromMetadata returns the agent display name stamped on an
+// activity's metadata JSON (`handlers_documents.go::agentMeta` writes the
+// `agent` key from the X-Pad-Agent header), or "" when the metadata is empty,
+// unparseable, or carries no non-empty string under that key. It is the Go
+// twin of the web client's agentNameOf (web/src/lib/utils/agentActor.ts) and
+// applies the same contract: verbatim, no normalization, and a non-string
+// value counts as absent rather than being rendered.
+//
+// Parsing happens here, in Go, rather than in SQL: the store targets both
+// SQLite and Postgres, whose JSON accessors (json_extract vs ->>) differ, and
+// the comment queries currently have no dialect fork to add one to.
+func AgentNameFromMetadata(metadata string) string {
+	if metadata == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		return ""
+	}
+	name, _ := m["agent"].(string)
+	return name
 }
