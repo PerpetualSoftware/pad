@@ -110,7 +110,11 @@ describe('activity page — Audit view', () => {
 	it.each([
 		['no agent key', JSON.stringify({ changes: 'status' })],
 		['an empty name', JSON.stringify({ agent: '' })],
-		['unparseable metadata', 'not json']
+		['unparseable metadata', 'not json'],
+		// A row can reach the client with no metadata at all — the audit
+		// helpers that log workspace-membership and auth events never call
+		// agentMeta, so they produce actor=agent with nothing stamped.
+		['absent metadata', undefined as unknown as string]
 	])('falls back to the generic badge given %s', async (_case, metadata) => {
 		await mountPage('audit', [act({ metadata })]);
 

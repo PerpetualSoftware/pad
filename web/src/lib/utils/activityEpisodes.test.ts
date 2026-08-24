@@ -93,10 +93,45 @@ describe('foldEpisodes', () => {
 	it('renders a generic-looking client id verbatim rather than filtering it', () => {
 		const eps = foldEpisodes([act(1, { metadata: '{"agent":"claude-code"}' })], { now });
 		expect(eps[0].actorLabel).toBe('claude-code');
-		// The fold key follows the label, so a filtered id would also have
+		// The fold key follows the name, so a filtered id would also have
 		// collapsed distinct clients into one episode — assert the key, since
 		// that consequence outlives any change to the label's wording.
-		expect(eps[0].key.startsWith('agent:claude-code|')).toBe(true);
+		expect(eps[0].key.startsWith('agent:named:claude-code|')).toBe(true);
+	});
+
+	// Codex round 4. `agent` is a legal value for X-Pad-Agent, and a person
+	// may be named `cli`. A key built from the display label alone folds
+	// either one together with the actors we have NO name for — two
+	// different claims ("this actor" vs "unattributed") sharing one key.
+	it('separates an actor literally named like the generic label from unnamed ones', () => {
+		const onOther = { document_id: 'item-2', item_ref: 'BUG-2' };
+		const eps = foldEpisodes(
+			[
+				act(1, { metadata: '{"agent":"agent"}' }),
+				act(2, { metadata: '{}', ...onOther })
+			],
+			{ now }
+		);
+
+		expect(eps).toHaveLength(2);
+		// Same rendered label, deliberately different identity.
+		expect(eps.map((e) => e.actorLabel)).toEqual(['agent', 'agent']);
+		expect(new Set(eps.map((e) => e.key.split('|')[0])).size).toBe(2);
+	});
+
+	it('separates a person named like a source from an unattributed one', () => {
+		const onOther = { document_id: 'item-2', item_ref: 'BUG-2' };
+		const eps = foldEpisodes(
+			[
+				act(1, { actor: 'user', actor_name: 'cli', source: 'cli' }),
+				act(2, { actor: 'user', actor_name: undefined, source: 'cli', ...onOther })
+			],
+			{ now }
+		);
+
+		expect(eps).toHaveLength(2);
+		expect(eps.map((e) => e.actorLabel)).toEqual(['cli', 'cli']);
+		expect(new Set(eps.map((e) => e.key.split('|')[0])).size).toBe(2);
 	});
 
 	// Each stamp shape gets its own fold call: within one call these rows would

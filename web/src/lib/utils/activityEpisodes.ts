@@ -59,13 +59,26 @@ export interface FoldOptions {
 	now?: () => number;
 }
 
+/**
+ * The fold key must distinguish "this actor" from "an actor we have no name
+ * for", and the LABEL cannot do that job: an agent may legitimately send
+ * `agent` in X-Pad-Agent, and a person's display name may be `cli`, so a key
+ * built from the label alone silently merges a named actor with the nameless
+ * ones. The name is client-supplied text, so treating it as a distinct
+ * namespace rather than a value in the same one is the only version that
+ * cannot collide. (Both halves matter: the user branch had the same defect
+ * for a person named `cli` or `web` — CONVE-18.)
+ */
 function actorKeyOf(a: Activity): { key: string; label: string; kind: string } {
 	if (a.actor === 'agent') {
-		const label = agentNameFromMetadata(a.metadata) ?? 'agent';
-		return { key: `agent:${label}`, label, kind: 'agent' };
+		const name = agentNameFromMetadata(a.metadata);
+		return { key: name ? `agent:named:${name}` : 'agent:anon', label: name ?? 'agent', kind: 'agent' };
 	}
-	const label = a.actor_name ?? (a.source === 'cli' ? 'cli' : 'web');
-	return { key: `user:${label}`, label, kind: 'user' };
+	if (a.actor_name) {
+		return { key: `user:named:${a.actor_name}`, label: a.actor_name, kind: 'user' };
+	}
+	const label = a.source === 'cli' ? 'cli' : 'web';
+	return { key: `user:anon:${label}`, label, kind: 'user' };
 }
 
 /**

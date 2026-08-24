@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 import { page } from '$app/state';
-import type { Activity } from '$lib/types';
+import type { DashboardResponse } from '$lib/types';
+
+/**
+ * The dashboard's rows are NOT `Activity` — `recent_activity` is a reduced
+ * shape with no id/workspace_id/document_id and an OPTIONAL metadata. Typing
+ * the fixture as the real DTO is what keeps this suite honest if that payload
+ * changes, and it is why the omitted-metadata case below is reachable at all
+ * (codex round 4).
+ */
+type RecentActivity = DashboardResponse['recent_activity'][number];
 
 /**
  * TASK-2759, the workspace dashboard's Recent Activity rows.
@@ -32,12 +41,8 @@ vi.mock('$lib/api/client', () => ({
 
 const { default: DashboardPage } = await import('./[username]/[workspace]/+page.svelte');
 
-let seq = 0;
-function act(over: Partial<Activity> = {}): Activity {
-	seq += 1;
+function act(over: Partial<RecentActivity> = {}): RecentActivity {
 	return {
-		id: `a${seq}`,
-		workspace_id: 'ws',
 		action: 'updated',
 		actor: 'agent',
 		source: 'cli',
@@ -48,7 +53,7 @@ function act(over: Partial<Activity> = {}): Activity {
 		item_slug: 'a-thing',
 		collection_slug: 'tasks',
 		...over
-	} as Activity;
+	};
 }
 
 /**
@@ -59,7 +64,7 @@ function act(over: Partial<Activity> = {}): Activity {
  * during render and leaves the whole page blank, which reads exactly like
  * "the badge did not render".
  */
-function dashboard(recent: Activity[]) {
+function dashboard(recent: RecentActivity[]) {
 	return {
 		summary: { total_items: recent.length, by_collection: {} },
 		active_items: [],
@@ -78,7 +83,7 @@ function dashboard(recent: Activity[]) {
 let host: HTMLElement;
 let app: Record<string, unknown> | null = null;
 
-async function mountWith(recent: Activity[]): Promise<void> {
+async function mountWith(recent: RecentActivity[]): Promise<void> {
 	dashboardGet.mockResolvedValue(dashboard(recent));
 	app = mount(DashboardPage, { target: host, props: {} }) as Record<string, unknown>;
 	flushSync();
@@ -126,7 +131,10 @@ describe('workspace dashboard — Recent Activity agent badge', () => {
 	it.each([
 		['no agent key', JSON.stringify({ changes: 'status' })],
 		['an empty name', JSON.stringify({ agent: '' })],
-		['unparseable metadata', 'not json']
+		['unparseable metadata', 'not json'],
+		// metadata is OPTIONAL on this DTO, so absent is a shape the server
+		// really sends — not just a defensive case (codex round 4).
+		['absent metadata', undefined]
 	])('falls back to the generic badge given %s', async (_case, metadata) => {
 		await mountWith([act({ metadata })]);
 
