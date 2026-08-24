@@ -372,6 +372,114 @@ func TestScrubOutboxUserRefs_DispatchedRowsScrubbedNotDeleted(t *testing.T) {
 	}
 }
 
+// TestScrubOutboxUserRefs_KeyScopedAndNumberSafe pins two properties a looser
+// implementation passes every other test without (codex round 1): the walk is
+// KEY-scoped, not value-scoped — a payload field that merely CONTAINS the
+// deleted user's id under an unrelated key survives — and numeric literals
+// cross the rewrite verbatim, so an int64 past float64's 2^53 integer range
+// cannot be corrupted by the re-marshal.
+func TestScrubOutboxUserRefs_KeyScopedAndNumberSafe(t *testing.T) {
+	s := testStore(t)
+	deleted, _ := scrubTestUsers(t, s)
+	ws := createTestWorkspace(t, s, "Scrub scoped")
+	clearOutbox(t, s)
+
+	// A hand-rolled item snapshot: the target key, a decoy string field whose
+	// VALUE is the deleted id under a non-target key, and a seq that float64
+	// cannot represent (2^53 + 1).
+	payload := `{"id":"` + newID() + `","workspace_id":"` + ws.ID + `","title":"decoy","content":"` + deleted.ID + `","assigned_user_id":"` + deleted.ID + `","seq":9007199254740993}`
+	emitInTx(t, s, func(tx *sql.Tx) error {
+		return writeOutboxTx(tx, s, OutboxEvent{
+			WorkspaceID:   ws.ID,
+			EventType:     kernelevents.ItemUpdated,
+			SubjectID:     newID(),
+			Payload:       []byte(payload),
+			PayloadFamily: kernelevents.PayloadItemSnapshot,
+		})
+	})
+
+	scrubInTx(t, s, deleted.ID)
+
+	var after string
+	if err := s.db.QueryRow(s.q(`SELECT payload FROM event_outbox`)).Scan(&after); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(after), &decoded); err != nil {
+		t.Fatalf("decode scrubbed payload: %v", err)
+	}
+	if _, present := decoded["assigned_user_id"]; present {
+		t.Fatalf("assigned_user_id survived: %v", decoded["assigned_user_id"])
+	}
+	if decoded["content"] != deleted.ID {
+		t.Fatalf("content damaged — the scrub is not key-scoped: %v", decoded["content"])
+	}
+	if !strings.Contains(after, `9007199254740993`) {
+		t.Fatalf("seq literal corrupted by the rewrite: %s", after)
+	}
+}
+
+// TestScrubOutboxRow_StaleReadRetriesAgainstFreshPayload drives the
+// compare-and-swap's retry leg directly — the concurrent-deletion race it
+// exists for needs two overlapping Postgres transactions to reproduce, but
+// the leg itself is reachable deterministically by handing the helper a STALE
+// copy of the payload: the conditional UPDATE must match zero rows, and the
+// re-read must scrub what is actually stored rather than reintroduce the
+// stale bytes.
+func TestScrubOutboxRow_StaleReadRetriesAgainstFreshPayload(t *testing.T) {
+	s := testStore(t)
+	deleted, bystander := scrubTestUsers(t, s)
+	ws := createTestWorkspace(t, s, "Scrub CAS")
+	clearOutbox(t, s)
+
+	// Stored reality: the payload another deletion already scrubbed — the
+	// bystander's id is gone, the deleted user's remains.
+	stored := `{"id":"` + newID() + `","workspace_id":"` + ws.ID + `","title":"cas","assigned_user_id":"` + deleted.ID + `"}`
+	// Our stale read: the pre-scrub original still naming BOTH users.
+	stale := `{"id":"` + newID() + `","workspace_id":"` + ws.ID + `","title":"cas","assigned_user_id":"` + deleted.ID + `","user_id":"` + bystander.ID + `"}`
+
+	var rowID string
+	emitInTx(t, s, func(tx *sql.Tx) error {
+		ev := OutboxEvent{
+			WorkspaceID:   ws.ID,
+			EventType:     kernelevents.ItemUpdated,
+			SubjectID:     newID(),
+			Payload:       []byte(stored),
+			PayloadFamily: kernelevents.PayloadItemSnapshot,
+		}
+		if err := writeOutboxTx(tx, s, ev); err != nil {
+			return err
+		}
+		return tx.QueryRow(s.q(`SELECT id FROM event_outbox`)).Scan(&rowID)
+	})
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+	if err := s.scrubOutboxRowTx(tx, rowID, stale, deleted.ID); err != nil {
+		t.Fatalf("scrubOutboxRowTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var after string
+	if err := s.db.QueryRow(s.q(`SELECT payload FROM event_outbox WHERE id = ?`), rowID).Scan(&after); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if strings.Contains(after, deleted.ID) {
+		t.Fatalf("deleted user id survived the retry: %s", after)
+	}
+	// The stale copy's extra key must NOT be reintroduced: the retry scrubbed
+	// the STORED bytes, not our stale ones — this is the lost-update the CAS
+	// prevents, asserted from its observable end.
+	if strings.Contains(after, bystander.ID) {
+		t.Fatalf("stale payload reintroduced the other deletion's id: %s", after)
+	}
+}
+
 func TestScrubOutboxUserRefs_RefusesEmptyUserID(t *testing.T) {
 	s := testStore(t)
 	tx, err := s.db.Begin()

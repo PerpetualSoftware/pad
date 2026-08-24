@@ -459,11 +459,33 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // is load-bearing: payload is JSONB on Postgres and TEXT on SQLite, and LIKE
 // on jsonb is not a thing. A uuid carries no LIKE metacharacters and is
 // specific enough that false positives are rare — and harmless, because the Go
-// rewrite is a no-op when no matching key holds the id. The scan is bounded by
-// TASK-2714's retention window, not the table's lifetime; its cost inside the
-// deletion transaction is accepted un-measured for a once-per-account-deletion
-// path (option (b) on the TASK-2719 trail, where (a) full-scan and (c) a
-// side-table were weighed).
+// rewrite is a no-op when no matching key holds the id. Two invariants the
+// prefilter leans on, named so they are checkable rather than assumed (codex
+// round 1): user ids are newID() uuids (hex + dashes — no LIKE metacharacters,
+// no characters JSON escapes, so the id appears verbatim in the stored text on
+// both dialects), and a payload is a SINGLE valid JSON value (writeOutboxTx
+// rejects anything json.Valid refuses, which includes concatenated values), so
+// the decoder cannot stop early with unscanned trailing content. The scan is
+// bounded by TASK-2714's retention window, not the table's lifetime; its cost
+// inside the deletion transaction is accepted un-measured for a
+// once-per-account-deletion path (option (b) on the TASK-2719 trail, where (a)
+// full-scan and (c) a side-table were weighed).
+//
+// RESIDUAL WINDOW, stated rather than discovered in an audit (codex round 1):
+// the candidate read is one snapshot inside the deletion transaction, so a row
+// emitted CONCURRENTLY can commit after it and keep the id. On both dialects
+// the paths that would CREATE such a row mostly serialize away — SQLite has
+// one writer at a time, and on Postgres any mutation that FK-references the
+// dying user (a new assignment, membership, authored comment) blocks on the
+// pending DELETE FROM users via its KEY SHARE check and then fails. What
+// survives is the narrow case that re-freezes an EXISTING reference without
+// re-checking it — e.g. a concurrent title update on an item still assigned to
+// the dying user, whose snapshot emit does not touch the users row — committed
+// inside the deletion's own window. Post-commit, the FK cascades have nulled
+// the live references, so new emits are clean. That escape is bounded by
+// TASK-2714's retention exactly like every pre-scrub payload was; closing it
+// outright would take a table lock on a once-per-account path, which is the
+// disproportion this note exists to record.
 //
 // READ FULLY, THEN WRITE. Both halves run on the one deletion transaction, and
 // issuing tx.Exec while a tx.Query cursor is open is the BUG-2409 shape — a
@@ -502,20 +524,8 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	rows.Close()
 
 	for _, c := range candidates {
-		scrubbed, changed, err := scrubUserRefsFromPayload([]byte(c.payload), userID)
-		if err != nil {
-			// A payload this transaction cannot parse is one the scrub cannot
-			// honestly claim to have erased — fail the deletion rather than
-			// skip the row silently.
-			return fmt.Errorf("outbox: scrub user refs: row %s: %w", c.id, err)
-		}
-		if !changed {
-			continue
-		}
-		if _, err := tx.Exec(s.q(`
-			UPDATE event_outbox SET payload = ? WHERE id = ?
-		`), string(scrubbed), c.id); err != nil {
-			return fmt.Errorf("outbox: scrub user refs: rewrite row %s: %w", c.id, err)
+		if err := s.scrubOutboxRowTx(tx, c.id, c.payload, userID); err != nil {
+			return err
 		}
 	}
 
@@ -530,6 +540,63 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 		return fmt.Errorf("outbox: scrub user refs: clear subject ids: %w", err)
 	}
 	return nil
+}
+
+// scrubOutboxRowTx rewrites one candidate row, retrying against concurrent
+// writers.
+//
+// THE UPDATE IS A COMPARE-AND-SWAP, not a blind write, because two account
+// deletions can hold one payload at once: a bulk payload naming users A and B
+// is a candidate for both, and on Postgres READ COMMITTED both transactions
+// can read the ORIGINAL before either commits — a blind rewrite by the later
+// committer would then reintroduce the earlier deletion's id from its stale
+// copy (codex round 1). Conditioning on the payload we read makes the stale
+// write match zero rows; we re-read and redo against the fresh bytes. SQLite
+// never takes the retry path (one writer at a time), and on Postgres the
+// text parameter coerces to jsonb, so the equality is the column's own.
+// Dialect-uniform on purpose — the same reasoning as claimOutboxIDs' arbiter.
+//
+// The retry bound is generous for its worst case (every concurrent deletion
+// of a user sharing this payload commits between our read and our write, per
+// attempt) and exists so a livelock bug fails loudly instead of spinning.
+func (s *Store) scrubOutboxRowTx(tx *sql.Tx, id, payload, userID string) error {
+	for attempt := 0; attempt < 5; attempt++ {
+		scrubbed, changed, err := scrubUserRefsFromPayload([]byte(payload), userID)
+		if err != nil {
+			// A payload this transaction cannot parse is one the scrub cannot
+			// honestly claim to have erased — fail the deletion rather than
+			// skip the row silently.
+			return fmt.Errorf("outbox: scrub user refs: row %s: %w", id, err)
+		}
+		if !changed {
+			return nil
+		}
+		res, err := tx.Exec(s.q(`
+			UPDATE event_outbox SET payload = ? WHERE id = ? AND payload = ?
+		`), string(scrubbed), id, payload)
+		if err != nil {
+			return fmt.Errorf("outbox: scrub user refs: rewrite row %s: %w", id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("outbox: scrub user refs: rewrite row %s: %w", id, err)
+		}
+		if n > 0 {
+			return nil
+		}
+		// Lost the race: someone rewrote (or pruned) the row since our read.
+		var fresh sql.NullString
+		err = tx.QueryRow(s.q(`SELECT payload FROM event_outbox WHERE id = ?`), id).Scan(&fresh)
+		if err == sql.ErrNoRows {
+			// Pruned between read and write — nothing left to scrub.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("outbox: scrub user refs: re-read row %s: %w", id, err)
+		}
+		payload = fresh.String
+	}
+	return fmt.Errorf("outbox: scrub user refs: row %s: contended past retry bound", id)
 }
 
 // emitItemEventTx writes one item-subject event to the outbox on the caller's
