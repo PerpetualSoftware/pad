@@ -94,16 +94,27 @@ type Observer interface {
 	// could not be CONFIRMED within the bus's bound, so the subscribers
 	// waiting on it were admitted anyway rather than refused (BUG-2747).
 	//
-	// It is not a coverage ending and deliberately does not go through
-	// SequenceReset. Nothing has been lost that this instance knows of; what
-	// happened is that a stream was admitted whose coverage is UNKNOWN,
-	// because Redis had not acknowledged the SUBSCRIBE. The two are diagnosed
-	// differently and one does not imply the other.
+	// It is not itself a coverage ending, and it is counted separately from
+	// SequenceReset: nothing has been lost that this instance knows of; what
+	// happened is that a stream was admitted whose coverage is UNKNOWN, because
+	// Redis had not acknowledged the SUBSCRIBE.
+	//
+	// THE TWO ARE NOT DISJOINT, and an earlier version of this comment said
+	// they were (codex round 3). When the acknowledgement eventually lands,
+	// that path calls dropWorkspaceCoverage, which reports SequenceReset with
+	// reason subscription_unconfirmed — though only when a buffer existed to
+	// drop, which on this path is the uncommon case. So this counter is the
+	// dependable one and that reason is corroboration.
+	//
+	// IT COUNTS ESTABLISHMENTS, NOT CLIENTS — also corrected from an earlier
+	// wording. One increment is one workspace subscription whose wait expired,
+	// however many subscribers were waiting on it; all of them are told to
+	// reconcile when the acknowledgement lands, so the client-side fan-out
+	// shows up in the midstream-resync counter rather than here.
 	//
 	// Expect zero. A non-zero rate means the SUBSCRIBE round trip is slow or
 	// stalling — the same Redis condition BUG-2748 makes an availability
-	// hazard — and every increment is a client that will be told to reconcile
-	// when the confirmation finally lands.
+	// hazard.
 	SubscriptionUnconfirmed()
 }
 

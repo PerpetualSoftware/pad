@@ -779,15 +779,18 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 
 	sub := b.addSubscriberLocked(workspaceID)
 
-	// The replay ceiling, captured at REGISTRATION rather than read in section
-	// 2. covered is false when this instance held no buffer for the workspace
-	// at that moment, which is the strongest form of "cannot vouch" there is —
-	// and it must be remembered, because establishment may create one in the
-	// gap and section 2 would otherwise mistake it for coverage we had.
-	rb, covered := b.replayBuffers[workspaceID]
-	var ceiling int64
-	if covered {
-		ceiling = rb.lastAppendedID
+	// Where the buffer stood at REGISTRATION, captured here rather than read in
+	// section 2.
+	//
+	// The BUFFER ITSELF is part of the mark, not just its position (codex round
+	// 3). An ID-space reset during the wait replaces the buffer wholesale, and
+	// a position in the old one describes nothing in the new one — while
+	// knownFrom may still accept an adjacent cursor, so the mismatch is not
+	// self-announcing. A nil buffer here is the same statement in its strongest
+	// form: this instance was not covering the workspace at all.
+	mark := registrationMark{buffer: b.replayBuffers[workspaceID]}
+	if mark.buffer != nil {
+		mark.appends = mark.buffer.appends
 	}
 
 	var establish bool
@@ -882,34 +885,49 @@ func (b *RedisBus) subscribeAndReplay(workspaceID string, sinceID int64, maxPerW
 		b.afterSubscribeRegister()
 	}
 	if resuming {
-		missed = b.eventsSinceCeilingLocked(workspaceID, sinceID, covered, ceiling)
+		missed = b.eventsSinceMarkLocked(workspaceID, sinceID, mark)
 	}
 	return sub.ch, missed, sub.gaps, true
 }
 
-// eventsSinceCeilingLocked is eventsSinceLocked bounded ABOVE by what the
-// buffer held when the caller registered, so the replay stops exactly where
-// the caller's own channel starts. Callers must hold b.mu.
+// registrationMark records where a workspace's replay buffer stood when a
+// caller registered: which buffer, and how many appends it had taken.
+type registrationMark struct {
+	buffer  *replayBuffer
+	appends int64
+}
+
+// eventsSinceMarkLocked is eventsSinceLocked bounded ABOVE by where the buffer
+// stood when the caller registered, so its replay stops exactly where its own
+// channel starts. Callers must hold b.mu.
 //
-// covered says whether a buffer existed at registration. A buffer that appeared
-// afterwards describes a span beginning after this caller's cursor, so it
-// cannot answer the cursor's question and must not be allowed to look like it
-// can.
-func (b *RedisBus) eventsSinceCeilingLocked(workspaceID string, sinceID int64, covered bool, ceiling int64) []Event {
-	if !covered {
+// BOUNDED BY POSITION, NOT BY ID. This bus's ids come from a counter shared
+// across workspaces, and a phase-1 publish assigns and publishes in two calls,
+// so arrival order and numeric order genuinely disagree. Cutting on id value
+// would both replay a straggler the caller already received and silently drop a
+// pre-registration event that happens to carry a higher id.
+func (b *RedisBus) eventsSinceMarkLocked(workspaceID string, sinceID int64, mark registrationMark) []Event {
+	rb, ok := b.replayBuffers[workspaceID]
+	if !ok || mark.buffer == nil || rb != mark.buffer {
+		// No coverage at registration, or a different buffer now: either way
+		// this instance cannot vouch for the caller's span.
 		return nil
 	}
 	events := b.eventsSinceLocked(workspaceID, sinceID)
 	if events == nil {
 		return nil
 	}
-	bounded := events[:0]
-	for _, e := range events {
-		if e.ID <= ceiling {
-			bounded = append(bounded, e)
-		}
+	// The buffer holds its last `count` appends, so the entries appended AFTER
+	// the caller registered are the final (appends - mark.appends) of whatever
+	// since() returned — it may trim from the front, never from the back.
+	after := rb.appends - mark.appends
+	if after <= 0 {
+		return events
 	}
-	return bounded
+	if after >= int64(len(events)) {
+		return events[:0]
+	}
+	return events[:int64(len(events))-after]
 }
 
 // Unsubscribe removes a local subscriber and closes its channel.

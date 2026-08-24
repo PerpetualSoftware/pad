@@ -227,6 +227,24 @@ type replayBuffer struct {
 	head   int // next write position
 	count  int // current number of events
 
+	// appends counts every append this buffer has ever taken, and it is a
+	// POSITION rather than an identifier (BUG-2747, codex round 3).
+	//
+	// A caller that registers and reads its replay in two separate critical
+	// sections needs to know where the buffer stood at the FIRST of them.
+	// lastAppendedID cannot answer that: this bus's IDs come from a shared
+	// counter and phase-1 publishes assign and publish in two calls, so
+	// arrival order and numeric order disagree. Against a numeric boundary a
+	// straggler arriving after registration is replayed as though it preceded
+	// it, and a pre-registration event that happens to carry a higher id is
+	// filtered out and never replayed at all — a duplicate and a silent
+	// omission from the same comparison.
+	//
+	// The buffer holds the last `count` appends, so ordinals
+	// (appends-count, appends] are what it still has, and the entries a caller
+	// must not be replayed are simply the final (appends - mark) of them.
+	appends int64
+
 	// knownFrom is the lowest event ID from which this buffer's coverage of
 	// its workspace can be VOUCHED FOR: the first ID appended since this
 	// instance began continuously receiving the workspace. Zero means
@@ -356,6 +374,7 @@ func (rb *replayBuffer) append(e Event) {
 		}
 	}
 	rb.lastAppendedID = e.ID
+	rb.appends++
 }
 
 // since returns all buffered events with ID > sinceID, in chronological order.

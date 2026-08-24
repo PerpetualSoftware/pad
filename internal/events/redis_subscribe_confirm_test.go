@@ -727,3 +727,103 @@ func TestCloseDuringEstablishmentDoesNotLeakTheSubscription(t *testing.T) {
 		t.Fatalf("after Close, %d connection(s) remain subscribed to the workspace channel: an establishment in flight installed into a closed bus and nothing tore it down", n)
 	}
 }
+
+// TestTheReplayCeilingIsAPositionNotAnID covers codex round 3's first P1
+// directly on the buffer, where the out-of-order case can be constructed
+// exactly rather than hoped for.
+//
+// This bus's IDs come from a counter shared across workspaces, and a phase-1
+// publish assigns and publishes in two calls, so arrival order and numeric
+// order genuinely disagree. Against an ID-valued ceiling both directions break
+// at once: a pre-registration event carrying a HIGHER id is filtered out and
+// never replayed, and a straggler arriving AFTER registration with a lower id
+// is replayed even though it also went to the caller's channel.
+func TestTheReplayCeilingIsAPositionNotAnID(t *testing.T) {
+	b := &RedisBus{
+		subscribers:   map[string]map[chan Event]*subscriber{},
+		workspaceOf:   map[chan Event]string{},
+		wsCounts:      map[string]int{},
+		wsSubs:        map[string]*redisSub{},
+		pendingSubs:   map[string]*pendingSub{},
+		replayBuffers: map[string]*replayBuffer{},
+		replaySize:    DefaultReplayBufferSize,
+	}
+	rb := newReplayBuffer(b.replaySize)
+	b.replayBuffers["ws-1"] = rb
+
+	// Pre-registration, appended out of numeric order — 10, then 30, then 20.
+	rb.append(Event{ID: 10, WorkspaceID: "ws-1"})
+	rb.append(Event{ID: 30, WorkspaceID: "ws-1"})
+	rb.append(Event{ID: 20, WorkspaceID: "ws-1"})
+
+	// The caller registers HERE. lastAppendedID is 20, which is below one of
+	// the events it has never seen.
+	mark := registrationMark{buffer: rb, appends: rb.appends}
+
+	// A straggler arrives after registration, carrying a LOWER id than the
+	// ceiling an ID-valued bound would have used.
+	rb.append(Event{ID: 15, WorkspaceID: "ws-1"})
+
+	b.mu.Lock()
+	missed := b.eventsSinceMarkLocked("ws-1", 10, mark)
+	b.mu.Unlock()
+
+	got := map[int64]int{}
+	for _, e := range missed {
+		got[e.ID]++
+	}
+	if got[30] != 1 {
+		t.Errorf("event 30 was appended before the caller registered and must be replayed exactly once, got %d", got[30])
+	}
+	if got[20] != 1 {
+		t.Errorf("event 20 was appended before the caller registered and must be replayed exactly once, got %d", got[20])
+	}
+	if got[15] != 0 {
+		t.Errorf("event 15 arrived after the caller registered, so it went to its channel and must not also be replayed, got %d", got[15])
+	}
+}
+
+// TestAReplacedBufferVoidsTheCallersCoverageClaim covers codex round 3's second
+// P1.
+//
+// An ID-space reset during the wait replaces the buffer wholesale. A position
+// in the old buffer describes nothing in the new one, and knownFrom may still
+// accept an adjacent cursor, so the mismatch does not announce itself — the
+// caller would be handed new-space events as though they preceded its
+// registration.
+func TestAReplacedBufferVoidsTheCallersCoverageClaim(t *testing.T) {
+	b := &RedisBus{
+		subscribers:   map[string]map[chan Event]*subscriber{},
+		workspaceOf:   map[chan Event]string{},
+		wsCounts:      map[string]int{},
+		wsSubs:        map[string]*redisSub{},
+		pendingSubs:   map[string]*pendingSub{},
+		replayBuffers: map[string]*replayBuffer{},
+		replaySize:    DefaultReplayBufferSize,
+	}
+	old := newReplayBuffer(b.replaySize)
+	b.replayBuffers["ws-1"] = old
+	old.append(Event{ID: 10, WorkspaceID: "ws-1"})
+	mark := registrationMark{buffer: old, appends: old.appends}
+
+	// Control: the same buffer still answers.
+	b.mu.Lock()
+	same := b.eventsSinceMarkLocked("ws-1", 9, mark)
+	b.mu.Unlock()
+	if same == nil {
+		t.Fatal("the buffer captured at registration must still answer its own caller")
+	}
+
+	// The reset: a new buffer, whose first event's id happens to sit adjacent
+	// to the caller's cursor so knownFrom would accept it.
+	fresh := newReplayBuffer(b.replaySize)
+	b.replayBuffers["ws-1"] = fresh
+	fresh.append(Event{ID: 10, WorkspaceID: "ws-1"})
+
+	b.mu.Lock()
+	after := b.eventsSinceMarkLocked("ws-1", 9, mark)
+	b.mu.Unlock()
+	if after != nil {
+		t.Fatalf("a buffer replaced since registration cannot vouch for the caller's span, got %d events", len(after))
+	}
+}
