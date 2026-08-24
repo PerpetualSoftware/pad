@@ -206,7 +206,6 @@
 		   badge, where the number's reasoning and its limits are written
 		   out. */
 		max-width: 24ch;
-		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
