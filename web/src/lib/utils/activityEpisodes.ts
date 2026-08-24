@@ -58,7 +58,11 @@ export interface FoldOptions {
 	now?: () => number;
 }
 
-/** Client ids that are tools, not seats — never shown as an actor name. */
+/** Client ids that are tools, not seats — never shown as an actor name.
+ *  SHIM with a retirement condition (CONVE-2757 rule 4): this list encodes
+ *  one team's tooling and dies with IDEA-2750 part 1, when agents carry
+ *  real display names via PAD_AGENT_NAME and the platform renders
+ *  metadata.agent verbatim. */
 const GENERIC_AGENT_IDS = new Set(['claude-code', 'cli', 'agent']);
 
 function metaAgentName(metadata: string): string | undefined {
