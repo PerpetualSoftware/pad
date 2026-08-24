@@ -13,6 +13,7 @@
 -->
 <script lang="ts">
 	import { adminFetch, type AdminUser } from '$lib/stores/admin.svelte';
+	import { agentNameFromMetadata } from '$lib/utils/agentActor';
 	import Chip from '$lib/components/common/Chip.svelte';
 
 	interface Props {
@@ -39,6 +40,8 @@
 		user_id?: string;
 		created_at: string;
 		actor_name?: string;
+		// See UserActivityTab — same rows, same omission (TASK-2759).
+		metadata?: string;
 	}
 
 	let metrics = $state<Metrics | null>(null);
@@ -227,6 +230,12 @@
 			{#each recentItems as ev (ev.id)}
 				<li class="recent-row">
 					<span class="recent-action">{ev.action}</span>
+					{#if ev.actor === 'agent'}
+						{@const agentName = agentNameFromMetadata(ev.metadata)}
+						{#if agentName}
+							<bdi class="recent-agent" title={agentName}>{agentName}</bdi>
+						{/if}
+					{/if}
 					<span class="recent-source">via {ev.source}</span>
 					<span class="recent-time" title={ev.created_at}>{relativeTime(ev.created_at)}</span>
 				</li>
@@ -331,6 +340,16 @@
 	.recent-action {
 		font-weight: 500;
 		color: var(--text-primary);
+	}
+	/* An agent name is arbitrary client-supplied text: <bdi> keeps a bidi
+	   control inside it from reordering the row, and the bound matches the
+	   activity page's badge, where the number's reasoning is written out. */
+	.recent-agent {
+		font-weight: 600;
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.recent-source {
 		color: var(--text-muted);

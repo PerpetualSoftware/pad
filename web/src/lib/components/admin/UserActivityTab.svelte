@@ -13,6 +13,7 @@
 -->
 <script lang="ts">
 	import { adminFetch, type AdminUser } from '$lib/stores/admin.svelte';
+	import { agentNameFromMetadata } from '$lib/utils/agentActor';
 
 	interface Props {
 		user: AdminUser;
@@ -31,6 +32,10 @@
 		user_id?: string;
 		created_at: string;
 		actor_name?: string;
+		// Carried so a named agent can be shown (TASK-2759). The endpoint
+		// serializes whole models.Activity rows, so this was always present
+		// on the wire — the type, not the payload, was the omission.
+		metadata?: string;
 		ip_address?: string;
 		user_agent?: string;
 	}
@@ -301,7 +306,18 @@
 				<div class="activity-main">
 					<div class="activity-summary">
 						<span class="activity-action">{describe(ev)}</span>
-						<span class="activity-source">via {ev.source}</span>
+				<!-- TASK-2759. The endpoint returns whole Activity rows, so the
+				     stamped agent name is on the wire here; only this local type
+				     was dropping it. Without it an admin reading a user's
+				     activity sees "via cli" and cannot tell WHICH agent acted —
+				     the same gap the audit log had, on the same rows. -->
+					{#if ev.actor === 'agent'}
+						{@const agentName = agentNameFromMetadata(ev.metadata)}
+						{#if agentName}
+							<bdi class="activity-agent" title={agentName}>{agentName}</bdi>
+						{/if}
+					{/if}
+					<span class="activity-source">via {ev.source}</span>
 					</div>
 					{#if ev.workspace_id}
 						<div class="activity-meta">workspace: {ev.workspace_id.slice(0, 8)}…</div>
@@ -391,6 +407,16 @@
 	.activity-action {
 		font-size: 0.85rem;
 		color: var(--text-primary);
+	}
+	/* An agent name is arbitrary client-supplied text: <bdi> keeps a bidi
+	   control inside it from reordering the row, and the bound matches the
+	   activity page's badge, where the number's reasoning is written out. */
+	.activity-agent {
+		font-weight: 600;
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.activity-source {
 		font-size: 0.7rem;

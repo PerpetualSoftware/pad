@@ -130,7 +130,7 @@ Agents load relevant conventions automatically, and every agent action is attrib
 
 **Name your agents:**
 
-An agent that identifies itself gets its name shown on its writes — in the activity feed's Live and Audit views, on the dashboard's recent activity, on item timeline *activity* entries, and in the admin audit log. With more than one agent working a project, that is the difference between "something automated touched this" and knowing which one.
+An agent that identifies itself gets its name shown on its writes — in the activity feed's Live and Audit views, on the dashboard's recent activity, on item timeline *activity* entries, and in the admin console's audit log and per-user activity views. With more than one agent working a project, that is the difference between "something automated touched this" and knowing which one.
 
 Pad takes the first of these it finds:
 
