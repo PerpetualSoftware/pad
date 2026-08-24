@@ -725,9 +725,22 @@ type redisSub struct {
 	// this field the detector reads its own inability to probe as evidence
 	// that the peer is dead, and tears down a healthy connection on a schedule.
 	//
-	// Stamped at install for the same reason lastSeen is: a zero value would
-	// permanently disqualify a subscription from ever being cycled, which
-	// fails in the opposite and quieter direction.
+	// Stamped at install, and the mutation matrix says that stamp is REDUNDANT
+	// under the ordering rule — recorded rather than left as an unearned
+	// justification. An earlier version of this comment claimed a zero value
+	// would "permanently disqualify a subscription from ever being cycled".
+	// That was true of the age-based premise it was written for; it is not true
+	// now. The rule is `lastProbeOK.After(lastSeen)`, and a zero value fails
+	// that test exactly as an install stamp equal to lastSeen does — in both
+	// cases the subscription is simply not cycled until its first successful
+	// probe, which is the intended behaviour either way. Removing the stamp
+	// changes no outcome and no test.
+	//
+	// It is kept because it makes the field's invariant true by construction —
+	// an installed subscription always carries a real timestamp, so any future
+	// rule that reasons about this value's AGE rather than its order gets a
+	// sane one instead of 1970. That is the same trap the age-based rule fell
+	// into, one field over.
 	lastProbeOK time.Time
 
 	// confirmed is closed by receiveMessages when Redis acknowledges the
@@ -1397,6 +1410,14 @@ func (b *RedisBus) Close() {
 	// Subscribe contends for — with subscriber channels still open behind it.
 	// Round 12 fixed the cycle path and left this one, which is the same defect
 	// on the path that runs once per process.
+	//
+	// UNTESTED, DELIBERATELY. Moving a close off a lock is a CONTENTION
+	// property: the only assertion that distinguishes it is a timing one — how
+	// long some other goroutine waited for b.mu — and a timing assertion in
+	// this suite is a flaky assertion. The mutation matrix says so plainly
+	// (closing under the lock survives every test), and that survival is
+	// recorded here rather than papered over with a test that would pass
+	// either way.
 	closing := make([]*redis.PubSub, 0, len(b.wsSubs))
 	for wsID, sub := range b.wsSubs {
 		sub.cancel()

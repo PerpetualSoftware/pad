@@ -702,6 +702,23 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	case b.now().Sub(sub.lastSeen) < idleTimeout:
 		// It recovered while this cycle sat in the queue. Nothing to end and
 		// nothing to replace: leaving it alone is the whole point.
+		//
+		// THIS AND THE PREMISE CASE ABOVE DIE ONLY TOGETHER in the matrix, and
+		// they are NOT redundant — they catch different shapes of the same
+		// recovery, which is why removing either alone leaves the recovery test
+		// green:
+		//
+		//   - Recovered and NOT re-probed since: the arrival pushed lastSeen
+		//     past lastProbeOK, so the premise case fires and this one is never
+		//     reached. That is the common shape and the one the test produces.
+		//   - Recovered AND re-probed since: the publisher runs on its own
+		//     goroutine at its own cadence, so it can land a successful probe
+		//     between the arrival and this decision. lastProbeOK is then ahead
+		//     of lastSeen again, the premise case passes, and only this one
+		//     stops a healthy subscription being torn down.
+		//
+		// Deleting this because "the matrix says it survives" would remove the
+		// second shape's only guard.
 		b.retirePendingLocked(c.workspaceID, c.pending)
 		b.mu.Unlock()
 		close(c.pending.done)
