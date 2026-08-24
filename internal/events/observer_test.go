@@ -6,12 +6,14 @@ import (
 )
 
 type recordingObserver struct {
-	mu          sync.Mutex
-	resumeGaps  []string
-	resets      []string
-	loopExits   int
-	drops       []string
-	unconfirmed int
+	mu            sync.Mutex
+	resumeGaps    []string
+	resets        []string
+	loopExits     int
+	drops         []string
+	unconfirmed   int
+	cycled        int
+	probeFailures int
 }
 
 func (o *recordingObserver) ResumeGap(workspaceID string) {
@@ -42,6 +44,36 @@ func (o *recordingObserver) SubscriptionUnconfirmed() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.unconfirmed++
+}
+
+func (o *recordingObserver) HeartbeatPublishFailed() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.probeFailures++
+}
+
+func (o *recordingObserver) probeFailureCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.probeFailures
+}
+
+func (o *recordingObserver) SubscriptionCycled() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cycled++
+}
+
+func (o *recordingObserver) loopExitCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.loopExits
+}
+
+func (o *recordingObserver) cycledCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.cycled
 }
 
 func (o *recordingObserver) unconfirmedCount() int {
@@ -190,3 +222,7 @@ func (o callbackObserver) EventDropped(string) {}
 func (o callbackObserver) ReceiveLoopExited() {}
 
 func (o callbackObserver) SubscriptionUnconfirmed() {}
+
+func (o callbackObserver) SubscriptionCycled() {}
+
+func (o callbackObserver) HeartbeatPublishFailed() {}

@@ -116,6 +116,49 @@ type Observer interface {
 	// stalling — the same Redis condition BUG-2748 makes an availability
 	// hazard.
 	SubscriptionUnconfirmed()
+
+	// SubscriptionCycled reports that a workspace's Redis subscription received
+	// NOTHING — no event, no heartbeat, no acknowledgement — for longer than
+	// the bus's idle timeout, so its connection was torn down and replaced
+	// (BUG-2738).
+	//
+	// IT IS COUNTED SEPARATELY FROM SequenceReset FOR A REASON THAT IS NOT
+	// STYLISTIC. An idle cycle calls dropWorkspaceCoverage, which reports
+	// SequenceReset with reason idle_timeout — but ONLY when a buffer existed
+	// to drop, and the case this detector exists for is disproportionately the
+	// case with no buffer: a route that wedged early, on a quiet workspace,
+	// having delivered nothing this instance could buffer. Reading cycles off
+	// the reset counter alone would therefore under-report exactly the
+	// incidents it was built to find. This counter is the dependable one; the
+	// idle_timeout reset label is corroboration.
+	//
+	// Expect zero — and note that on heartbeat phase 1 it is zero STRUCTURALLY,
+	// because the detector does not run at all there, so a zero says nothing
+	// about whether any route has wedged. On phase 2, a non-zero rate means
+	// connections between this instance and Redis are being silently
+	// blackholed — a NAT idle timeout, a stateful firewall, an overlay network
+	// dropping long-lived flows. Compare against TCP keepalive settings on the
+	// path before tuning the interval, because tuning the interval treats the
+	// symptom.
+	SubscriptionCycled()
+
+	// HeartbeatPublishFailed reports that this instance could not publish a
+	// liveness heartbeat for one workspace (BUG-2738).
+	//
+	// IT IS THE DETECTOR SAYING IT CANNOT SEE, not a finding about any peer.
+	// While it is firing, idle detection for that workspace is SUSPENDED —
+	// silence cannot be read as evidence when we could not ask — so a non-zero
+	// rate here means half-open detection is degraded or off for those
+	// workspaces, however healthy pad_event_subscription_cycled_total looks.
+	//
+	// PUBLISH and pub/sub use different connection pools, so this is a signal
+	// about the OUTBOUND path specifically: pool exhaustion, a wedged outbound
+	// route, or Redis refusing writes. An instance in this state is also
+	// failing to deliver its own events to every other instance, which is a
+	// larger problem than the one this feature exists to find.
+	//
+	// Expect zero.
+	HeartbeatPublishFailed()
 }
 
 // Drop reasons. Bounded by construction so they are safe as metric labels.
@@ -191,8 +234,43 @@ const (
 	// deliberate asymmetry between the metric and the client signal. The
 	// dependable counter for this condition is Observer.SubscriptionUnconfirmed.
 	ResetReasonSubscriptionUnconfirmed = "subscription_unconfirmed"
+
+	// ResetReasonIdleTimeout means a workspace's Redis subscription received
+	// nothing at all for longer than the bus's idle timeout, so this instance
+	// STOPPED VOUCHING FOR ITS BUFFER (BUG-2738).
+	//
+	// IT DOES NOT SAY THE CONNECTION WAS REPLACED, and an earlier version of
+	// this comment claimed it did (codex round 6). This reason is emitted
+	// before the re-establishment is attempted, and the attempt can install
+	// nothing — the bus closes, or the last subscriber leaves while we dial.
+	// Observer.SubscriptionCycled is the one that means "replaced"; this one
+	// means "coverage ended".
+	//
+	// WHAT IT ESTABLISHES IS NOT THAT EVENTS WERE LOST, unlike
+	// subscription_resumed: nothing was observed going missing. What it says is
+	// that the socket stopped proving it works, and a socket that cannot be
+	// proved cannot back a coverage claim. The silence includes this instance's
+	// own heartbeats, which is what makes it diagnostic rather than a guess
+	// about how busy the workspace is — and is why the detector only runs on
+	// heartbeat phase 2. On phase 1 this reason is structurally never emitted.
+	//
+	// It reaches this counter only when a buffer existed to drop. Read
+	// Observer.SubscriptionCycled for the dependable count — the no-buffer case
+	// is over-represented here for the reason recorded there.
+	ResetReasonIdleTimeout = "idle_timeout"
 )
 
+// THE ONE THING AN OBSERVER CALLBACK MUST NOT DO is call a Subscribe path on
+// the bus that is reporting to it.
+//
+// Callbacks run synchronously, and several of the paths that report — a late
+// subscription acknowledgement, an idle-fired cycle — do so while holding that
+// workspace's establishment record. A Subscribe arriving there waits on a
+// record only the reporting goroutine can retire, and the reporting goroutine
+// is waiting on the callback: neither moves again. Publishing, reading, and
+// unsubscribing from a callback are all fine and are exercised by this
+// package's tests; subscribing is the one door that is closed.
+//
 // observable is the shared, nil-safe Observer holder both bus implementations
 // embed. Reporting before SetObserver is called — every bus in every test that
 // does not opt in — is a no-op.
@@ -237,6 +315,18 @@ func (o *observable) reportReceiveLoopExited() {
 func (o *observable) reportSubscriptionUnconfirmed() {
 	if obs := o.observer(); obs != nil {
 		obs.SubscriptionUnconfirmed()
+	}
+}
+
+func (o *observable) reportSubscriptionCycled() {
+	if obs := o.observer(); obs != nil {
+		obs.SubscriptionCycled()
+	}
+}
+
+func (o *observable) reportHeartbeatPublishFailed() {
+	if obs := o.observer(); obs != nil {
+		obs.HeartbeatPublishFailed()
 	}
 }
 

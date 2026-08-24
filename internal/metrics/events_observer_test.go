@@ -39,6 +39,20 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
+	// The comment above claimed "every reason this bus can emit" while this one
+	// was missing (codex round 8). Production emits it from
+	// confirmSubscription's late-acknowledgement path, so the mapping was
+	// unexercised — and the zero-assertion further down proved only that the
+	// dedicated counter does not leak INTO this series, which is a different
+	// claim.
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
+	obs.SequenceReset(events.ResetReasonSubscriptionUnconfirmed)
 
 	obs.ReceiveLoopExited()
 	obs.ReceiveLoopExited()
@@ -54,6 +68,44 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SubscriptionUnconfirmed()
 	obs.SubscriptionUnconfirmed()
 
+	// Same argument again for BUG-2738's pair, which arrived after the comment
+	// above and needs the same protection: idle_timeout is a reset REASON and
+	// SubscriptionCycled is its OWN counter, and they deliberately disagree —
+	// the reason only fires when a buffer existed to drop, the counter fires on
+	// every replacement. An adapter that folded the counter into the reset
+	// series, or mapped the new reason onto an existing one, would satisfy a
+	// total-only assertion while destroying exactly that distinction.
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+	obs.SequenceReset(events.ResetReasonIdleTimeout)
+
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+	obs.SubscriptionCycled()
+
+	// A THIRD count distinct from both its neighbours. These three say
+	// different things and an operator acts on the difference: cycled means a
+	// connection was replaced, idle_timeout means coverage ended, and this one
+	// means DETECTION IS DEGRADED because the probe never went out. An adapter
+	// that merged any pair of them would satisfy a total-only assertion while
+	// destroying exactly that distinction.
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+	obs.HeartbeatPublishFailed()
+
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 2)
 	// The reason must land on a LABELLED series, not on the bare counter: an
 	// adapter that dropped the label would satisfy a total-only assertion and
@@ -67,12 +119,20 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonEpochRegressed}, 1)
 	assertCounter(t, m, "pad_event_subscription_unconfirmed_total", nil, 2)
-	// ...and it did NOT leak into the reset series, which is the half a
-	// merged-counter adapter would still pass without.
+	// ...and the two stay SEPARATE. The counts differ on purpose — 2 on the
+	// dedicated counter, 8 on the reset reason — so an adapter that merged them
+	// cannot satisfy both, which a zero-versus-nonzero pair could not establish
+	// once the reason itself started being emitted here.
 	assertCounter(t, m, "pad_event_sequence_resets_total",
-		map[string]string{"reason": events.ResetReasonSubscriptionUnconfirmed}, 0)
+		map[string]string{"reason": events.ResetReasonSubscriptionUnconfirmed}, 8)
 	assertCounter(t, m, "pad_event_sequence_resets_total",
 		map[string]string{"reason": events.ResetReasonUndecodableMessage}, 5)
+	assertCounter(t, m, "pad_event_sequence_resets_total",
+		map[string]string{"reason": events.ResetReasonIdleTimeout}, 6)
+	assertCounter(t, m, "pad_event_subscription_cycled_total", nil, 7)
+	assertCounter(t, m, "pad_event_heartbeat_publish_failures_total", nil, 9)
+	// The counter must not leak into the reset series either, the same half
+	// that a merged-counter adapter would pass without.
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)
 }
 

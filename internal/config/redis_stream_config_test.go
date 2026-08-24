@@ -186,3 +186,163 @@ func TestEventsPublishEpochPrecedenceBetweenEnvAndFile(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// BUG-2738's phase-2 flip. Structurally these mirror the EventsPublishEpoch
+// tests above, and the ASSERTIONS are the same — but the RATIONALE is
+// inverted, which is why they are written out rather than folded into a table
+// with the epoch's comments attached. See TestEventsHeartbeatIgnoresANonBooleanValue.
+// ---------------------------------------------------------------------------
+
+// TestEventsHeartbeatEnvMapping is the wiring. The bus's heartbeat behaviour
+// has its own tests and every one of them passes with Load() never populating
+// this field — the deployment would simply stay on phase 1 forever, which is
+// indistinguishable from a correct phase-1 deployment in every metric.
+func TestEventsHeartbeatEnvMapping(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_EVENTS_HEARTBEAT", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.EventsHeartbeat {
+		t.Error("EventsHeartbeat = false, want true from PAD_EVENTS_HEARTBEAT")
+	}
+	// The neighbour, so a copy-paste that pointed two env vars at one field
+	// cannot pass. These two flags are the same SHAPE and are set in the same
+	// procedures, which is exactly when that mistake happens.
+	if cfg.EventsPublishEpoch {
+		t.Error("PAD_EVENTS_HEARTBEAT must not move EventsPublishEpoch")
+	}
+}
+
+// TestEventsHeartbeatIgnoresANonBooleanValue.
+//
+// READ THIS COMMENT BEFORE "FIXING" THIS TEST TO MATCH ITS EPOCH TWIN. The
+// assertion is identical to TestEventsPublishEpochIgnoresANonBooleanValue and
+// the reason for it is the OPPOSITE one.
+//
+// For the epoch flip, OFF was the data-LOSING direction: an instance stuck on
+// phase 1 published a wire form nothing could misread, and the hazard was a
+// typo carrying a deployment FORWARD into a phase its peers could not parse.
+//
+// Here OFF is the SAFE direction. An instance that publishes no heartbeat does
+// no idle detection at all — exactly the behaviour that existed before this
+// feature, so the worst case of a wrong OFF is that a wedged route goes
+// unnoticed, which is where every deployment already was. An instance that publishes into a MIXED
+// fleet makes every un-upgraded peer fail to decode the frame, drop that
+// workspace's replay buffer, and tell every one of its live subscribers to
+// resync — every 30 seconds, per workspace, for the length of the roll. The
+// blast radius is the instances you have NOT upgraded, which no amount of care
+// in the new code can reach.
+//
+// So: same assertion, opposite hazard. Copying the epoch's rationale onto this
+// test would leave a comment arguing for the wrong thing, and the next person
+// to touch it would "fix" the behaviour to match its own comment.
+func TestEventsHeartbeatIgnoresANonBooleanValue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_EVENTS_HEARTBEAT", "yes-please")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.EventsHeartbeat {
+		t.Error("an unparseable value must not turn the flip on; publishing into a mixed fleet resyncs every client of every un-upgraded instance")
+	}
+}
+
+// The precise contract, stated because the sentence above is easy to read as
+// something stronger than it is (codex round 9): an unparseable value is
+// IGNORED, not read as false. From a default config that leaves the flip off,
+// which is what the test above checks. From a config file that set it true it
+// leaves it TRUE — deliberately, and the same as the epoch flag: a typo must
+// not move a migration in either direction, and silently rolling an operator
+// back to phase 1 would disable detection on a fleet that had opted in without
+// anything saying so. The warning is what tells them. The file-true case is
+// asserted in TestEventsHeartbeatPrecedenceBetweenEnvAndFile; this comment
+// exists so nobody "fixes" the ignore into a fail-closed reset.
+
+// The default MUST be off, for the reason above: phase 2 emits a frame older
+// instances treat as a hole in coverage, so defaulting it on would break a
+// rolling upgrade for every deployment that upgrades without reading the
+// release notes.
+func TestEventsHeartbeatDefaultsOff(t *testing.T) {
+	if _, set := os.LookupEnv("PAD_EVENTS_HEARTBEAT"); set {
+		t.Setenv("PAD_EVENTS_HEARTBEAT", "")
+	}
+	if cfg := DefaultConfig(); cfg.EventsHeartbeat {
+		t.Error("default EventsHeartbeat = true, want false — phase 2 must be opted into after every instance recognises the frame")
+	}
+}
+
+// The TOML tag, for the same reason its epoch twin has one: the env-var test
+// above says nothing about the file, and a wrong or missing
+// `toml:"events_heartbeat"` would keep every other test green while an
+// operator who set the flag in ~/.pad/config.toml silently stayed on phase 1.
+func TestEventsHeartbeatRoundTripsThroughTheConfigFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_EVENTS_HEARTBEAT", "")
+
+	cfg := DefaultConfig()
+	cfg.EventsHeartbeat = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.EventsHeartbeat {
+		t.Error("events_heartbeat did not survive a save/load round trip through config.toml")
+	}
+}
+
+// The rollback procedure tells an operator to make the EFFECTIVE value false
+// and warns that unsetting the environment variable is not the same thing.
+// Both halves are asserted here for the same reason they are for the epoch
+// flag — and here rollback is the direction an operator reaches for in a
+// hurry, because the failure they are rolling back FROM is a fleet-wide resync
+// storm.
+func TestEventsHeartbeatPrecedenceBetweenEnvAndFile(t *testing.T) {
+	writeFileValue := func(t *testing.T) {
+		t.Helper()
+		cfg := DefaultConfig()
+		cfg.EventsHeartbeat = true
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+
+	t.Run("an explicit env false overrides a true in the file", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		writeFileValue(t)
+		t.Setenv("PAD_EVENTS_HEARTBEAT", "false")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if cfg.EventsHeartbeat {
+			t.Error("an explicit env-var false must win over the config file — this is the documented rollback")
+		}
+	})
+
+	t.Run("an unparseable env value leaves the file's value standing", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		writeFileValue(t)
+		t.Setenv("PAD_EVENTS_HEARTBEAT", "off-ish")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		// IGNORED, not read as false. A typo must not move a migration in
+		// either direction; the warning is what tells the operator.
+		if !cfg.EventsHeartbeat {
+			t.Error("an unparseable env value must leave the configured value alone, not reset it")
+		}
+	})
+}

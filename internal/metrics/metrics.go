@@ -181,7 +181,14 @@ type Metrics struct {
 	WatchMidstreamResyncsTotal prometheus.Counter
 
 	// EventSequenceResetsTotal counts activity-stream coverage resets by
-	// reason. Five reasons, listed below in the order they were added.
+	// reason. SEVEN reasons, listed below in the order they were added.
+	//
+	// If you add another, the count in this line is the first thing to go
+	// stale and the last thing anyone reads — it was already wrong by two when
+	// BUG-2738 landed. The authoritative list is the Help string on the
+	// counter's construction, which is what an operator actually sees, plus
+	// the enumeration in internal/events/observer.go and the table in
+	// docs/deployment.md. Those three move together.
 	//
 	//   subscription_resumed — a pub/sub connection dropped and resubscribed,
 	//   so ONE workspace's replay buffer was dropped and resumes across the
@@ -238,9 +245,13 @@ type Metrics struct {
 	EventSequenceResetsTotal *prometheus.CounterVec
 
 	// EventReceiveLoopExitsTotal counts a workspace's Redis subscription loop
-	// stopping. Expected at shutdown and whenever the last local subscriber
-	// for a workspace leaves, so unlike the watch stream's twin it does NOT
-	// stay at zero — read it as a RATE against a stable subscriber count.
+	// stopping. Expected at shutdown, whenever the last local subscriber for a
+	// workspace leaves, AND on every idle cycle (BUG-2738) — a cycle stops the
+	// old loop while its subscribers are still connected, which is a case this
+	// comment did not previously admit. So unlike the watch stream's twin it
+	// does NOT stay at zero: read it as a RATE against a stable subscriber
+	// count, and expect it to track pad_event_subscription_cycled_total during
+	// a connectivity incident.
 	EventReceiveLoopExitsTotal prometheus.Counter
 
 	// EventSubscriptionUnconfirmedTotal counts activity-stream subscriptions
@@ -266,6 +277,57 @@ type Metrics struct {
 	// hazard — so read it alongside connect latency rather than alongside
 	// pad_event_sequence_resets_total.
 	EventSubscriptionUnconfirmedTotal prometheus.Counter
+
+	// EventSubscriptionCycledTotal counts workspace subscriptions torn down and
+	// replaced because they received NOTHING — no event, no heartbeat, no
+	// acknowledgement — for longer than the bus's idle timeout (BUG-2738).
+	//
+	// WHAT IT DETECTS IS A HALF-OPEN CONNECTION: no FIN, no RST, just a route
+	// that stopped working. go-redis cannot see one (its pub/sub health check
+	// writes a PING and never reads the reply), so before this existed such an
+	// instance sat receiving nothing while its replay buffer went on looking
+	// complete and every resume was answered "caught up".
+	//
+	// READ THIS ONE RATHER THAN THE idle_timeout RESET LABEL. A cycle reports
+	// that label only when a buffer existed to drop, and the incidents this
+	// detector exists for skew hard toward having none — a route that wedged
+	// early, on a quiet workspace, with nothing yet buffered.
+	//
+	// IT COUNTS REPLACEMENTS, NOT TEARDOWNS. A cycle that tore a subscription
+	// down and then installed nothing — the bus was closing, or the last
+	// subscriber left while it dialled — does NOT increment this, because
+	// counting a shutdown would manufacture the exact signal an operator reads
+	// as "connections are being blackholed". Those teardowns remain visible
+	// through the idle_timeout reset reason when a buffer existed to drop.
+	//
+	// EXPECT ZERO — structurally so on heartbeat phase 1, where the detector
+	// does not run, so a zero there says nothing about whether a route has
+	// wedged; read heartbeat_phase off the startup log first. On phase 2, a
+	// non-zero rate means connections to Redis are being silently blackholed: a
+	// NAT idle timeout, a stateful firewall, an overlay network dropping
+	// long-lived flows. Check TCP keepalive on the path before touching the
+	// interval — a shorter interval hides the cause and a longer one widens the
+	// silent window.
+	EventSubscriptionCycledTotal prometheus.Counter
+
+	// EventHeartbeatPublishFailuresTotal counts liveness heartbeats this
+	// instance could not publish (BUG-2738).
+	//
+	// READ IT AS "DETECTION IS DEGRADED", not as "a peer is broken". While it
+	// fires, idle detection for the affected workspaces is SUSPENDED — silence
+	// cannot be read as evidence of a dead receive path when the probe that
+	// would have produced the traffic never went out — so a healthy-looking
+	// pad_event_subscription_cycled_total means less than usual.
+	//
+	// PUBLISH and pub/sub use different connection pools, so this points at the
+	// OUTBOUND path: pool exhaustion, a wedged outbound route, or Redis
+	// refusing writes. An instance in this state is also failing to deliver its
+	// own events to every other instance, which is a bigger problem than the
+	// one this feature exists to find — read it alongside publish latency and
+	// pool saturation rather than alongside the cycle counter.
+	//
+	// EXPECT ZERO.
+	EventHeartbeatPublishFailuresTotal prometheus.Counter
 
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
@@ -510,17 +572,27 @@ func New() *Metrics {
 
 	eventSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_event_sequence_resets_total",
-		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there — usually a Redis failover to a replica that lost writes, and since BUG-2740 also a corrupted generation key having been repaired and reseeded from wall-clock seconds; read the key to tell them apart, a repaired one looks like a unix timestamp), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended), subscription_unconfirmed (a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived; reaches this counter only when a buffer existed to drop — see pad_event_subscription_unconfirmed_total).",
+		Help: "Times activity-event replay coverage was dropped, by reason: subscription_resumed (a Redis connection flap, one workspace's buffer), epoch_change (the shared counter's ID space changed generation, every buffer), counter_backward (an ID at or below a buffer's high-water mark with no generation change), epoch_regressed (the generation counter went backwards and stayed there — usually a Redis failover to a replica that lost writes, and since BUG-2740 also a corrupted generation key having been repaired and reseeded from wall-clock seconds; read the key to tell them apart, a repaired one looks like a unix timestamp), undecodable_message (a pub/sub message could not be parsed, so that workspace's coverage ended), subscription_unconfirmed (a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived; reaches this counter only when a buffer existed to drop — see pad_event_subscription_unconfirmed_total), idle_timeout (a subscription received nothing at all — no event, no heartbeat, no acknowledgement — for longer than the idle timeout, so this instance stopped vouching for its buffer; it means COVERAGE ENDED, not that the connection was replaced — the replacement is attempted afterwards and can install nothing if the instance is shutting down or the workspace loses its last subscriber, so only pad_event_subscription_cycled_total proves a replacement. It establishes that the socket stopped proving it works, NOT that events were observed going missing, and like subscription_unconfirmed it reaches this counter only when a buffer existed to drop).",
 	}, []string{"reason"})
 
 	eventReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_receive_loop_exits_total",
-		Help: "Times a workspace's activity subscription loop stopped. Expected at shutdown and when a workspace's last local subscriber leaves — read as a rate against a stable subscriber count.",
+		Help: "Times a workspace's activity subscription loop stopped. Expected at shutdown, when a workspace's last local subscriber leaves, and on every idle cycle (BUG-2738) — a cycle stops the old loop while its subscribers are still connected. Read as a rate against a stable subscriber count; during a connectivity incident expect it to track pad_event_subscription_cycled_total.",
 	})
 
 	eventSubscriptionUnconfirmedTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_event_subscription_unconfirmed_total",
 		Help: "Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait timed out. Counts ESTABLISHMENTS, not clients — however many subscribers were waiting on one, it increments once. Expect zero. Nothing is known lost; the stream's coverage is simply undescribable until the acknowledgement lands, at which point every subscriber waiting on it is told to reconcile and pad_event_sequence_resets_total may also move with reason subscription_unconfirmed.",
+	})
+
+	eventSubscriptionCycledTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_subscription_cycled_total",
+		Help: "Activity-stream workspace subscriptions torn down and replaced because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout (BUG-2738). Detects a HALF-OPEN connection, which go-redis's pub/sub health check cannot see because it writes a PING without reading the reply. Counts REPLACEMENTS, not teardowns: a cycle that installed nothing because the bus was closing or the workspace emptied does not increment it. Expect zero — and structurally zero on heartbeat phase 1, where the detector does not run at all, so a zero there says nothing about whether a route has wedged (read heartbeat_phase off the startup log). Read THIS rather than pad_event_sequence_resets_total{reason=\"idle_timeout\"}, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — NAT idle timeout, stateful firewall, overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval.",
+	})
+
+	eventHeartbeatPublishFailuresTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_event_heartbeat_publish_failures_total",
+		Help: "Liveness heartbeats this instance could not publish (BUG-2738). Read as DETECTION DEGRADED, not as a peer being broken: while it fires, idle detection for those workspaces is suspended, because silence cannot be read as evidence of a dead receive path when the probe never went out. PUBLISH and pub/sub use different connection pools, so this points at the OUTBOUND path — pool exhaustion, a wedged outbound route, or Redis refusing writes. Such an instance is also failing to deliver its own events to every other instance. Expect zero.",
 	})
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -542,6 +614,8 @@ func New() *Metrics {
 		eventSequenceResetsTotal,
 		eventReceiveLoopExitsTotal,
 		eventSubscriptionUnconfirmedTotal,
+		eventSubscriptionCycledTotal,
+		eventHeartbeatPublishFailuresTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -562,21 +636,23 @@ func New() *Metrics {
 	return &Metrics{
 		Registry: reg,
 
-		RedisUp:                           redisUp,
-		WatchNotificationsDroppedTotal:    watchNotificationsDroppedTotal,
-		WatchSequenceGapsTotal:            watchSequenceGapsTotal,
-		WatchNotificationsMissedTotal:     watchNotificationsMissedTotal,
-		WatchResumeGapsTotal:              watchResumeGapsTotal,
-		WatchSequenceResetsTotal:          watchSequenceResetsTotal,
-		EventResumeGapsTotal:              eventResumeGapsTotal,
-		EventEventsDroppedTotal:           eventEventsDroppedTotal,
-		EventMidstreamResyncsTotal:        eventMidstreamResyncsTotal,
-		WatchMidstreamResyncsTotal:        watchMidstreamResyncsTotal,
-		EventSequenceResetsTotal:          eventSequenceResetsTotal,
-		EventReceiveLoopExitsTotal:        eventReceiveLoopExitsTotal,
-		EventSubscriptionUnconfirmedTotal: eventSubscriptionUnconfirmedTotal,
-		WatchReceiveLoopExitsTotal:        watchReceiveLoopExitsTotal,
-		SessionPresenceFailuresTotal:      sessionPresenceFailuresTotal,
+		RedisUp:                            redisUp,
+		WatchNotificationsDroppedTotal:     watchNotificationsDroppedTotal,
+		WatchSequenceGapsTotal:             watchSequenceGapsTotal,
+		WatchNotificationsMissedTotal:      watchNotificationsMissedTotal,
+		WatchResumeGapsTotal:               watchResumeGapsTotal,
+		WatchSequenceResetsTotal:           watchSequenceResetsTotal,
+		EventResumeGapsTotal:               eventResumeGapsTotal,
+		EventEventsDroppedTotal:            eventEventsDroppedTotal,
+		EventMidstreamResyncsTotal:         eventMidstreamResyncsTotal,
+		WatchMidstreamResyncsTotal:         watchMidstreamResyncsTotal,
+		EventSequenceResetsTotal:           eventSequenceResetsTotal,
+		EventReceiveLoopExitsTotal:         eventReceiveLoopExitsTotal,
+		EventSubscriptionUnconfirmedTotal:  eventSubscriptionUnconfirmedTotal,
+		EventSubscriptionCycledTotal:       eventSubscriptionCycledTotal,
+		EventHeartbeatPublishFailuresTotal: eventHeartbeatPublishFailuresTotal,
+		WatchReceiveLoopExitsTotal:         watchReceiveLoopExitsTotal,
+		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,
 
 		HTTPRequestsTotal:          httpRequestsTotal,
 		HTTPRequestDuration:        httpRequestDuration,

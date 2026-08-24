@@ -88,6 +88,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
 | `PAD_EVENTS_PUBLISH_EPOCH` | `false` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. **Only set this once every instance runs a binary that accepts it** — see *Event ID-space migration* below. Ignored without Redis. |
+| `PAD_EVENTS_HEARTBEAT` | `false` | Phase 2 of the half-open-connection detection rollout: publish a bus-internal liveness frame on each subscribed workspace channel every 30s. **Only set this once every instance runs a binary that recognises it** — see *Half-open connection detection* below. Setting it early makes every un-upgraded instance resync all its clients every 30 seconds. Ignored without Redis. |
 
 #### Streaming connection limits
 
@@ -300,19 +301,24 @@ reading the metrics below, and for anyone writing a third-party consumer:
   whole message into memory before Pad sees it; bound it with Redis's
   `proto-max-bulk-len` and with who holds `PUBLISH`.
 
-  **Two gaps in that detection remain, and an operator should know both.** A
-  message lost in transit with the connection intact — no flap, no decode
-  failure, just a message that never arrived (BUG-2735): on the watch stream a
-  LATER notification exposes it as an ID gap, while on the activity stream,
-  whose per-workspace IDs are non-consecutive by construction, nothing local
-  ever does. And a HALF-OPEN connection — a route that stopped carrying
-  traffic without closing, so nothing ever resubscribes and no message ever
-  arrives to be non-consecutive with (BUG-2738). Do not assume go-redis's
-  pub/sub health check covers the second: `PubSub.Ping` writes the command and
-  never reads a reply, so it reports healthy for as long as the socket accepts
-  writes. Detecting it needs application-level idle tracking, which needs a
-  threshold, which is a deployment decision rather than an implementation
-  detail.
+  **One gap in that detection remains everywhere, and a second remains on the
+  watch stream only.** A message lost in transit with the connection intact —
+  no flap, no decode failure, just a message that never arrived (BUG-2735): on
+  the watch stream a LATER notification exposes it as an ID gap, while on the
+  activity stream, whose per-workspace IDs are non-consecutive by construction,
+  nothing local ever does. That one is open on both.
+
+  A HALF-OPEN connection — a route that stopped carrying traffic without
+  closing, so nothing ever resubscribes and no message ever arrives to be
+  non-consecutive with — is **closed on the activity stream** as of BUG-2738
+  and **still open on the watch stream**, which has the same defect by the same
+  mechanism and has not been ported yet. Do not assume go-redis's pub/sub
+  health check covers it on either: `PubSub.Ping` writes the command and never
+  reads a reply, so it reports healthy for as long as the socket accepts
+  writes. What closes it on the activity stream is application-level idle
+  tracking with a heartbeat that makes the threshold answerable — see *Half-open
+  connection detection* — and until the same lands on the watch stream, a wedged
+  route there is still silent.
 
   **A third residual affects RESUMES rather than open streams** (BUG-2743): if
   the watch counter restarts without the epoch rotating — evicted under
@@ -412,8 +418,9 @@ Alert on these instead:
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch resume counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
 | `pad_event_midstream_resyncs_total` | Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open. New in BUG-2730, and the counter to watch when judging whether that fix is costing more resyncs than it is worth. It counts ANNOUNCEMENTS, not causes and not distinct clients: a reset that drops buffers moves it once per live subscriber (and that ratio against `pad_event_sequence_resets_total` is the fan-out); a burst of drops on ONE connection moves it once, because signals coalesce and are rate-limited per connection; and a coverage loss on a workspace with no buffer yet moves it while every cause counter stays flat, because there was no coverage to end but the subscribers still have a hole |
 | `pad_watchevents_midstream_resyncs_total` (see also, listed above) | Same meaning for the watch stream. Its causes are a slow-subscriber drop and a received sequence gap or reset; a gap announces to EVERY subscriber on the instance, so it can exceed all of its cause counters |
-| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase. `epoch_regressed` — a LOWER generation was seen, so this instance stopped vouching for its buffers. One alongside an `epoch_change` is a message that was in flight when the generation rotated; a RUN of them means the counter itself went backwards — usually Redis lost writes, and since BUG-2740 possibly a repaired generation key (see *A repaired generation counter*). `undecodable_message` — a message on these channels could not be parsed, so that workspace's coverage ended; expect zero, and suspect a namespace collision. `subscription_unconfirmed` — a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived, so the span in between is one that stream cannot account for; it reaches THIS counter only when a buffer existed to drop, so read `pad_event_subscription_unconfirmed_total` for the dependable count |
+| `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase. `epoch_regressed` — a LOWER generation was seen, so this instance stopped vouching for its buffers. One alongside an `epoch_change` is a message that was in flight when the generation rotated; a RUN of them means the counter itself went backwards — usually Redis lost writes, and since BUG-2740 possibly a repaired generation key (see *A repaired generation counter*). `undecodable_message` — a message on these channels could not be parsed, so that workspace's coverage ended; expect zero, and suspect a namespace collision. `subscription_unconfirmed` — a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived, so the span in between is one that stream cannot account for; it reaches THIS counter only when a buffer existed to drop, so read `pad_event_subscription_unconfirmed_total` for the dependable count. `idle_timeout` — a subscription received nothing at all (no event, no heartbeat, no acknowledgement) for longer than the idle timeout, so this instance stopped vouching for its buffer. It means **coverage ended, not that the connection was replaced**: the replacement is attempted afterwards and installs nothing if the instance is shutting down or the workspace loses its last subscriber, so only `pad_event_subscription_cycled_total` proves a replacement. Unlike `subscription_resumed` it does NOT establish that events went missing, only that the socket stopped proving it works, and like `subscription_unconfirmed` it reaches this counter only when a buffer existed to drop |
 | `pad_event_events_dropped_total` | Activity events not delivered to a live subscriber, by reason — today only `slow_subscriber` (that connection's 64-deep channel was full). Per-SUBSCRIBER: every subscriber that was keeping up received the event. Pairs with `pad_event_midstream_resyncs_total`, though not one-for-one in either direction — see that row. New in BUG-2730, along with the fix that stops the drop being silent, so a deploy that starts reporting these is not necessarily a regression — it may be the first time they were countable |
+| `pad_event_subscription_cycled_total` | Activity-stream workspace subscriptions torn down **and replaced** because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout. It counts replacements, not teardowns: a cycle that installed nothing because the instance was shutting down or the workspace lost its last subscriber does not increment it, so a restart cannot manufacture this signal. Detects a **half-open connection**: no FIN, no RST, just a route that stopped working, which go-redis cannot see because its pub/sub health check writes a PING and never reads the reply. **Expect zero.** Read this rather than `pad_event_sequence_resets_total{reason="idle_timeout"}`, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — a NAT idle timeout, a stateful firewall, an overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval. **On heartbeat phase 1 this counter is structurally zero** — detection is part of phase 2, so a zero there says nothing at all about whether any route has wedged. Read `heartbeat_phase` off the startup log before drawing any conclusion from it |
 | `pad_event_subscription_unconfirmed_total` | Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait for it timed out (BUG-2747). **Expect zero.** Counts ESTABLISHMENTS, not clients — one workspace subscription that timed out increments it once however many subscribers were waiting on it. Nothing is known to have been lost; what it says is that a stream was admitted whose coverage this instance cannot describe, and that every subscriber waiting on it will be told to reconcile when the acknowledgement lands. A non-zero rate means the SUBSCRIBE round trip is slow or stalling — read it alongside SSE connect latency rather than alongside `pad_event_sequence_resets_total` |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
@@ -755,6 +762,167 @@ restart completed inside a single millisecond — both deterministic bounds
 rather than probabilities, and neither reachable by a process that has to bind
 a listener and open a database before it can publish anything. A clock stepped **backwards** across a restart degrades the other
 way, into extra `sync_required` responses rather than wrong replays.
+
+#### Half-open connection detection (`PAD_EVENTS_HEARTBEAT`)
+
+**The problem this fixes.** A TCP connection can stop carrying traffic without
+closing — no FIN, no RST, just a route that stopped working. A NAT table
+expiring, a stateful firewall dropping an idle flow, an overlay network
+silently rerouting. The instance behind it blocks on a read that will never
+return, receives nothing, and its replay buffer goes on looking complete. Every
+resume for that workspace is then answered "caught up" from a coverage window
+that ended when the route did — silent loss, with nothing in any metric.
+
+**Why go-redis does not cover it.** Its pub/sub health check writes a `PING`
+and never reads a reply, so its error stays nil for as long as the socket
+accepts writes — which a half-open socket does until its send buffer fills. The
+channel path sets no read deadline either. Measured, not assumed: against a TCP
+proxy that silently stopped forwarding, with the health check running, there
+was no reconnect in 24 seconds.
+
+**What the fix does.** Every subscription records when it last received
+anything — an event, a subscription acknowledgement, or a heartbeat. When that
+goes stale past the idle timeout, the instance ends the workspace's replay
+coverage (so the next resume answers `sync_required` rather than "caught up")
+**and replaces the connection**. Dropping coverage alone would not recover: the
+resync it demands is served from the same dead socket, and the detector fires
+again on the next pass — a loop metering the failure rather than fixing it.
+
+**Why a heartbeat, rather than just a threshold on real traffic.** "Is this
+workspace quiet, or is the route dead?" cannot be answered from traffic — it
+depends on your publish rate, and no constant is right for every deployment.
+Publishing our own frame replaces it with "did our heartbeat arrive?", which is
+answerable everywhere. The instance publishes one frame per subscribed workspace
+every **30 seconds** (T), and cycles a subscription that has received nothing for
+**90 seconds** (3T). Three intervals rather than two so a single lost or late
+frame is not a cycle. Detection latency measured from the last frame that got
+through is 90–120s — the scan runs on its own 30s cadence, which adds up to one
+interval on top of the threshold. Measured from the moment the route actually
+died it is wider, roughly 60–120s: the publisher runs on an independent
+schedule, so the last frame through may have been sent anywhere in the interval
+before the fault.
+
+**Detection is part of phase 2, not phase 1.** Publishing and detecting are one
+capability with one switch, because an instance detects off its *own* frames —
+it publishes to the workspace channels it subscribes to and receives them back,
+so it never depends on peers having flipped. A phase-1 instance therefore
+detects nothing; it only recognises the frame so that a phase-2 peer costs it
+nothing. Splitting them was tried and is wrong: with no heartbeat and no
+events, a perfectly healthy *quiet* workspace crosses the threshold every
+90–120s and gets cycled, which is a resync storm on the default configuration
+every deployment lands in first.
+
+**It rolls out in two phases, and the order is not optional.**
+
+| Phase | What you do | What instances publish | What they do with a frame |
+|-------|-------------|------------------------|---------------------------|
+| 1 | Roll the new binary everywhere. Leave `PAD_EVENTS_HEARTBEAT` unset. | No heartbeats | Recognise and ignore it. **No idle detection.** |
+| 2 | Set `PAD_EVENTS_HEARTBEAT=true` and roll again. | One frame per subscribed workspace per 30s | Recognise and ignore it. **Idle detection active.** |
+
+**What happens if you run them out of order.** The frame has to travel on the
+workspace's *event* channel, because that channel's connection is the thing
+whose liveness is in question — a probe anywhere else proves the wrong thing.
+An instance running a **pre-phase-1** binary cannot classify it: the frame falls
+through to the event decoder, fails to parse, and is treated as a hole in
+coverage. That instance drops the workspace's replay buffer **and tells every
+one of its live subscribers to resync** — every 30 seconds, for every workspace,
+for as long as the deployment is mixed. The blast radius is the instances you
+have *not* upgraded, which no amount of care in the new code can reach. This is
+noisier than the ID-space migration's equivalent mistake and it is the reason
+the default is off.
+
+Both rolls are zero-loss in the other direction: phase-1 instances recognise the
+frame from the release that introduces it, so during the phase-2 roll a mix of
+publishing and non-publishing instances is exactly the case ignore-the-frame
+exists for.
+
+**Rolling back to phase 1** is safe and takes effect immediately: make the
+effective value **false** and roll. Peers ignore the frame throughout, and idle
+detection stops with it — you are back to the pre-BUG-2738 behaviour, which is
+a wedged route going unnoticed, not a worse one. The same two wrinkles as
+the ID-space migration apply, for the same reasons:
+
+- **Setting the value to false is not the same as unsetting the environment
+  variable.** `events_heartbeat` can also be set in `~/.pad/config.toml`, and
+  the file's value stands when the environment variable is absent. Clear both,
+  or set the environment variable explicitly to `false`.
+- **Downgrading past phase 1 is a SECOND step, in the reverse order.** A
+  pre-phase-1 binary still cannot classify the frame. Roll every instance to
+  phase 1 (new binary, flip off), let it finish, *then* downgrade the binary.
+
+**The frame is validated, not just prefix-matched.** A liveness frame is
+`hb|<version>` plus optional short tokens, under a length cap. Anything else
+that happens to begin with `hb|` is treated exactly as any other unreadable
+payload: that workspace's coverage ends and
+`pad_event_sequence_resets_total{reason="undecodable_message"}` moves, which is
+the signal that says *suspect a namespace collision*. A forged frame cannot
+fake liveness in any case — liveness means "this socket carried traffic", and a
+frame that arrives demonstrates that whoever sent it.
+
+There is no Redis or database migration in either direction, and the frames are
+never persisted: a heartbeat consumes no event ID, carries no epoch, is never
+buffered or replayed, never reaches a subscriber, and is never counted as an
+event. That last part is load-bearing rather than tidy — three of this bus's
+reset reasons (`counter_backward`, `epoch_change`, `epoch_regressed`) are
+derived from the shared ID counter, so a probe that consumed IDs would
+manufacture the resets it exists to avoid.
+
+**Which phase an instance publishes in is in its startup log**, as
+`heartbeat_phase=1` or `heartbeat_phase=2` on the "Event bus using Redis pub/sub"
+line, alongside `id_space_phase`. The two migrations are independent — any
+combination is valid. An unparseable `PAD_EVENTS_HEARTBEAT` is ignored and logs
+a warning naming the value.
+
+**What this covers, and what it does not.** It is a *receive-side* detector,
+not a round-trip health check. It measures whether frames arrive on a
+workspace's subscription, so:
+
+- A subscription whose *outbound* direction is broken but which still receives
+  looks healthy — correctly, since nothing is being lost.
+- The **PUBLISH path is not covered and cannot be.** `PUBLISH` travels on the
+  client's ordinary connection pool while a subscription holds a connection
+  from a separate pub/sub pool; those are different sockets with different
+  fates, and a reconnect of one repairs nothing about the other. An instance
+  whose publish path is wedged loses its own events for every other instance,
+  and this feature will not tell you.
+- **The replacement is attempted, not guaranteed.** If the path is still
+  blackholed when the cycle re-dials, the new connection cannot receive either
+  and the detector fires again on the next pass. Coverage stays ended
+  throughout, so nothing is ever falsely claimed — but delivery resuming is a
+  statement about your network, not about Pad. One case where the replacement
+  can fail on a *healthy* path is tracked as BUG-2764: go-redis discards the
+  error from the initial `SUBSCRIBE`, so a failed subscribe yields a connection
+  that looks live and is subscribed to nothing. The detector cycles it again on
+  the next pass, which is why this self-heals on phase 2 and does not on phase 1.
+
+**What to watch.** `pad_event_subscription_cycled_total` — expect zero. Read it
+rather than the `idle_timeout` reset label, which only moves when there was a
+buffer to drop and therefore misses the early-wedge case. A non-zero rate is a
+network fact about the path between your instances and Redis, not a Pad
+condition: compare it against TCP keepalive settings on that path before
+changing the interval, because a shorter interval treats the symptom and a
+longer one widens the window the detector exists to bound.
+
+**A residual an operator should know about, not fixed here.** When many
+workspaces are cycled at once — a NAT table flush, a firewall rule change, an
+overlay network dropping every long-lived flow — every connected subscriber of
+every affected workspace is told to resync in the same instant. The SSE
+connections stay open, so this is *not* a reconnect storm and the admission
+limits are not involved; what it produces is a burst of `/changes` requests
+against the database, coalesced per browser tab but with no jitter and no
+global budget. This is not new with the heartbeat: a Redis failover already
+signals every workspace at once through `subscription_resumed`. What is new is
+a second trigger of the same class. Tracked separately; if you run a large
+fleet, watch database load alongside
+`pad_event_sequence_resets_total` after any network event that could wedge many
+routes simultaneously. Tracked as BUG-2761.
+
+**Cost.** Each workspace has its own Redis subscription — and therefore its own
+connection — so liveness is genuinely per-workspace and there is no cheaper
+shared probe. An instance subscribed to N workspaces publishes N frames every
+30s; at N=1000 that is roughly 33 publishes/sec, which is noise for Redis. If
+fleet workspace counts ever make it matter, the fix is connection
+consolidation, not a longer interval.
 
 ### Security
 

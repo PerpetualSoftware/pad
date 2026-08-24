@@ -37,7 +37,7 @@ func newSeededFlippedBus(t *testing.T) (*RedisBus, *miniredis.Miniredis) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	b := NewRedisBusWithKeys(client, redisns.Default, true)
+	b := NewRedisBusWithKeys(client, redisns.Default, true, false)
 	b.nowUnix = func() int64 { return fixedSeed }
 	t.Cleanup(b.Close)
 	return b, mr
@@ -91,7 +91,7 @@ func TestACorruptedGenerationCounterIsRepairedRatherThanFatal(t *testing.T) {
 			// puts the sequence past 1 so the later publish reaches the
 			// branch under test.
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-			if _, _, err := decodePayload(next()); err != nil {
+			if _, _, _, err := decodePayload(next()); err != nil {
 				t.Fatalf("fixture: the first publish must succeed, got %v", err)
 			}
 
@@ -112,7 +112,7 @@ func TestACorruptedGenerationCounterIsRepairedRatherThanFatal(t *testing.T) {
 
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-7"})
 
-			epoch, ev, err := decodePayload(next())
+			_, epoch, ev, err := decodePayload(next())
 			if err != nil {
 				t.Fatalf("the publish must survive a %s generation key (%s): %v", tc.name, tc.abort, err)
 			}
@@ -165,7 +165,7 @@ func TestAHealthyGenerationCounterIsIncrementedNotReseeded(t *testing.T) {
 	ctx := context.Background()
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	first, _, err := decodePayload(next())
+	_, first, _, err := decodePayload(next())
 	if err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestAHealthyGenerationCounterIsIncrementedNotReseeded(t *testing.T) {
 		t.Fatalf("clear the epoch: %v", err)
 	}
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-2"})
-	second, _, err := decodePayload(next())
+	_, second, _, err := decodePayload(next())
 	if err != nil {
 		t.Fatalf("second publish: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
 			// Get the sequence past 1 so the branches that need a live
 			// sequence can be reached; the first case then clears it again.
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-			if _, _, err := decodePayload(next()); err != nil {
+			if _, _, _, err := decodePayload(next()); err != nil {
 				t.Fatalf("fixture: the first publish must succeed, got %v", err)
 			}
 
@@ -274,7 +274,7 @@ func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
 
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-9"})
 
-			epoch, ev, err := decodePayload(next())
+			_, epoch, ev, err := decodePayload(next())
 			if err != nil {
 				t.Fatalf("the %s branch must survive a corrupted generation counter: %v", tc.branch, err)
 			}
@@ -316,7 +316,7 @@ func TestThePublishedGenerationMatchesTheStoredOneAboveExactDoubleRange(t *testi
 	ctx := context.Background()
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
-	if _, _, err := decodePayload(next()); err != nil {
+	if _, _, _, err := decodePayload(next()); err != nil {
 		t.Fatalf("fixture: the first publish must succeed, got %v", err)
 	}
 
@@ -337,7 +337,7 @@ func TestThePublishedGenerationMatchesTheStoredOneAboveExactDoubleRange(t *testi
 	}
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "item-11"})
-	published, _, err := decodePayload(next())
+	_, published, _, err := decodePayload(next())
 	if err != nil {
 		t.Fatalf("publish at the guard's limit: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestTheGenerationCeilingIsOneUnderTheEpochCeiling(t *testing.T) {
 			ctx := context.Background()
 
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "a"})
-			if _, _, err := decodePayload(next()); err != nil {
+			if _, _, _, err := decodePayload(next()); err != nil {
 				t.Fatalf("fixture: %v", err)
 			}
 
@@ -411,7 +411,7 @@ func TestTheGenerationCeilingIsOneUnderTheEpochCeiling(t *testing.T) {
 			}
 
 			b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "b"})
-			published, _, err := decodePayload(next())
+			_, published, _, err := decodePayload(next())
 			if err != nil {
 				t.Fatalf("publish: %v", err)
 			}
@@ -613,7 +613,7 @@ func TestABrokenClockDoesNotProduceAnUnpublishableEpoch(t *testing.T) {
 	ctx := context.Background()
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "a"})
-	if _, _, err := decodePayload(next()); err != nil {
+	if _, _, _, err := decodePayload(next()); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
 
@@ -632,7 +632,7 @@ func TestABrokenClockDoesNotProduceAnUnpublishableEpoch(t *testing.T) {
 	}
 
 	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1", ItemID: "b"})
-	epoch, ev, err := decodePayload(next())
+	_, epoch, ev, err := decodePayload(next())
 	if err != nil {
 		t.Fatalf("a repair under a zero clock must still publish a decodable event: %v", err)
 	}

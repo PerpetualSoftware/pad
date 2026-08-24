@@ -504,6 +504,49 @@ type RedisBus struct {
 	// connections and amplifying the outage.
 	confirmTimeout time.Duration
 
+	// heartbeatInterval is T and idleTimeout is 3T: how often this instance
+	// publishes a liveness frame per subscribed workspace, and how long a
+	// subscription may receive nothing at all before its coverage ends and its
+	// connection is replaced (BUG-2738). Tunables with the ruled defaults; see
+	// DefaultHeartbeatInterval and cycleIdleSubscriptions.
+	heartbeatInterval time.Duration
+	idleTimeout       time.Duration
+
+	// heartbeatKick and idleKick wake their loops when the cadence above
+	// changes, so a new interval takes effect at once instead of after the old
+	// one expires. Buffered depth 1 and written non-blockingly: each is a
+	// signal that the values moved, not a queue of changes.
+	//
+	// ONE PER LOOP because the two run in separate goroutines (see
+	// maintenanceLoop); a shared channel would be consumed by whichever was
+	// waiting and leave the other on the stale cadence.
+	heartbeatKick chan struct{}
+	idleKick      chan struct{}
+
+	// maintenanceStopped is closed when maintenanceLoop returns.
+	//
+	// IT EXISTS BECAUSE THE LOOP'S TEARDOWN IS OTHERWISE UNOBSERVABLE, which
+	// makes it untestable and therefore unprotected. Close drains wsSubs, so a
+	// loop that ignored b.ctx entirely would find no workspaces and publish
+	// nothing — indistinguishable from a loop that stopped, while it went on
+	// waking every interval for the life of the process. Same reason
+	// Observer.ReceiveLoopExited exists for the receive goroutines.
+	maintenanceStopped chan struct{}
+
+	// publishHeartbeat selects whether this instance EMITS liveness frames:
+	// PHASE 2 of the heartbeat rollout. Receiving instances recognise and
+	// ignore them from the release that introduced this field, so emission is
+	// the half that is gated — see config.EventsHeartbeat for why the order is
+	// not optional. Constructor parameter with no default, the same shape as
+	// publishEpoch, so every call site states which phase it is in.
+	publishHeartbeat bool
+
+	// nowFunc overrides the clock behind idle detection. Nil in every real
+	// construction; tests set it so a 90s threshold can be crossed without
+	// sleeping through one. Distinct from nowUnix, which seams a different
+	// clock for a different reason (BUG-2740's generation repair).
+	nowFunc func() time.Time
+
 	// afterSubscribeRegister is a TEST SEAM, nil in production. It runs
 	// inside SubscribeAndReplaySince's critical section, after the subscriber
 	// is registered and before the replay is read — the only point at which
@@ -552,6 +595,36 @@ type RedisBus struct {
 	// land a cancellation exactly here cannot tell that regression from a
 	// correct abandon. Receives the workspace.
 	afterRegisterBeforeEstablish func(workspaceID string)
+
+	// afterProbePublish is a TEST SEAM, nil in production. It runs in
+	// publishHeartbeats after a heartbeat has been published for one workspace
+	// and BEFORE its lastProbeOK is stamped. Receives the workspace.
+	//
+	// POSITIONAL: that gap is exactly where a slow publish lets the
+	// subscription it was sent for be replaced, and stamping the replacement
+	// would credit it with a probe it never received. It is the only place a
+	// test can make that interleave happen on purpose.
+	afterProbePublish func(workspaceID string)
+
+	// afterIdleScan is a TEST SEAM, nil in production. It runs in
+	// cycleIdleSubscriptions after the scan has selected its victims and
+	// RELEASED b.mu, and before any of them is cycled.
+	//
+	// POSITIONAL, like its siblings. That gap is the whole subject of the
+	// freshness re-check in cycleOne: in production it is widened by the
+	// concurrency cap and by GC pauses, and it is the only place a test can
+	// make a selected workspace start receiving again before its turn.
+	afterIdleScan func()
+
+	// afterCycleEstablish is a TEST SEAM, nil in production. It runs in
+	// cycleOne after establishSubscription returns and BEFORE the cycle decides
+	// whether to count a replacement.
+	//
+	// POSITIONAL: that is the one point at which an UNRELATED caller's fresh
+	// subscription can be mistaken for this cycle's replacement, which is the
+	// misattribution the explicit installed result exists to prevent. Receives
+	// the workspace.
+	afterCycleEstablish func(workspaceID string)
 
 	// beforeInstallSubscription is a TEST SEAM, nil in production. It runs in
 	// establishSubscription after the dial and BEFORE the lock that decides
@@ -628,6 +701,48 @@ type redisSub struct {
 	// recognised as belonging to a subscription that has already ended.
 	gen int64
 
+	// lastSeen is when this subscription last received ANYTHING from Redis:
+	// an event, a heartbeat, or a subscription confirmation. Guarded by b.mu.
+	//
+	// WHAT IS BEING MEASURED IS WHETHER THE SOCKET CARRIES TRAFFIC, not
+	// whether the workspace is busy — which is why every inbound frame stamps
+	// it rather than only the ones that turn into events, and why it is
+	// stamped at INSTALL time too. A zero value would read as 1970 and cycle a
+	// subscription that has simply not been given the chance to receive
+	// anything yet; see cycleIdleSubscriptions' rule 2.
+	lastSeen time.Time
+
+	// lastProbeOK is when this instance last SUCCEEDED in publishing a
+	// heartbeat for this workspace. Guarded by b.mu.
+	//
+	// IT IS THE DETECTOR'S PREMISE, not bookkeeping (codex round 13). Idle
+	// detection reasons "we published a frame and nothing came back, so the
+	// receive path is dead". That inference is only valid if the publish
+	// actually happened. PUBLISH travels on the client's connPool while the
+	// subscription holds a connection from the separate pubSubPool, so a
+	// publish-side failure — pool exhaustion, a wedged outbound path — says
+	// nothing whatever about whether this subscription can receive. Without
+	// this field the detector reads its own inability to probe as evidence
+	// that the peer is dead, and tears down a healthy connection on a schedule.
+	//
+	// Stamped at install, and the mutation matrix says that stamp is REDUNDANT
+	// under the ordering rule — recorded rather than left as an unearned
+	// justification. An earlier version of this comment claimed a zero value
+	// would "permanently disqualify a subscription from ever being cycled".
+	// That was true of the age-based premise it was written for; it is not true
+	// now. The rule is `lastProbeOK.After(lastSeen)`, and a zero value fails
+	// that test exactly as an install stamp equal to lastSeen does — in both
+	// cases the subscription is simply not cycled until its first successful
+	// probe, which is the intended behaviour either way. Removing the stamp
+	// changes no outcome and no test.
+	//
+	// It is kept because it makes the field's invariant true by construction —
+	// an installed subscription always carries a real timestamp, so any future
+	// rule that reasons about this value's AGE rather than its order gets a
+	// sane one instead of 1970. That is the same trap the age-based rule fell
+	// into, one field over.
+	lastProbeOK time.Time
+
 	// confirmed is closed by receiveMessages when Redis acknowledges the
 	// SUBSCRIBE for this subscription (BUG-2747). Subscribe waits on it — up to
 	// confirmTimeout, after which it admits anyway and says so, see
@@ -673,7 +788,7 @@ type pendingSub struct {
 // NewRedisBus creates a new Redis-backed EventBus.
 // The provided redis.Client should already be configured and connected.
 func NewRedisBus(client *redis.Client) *RedisBus {
-	return NewRedisBusWithKeys(client, redisns.Default, false)
+	return NewRedisBusWithKeys(client, redisns.Default, false, false)
 }
 
 // NewRedisBusWithKeys is NewRedisBus with an explicit key namespace
@@ -681,28 +796,65 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // shared with the watch bus and the presence registry so all three
 // keyspaces carry the same namespace or none.
 //
+// TWO INDEPENDENT ROLLOUT FLAGS, in this order, and they are NOT
+// interchangeable despite being adjacent booleans of the same type — the
+// hazard being that a maintenance edit swaps or drops one silently
+// (codex round 9). publishEpoch is BUG-2736's ID-space migration; publishHeartbeat
+// is BUG-2738's half-open-connection detection. Any combination is valid and
+// each has its own phase in the startup log.
+//
+// publishHeartbeat turns on PHASE 2 of the heartbeat rollout: this instance
+// publishes a bus-internal liveness frame per subscribed workspace AND runs
+// idle detection. Those are one switch on purpose — an instance detects off
+// its own frames, so detecting without publishing cycles healthy quiet
+// workspaces; see cycleIdleSubscriptions and config.EventsHeartbeat.
+//
 // publishEpoch selects the wire form this instance EMITS (BUG-2736). It is a
 // constructor parameter with no default rather than a setter, so every call
 // site states which phase of the rollout it is in and none can flip a bus that
 // is already publishing. See config.EventsPublishEpoch for the order the two
 // phases must be rolled in.
-func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch bool) *RedisBus {
+func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch, publishHeartbeat bool) *RedisBus {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &RedisBus{
-		client:         client,
-		keys:           keys,
-		publishEpoch:   publishEpoch,
-		subscribers:    make(map[string]map[chan Event]*subscriber),
-		workspaceOf:    make(map[chan Event]string),
-		wsCounts:       make(map[string]int),
-		wsSubs:         make(map[string]*redisSub),
-		pendingSubs:    make(map[string]*pendingSub),
-		replayBuffers:  make(map[string]*replayBuffer),
-		replaySize:     DefaultReplayBufferSize,
-		confirmTimeout: defaultSubscribeConfirmTimeout,
-		ctx:            ctx,
-		cancel:         cancel,
+	b := &RedisBus{
+		client:             client,
+		keys:               keys,
+		publishEpoch:       publishEpoch,
+		publishHeartbeat:   publishHeartbeat,
+		subscribers:        make(map[string]map[chan Event]*subscriber),
+		workspaceOf:        make(map[chan Event]string),
+		wsCounts:           make(map[string]int),
+		wsSubs:             make(map[string]*redisSub),
+		pendingSubs:        make(map[string]*pendingSub),
+		replayBuffers:      make(map[string]*replayBuffer),
+		replaySize:         DefaultReplayBufferSize,
+		confirmTimeout:     defaultSubscribeConfirmTimeout,
+		heartbeatInterval:  DefaultHeartbeatInterval,
+		idleTimeout:        DefaultIdleTimeout,
+		heartbeatKick:      make(chan struct{}, 1),
+		idleKick:           make(chan struct{}, 1),
+		maintenanceStopped: make(chan struct{}),
+		ctx:                ctx,
+		cancel:             cancel,
 	}
+	// NOT STARTED AT ALL ON PHASE 1 (codex round 4, P3). Both halves are gated
+	// on publishHeartbeat and would be guaranteed no-ops there, so the loop
+	// would be two goroutines and two timers per process waking every 30s for
+	// the life of a deployment that has asked for none of it — and the DEFAULT
+	// deployment is phase 1. The flag is constructor-only, so this decision can
+	// be taken once and cannot go stale.
+	//
+	// The in-function gates stay regardless: they are the correctness ones
+	// (see cycleIdleSubscriptions for what a phase-1 detector does to a quiet
+	// workspace), and direct callers — the tests — reach them without a loop.
+	if publishHeartbeat {
+		go b.maintenanceLoop()
+	} else {
+		// Nothing will ever run, so the teardown signal is already true; a
+		// caller waiting on it must not hang.
+		close(b.maintenanceStopped)
+	}
+	return b
 }
 
 // Subscribe registers a local subscriber for the given workspace.
@@ -1232,17 +1384,52 @@ func (b *RedisBus) eventsSinceLocked(workspaceID string, sinceID int64) []Event 
 }
 
 // Close shuts down all Redis subscriptions and closes local subscriber channels.
+//
+// IT DOES NOT JOIN THE MAINTENANCE GOROUTINES (BUG-2738, codex round 3), and
+// that is a choice rather than an omission. Their publish half makes
+// synchronous Redis calls bounded by go-redis's own Dial/Read/WriteTimeout —
+// exactly the calls that stall on the wedged route this whole feature exists
+// to detect — so joining them would let a dead network hold shutdown open for
+// as long as those timeouts take. maintenanceStopped is available for a caller
+// that genuinely wants to wait; nothing in production does.
+//
+// What holds instead is that a cycle already past its own ctx check cannot
+// leave anything behind: establishSubscription re-checks b.ctx under its
+// deciding lock and abandons there, closing the PubSub and retiring the record
+// in the same critical section, and the dial dies with b.ctx through
+// mergeCancellation (except under TLS, where DialTimeout bounds it — see that
+// function). Pinned by TestClosingTheBusDuringACycleInstallsNothing.
 func (b *RedisBus) Close() {
 	b.cancel() // signal all subscription goroutines to stop
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	// COLLECTED UNDER THE LOCK, CLOSED AFTER IT (codex round 13). Same reason
+	// stopRedisSubscription hands its close off: PubSub.Close takes go-redis's
+	// mutex, which the health check can hold across reconnect work, so closing
+	// here would block shutdown inside the lock that every fan-out and every
+	// Subscribe contends for — with subscriber channels still open behind it.
+	// Round 12 fixed the cycle path and left this one, which is the same defect
+	// on the path that runs once per process.
+	//
+	// UNTESTED, DELIBERATELY. Moving a close off a lock is a CONTENTION
+	// property: the only assertion that distinguishes it is a timing one — how
+	// long some other goroutine waited for b.mu — and a timing assertion in
+	// this suite is a flaky assertion. The mutation matrix says so plainly
+	// (closing under the lock survives every test), and that survival is
+	// recorded here rather than papered over with a test that would pass
+	// either way.
+	closing := make([]*redis.PubSub, 0, len(b.wsSubs))
 	for wsID, sub := range b.wsSubs {
 		sub.cancel()
-		sub.pubsub.Close()
+		closing = append(closing, sub.pubsub)
 		delete(b.wsSubs, wsID)
 	}
+	defer func() {
+		for _, ps := range closing {
+			_ = ps.Close()
+		}
+	}()
+	defer b.mu.Unlock()
 
 	for wsID, byWorkspace := range b.subscribers {
 		for ch := range byWorkspace {
@@ -1290,7 +1477,12 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 // could subscribe, unsubscribe, close, or receive a fanned-out event.
 //
 // Exactly one caller per workspace reaches here; the rest wait on pending.
-func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string, establisher *subscriber, pending *pendingSub) {
+// Returns whether a subscription was actually INSTALLED. The idle cycle needs
+// that answer and cannot infer it: reading the live generation afterwards
+// misattributes an unrelated caller's fresh subscription as this cycle's
+// replacement, and misses a real replacement that has already lost its last
+// subscriber (codex round 13).
+func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string, establisher *subscriber, pending *pendingSub) (installed bool) {
 	channel := b.keys.Name(redisChannelSuffix) + workspaceID
 	// DIALLED ON THE CALLER'S CONTEXT *AND* THE BUS'S, so a client that leaves
 	// mid-dial stops paying for it (BUG-2749) without taking away Close()'s
@@ -1368,7 +1560,14 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	// still non-zero and the subscription is installed for them, which is the
 	// hand-off the filing asked about — expressed as a count rather than as a
 	// transfer of ownership.
-	if ctx.Err() != nil {
+	// A NIL ESTABLISHER IS THE BUS ESTABLISHING FOR ITSELF (BUG-2738, rule 4).
+	// The idle detector re-establishes on b.ctx with no subscriber
+	// registration of its own, so there is nothing to deregister — and b.ctx
+	// is never cancelled until Close, at which point the count/closed check
+	// below is what abandons. Guarding the nil here rather than handing the
+	// detector a synthetic subscriber keeps wsCounts meaning "clients", which
+	// is what every arbitration in this file reads it as.
+	if establisher != nil && ctx.Err() != nil {
 		b.unsubscribeLocked(establisher.ch)
 	}
 	if b.wsCounts[workspaceID] == 0 || b.ctx.Err() != nil {
@@ -1377,15 +1576,24 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 		subCancel()
 		_ = pubsub.Close()
 		close(pending.done)
-		return
+		return false
 	}
 	b.subGen++
 	gen := b.subGen
 	sub := &redisSub{
-		pubsub:    pubsub,
-		cancel:    subCancel,
-		gen:       gen,
-		confirmed: make(chan struct{}),
+		pubsub: pubsub,
+		cancel: subCancel,
+		gen:    gen,
+		// STAMPED AT INSTALL, not left at the zero value (BUG-2738, rule 2 of
+		// cycleIdleSubscriptions). A zero time reads as 1970, so a subscription
+		// that has simply not received anything yet would be older than any
+		// threshold and the idle detector would cycle it on its next tick —
+		// hardest in exactly the case BUG-2747 exists for, an unconfirmed
+		// admission where no acknowledgement ever arrives to stamp it. The
+		// clock starts when the socket does.
+		lastSeen:    b.now(),
+		lastProbeOK: b.now(),
+		confirmed:   make(chan struct{}),
 	}
 	b.wsSubs[workspaceID] = sub
 	b.mu.Unlock()
@@ -1441,7 +1649,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 			}
 			b.finishPending(workspaceID, pending)
 		}()
-		return
+		return true
 	case <-timer.C:
 		b.markUnconfirmedAdmission(workspaceID, gen)
 	}
@@ -1452,6 +1660,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	}
 
 	b.finishPending(workspaceID, pending)
+	return true
 }
 
 // mergeCancellation returns a context that ends when EITHER input does.
@@ -1570,8 +1779,20 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 		return
 	}
 	sub.cancel()
-	sub.pubsub.Close()
 	delete(b.wsSubs, workspaceID)
+
+	// CLOSED OFF THE LOCK (codex round 12). PubSub.Close takes go-redis's own
+	// mutex, which its health check can be holding across reconnect work — so
+	// closing here would put a network-bound wait inside b.mu, and b.mu is the
+	// lock every fan-out and every Subscribe on this instance contends for.
+	// The idle detector made that matter: teardown used to happen only when a
+	// workspace lost its last subscriber, and now happens on every cycle.
+	//
+	// Fire-and-forget is safe because nothing references this PubSub any more:
+	// the map entry is gone and the receive loop has already been signalled by
+	// cancel() above, which is what actually stops delivery. Close only
+	// releases the connection.
+	go func(ps *redis.PubSub) { _ = ps.Close() }(sub.pubsub)
 
 	// WHEN WE STOP RECEIVING, THE HONEST STATE IS NO BUFFER, NOT A STALE
 	// CONTIGUOUS ONE (BUG-2731). This is the invariant a future optimization
@@ -1619,9 +1840,13 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 // (Receive → ReceiveTimeout(ctx, 0)).
 //
 // So an instance behind a wedged route sits there receiving nothing while its
-// buffer keeps looking valid. Detecting that needs application-level idle
-// tracking, which is BUG-2730's family and its own decision, because it needs
-// a threshold. Do not assume the health check covers it.
+// buffer keeps looking valid. THAT IS NOW COVERED, but NOT by anything in this
+// function's choice of channel constructor: BUG-2738 added application-level
+// idle tracking on top. Every inbound frame stamps sub.lastSeen below, and
+// cycleIdleSubscriptions ends coverage and replaces the connection when the
+// stamp goes stale. Do not assume the health check covers it; it still does
+// not, and a future change that drops the stamping silently un-fixes BUG-2738
+// while leaving this loop looking untouched.
 func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, workspaceID string, gen int64) {
 	defer b.reportReceiveLoopExited()
 
@@ -1635,6 +1860,17 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 			if !ok {
 				return
 			}
+			// STAMPED FOR EVERY FRAME, ahead of the type switch and ahead of
+			// any decode (BUG-2738). What idle detection measures is whether
+			// the SOCKET carries traffic, so a frame that turns out to be
+			// undecodable, or to name another workspace, or to be a
+			// resubscription notice, is still proof the route works — and each
+			// of those paths `continue`s, so stamping inside the switch would
+			// miss them. A message we could not read means coverage is broken,
+			// which dropWorkspaceCoverage handles; it does NOT mean the
+			// connection is dead, and cycling it would be the wrong remedy.
+			b.stampLastSeen(workspaceID, gen)
+
 			switch msg := raw.(type) {
 			case *redis.Subscription:
 				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
@@ -1659,7 +1895,17 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 				b.dropWorkspaceCoverage(workspaceID, ResetReasonSubscriptionResumed, gen)
 
 			case *redis.Message:
-				epoch, event, err := decodePayload(msg.Payload)
+				kind, epoch, event, err := decodePayload(msg.Payload)
+				if kind == payloadHeartbeat {
+					// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
+					// has already done its whole job by arriving — the stamp
+					// above is the entire effect. It consumes no id, drops no
+					// buffer, reaches no subscriber and moves no counter, so an
+					// instance that publishes none is still a correct receiver
+					// for one that does. That is what makes the two-phase roll
+					// zero-loss.
+					continue
+				}
 				if err != nil {
 					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS WORKSPACE'S
 					// COVERAGE (codex round 11). Dropping it and carrying on
@@ -1719,16 +1965,26 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 // any other workspace's channel, and dropping the rest would be a resync
 // charged to clients whose stream never broke.
 func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) {
-	var report string
-	defer func() {
-		if report != "" {
-			b.reportReset(report)
-		}
-	}()
-
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	report := b.dropWorkspaceCoverageLocked(workspaceID, reason, gen)
+	b.mu.Unlock()
+	if report != "" {
+		b.reportReset(report)
+	}
+}
 
+// dropWorkspaceCoverageLocked is dropWorkspaceCoverage with the lock already
+// held. It returns the reason to report, or "" for nothing to report; the
+// caller reports it AFTER releasing b.mu, because an Observer callback may call
+// back into the bus.
+//
+// SPLIT OUT SO A CALLER CAN MAKE THE DROP PART OF A LARGER ATOMIC DECISION
+// (BUG-2738, codex round 11). The idle cycle has to validate the subscription,
+// end its coverage and tear it down without releasing the lock in between —
+// otherwise a heartbeat arriving in one of those gaps makes it drop coverage
+// for a workspace that had just recovered.
+func (b *RedisBus) dropWorkspaceCoverageLocked(workspaceID, reason string, gen int64) string {
+	var report string
 	// THE GENERATION CHECK BELONGS HERE TOO, not only in fan-out (codex round
 	// 7). A receive loop can notice its connection died LONG after the
 	// workspace was unsubscribed and resubscribed under it: last viewer
@@ -1739,7 +1995,7 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 	// before its subscription began, and the reset counter names an incident
 	// that did not happen to it.
 	if sub, ok := b.wsSubs[workspaceID]; !ok || sub.gen != gen {
-		return
+		return report
 	}
 
 	if _, ok := b.replayBuffers[workspaceID]; !ok {
@@ -1761,7 +2017,7 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 		// (there was none) and the signal measures CLIENTS WHO MAY HAVE
 		// MISSED SOMETHING (there are some).
 		b.signalWorkspaceLocked(workspaceID)
-		return
+		return report
 	}
 	delete(b.replayBuffers, workspaceID)
 	// TELL THE SUBSCRIBERS THAT ARE STILL HOLDING THE STREAM OPEN (BUG-2730).
@@ -1775,6 +2031,7 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 	// directly above: no other workspace's channel is implicated.
 	b.signalWorkspaceLocked(workspaceID)
 	report = reason
+	return report
 }
 
 // signalWorkspaceLocked raises the gap flag for every live subscriber of one
@@ -1794,6 +2051,23 @@ func (b *RedisBus) signalAllLocked() {
 		for _, sub := range byWorkspace {
 			sub.signalGap()
 		}
+	}
+}
+
+// stampLastSeen records that this workspace's subscription just received
+// something from Redis.
+//
+// GENERATION-CHECKED like every other bookkeeping write keyed by workspace: a
+// receive loop can outlive its subscription (stopRedisSubscription only
+// signals it, never joins it), and a straggler frame from a dead generation
+// must not refresh the liveness of the one that replaced it. Without this
+// check a wedged old loop's final buffered frames could keep a NEW subscription
+// looking alive.
+func (b *RedisBus) stampLastSeen(workspaceID string, gen int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if sub, ok := b.wsSubs[workspaceID]; ok && sub.gen == gen {
+		sub.lastSeen = b.now()
 	}
 }
 
@@ -1922,6 +2196,17 @@ const (
 	floorKeep
 )
 
+// payloadKind distinguishes the frames that arrive on a workspace's event
+// channel. A heartbeat is BUS-INTERNAL: never an event, never buffered, never
+// replayed, never fanned out, and never counted. It exists only so that
+// silence on a socket becomes diagnostic (BUG-2738).
+type payloadKind int
+
+const (
+	payloadEvent payloadKind = iota
+	payloadHeartbeat
+)
+
 // decodePayload parses the "<epoch>|<id>|<json>" wire form publishScript emits,
 // and ALSO accepts a bare JSON body with no prefix.
 //
@@ -1943,43 +2228,58 @@ const (
 // The leading '{' check is what stops a JSON body that happens to contain two
 // '|' characters from being mistaken for a prefixed payload — an epoch is
 // never a JSON object.
-func decodePayload(payload string) (int64, Event, error) {
+func decodePayload(payload string) (payloadKind, int64, Event, error) {
+	// CLASSIFIED BEFORE ANYTHING IS SPLIT OR UNMARSHALLED, and the ORDER is
+	// what makes the frame safe (BUG-2738). "hb|1" has one separator and would
+	// otherwise fall through to the bare-JSON branch and fail to unmarshal;
+	// a future two-field frame would split into three and fail to parse an
+	// epoch. Either way it would reach the caller as an error, and an error
+	// here ends the workspace's coverage — so a liveness probe would
+	// manufacture the resync it exists to prevent.
+	//
+	// THE KIND IS RETURNED RATHER THAN HANDLED AT THE CALL SITE so that no
+	// future caller of this decoder can reintroduce that. The wire format is
+	// this function's to know.
+	if isHeartbeat(payload) {
+		return payloadHeartbeat, 0, Event{}, nil
+	}
+
 	if parts := strings.SplitN(payload, "|", 3); len(parts) == 3 && !strings.HasPrefix(parts[0], "{") {
 		epochPart, idPart, body := parts[0], parts[1], parts[2]
 		epoch, err := strconv.ParseInt(epochPart, 10, 64)
 		if err != nil {
-			return 0, Event{}, fmt.Errorf("payload epoch prefix %q is not an integer: %w", epochPart, err)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload epoch prefix %q is not an integer: %w", epochPart, err)
 		}
 		if epoch <= 0 {
 			// Zero is this package's sentinel for "no ID-space information",
 			// so a message may not carry it as a real generation — otherwise a
 			// malformed publisher could make every receiver stop reconciling
 			// while looking perfectly healthy.
-			return 0, Event{}, fmt.Errorf("payload epoch prefix %d is not a positive generation", epoch)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload epoch prefix %d is not a positive generation", epoch)
 		}
 		id, err := strconv.ParseInt(idPart, 10, 64)
 		if err != nil {
-			return 0, Event{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload id prefix %q is not an integer: %w", idPart, err)
 		}
 		var event Event
 		if err := json.Unmarshal([]byte(body), &event); err != nil {
-			return 0, Event{}, fmt.Errorf("payload body is not an Event: %w", err)
+			return payloadEvent, 0, Event{}, fmt.Errorf("payload body is not an Event: %w", err)
 		}
 		event.ID = id
 		if err := requirePositiveID(event.ID); err != nil {
-			return 0, Event{}, err
+			return payloadEvent, 0, Event{}, err
 		}
-		return epoch, event, nil
+		return payloadEvent, epoch, event, nil
 	}
 
 	var event Event
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return 0, Event{}, fmt.Errorf("payload is neither <epoch>|<id>|<json> nor a bare Event: %w", err)
+		return payloadEvent, 0, Event{}, fmt.Errorf("payload is neither <epoch>|<id>|<json> nor a bare Event: %w", err)
 	}
 	if err := requirePositiveID(event.ID); err != nil {
-		return 0, Event{}, err
+		return payloadEvent, 0, Event{}, err
 	}
-	return 0, event, nil
+	return payloadEvent, 0, event, nil
 }
 
 // requirePositiveID is applied to BOTH wire forms, and being applied to both
