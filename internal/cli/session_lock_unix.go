@@ -33,3 +33,11 @@ func lockSessionsDir(dir string) (unlock func(), err error) {
 		_ = f.Close()
 	}, nil
 }
+
+// openRegistryFile opens a registry entry read-only without following a
+// symlink at the final component and without blocking if the name has
+// become a FIFO (O_NONBLOCK makes a FIFO open return immediately; the
+// caller's regular-file check then rejects it).
+func openRegistryFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}

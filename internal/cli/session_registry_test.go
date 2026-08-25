@@ -654,3 +654,52 @@ func TestSessionsDir_TightensExistingMode(t *testing.T) {
 		t.Fatalf("existing directory must be tightened to 0700, got %o", info.Mode().Perm())
 	}
 }
+
+// TestReadSessionRecord_InputHardening: an oversized file, invalid UTF-8,
+// and a FIFO under a session-shaped name are all MALFORMED — and the FIFO
+// does not block the reader (codex round 8).
+func TestReadSessionRecord_InputHardening(t *testing.T) {
+	dir := registryEnv(t)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(dir, "2001.json")
+	if err := os.WriteFile(big, append([]byte(`{"session_pid":1,"pid":1,"cwd":"/x","registered_at":"2026-08-01T00:00:00Z","agent":"`), append(make([]byte, maxRegistryRecordBytes), '"', '}')...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(dir, "2002.json")
+	if err := os.WriteFile(bad, []byte("{\"session_pid\":1,\"pid\":1,\"cwd\":\"/x\",\"registered_at\":\"2026-08-01T00:00:00Z\",\"agent\":\"\xff\xfe\"}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{big, bad} {
+		rec, err := readSessionRecord(p)
+		if err != nil || !rec.Malformed || rec.Liveness != LivenessUnknown {
+			t.Fatalf("%s must read as malformed/unknown: %+v %v", filepath.Base(p), rec, err)
+		}
+	}
+
+	fifo := filepath.Join(dir, "2003.json")
+	if err := mkfifo(fifo); err != nil {
+		t.Skipf("no fifo on this platform: %v", err)
+	}
+	done := make(chan SessionRecord, 1)
+	go func() { rec, _ := readSessionRecord(fifo); done <- rec }()
+	select {
+	case rec := <-done:
+		if !rec.Malformed {
+			t.Fatalf("a FIFO must read as malformed, got %+v", rec)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("reading a FIFO under a session name must not block")
+	}
+	// And the directory listing skips it by type, so it never lists.
+	records, err := ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range records {
+		if r.Path == fifo {
+			t.Fatalf("FIFO must not list: %+v", r)
+		}
+	}
+}

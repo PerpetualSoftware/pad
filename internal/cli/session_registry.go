@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,6 +43,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SessionRegistration is one session's on-disk record.
@@ -250,7 +252,7 @@ func ListSessions() ([]SessionRecord, error) {
 // readSessionRecord reads one file and judges it. Only a missing file is
 // an error; unreadable or unparseable content is a Malformed record.
 func readSessionRecord(path string) (SessionRecord, error) {
-	data, err := os.ReadFile(path)
+	data, err := readRegistryBytes(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return SessionRecord{}, err
@@ -258,10 +260,56 @@ func readSessionRecord(path string) (SessionRecord, error) {
 		return malformedRecord(path), nil
 	}
 	var reg SessionRegistration
+	// Invalid UTF-8 is rejected outright: encoding/json would otherwise
+	// replace the bad bytes with U+FFFD and hand back an agent name or cwd
+	// that is not what the file says (codex round 8).
+	if !utf8.Valid(data) {
+		return malformedRecord(path), nil
+	}
 	if err := json.Unmarshal(data, &reg); err != nil || !registrationWellFormed(&reg) {
 		return malformedRecord(path), nil
 	}
 	return recordFor(path, reg), nil
+}
+
+// maxRegistryRecordBytes bounds what a registry read will load. A real
+// record is well under 1 KiB (a handful of short fields); the bound is
+// generous so no legitimate writer approaches it, and it turns a
+// multi-megabyte file under a session-shaped name into a malformed row
+// instead of a memory bill at every monitor start (codex round 8).
+const maxRegistryRecordBytes = 64 * 1024
+
+var (
+	errRegistryNotRegular = errors.New("registry entry is not a regular file")
+	errRegistryTooLarge   = errors.New("registry entry exceeds the record size bound")
+)
+
+// readRegistryBytes opens a registry entry WITHOUT following symlinks or
+// blocking on a FIFO (where the platform allows), re-checks that what it
+// opened is a regular file — ListSessions filtered on the directory
+// entry's type, but a same-user process could swap the name between that
+// check and this open — and reads at most the record bound.
+func readRegistryBytes(path string) ([]byte, error) {
+	f, err := openRegistryFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errRegistryNotRegular
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRegistryRecordBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxRegistryRecordBytes {
+		return nil, errRegistryTooLarge
+	}
+	return data, nil
 }
 
 // registrationWellFormed rejects files that parse as JSON but are not
