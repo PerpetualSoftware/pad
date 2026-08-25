@@ -28,13 +28,21 @@ const ActivityDebounceCooldown = 5 * time.Minute
 // human's row, refuse the merge on identity, and split the agent's run across
 // two rows (codex round 1 on this fix).
 //
-// Ten covers the writers that plausibly interleave on one item inside a
-// five-minute window — a human plus a handful of agents on one account, plus
-// any rows already frozen by a comment link. It is not a correctness bound in
-// either direction: past it the loop simply fails to find the writer's own row
+// The rows that can crowd out the writer's own are narrower than "everything
+// in the window": the query already filters to one document, one account and
+// one actor kind, so only rows carrying a DIFFERENT agent name compete. For a
+// human write that is normally none at all (a human write stamps no name), and
+// can only be a row written before this fix, when a merge could overlay an
+// agent name onto a user-actor row. For an agent it is the other agent names
+// on the same account touching the same item inside five minutes.
+//
+// Ten of those is already an implausible load, and the bound is deliberately
+// not a correctness one: past it the loop fails to find the writer's own row
 // and starts a new one, which costs an extra activity row and can never
-// produce a wrong attribution. It does NOT bound how many rows the window can
-// hold, only how many are inspected.
+// produce a wrong attribution — the direction this fix exists to prevent.
+// Raising it costs a longer scan on a write path; the number is a scan
+// ceiling, not a statement about how many rows the window may hold.
+// (Declined codex round 2, which read the bound as incomplete coalescing.)
 const maxDebounceCandidates = 10
 
 func (s *Store) CreateActivity(a models.Activity) (string, error) {
@@ -98,10 +106,15 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// TimelineActivityCard reads the stamped name only when actor == "agent"
 	// and prints the person otherwise.
 	//
-	// actor is a SQL predicate; the agent name is matched in Go because it
-	// lives inside the metadata JSON and this store targets two dialects
-	// whose JSON accessors differ (the same reason models.AgentNameFromMetadata
-	// exists rather than a json_extract).
+	// actor is a SQL predicate; the agent name is matched in Go. Not for want
+	// of a portable accessor — s.dialect.JSONExtractText would render this
+	// column's `agent` key on both backends — but because
+	// models.AgentNameFromMetadata is the twin of the accessor the RENDERER
+	// uses, and the two disagree exactly where a stored value is odd: a
+	// non-string `agent` reads as absent in Go and as its text form in SQL,
+	// and malformed metadata is one skipped row in Go versus a failed query
+	// on SQLite. Matching on the value the timeline will actually display
+	// keeps the merge decision and the rendering in agreement.
 	incomingAgent := models.AgentNameFromMetadata(a.Metadata)
 
 	rows, err := s.db.Query(s.q(`
