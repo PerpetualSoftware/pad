@@ -515,12 +515,14 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 // server's presence registry can name the session instead of showing an
 // opaque uuid.
 //
-// The two fields are the wire-safe half of what `pad session register`
+// The two fields are the wire-safe subset of what `pad session register`
 // records locally (internal/cli/session_registry.go). What is missing
-// is the point: MessagingSocketPath never leaves this machine, and the
-// cwd travels as a BASENAME, because "docapp" is what a session picker
-// needs while "/home/dave/Dev/docapp" additionally hands over a home
-// directory and an account name.
+// is the point: the messaging socket path and its identity never leave
+// this machine, the cwd travels as a BASENAME, because "docapp" is what
+// a session picker needs while "/home/dave/Dev/docapp" additionally
+// hands over a home directory and an account name — and the agent name
+// the registry carries since TASK-2767 stays local until IDEA-2750 part
+// 2b gives it a reviewed place on the wire.
 //
 // Both fields are optional. A zero value produces the pre-S2 behaviour:
 // an unlabelled session that still receives every event.

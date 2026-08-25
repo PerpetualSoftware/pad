@@ -27,25 +27,47 @@ import (
 // that follow are space-separated. State is the 3rd field overall (index
 // 0 after comm) and starttime is the 22nd (index 19 after comm).
 func procStartToken(pid int) (string, bool) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	tok, err := procStartTokenErr(pid)
+	return tok, err == nil
+}
+
+// procStartTokenErr is procStartToken with the failure preserved, so a
+// caller that must tell "this process is gone" (os.ErrNotExist, errProcZombie)
+// from "this process could not be examined" (a permission or I/O error —
+// hidepid mounts, a namespace boundary) can do so. The registry's liveness
+// verdict needs that distinction (TASK-2767, codex round 1 P2): a probe that
+// failed is not proof the owner is gone.
+func procStartTokenErr(pid int) (string, error) {
+	fields, err := procStatFields(pid)
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	s := string(data)
-	rparen := strings.LastIndexByte(s, ')')
-	if rparen < 0 || rparen+1 >= len(s) {
-		return "", false
-	}
-	fields := strings.Fields(s[rparen+1:])
 	const (
 		stateIndexAfterComm     = 0  // field 3
 		startTimeIndexAfterComm = 19 // field 22, minus pid(1) and comm(2)
 	)
 	if len(fields) <= startTimeIndexAfterComm {
-		return "", false
+		return "", errProcStatMalformed
 	}
 	if fields[stateIndexAfterComm] == "Z" {
-		return "", false // zombie: the arming process has exited
+		return "", errProcZombie // the process has exited and awaits reap
 	}
-	return fields[startTimeIndexAfterComm], true
+	return fields[startTimeIndexAfterComm], nil
+}
+
+// procStatFields reads /proc/<pid>/stat and returns the space-separated
+// fields AFTER the comm field — the one parser both the start-token and
+// the ancestry readers use, so the "last ')'" subtlety lives in one place.
+// Index 0 is field 3 (state), index 1 field 4 (ppid), and so on.
+func procStatFields(pid int) ([]string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return nil, err
+	}
+	s := string(data)
+	rparen := strings.LastIndexByte(s, ')')
+	if rparen < 0 || rparen+1 >= len(s) {
+		return nil, errProcStatMalformed
+	}
+	return strings.Fields(s[rparen+1:]), nil
 }

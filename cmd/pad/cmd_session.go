@@ -3,7 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
+	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -11,8 +15,9 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
-// sessionCmd groups session-registry commands (TASK-2533) and the
-// arm/disarm/status consent verbs (PLAN-2613 S2, TASK-2617).
+// sessionCmd groups the local session-registry verbs (register / list /
+// prune — TASK-2533, TASK-2767) and the arm/disarm/status consent verbs
+// (PLAN-2613 S2, TASK-2617).
 func sessionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "session",
@@ -21,6 +26,8 @@ func sessionCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		sessionRegisterCmd(),
+		sessionListCmd(),
+		sessionPruneCmd(),
 		sessionArmCmd(),
 		sessionDisarmCmd(),
 		sessionStatusCmd(),
@@ -94,46 +101,265 @@ func sessionShouldArmCmd() *cobra.Command {
 // exit-1 path — SilenceErrors keeps it off the terminal.
 var errNotArmed = fmt.Errorf("not armed")
 
-// sessionRegisterCmd registers the CURRENT process in the on-disk
-// session registry (~/.pad/sessions/<pid>.json). See
-// internal/cli/session_registry.go's package doc comment for what this
-// is for and — as important — what it is NOT for yet: Phase 1's nudge
-// delivery (the plugin monitor) needs no session registry at all; this
-// is forward-looking infra for Phase 3's live-sessions/presence surface
-// (IDEA-2464).
+// sessionRegisterCmd records the CURRENT session in the local session
+// registry (~/.pad/sessions/<session_pid>.json — see
+// internal/cli/session_registry.go). The plugin monitor runs it on start;
+// other harnesses call it from their own session-start hook.
 func sessionRegisterCmd() *cobra.Command {
-	return &cobra.Command{
+	var agent string
+	cmd := &cobra.Command{
 		Use:   "register",
-		Short: "Register this session in the local pad session registry",
-		Long: `Records this process's pid, working directory, and (when running inside a
-Claude Code session) the CLAUDE_CODE_MESSAGING_SOCKET path to
-~/.pad/sessions/<pid>.json.
+		Short: "Register this session, and the agent it runs as, in the local session registry",
+		Long: `Records this session — the harness session process (from $PAD_SESSION_PID,
+else $CLAUDE_PID, else this process), its working directory, the agent
+name it runs as, and its messaging socket's identity — to
+~/.pad/sessions/<session_pid>.json, mode 0600. 'pad session list' reads
+the registry back with a liveness verdict per session.
 
-Safe to call from any directory — it does not require a linked
-workspace (.pad.toml) — and safe to call more than once per session
-(each call overwrites this pid's record with a fresh timestamp).`,
+The agent name defaults to what every write is attributed to (.pad.toml
+agent_name, else $PAD_AGENT, else the detected runtime); --agent overrides
+it, and --agent "" registers an anonymous session.
+
+Safe to call from any directory — it does not require a linked workspace
+(.pad.toml) — and safe to call more than once per session: each call
+overwrites the session's record with a fresh timestamp. Records of
+sessions it can see are dead are pruned on the way (see 'pad session
+prune').`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("get working directory: %w", err)
 			}
-			socketPath := os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET")
-
-			path, err := cli.RegisterSession(cwd, socketPath)
+			cwd = canonicalDir(cwd)
+			// An explicit --agent wins verbatim, including the empty string
+			// (anonymous). Absent, the session is named the way its writes
+			// are.
+			if !cmd.Flags().Changed("agent") {
+				agent = cli.ResolveAgentName()
+			}
+			rec, err := cli.RegisterSession(cwd, agent)
 			if err != nil {
 				return fmt.Errorf("register session: %w", err)
 			}
-
 			if formatFlag == "json" {
-				return cli.PrintJSON(map[string]string{
-					"path": path,
-					"cwd":  cwd,
-				})
+				return cli.PrintJSON(rec)
 			}
-			fmt.Printf("Registered session (pid %d) at %s\n", os.Getpid(), path)
+			name := rec.Agent
+			if name == "" {
+				name = "(anonymous)"
+			}
+			fmt.Printf("Registered session pid %d as %s at %s\n", rec.SessionPID, printableCell(name), rec.Path)
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&agent, "agent", "", "agent name to register as (default: the name this session's writes carry; \"\" for anonymous)")
+	return cmd
+}
+
+// sessionListCmd is `pad session list` (TASK-2767): the registry read-back,
+// one row per registered session with a liveness verdict. Deterministic
+// and local: it stats sockets and probes pids, it does not ask the server.
+// By default shows sessions that are alive or unknown (a platform that
+// cannot probe); --all adds the dead ones a prune would remove.
+func sessionListCmd() *cobra.Command {
+	var (
+		agentFilter string
+		cwdFilter   string
+		all         bool
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List registered sessions on this machine with a liveness verdict each",
+		Long: `Reads ~/.pad/sessions and reports each registered session: its owner pid,
+the agent it registered as, its working directory, and whether it is
+alive right now.
+
+Liveness is decided locally and fails toward honesty: "alive" means every
+signal the record carries — its messaging socket, its owner pid, and the
+identity captured for each at registration where the platform supplies
+one — still checks out; "dead" means one is gone or has been reused by
+something else; "unknown" means one could not be examined (a platform
+that cannot probe pids, a socket that cannot be stat'ed). A legacy row
+(registered before sessions carried an agent name) is judged by its pid
+alone: it can say a session exists but not who it is, and it matches no
+--agent filter.
+
+Everything a row says about WHO — agent, session id, and (unless
+session_pid_verified is true) the owner pid itself — is what the session
+declared. On Linux the pid claim is checked against the registering
+process's ancestry; a consumer that needs that check reads
+session_pid_verified in the JSON.
+
+Deciding whether a NAME is in use from this output (the rule a script
+needs, and where it is only as good as its inputs):
+
+  - List WITHOUT --agent (use --cwd to scope), then apply the rule
+    yourself: a row with liveness "alive", no legacy/malformed flag, and
+    session_pid_verified true, whose agent is the name, means IN USE by
+    that session (identify it by session_id, else session_pid).
+  - Any "unknown", legacy, or malformed row scoped to the same directory
+    is INDETERMINATE, never "not in use" — such a row cannot say who it
+    is, so --agent NAME would have hidden it.
+  - No matching row means "no registered row", not "nobody": a harness
+    that never registers, or whose registration failed, is invisible.
+  - Two or more alive rows for one name is ambiguous; do not pick the
+    newest — registered_at is each session's own clock.
+  - The registry is this OS user's; other users' sessions are not here.
+  - The verdict is a sample: a session can register or exit right after.
+  - A row carries the name at registration; a window that changes its
+    PAD_AGENT afterwards must run 'pad session register' again.
+
+Newest first. Use --format json for the stable shape.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			records, err := cli.ListSessions()
+			if err != nil {
+				return err
+			}
+			var filtered []cli.SessionRecord
+			cwdWant := ""
+			if cwdFilter != "" {
+				cwdWant = canonicalDir(cwdFilter)
+			}
+			for _, r := range records {
+				if !all && r.Liveness == cli.LivenessDead {
+					continue
+				}
+				// A legacy or malformed row has NO agent — not an empty one —
+				// so it matches no --agent filter, including --agent "".
+				if cmd.Flags().Changed("agent") && (r.Agent != agentFilter || r.Legacy || r.Malformed) {
+					continue
+				}
+				// Directory IDENTITY, not spelling: both sides resolve
+				// symlinks so a checkout reached through a link matches its
+				// real path (codex round 5). A stored cwd that no longer
+				// exists compares by its cleaned spelling.
+				if cwdWant != "" && canonicalDir(r.Cwd) != cwdWant {
+					continue
+				}
+				filtered = append(filtered, r)
+			}
+			if formatFlag == "json" {
+				if filtered == nil {
+					filtered = []cli.SessionRecord{}
+				}
+				return cli.PrintJSON(filtered)
+			}
+			printSessionList(filtered)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&agentFilter, "agent", "", "only sessions registered as this agent name (\"\" matches anonymous sessions)")
+	cmd.Flags().StringVar(&cwdFilter, "cwd", "", "only sessions registered from this directory (symlinks resolved on both sides)")
+	cmd.Flags().BoolVar(&all, "all", false, "include dead sessions")
+	return cmd
+}
+
+func printSessionList(records []cli.SessionRecord) {
+	if len(records) == 0 {
+		fmt.Println("No registered sessions.")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "AGENT\tPID\tSTATE\tCWD\tREGISTERED")
+	for _, r := range records {
+		agent := r.Agent
+		if agent == "" {
+			agent = "-"
+		}
+		state := string(r.Liveness)
+		switch {
+		case r.Malformed:
+			state += " (malformed)"
+		case r.Legacy:
+			state += " (legacy)"
+		case !r.SessionPIDVerified:
+			state += " (unverified pid)"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", printableCell(agent), r.SessionPID, state, printableCell(r.Cwd), printableCell(r.RegisteredAt))
+	}
+	tw.Flush()
+}
+
+// canonicalDir resolves a directory to its real, absolute, cleaned path
+// when it exists (symlinks followed), and to its cleaned absolute
+// spelling otherwise — so registration and --cwd compare directory
+// identity rather than the string a shell happened to use.
+func canonicalDir(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(abs)
+}
+
+// printableCell makes a self-declared value safe for the terminal table:
+// every non-printable rune (newline, carriage return, ESC, ...) becomes
+// '?', so a hostile agent name or directory cannot forge a row or drive
+// the terminal (codex round 3). Replaced, not dropped, so the value is
+// visibly odd rather than silently shortened. JSON output is untouched —
+// encoding/json escapes on its own.
+func printableCell(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
+}
+
+// sessionPruneCmd is `pad session prune` (TASK-2767): removes the records
+// of dead sessions. Alive records are never touched. Unknown ones — a
+// platform that cannot probe pids, or a malformed file — are removed only
+// under an explicit --older-than bound, because "cannot tell" is not
+// "dead" and deleting on it would empty a live registry on such a platform.
+func sessionPruneCmd() *cobra.Command {
+	var olderThan time.Duration
+	cmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Remove dead sessions' records from the local session registry",
+		Long: `Deletes registry records whose session is dead. Never deletes a record
+it can see is alive.
+
+Records whose liveness is unknown (this platform cannot probe the owner,
+or the file is malformed) are kept unless --older-than is given, in which
+case those older than the bound are deleted too — live or not, since
+unknown means exactly that; it is the only way such a registry ever
+shrinks, and an explicit choice for that reason.
+
+'pad session register' already prunes the records it can see are dead on
+every call; this verb is for the unknown ones and for cleaning up
+without registering.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rep, err := cli.PruneSessions(olderThan, time.Now())
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				if rep.Removed == nil {
+					rep.Removed = []cli.SessionRecord{}
+				}
+				return cli.PrintJSON(rep)
+			}
+			fmt.Printf("Pruned %d dead", rep.DeadRemoved)
+			if olderThan > 0 {
+				fmt.Printf(" and %d unknown older than %s", rep.UnknownRemoved, olderThan)
+			}
+			fmt.Printf("; kept %d.\n", rep.Kept)
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&olderThan, "older-than", 0, "also remove unknown-liveness records older than this (e.g. 72h)")
+	return cmd
 }
 
 // sessionArmCmd is `pad session arm` (PLAN-2613 S2, TASK-2617): the

@@ -38,6 +38,20 @@ while ! pad watch --help >/dev/null 2>&1; do
 	sleep 3600
 done
 
+# --- 0.5. Presence. Record this session in the local session registry
+# (~/.pad/sessions, TASK-2767) BEFORE the consent gate: presence is a fact
+# about the session, consent is a grant it may or may not make, and the
+# record is local, 0600, and never crosses the wire — so an unarmed session
+# still registers. Both monitors of one session run this; the second is an
+# idempotent overwrite. The record is keyed on the harness session pid
+# (PAD_SESSION_PID if exported, else Claude Code's CLAUDE_PID) and named by
+# the agent name (.pad.toml agent_name, else PAD_AGENT, else the detected
+# runtime); `pad session list` reads it back.
+# Silent by construction — a failure here must not cost the stream. No
+# test harness drives this script; the step is verified by hand with
+# `pad session list` after a session starts (TASK-2767).
+pad session register >/dev/null 2>&1 || true
+
 # --- 1. Session key for the lockfile.
 sock="${CLAUDE_CODE_MESSAGING_SOCKET:-}"
 if [ -n "$sock" ]; then

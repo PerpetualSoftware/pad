@@ -7,10 +7,13 @@ import (
 )
 
 // pidAlive reports whether a process with the given pid is currently
-// running. It is used only by the headless (no-socket) arm-state liveness
-// fallback (see armStateOwnerAlive) and errs toward "dead" on any
-// uncertainty, because that is the fail-closed direction for a consent
-// gate: a session wrongly judged dead simply doesn't arm.
+// running. It is the pid probe behind OwnerLiveness (session_owner.go) —
+// the headless arm-state fallback and the session registry both — and
+// errs toward "dead" on any uncertainty. That is the fail-closed
+// direction for the consent gate (a session wrongly judged dead simply
+// doesn't arm); the registry's pruner is shielded from it on the one
+// platform where the probe cannot work at all, Windows, which
+// OwnerLiveness reports as unknown before ever calling this.
 //
 // On Unix, os.FindProcess never fails, so liveness is probed with signal
 // 0: a nil error means the process exists, EPERM means it exists but is

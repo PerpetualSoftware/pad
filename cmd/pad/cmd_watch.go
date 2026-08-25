@@ -343,24 +343,19 @@ func monitorClient() (*cli.Client, error) {
 // presence registry (PLAN-2558 S2, TASK-2560): the working directory's
 // basename as a human-readable label, plus this process's own pid.
 //
-// WHY NOT READ ~/.pad/sessions/, given that this slice exists to give
-// `pad session register` a consumer. Because the monitor cannot tell
-// WHICH registry entry is its own session without guessing. The entries
-// are written by whatever process ran `pad session register` — an agent
-// harness, a different pid — and the only fields available to match on
-// are pid and cwd. Two agent sessions in the same checkout produce two
-// entries with identical cwd, and picking "the newest" would be a
-// coin flip that puts a wrong-but-confident name in the S5 target
-// picker. Process ancestry would settle it exactly, and is
-// platform-specific (this binary ships for macOS and Windows too), so
-// it is not a slice-S2 shape.
-//
-// The monitor's own cwd + pid are never wrong, and they answer the
-// question the label exists to answer: which project is this session
-// working in. The registry's remaining value — correlating a stream to
-// the agent session that spawned it — needs an identifier the harness
-// passes down, not a heuristic; that is worth doing when something
-// actually needs it, and worth NOT faking until then.
+// WHY NOT READ ~/.pad/sessions/. When this slice shipped (S2), the
+// registry was keyed on the dead `pad session register` command pid and
+// the only fields to match on were pid and cwd — two agent sessions in
+// one checkout were indistinguishable, and picking "the newest" would
+// have put a wrong-but-confident name in the S5 target picker. TASK-2767
+// fixed the registry: it is now keyed on the harness session pid
+// (CLAUDE_PID) and records the messaging socket's identity, so a monitor
+// COULD find its own record exactly (same CLAUDE_CODE_MESSAGING_SOCKET).
+// It still does not, by ruling: the agent name reaching the server is
+// IDEA-2750 part 2b, a wire change with its own review (the server would
+// then carry a self-declared label per stream, and the picker would show
+// it), and until that lands the label stays what the monitor can never
+// be wrong about — its own cwd and pid.
 //
 // Failures are silent by construction: os.Getwd can fail (a deleted
 // cwd), and the answer is an unlabelled session, not a dead monitor.

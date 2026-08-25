@@ -251,6 +251,7 @@ pad bootstrap [--format markdown]    # the canonical context-load — see Contex
 pad server info
 pad server open                       # open the web UI in browser
 pad auth whoami
+pad session list [--cwd DIR] [--format json]   # sessions on this machine and the agent each runs as (local registry; `--help` has the decision rule)
 ```
 
 For everything else (`pad workspace init`, `pad agent install`, `pad github link`, webhooks REST API, etc.) run `pad --help` or `pad <cmd> --help`.
