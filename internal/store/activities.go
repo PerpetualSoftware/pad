@@ -17,6 +17,26 @@ import (
 // agent names sharing one user_id (BUG-2763).
 const ActivityDebounceCooldown = 5 * time.Minute
 
+// maxDebounceCandidates bounds how many recent rows CreateActivityDebounced
+// examines when looking for the current writer's own row to extend.
+//
+// It is a scan bound, not a semantic one, and it exists because created_at has
+// WHOLE-SECOND precision: several rows inside the window can carry the same
+// timestamp, and ORDER BY created_at cannot order them — SQLite returns such a
+// tie in a stable-looking order that Postgres does not promise. Reading only
+// the top row would let a rapid human → agent → agent sequence land on the
+// human's row, refuse the merge on identity, and split the agent's run across
+// two rows (codex round 1 on this fix).
+//
+// Ten covers the writers that plausibly interleave on one item inside a
+// five-minute window — a human plus a handful of agents on one account, plus
+// any rows already frozen by a comment link. It is not a correctness bound in
+// either direction: past it the loop simply fails to find the writer's own row
+// and starts a new one, which costs an extra activity row and can never
+// produce a wrong attribution. It does NOT bound how many rows the window can
+// hold, only how many are inspected.
+const maxDebounceCandidates = 10
+
 func (s *Store) CreateActivity(a models.Activity) (string, error) {
 	a.ID = newID()
 	if a.Metadata == "" {
@@ -53,58 +73,70 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	ts := now()
 	cutoff := time.Now().UTC().Add(-ActivityDebounceCooldown).Format(time.RFC3339)
 
-	// Look for a recent activity to coalesce with — the newest match. If a
-	// comment links that row (comments.activity_id), the merge below REFUSES
-	// it and a fresh row is written instead: the comment reads its agent
-	// name from the row's metadata, and a merge overlays the incoming `agent`
-	// and bumps created_at, so a later update by a different agent under the
-	// same credentials would otherwise silently re-attribute an earlier
-	// comment (TASK-2760, codex round 3). A linked row therefore ENDS a
-	// coalescing run; the next update starts a new one. The refusal lives in
-	// the UPDATE's own predicate and nowhere else, because a comment can link
-	// the row between this read and that write (codex round 6) — a check
-	// here would be a second guard that only looks load-bearing. What this
-	// does NOT close is the opposite order, an update that completes before
-	// the comment links its row at all: BUG-2716's transaction.
-	var existingID, existingMeta, existingActor string
-	err := s.db.QueryRow(s.q(`
-		SELECT id, metadata, actor FROM activities
-		WHERE document_id = ? AND action = ? AND created_at >= ?
-			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
-		ORDER BY created_at DESC LIMIT 1
-	`), a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta, &existingActor)
+	// Look for a recent activity of THIS WRITER's to coalesce with, newest
+	// first. If a comment links the row we choose (comments.activity_id), the
+	// merge below REFUSES it and a fresh row is written instead: the comment
+	// reads its agent name from the row's metadata, and a merge overlays the
+	// incoming `agent` and bumps created_at, so a later update by a different
+	// agent under the same credentials would otherwise silently re-attribute
+	// an earlier comment (TASK-2760, codex round 3). A linked row therefore
+	// ENDS a coalescing run; the next update starts a new one. That refusal
+	// lives in the UPDATE's own predicate and nowhere else, because a comment
+	// can link the row between this read and that write (codex round 6) — a
+	// check here would be a second guard that only looks load-bearing. What
+	// this does NOT close is the opposite order, an update that completes
+	// before the comment links its row at all: BUG-2716's transaction.
+	//
+	// THE WRITER, NOT THE ACCOUNT (BUG-2763). One account is shared by the
+	// human and by every agent authenticating as them, so user_id does not
+	// identify the writer: `actor` separates a human's write from an agent's,
+	// and the `agent` name inside metadata separates two agents from each
+	// other. Coalescing across either produces a row naming the wrong writer
+	// in both directions, because the UPDATE writes only metadata and
+	// created_at — the surviving row keeps the FIRST write's actor — while
+	// mergeActivityMeta overlays `agent` last-writer-wins. Both are visible:
+	// TimelineActivityCard reads the stamped name only when actor == "agent"
+	// and prints the person otherwise.
+	//
+	// actor is a SQL predicate; the agent name is matched in Go because it
+	// lives inside the metadata JSON and this store targets two dialects
+	// whose JSON accessors differ (the same reason models.AgentNameFromMetadata
+	// exists rather than a json_extract).
+	incomingAgent := models.AgentNameFromMetadata(a.Metadata)
 
-	if err == sql.ErrNoRows {
-		// No recent match — create a new activity.
-		return s.CreateActivity(a)
-	}
+	rows, err := s.db.Query(s.q(`
+		SELECT id, metadata FROM activities
+		WHERE document_id = ? AND action = ? AND created_at >= ? AND actor = ?
+			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
+		ORDER BY created_at DESC LIMIT ?
+	`), a.DocumentID, a.Action, cutoff, a.Actor, a.UserID, a.UserID, maxDebounceCandidates)
 	if err != nil {
 		// Query error — fall back to creating a new activity.
 		return s.CreateActivity(a)
 	}
 
-	// Refuse to coalesce across WRITER IDENTITIES (BUG-2763). One account is
-	// shared by the human and by every agent authenticating as them, so the
-	// user_id predicate above does not identify the writer: `actor`
-	// separates a human's write from an agent's, and the `agent` name inside
-	// metadata separates two agents from each other. Merging across either
-	// produces a row that names the wrong writer, in both directions — the
-	// UPDATE below writes only metadata and created_at, so the surviving row
-	// keeps the FIRST write's actor, while mergeActivityMeta overlays
-	// `agent` last-writer-wins. Both are visible, because
-	// TimelineActivityCard reads the stamped name only when actor ==
-	// "agent" and ignores it otherwise.
-	//
-	// This check is in Go rather than in the UPDATE's predicate, where the
-	// comment-link refusal lives (TASK-2760, codex round 6), because nothing
-	// can invalidate it between this read and that write: `actor` is written
-	// once at INSERT and no statement in this package updates it, and the
-	// metadata `agent` key can only be rewritten by a merge that passed this
-	// same check — which by construction leaves the name equal to what it
-	// already was. A predicate in the UPDATE would be guarding against a
-	// change that cannot happen.
-	if existingActor != a.Actor ||
-		models.AgentNameFromMetadata(existingMeta) != models.AgentNameFromMetadata(a.Metadata) {
+	var existingID, existingMeta string
+	for rows.Next() {
+		var id, meta string
+		if err := rows.Scan(&id, &meta); err != nil {
+			_ = rows.Close()
+			return s.CreateActivity(a)
+		}
+		if models.AgentNameFromMetadata(meta) == incomingAgent {
+			existingID, existingMeta = id, meta
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return s.CreateActivity(a)
+	}
+	if err := rows.Close(); err != nil {
+		return s.CreateActivity(a)
+	}
+
+	if existingID == "" {
+		// Nothing recent of this writer's — start a new run.
 		return s.CreateActivity(a)
 	}
 

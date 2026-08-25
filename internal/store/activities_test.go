@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -787,4 +788,75 @@ func changesOfActivity(t *testing.T, metadata string) string {
 	}
 	c, _ := m["changes"].(string)
 	return c
+}
+
+// Codex round 1 on BUG-2763: with the identity guard added but the candidate
+// query still taking only the newest row overall, a writer that returns inside
+// the window lands on the OTHER writer's row, is refused on identity, and
+// starts a third row — so the guard fixed the attribution and broke the
+// coalescing it is guarding.
+//
+// Written with real 1.1s gaps rather than three writes in one second, because
+// created_at is whole-second and the same-second form of this sequence is
+// ordered by whatever the driver happens to return: it would fail on one
+// backend and pass on the other for reasons unrelated to the fix. Strictly
+// increasing timestamps make the WRONG candidate deterministically the newest
+// row, which is what turns this into an instrument. Verified against the
+// pre-fix code, where it produced 3 rows.
+func TestCreateActivityDebounced_WriterRejoinsItsOwnRun(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
+	u, err := s.CreateUser(models.UserCreate{Email: "rejoin@test.com", Name: "Solo", Password: "pass-rejoin"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	write := func(actor, agent, changes string) {
+		t.Helper()
+		meta := fmt.Sprintf(`{"changes":%q}`, changes)
+		if agent != "" {
+			meta = fmt.Sprintf(`{"agent":%q,"changes":%q}`, agent, changes)
+		}
+		if _, err := s.CreateActivityDebounced(models.Activity{
+			WorkspaceID: ws.ID,
+			DocumentID:  doc.ID,
+			Action:      "updated",
+			Actor:       actor,
+			Source:      "cli",
+			Metadata:    meta,
+			UserID:      u.ID,
+		}); err != nil {
+			t.Fatalf("write by %s/%s: %v", actor, agent, err)
+		}
+	}
+
+	write("agent", "wren", "status: open → active")
+	time.Sleep(1100 * time.Millisecond)
+	write("user", "", "title: a → b")
+	time.Sleep(1100 * time.Millisecond)
+	// The agent returns. The newest row in the window is now the human's, and
+	// this write must NOT start a third row because of it.
+	write("agent", "wren", "priority: low → high")
+
+	activities, _ := s.ListDocumentActivity(doc.ID, models.ActivityListParams{Action: "updated"})
+	if len(activities) != 2 {
+		t.Fatalf("got %d rows, want 2 (one per writer): %+v", len(activities), activities)
+	}
+
+	var agentRow *models.Activity
+	for i := range activities {
+		if activities[i].Actor == "agent" {
+			agentRow = &activities[i]
+		}
+	}
+	if agentRow == nil {
+		t.Fatalf("no agent row among %+v", activities)
+	}
+	// Both of the agent's writes must be ON that row — the point of rejoining
+	// is that the second one extends the run rather than sitting elsewhere.
+	changes := changesOfActivity(t, agentRow.Metadata)
+	if !strings.Contains(changes, "status") || !strings.Contains(changes, "priority") {
+		t.Errorf("agent row changes = %q, want both of the agent's writes", changes)
+	}
 }
