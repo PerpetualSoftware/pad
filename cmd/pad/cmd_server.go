@@ -33,6 +33,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	oauthpkg "github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/PerpetualSoftware/pad/internal/redisdial"
 	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -673,6 +674,16 @@ func serveCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("invalid PAD_REDIS_URL: %w", err)
 				}
+				// A CONTEXT-AWARE DIALER ON EVERY CLIENT (BUG-2754).
+				// go-redis's default hands TLS connections to
+				// tls.DialWithDialer, which takes no context, so on a
+				// rediss:// deployment a cancelled caller could not shorten
+				// the dial — the one segment BUG-2749's request-scoped
+				// establishment could not reach. Installed here rather than
+				// in any consumer because it is a property of the CLIENT: the
+				// same dial serves Publish, the Lua scripts, the presence
+				// registry and the watch bus's reads.
+				opts.Dialer = redisdial.New(opts.TLSConfig, opts.DialTimeout)
 				rc := redis.NewClient(opts)
 				if err := rc.Ping(context.Background()).Err(); err != nil {
 					return fmt.Errorf("redis connection failed: %w", err)
