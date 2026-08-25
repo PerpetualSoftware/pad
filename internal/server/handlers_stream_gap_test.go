@@ -63,8 +63,8 @@ func (b *gapWatchBus) Subscribe() (chan watchevents.Notification, <-chan struct{
 	return ch, b.gaps
 }
 
-func (b *gapWatchBus) SubscribeAndReplaySince(sinceID int64) (chan watchevents.Notification, []watchevents.Notification, <-chan struct{}) {
-	ch, missed, _ := b.Bus.SubscribeAndReplaySince(sinceID)
+func (b *gapWatchBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan watchevents.Notification, []watchevents.Notification, <-chan struct{}) {
+	ch, missed, _ := b.Bus.SubscribeAndReplaySince(ctx, sinceID)
 	return ch, missed, b.gaps
 }
 

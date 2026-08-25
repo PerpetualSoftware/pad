@@ -1,6 +1,7 @@
 package watchevents
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -256,7 +257,7 @@ func TestMemoryBus_SubscribeAndReplaySince_NoDuplicateUnderConcurrentPublish(t *
 	seeded := b.EventsSince(0)
 	sinceID := seeded[2].ID // resume from partway through history
 
-	ch, missed, _ := b.SubscribeAndReplaySince(sinceID)
+	ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), sinceID)
 	defer b.Unsubscribe(ch)
 
 	const concurrentPublishes = 20

@@ -231,6 +231,16 @@ type RedisBus struct {
 	// while proving nothing.
 	afterSubscribeRegister func()
 
+	// beforeSettleWait is a test-only seam, nil in production. It runs in
+	// resumeOutrunsLocalView after the first counter read has DISAGREED and
+	// immediately before the settle wait begins.
+	//
+	// POSITIONAL, like its neighbour. It is the only point at which a test can
+	// land a cancellation strictly inside the window rather than racing it with
+	// a sleep — and a sleep-timed cancellation that lands late does not fail
+	// safe here, it just measures a different path (BUG-2751).
+	beforeSettleWait func()
+
 	// knownFrom / lastAppendedID bound what this instance can HONESTLY
 	// replay — a failure mode MemoryBus structurally cannot have and this
 	// one can (codex rounds 3 and 4).
@@ -493,11 +503,43 @@ func (b *RedisBus) Subscribe() (chan Notification, <-chan struct{}) {
 // and the caller turns that into sync_required.
 //
 // The third return is the subscriber's GAP SIGNAL — see Subscribe.
-func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
 	// Consulted BEFORE the lock: it sleeps and does network I/O. See its
 	// comment for why that ordering is also the only one that preserves the
 	// subscribe-and-replay guarantee.
-	forceGap := b.resumeOutrunsLocalView(sinceID)
+	//
+	// ctx IS THE CALLER'S, and that is the whole of BUG-2751. This runs on the
+	// request path while the SSE handler holds a global AND a per-user
+	// admission slot (BUG-2726), released by defer when the handler returns —
+	// so every moment spent here is capacity held for a client that may
+	// already be gone.
+	// CHECKED BEFORE THE SETTLE PATH IS ENTERED AT ALL (codex round 2). Placed
+	// after it, an already-cancelled caller still made the first Redis GET —
+	// which fails on the dead context and logs "could not read the sequence
+	// counter to validate a resume" at WARN. That line means "Redis is
+	// unhealthy" to whoever reads it, and it would have fired on every client
+	// that hung up a moment before its resume landed. Ordinary disconnect
+	// churn would have looked like Redis trouble.
+	if ctx.Err() != nil {
+		return b.declineCancelledResume(sinceID)
+	}
+
+	forceGap := b.resumeOutrunsLocalView(ctx, sinceID)
+
+	// A CALLER THAT HAS GONE IS NOT REGISTERED (BUG-2751, codex round 1).
+	// resumeOutrunsLocalView answers false on cancellation — "no forced gap" —
+	// which on its own reads as an ordinary converged resume, so the rest of
+	// this function would go on to register a subscriber and build a replay
+	// slice for a connection that is unwinding. Ending the wait early and then
+	// doing the work anyway is half a fix.
+	//
+	// The shape returned is the SAME one the closed-bus branch below returns:
+	// a closed channel, no replay. That matters at the call site — the handler
+	// falls back to plain Subscribe() when it gets a NIL channel, so returning
+	// nil here would re-register the very caller this is declining to serve.
+	if ctx.Err() != nil {
+		return b.declineCancelledResume(sinceID)
+	}
 
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire
 	// with no bus lock held. See Observer.
@@ -537,6 +579,67 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		pending.resumeGap()
 	}
 	return ch, missed, sub.gaps
+}
+
+// callerIsGone reports whether a Redis error is our own cancellation rather
+// than a fault worth telling an operator about.
+//
+// A FUNCTION OF THE ERROR ALONE, AND THAT IS THE FIX (codex round 4, which
+// BLOCKED on the earlier form). The first version asked ctx.Err() instead —
+// which cannot distinguish "the caller left" from "Redis failed while the
+// caller happened to be leaving", so a genuine failure coinciding with a
+// disconnect was downgraded to Debug and disappeared. That is the signal an
+// operator most needs, hidden by the change meant to reduce noise.
+//
+// Written as a predicate rather than inlined so the classification can be
+// tested for what it IS: the racing case cannot be staged deterministically
+// through a live client — go-redis decides, by timing, whether it returns the
+// context error or the server error — so the property is pinned here, where
+// timing plays no part.
+func callerIsGone(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// declineCancelledResume answers a caller that has already gone.
+//
+// SAME SHAPE AS THE CLOSED-BUS BRANCH — a closed channel, no replay, never nil.
+// nil is meaningful at the call site: the SSE handler falls back to plain
+// Subscribe() when it gets one, which would re-register the caller this is
+// declining.
+//
+// LOGGED AT DEBUG, AND DELIBERATELY NOT COUNTED (codex round 2). The finding
+// was that an operator cannot distinguish disconnect churn from no resume
+// activity. True, and the honest fix is not a counter: a client hanging up
+// during its own resume is ORDINARY on a mobile network, so a metric for it
+// would be a number nobody can act on, sitting next to
+// pad_watchevents_resume_gaps_total where it would be read as a fault. The
+// condition an operator does act on — capacity held by connections that no
+// longer exist — is already visible in the admission counts, and this change is
+// what keeps those honest.
+func (b *RedisBus) declineCancelledResume(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+	slog.Debug("watchevents: resume abandoned before it could be served; the caller is gone",
+		"since_id", sinceID)
+	sub := newSubscriber()
+	close(sub.ch)
+	return sub.ch, nil, sub.gaps
+}
+
+// whicheverEndsFirst returns a context that ends when EITHER input does, and a
+// cancel that must be called to release the registration on the second one.
+//
+// It exists because the settle wait has two independent reasons to be
+// abandoned that live in different places: the client going away (BUG-2751)
+// and the bus closing. Deriving from one and ignoring the other silently drops
+// half the story — internal/events lost the shutdown half exactly that way in
+// its own first draft, which is why this is written as a merge rather than a
+// swap.
+func whicheverEndsFirst(caller, bus context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(caller)
+	stop := context.AfterFunc(bus, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // settleWindow is how long resumeOutrunsLocalView waits before deciding that
@@ -590,12 +693,26 @@ const settleWindow = 250 * time.Millisecond
 // out that it is not the per-workspace firehose) and by resumes only
 // happening on reconnect. If a workload ever makes this chatty in practice,
 // the fix is a longer settle window, not a magnitude threshold.
-func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
+func (b *RedisBus) resumeOutrunsLocalView(ctx context.Context, sinceID int64) bool {
 	if sinceID <= 0 || b.client == nil {
 		return false
 	}
 
-	remote, ok := b.sharedCounter()
+	// BOUNDED BY THE CALLER *AND* BY THE BUS, not by either alone (BUG-2751).
+	//
+	// It used to wait on b.ctx only — the bus's lifetime — so a client that
+	// disconnected during the settle window held its admission slots for the
+	// remainder of it plus two Redis round trips. The connection was gone; the
+	// capacity was not.
+	//
+	// Swapping to the caller's context alone would trade one leak for another:
+	// b.ctx is what lets Close cut a wait short, and dropping it would leave a
+	// shutdown blocked behind a client that is still connected. Both endings
+	// are reasons to stop, so the wait ends on either.
+	ctx, cancel := whicheverEndsFirst(ctx, b.ctx)
+	defer cancel()
+
+	remote, ok := b.sharedCounter(ctx)
 	if !ok {
 		return false
 	}
@@ -626,13 +743,22 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 	//
 	// Agreement between the authority and this instance is the condition, and
 	// it has to be evaluated on two fresh reads or it is not agreement at all.
-	select {
-	case <-b.ctx.Done():
-		return false
-	case <-time.After(settleWindow):
+	if b.beforeSettleWait != nil {
+		b.beforeSettleWait()
 	}
 
-	remote, ok = b.sharedCounter()
+	timer := time.NewTimer(settleWindow)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		// The caller left, or the bus is closing. Either way there is nobody
+		// to answer and no reason to hold the slot: returning false means "no
+		// forced gap", and the caller is about to unwind anyway.
+		return false
+	case <-timer.C:
+	}
+
+	remote, ok = b.sharedCounter(ctx)
 	if !ok {
 		return false
 	}
@@ -654,8 +780,8 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 // sharedCounter reads the authoritative sequence value. The bool is false when
 // it could not be read, which callers treat as "answer from local knowledge" —
 // see resumeOutrunsLocalView for why failing closed here would be worse.
-func (b *RedisBus) sharedCounter() (int64, bool) {
-	v, err := b.client.Get(b.ctx, b.keys.Name(redisWatchSeqSuffix)).Int64()
+func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
+	v, err := b.client.Get(ctx, b.keys.Name(redisWatchSeqSuffix)).Int64()
 	switch {
 	case err == nil:
 		return v, true
@@ -674,6 +800,25 @@ func (b *RedisBus) sharedCounter() (int64, bool) {
 		// comparison: an instance holding 101 disagrees with an authority at
 		// 0, does not converge, and the resume is answered with a gap.
 		return 0, true
+	case callerIsGone(err):
+		// OUR OWN CANCELLATION IS NOT A REDIS FAULT (codex round 3). The
+		// caller can disconnect while this GET is IN FLIGHT, and the error
+		// that comes back is context.Canceled — indistinguishable, at the WARN
+		// below, from Redis being unreachable. That line is read as "the
+		// sequence counter is unhealthy", so on a stream where clients hang up
+		// mid-resume it would manufacture exactly the alarm an operator would
+		// chase. The entry-side decline catches a caller that was already
+		// gone; this catches one that left while we were asking.
+		//
+		// CLASSIFIED ON THE ERROR, NOT ON ctx.Err() (codex round 4, which
+		// BLOCKED on this). Asking the context instead asks the wrong
+		// question: a GENUINE Redis failure that merely coincides with a
+		// cancellation would be downgraded to Debug and vanish — precisely the
+		// signal an operator needs, hidden by the fix meant to reduce noise.
+		// The error itself is the only thing that says which happened.
+		slog.Debug("watchevents: resume abandoned while reading the sequence counter; the caller is gone",
+			"error", err)
+		return 0, false
 	default:
 		slog.Warn("watchevents: could not read the sequence counter to validate a resume; "+
 			"answering from local knowledge only", "error", err)
