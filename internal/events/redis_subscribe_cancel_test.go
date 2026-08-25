@@ -378,11 +378,11 @@ func TestAnAlreadyCancelledCallerRegistersNothing(t *testing.T) {
 // seams that run after the dial has returned.
 //
 // WHAT IT DOES NOT CLAIM: that cancellation actually shortens a real dial.
-// go-redis derives its per-attempt dial deadline from the context passed in
-// and the default dialer is net.Dialer.DialContext, so it does on plaintext;
-// under TLS the same dialer calls tls.DialWithDialer, which takes no context
-// at all, and there the dial stays bounded by DialTimeout alone. That residual
-// is documented on establishSubscription and is not tested here.
+// go-redis derives its per-attempt dial deadline from the context passed in,
+// so it does — on plaintext through net.Dialer.DialContext, and since BUG-2754
+// on TLS too, through the dialer Pad installs (internal/redisdial). Neither is
+// tested here; the TLS half has its own tests in that package, against a server
+// that accepts and then never completes a handshake.
 func TestTheDialUsesTheCallersContext(t *testing.T) {
 	mr := miniredis.RunT(t)
 

@@ -1764,8 +1764,8 @@ func TestPhase2CyclesTheSameWorkspace(t *testing.T) {
 // past its own ctx check cannot leave anything behind: establishSubscription
 // re-checks b.ctx under its deciding lock and abandons, closing the PubSub and
 // retiring the record in that same section, and the dial itself dies with
-// b.ctx (BUG-2749's mergeCancellation) except under TLS, where DialTimeout
-// bounds it instead.
+// b.ctx (BUG-2749's mergeCancellation), on TLS as well since BUG-2754 replaced
+// go-redis's context-blind default dialer.
 //
 // The seam runs after the dial and before that decision, which is exactly
 // where the race lives.

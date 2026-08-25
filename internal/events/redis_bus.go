@@ -1397,8 +1397,9 @@ func (b *RedisBus) eventsSinceLocked(workspaceID string, sinceID int64) []Event 
 // leave anything behind: establishSubscription re-checks b.ctx under its
 // deciding lock and abandons there, closing the PubSub and retiring the record
 // in the same critical section, and the dial dies with b.ctx through
-// mergeCancellation (except under TLS, where DialTimeout bounds it — see that
-// function). Pinned by TestClosingTheBusDuringACycleInstallsNothing.
+// mergeCancellation — on TLS as well as plaintext since BUG-2754 replaced
+// go-redis's context-blind default dialer. Pinned by
+// TestClosingTheBusDuringACycleInstallsNothing.
 func (b *RedisBus) Close() {
 	b.cancel() // signal all subscription goroutines to stop
 
@@ -1472,8 +1473,8 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 // each client.Subscribe mints a PubSub whose connection starts nil. A Redis
 // whose route blackholes packets stalled that dial for the client's
 // DialTimeout (5s by default; since BUG-2749 the CALLER's context can cut that
-// short on a plaintext connection, but not under TLS — see
-// defaultSubscribeConfirmTimeout), and for that whole time no other workspace
+// short, and since BUG-2754 on TLS as well — see defaultSubscribeConfirmTimeout),
+// and for that whole time no other workspace
 // could subscribe, unsubscribe, close, or receive a fanned-out event.
 //
 // Exactly one caller per workspace reaches here; the rest wait on pending.
@@ -1503,19 +1504,19 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	// conn(ctx) dials when there is no connection yet, then writes the
 	// SUBSCRIBE command. Only the REPLY is unawaited.
 	//
-	//   - Plaintext: dialConn derives its attempt context from the one passed
-	//     in (internal/pool/pool.go, "Apply DialTimeout per attempt, but never
-	//     extend an existing earlier deadline") and the default dialer is
-	//     net.Dialer.DialContext, which honours it. Cancellation aborts the
-	//     dial.
-	//   - TLS: the same dialer returns tls.DialWithDialer(netDialer, ...)
-	//     (options.go), which takes NO context. Under TLS the dial is bounded
-	//     by DialTimeout alone and cancellation cannot shorten it.
+	// dialConn derives its attempt context from the one passed in
+	// (internal/pool/pool.go, "Apply DialTimeout per attempt, but never extend
+	// an existing earlier deadline"), so cancellation aborts the dial.
 	//
-	// So on a TLS deployment this shrinks the held slot from (dial + confirm
-	// bound) to (dial), not to zero. That residual is real and is why the
-	// cancellation check below is repeated after the dial rather than assumed
-	// to have fired during it.
+	// ON TLS TOO, SINCE BUG-2754, and this comment used to say the opposite —
+	// correctly at the time. go-redis's DEFAULT dialer hands TLS connections to
+	// tls.DialWithDialer, which takes no context, so the dial was bounded by
+	// DialTimeout alone and a departing client kept its slots for the rest of
+	// it. Pad installs its own dialer now (internal/redisdial, wired in
+	// cmd/pad/cmd_server.go) that runs the handshake on the caller's context.
+	//
+	// The cancellation check below is repeated after the dial anyway: it costs
+	// nothing and does not depend on the dialer being the one we think it is.
 	pubsub := b.client.Subscribe(dialCtx, channel)
 	subCtx, subCancel := context.WithCancel(b.ctx)
 
@@ -2369,15 +2370,17 @@ const stragglerWindow = 30 * time.Second
 // wait composes to roughly DialTimeout + this, and anyone reasoning about
 // worst-case connect latency needs both numbers.
 //
-// AMENDED BY BUG-2749 on the context half, which this comment used to state
-// flatly as "not by any context we pass". Since that unit the dial runs on the
-// CALLER's context, and go-redis derives its per-attempt dial deadline from it
-// — so on plaintext a caller that goes away no longer waits out DialTimeout.
-// Under TLS it still does: the default dialer hands a TLS connection to
-// tls.DialWithDialer, which takes no context at all. The composed worst case
-// above is therefore unchanged for a client that STAYS, and unchanged for a
-// TLS deployment whose client leaves; it shrinks only for a departing client
-// on a plaintext connection. See BUG-2754 for the TLS half.
+// AMENDED TWICE, and the second amendment resolves the first one's caveat.
+// BUG-2749 put the dial on the CALLER's context — go-redis derives its
+// per-attempt dial deadline from it — so a client that goes away stopped
+// waiting out DialTimeout, but only on plaintext: the default dialer hands TLS
+// connections to tls.DialWithDialer, which takes no context at all. BUG-2754
+// closed that half by installing Pad's own dialer (internal/redisdial), which
+// runs the handshake on the caller's context while still bounding it by
+// DialTimeout.
+//
+// So the composed worst case above is unchanged for a client that STAYS, on
+// either transport, and no longer applies to a departing client on either.
 //
 // SHORT BECAUSE THE DISTRIBUTION HAS NO MIDDLE, not as a guess at how fast
 // Redis is. Establishment either completes in single-digit milliseconds or does
