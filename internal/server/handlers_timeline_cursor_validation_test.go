@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -60,8 +61,28 @@ func TestTimeline_MalformedBeforeIDIsClientError(t *testing.T) {
 			t.Parallel()
 			rr := timelineRaw(t, srv, ws, item.Slug, cursor+tc.rawID)
 			if rr.Code != tc.want {
-				t.Errorf("GET timeline before_id=%s = %d, want %d: %s",
+				t.Fatalf("GET timeline before_id=%s = %d, want %d: %s",
 					tc.rawID, rr.Code, tc.want, rr.Body.String())
+			}
+			if tc.want != http.StatusBadRequest {
+				return
+			}
+			// The status alone would pass for a bare 400 or the wrong code,
+			// and clients branch on the code, not the number.
+			var env struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+				t.Fatalf("decode error envelope: %v (body %s)", err, rr.Body.String())
+			}
+			if env.Error.Code != "invalid_cursor" {
+				t.Errorf("error code = %q, want %q", env.Error.Code, "invalid_cursor")
+			}
+			if env.Error.Message == "" {
+				t.Error("error message is empty — the envelope has to say what was wrong")
 			}
 		})
 	}
@@ -75,24 +96,31 @@ func longRunOfAs(n int) string {
 	return string(b)
 }
 
-// The premise the 400 exists to prevent, pinned where it is real: on Postgres
-// the query itself FAILS on such a parameter, which is what surfaced as a 500.
-// Skipped on SQLite, where the same call succeeds and returns nothing — the
-// divergence is the point, so both halves are asserted in the one place that
-// can see both.
+// CHARACTERIZATION, not a regression test: it passes with or without this
+// unit's change, because it describes the BACKENDS rather than the handler.
+// That is the point — it is the premise the 400 rests on, and if it stops
+// holding the 400 needs revisiting rather than silently guarding nothing.
+//
+// The SQLite half runs everywhere; the Postgres half needs
+// PAD_TEST_POSTGRES_URL and skips without it, so an unconfigured run proves
+// only that SQLite still accepts the bytes.
 func TestListBeforeTime_InvalidUTF8CursorIsADialectDivergence(t *testing.T) {
-	pg := storetest.NewPostgres(t) // skips unless PAD_TEST_POSTGRES_URL is set
-	sqlite := storetest.NewSQLite(t)
-
 	const badID = "note-\xff-1"
 	when := time.Now().UTC().Add(time.Minute)
 
-	if _, err := sqlite.ListDocumentActivityBeforeTime("no-such-doc", when, badID, 10); err != nil {
-		t.Errorf("SQLite rejected the cursor (%v) — if this backend has started refusing it too, the handler's 400 is still right but this test's reasoning needs updating", err)
-	}
-	if _, err := pg.ListDocumentActivityBeforeTime("no-such-doc", when, badID, 10); err == nil {
-		t.Error("Postgres accepted an invalid-UTF-8 cursor: the 500 this validation prevents is no longer reachable, so either the driver changed or the premise moved")
-	}
+	t.Run("sqlite accepts it", func(t *testing.T) {
+		s := storetest.NewSQLite(t)
+		if _, err := s.ListDocumentActivityBeforeTime("no-such-doc", when, badID, 10); err != nil {
+			t.Errorf("SQLite rejected the cursor (%v) — the handler's 400 is still right, but this test's reasoning about WHY needs updating", err)
+		}
+	})
+
+	t.Run("postgres refuses it", func(t *testing.T) {
+		p := storetest.NewPostgres(t) // skips unless PAD_TEST_POSTGRES_URL is set
+		if _, err := p.ListDocumentActivityBeforeTime("no-such-doc", when, badID, 10); err == nil {
+			t.Error("Postgres accepted an invalid-UTF-8 cursor: the 500 this validation prevents is no longer reachable, so either the driver changed or the premise moved")
+		}
+	})
 }
 
 // The other direction of the same rule: the server must never EMIT a cursor it
@@ -107,13 +135,18 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
-	// Two notes: one whose id carries a NUL, one clean, so the assertions
-	// distinguish "replaced the unusable id" from "stopped using raw ids".
-	notes := `[{"id":"note-\u0000-bad","summary":"first","created_at":"2026-04-02T10:00:00Z"},` +
-		`{"id":"note-clean","summary":"second","created_at":"2026-04-02T10:00:01Z"}]`
+	// Three notes so the NUL-bearing one can be the LAST kept entry under a
+	// truncating limit — that is what makes it the emitted next_before_id
+	// rather than merely an entry id. The clean one is the control: it
+	// distinguishes "replaced the unusable id" from "stopped using raw ids".
+	notes := `[{"id":"note-\u0000-bad","summary":"middle","created_at":"2026-04-02T10:00:01Z"},` +
+		`{"id":"note-clean","summary":"newest note","created_at":"2026-04-02T10:00:02Z"},` +
+		`{"id":"note-oldest","summary":"oldest","created_at":"2026-04-02T10:00:00Z"}]`
 	item := timelineItemWithStructured(t, srv, ws, notes, "")
 
-	resp := fetchTimeline(t, srv, ws, item.Slug, "limit=50")
+	// The item's own `created` activity plus three notes; limit=3 truncates,
+	// so the cursor is the third entry — the NUL-bearing note.
+	resp := fetchTimeline(t, srv, ws, item.Slug, "limit=3")
 	var sawClean, sawFallback bool
 	for _, e := range resp.Entries {
 		if !validCursorID(e.ID) {
@@ -126,6 +159,23 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 			sawFallback = true
 		}
 	}
+
+	// The cursor itself, which is what the client actually sends back.
+	if !resp.HasMore || resp.NextBeforeID == "" {
+		t.Fatalf("expected a truncated page with a cursor, got has_more=%v next_before_id=%q",
+			resp.HasMore, resp.NextBeforeID)
+	}
+	if !validCursorID(resp.NextBeforeID) {
+		t.Errorf("the server emitted next_before_id=%q, which its own validation refuses", resp.NextBeforeID)
+	}
+	// And it round-trips: the follow-up page is a 200, not the 400 this
+	// unit's other half returns for an unusable cursor.
+	rr := timelineRaw(t, srv, ws, item.Slug,
+		"limit=3&before="+resp.NextBefore+"&before_id="+resp.NextBeforeID)
+	if rr.Code != http.StatusOK {
+		t.Errorf("paging with the server's own cursor = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
 	if !sawClean {
 		t.Error("the clean id was not used verbatim — the fallback is for unusable ids only")
 	}
