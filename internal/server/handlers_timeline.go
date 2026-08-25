@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -97,6 +99,11 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if v := r.URL.Query().Get("before_id"); v != "" {
+		if !validCursorID(v) {
+			writeError(w, http.StatusBadRequest, "invalid_cursor",
+				"before_id must be valid UTF-8 with no NUL byte")
+			return
+		}
 		beforeID = v
 	}
 	if hasBefore && beforeID == "" {
@@ -581,4 +588,30 @@ func exhaustedWindowCursor(
 	}
 
 	return at, id, found
+}
+
+// validCursorID reports whether a caller-supplied `before_id` can be bound
+// into the cursor predicate at all.
+//
+// It rejects exactly what the DATABASE rejects rather than what an id
+// "should" look like. Postgres refuses a text parameter that is not valid
+// UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx surfaces
+// that as a query error, which this handler turns into a 500 — an operator's
+// alerting reads that as the server breaking when a client sent a bad cursor.
+// SQLite accepts both and simply matches nothing, so the same request is a
+// 200 there: a dialect divergence in the failure mode, from one line of
+// unvalidated input. Same failure the BUG-1086 comment above records, whose
+// fix covered the sentinel this handler synthesizes and not the value a
+// caller supplies.
+//
+// DELIBERATELY NO LENGTH BOUND. The obvious cap is the one thing here that
+// could reject a LEGITIMATE cursor: the structured kinds' ids come from the
+// item's own fields blob (see entryID below), nothing validates them on
+// write, and an imported artifact may carry any string. Real ids are far
+// shorter — a UUID is 36 bytes, `note-<nanos>` about 24 — but "far shorter
+// than any cap I would pick" is not a guarantee, and the cost of an over-long
+// one is a single indexed comparison against a parameter the URL length limit
+// already bounds. A bound that can only fire on a valid id is not protection.
+func validCursorID(v string) bool {
+	return utf8.ValidString(v) && !strings.ContainsRune(v, 0)
 }
