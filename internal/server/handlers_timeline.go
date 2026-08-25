@@ -104,6 +104,19 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 				"before_id must be valid UTF-8 with no NUL byte")
 			return
 		}
+		// The id is the tie-break AT the cursor instant, so on its own it can
+		// never match anything: `before` defaults to now+1m and no row shares
+		// that timestamp. It was therefore accepted and silently ignored, and
+		// the caller paged from the beginning believing they had a cursor
+		// (codex round 4). The documented contract is both fields or neither.
+		//
+		// The other direction stays supported on purpose: `before` alone is
+		// the external-client case the sentinel above exists for.
+		if !hasBefore {
+			writeError(w, http.StatusBadRequest, "invalid_cursor",
+				"before_id requires before — send both fields of the cursor or neither")
+			return
+		}
 		beforeID = v
 	}
 	if hasBefore && beforeID == "" {

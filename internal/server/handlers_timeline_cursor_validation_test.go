@@ -183,3 +183,52 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 		t.Errorf("the NUL-bearing id did not take the positional fallback; entries: %+v", resp.Entries)
 	}
 }
+
+// A cursor is a PAIR. `before_id` alone could never match anything — the id is
+// the tie-break at the cursor instant, and `before` defaults to a moment no row
+// shares — so it was accepted and silently ignored while the caller paged from
+// the beginning believing otherwise (codex round 4).
+func TestTimeline_OneSidedCursorIsRejected(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	item := timelineItemWithStructured(t, srv, ws, "", "")
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	for _, tc := range []struct {
+		name, query string
+		want        int
+	}{
+		{
+			name:  "before_id without before",
+			query: "before_id=0e2f3b1c-1111-4111-8111-111111111111",
+			want:  http.StatusBadRequest,
+		},
+		{
+			// Deliberately supported: the sentinel exists for exactly this
+			// external-client shape, so rejecting the pair symmetrically would
+			// break a case the handler goes out of its way to serve.
+			name:  "before without before_id (control)",
+			query: "before=" + now,
+			want:  http.StatusOK,
+		},
+		{
+			name:  "both (control)",
+			query: "before=" + now + "&before_id=0e2f3b1c-1111-4111-8111-111111111111",
+			want:  http.StatusOK,
+		},
+		{
+			name:  "neither (control)",
+			query: "limit=5",
+			want:  http.StatusOK,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rr := timelineRaw(t, srv, ws, item.Slug, tc.query)
+			if rr.Code != tc.want {
+				t.Errorf("GET timeline?%s = %d, want %d: %s", tc.query, rr.Code, tc.want, rr.Body.String())
+			}
+		})
+	}
+}
