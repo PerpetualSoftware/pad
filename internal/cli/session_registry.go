@@ -52,9 +52,11 @@ type SessionRegistration struct {
 	// messaging_socket_path and the socket identity fields.
 	SessionOwner
 	// SessionID is the harness's own session identifier when it exports
-	// one ($PAD_SESSION_ID, else $CLAUDE_CODE_SESSION_ID) — a handle for
-	// tooling that addresses sessions by id (transcript paths, session
-	// measurement). Opaque to pad.
+	// one — $PAD_SESSION_ID first (the harness-agnostic override, on the
+	// same footing as PAD_SESSION_PID and PAD_AGENT), else Claude Code's
+	// $CLAUDE_CODE_SESSION_ID — a handle for tooling that addresses
+	// sessions by id (transcript paths, session measurement). Opaque to
+	// pad.
 	SessionID string `json:"session_id,omitempty"`
 	// Agent is the name the session declared for itself — the same
 	// self-declared value ResolveAgentName stamps on every write, recorded

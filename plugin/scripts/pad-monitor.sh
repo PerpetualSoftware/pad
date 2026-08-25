@@ -47,7 +47,9 @@ done
 # (PAD_SESSION_PID if exported, else Claude Code's CLAUDE_PID) and named by
 # the agent name (.pad.toml agent_name, else PAD_AGENT, else the detected
 # runtime); `pad session list` reads it back.
-# Silent by construction — a failure here must not cost the stream.
+# Silent by construction — a failure here must not cost the stream. No
+# test harness drives this script; the step is verified by hand with
+# `pad session list` after a session starts (TASK-2767).
 pad session register >/dev/null 2>&1 || true
 
 # --- 1. Session key for the lockfile.
