@@ -133,6 +133,8 @@
 	);
 	let showComposer = $derived(!visibleKinds || visibleKinds.includes('comment'));
 	let hasMore: boolean = $state(false);
+	// Server-supplied position of the next page; see cursorFrom (BUG-2765).
+	let nextCursor: { before: string; before_id: string } | null = $state(null);
 	let loading: boolean = $state(false);
 	let loadingMore: boolean = $state(false);
 	let error: string = $state('');
@@ -621,11 +623,22 @@
 		const reqWs = wsSlug;
 		loading = true;
 		error = '';
+		// Paging state belongs to the page-1 fetch below and is unknown until
+		// it lands. Clearing it BEFORE the await matters because the entries
+		// from the previous load stay on screen while this one is in flight
+		// (`{#if !loading || entries.length > 0}`), so Load More is still
+		// clickable — and its cursor would be the OLD item's position sent
+		// against the NEW one (codex round 6). This function replaces entries
+		// with page 1 when it resolves anyway, so there is no deeper paging
+		// state being thrown away that would have survived.
+		nextCursor = null;
+		hasMore = false;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			entries = resp.entries;
 			hasMore = resp.has_more;
+			nextCursor = cursorFrom(resp, resp.entries);
 			firstPageIds = new Set(resp.entries.map((e) => e.id));
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
@@ -635,25 +648,112 @@
 		}
 	}
 
+	/**
+	 * Where the next page starts. The SERVER decides this (BUG-2765): it
+	 * over-fetches per source and drops rows that cannot render, so a page can
+	 * carry fewer entries than the rows it consumed — or none, with more
+	 * history behind them. Deriving the cursor from the last rendered entry
+	 * then either cannot be done (an empty page) or does not advance (a page
+	 * whose rows all dropped), and the same window is requested forever.
+	 *
+	 * The fallback to the last entry is for a server that predates the field;
+	 * it is exactly what this component did before, including its wedge.
+	 */
+	function cursorFrom(
+		resp: TimelineResponse,
+		known: TimelineEntry[]
+	): { before: string; before_id: string } | null {
+		if (!resp.has_more) return null;
+		if (resp.next_before && resp.next_before_id) {
+			return { before: resp.next_before, before_id: resp.next_before_id };
+		}
+		const last = known[known.length - 1];
+		return last ? { before: last.created_at, before_id: last.id } : null;
+	}
+
+	/**
+	 * How many pages one press of Load More may walk through while every row
+	 * comes back droppable. This is a UX bound, not the fix: the cursor above
+	 * is what makes paging complete, and a single hop is already correct. It
+	 * exists so a user crossing a long run of `read` activity sees entries
+	 * appear rather than a spinner and nothing, and it is small so a
+	 * pathological item cannot turn one click into an unbounded request fan.
+	 */
+	const MAX_EMPTY_HOPS = 5;
+
+	/**
+	 * The server's own ordering: created_at descending, id descending as the
+	 * tie-break. Applied wherever entries from two fetches are combined, since
+	 * neither side can assume the other's are strictly older or strictly newer
+	 * — the paging cursor deliberately re-covers ground, and a structured note
+	 * can carry a backdated timestamp.
+	 *
+	 * Compared as INSTANTS, not as strings: precision is not uniform — the
+	 * store writes whole seconds, a hand-written note timestamp need not — and
+	 * lexicographically `…:05.123Z` sorts BEFORE `…:05Z`.
+	 */
+	function byNewestFirst(list: TimelineEntry[]): TimelineEntry[] {
+		return [...list].sort((a, b) => {
+			const at = new Date(a.created_at).getTime();
+			const bt = new Date(b.created_at).getTime();
+			if (at !== bt) return bt - at;
+			return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+		});
+	}
+
 	async function loadMore() {
-		if (loadingMore || entries.length === 0) return;
+		if (loadingMore || !nextCursor) return;
 		// Capture identity before the await so a switch mid-flight can't append
 		// A's older page onto B's entries (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
-		const oldest = entries[entries.length - 1];
 		loadingMore = true;
 		try {
-			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
-				before: oldest.created_at,
-				before_id: oldest.id
-			});
-			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			// Deduplicate by ID to handle boundary overlap from <= queries.
-			const existingIds = new Set(entries.map((e) => e.id));
-			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
-			entries = [...entries, ...newEntries];
-			hasMore = resp.has_more;
+			for (let hop = 0; hop < MAX_EMPTY_HOPS && nextCursor; hop++) {
+				const cursor = nextCursor;
+				const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
+					before: cursor.before,
+					before_id: cursor.before_id
+				});
+				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+				// Deduplicate by ID to handle boundary overlap from <= queries,
+				// and because the server's cursor can deliberately re-cover rows
+				// an earlier page already rendered (see cursorFrom).
+				const existingIds = new Set(entries.map((e) => e.id));
+				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
+				// Merge, do not concatenate. The server's cursor deliberately
+				// re-covers ground when one source's window ran out before
+				// another's, so a later page can carry entries NEWER than the
+				// oldest one already shown — appending those would print them
+				// below it (codex round 1). Same order the server sorts by:
+				// created_at descending, id descending as the tie-break.
+				//
+				// Compared as INSTANTS, not as strings: these timestamps do
+				// not all carry the same precision — the store writes whole
+				// seconds, but a structured note or decision can carry a
+				// hand-written sub-second one — and lexicographically
+				// "…:05.123Z" sorts BEFORE "…:05Z", which would place the more
+				// precise entry an hour's worth of rows away from where it
+				// belongs.
+				entries = byNewestFirst([...entries, ...newEntries]);
+				hasMore = resp.has_more;
+				nextCursor = cursorFrom(resp, entries);
+				// Stop as soon as the press produced something to look at.
+				if (newEntries.length > 0) break;
+				// A cursor that did not move cannot make progress, so asking
+				// again would only repeat this request. Reachable against a
+				// server that predates next_before: the fallback re-derives
+				// the same last entry every time, and without this the hop
+				// loop turns one click into five identical requests instead of
+				// the single one this component used to make (codex round 2).
+				if (
+					nextCursor &&
+					nextCursor.before === cursor.before &&
+					nextCursor.before_id === cursor.before_id
+				) {
+					break;
+				}
+			}
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to load more';
@@ -738,7 +838,11 @@
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
 
-			// Prepend genuinely new entries.
+			// Genuinely new entries. Normally these ARE the newest — the
+			// refresh re-fetches the newest window — but "normally" is not
+			// "always": a structured note or decision carries a hand-written
+			// created_at and can arrive backdated, so they are merged into
+			// order rather than prepended on the assumption (codex round 3).
 			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
 			// Update existing entries from the fresh response (e.g., reaction changes).
@@ -752,7 +856,7 @@
 				})
 				.map((e) => freshById.get(e.id) ?? e);
 
-			entries = [...newEntries, ...updatedExisting];
+			entries = byNewestFirst([...newEntries, ...updatedExisting]);
 			firstPageIds = freshIds;
 		} catch (err) {
 			// A failed SSE-driven refresh is not fatal — the timeline keeps

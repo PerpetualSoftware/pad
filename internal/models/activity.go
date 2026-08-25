@@ -164,9 +164,25 @@ type TimelineEntry struct {
 }
 
 // TimelineResponse is the paginated response from the timeline endpoint.
+//
+// NextBefore / NextBeforeID are the cursor for the following page, set
+// whenever HasMore is true, and a client must page with THEM rather than with
+// the last entry it received (BUG-2765). The two differ exactly when the
+// server discarded rows: the handler over-fetches per source and drops what
+// cannot render (read/searched actions, empty-metadata updates, activities a
+// version or a comment already stands for, collapsed autosave bursts), so a
+// page can carry fewer entries than the rows it consumed — or none at all,
+// while more history waits behind them. A cursor derived from the last
+// rendered entry then either cannot be formed or does not advance, and the
+// client re-requests the same window forever.
+//
+// The value is the position the next page must start strictly before, in the
+// same (created_at, id) space the store's cursor queries use.
 type TimelineResponse struct {
-	Entries []TimelineEntry `json:"entries"`
-	HasMore bool            `json:"has_more"`
+	Entries      []TimelineEntry `json:"entries"`
+	HasMore      bool            `json:"has_more"`
+	NextBefore   string          `json:"next_before,omitempty"`
+	NextBeforeID string          `json:"next_before_id,omitempty"`
 }
 
 // AgentNameFromMetadata returns the agent display name stamped on an

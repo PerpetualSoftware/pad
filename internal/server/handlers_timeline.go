@@ -12,9 +12,25 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// handleListItemTimeline returns a unified, chronological timeline for an item.
-// It uses cursor-based pagination: pass `before=<RFC3339>` to get entries older
-// than that timestamp, and `limit=N` to control page size (default 50).
+// handleListItemTimeline returns a unified, chronological timeline for an item,
+// newest first, with cursor-based pagination.
+//
+// Request: `limit=N` (default 50) and the cursor pair `before=<RFC3339>` +
+// `before_id=<id>`, which select entries strictly older than that position —
+// created_at first, id as the tie-break, because several entries can share a
+// whole second.
+//
+// Response: when `has_more` is true the body also carries `next_before` and
+// `next_before_id`, and a client MUST page with those two rather than deriving
+// a cursor from the last entry it received. They are not the same value. This
+// handler over-fetches per source and drops rows that cannot render, so a page
+// can carry fewer entries than the rows it consumed — or none, with history
+// still behind them — and it can deliberately resume at a position it has
+// already covered when one source's window ran out before another's. A
+// consumer that pages from its last visible entry therefore either cannot form
+// a cursor at all or re-requests the same window forever (BUG-2765), and one
+// that forwards only `next_before` without `next_before_id` can repeat or skip
+// entries sharing that second. Both fields, or neither.
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -138,21 +154,46 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 
 	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
-	// Determine if there are more entries beyond this page.
-	hasMore := false
+	// Determine if there are more entries beyond this page, and where the
+	// next one starts. The cursor is the server's to compute: it over-fetched
+	// per source and dropped rows above, so the client cannot see the
+	// position it must continue from (BUG-2765).
+	// Two independent reasons the next page must not start further back than
+	// a given position, and the cursor is the NEWEST of them:
+	//
+	//   - truncation: entries past `limit` were rendered and then cut, so they
+	//     have to be re-delivered — the cursor cannot be older than the last
+	//     entry KEPT.
+	//   - an exhausted window: a source that filled its over-fetch has rows
+	//     older than its tail that were never examined — the cursor cannot be
+	//     older than that tail, or those rows fall between the two pages and
+	//     are never fetched by either (codex round 1).
+	//
+	// Both can hold at once, and the second is not implied by the first: a
+	// source whose rows all DROP contributes nothing to `entries`, so the
+	// truncation cursor can easily sit older than its tail. Taking the newest
+	// candidate re-covers ground the client dedups away; taking anything
+	// older loses rows permanently.
+	cursorAt, cursorID, hasMore := exhaustedWindowCursor(comments, activities, versions, perSource)
 	if len(entries) > limit {
 		entries = entries[:limit]
 		hasMore = true
-	} else {
-		// Even if merged result is <= limit, there may be more in individual sources.
-		// If any source returned its full limit, there's likely more data.
-		hasMore = len(comments) >= perSource || len(activities) >= perSource || len(versions) >= perSource
+		last := entries[len(entries)-1]
+		if cursorID == "" || last.CreatedAt.After(cursorAt) ||
+			(last.CreatedAt.Equal(cursorAt) && last.ID > cursorID) {
+			cursorAt, cursorID = last.CreatedAt, last.ID
+		}
 	}
 
-	writeJSON(w, http.StatusOK, models.TimelineResponse{
+	resp := models.TimelineResponse{
 		Entries: entries,
 		HasMore: hasMore,
-	})
+	}
+	if hasMore {
+		resp.NextBefore = cursorAt.UTC().Format(time.RFC3339Nano)
+		resp.NextBeforeID = cursorID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // structuredTimelineEntries turns the item's implementation notes and
@@ -485,4 +526,59 @@ func collapseAutosaveBursts(entries []models.TimelineEntry) []models.TimelineEnt
 		kept = append(kept, e)
 	}
 	return kept
+}
+
+// exhaustedWindowCursor returns the position the next timeline page must start
+// strictly before, when the merged page fit inside `limit` but at least one
+// source filled its over-fetch window.
+//
+// WHICH tail is the subtle part. A source that returned fewer than `perSource`
+// rows is EXHAUSTED — there is nothing older than its tail to come back for —
+// so it puts no constraint on the cursor. A source that filled its window has
+// unexamined rows strictly older than its own tail. Resuming at the NEWEST
+// such tail therefore skips nothing: every full source is picked up exactly
+// where it stopped, and the sources whose tails are older simply get rows
+// re-examined that this page already rendered. Choosing the oldest tail
+// instead would step over the newer source's unexamined rows and lose them
+// permanently, which is the failure this cursor exists to prevent — repeats
+// are absorbed by the client's dedup-by-id, gaps are not recoverable.
+//
+// Progress is guaranteed because every candidate is a row this page FETCHED,
+// and the store's cursor predicate is strict: any tail is strictly older than
+// the cursor that produced it, so the next request cannot re-ask this one.
+//
+// The structured kinds (notes, decisions) are deliberately absent: they live
+// in the item's fields blob, are filtered by the same cursor predicate, and
+// arrive complete rather than windowed — there is never an unexamined
+// remainder of them to page toward.
+func exhaustedWindowCursor(
+	comments []models.Comment,
+	activities []models.Activity,
+	versions []models.Version,
+	perSource int,
+) (time.Time, string, bool) {
+	var at time.Time
+	var id string
+	found := false
+
+	consider := func(t time.Time, rowID string, full bool) {
+		if !full {
+			return
+		}
+		if !found || t.After(at) || (t.Equal(at) && rowID > id) {
+			at, id, found = t, rowID, true
+		}
+	}
+
+	if n := len(comments); n > 0 {
+		consider(comments[n-1].CreatedAt, comments[n-1].ID, n >= perSource)
+	}
+	if n := len(activities); n > 0 {
+		consider(activities[n-1].CreatedAt, activities[n-1].ID, n >= perSource)
+	}
+	if n := len(versions); n > 0 {
+		consider(versions[n-1].CreatedAt, versions[n-1].ID, n >= perSource)
+	}
+
+	return at, id, found
 }

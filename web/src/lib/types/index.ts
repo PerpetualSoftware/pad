@@ -1316,6 +1316,20 @@ export interface TimelineEntry {
 export interface TimelineResponse {
 	entries: TimelineEntry[];
 	has_more: boolean;
+	/**
+	 * Cursor for the next page, set by the server whenever `has_more` is true
+	 * (BUG-2765). Page with THESE, not with the last entry received: the
+	 * server over-fetches and drops rows that cannot render, so a page can
+	 * carry fewer entries than the rows it consumed — or none at all with more
+	 * history behind them. A cursor derived from the last rendered entry then
+	 * either cannot be formed or does not advance, and the same window is
+	 * requested forever.
+	 *
+	 * Optional because a server older than this field omits it; callers fall
+	 * back to the last entry, which is what they did before.
+	 */
+	next_before?: string;
+	next_before_id?: string;
 }
 
 // ─── Views ───────────────────────────────────────────────────────────────────
