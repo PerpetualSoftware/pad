@@ -629,9 +629,13 @@
 		// state being thrown away that would have survived.
 		nextCursor = null;
 		hasMore = false;
+		// This reload replaces the view; anything already in flight against
+		// the old one must not land on it.
+		const reqGen = ++viewGen;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (reqGen !== viewGen) return;
 			entries = resp.entries;
 			hasMore = resp.has_more;
 			nextCursor = cursorFrom(resp, resp.entries);
@@ -719,13 +723,13 @@
 				// round 4). Discard such a page rather than merge it — the
 				// cursor is untouched, so the button is still there and the
 				// next click fetches the same page against the current view.
-				const seqAtDispatch = sseRefreshSeq;
+				const seqAtDispatch = viewGen;
 				const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
 					before: cursor.before,
 					before_id: cursor.before_id
 				});
 				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-				if (sseRefreshSeq !== seqAtDispatch) return;
+				if (viewGen !== seqAtDispatch) return;
 				// Deduplicate by ID to handle boundary overlap from <= queries,
 				// and because the server's cursor can deliberately re-cover rows
 				// an earlier page already rendered (see cursorFrom).
@@ -829,12 +833,22 @@
 	/** Set by onDestroy; checked by every continuation that outlives the mount. */
 	let destroyed = false;
 	/**
-	 * Monotonic id of the newest dispatched SSE refresh. A plain `let`, not
-	 * `$state`: it is read and written only inside the refresh itself, and a
-	 * `$state` written by an effect that also reads it self-invalidates
-	 * (CONVE-1688).
+	 * Monotonic id of the newest thing that may REPLACE what is on screen —
+	 * an SSE refresh or a full reload. Every continuation that writes entries
+	 * captures it before its await and drops its result if it moved, so a
+	 * response assembled against an older view can never land on a newer one.
+	 *
+	 * It counts reloads as well as refreshes deliberately: a local comment
+	 * delete calls loadTimeline, which removes the entry from page 1, and a
+	 * Load More page in flight from before that would otherwise re-add it
+	 * (codex round 6). One counter for both, because "the view was replaced"
+	 * is the same fact whichever path replaced it.
+	 *
+	 * A plain `let`, not `$state`: it is read and written inside the same
+	 * continuations, and a `$state` written by an effect that also reads it
+	 * self-invalidates (CONVE-1688).
 	 */
-	let sseRefreshSeq = 0;
+	let viewGen = 0;
 
 
 	// Named rather than inline so the failure path can re-invoke it once. The
@@ -854,12 +868,12 @@
 		// one removed, or removes one it added, and the view then disagrees
 		// with the server until something else redraws it. Only the newest
 		// dispatched refresh may write (codex round 2).
-		const reqSeq = ++sseRefreshSeq;
+		const reqSeq = ++viewGen;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			if (reqSeq !== sseRefreshSeq) return;
+			if (reqSeq !== viewGen) return;
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
 
