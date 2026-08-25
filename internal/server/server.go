@@ -1256,6 +1256,16 @@ func (s *Server) setupRouter() {
 		r.Use(StrictTransportSecurity)
 	}
 
+	// Reject a request whose decoded path is not valid UTF-8 (or contains a
+	// NUL) before anything routes it, so no handler can hand such a segment
+	// to the store (BUG-2782). Placed at the END of the infrastructure block
+	// deliberately: after StructuredLogger and MetricsMiddleware so a
+	// rejection is still logged with a request id and still counted (as
+	// route "unmatched", status 400) rather than being invisible to an
+	// operator watching for a flood, and after SecurityHeaders so the 400
+	// carries them like every other response.
+	r.Use(ValidatePath)
+
 	// MCP Streamable HTTP transport + OAuth discovery endpoints
 	// (PLAN-943 TASK-950). Mounted outside the standard /api/v1
 	// auth-required group because:
