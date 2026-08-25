@@ -845,14 +845,50 @@
 			// order rather than prepended on the assumption (codex round 3).
 			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
-			// Update existing entries from the fresh response (e.g., reaction changes).
-			// Remove entries that were previously on the first page but are now gone (deleted).
-			// Keep all entries from older pages (loaded via "Load more") untouched.
+			// Update existing entries from the fresh response (e.g., reaction
+			// changes), and drop the ones that were genuinely deleted.
+			//
+			// ABSENT FROM THE FRESH PAGE IS NOT THE SAME AS DELETED (BUG-2773).
+			// The refresh re-fetches the FIRST page, which is the newest N
+			// entries — so once enough newer entries exist, an entry that is
+			// perfectly alive ROLLS OFF that window. Treating its absence as a
+			// deletion made it disappear from the reader's view, and for
+			// anyone who had pressed Load More it vanished from the MIDDLE of
+			// a timeline whose neighbours on both sides were still shown. A
+			// full reload brought it back, which is the tell that this was
+			// display state and not data.
+			//
+			// So deletion is inferred only for a position the fresh page still
+			// COVERS: at or newer than its oldest entry, compared in the same
+			// (created_at, id) space the server's cursor uses. Anything older
+			// is out of window and left alone. An empty fresh page covers
+			// nothing and therefore deletes nothing — it means every row in
+			// that window was dropped as unrenderable, not that the item's
+			// history was erased.
+			// The oldest entry the fresh page reached, found by the same
+			// ordering the server sorts by rather than by trusting the array's
+			// order.
+			const sortedFresh = byNewestFirst(resp.entries);
+			const coverageFloor = sortedFresh[sortedFresh.length - 1] ?? null;
+			const coveredByFreshPage = (e: TimelineEntry) => {
+				if (!coverageFloor) return false;
+				const et = new Date(e.created_at).getTime();
+				const ft = new Date(coverageFloor.created_at).getTime();
+				if (et !== ft) return et > ft;
+				// Same instant: the id is the tie-break, descending, exactly as
+				// the cursor predicate orders it. The `>=` vs `>` distinction
+				// is unobservable from here — the floor is by construction one
+				// of the fresh page's own entries, so it never reaches this
+				// branch — and is written inclusive to match the ordering
+				// rather than because a case depends on it.
+				return e.id >= coverageFloor.id;
+			};
+
 			const freshById = new Map(resp.entries.map((e) => [e.id, e]));
 			const updatedExisting = entries
 				.filter((e) => {
-					if (firstPageIds.has(e.id) && !freshIds.has(e.id)) return false;
-					return true;
+					const missing = firstPageIds.has(e.id) && !freshIds.has(e.id);
+					return !(missing && coveredByFreshPage(e));
 				})
 				.map((e) => freshById.get(e.id) ?? e);
 
