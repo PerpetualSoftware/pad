@@ -131,6 +131,7 @@ prune').`,
 			if err != nil {
 				return fmt.Errorf("get working directory: %w", err)
 			}
+			cwd = canonicalDir(cwd)
 			// An explicit --agent wins verbatim, including the empty string
 			// (anonymous). Absent, the session is named the way its writes
 			// are.
@@ -190,6 +191,25 @@ declared. On Linux the pid claim is checked against the registering
 process's ancestry; a consumer that needs that check reads
 session_pid_verified in the JSON.
 
+Deciding whether a NAME is in use from this output (the rule a script
+needs, and where it is only as good as its inputs):
+
+  - List WITHOUT --agent (use --cwd to scope), then apply the rule
+    yourself: a row with liveness "alive", no legacy/malformed flag, and
+    session_pid_verified true, whose agent is the name, means IN USE by
+    that session (identify it by session_id, else session_pid).
+  - Any "unknown", legacy, or malformed row scoped to the same directory
+    is INDETERMINATE, never "not in use" — such a row cannot say who it
+    is, so --agent NAME would have hidden it.
+  - No matching row means "no registered row", not "nobody": a harness
+    that never registers, or whose registration failed, is invisible.
+  - Two or more alive rows for one name is ambiguous; do not pick the
+    newest — registered_at is each session's own clock.
+  - The registry is this OS user's; other users' sessions are not here.
+  - The verdict is a sample: a session can register or exit right after.
+  - A row carries the name at registration; a window that changes its
+    PAD_AGENT afterwards must run 'pad session register' again.
+
 Newest first. Use --format json for the stable shape.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -200,7 +220,7 @@ Newest first. Use --format json for the stable shape.`,
 			var filtered []cli.SessionRecord
 			cwdWant := ""
 			if cwdFilter != "" {
-				cwdWant = filepath.Clean(cwdFilter)
+				cwdWant = canonicalDir(cwdFilter)
 			}
 			for _, r := range records {
 				if !all && r.Liveness == cli.LivenessDead {
@@ -211,7 +231,11 @@ Newest first. Use --format json for the stable shape.`,
 				if cmd.Flags().Changed("agent") && (r.Agent != agentFilter || r.Legacy || r.Malformed) {
 					continue
 				}
-				if cwdWant != "" && filepath.Clean(r.Cwd) != cwdWant {
+				// Directory IDENTITY, not spelling: both sides resolve
+				// symlinks so a checkout reached through a link matches its
+				// real path (codex round 5). A stored cwd that no longer
+				// exists compares by its cleaned spelling.
+				if cwdWant != "" && canonicalDir(r.Cwd) != cwdWant {
 					continue
 				}
 				filtered = append(filtered, r)
@@ -227,7 +251,7 @@ Newest first. Use --format json for the stable shape.`,
 		},
 	}
 	cmd.Flags().StringVar(&agentFilter, "agent", "", "only sessions registered as this agent name (\"\" matches anonymous sessions)")
-	cmd.Flags().StringVar(&cwdFilter, "cwd", "", "only sessions registered from this directory")
+	cmd.Flags().StringVar(&cwdFilter, "cwd", "", "only sessions registered from this directory (symlinks resolved on both sides)")
 	cmd.Flags().BoolVar(&all, "all", false, "include dead sessions")
 	return cmd
 }
@@ -250,10 +274,27 @@ func printSessionList(records []cli.SessionRecord) {
 			state += " (malformed)"
 		case r.Legacy:
 			state += " (legacy)"
+		case !r.SessionPIDVerified:
+			state += " (unverified pid)"
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", printableCell(agent), r.SessionPID, state, printableCell(r.Cwd), printableCell(r.RegisteredAt))
 	}
 	tw.Flush()
+}
+
+// canonicalDir resolves a directory to its real, absolute, cleaned path
+// when it exists (symlinks followed), and to its cleaned absolute
+// spelling otherwise — so registration and --cwd compare directory
+// identity rather than the string a shell happened to use.
+func canonicalDir(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(abs)
 }
 
 // printableCell makes a self-declared value safe for the terminal table:

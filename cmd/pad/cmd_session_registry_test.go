@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -348,5 +349,69 @@ func TestSessionList_TableNeutralizesControlCharacters(t *testing.T) {
 	regOut := runSessionCmd(t, "register", "--agent", hostile)
 	if strings.Contains(regOut, "\x1b") || strings.Count(regOut, "\n") != 1 {
 		t.Fatalf("register's confirmation line must neutralize control characters:\n%q", regOut)
+	}
+}
+
+// TestSessionList_CwdMatchesDirectoryIdentity: a session registered from a
+// directory reached through a symlink matches --cwd given as the real
+// path AND as the link — identity, not spelling — and the stored cwd is
+// the real path.
+func TestSessionList_CwdMatchesDirectoryIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on windows")
+	}
+	sessionRegistryTestEnv(t)
+	real := t.TempDir()
+	realResolved, err := filepath.EvalSymlinks(real) // t.TempDir may itself sit under a symlink (macOS /var → /private/var)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "via-link")
+	if err := os.Symlink(realResolved, link); err != nil {
+		t.Fatal(err)
+	}
+	registerAs(t, os.Getpid(), "a", link)
+	recs := decodeRecords(t, runSessionCmd(t, "list"))
+	if len(recs) != 1 || recs[0].Cwd != realResolved {
+		t.Fatalf("registration must store the real path, got %+v", recs)
+	}
+	for _, q := range []string{realResolved, link, link + "/"} {
+		got := decodeRecords(t, runSessionCmd(t, "list", "--cwd", q))
+		if len(got) != 1 {
+			t.Fatalf("--cwd %q must match the session registered via the link: %+v", q, got)
+		}
+	}
+	if got := decodeRecords(t, runSessionCmd(t, "list", "--cwd", t.TempDir())); len(got) != 0 {
+		t.Fatalf("an unrelated directory must not match: %+v", got)
+	}
+}
+
+// TestSessionList_TableMarksUnverifiedPid: a harness pid claim that is not
+// in the registering process's ancestry shows as "(unverified pid)" in
+// the table, so a human reading it sees the same caveat the JSON carries.
+func TestSessionList_TableMarksUnverifiedPid(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("ancestry verification is linux-only")
+	}
+	sessionRegistryTestEnv(t)
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no shell")
+	}
+	c := exec.Command(sh, "-c", "sleep 60")
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+	t.Setenv("CLAUDE_PID", strconv.Itoa(c.Process.Pid))
+	rec := decodeRecord(t, runSessionCmd(t, "register", "--agent", "claimant"))
+	if rec.SessionPIDVerified {
+		t.Fatalf("a non-ancestor pid must be unverified: %+v", rec)
+	}
+	t.Setenv("CLAUDE_PID", "")
+	formatFlag = "table"
+	out := runSessionCmd(t, "list")
+	if !strings.Contains(out, "alive (unverified pid)") {
+		t.Fatalf("table must mark the unverified pid:\n%s", out)
 	}
 }
