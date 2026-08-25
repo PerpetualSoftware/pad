@@ -40,6 +40,12 @@ func TestWatchEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 
 	obs.ReceiveLoopExited()
 
+	// Six, a count no other assertion in this test uses, so a counter wired to
+	// the wrong callback cannot land on the right number by coincidence.
+	for range 6 {
+		obs.HeartbeatPublishFailed()
+	}
+
 	assertCounter(t, m, "pad_watchevents_notifications_dropped_total",
 		map[string]string{"reason": watchevents.DropReasonSlowSubscriber}, 1)
 	assertCounter(t, m, "pad_watchevents_sequence_gaps_total", nil, 2)
@@ -54,6 +60,7 @@ func TestWatchEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
 		map[string]string{"reason": watchevents.ResetReasonCounterBackward}, 2)
 	assertCounter(t, m, "pad_watchevents_receive_loop_exits_total", nil, 1)
+	assertCounter(t, m, "pad_watchevents_heartbeat_publish_failures_total", nil, 6)
 }
 
 // TestWatchEventsObserverIgnoresNonPositiveGapSpans pins the documented
@@ -142,6 +149,9 @@ func TestWatchEventsResetReasonsReachTheMetricWithTheirWireSpelling(t *testing.T
 	obs.SequenceReset(watchevents.ResetReasonUndecodableMessage)
 	obs.SequenceReset(watchevents.ResetReasonCounterBackward)
 	obs.SequenceReset(watchevents.ResetReasonEpochChange)
+	obs.SequenceReset(watchevents.ResetReasonIdleTimeout)
+	obs.SequenceReset(watchevents.ResetReasonIdleTimeout)
+	obs.SequenceReset(watchevents.ResetReasonIdleTimeout)
 
 	// Literal, deliberately. Do not replace these with the constants.
 	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
@@ -152,6 +162,12 @@ func TestWatchEventsResetReasonsReachTheMetricWithTheirWireSpelling(t *testing.T
 		map[string]string{"reason": "counter_backward"}, 1)
 	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
 		map[string]string{"reason": "epoch_change"}, 1)
+	// The label docs/deployment.md tells an operator to alert on. It is a
+	// separate assertion from the reason's behaviour in internal/watchevents
+	// because a reason that never reaches the registry is a runbook pointing
+	// at a series that does not exist.
+	assertCounter(t, m, "pad_watchevents_sequence_resets_total",
+		map[string]string{"reason": "idle_timeout"}, 3)
 
 	// AND THE SPELLING THAT WAS RETIRED IS NOT ALSO BEING EMITTED. Without
 	// this leg the assertions above pass on an adapter that emits both, which

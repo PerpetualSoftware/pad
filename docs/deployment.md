@@ -770,7 +770,6 @@ Redis subscriptions with different fates, so each has its own phase-2 flag and
 you can roll one before the other. Everything below applies to both; the
 differences are collected at the end.
 
-
 **The problem this fixes.** A TCP connection can stop carrying traffic without
 closing — no FIN, no RST, just a route that stopped working. A NAT table
 expiring, a stateful firewall dropping an idle flow, an overlay network
@@ -829,16 +828,19 @@ every deployment lands in first.
 | 2 | Set the flag (`PAD_EVENTS_HEARTBEAT` and/or `PAD_WATCH_HEARTBEAT`) and roll again. | One frame per 30s — per subscribed workspace on the activity bus, once per instance on the watch bus | Recognise and ignore it. **Idle detection active.** |
 
 **What happens if you run them out of order.** The frame has to travel on the
-workspace's *event* channel, because that channel's connection is the thing
-whose liveness is in question — a probe anywhere else proves the wrong thing.
-An instance running a **pre-phase-1** binary cannot classify it: the frame falls
-through to the event decoder, fails to parse, and is treated as a hole in
-coverage. That instance drops the workspace's replay buffer **and tells every
-one of its live subscribers to resync** — every 30 seconds, for every workspace,
-for as long as the deployment is mixed. The blast radius is the instances you
-have *not* upgraded, which no amount of care in the new code can reach. This is
-noisier than the ID-space migration's equivalent mistake and it is the reason
-the default is off.
+same channel the stream's own traffic does — the workspace's *event* channel on
+the activity bus, the single watch channel on the watch bus — because that
+channel's connection is the thing whose liveness is in question; a probe
+anywhere else proves the wrong thing. An instance running a **pre-phase-1**
+binary cannot classify it: the frame falls through to that bus's decoder, fails
+to parse, and is treated as a hole in coverage. That instance drops the replay
+buffer **and tells every one of its live subscribers to resync** — every 30
+seconds, for as long as the deployment is mixed. On the activity bus that is per
+workspace, so the noise scales with how many an instance is subscribed to; on
+the watch bus it is one buffer and one announcement round per instance. Either
+way the blast radius is the instances you have *not* upgraded, which no amount
+of care in the new code can reach. This is noisier than the ID-space migration's
+equivalent mistake and it is the reason both defaults are off.
 
 Both rolls are zero-loss in the other direction: phase-1 instances recognise the
 frame from the release that introduces it, so during the phase-2 roll a mix of
