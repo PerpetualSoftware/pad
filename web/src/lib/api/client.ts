@@ -1576,6 +1576,17 @@ export const api = {
 	// ── Timeline ──────────────────────────────────────────────────────────────
 
 	timeline: {
+		/**
+		 * One page of an item's timeline, newest first.
+		 *
+		 * Page with the response's `next_before` + `next_before_id`, never with
+		 * the last entry received: the server drops rows that cannot render, so
+		 * a page can carry fewer entries than the rows it consumed — or none,
+		 * with history behind them — and its cursor can deliberately re-cover
+		 * ground. Deriving one from the last visible entry cannot advance past
+		 * such a page (BUG-2765). Send both fields or neither; the id is the
+		 * tie-break among entries sharing a second.
+		 */
 		list: (ws: string, itemSlug: string, params?: { limit?: number; before?: string; before_id?: string }) => {
 			const qs = new URLSearchParams();
 			if (params?.limit != null) qs.set('limit', String(params.limit));

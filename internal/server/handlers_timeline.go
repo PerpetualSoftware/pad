@@ -12,9 +12,25 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// handleListItemTimeline returns a unified, chronological timeline for an item.
-// It uses cursor-based pagination: pass `before=<RFC3339>` to get entries older
-// than that timestamp, and `limit=N` to control page size (default 50).
+// handleListItemTimeline returns a unified, chronological timeline for an item,
+// newest first, with cursor-based pagination.
+//
+// Request: `limit=N` (default 50) and the cursor pair `before=<RFC3339>` +
+// `before_id=<id>`, which select entries strictly older than that position —
+// created_at first, id as the tie-break, because several entries can share a
+// whole second.
+//
+// Response: when `has_more` is true the body also carries `next_before` and
+// `next_before_id`, and a client MUST page with those two rather than deriving
+// a cursor from the last entry it received. They are not the same value. This
+// handler over-fetches per source and drops rows that cannot render, so a page
+// can carry fewer entries than the rows it consumed — or none, with history
+// still behind them — and it can deliberately resume at a position it has
+// already covered when one source's window ran out before another's. A
+// consumer that pages from its last visible entry therefore either cannot form
+// a cursor at all or re-requests the same window forever (BUG-2765), and one
+// that forwards only `next_before` without `next_before_id` can repeat or skip
+// entries sharing that second. Both fields, or neither.
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
