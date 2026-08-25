@@ -43,8 +43,10 @@ done
 # about the session, consent is a grant it may or may not make, and the
 # record is local, 0600, and never crosses the wire — so an unarmed session
 # still registers. Both monitors of one session run this; the second is an
-# idempotent overwrite. The harness's CLAUDE_PID keys the record and
-# PAD_AGENT (if exported) names it; `pad session list` reads it back.
+# idempotent overwrite. The record is keyed on the harness session pid
+# (PAD_SESSION_PID if exported, else Claude Code's CLAUDE_PID) and named by
+# the agent name (.pad.toml agent_name, else PAD_AGENT, else the detected
+# runtime); `pad session list` reads it back.
 # Silent by construction — a failure here must not cost the stream.
 pad session register >/dev/null 2>&1 || true
 

@@ -303,3 +303,28 @@ func TestSessionPrune_Verb(t *testing.T) {
 		t.Fatalf("old unknown record must be gone under a bound: %v", err)
 	}
 }
+
+// TestSessionList_EmptyAgentFilterExcludesLegacyAndMalformed: a legacy or
+// malformed row has NO agent, not an empty one, so --agent "" returns only
+// genuinely anonymous registrations.
+func TestSessionList_EmptyAgentFilterExcludesLegacyAndMalformed(t *testing.T) {
+	sessionRegistryTestEnv(t)
+	registerAs(t, os.Getpid(), "", t.TempDir()) // anonymous v2
+	dir := filepath.Join(os.Getenv("HOME"), ".pad", "sessions")
+	legacy := map[string]any{"pid": 1, "cwd": "/legacy", "messaging_socket_path": "/run/x/" + strconv.Itoa(os.Getppid()) + ".sock", "registered_at": "2026-08-20T00:00:00Z"}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(filepath.Join(dir, "1.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "424242.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	all := decodeRecords(t, runSessionCmd(t, "list"))
+	if len(all) != 3 {
+		t.Fatalf("unfiltered list must show all three rows: %+v", all)
+	}
+	recs := decodeRecords(t, runSessionCmd(t, "list", "--agent", ""))
+	if len(recs) != 1 || recs[0].Legacy || recs[0].Malformed || recs[0].SessionPID != os.Getpid() {
+		t.Fatalf("--agent \"\" must return only the anonymous v2 row: %+v", recs)
+	}
+}

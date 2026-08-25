@@ -205,8 +205,9 @@ func socketLiveness(o *SessionOwner) Liveness {
 }
 
 // pidLiveness judges the recorded owner pid. A live pid with no token
-// recorded is alive on bare liveness — the documented residual on
-// platforms without a start token.
+// recorded is alive on bare liveness — the documented residual for records
+// written where no start token exists (non-Linux) and for legacy rows,
+// which never had one; pid reuse cannot be excluded there.
 func pidLiveness(o *SessionOwner) Liveness {
 	if runtime.GOOS == "windows" {
 		// pidAlive cannot probe here (Signal(0) is unsupported), so a

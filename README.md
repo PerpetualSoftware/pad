@@ -150,7 +150,7 @@ export PAD_AGENT=reviewer
 
 The name is rendered exactly as sent — Pad keeps no list of approved names, and does not re-case or rewrite what you choose.
 
-**Sessions carry the name too, locally.** Every session with the Claude Code plugin records itself in `~/.pad/sessions` on start — the harness session's pid, the agent name above, and its working directory — and `pad session list` reads that back with a liveness verdict per row (`alive`, `dead`, or `unknown` where the platform cannot probe). It is a local, deterministic answer to "which of my sessions on this machine are running, and as which agent" — no server round-trip, no guessing from process names. Any other harness gets the same by calling `pad session register` from its session-start hook with `PAD_SESSION_PID` (the session process) and `PAD_AGENT` exported. Dead records are pruned on every register; `pad session prune --older-than 72h` also clears the unknown ones. The record never leaves the machine.
+**Sessions carry the name too, locally.** Every session with the Claude Code plugin records itself in `~/.pad/sessions` on start — the harness session's pid, the agent name above, and its working directory — and `pad session list` reads that back with a liveness verdict per row (`alive`, `dead`, or `unknown` where the platform cannot probe). It is a local, deterministic answer to "which of my sessions on this machine are running, and as which agent" — no server round-trip, no guessing from process names. Any other harness gets the same by calling `pad session register` from its session-start hook with `PAD_SESSION_PID` (the session process) and `PAD_AGENT` exported. Records of sessions the register can see are dead are pruned on every register; `pad session prune --older-than 72h` also clears ones whose liveness cannot be determined. The record never leaves the machine.
 
 Not every entry can show it. Activity entries store it, and comments (replies included) read it through the activity each one links to — so a comment written by an agent that sent a name shows that name in its chip, next to the person whose credentials it used. Version snapshots and implementation-note/decision entries record only *that* an agent acted, because nothing links them to a named row — they still read `Agent`.
 
@@ -505,6 +505,10 @@ pad github unlink <item-ref>          Remove PR link from item
 
 pad webhook list             List workspace webhooks
 pad webhook create <url>     Create webhook
+
+pad session register         Record this session (harness pid + agent name) locally
+pad session list             Registered sessions on this machine, with liveness
+pad session prune            Remove records of sessions that are dead
 ```
 
 All commands accept `--format json` for machine-readable output and `--workspace` to target a specific workspace.

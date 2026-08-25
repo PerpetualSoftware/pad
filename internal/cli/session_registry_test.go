@@ -191,6 +191,9 @@ func writeV2Record(t *testing.T, dir string, reg SessionRegistration) string {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
+	if reg.RegistrarPID == 0 {
+		reg.RegistrarPID = 1 // every real writer records one; well-formedness requires it
+	}
 	data, err := json.Marshal(reg)
 	if err != nil {
 		t.Fatal(err)
@@ -409,6 +412,9 @@ func TestListSessions_SemanticallyMalformedIsUnknown(t *testing.T) {
 		"1003.json": `{"session_pid":1,"registered_at":"not-a-time"}`,
 		"1004.json": `{"session_pid":-5,"registered_at":"2026-08-01T00:00:00Z"}`,
 		"1005.json": `{"pid":0,"registered_at":"2026-08-01T00:00:00Z"}`,
+		// Fields every writer emits, missing: no cwd; no registrar pid.
+		"1006.json": `{"session_pid":1,"pid":1,"registered_at":"2026-08-01T00:00:00Z"}`,
+		"1007.json": `{"session_pid":1,"cwd":"/x","registered_at":"2026-08-01T00:00:00Z"}`,
 	}
 	for name, body := range cases {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
@@ -488,5 +494,48 @@ func TestRegistry_ConcurrentRegisterAndPrune(t *testing.T) {
 	files := numericFiles(t, dir)
 	if len(files) != 1 || files[0] != fmt.Sprintf("%d.json", os.Getppid()) {
 		t.Fatalf("expected exactly the live record, got %v", files)
+	}
+}
+
+// TestListSessions_OrdersByInstantAcrossFormats: two registrations inside
+// one second still order (nanosecond stamps), and a v2 nanosecond stamp
+// interleaves correctly with a v1 whole-second one — compared as times,
+// not strings ("…:08Z" would string-sort after "…:08.5Z").
+func TestListSessions_OrdersByInstantAcrossFormats(t *testing.T) {
+	dir := registryEnv(t)
+	t.Setenv("CLAUDE_PID", itoa(os.Getpid()))
+	first, err := RegisterSession("/first", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_PID", itoa(os.Getppid()))
+	second, err := RegisterSession("/second", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RegisteredAt == second.RegisteredAt {
+		t.Fatalf("nanosecond stamps must differ across two registrations: %q", first.RegisteredAt)
+	}
+	records, err := ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].Cwd != "/second" {
+		t.Fatalf("newest first within one second: %+v", records)
+	}
+
+	// Mixed formats: a v1 row at 08Z and a v2 row at 08.5Z in the same
+	// second — the v2 row is later and must list first.
+	for _, f := range numericFiles(t, dir) {
+		_ = os.Remove(filepath.Join(dir, f))
+	}
+	writeV1Record(t, dir, 50001, "") // registered_at 2026-08-20T00:00:00Z
+	writeV2Record(t, dir, SessionRegistration{SessionOwner: SessionOwner{PID: 50002, PIDSource: "self"}, Cwd: "/v2", RegisteredAt: "2026-08-20T00:00:00.5Z"})
+	records, err = ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].Cwd != "/v2" {
+		t.Fatalf("v2 half-second-later row must list before the v1 whole-second row: %+v", records)
 	}
 }

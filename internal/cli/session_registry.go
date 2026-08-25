@@ -7,7 +7,7 @@ package cli
 // the OWNER pid (the agent harness's session process, see SessionOwner),
 // carrying the agent name the session declared. `pad session register`
 // writes it; `pad session list` reads it with a liveness verdict per row;
-// `pad session prune` removes the dead ones. The plugin monitor registers
+// `pad session prune` removes the ones it can see are dead. The plugin monitor registers
 // on start, so any Claude Code session with the plugin has a record from
 // its first second; any other harness calls register from its own
 // session-start hook with PAD_SESSION_PID / PAD_AGENT set.
@@ -151,7 +151,10 @@ func RegisterSession(cwd, agent string) (SessionRecord, error) {
 		Agent:        agent,
 		RegistrarPID: os.Getpid(),
 		Cwd:          cwd,
-		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+		// Nanosecond precision so two registrations in one second still
+		// order (codex round 2): "newest first" must not fall back to
+		// filename order. v1 wrote whole seconds; both parse as RFC3339.
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {
@@ -211,7 +214,19 @@ func ListSessions() ([]SessionRecord, error) {
 		out = append(out, rec)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].RegisteredAt > out[j].RegisteredAt // RFC3339 UTC sorts lexically
+		// Compare as TIMES, not strings: v1 whole-second and v2 nanosecond
+		// stamps interleave, and "…:08Z" vs "…:08.5Z" would string-sort the
+		// later one first. Ties (identical instants) and unparseable
+		// stamps fall to path order, which at least is deterministic.
+		ti, ei := time.Parse(time.RFC3339, out[i].RegisteredAt)
+		tj, ej := time.Parse(time.RFC3339, out[j].RegisteredAt)
+		if ei == nil && ej == nil && !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		if (ei == nil) != (ej == nil) {
+			return ei == nil // parseable before unparseable
+		}
+		return out[i].Path < out[j].Path
 	})
 	return out, nil
 }
@@ -241,16 +256,16 @@ func readSessionRecord(path string) (SessionRecord, error) {
 // carry an RFC3339 registered_at. Anything else is malformed — listed,
 // unknown, and removed only under an explicit age bound.
 func registrationWellFormed(reg *SessionRegistration) bool {
-	if reg.RegisteredAt == "" {
+	// Fields every writer (v1 and v2) always emitted: a cwd, a positive
+	// registrar pid, an RFC3339 timestamp.
+	if reg.RegisteredAt == "" || reg.Cwd == "" || reg.RegistrarPID <= 0 {
 		return false
 	}
 	if _, err := time.Parse(time.RFC3339, reg.RegisteredAt); err != nil {
 		return false
 	}
-	if reg.PID > 0 {
-		return true
-	}
-	return reg.PID == 0 && reg.RegistrarPID > 0
+	// v2 additionally has a positive owner pid; v1 has none at all.
+	return reg.PID > 0 || reg.PID == 0
 }
 
 // malformedRecord describes a file this code cannot read as a

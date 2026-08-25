@@ -120,8 +120,9 @@ it, and --agent "" registers an anonymous session.
 
 Safe to call from any directory — it does not require a linked workspace
 (.pad.toml) — and safe to call more than once per session: each call
-overwrites the session's record with a fresh timestamp. Dead sessions'
-records are pruned on the way (see 'pad session prune').`,
+overwrites the session's record with a fresh timestamp. Records of
+sessions it can see are dead are pruned on the way (see 'pad session
+prune').`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -171,12 +172,15 @@ func sessionListCmd() *cobra.Command {
 the agent it registered as, its working directory, and whether it is
 alive right now.
 
-Liveness is decided locally and fails toward honesty: "alive" means the
-session's messaging socket (or pid) still exists AND matches the identity
-recorded at registration; "dead" means it is gone or has been reused by
-something else; "unknown" means this platform cannot probe it. A legacy
-row (registered before sessions carried an agent name) can say a session
-exists but not who it is.
+Liveness is decided locally and fails toward honesty: "alive" means every
+signal the record carries — its messaging socket, its owner pid, and the
+identity captured for each at registration where the platform supplies
+one — still checks out; "dead" means one is gone or has been reused by
+something else; "unknown" means one could not be examined (a platform
+that cannot probe pids, a socket that cannot be stat'ed). A legacy row
+(registered before sessions carried an agent name) is judged by its pid
+alone: it can say a session exists but not who it is, and it matches no
+--agent filter.
 
 Newest first. Use --format json for the stable shape.`,
 		Args: cobra.NoArgs,
@@ -194,7 +198,9 @@ Newest first. Use --format json for the stable shape.`,
 				if !all && r.Liveness == cli.LivenessDead {
 					continue
 				}
-				if cmd.Flags().Changed("agent") && r.Agent != agentFilter {
+				// A legacy or malformed row has NO agent — not an empty one —
+				// so it matches no --agent filter, including --agent "".
+				if cmd.Flags().Changed("agent") && (r.Agent != agentFilter || r.Legacy || r.Malformed) {
 					continue
 				}
 				if cwdWant != "" && filepath.Clean(r.Cwd) != cwdWant {
@@ -252,15 +258,18 @@ func sessionPruneCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Remove dead sessions' records from the local session registry",
-		Long: `Deletes registry records whose session is dead. Never deletes a live one.
+		Long: `Deletes registry records whose session is dead. Never deletes a record
+it can see is alive.
 
 Records whose liveness is unknown (this platform cannot probe the owner,
 or the file is malformed) are kept unless --older-than is given, in which
-case those older than the bound are deleted too — the only way such a
-registry ever shrinks, and an explicit choice for that reason.
+case those older than the bound are deleted too — live or not, since
+unknown means exactly that; it is the only way such a registry ever
+shrinks, and an explicit choice for that reason.
 
-'pad session register' already prunes dead records on every call; this
-verb is for the unknown ones and for cleaning up without registering.`,
+'pad session register' already prunes the records it can see are dead on
+every call; this verb is for the unknown ones and for cleaning up
+without registering.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rep, err := cli.PruneSessions(olderThan, time.Now())
