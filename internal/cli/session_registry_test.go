@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -531,10 +532,17 @@ func TestListSessions_OrdersByInstantAcrossFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Pin the FORMAT directly so a coarse clock cannot make this leg
+	// vacuous: nanosecond stamps carry a fractional part (a whole-second
+	// writer never does; both stamps landing on an exact second is a
+	// one-in-1e18 event, not a flake source).
+	if !strings.Contains(first.RegisteredAt, ".") && !strings.Contains(second.RegisteredAt, ".") {
+		t.Fatalf("registrations must carry sub-second stamps, got %q and %q", first.RegisteredAt, second.RegisteredAt)
+	}
 	if first.RegisteredAt == second.RegisteredAt {
-		// A coarse clock can hand two calls the same instant; the sort
-		// then falls to path order by design, and this leg has nothing to
-		// say. Only the mixed-format leg below is asserted in that case.
+		// A coarse clock can still hand two calls the same instant; the
+		// sort then falls to path order by design, and the ORDER leg has
+		// nothing to say (the format leg above already held).
 		t.Logf("two registrations shared one stamp (%q); skipping the same-second ordering leg", first.RegisteredAt)
 	} else {
 		records, err := ListSessions()
