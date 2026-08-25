@@ -349,3 +349,33 @@ func TestArmState_SocketWithoutIdentityRejected(t *testing.T) {
 		t.Fatalf("identity-less file must be reaped; stat err = %v", err)
 	}
 }
+
+// TestArmState_SocketKeyedIgnoresWriterPid pins the arm-state contract
+// under the shared verdict (TASK-2767): for a socket-keyed file the
+// recorded pid is the short-lived `pad session arm` command, informational
+// only. OwnerLiveness requires every recorded signal to agree, so the arm
+// mapping must NOT hand it the pid — or every armed session would read
+// disarmed the instant its arm command exited.
+func TestArmState_SocketKeyedIgnoresWriterPid(t *testing.T) {
+	socketFile := filepath.Join(t.TempDir(), "msg.sock")
+	if err := os.WriteFile(socketFile, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	armStateTestEnv(t, socketFile)
+	path, err := WriteArmState()
+	if err != nil {
+		t.Fatalf("WriteArmState: %v", err)
+	}
+	st, _, err := readArmState()
+	if err != nil || st == nil {
+		t.Fatalf("read state: %v", err)
+	}
+	st.PID = exitedProcessPID(t) // the arm command is gone, as it always is
+	data, _ := json.MarshalIndent(st, "", "  ")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !SessionArmedLocally() {
+		t.Fatal("a socket-keyed arm file must stay armed after its writer pid exits")
+	}
+}

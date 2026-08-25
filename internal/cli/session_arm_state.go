@@ -342,6 +342,13 @@ func armStateOwnerAlive(st *ArmState) bool {
 		SocketIno:           st.SocketIno,
 		SocketDev:           st.SocketDev,
 	}
+	if st.Socket != "" {
+		// Socket-keyed: the recorded pid is the short-lived `pad session
+		// arm` command, informational only — it is dead by the time any
+		// reader looks, and OwnerLiveness requires every recorded signal to
+		// agree. The socket is the whole owner here.
+		owner.PID, owner.ProcStart = 0, ""
+	}
 	return OwnerLiveness(&owner) == LivenessAlive
 }
 

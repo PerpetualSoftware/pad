@@ -11,3 +11,9 @@ package cli
 func procStartToken(pid int) (string, bool) {
 	return "", false
 }
+
+// procStartTokenErr reports the platform limitation as an error, so a
+// caller distinguishing "gone" from "cannot examine" lands on the latter.
+func procStartTokenErr(pid int) (string, error) {
+	return "", errProcStartUnsupported
+}

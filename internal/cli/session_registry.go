@@ -121,9 +121,13 @@ func SessionsDir() (string, error) {
 }
 
 // registryFileName matches registry records — and ONLY them. The same
-// directory holds arm-state files (arm-*.json) and atomic-write temp
-// files (.arm-*.tmp), which are not sessions.
+// directory holds arm-state files (arm-*.json), atomic-write temp files
+// (.arm-*.tmp) and the mutation lock (.lock), which are not sessions.
 var registryFileName = regexp.MustCompile(`^[0-9]+\.json$`)
+
+// sessionsLockName is the advisory lock file register and prune hold while
+// mutating the directory (see lockSessionsDir).
+const sessionsLockName = ".lock"
 
 // RegisterSession records the CURRENT session — owner from the
 // environment (CaptureSessionOwner), the given cwd and agent name — to
@@ -153,13 +157,19 @@ func RegisterSession(cwd, agent string) (SessionRecord, error) {
 	if err != nil {
 		return SessionRecord{}, fmt.Errorf("marshal session registration: %w", err)
 	}
+	unlock, err := lockSessionsDir(dir)
+	if err != nil {
+		return SessionRecord{}, fmt.Errorf("lock sessions directory: %w", err)
+	}
+	defer unlock()
 	path := filepath.Join(dir, fmt.Sprintf("%d.json", reg.PID))
 	if err := atomicWriteFile(path, data, 0600); err != nil {
 		return SessionRecord{}, fmt.Errorf("write session registration: %w", err)
 	}
 	// Best effort, and only DEAD records: unknown ones need an explicit
 	// age bound (PruneSessions), which register has no business choosing.
-	_, _ = PruneSessions(0, time.Now())
+	// Under the same lock as the write, so no other mutator interleaves.
+	_, _ = pruneLocked(0, time.Now())
 	return recordFor(path, reg, nil), nil
 }
 
@@ -217,10 +227,30 @@ func readSessionRecord(path string) (SessionRecord, error) {
 		return malformedRecord(path), nil
 	}
 	var reg SessionRegistration
-	if err := json.Unmarshal(data, &reg); err != nil {
+	if err := json.Unmarshal(data, &reg); err != nil || !registrationWellFormed(&reg) {
 		return malformedRecord(path), nil
 	}
 	return recordFor(path, reg, nil), nil
+}
+
+// registrationWellFormed rejects files that parse as JSON but are not
+// something this code wrote (codex round 1 P2): `{}` would otherwise read
+// as a dead legacy record (owner pid 0) and be pruned with no age bound,
+// and `{"session_pid":1}` as a live one. A v2 record has a positive
+// session_pid; a v1 record has none and a positive registrar pid; both
+// carry an RFC3339 registered_at. Anything else is malformed — listed,
+// unknown, and removed only under an explicit age bound.
+func registrationWellFormed(reg *SessionRegistration) bool {
+	if reg.RegisteredAt == "" {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339, reg.RegisteredAt); err != nil {
+		return false
+	}
+	if reg.PID > 0 {
+		return true
+	}
+	return reg.PID == 0 && reg.RegistrarPID > 0
 }
 
 // malformedRecord describes a file this code cannot read as a
@@ -301,11 +331,27 @@ type PruneReport struct {
 // platform that cannot probe pids ever shrinks, and it is deliberately an
 // explicit choice: register passes 0.
 //
-// Each candidate is RE-READ immediately before removal and kept if it is
-// alive by then — a session re-registering into the same file between
-// our list and our remove must not lose its fresh record (the same
-// non-destructive reap as reapArmFile).
+// Mutations are serialized under the directory lock (lockSessionsDir), so
+// a register cannot rename a fresh record into place between a prune's
+// read and its remove; each candidate is additionally RE-READ immediately
+// before removal and kept if alive by then (the same non-destructive reap
+// as reapArmFile) — which is what stands alone on platforms without the
+// lock.
 func PruneSessions(olderThan time.Duration, now time.Time) (PruneReport, error) {
+	dir, err := SessionsDir()
+	if err != nil {
+		return PruneReport{}, err
+	}
+	unlock, err := lockSessionsDir(dir)
+	if err != nil {
+		return PruneReport{}, fmt.Errorf("lock sessions directory: %w", err)
+	}
+	defer unlock()
+	return pruneLocked(olderThan, now)
+}
+
+// pruneLocked is PruneSessions's body; the caller holds the directory lock.
+func pruneLocked(olderThan time.Duration, now time.Time) (PruneReport, error) {
 	records, err := ListSessions()
 	if err != nil {
 		return PruneReport{}, err

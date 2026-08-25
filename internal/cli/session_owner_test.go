@@ -139,13 +139,25 @@ func TestOwnerLiveness_Socket(t *testing.T) {
 		t.Fatalf("socket with matching identity: got %s, want alive", got)
 	}
 
-	// The socket decides ALONE: a dead pid alongside a live socket is still
-	// alive (the socket outlives every short-lived command and is the
-	// stronger signal), so the pid leg must not be consulted here.
+	// EVERY recorded signal must agree. A live socket node beside a dead
+	// pid is dead: the kernel does not unlink a socket when its owner is
+	// SIGKILLed, so a socket-only verdict would report a crashed harness
+	// alive forever (codex round 1 P1).
 	withDeadPID := o
 	withDeadPID.PID = exitedProcessPID(t)
-	if got := OwnerLiveness(&withDeadPID); got != LivenessAlive {
-		t.Fatalf("live socket + dead pid: got %s, want alive (socket decides)", got)
+	if got := OwnerLiveness(&withDeadPID); got != LivenessDead {
+		t.Fatalf("live socket + dead pid: got %s, want dead (both must agree)", got)
+	}
+	tok, _ := procStartToken(os.Getpid())
+	withLivePID := o
+	withLivePID.PID, withLivePID.ProcStart = os.Getpid(), tok
+	if got := OwnerLiveness(&withLivePID); got != LivenessAlive {
+		t.Fatalf("live socket + live pid: got %s, want alive", got)
+	}
+	reused := withLivePID
+	reused.ProcStart = "0"
+	if got := OwnerLiveness(&reused); got != LivenessDead {
+		t.Fatalf("live socket + reused pid: got %s, want dead", got)
 	}
 
 	// No identity recorded → cannot prove it is ours → dead.
@@ -187,3 +199,33 @@ func TestOwnerLiveness_WindowsIsUnknown(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// TestOwnerLiveness_SocketProbeErrorIsUnknown: a socket the caller cannot
+// stat (EACCES, not ENOENT) is not evidence the owner is gone — the verdict
+// is unknown, which the pruner leaves alone (codex round 1 P2). Skips as
+// root, where permission bits do not bite.
+func TestOwnerLiveness_SocketProbeErrorIsUnknown(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs unix permission bits and a non-root user")
+	}
+	parent := t.TempDir()
+	sock := filepath.Join(parent, "s.sock")
+	if err := os.WriteFile(sock, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(sock)
+	o := SessionOwner{Socket: sock, SocketMtimeUnixNano: info.ModTime().UnixNano()}
+	if err := os.Chmod(parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0700) })
+	if got := OwnerLiveness(&o); got != LivenessUnknown {
+		t.Fatalf("unstat-able socket: got %s, want unknown", got)
+	}
+	// And a live pid beside it does not upgrade the verdict: unknown is
+	// the answer as long as any recorded signal could not be examined.
+	o.PID = os.Getpid()
+	if got := OwnerLiveness(&o); got != LivenessUnknown {
+		t.Fatalf("unstat-able socket + live pid: got %s, want unknown", got)
+	}
+}

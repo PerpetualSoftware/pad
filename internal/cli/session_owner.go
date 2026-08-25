@@ -1,10 +1,19 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
 	"strconv"
+)
+
+// Probe failures that mean "the owner is GONE" (as opposed to "the owner
+// could not be examined"). See pidLiveness.
+var (
+	errProcZombie           = errors.New("process is a zombie")
+	errProcStatMalformed    = errors.New("/proc stat is malformed")
+	errProcStartUnsupported = errors.New("process start token unsupported on this platform")
 )
 
 // Session owner identity (TASK-2767, IDEA-2750 part 2).
@@ -125,60 +134,101 @@ func CaptureSessionOwner() (SessionOwner, error) {
 	return o, nil
 }
 
-// OwnerLiveness is the shared verdict. The socket, when recorded, decides
-// on its own: it outlives every short-lived command and vanishes with the
-// harness session, and its inode/mtime identity rejects a reused path. A
-// record with no socket falls to the pid: on Windows pids cannot be
-// probed, so the answer is unknown; elsewhere a dead pid is dead, a live
-// pid with a recorded start token must re-read and match (a reused pid is
-// a different owner), and a live pid with no token recorded is alive on
-// bare liveness — the documented residual on platforms without a token.
+// OwnerLiveness is the shared verdict. EVERY recorded signal must agree:
+// the socket (when recorded) must still exist with the identity captured
+// at registration — inode/device, else mtime, so a reused path is a
+// different session — AND the pid (when recorded) must be alive and, when
+// a start token was recorded, still carry it. Either signal dead → dead.
+// Neither alone suffices for the registry: a socket node outlives a
+// SIGKILLed owner (the kernel does not unlink it), so a socket-only verdict
+// would report a crashed harness alive indefinitely (codex round 1 P1);
+// and a pid alone cannot exclude reuse on platforms without a start token.
 //
-// Nothing here is "alive because we cannot tell": every uncertain case is
-// dead or unknown, and the two consumers choose how to treat unknown.
+// Unknown is the third answer, and it is reserved for "could not examine",
+// never "not sure it is alive": a platform that cannot probe pids
+// (Windows), a socket the caller cannot stat (a permission or I/O error,
+// as opposed to ENOENT), or a /proc entry that cannot be read (hidepid, a
+// namespace boundary). A dead verdict is only ever issued on positive
+// evidence of absence or of a different owner (P2). The two consumers
+// then choose: the consent gate treats unknown as not-armed, the pruner
+// leaves it alone.
+//
+// A record with NO signal at all (no socket, no pid) is dead.
 func OwnerLiveness(o *SessionOwner) Liveness {
-	if o == nil {
+	if o == nil || (o.Socket == "" && o.PID <= 0) {
 		return LivenessDead
 	}
+	verdict := LivenessAlive
 	if o.Socket != "" {
-		info, err := os.Stat(o.Socket)
-		if err != nil {
+		switch socketLiveness(o) {
+		case LivenessDead:
+			return LivenessDead
+		case LivenessUnknown:
+			verdict = LivenessUnknown
+		}
+	}
+	if o.PID > 0 {
+		switch pidLiveness(o) {
+		case LivenessDead:
+			return LivenessDead
+		case LivenessUnknown:
+			verdict = LivenessUnknown
+		}
+	}
+	return verdict
+}
+
+// socketLiveness judges the recorded socket instance.
+func socketLiveness(o *SessionOwner) Liveness {
+	info, err := os.Stat(o.Socket)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return LivenessDead // socket vanished — session gone
 		}
-		if o.SocketMtimeUnixNano == 0 {
-			return LivenessDead // no identity recorded — cannot prove it is ours
-		}
-		if o.SocketIno != 0 {
-			if ino, dev, ok := statIdentity(info); ok {
-				if ino == o.SocketIno && dev == o.SocketDev {
-					return LivenessAlive
-				}
-				return LivenessDead
+		return LivenessUnknown // could not examine (EACCES, EIO, ...)
+	}
+	if o.SocketMtimeUnixNano == 0 {
+		return LivenessDead // no identity recorded — cannot prove it is ours
+	}
+	if o.SocketIno != 0 {
+		if ino, dev, ok := statIdentity(info); ok {
+			if ino == o.SocketIno && dev == o.SocketDev {
+				return LivenessAlive
 			}
+			return LivenessDead // rebound at the same path — a different session
 		}
-		if info.ModTime().UnixNano() == o.SocketMtimeUnixNano {
-			return LivenessAlive
-		}
-		return LivenessDead
 	}
-	if o.PID <= 0 {
-		return LivenessDead
+	if info.ModTime().UnixNano() == o.SocketMtimeUnixNano {
+		return LivenessAlive
 	}
+	return LivenessDead
+}
+
+// pidLiveness judges the recorded owner pid. A live pid with no token
+// recorded is alive on bare liveness — the documented residual on
+// platforms without a start token.
+func pidLiveness(o *SessionOwner) Liveness {
 	if runtime.GOOS == "windows" {
 		// pidAlive cannot probe here (Signal(0) is unsupported), so a
-		// verdict either way would be invented. See the package comment
-		// for why this is unknown rather than dead.
+		// verdict either way would be invented.
 		return LivenessUnknown
 	}
 	if !pidAlive(o.PID) {
 		return LivenessDead
 	}
-	if o.ProcStart != "" {
-		now, ok := procStartToken(o.PID)
-		if !ok || now != o.ProcStart {
-			return LivenessDead // gone from /proc, a zombie, or a reused pid
-		}
+	if o.ProcStart == "" {
 		return LivenessAlive
 	}
-	return LivenessAlive
+	now, err := procStartTokenErr(o.PID)
+	switch {
+	case err == nil:
+		if now == o.ProcStart {
+			return LivenessAlive
+		}
+		return LivenessDead // a reused pid — a different process
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, errProcZombie):
+		return LivenessDead // gone between the signal probe and the read, or exited awaiting reap
+	default:
+		return LivenessUnknown // /proc unreadable or unsupported here — not evidence of absence
+	}
 }

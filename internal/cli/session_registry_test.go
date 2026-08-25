@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -390,5 +391,102 @@ func TestSessionRecord_JSONShape(t *testing.T) {
 		if _, ok := raw[absent]; ok {
 			t.Fatalf("%q must be omitted when false/empty: %s", absent, data)
 		}
+	}
+}
+
+// TestListSessions_SemanticallyMalformedIsUnknown: JSON that parses but
+// is not a registration this code wrote must be MALFORMED (unknown, kept
+// without an age bound) — not a dead legacy record to prune, and not a
+// live one (codex round 1 P2).
+func TestListSessions_SemanticallyMalformedIsUnknown(t *testing.T) {
+	dir := registryEnv(t)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"1001.json": `{}`,
+		"1002.json": `{"session_pid":1}`,
+		"1003.json": `{"session_pid":1,"registered_at":"not-a-time"}`,
+		"1004.json": `{"session_pid":-5,"registered_at":"2026-08-01T00:00:00Z"}`,
+		"1005.json": `{"pid":0,"registered_at":"2026-08-01T00:00:00Z"}`,
+	}
+	for name, body := range cases {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != len(cases) {
+		t.Fatalf("expected %d records, got %+v", len(cases), records)
+	}
+	for _, r := range records {
+		if !r.Malformed || r.Liveness != LivenessUnknown {
+			t.Fatalf("%s must be malformed+unknown: %+v", filepath.Base(r.Path), r)
+		}
+	}
+	rep, err := PruneSessions(0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Removed) != 0 || rep.Kept != len(cases) {
+		t.Fatalf("an unbounded prune must keep every malformed file: %+v", rep)
+	}
+}
+
+// TestRegistry_LockFileIsNotASession: the mutation lock lives in the
+// registry directory and must never list as a session.
+func TestRegistry_LockFileIsNotASession(t *testing.T) {
+	dir := registryEnv(t)
+	if _, err := RegisterSession("/p", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, sessionsLockName)); err != nil {
+		t.Fatalf("register must take the directory lock (lock file missing): %v", err)
+	}
+	records, err := ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("only the registration may list, got %+v", records)
+	}
+}
+
+// TestRegistry_ConcurrentRegisterAndPrune: many registers and prunes at
+// once, in-process, end with exactly the live record and no error. This
+// exercises the lock + re-read path under contention; it cannot prove the
+// cross-process race is closed (that is flock's contract, stated in
+// session_lock_unix.go), only that the mutators do not corrupt each other.
+func TestRegistry_ConcurrentRegisterAndPrune(t *testing.T) {
+	dir := registryEnv(t)
+	t.Setenv("CLAUDE_PID", itoa(os.Getppid()))
+	var wg sync.WaitGroup
+	errs := make(chan error, 200)
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := RegisterSession(fmt.Sprintf("/d/%d", i), "a"); err != nil {
+				errs <- err
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			if _, err := PruneSessions(0, time.Now()); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent mutation error: %v", err)
+	}
+	files := numericFiles(t, dir)
+	if len(files) != 1 || files[0] != fmt.Sprintf("%d.json", os.Getppid()) {
+		t.Fatalf("expected exactly the live record, got %v", files)
 	}
 }
