@@ -46,6 +46,21 @@ type Store struct {
 	dbPath        string
 	encryptionKey []byte // 32-byte AES-256 key for encrypting sensitive fields (e.g., TOTP secrets)
 
+	// afterDebounceRead is a TEST-ONLY seam, nil in production. When set,
+	// CreateActivityDebounced calls it between reading its candidate row
+	// and issuing the merge UPDATE — the window in which a concurrent
+	// writer can move the row out from under the read (BUG-2770). A hook
+	// makes that interleaving deterministic; racing two real goroutines
+	// reproduces it only sometimes, and a test that reproduces a race
+	// sometimes is a detector with an unknown rate, not a regression test.
+	// It is a Store field rather than a package var so parallel tests
+	// cannot write each other's seam. Set it only while no request is in
+	// flight against this Store: it is READ on a write path with no
+	// synchronisation, so mutating it under live traffic is a -race
+	// finding waiting to happen (codex round 2 — latent, not current:
+	// every test that sets it does so synchronously and none is parallel).
+	afterDebounceRead func()
+
 	// stopMaint signals the background WAL checkpointer to exit; maintDone
 	// is closed once it has. Both are nil on the Postgres path (no WAL
 	// file to checkpoint) and Close() guards on nil accordingly.

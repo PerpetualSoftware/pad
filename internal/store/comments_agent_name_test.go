@@ -368,9 +368,16 @@ func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 // Codex round 6 on TASK-2760: the debounce's read-then-write is two
 // statements, and a comment can link the chosen row between them. The write
 // itself must refuse a linked row — this drives the write directly with the
-// row already linked, the state the race produces, since the interleaving
-// cannot be scheduled from a test. The control leg pins that an unlinked row
-// is still written, so the predicate is a freeze and not a disabled merge.
+// row already linked, the state the race produces. The control leg pins that
+// an unlinked row is still written, so the predicate is a freeze and not a
+// disabled merge.
+//
+// (This comment used to say the interleaving could not be scheduled from a
+// test. BUG-2770 added the afterDebounceRead seam, so it now can — see
+// TestCreateActivityDebounced_FrozenRowIsNotRetried, which schedules exactly
+// this ordering through CreateActivityDebounced. Driving the write directly
+// is still the right shape for THIS test: it pins the predicate itself,
+// independently of any caller.)
 func TestMergeIntoUnlinkedActivity_RefusesLinkedRow(t *testing.T) {
 	s, item := agentNameFixture(t)
 	mk := func(meta string) string {
@@ -397,7 +404,11 @@ func TestMergeIntoUnlinkedActivity_RefusesLinkedRow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create comment: %v", err)
 	}
-	written, err := s.mergeIntoUnlinkedActivity(linked, `{"agent":"rook"}`, now())
+	// The compare-and-set arm (BUG-2770) is given the row's CURRENT blob, so
+	// it holds and the link arm is the only thing that can refuse this call.
+	// A mismatched expectation here would refuse for two reasons at once and
+	// this leg would stop discriminating.
+	written, err := s.mergeIntoUnlinkedActivity(linked, metaOf(linked), `{"agent":"rook"}`, now())
 	if err != nil {
 		t.Fatalf("merge into linked: %v", err)
 	}
@@ -409,7 +420,7 @@ func TestMergeIntoUnlinkedActivity_RefusesLinkedRow(t *testing.T) {
 	}
 
 	unlinked := mk(`{"agent":"wren"}`)
-	written, err = s.mergeIntoUnlinkedActivity(unlinked, `{"agent":"rook"}`, now())
+	written, err = s.mergeIntoUnlinkedActivity(unlinked, metaOf(unlinked), `{"agent":"rook"}`, now())
 	if err != nil {
 		t.Fatalf("merge into unlinked: %v", err)
 	}

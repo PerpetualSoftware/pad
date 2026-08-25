@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -43,6 +44,22 @@ const ActivityDebounceCooldown = 5 * time.Minute
 // Raising it costs a longer scan on a write path; the number is a scan
 // ceiling, not a statement about how many rows the window may hold.
 // (Declined codex round 2, which read the bound as incomplete coalescing.)
+//
+// WHAT IT DOES NOT BOUND (codex rounds 5-7 on BUG-2770). It caps the rows
+// the GO loop examines. It says nothing about the work the database does to
+// produce them: no index matches this query's five filters together
+// (document_id, action, created_at, actor, user_id — and there is no index
+// on `actor` at all), so the plan is the planner's
+// choice and the rows it visits are not bounded by this constant. What is
+// bounded is the QUERY COUNT — BUG-2770's retry loop issues at most
+// debounceMergeAttempts candidate queries, each losing attempt adding one
+// UPDATE and at most one primary-key probe.
+//
+// Deliberately not claiming more than that here. The earlier version of
+// this comment asserted which index the planner would use and that the cost
+// stays small; both were guesses about a planner, and two review rounds
+// went into correcting them. If this write path ever shows up in a profile,
+// measure the plan on the dialect that hurts before adding an index.
 const maxDebounceCandidates = 10
 
 func (s *Store) CreateActivity(a models.Activity) (string, error) {
@@ -78,7 +95,6 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 		return s.CreateActivity(a)
 	}
 
-	ts := now()
 	cutoff := time.Now().UTC().Add(-ActivityDebounceCooldown).Format(time.RFC3339)
 
 	// Look for a recent activity of THIS WRITER's to coalesce with, newest
@@ -91,8 +107,12 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// ENDS a coalescing run; the next update starts a new one. That refusal
 	// lives in the UPDATE's own predicate and nowhere else, because a comment
 	// can link the row between this read and that write (codex round 6) — a
-	// check here would be a second guard that only looks load-bearing. What
-	// this does NOT close is the opposite order, an update that completes
+	// check here would be a second guard that only looks load-bearing. That
+	// still holds with BUG-2770's compare-and-set arm on the same UPDATE:
+	// debounceRowUnchanged runs only AFTER a refusal, asks about the
+	// metadata rather than the link, and decides a disposition — it never
+	// gates the write, so the link check is still made in exactly one
+	// place. What this does NOT close is the opposite order, an update that completes
 	// before the link is VISIBLE to it — the comment row is written in its
 	// own transaction, so on Postgres a link committing while this UPDATE's
 	// snapshot is already open is missed exactly as an unwritten one is.
@@ -123,6 +143,138 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// merge decision and the rendering in agreement.
 	incomingAgent := models.AgentNameFromMetadata(a.Metadata)
 
+	// The read and the write are separate statements, so the row can move
+	// under us between them — see debounceMergeAttempts. Each attempt
+	// re-reads the candidate, so the blob a losing attempt merges into is
+	// the winner's result rather than the stale one it first read.
+	for attempt := 0; attempt < debounceMergeAttempts; attempt++ {
+		existingID, existingMeta, ok := s.recentDebounceCandidate(a, cutoff, incomingAgent)
+		if !ok || existingID == "" {
+			// Query trouble, or nothing recent of this writer's — start a
+			// new run.
+			return s.CreateActivity(a)
+		}
+
+		// Test seam: runs between the read and the write, which is exactly
+		// the window this loop exists to survive. Nil in production.
+		if s.afterDebounceRead != nil {
+			s.afterDebounceRead()
+		}
+
+		// Merge metadata: accumulate "changes" strings from both old and new.
+		merged := mergeActivityMeta(existingMeta, a.Metadata)
+
+		// Stamped per ATTEMPT, not once before the loop (codex round 3): the
+		// merge bumps created_at because the row now carries a change that
+		// just happened, and a retry that stamped the pre-loop instant would
+		// backdate a row whose newest change is younger than that — the
+		// window this row stays coalescable in, its place in the timeline's
+		// ordering, and the backfill's chronology all read created_at. The
+		// cutoff deliberately does NOT move: it bounds which rows were
+		// eligible when the call began, and re-deriving it mid-call would
+		// let a long retry chain reach back further than the caller asked.
+		ts := now()
+
+		mergedOK, err := s.mergeIntoUnlinkedActivity(existingID, existingMeta, merged, ts)
+		if err != nil {
+			return existingID, err
+		}
+		if mergedOK {
+			return existingID, nil
+		}
+
+		// The UPDATE matched nothing, and its predicate has two arms that
+		// can do that. Ask which, rather than picking the disposition that
+		// happens to be safe for both: they want OPPOSITE handling — a
+		// frozen row must not be retried (the answer will not change), and
+		// a contended row must not start a new run (retrying merges into
+		// the winner's blob and keeps the timeline entry whole).
+		unchanged, err := s.debounceRowUnchanged(existingID, existingMeta)
+		if err != nil {
+			return existingID, err
+		}
+		if unchanged {
+			// The blob we read is still there, so the CAS arm held and the
+			// refusal was the comment link — before the read above, or
+			// since. Frozen: a fresh row starts the next run.
+			//
+			// "Frozen" is about THIS call, not forever: DeleteComment can
+			// unlink the row a moment later (codex round 8). The cost of
+			// having decided otherwise is one extra activity row, which is
+			// the same currency every other giving-up path here spends.
+			return s.CreateActivity(a)
+		}
+		// Someone else merged into this row (or deleted it) between our
+		// read and our write. Go around: re-read and merge into what they
+		// left.
+	}
+
+	// Contended past the bound. A new row costs one extra timeline entry
+	// and loses no change text, which is the direction this bug exists to
+	// prevent — unlike the alternative of overwriting a merge we know
+	// happened. See debounceMergeAttempts.
+	return s.CreateActivity(a)
+}
+
+// REFUSAL ARMS — read this before adding a predicate to
+// mergeIntoUnlinkedActivity's UPDATE. That statement refuses on exactly two
+// grounds today (the comment link, and the compare-and-set below), and
+// debounceRowUnchanged distinguishes them by asking the CAS question alone:
+// CAS still matches => it must have been the link. A THIRD arm added to the
+// UPDATE without a matching question in the probe would be classified from
+// metadata alone and silently read as "frozen".
+//
+// Left as an invariant rather than a framework because the drift is BOUNDED
+// in a way worth stating: either misclassification (frozen read as
+// contended, or the reverse) costs at most one wasted attempt or one extra
+// activity row. Neither can lose change text, which is the thing this whole
+// mechanism exists to protect. A composition layer over a two-arm predicate
+// would cost more clarity than the failure it prevents.
+//
+// debounceCASPredicate is the compare-and-set arm of the debounce merge:
+// "the row still carries the blob the caller merged from". It is ONE string
+// used by both statements that ask it — the UPDATE that enforces it and the
+// probe that decides, after a refusal, which arm refused (BUG-2770).
+//
+// Shared rather than written twice on purpose (codex round 6): if the two
+// spellings could drift, the probe would answer a question the UPDATE is
+// not asking, and the disposition it picks — retry, or start a fresh row —
+// would silently be the wrong one. This makes them the same question by
+// construction rather than by a comment asking the next editor to keep them
+// in step.
+const debounceCASPredicate = `metadata = ?`
+
+// debounceMergeAttempts bounds how many times CreateActivityDebounced will
+// re-read and retry a merge whose compare-and-set lost to a concurrent
+// writer (BUG-2770).
+//
+// It is a liveness bound, not a correctness one. An attempt that loses the
+// CAS means the row is no longer the one we merged from — because another
+// writer merged into it, or because it was deleted — so the only changes at
+// risk from giving up are the ones THIS call is carrying, and the fallback
+// (a new activity row) still records them, at the cost of one extra
+// timeline entry. Exhausting the bound therefore degrades presentation,
+// never content.
+//
+// Three because the racing pair must already be the same account, the same
+// actor kind AND the same agent name on the same item inside five minutes
+// (BUG-2763's narrowing), so contention comes from one editor's autosave
+// burst or one agent's concurrent PATCHes. A single retry clears the
+// two-writer case that BUG-2770 filed; the third is headroom for a third
+// racer arriving mid-retry. Raising it trades a longer write path for a
+// case that has to be pathological to reach; it is not load-bearing for
+// correctness in either direction.
+const debounceMergeAttempts = 3
+
+// recentDebounceCandidate reads the newest activity row of THIS WRITER's
+// inside the cooldown window, with the metadata blob it carries right now.
+// The blob is returned because it is the compare-and-set token the merge
+// UPDATE uses, not merely the input to the merge.
+//
+// ok is false when the registry could not be read at all (query or scan
+// trouble); the caller starts a new run rather than guessing. An empty id
+// with ok true means the read succeeded and this writer has no recent row.
+func (s *Store) recentDebounceCandidate(a models.Activity, cutoff, incomingAgent string) (id, metadata string, ok bool) {
 	rows, err := s.db.Query(s.q(`
 		SELECT id, metadata FROM activities
 		WHERE document_id = ? AND action = ? AND created_at >= ? AND actor = ?
@@ -130,61 +282,84 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 		ORDER BY created_at DESC LIMIT ?
 	`), a.DocumentID, a.Action, cutoff, a.Actor, a.UserID, a.UserID, maxDebounceCandidates)
 	if err != nil {
-		// Query error — fall back to creating a new activity.
-		return s.CreateActivity(a)
+		return "", "", false
 	}
 
-	var existingID, existingMeta string
+	var foundID, foundMeta string
 	for rows.Next() {
-		var id, meta string
-		if err := rows.Scan(&id, &meta); err != nil {
+		var rowID, meta string
+		if err := rows.Scan(&rowID, &meta); err != nil {
 			_ = rows.Close()
-			return s.CreateActivity(a)
+			return "", "", false
 		}
 		if models.AgentNameFromMetadata(meta) == incomingAgent {
-			existingID, existingMeta = id, meta
+			foundID, foundMeta = rowID, meta
 			break
 		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return s.CreateActivity(a)
+		return "", "", false
 	}
 	if err := rows.Close(); err != nil {
-		return s.CreateActivity(a)
+		return "", "", false
 	}
+	return foundID, foundMeta, true
+}
 
-	if existingID == "" {
-		// Nothing recent of this writer's — start a new run.
-		return s.CreateActivity(a)
+// debounceRowUnchanged reports whether the row still carries the exact
+// metadata the caller read, and is the only thing that can tell the merge
+// UPDATE's two refusal arms apart after the fact.
+//
+// It asks the CAS arm's own question, so a true answer means the CAS would
+// still match and the refusal must have come from the comment-link arm. A
+// false answer covers both "another writer merged into it" and "it is gone"
+// — the caller treats them the same way (go around; a vanished row simply
+// fails to be selected next time), so nothing is served by separating them
+// here.
+//
+// It is a DISPOSITION HINT, not a guard. Nothing holds the row still
+// between this probe and the next attempt, so its answer can be stale the
+// moment it returns; the loop re-reads and re-runs the CAS rather than
+// trusting it, and the worst a stale hint costs is one wasted attempt or
+// one extra activity row (codex round 7).
+func (s *Store) debounceRowUnchanged(id, metadata string) (bool, error) {
+	var found int
+	err := s.db.QueryRow(s.q(`
+		SELECT 1 FROM activities WHERE id = ? AND `+debounceCASPredicate+`
+	`), id, metadata).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-
-	// Merge metadata: accumulate "changes" strings from both old and new.
-	merged := mergeActivityMeta(existingMeta, a.Metadata)
-
-	mergedOK, err := s.mergeIntoUnlinkedActivity(existingID, merged, ts)
 	if err != nil {
-		return existingID, err
+		return false, err
 	}
-	if !mergedOK {
-		// Comment-linked (before the read above, or since) — frozen. A
-		// fresh row starts the next run.
-		return s.CreateActivity(a)
-	}
-	return existingID, nil
+	return true, nil
 }
 
 // mergeIntoUnlinkedActivity applies a debounce merge to one activity row in a
-// single statement whose predicate refuses a row any comment links to. It
-// reports whether the row was written: false means a comment linked it after
-// the caller chose it, and the caller must not treat it as merged. See the
-// comment in CreateActivityDebounced for why the check lives in the UPDATE.
-func (s *Store) mergeIntoUnlinkedActivity(id, metadata, ts string) (bool, error) {
+// single statement whose predicate refuses the row on two grounds: a comment
+// links it, or its metadata is no longer the blob the caller merged from.
+// It reports whether the row was written; false means one of those arms
+// refused and the caller must not treat it as merged. See the comment in
+// CreateActivityDebounced for why the comment-link check lives in the UPDATE,
+// and debounceRowUnchanged for how a caller tells the two arms apart.
+//
+// expectedMetadata is the compare-and-set token (BUG-2770): the merge is a
+// read-modify-write across two statements, and without it two writers who
+// select the SAME row each merge their own change into the blob they read
+// and the second UPDATE silently erases the first one's change entry. The
+// comparison is exact-text on SQLite and jsonb equality on Postgres, where
+// the column is JSONB — both answer the only question being asked, "is this
+// still the value I merged from", because the string being compared is the
+// one that column just handed us.
+func (s *Store) mergeIntoUnlinkedActivity(id, expectedMetadata, metadata, ts string) (bool, error) {
 	res, err := s.db.Exec(s.q(`
 		UPDATE activities SET metadata = ?, created_at = ?
 		WHERE id = ?
+		  AND `+debounceCASPredicate+`
 		  AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.activity_id = activities.id AND c.item_id = activities.document_id)
-	`), metadata, ts, id)
+	`), metadata, ts, id, expectedMetadata)
 	if err != nil {
 		return false, err
 	}
@@ -205,6 +380,15 @@ func mergeActivityMeta(existing, incoming string) string {
 	}
 	if err := json.Unmarshal([]byte(incoming), &newMap); err != nil {
 		newMap = make(map[string]interface{})
+	}
+	// A JSON `null` blob unmarshals with NO error and leaves the map nil,
+	// and the overlay below writes into existMap — assignment to a nil map
+	// panics (codex round 3). The error branches above cannot catch this
+	// because there is no error: `null` is valid JSON, valid JSONB on
+	// Postgres, and storable in the TEXT column on SQLite. Ranging over a
+	// nil newMap is already safe; existMap is the one that must be real.
+	if existMap == nil {
+		existMap = make(map[string]interface{})
 	}
 
 	// Accumulate changes
