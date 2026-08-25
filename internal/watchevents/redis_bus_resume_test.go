@@ -14,6 +14,8 @@ package watchevents
 
 import (
 	"context"
+	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -383,6 +385,16 @@ func TestAResumeCancelledBeforeItStartsIsDeclinedOutright(t *testing.T) {
 	var reachedSettle atomic.Bool
 	b.beforeSettleWait = func() { reachedSettle.Store(true) }
 
+	// ASSERTED ON THE LOG, not on a proxy for it. Counting Redis reads was the
+	// first instrument and it measured nothing: go-redis short-circuits a
+	// cancelled context before it touches the wire, so no GET reaches miniredis
+	// whether or not the early decline exists, and removing that decline
+	// survived. The misleading WARN is emitted from sharedCounter's error path,
+	// so the log is the only thing that distinguishes the two.
+	var logged logCapture
+	restore := captureSlog(&logged)
+	defer restore()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -390,6 +402,11 @@ func TestAResumeCancelledBeforeItStartsIsDeclinedOutright(t *testing.T) {
 
 	if reachedSettle.Load() {
 		t.Error("an already-cancelled caller paid for the settle window")
+	}
+	if msg := logged.firstAtLeast(slog.LevelWarn); msg != "" {
+		t.Errorf("an already-cancelled caller logged %q at WARN or above: that line means 'Redis is unhealthy' to "+
+			"whoever reads it, and ordinary disconnect churn would fire it on every client that hung up a moment "+
+			"before its resume landed", msg)
 	}
 	if missed != nil {
 		t.Fatalf("an already-cancelled caller was handed %d replayed notifications", len(missed))
@@ -493,4 +510,42 @@ func TestClosingTheBusStillEndsTheSettleWindow(t *testing.T) {
 		t.Fatalf("a closing bus waited %v, the full settle window of %v: shutdown is blocked behind a connected client",
 			elapsed, settleWindow)
 	}
+}
+
+// logCapture records slog records so a test can assert on what an OPERATOR
+// would see. Used where the defect is a misleading line rather than a wrong
+// value — see TestAResumeCancelledBeforeItStartsIsDeclinedOutright.
+type logCapture struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, r.Clone())
+	return nil
+}
+
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+// firstAtLeast returns the first message logged at or above level, or "".
+func (c *logCapture) firstAtLeast(level slog.Level) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range c.records {
+		if r.Level >= level {
+			return r.Message
+		}
+	}
+	return ""
+}
+
+func captureSlog(c *logCapture) func() {
+	prev := slog.Default()
+	slog.SetDefault(slog.New(c))
+	return func() { slog.SetDefault(prev) }
 }

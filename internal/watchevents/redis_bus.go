@@ -513,6 +513,17 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 	// admission slot (BUG-2726), released by defer when the handler returns —
 	// so every moment spent here is capacity held for a client that may
 	// already be gone.
+	// CHECKED BEFORE THE SETTLE PATH IS ENTERED AT ALL (codex round 2). Placed
+	// after it, an already-cancelled caller still made the first Redis GET —
+	// which fails on the dead context and logs "could not read the sequence
+	// counter to validate a resume" at WARN. That line means "Redis is
+	// unhealthy" to whoever reads it, and it would have fired on every client
+	// that hung up a moment before its resume landed. Ordinary disconnect
+	// churn would have looked like Redis trouble.
+	if ctx.Err() != nil {
+		return b.declineCancelledResume(sinceID)
+	}
+
 	forceGap := b.resumeOutrunsLocalView(ctx, sinceID)
 
 	// A CALLER THAT HAS GONE IS NOT REGISTERED (BUG-2751, codex round 1).
@@ -527,9 +538,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 	// falls back to plain Subscribe() when it gets a NIL channel, so returning
 	// nil here would re-register the very caller this is declining to serve.
 	if ctx.Err() != nil {
-		sub := newSubscriber()
-		close(sub.ch)
-		return sub.ch, nil, sub.gaps
+		return b.declineCancelledResume(sinceID)
 	}
 
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire
@@ -570,6 +579,30 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 		pending.resumeGap()
 	}
 	return ch, missed, sub.gaps
+}
+
+// declineCancelledResume answers a caller that has already gone.
+//
+// SAME SHAPE AS THE CLOSED-BUS BRANCH — a closed channel, no replay, never nil.
+// nil is meaningful at the call site: the SSE handler falls back to plain
+// Subscribe() when it gets one, which would re-register the caller this is
+// declining.
+//
+// LOGGED AT DEBUG, AND DELIBERATELY NOT COUNTED (codex round 2). The finding
+// was that an operator cannot distinguish disconnect churn from no resume
+// activity. True, and the honest fix is not a counter: a client hanging up
+// during its own resume is ORDINARY on a mobile network, so a metric for it
+// would be a number nobody can act on, sitting next to
+// pad_watchevents_resume_gaps_total where it would be read as a fault. The
+// condition an operator does act on — capacity held by connections that no
+// longer exist — is already visible in the admission counts, and this change is
+// what keeps those honest.
+func (b *RedisBus) declineCancelledResume(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+	slog.Debug("watchevents: resume abandoned before it could be served; the caller is gone",
+		"since_id", sinceID)
+	sub := newSubscriber()
+	close(sub.ch)
+	return sub.ch, nil, sub.gaps
 }
 
 // whicheverEndsFirst returns a context that ends when EITHER input does, and a
