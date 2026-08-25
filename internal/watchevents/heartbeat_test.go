@@ -996,47 +996,37 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 	b.client = good
 	b.mu.Unlock()
 
-	// Both dial before either installs: the seam fires with the dial done and
-	// the lock released, which is precisely the window.
-	release := make(chan struct{})
-	// DEFERRED, so a failing run unblocks the seam on its way out. Without it
-	// t.Fatal below leaves both callers parked in the callback, the bus's Close
-	// waits on receive loops that cannot start, and the failure arrives as a
-	// package-wide hang with no message — which is how the guard's mutation
-	// first "passed".
-	releaseOnce := sync.OnceFunc(func() { close(release) })
-	defer releaseOnce()
+	// COUNTED, NOT SYNCHRONISED ON. The seam fires only for a caller that
+	// actually installs, so a WaitGroup expecting both arrivals can never
+	// complete in the passing case — the waiter on it is a goroutine leaked by
+	// design, which an earlier version of this test had. An atomic the
+	// abandoning caller simply never touches says the same thing and blocks
+	// nobody.
+	var installs atomic.Int32
+	b.afterResubscribeInstall = func() { installs.Add(1) }
 
-	var arrived sync.WaitGroup
-	arrived.Add(2)
-	b.afterResubscribeInstall = func() {
-		arrived.Done()
-		<-release
-	}
-
+	// Started from a barrier so the two dials genuinely overlap; the window
+	// this guards is open from the dial until the install takes the lock.
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Add(1)
-		go func() { defer wg.Done(); _ = b.resubscribe() }()
+		go func() { defer wg.Done(); <-start; _ = b.resubscribe() }()
 	}
-	// Only the WINNER reaches the seam — the loser abandons before it — so
-	// waiting for both would hang by design. Wait for one, then let it through.
-	done := make(chan struct{})
-	go func() { arrived.Wait(); close(done) }()
-	select {
-	case <-done:
-		t.Fatal("both callers installed a subscription: two receive loops now share a generation, so every " +
-			"notification is delivered twice and one PubSub is untracked")
-	case <-time.After(500 * time.Millisecond):
-	}
-	releaseOnce()
+	close(start)
 	wg.Wait()
 
+	// THE DISCRIMINATING ASSERTION, and it is on the install count rather than
+	// on the loop count. A loop is started after its install, so reading
+	// liveReceiveLoops can catch a second caller's loop before it has begun and
+	// see the passing value on a failing run. The install count cannot: both
+	// callers have returned by here, so it is final.
+	if got := installs.Load(); got != 1 {
+		t.Fatalf("%d callers installed a subscription, want exactly 1: two receive loops on one generation deliver "+
+			"every notification twice, and the loser's PubSub is tracked by nothing, Close included", got)
+	}
 	if b.currentPubSub() == nil {
 		t.Fatal("neither caller installed anything: the guard rejected both and the instance is now deaf")
 	}
-	waitFor(t, "exactly one receive loop to be running", func() bool { return liveReceiveLoops.Load() == 1 })
-	if got := liveReceiveLoops.Load(); got != 1 {
-		t.Fatalf("%d receive loops are running: two on one generation deliver every notification twice", got)
-	}
+	waitFor(t, "the installed receive loop to be running", func() bool { return liveReceiveLoops.Load() == 1 })
 }

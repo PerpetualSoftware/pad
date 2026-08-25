@@ -303,8 +303,11 @@ func (b *RedisBus) cycleIfIdle() {
 	if b.pubsub == nil && !b.closed && b.client != nil {
 		b.mu.Unlock()
 		if err := b.resubscribe(); err != nil {
-			slog.Warn("watchevents: still cannot re-establish the watch subscription; this instance receives no "+
-				"notifications until an attempt succeeds", "error", err)
+			// "this attempt failed", not "this instance is deaf": with a
+			// second caller the dial can fail here while that caller has
+			// already installed one, so the stronger claim would be stale.
+			slog.Warn("watchevents: a retry to re-establish the watch subscription failed; this instance receives "+
+				"no notifications unless another attempt has already succeeded", "error", err)
 		}
 		return
 	}
@@ -446,7 +449,7 @@ func (b *RedisBus) resubscribe() error {
 	// counter off zero from racing a Wait, and between an Unlock here and an
 	// Add outside it, Close can run in full. Holding the lock across the Add
 	// makes "not closed" and "counted" one step, so Close either sees the
-	// count or has already turned this path into the error return above.
+	// count or has already sent this call down the closed-bus return above.
 	b.wg.Add(1)
 	b.mu.Unlock()
 
