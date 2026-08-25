@@ -27,7 +27,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	b := NewRedisBusWithKeys(client, 64, keys)
+	b := NewRedisBusWithKeys(client, 64, keys, false)
 	t.Cleanup(b.Close)
 
 	ch, _ := b.Subscribe()

@@ -108,7 +108,7 @@ func TestResumeToleratesAnInFlightCounter(t *testing.T) {
 	}
 	go func() {
 		time.Sleep(settleWindow / 4)
-		b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-2"})
+		b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-2"}, b.currentGen())
 	}()
 
 	_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
@@ -144,7 +144,7 @@ func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.
 	go func() {
 		time.Sleep(settleWindow / 4)
 		// The id the first read was waiting for lands...
-		b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-2"})
+		b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-2"}, b.currentGen())
 		// ...while a THIRD is published elsewhere and never reaches us.
 		_ = mr.Set(b.keys.Name(redisWatchSeqSuffix), "3")
 	}()

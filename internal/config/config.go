@@ -187,6 +187,26 @@ type Config struct {
 	// frame. See docs/deployment.md for the procedure in both directions.
 	EventsHeartbeat bool `toml:"events_heartbeat"`
 
+	// WatchHeartbeat turns on PHASE 2 of the WATCH bus's half-open detection
+	// (BUG-2769). Separate from EventsHeartbeat and independently flippable:
+	// the two buses hold different connections with different fates, and an
+	// operator may well roll one before the other.
+	//
+	// Same mechanics and the same non-optional order as EventsHeartbeat. The
+	// frame travels on the watch channel because that is the connection whose
+	// liveness is in question, and an instance running an OLDER binary cannot
+	// classify it — it reaches the notification decoder, fails, and is treated
+	// as a hole in coverage, which drops the replay buffer and tells every one
+	// of that instance's live subscribers to resync. Every 30 seconds, for as
+	// long as the deployment is mixed. Phase 1: roll the new binary everywhere
+	// with this false. Phase 2: set it true and roll again.
+	//
+	// Publishing and detecting are ONE switch, deliberately: an instance
+	// detects off its own frames, so a phase-1 detector would have no traffic
+	// to reason about on a quiet deployment and would cycle healthy
+	// connections on a schedule.
+	WatchHeartbeat bool `toml:"watch_heartbeat"`
+
 	// Push carries per-USER push/consent preferences (PLAN-2613 S2). A
 	// pointer so an absent `[push]` table stays nil and Save() (via the
 	// omitempty tag) never writes an empty table into everyone's
@@ -472,6 +492,20 @@ func Load() (*Config, error) {
 			// the value is ignored, and a silent ignore makes that
 			// indistinguishable from a phase-1 deployment in every metric.
 			slog.Warn("PAD_EVENTS_HEARTBEAT is not a boolean and was ignored; this instance keeps its current heartbeat phase",
+				"value", v)
+		}
+	}
+	if v := os.Getenv("PAD_WATCH_HEARTBEAT"); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil {
+			cfg.WatchHeartbeat = on
+		} else {
+			// LOUD, and the safe direction is OFF — same inversion as
+			// PAD_EVENTS_HEARTBEAT and the opposite of PAD_EVENTS_PUBLISH_EPOCH.
+			// An instance that publishes no watch heartbeat simply does no idle
+			// detection, which is the behaviour that existed before this
+			// feature; one that publishes into a mixed fleet resyncs every
+			// client of every un-upgraded instance every 30 seconds.
+			slog.Warn("PAD_WATCH_HEARTBEAT is not a boolean and was ignored; this instance keeps its current watch heartbeat phase",
 				"value", v)
 		}
 	}

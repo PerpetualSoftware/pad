@@ -17,13 +17,14 @@ import (
 type recordingObserver struct {
 	mu sync.Mutex
 
-	dropped     map[string]int
-	gaps        int
-	resumeGaps  int
-	missed      int64
-	resets      map[string]int
-	loopExits   int
-	totalEvents int
+	dropped       map[string]int
+	gaps          int
+	resumeGaps    int
+	missed        int64
+	resets        map[string]int
+	loopExits     int
+	probeFailures int
+	totalEvents   int
 }
 
 func newRecordingObserver() *recordingObserver {
@@ -69,32 +70,41 @@ func (o *recordingObserver) ReceiveLoopExited() {
 	o.totalEvents++
 }
 
+func (o *recordingObserver) HeartbeatPublishFailed() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.probeFailures++
+	o.totalEvents++
+}
+
 // observerCounts is the lock-free snapshot type. Separate from
 // recordingObserver so returning one does not copy a sync.Mutex — which
 // `go vet`'s copylocks check rejects, and which `go test`'s reduced vet
 // subset does NOT run, so the suite was green while `make lint` would
 // have failed.
 type observerCounts struct {
-	dropped     map[string]int
-	resets      map[string]int
-	gaps        int
-	resumeGaps  int
-	missed      int64
-	loopExits   int
-	totalEvents int
+	dropped       map[string]int
+	resets        map[string]int
+	gaps          int
+	resumeGaps    int
+	missed        int64
+	loopExits     int
+	probeFailures int
+	totalEvents   int
 }
 
 func (o *recordingObserver) snapshot() observerCounts {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	cp := observerCounts{
-		dropped:     map[string]int{},
-		resets:      map[string]int{},
-		gaps:        o.gaps,
-		resumeGaps:  o.resumeGaps,
-		missed:      o.missed,
-		loopExits:   o.loopExits,
-		totalEvents: o.totalEvents,
+		dropped:       map[string]int{},
+		resets:        map[string]int{},
+		gaps:          o.gaps,
+		resumeGaps:    o.resumeGaps,
+		missed:        o.missed,
+		loopExits:     o.loopExits,
+		probeFailures: o.probeFailures,
+		totalEvents:   o.totalEvents,
 	}
 	for k, v := range o.dropped {
 		cp.dropped[k] = v
@@ -175,7 +185,7 @@ func TestRedisBusReportsSlowSubscriberDrop(t *testing.T) {
 	// PREMISE: a subscriber with room is delivered to and reports
 	// nothing, so the assertion below is about the OVERFLOW rather than
 	// about a bus that reports on every notification.
-	b.fanOutLocally(Notification{ID: 1, Kind: KindPush, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 1, Kind: KindPush, ItemRef: "TASK-1"}, b.currentGen())
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
@@ -189,13 +199,13 @@ func TestRedisBusReportsSlowSubscriberDrop(t *testing.T) {
 	// Ids stay contiguous so no gap is reported and the drop is the only
 	// event in the snapshot.
 	for i := int64(2); i <= 65; i++ {
-		b.fanOutLocally(Notification{ID: i, Kind: KindPush, ItemRef: "TASK-2"})
+		b.fanOutLocally(Notification{ID: i, Kind: KindPush, ItemRef: "TASK-2"}, b.currentGen())
 	}
 	if got := obs.snapshot(); got.totalEvents != 0 {
 		t.Fatalf("premise failed: filling to capacity reported %d events (%+v)", got.totalEvents, got)
 	}
 
-	b.fanOutLocally(Notification{ID: 66, Kind: KindPush, ItemRef: "TASK-3"})
+	b.fanOutLocally(Notification{ID: 66, Kind: KindPush, ItemRef: "TASK-3"}, b.currentGen())
 
 	got := obs.snapshot()
 	if got.dropped[DropReasonSlowSubscriber] != 1 {
@@ -220,14 +230,14 @@ func TestRedisBusReportsSequenceGap(t *testing.T) {
 
 	// PREMISE: contiguous ids report nothing. Without this leg a bus that
 	// reported a gap on every notification would pass the assertion below.
-	b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
-	b.fanOutLocally(Notification{ID: 2, Kind: KindPush})
+	b.fanOutLocally(Notification{ID: 1, Kind: KindPush}, b.currentGen())
+	b.fanOutLocally(Notification{ID: 2, Kind: KindPush}, b.currentGen())
 	if got := obs.snapshot(); got.totalEvents != 0 {
 		t.Fatalf("premise failed: contiguous ids 1,2 reported %d observer events, want 0 (%+v)", got.totalEvents, got)
 	}
 
 	// 3 and 4 are missing.
-	b.fanOutLocally(Notification{ID: 5, Kind: KindPush})
+	b.fanOutLocally(Notification{ID: 5, Kind: KindPush}, b.currentGen())
 
 	got := obs.snapshot()
 	if got.gaps != 1 {
@@ -252,12 +262,12 @@ func TestRedisBusReportsSequenceResets(t *testing.T) {
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
 
-		b.fanOutFromRedis("epoch-a", Notification{ID: 1, Kind: KindPush})
+		b.fanOutFromRedis("epoch-a", Notification{ID: 1, Kind: KindPush}, b.currentGen())
 		if got := obs.snapshot(); got.totalEvents != 0 {
 			t.Fatalf("premise failed: the first epoch seen reported %d events, want 0 (%+v)", got.totalEvents, got)
 		}
 
-		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush})
+		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush}, b.currentGen())
 
 		got := obs.snapshot()
 		if got.resets[ResetReasonEpochChange] != 1 {
@@ -270,14 +280,14 @@ func TestRedisBusReportsSequenceResets(t *testing.T) {
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
 
-		b.fanOutLocally(Notification{ID: 100, Kind: KindPush})
+		b.fanOutLocally(Notification{ID: 100, Kind: KindPush}, b.currentGen())
 		if got := obs.snapshot(); got.totalEvents != 0 {
 			t.Fatalf("premise failed: a cold start reported %d events, want 0 (%+v)", got.totalEvents, got)
 		}
 
 		// The shared counter restarted: an id at or below the high-water
 		// mark.
-		b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
+		b.fanOutLocally(Notification{ID: 1, Kind: KindPush}, b.currentGen())
 
 		got := obs.snapshot()
 		if got.resets[ResetReasonCounterBackward] != 1 {
@@ -445,7 +455,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		b.Unsubscribe(ch)
 
 		// A HOLE moves knownFrom up past the cursor...
-		b.fanOutLocally(Notification{ID: 9, Kind: KindComment, ItemRef: "TASK-9"})
+		b.fanOutLocally(Notification{ID: 9, Kind: KindComment, ItemRef: "TASK-9"}, b.currentGen())
 		// ...and the shared counter is set to AGREE with what this
 		// instance has seen, so resumeOutrunsLocalView finds no
 		// disagreement and does NOT report. Without this the gap comes
@@ -520,6 +530,7 @@ func (o *reentrantObserver) SequenceGap(int64)          { o.reenter("gap") }
 func (o *reentrantObserver) SequenceReset(string)       { o.reenter("reset") }
 func (o *reentrantObserver) ResumeGap()                 { o.reenter("resume") }
 func (o *reentrantObserver) ReceiveLoopExited()         { o.reenter("exit") }
+func (o *reentrantObserver) HeartbeatPublishFailed()    { o.reenter("probe") }
 
 // TestObserverMayReenterTheBus pins Observer's contract: reports fire
 // with no bus lock held, so an observer that calls back into the bus
@@ -539,11 +550,11 @@ func TestObserverMayReenterTheBus(t *testing.T) {
 	go func() {
 		defer close(done)
 		// A gap: ids 1 then 3.
-		b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
-		b.fanOutLocally(Notification{ID: 3, Kind: KindPush})
+		b.fanOutLocally(Notification{ID: 1, Kind: KindPush}, b.currentGen())
+		b.fanOutLocally(Notification{ID: 3, Kind: KindPush}, b.currentGen())
 		// An epoch change, through the other locked path.
-		b.fanOutFromRedis("epoch-a", Notification{ID: 4, Kind: KindPush})
-		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush})
+		b.fanOutFromRedis("epoch-a", Notification{ID: 4, Kind: KindPush}, b.currentGen())
+		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush}, b.currentGen())
 	}()
 
 	select {

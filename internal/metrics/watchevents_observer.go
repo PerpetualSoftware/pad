@@ -52,3 +52,9 @@ func (o *WatchEventsObserver) SequenceReset(reason string) {
 func (o *WatchEventsObserver) ReceiveLoopExited() {
 	o.m.WatchReceiveLoopExitsTotal.Inc()
 }
+
+// HeartbeatPublishFailed is unlabelled for the same cardinality reason as its
+// neighbours.
+func (o *WatchEventsObserver) HeartbeatPublishFailed() {
+	o.m.WatchHeartbeatPublishFailuresTotal.Inc()
+}

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/redisns"
@@ -302,6 +303,96 @@ type RedisBus struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// afterProbePublish is a test-only seam, nil in production. It runs in
+	// publishHeartbeats after the publish and BEFORE lastProbeOK is stamped —
+	// the window in which a slow publish can have its subscription replaced
+	// underneath it, and the only place a test can force that interleave.
+	afterProbePublish func()
+
+	// beforeInstallLock fires inside resubscribe once the new connection is
+	// dialled and before the install takes the lock. Tests only; see the call
+	// site.
+	beforeInstallLock func()
+
+	// afterResubscribeInstall fires inside resubscribe, after the new
+	// subscription is installed and counted and the lock is released, before
+	// the receive goroutine starts. Tests only; see the call site.
+	afterResubscribeInstall func()
+
+	// afterFrameHandled fires once per inbound frame, after whichever arm of
+	// receiveMessages handled it. Tests only; see the call site.
+	afterFrameHandled func()
+
+	// beforeDropHook is a test-only seam, nil in production. It runs in
+	// cycleIfIdle after the decision to cycle and BEFORE the re-validation that
+	// precedes the drop — the only point at which a test can land a recovery
+	// strictly inside that window rather than racing it.
+	beforeDropHook func()
+
+	// subGen numbers subscriptions so a frame can be matched to the one it
+	// arrived on (BUG-2769, codex round 1).
+	//
+	// stopping a receive loop only SIGNALS it — cancelling its context and
+	// closing its PubSub does not join the goroutine, and go-redis's channel is
+	// buffered — so a straggler from a subscription that has already been
+	// replaced can still reach the switch. Without a generation it would stamp
+	// the REPLACEMENT's liveness, append to the replacement's buffer, or drop
+	// the replacement's coverage, all on the strength of a frame that arrived
+	// on a dead socket. Guarded by mu.
+	subGen int64
+
+	// subCancel ends the CURRENT subscription's receive loop without ending the
+	// bus. The idle cycle calls it before closing the old PubSub so the
+	// replaced loop exits quietly instead of reporting the instance deaf
+	// (BUG-2769). Guarded by mu.
+	subCancel context.CancelFunc
+
+	// lastSeen is when this instance last received ANYTHING on its watch
+	// subscription — a notification, a subscription confirmation, or a
+	// heartbeat. Guarded by mu.
+	//
+	// ONE FIELD, NOT A MAP, and that is this bus's shape rather than a
+	// simplification: there is a single process-wide subscription on a single
+	// channel (see the type comment), so liveness is a property of the
+	// instance. internal/events needs a per-workspace stamp because it holds a
+	// PubSub per workspace; none of that structure exists here.
+	lastSeen time.Time
+
+	// lastProbeOK is when this instance last SUCCEEDED in publishing a
+	// heartbeat. Guarded by mu.
+	//
+	// It is the detector's PREMISE. Idle detection reasons "we published a
+	// frame and nothing came back, so the receive path is dead", which is only
+	// valid if the publish happened: PUBLISH travels on the client's ordinary
+	// connection pool while the subscription holds one from the separate
+	// pub/sub pool, so a publish-side failure says nothing about whether this
+	// subscription can receive. Without it the detector reads its own inability
+	// to probe as evidence about the peer.
+	lastProbeOK time.Time
+
+	// publishHeartbeat selects whether this instance emits liveness frames AND
+	// runs idle detection — one switch, because an instance detects off its own
+	// frames. Constructor parameter with no default, so every call site states
+	// its phase. See config.WatchHeartbeat.
+	publishHeartbeat bool
+
+	// heartbeatInterval is T and idleTimeout is 3T. Guarded by mu.
+	heartbeatInterval time.Duration
+	idleTimeout       time.Duration
+
+	// heartbeatKick and idleKick wake their loops when the cadence changes.
+	//
+	// ONE PER LOOP, and this was ported wrong first: a SHARED channel is
+	// consumed by whichever goroutine happens to be waiting, leaving the other
+	// on the stale cadence. internal/events' mutation matrix caught that there
+	// (M11c) and the fix did not come across with the structure — the wiring
+	// test here failed for exactly that reason.
+	heartbeatKick chan struct{}
+	idleKick      chan struct{}
+
+	// nowFunc overrides the clock behind idle detection. Nil in production.
+	nowFunc func() time.Time
 }
 
 // NewRedisBus creates a Redis-backed Bus with the default replay buffer size
@@ -315,7 +406,7 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // NewRedisBusWithReplaySize is NewRedisBus with a custom replay capacity
 // (tests use a small one, exactly like NewWithReplaySize).
 func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
-	return NewRedisBusWithKeys(client, size, redisns.Default)
+	return NewRedisBusWithKeys(client, size, redisns.Default, false)
 }
 
 // NewRedisBusWithKeys is NewRedisBusWithReplaySize with an explicit key
@@ -329,7 +420,13 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 // makes that safe rather than silent, but plan the cutover; it is not a
 // free config change. Presence keys, by contrast, are transient (90s TTL)
 // and cost nothing to rename.
-func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *RedisBus {
+// publishHeartbeat selects whether this instance emits liveness frames AND runs
+// idle detection (BUG-2769) — one switch, because an instance detects off its
+// own frames. A constructor parameter with no default, the same shape
+// internal/events uses for its two rollout flags, so every call site states
+// which phase it is in. See config.WatchHeartbeat for why the order of the two
+// rolls is not optional.
+func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publishHeartbeat bool) *RedisBus {
 	if size <= 0 {
 		// newReplayBuffer(0) returns a buffer whose first append panics on a
 		// zero-length backing slice. That was reachable here in a way it is
@@ -349,6 +446,12 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *Red
 		replaySize:  size,
 		ctx:         ctx,
 		cancel:      cancel,
+
+		publishHeartbeat:  publishHeartbeat,
+		heartbeatInterval: DefaultWatchHeartbeatInterval,
+		idleTimeout:       DefaultWatchIdleTimeout,
+		heartbeatKick:     make(chan struct{}, 1),
+		idleKick:          make(chan struct{}, 1),
 	}
 	// Eager subscription — see the type comment (2).
 	b.pubsub = client.Subscribe(ctx, keys.Name(redisWatchChannelSuffix))
@@ -382,8 +485,33 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *Red
 			"error", err, "channel", keys.Name(redisWatchChannelSuffix))
 	}
 
+	subLoopCtx, subLoopCancel := context.WithCancel(ctx)
+	b.subCancel = subLoopCancel
+	b.lastSeen = b.now()
+	b.lastProbeOK = b.now()
 	b.wg.Add(1)
-	go b.receiveMessages()
+	b.subGen++
+	go b.receiveMessages(subLoopCtx, b.pubsub, b.subGen)
+
+	// NOT STARTED AT ALL ON PHASE 1 (codex round 2). Both halves are gated on
+	// publishHeartbeat and would be guaranteed no-ops there, so the loop would
+	// be goroutines and timers per bus for a deployment that asked for none of
+	// it — and phase 1 is the DEFAULT. The flag is constructor-only, so the
+	// decision is taken once and cannot go stale. The in-function gates stay:
+	// those are the correctness ones, and direct callers reach them without a
+	// loop.
+	//
+	// UNTESTED BY DESIGN, and recorded rather than papered over: removing this
+	// gate changes no behaviour, because both halves return immediately on
+	// phase 1 anyway. What it changes is goroutine and timer count, and the only
+	// assertion that separates them is a goroutine census — which is flaky in a
+	// package whose other tests start and stop buses concurrently. The
+	// mutation matrix says so plainly (starting the loop unconditionally
+	// survives), and that survival is the honest reading.
+	if publishHeartbeat {
+		b.wg.Add(1)
+		go b.maintenanceLoop()
+	}
 	return b
 }
 
@@ -913,11 +1041,18 @@ func (b *RedisBus) Close() {
 		delete(b.subscribers, ch)
 		close(ch)
 	}
+	// READ UNDER THE LOCK. b.pubsub used to be written once, in the
+	// constructor, and an unsynchronised read here was safe. An idle cycle now
+	// REPLACES it (BUG-2769), so the read races the write — and the value that
+	// races is the one whose Close unblocks the loop this function then waits
+	// for. Captured here and closed below, outside the lock, because Close on a
+	// PubSub can block and the cycle path takes this same mutex.
+	pubsub := b.pubsub
 	b.mu.Unlock()
 
 	b.cancel()
-	if b.pubsub != nil {
-		_ = b.pubsub.Close()
+	if pubsub != nil {
+		_ = pubsub.Close()
 	}
 	b.wg.Wait()
 }
@@ -975,14 +1110,58 @@ func (b *RedisBus) Close() {
 // does: that is BUG-2727's standing boundary, unchanged in both directions
 // by this work. A reconnecting client is covered either way, since
 // resumeOutrunsLocalView asks the shared counter rather than local state.
-func (b *RedisBus) receiveMessages() {
+// TAKES ITS SUBSCRIPTION AND ITS OWN CONTEXT, rather than reading b.pubsub
+// (BUG-2769). An idle cycle replaces the subscription under a running bus, and
+// the loop reading the OLD one has to be able to tell "I was replaced" from "the
+// client died", because those take different exits — the second logs an ERROR
+// and moves a counter documented to mean the instance has gone deaf. Passing
+// both in makes the distinction structural: the cycle cancels this ctx before
+// it closes the old PubSub, so the replaced loop leaves by the quiet door.
+// liveReceiveLoops counts receive goroutines currently running, across every
+// bus in the process. It exists for one test — that a REPLACED loop actually
+// terminates, which no other observable reports, because leaving quietly is
+// precisely leaving without a trace. b.wg cannot answer it: Wait is all-or-
+// nothing and a bus mid-cycle always has the replacement running.
+//
+// Kept in production rather than behind a seam because it is two atomic
+// operations per subscription lifetime, not per frame, and a leak is otherwise
+// invisible until the process runs out of them.
+var liveReceiveLoops atomic.Int64
+
+func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, gen int64) {
+	liveReceiveLoops.Add(1)
+	// ORDERED SO THE COUNT DROPS BEFORE Wait CAN RETURN. Defers run LIFO, so
+	// the one registered first runs last: wg.Done goes here and the decrement
+	// after it, leaving the count already at zero by the time Close's Wait
+	// unblocks. That is what lets a test read the count the instant Close
+	// returns and be asserting Close's contract rather than racing it.
 	defer b.wg.Done()
-	ch := b.pubsub.ChannelWithSubscriptions()
+	defer liveReceiveLoops.Add(-1)
+	ch := pubsub.ChannelWithSubscriptions()
 	for {
 		select {
-		case <-b.ctx.Done():
+		case <-ctx.Done():
 			return
 		case raw, ok := <-ch:
+			// STAMPED FOR EVERY FRAME, ahead of the type switch and ahead of
+			// any decode (BUG-2769). What idle detection measures is whether
+			// the SOCKET carries traffic, so a frame that turns out to be
+			// undecodable is still proof the route works — and that path
+			// continues, so stamping inside the switch would miss it. An
+			// unreadable message means coverage is broken, which dropCoverage
+			// handles; it does not mean the connection is dead, and cycling it
+			// would be the wrong remedy.
+			// THE GENERATION TRAVELS TO EACH MUTATION rather than being
+			// checked once here (codex round 2). A check in this frame and a
+			// mutation inside stampLastSeen / fanOutFromRedis /
+			// dropCoverageForGen are two separate lock acquisitions, and a
+			// replacement between them is exactly the interleave the fence
+			// exists to stop. Each of the four — the liveness stamp, the
+			// epoch bookkeeping, the buffer append and the coverage drop —
+			// re-checks under the same lock it mutates under.
+			if ok {
+				b.stampLastSeen(gen)
+			}
 			if !ok {
 				// The subscription's message channel closed. go-redis
 				// (v9.22.0) closes it ONLY on pool.ErrClosed — the client
@@ -1011,7 +1190,11 @@ func (b *RedisBus) receiveMessages() {
 				// with Close's ordering reversed as well. Kept because
 				// select's randomness is real and this makes the outcome
 				// independent of that ordering.
-				if b.ctx.Err() != nil {
+				// ctx covers BOTH endings now: bus shutdown, which cancels
+				// b.ctx and is inherited here, and a deliberate replacement by
+				// the idle cycle, which cancels this subscription's own ctx
+				// first. Either way the closure is ours and not a fault.
+				if ctx.Err() != nil {
 					return
 				}
 				slog.Error("watchevents: Redis subscription closed; this instance will receive no further notifications " +
@@ -1019,73 +1202,105 @@ func (b *RedisBus) receiveMessages() {
 				b.reportReceiveLoopExited()
 				return
 			}
-			switch msg := raw.(type) {
-			case *redis.Subscription:
-				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
-					// Unsubscribe confirmations. DEFENCE, AND NO TEST FAILS
-					// IF IT IS DELETED — measured, not assumed, and the
-					// reason is doubled: nothing in this bus produces one.
-					// It never calls pubsub.Unsubscribe, and PubSub.Close
-					// (go-redis v9.22.0) closes the connection without
-					// sending UNSUBSCRIBE at all, so no confirmation is
-					// emitted on the way out either. Kept because a Kind
-					// switch that names only the case it handles is a
-					// switch waiting to mis-handle the others, and because
-					// the alternative failure — a graceful stop
-					// incrementing an operator's failover counter — is
-					// silent.
-					continue
-				}
-				// A RESUBSCRIPTION: the connection dropped and came back, and
-				// whatever was published in between never reached us. See the
-				// function comment for why there is no "skip the first" here.
-				slog.Warn("watchevents: pub/sub resubscribed; dropping the replay buffer — "+
-					"resumes across the gap will report sync_required",
-					"channel", msg.Channel)
-				b.dropCoverage(ResetReasonSubscriptionResumed)
+			b.handleFrame(raw, gen)
 
-			case *redis.Message:
-				epoch, n, err := decodePayload(msg.Payload)
-				if err != nil {
-					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS INSTANCE'S
-					// COVERAGE. Discarding it and carrying on was the original
-					// behaviour and left the buffer claiming a span it no
-					// longer had.
-					//
-					// WHAT WE KNOW is narrower than "a notification was
-					// lost": something arrived on our channel that we could
-					// not read. It may have been ours, or it may be foreign
-					// — another installation sharing this Redis without
-					// PAD_REDIS_NAMESPACE (BUG-2724), a probe, an older
-					// publisher. Coverage ends because we cannot TELL, which
-					// is a claim about our own evidence rather than about the
-					// stream.
-					//
-					// It is NOT enough that this bus's ids are consecutive by
-					// construction — one channel, one counter — so IF the
-					// message was ours the next notification's id would expose
-					// the miss through the gap arm below. That detection needs
-					// a LATER notification to arrive, and an unreadable NEWEST
-					// message on a stream that then goes quiet is exactly the
-					// case with no later one. (internal/events cannot lean on
-					// id arithmetic at all, since its per-workspace ids are
-					// non-consecutive by construction; it reaches the same
-					// drop by a different road.)
-					//
-					// knownFrom = 0 is the honest value because there is no id
-					// to raise it to — we cannot name what we may have missed,
-					// which is the same fact from the other side. Recovery is
-					// bounded by the next publish, which re-establishes
-					// coverage through the cold-start arm.
-					slog.Error("watchevents: failed to decode notification from Redis; "+
-						"dropping the replay buffer — resumes across it will report sync_required",
-						"error", err, "channel", msg.Channel)
-					b.dropCoverage(ResetReasonUndecodableMessage)
-					continue
-				}
-				b.fanOutFromRedis(epoch, n)
+			// A TEST BARRIER, and it has to be outside handleFrame rather than
+			// at the end of it. Every effect a frame can have is fenced by the
+			// generation, so a frame the fence REFUSES is by design invisible
+			// — which leaves a test no way to know the loop handled it rather
+			// than never having received it, and a fixed sleep in place of
+			// that knowledge passes just as well against a loop that stalled
+			// (codex round 4). Placed here it fires for EVERY frame and every
+			// arm; when the arms were `continue`s in this loop it silently
+			// skipped heartbeats, undecodable payloads and unsubscribe
+			// confirmations while the comment claimed otherwise (codex round
+			// 9). nil in production.
+			if b.afterFrameHandled != nil {
+				b.afterFrameHandled()
 			}
 		}
+	}
+}
+
+// handleFrame applies one inbound frame. Split out of receiveMessages so each
+// arm ENDS the frame by returning: the arms that decline to act were `continue`
+// statements in the loop, which skipped everything after the switch.
+func (b *RedisBus) handleFrame(raw any, gen int64) {
+	switch msg := raw.(type) {
+	case *redis.Subscription:
+		if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
+			// Unsubscribe confirmations. DEFENCE, AND NO TEST FAILS
+			// IF IT IS DELETED — measured, not assumed, and the
+			// reason is doubled: nothing in this bus produces one.
+			// It never calls pubsub.Unsubscribe, and PubSub.Close
+			// (go-redis v9.22.0) closes the connection without
+			// sending UNSUBSCRIBE at all, so no confirmation is
+			// emitted on the way out either. Kept because a Kind
+			// switch that names only the case it handles is a
+			// switch waiting to mis-handle the others, and because
+			// the alternative failure — a graceful stop
+			// incrementing an operator's failover counter — is
+			// silent.
+			return
+		}
+		// A RESUBSCRIPTION: the connection dropped and came back, and
+		// whatever was published in between never reached us. See the
+		// function comment for why there is no "skip the first" here.
+		slog.Warn("watchevents: pub/sub resubscribed; dropping the replay buffer — "+
+			"resumes across the gap will report sync_required",
+			"channel", msg.Channel)
+		b.dropCoverageForGen(ResetReasonSubscriptionResumed, gen)
+
+	case *redis.Message:
+		if isWatchHeartbeat(msg.Payload) {
+			// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
+			// has already done its whole job by arriving — the stamp
+			// above is the entire effect. It consumes no id, drops no
+			// buffer, reaches no subscriber and moves no counter, so an
+			// instance that publishes none is still a correct receiver
+			// for one that does. That is what makes the two-phase roll
+			// zero-loss.
+			return
+		}
+		epoch, n, err := decodePayload(msg.Payload)
+		if err != nil {
+			// A MESSAGE WE CANNOT READ IS A HOLE IN THIS INSTANCE'S
+			// COVERAGE. Discarding it and carrying on was the original
+			// behaviour and left the buffer claiming a span it no
+			// longer had.
+			//
+			// WHAT WE KNOW is narrower than "a notification was
+			// lost": something arrived on our channel that we could
+			// not read. It may have been ours, or it may be foreign
+			// — another installation sharing this Redis without
+			// PAD_REDIS_NAMESPACE (BUG-2724), a probe, an older
+			// publisher. Coverage ends because we cannot TELL, which
+			// is a claim about our own evidence rather than about the
+			// stream.
+			//
+			// It is NOT enough that this bus's ids are consecutive by
+			// construction — one channel, one counter — so IF the
+			// message was ours the next notification's id would expose
+			// the miss through the gap arm below. That detection needs
+			// a LATER notification to arrive, and an unreadable NEWEST
+			// message on a stream that then goes quiet is exactly the
+			// case with no later one. (internal/events cannot lean on
+			// id arithmetic at all, since its per-workspace ids are
+			// non-consecutive by construction; it reaches the same
+			// drop by a different road.)
+			//
+			// knownFrom = 0 is the honest value because there is no id
+			// to raise it to — we cannot name what we may have missed,
+			// which is the same fact from the other side. Recovery is
+			// bounded by the next publish, which re-establishes
+			// coverage through the cold-start arm.
+			slog.Error("watchevents: failed to decode notification from Redis; "+
+				"dropping the replay buffer — resumes across it will report sync_required",
+				"error", err, "channel", msg.Channel)
+			b.dropCoverageForGen(ResetReasonUndecodableMessage, gen)
+			return
+		}
+		b.fanOutFromRedis(epoch, n, gen)
 	}
 }
 
@@ -1136,13 +1351,26 @@ func decodePayload(payload string) (string, Notification, error) {
 // contiguous within it". Numeric detection alone is blind to a reset that has
 // already climbed past our high-water mark (codex round 13), which is exactly
 // the case the epoch exists for.
-func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
+// gen is the subscription this frame arrived on. Checked under the SAME lock
+// that mutates, because a check taken in the caller and a mutation taken here
+// are two lock acquisitions with a replacement possible in between — which is
+// what codex round 2 found wrong with a single fence at the top of the frame
+// handler (BUG-2769).
+func (b *RedisBus) fanOutFromRedis(epoch string, n Notification, gen int64) {
 	// Registered FIRST so it runs LAST — after the Unlock below — because
 	// observer callbacks must not run under the bus mutex (codex round 9).
 	var pending pendingReports
 	defer func() { b.flush(&pending) }()
 
 	b.mu.Lock()
+	if b.subGen != gen {
+		// A straggler from a subscription that has already been replaced. It
+		// arrived on a socket this instance has stopped believing, so it is not
+		// evidence about the id space and must not enter the replacement's
+		// buffer.
+		b.mu.Unlock()
+		return
+	}
 	if b.epoch == "" {
 		b.epoch = epoch
 	} else if b.epoch != epoch {
@@ -1166,10 +1394,19 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification) {
 	}
 	b.mu.Unlock()
 
-	b.fanOutLocally(n)
+	b.fanOutLocally(n, gen)
 }
 
-func (b *RedisBus) fanOutLocally(n Notification) {
+// gen is the subscription this notification arrived on, or currentGen() for a
+// caller that is not the receive loop.
+//
+// CHECKED HERE, under the lock that APPENDS — not only in fanOutFromRedis
+// (codex round 3). That function checks, unlocks to do its epoch bookkeeping,
+// and calls this one, which locks again; a replacement in between let a stale
+// notification into the fresh buffer. The rule that actually holds is per
+// MUTATION, not per call chain: every place that writes re-checks under the
+// lock in which it writes.
+func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 	// Registered FIRST so it runs LAST — after the Unlock below. See
 	// Observer: reports fire with no bus lock held, so an observer may
 	// call back into the bus without deadlocking it.
@@ -1178,6 +1415,13 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.subGen != gen {
+		// A straggler from a replaced subscription. Checked HERE, under the
+		// lock that appends, because fanOutFromRedis's check happens in a
+		// different acquisition.
+		return
+	}
 
 	// Coverage bookkeeping before the append — see knownFrom's comment.
 	switch {
@@ -1394,7 +1638,25 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 // other detections need something to HAPPEN (a reachable Redis, or a later
 // publish), and the live subscriber on a stream that then goes quiet has
 // neither. That client is what this function exists for.
+// dropCoverageForGen ends coverage on behalf of a caller that learned of the
+// problem from a specific subscription. A frame from a replaced one says
+// nothing about the replacement's coverage, and ending it would resync every
+// client on the instance because a dead socket's buffered tail arrived late.
+//
+// The generation is checked INSIDE dropCoverage's own critical section rather
+// than in a separate acquisition here (codex round 3) — a check and a reset in
+// two locks is the TOCTOU this fence exists to close.
+func (b *RedisBus) dropCoverageForGen(reason string, gen int64) {
+	b.dropCoverageChecked(reason, &gen)
+}
+
 func (b *RedisBus) dropCoverage(reason string) {
+	b.dropCoverageChecked(reason, nil)
+}
+
+// dropCoverageChecked is dropCoverage with an optional generation guard. A nil
+// gen means the caller is not acting on a frame and no guard applies.
+func (b *RedisBus) dropCoverageChecked(reason string, gen *int64) {
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire with
 	// no bus lock held. See Observer.
 	var pending pendingReports
@@ -1402,6 +1664,10 @@ func (b *RedisBus) dropCoverage(reason string) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if gen != nil && b.subGen != *gen {
+		return
+	}
 
 	b.replay = newReplayBuffer(b.replaySize)
 	b.lastAppendedID = 0

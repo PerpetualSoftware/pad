@@ -568,7 +568,7 @@ func TestACounterResetDuringTheReconnectWindowIsStillReported(t *testing.T) {
 	b.SetObserver(obs)
 
 	for _, id := range []int64{1, 2, 3} {
-		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-1"})
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 	}
 
 	// CONTROL: an ordinary contiguous stream reports nothing.
@@ -581,7 +581,7 @@ func TestACounterResetDuringTheReconnectWindowIsStillReported(t *testing.T) {
 	b.dropCoverage(ResetReasonSubscriptionResumed)
 
 	// The first notification of the restarted sequence.
-	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-2"})
+	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-2"}, b.currentGen())
 
 	got := obs.snapshot()
 	if got.resets[ResetReasonCounterBackward] != 1 {
@@ -593,9 +593,9 @@ func TestACounterResetDuringTheReconnectWindowIsStillReported(t *testing.T) {
 	// AND THE MARK REBASED, so the restarted sequence is not read as a run of
 	// further resets. Without the rebase this is where one incident becomes a
 	// stream of false counter_backward reports.
-	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-3"})
+	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-3"}, b.currentGen())
 	b.dropCoverage(ResetReasonSubscriptionResumed)
-	b.fanOutLocally(Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-4"})
+	b.fanOutLocally(Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-4"}, b.currentGen())
 
 	if after := obs.snapshot().resets[ResetReasonCounterBackward]; after != 1 {
 		t.Fatalf("ids climbing within the NEW space must not report further resets: %q went 1 -> %d",
@@ -620,19 +620,19 @@ func TestTheOriginalBackwardArmRebasesTheHighWaterMark(t *testing.T) {
 	b.SetObserver(obs)
 
 	for _, id := range []int64{98, 99, 100} {
-		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-1"})
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 	}
 
 	// The counter resets while we are CONNECTED, so the original arm sees it.
-	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-2"})
+	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-2"}, b.currentGen())
 	if got := obs.snapshot(); got.resets[ResetReasonCounterBackward] != 1 {
 		t.Fatalf("the connected counter reset must be reported once, got %v", got.resets)
 	}
 
 	// The new space climbs normally, then a flap drops coverage.
-	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-3"})
+	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-3"}, b.currentGen())
 	b.dropCoverage(ResetReasonSubscriptionResumed)
-	b.fanOutLocally(Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-4"})
+	b.fanOutLocally(Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-4"}, b.currentGen())
 
 	if after := obs.snapshot().resets[ResetReasonCounterBackward]; after != 1 {
 		t.Fatalf("id 3 of the restarted sequence is not a second reset: %q went 1 -> %d — "+
@@ -654,11 +654,11 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 	obs := newRecordingObserver()
 	b.SetObserver(obs)
 
-	b.fanOutFromRedis("epoch-a", Notification{ID: 90, Kind: KindComment, ItemRef: "TASK-1"})
-	b.fanOutFromRedis("epoch-a", Notification{ID: 91, Kind: KindComment, ItemRef: "TASK-2"})
+	b.fanOutFromRedis("epoch-a", Notification{ID: 90, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
+	b.fanOutFromRedis("epoch-a", Notification{ID: 91, Kind: KindComment, ItemRef: "TASK-2"}, b.currentGen())
 
 	// The migration: new epoch, ids restart from 1.
-	b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-3"})
+	b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-3"}, b.currentGen())
 
 	got := obs.snapshot()
 	if got.resets[ResetReasonEpochChange] != 1 {
@@ -676,9 +676,9 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 	// ordinary id of the new space falls below the OLD space's peak and is
 	// read as a reset. Verified by mutation: without this leg, deleting
 	// `highWaterID = 0` from the epoch arm survives the whole suite.
-	b.fanOutFromRedis("epoch-b", Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-4"})
+	b.fanOutFromRedis("epoch-b", Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-4"}, b.currentGen())
 	b.dropCoverage(ResetReasonSubscriptionResumed)
-	b.fanOutFromRedis("epoch-b", Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-5"})
+	b.fanOutFromRedis("epoch-b", Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-5"}, b.currentGen())
 
 	if after := obs.snapshot().resets[ResetReasonCounterBackward]; after != 0 {
 		t.Fatalf("an ordinary id of the new epoch must not be read as a counter reset after a coverage drop, got %d — "+
@@ -726,7 +726,7 @@ func TestAnOldSpaceCursorIsRefusedAfterACounterReset(t *testing.T) {
 			defer b.Close()
 
 			for _, id := range []int64{198, 199, 200} {
-				b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "OLD"})
+				b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "OLD"}, b.currentGen())
 			}
 
 			// CONTROL: inside the OLD space, a cursor below our newest is
@@ -742,7 +742,7 @@ func TestAnOldSpaceCursorIsRefusedAfterACounterReset(t *testing.T) {
 
 			// The counter restarted while we were away and climbed to 100
 			// without us; 100 is the first id of the new space we receive.
-			b.fanOutLocally(Notification{ID: 100, Kind: KindComment, ItemRef: "NEW"})
+			b.fanOutLocally(Notification{ID: 100, Kind: KindComment, ItemRef: "NEW"}, b.currentGen())
 
 			if got := b.EventsSince(99); got != nil {
 				t.Fatalf("cursor 99 is ambiguous — it may be the OLD space's 99 — and must be refused, "+
@@ -752,7 +752,7 @@ func TestAnOldSpaceCursorIsRefusedAfterACounterReset(t *testing.T) {
 			// AND THE NEW SPACE STILL WORKS: a client genuinely at 100 is
 			// served whatever follows. Without this leg, refusing everything
 			// forever would pass the assertion above.
-			b.fanOutLocally(Notification{ID: 101, Kind: KindComment, ItemRef: "NEWER"})
+			b.fanOutLocally(Notification{ID: 101, Kind: KindComment, ItemRef: "NEWER"}, b.currentGen())
 			got := b.EventsSince(100)
 			if len(got) != 1 || got[0].ItemRef != "NEWER" {
 				t.Fatalf("a cursor inside the NEW space must be served, got %+v", got)

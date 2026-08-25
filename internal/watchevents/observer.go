@@ -93,11 +93,13 @@ type Observer interface {
 	// "counter_backward" (an id arrived at or below the high-water mark
 	// with the epoch unchanged), "subscription_resumed" (go-redis
 	// reconnected and re-subscribed, so the outage's notifications never
-	// arrived) or "undecodable_message" (a message on the channel could
-	// not be parsed).
+	// arrived), "undecodable_message" (a message on the channel could
+	// not be parsed) or "idle_timeout" (nothing arrived at all for longer
+	// than the idle timeout, so the subscription stopped proving it works
+	// and a replacement was attempted — BUG-2769).
 	//
-	// The first two mean the ID SPACE changed under us; the last two mean it
-	// did not and we can no longer account for part of it. All end coverage,
+	// The first two mean the ID SPACE changed under us; the other three mean
+	// it did not and we can no longer account for part of it. All end coverage,
 	// because the buffer cannot vouch for the span either way.
 	SequenceReset(reason string)
 
@@ -120,6 +122,25 @@ type Observer interface {
 	// closed underneath the bus — which is why it is worth a counter and an
 	// ERROR log rather than a silent return.
 	ReceiveLoopExited()
+
+	// HeartbeatPublishFailed reports that this instance could not CONFIRM a
+	// liveness heartbeat publish (BUG-2769). Not the same as "did not
+	// publish": the call returning an error can also mean Redis accepted the
+	// frame and the reply was lost.
+	//
+	// IT IS THE DETECTOR SAYING IT CANNOT SEE, not a finding about any peer.
+	// While it fires, idle detection is SUSPENDED — silence cannot be read as
+	// evidence when we cannot say a probe went out — so a healthy-looking
+	// absence of idle_timeout resets means less than usual.
+	//
+	// PUBLISH and pub/sub use different connection pools, so a SUSTAINED rate
+	// points at the OUTBOUND path, and an instance whose outbound path is
+	// genuinely broken is also failing to deliver its own notifications to
+	// every other instance. One firing establishes neither: it says only that
+	// one call did not come back.
+	//
+	// Expect zero.
+	HeartbeatPublishFailed()
 }
 
 // observable is the shared, nil-safe Observer holder both bus
@@ -209,6 +230,12 @@ func (o *observable) reportReceiveLoopExited() {
 	}
 }
 
+func (o *observable) reportHeartbeatPublishFailed() {
+	if obs := o.observer(); obs != nil {
+		obs.HeartbeatPublishFailed()
+	}
+}
+
 // Drop reasons and reset reasons. Bounded by construction so they can be
 // metric labels without a cardinality risk.
 const (
@@ -233,4 +260,25 @@ const (
 	// longer provable, not that a specific notification was lost. Expect
 	// zero; suspect a namespace collision.
 	ResetReasonUndecodableMessage = "undecodable_message"
+
+	// ResetReasonIdleTimeout means this instance's watch subscription received
+	// nothing at all — no notification, no heartbeat, no subscription
+	// confirmation — for longer than the idle timeout, so it stopped vouching
+	// for its replay buffer and ATTEMPTED to replace the connection
+	// (BUG-2769). Attempted: the resubscribe can fail, and this has already
+	// been reported by then — a later pass tries again.
+	//
+	// WHAT IT ESTABLISHES IS NOT THAT NOTIFICATIONS WERE LOST, unlike
+	// subscription_resumed: nothing was observed going missing. What it says is
+	// that the socket stopped proving it works, and a socket that cannot be
+	// proved cannot back a coverage claim. The silence includes this instance's
+	// own heartbeats, which is what makes it diagnostic rather than a guess
+	// about how busy the deployment is — and is why the detector runs only on
+	// heartbeat phase 2. On phase 1 this reason is structurally never emitted.
+	//
+	// Unlike the activity bus's twin it needs no companion counter: dropCoverage
+	// here replaces the replay buffer and reports unconditionally, with no
+	// "did a buffer exist" branch, so this reason is a complete count of the
+	// condition.
+	ResetReasonIdleTimeout = "idle_timeout"
 )

@@ -32,13 +32,13 @@ func TestGapSignalIsPerInstanceForAReceivedHole(t *testing.T) {
 	defer b.Unsubscribe(chA)
 	defer b.Unsubscribe(chB)
 
-	b.fanOutLocally(Notification{ID: 1, Kind: "test"})
+	b.fanOutLocally(Notification{ID: 1, Kind: "test"}, b.currentGen())
 	if raised(gapsA) || raised(gapsB) {
 		t.Fatal("a contiguous notification raised a gap signal; the flag means a HOLE, not delivery")
 	}
 
 	// id 5 after id 1: ids 2..4 never arrived here.
-	b.fanOutLocally(Notification{ID: 5, Kind: "test"})
+	b.fanOutLocally(Notification{ID: 5, Kind: "test"}, b.currentGen())
 	if !raised(gapsA) {
 		t.Error("subscriber A was connected across the hole and was not told")
 	}
@@ -50,7 +50,7 @@ func TestGapSignalIsPerInstanceForAReceivedHole(t *testing.T) {
 	// promised: its cursor starts here.
 	chC, gapsC := b.Subscribe()
 	defer b.Unsubscribe(chC)
-	b.fanOutLocally(Notification{ID: 6, Kind: "test"})
+	b.fanOutLocally(Notification{ID: 6, Kind: "test"}, b.currentGen())
 	if raised(gapsC) {
 		t.Error("a subscriber that registered after the hole was told it had missed something")
 	}
@@ -77,7 +77,7 @@ func TestGapSignalForASlowSubscriberIsNotBroadcast(t *testing.T) {
 	// per-instance arm cannot fire and take credit for the signal.
 	const chanDepth = 64
 	for i := 1; i <= chanDepth; i++ {
-		b.fanOutLocally(Notification{ID: int64(i), Kind: "test"})
+		b.fanOutLocally(Notification{ID: int64(i), Kind: "test"}, b.currentGen())
 		<-fast
 	}
 	if raised(slowGaps) {
@@ -85,7 +85,7 @@ func TestGapSignalForASlowSubscriberIsNotBroadcast(t *testing.T) {
 	}
 
 	// One more: the slow subscriber's channel has no room.
-	b.fanOutLocally(Notification{ID: chanDepth + 1, Kind: "test"})
+	b.fanOutLocally(Notification{ID: chanDepth + 1, Kind: "test"}, b.currentGen())
 	<-fast
 
 	if !raised(slowGaps) {
@@ -108,7 +108,7 @@ func TestGapSignalCoalesces(t *testing.T) {
 	defer b.Unsubscribe(ch)
 
 	for i := 1; i <= 200; i++ {
-		b.fanOutLocally(Notification{ID: int64(i), Kind: "test"})
+		b.fanOutLocally(Notification{ID: int64(i), Kind: "test"}, b.currentGen())
 	}
 
 	if !raised(gaps) {
@@ -161,7 +161,7 @@ func TestEpochChangeSignalsEverySubscriber(t *testing.T) {
 	defer b.Unsubscribe(chA)
 	defer b.Unsubscribe(chB)
 
-	b.fanOutFromRedis("epoch-1", Notification{ID: 1, Kind: "test"})
+	b.fanOutFromRedis("epoch-1", Notification{ID: 1, Kind: "test"}, b.currentGen())
 	<-chA
 	<-chB
 	if raised(gapsA) || raised(gapsB) {
@@ -170,7 +170,7 @@ func TestEpochChangeSignalsEverySubscriber(t *testing.T) {
 
 	// A different epoch: the id space this instance was tracking is gone, so
 	// every buffered id is meaningless and every subscriber has a hole.
-	b.fanOutFromRedis("epoch-2", Notification{ID: 1, Kind: "test"})
+	b.fanOutFromRedis("epoch-2", Notification{ID: 1, Kind: "test"}, b.currentGen())
 
 	if !raised(gapsA) || !raised(gapsB) {
 		t.Error("an epoch change invalidates the whole buffer, so every subscriber must be told")
@@ -189,14 +189,14 @@ func TestCounterBackwardsSignalsEverySubscriber(t *testing.T) {
 	defer b.Unsubscribe(chA)
 	defer b.Unsubscribe(chB)
 
-	b.fanOutLocally(Notification{ID: 100, Kind: "test"})
+	b.fanOutLocally(Notification{ID: 100, Kind: "test"}, b.currentGen())
 	<-chA
 	<-chB
 	if raised(gapsA) || raised(gapsB) {
 		t.Fatal("a first notification raised the flag")
 	}
 
-	b.fanOutLocally(Notification{ID: 3, Kind: "test"})
+	b.fanOutLocally(Notification{ID: 3, Kind: "test"}, b.currentGen())
 
 	if !raised(gapsA) || !raised(gapsB) {
 		t.Error("a counter reset drops the whole buffer, so every subscriber must be told")
