@@ -11,7 +11,10 @@ import (
 )
 
 // ActivityDebounceCooldown is the window during which repeated "updated" actions
-// on the same item by the same user are coalesced into a single activity entry.
+// on the same item by the same writer are coalesced into a single activity
+// entry. "Same writer" is narrower than the account: see
+// CreateActivityDebounced, which refuses to coalesce across actor kinds or
+// agent names sharing one user_id (BUG-2763).
 const ActivityDebounceCooldown = 5 * time.Minute
 
 func (s *Store) CreateActivity(a models.Activity) (string, error) {
@@ -29,8 +32,9 @@ func (s *Store) CreateActivity(a models.Activity) (string, error) {
 }
 
 // CreateActivityDebounced creates a new activity or updates an existing one if a
-// matching activity (same document, same user, same action) was recorded within
-// the cooldown window. Only "updated" actions are debounced; all other actions
+// matching activity (same document, same action, and same WRITER — same user
+// account, same actor kind, and same agent name) was recorded within the
+// cooldown window. Only "updated" actions are debounced; all other actions
 // always create a new entry.
 //
 // When merging, the existing activity's timestamp is bumped to now and its
@@ -62,13 +66,13 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// here would be a second guard that only looks load-bearing. What this
 	// does NOT close is the opposite order, an update that completes before
 	// the comment links its row at all: BUG-2716's transaction.
-	var existingID, existingMeta string
+	var existingID, existingMeta, existingActor string
 	err := s.db.QueryRow(s.q(`
-		SELECT id, metadata FROM activities
+		SELECT id, metadata, actor FROM activities
 		WHERE document_id = ? AND action = ? AND created_at >= ?
 			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
 		ORDER BY created_at DESC LIMIT 1
-	`), a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta)
+	`), a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta, &existingActor)
 
 	if err == sql.ErrNoRows {
 		// No recent match — create a new activity.
@@ -76,6 +80,31 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	}
 	if err != nil {
 		// Query error — fall back to creating a new activity.
+		return s.CreateActivity(a)
+	}
+
+	// Refuse to coalesce across WRITER IDENTITIES (BUG-2763). One account is
+	// shared by the human and by every agent authenticating as them, so the
+	// user_id predicate above does not identify the writer: `actor`
+	// separates a human's write from an agent's, and the `agent` name inside
+	// metadata separates two agents from each other. Merging across either
+	// produces a row that names the wrong writer, in both directions — the
+	// UPDATE below writes only metadata and created_at, so the surviving row
+	// keeps the FIRST write's actor, while mergeActivityMeta overlays
+	// `agent` last-writer-wins. Both are visible, because
+	// TimelineActivityCard reads the stamped name only when actor ==
+	// "agent" and ignores it otherwise.
+	//
+	// This check is in Go rather than in the UPDATE's predicate, where the
+	// comment-link refusal lives (TASK-2760, codex round 6), because nothing
+	// can invalidate it between this read and that write: `actor` is written
+	// once at INSERT and no statement in this package updates it, and the
+	// metadata `agent` key can only be rewritten by a merge that passed this
+	// same check — which by construction leaves the name equal to what it
+	// already was. A predicate in the UPDATE would be guarding against a
+	// change that cannot happen.
+	if existingActor != a.Actor ||
+		models.AgentNameFromMetadata(existingMeta) != models.AgentNameFromMetadata(a.Metadata) {
 		return s.CreateActivity(a)
 	}
 

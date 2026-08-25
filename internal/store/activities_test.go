@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -638,6 +639,108 @@ func TestMergeActivityMeta(t *testing.T) {
 			if tt.wantKey == "" {
 				if _, exists := m["changes"]; exists {
 					t.Errorf("expected no changes key, but found one: %v", m)
+				}
+			}
+		})
+	}
+}
+
+// BUG-2763. The three writer-identity legs the debounce key was missing, all
+// under ONE user account — which is the normal shape, since an agent
+// authenticates as the human it works for, so user_id cannot tell them apart.
+// Each leg asserts the surviving rows' `actor`/`agent` values, not merely the
+// row COUNT: splitting into two rows that both name the same writer would be a
+// different bug wearing this fix's passing test (CONVE-12).
+func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
+	oneAccount := func(t *testing.T) (st *Store, wsID, docID, userID string) {
+		t.Helper()
+		st = testStore(t)
+		ws := createTestWorkspace(t, st, "Test")
+		doc := createTestDoc(t, st, ws.ID, "Doc", "content")
+		u, err := st.CreateUser(models.UserCreate{Email: "solo@test.com", Name: "Solo", Password: "pass-solo"})
+		if err != nil {
+			t.Fatalf("create user: %v", err)
+		}
+		return st, ws.ID, doc.ID, u.ID
+	}
+
+	type write struct {
+		actor   string // "user" or "agent"
+		agent   string // agent display name, "" for a human write
+		changes string
+	}
+	// want is the (actor, agent-name) pair per surviving row, oldest first.
+	for _, tc := range []struct {
+		name   string
+		writes []write
+		want   []write
+	}{
+		{
+			name:   "human then agent",
+			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
+			want:   []write{{actor: "user"}, {actor: "agent", agent: "wren"}},
+		},
+		{
+			name:   "agent then human",
+			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "user", changes: "priority: low → high"}},
+			want:   []write{{actor: "agent", agent: "wren"}, {actor: "user"}},
+		},
+		{
+			name:   "two agents on one account",
+			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "rook", changes: "priority: low → high"}},
+			want:   []write{{actor: "agent", agent: "wren"}, {actor: "agent", agent: "rook"}},
+		},
+		// The control legs. Without them, a "never coalesce" implementation —
+		// or one that split on any difference at all, including the `changes`
+		// text — passes every leg above.
+		{
+			name:   "same agent twice still coalesces (control)",
+			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
+			want:   []write{{actor: "agent", agent: "wren"}},
+		},
+		{
+			name:   "same human twice still coalesces (control)",
+			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "user", changes: "priority: low → high"}},
+			want:   []write{{actor: "user"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, wsID, docID, userID := oneAccount(t)
+
+			for i, w := range tc.writes {
+				meta := fmt.Sprintf(`{"changes":%q}`, w.changes)
+				if w.agent != "" {
+					meta = fmt.Sprintf(`{"agent":%q,"changes":%q}`, w.agent, w.changes)
+				}
+				source := "web"
+				if w.actor == "agent" {
+					source = "cli"
+				}
+				if _, err := s.CreateActivityDebounced(models.Activity{
+					WorkspaceID: wsID,
+					DocumentID:  docID,
+					Action:      "updated",
+					Actor:       w.actor,
+					Source:      source,
+					Metadata:    meta,
+					UserID:      userID,
+				}); err != nil {
+					t.Fatalf("write %d (%s/%s): %v", i, w.actor, w.agent, err)
+				}
+			}
+
+			activities, _ := s.ListDocumentActivity(docID, models.ActivityListParams{Action: "updated"})
+			if len(activities) != len(tc.want) {
+				t.Fatalf("got %d activity rows, want %d: %+v", len(activities), len(tc.want), activities)
+			}
+			// ListDocumentActivity returns newest first; compare oldest first.
+			for i, w := range tc.want {
+				got := activities[len(activities)-1-i]
+				if got.Actor != w.actor {
+					t.Errorf("row %d actor = %q, want %q", i, got.Actor, w.actor)
+				}
+				if name := models.AgentNameFromMetadata(got.Metadata); name != w.agent {
+					t.Errorf("row %d agent name = %q, want %q (metadata %s)", i, name, w.agent, got.Metadata)
 				}
 			}
 		})
