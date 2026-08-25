@@ -11,8 +11,39 @@ import (
 )
 
 // ActivityDebounceCooldown is the window during which repeated "updated" actions
-// on the same item by the same user are coalesced into a single activity entry.
+// on the same item by the same writer are coalesced into a single activity
+// entry. "Same writer" is narrower than the account: see
+// CreateActivityDebounced, which refuses to coalesce across actor kinds or
+// agent names sharing one user_id (BUG-2763).
 const ActivityDebounceCooldown = 5 * time.Minute
+
+// maxDebounceCandidates bounds how many recent rows CreateActivityDebounced
+// examines when looking for the current writer's own row to extend.
+//
+// It is a scan bound, not a semantic one, and it exists because created_at has
+// WHOLE-SECOND precision: several rows inside the window can carry the same
+// timestamp, and ORDER BY created_at cannot order them — SQLite returns such a
+// tie in a stable-looking order that Postgres does not promise. Reading only
+// the top row would let a rapid human → agent → agent sequence land on the
+// human's row, refuse the merge on identity, and split the agent's run across
+// two rows (codex round 1 on this fix).
+//
+// The rows that can crowd out the writer's own are narrower than "everything
+// in the window": the query already filters to one document, one account and
+// one actor kind, so only rows carrying a DIFFERENT agent name compete. For a
+// human write that is normally none at all (a human write stamps no name), and
+// can only be a row written before this fix, when a merge could overlay an
+// agent name onto a user-actor row. For an agent it is the other agent names
+// on the same account touching the same item inside five minutes.
+//
+// Ten of those is already an implausible load, and the bound is deliberately
+// not a correctness one: past it the loop fails to find the writer's own row
+// and starts a new one, which costs an extra activity row and can never
+// produce a wrong attribution — the direction this fix exists to prevent.
+// Raising it costs a longer scan on a write path; the number is a scan
+// ceiling, not a statement about how many rows the window may hold.
+// (Declined codex round 2, which read the bound as incomplete coalescing.)
+const maxDebounceCandidates = 10
 
 func (s *Store) CreateActivity(a models.Activity) (string, error) {
 	a.ID = newID()
@@ -29,8 +60,9 @@ func (s *Store) CreateActivity(a models.Activity) (string, error) {
 }
 
 // CreateActivityDebounced creates a new activity or updates an existing one if a
-// matching activity (same document, same user, same action) was recorded within
-// the cooldown window. Only "updated" actions are debounced; all other actions
+// matching activity (same document, same action, and same WRITER — same user
+// account, same actor kind, and same agent name) was recorded within the
+// cooldown window. Only "updated" actions are debounced; all other actions
 // always create a new entry.
 //
 // When merging, the existing activity's timestamp is bumped to now and its
@@ -49,33 +81,81 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	ts := now()
 	cutoff := time.Now().UTC().Add(-ActivityDebounceCooldown).Format(time.RFC3339)
 
-	// Look for a recent activity to coalesce with — the newest match. If a
-	// comment links that row (comments.activity_id), the merge below REFUSES
-	// it and a fresh row is written instead: the comment reads its agent
-	// name from the row's metadata, and a merge overlays the incoming `agent`
-	// and bumps created_at, so a later update by a different agent under the
-	// same credentials would otherwise silently re-attribute an earlier
-	// comment (TASK-2760, codex round 3). A linked row therefore ENDS a
-	// coalescing run; the next update starts a new one. The refusal lives in
-	// the UPDATE's own predicate and nowhere else, because a comment can link
-	// the row between this read and that write (codex round 6) — a check
-	// here would be a second guard that only looks load-bearing. What this
-	// does NOT close is the opposite order, an update that completes before
-	// the comment links its row at all: BUG-2716's transaction.
-	var existingID, existingMeta string
-	err := s.db.QueryRow(s.q(`
-		SELECT id, metadata FROM activities
-		WHERE document_id = ? AND action = ? AND created_at >= ?
-			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
-		ORDER BY created_at DESC LIMIT 1
-	`), a.DocumentID, a.Action, cutoff, a.UserID, a.UserID).Scan(&existingID, &existingMeta)
+	// Look for a recent activity of THIS WRITER's to coalesce with, newest
+	// first. If a comment links the row we choose (comments.activity_id), the
+	// merge below REFUSES it and a fresh row is written instead: the comment
+	// reads its agent name from the row's metadata, and a merge overlays the
+	// incoming `agent` and bumps created_at, so a later update by a different
+	// agent under the same credentials would otherwise silently re-attribute
+	// an earlier comment (TASK-2760, codex round 3). A linked row therefore
+	// ENDS a coalescing run; the next update starts a new one. That refusal
+	// lives in the UPDATE's own predicate and nowhere else, because a comment
+	// can link the row between this read and that write (codex round 6) — a
+	// check here would be a second guard that only looks load-bearing. What
+	// this does NOT close is the opposite order, an update that completes
+	// before the link is VISIBLE to it — the comment row is written in its
+	// own transaction, so on Postgres a link committing while this UPDATE's
+	// snapshot is already open is missed exactly as an unwritten one is.
+	// Closing that needs both rows in one transaction: BUG-2716.
+	//
+	// THE WRITER, NOT THE ACCOUNT (BUG-2763). One account is shared by the
+	// human and by every agent authenticating as them, so user_id does not
+	// identify the writer: `actor` separates a human's write from an agent's,
+	// and the `agent` name inside metadata separates two agents from each
+	// other. Coalescing across either produces a row naming the wrong writer
+	// in both directions, because the UPDATE writes only metadata and
+	// created_at — the surviving row keeps the FIRST write's actor — while
+	// mergeActivityMeta overlays `agent` only when the incoming write carries
+	// one and leaves the stale name standing when it does not — which is the
+	// two directions. Both are visible:
+	// TimelineActivityCard reads the stamped name only when actor == "agent"
+	// and prints the person otherwise.
+	//
+	// actor is a SQL predicate; the agent name is matched in Go. Not for want
+	// of a portable accessor — s.dialect.JSONExtractText would render this
+	// column's `agent` key on both backends — but because
+	// models.AgentNameFromMetadata is the twin of the accessor the RENDERER
+	// uses, and the two disagree exactly where a stored value is odd: a
+	// non-string `agent` reads as absent in Go, while json_extract yields a
+	// native number or boolean that no text comparison matches, and malformed
+	// metadata is one skipped row in Go versus a failed query on SQLite.
+	// Matching on the value the timeline will actually display keeps the
+	// merge decision and the rendering in agreement.
+	incomingAgent := models.AgentNameFromMetadata(a.Metadata)
 
-	if err == sql.ErrNoRows {
-		// No recent match — create a new activity.
-		return s.CreateActivity(a)
-	}
+	rows, err := s.db.Query(s.q(`
+		SELECT id, metadata FROM activities
+		WHERE document_id = ? AND action = ? AND created_at >= ? AND actor = ?
+			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
+		ORDER BY created_at DESC LIMIT ?
+	`), a.DocumentID, a.Action, cutoff, a.Actor, a.UserID, a.UserID, maxDebounceCandidates)
 	if err != nil {
 		// Query error — fall back to creating a new activity.
+		return s.CreateActivity(a)
+	}
+
+	var existingID, existingMeta string
+	for rows.Next() {
+		var id, meta string
+		if err := rows.Scan(&id, &meta); err != nil {
+			_ = rows.Close()
+			return s.CreateActivity(a)
+		}
+		if models.AgentNameFromMetadata(meta) == incomingAgent {
+			existingID, existingMeta = id, meta
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return s.CreateActivity(a)
+	}
+	if err := rows.Close(); err != nil {
+		return s.CreateActivity(a)
+	}
+
+	if existingID == "" {
+		// Nothing recent of this writer's — start a new run.
 		return s.CreateActivity(a)
 	}
 

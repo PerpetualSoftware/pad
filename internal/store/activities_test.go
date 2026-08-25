@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -641,5 +643,220 @@ func TestMergeActivityMeta(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// BUG-2763. The three writer-identity legs the debounce key was missing, all
+// under ONE user account — which is the normal shape, since an agent
+// authenticates as the human it works for, so user_id cannot tell them apart.
+// Each leg asserts the surviving rows' `actor`/`agent` values, not merely the
+// row COUNT: splitting into two rows that both name the same writer would be a
+// different bug wearing this fix's passing test (CONVE-12).
+func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
+	oneAccount := func(t *testing.T) (st *Store, wsID, docID, userID string) {
+		t.Helper()
+		st = testStore(t)
+		ws := createTestWorkspace(t, st, "Test")
+		doc := createTestDoc(t, st, ws.ID, "Doc", "content")
+		u, err := st.CreateUser(models.UserCreate{Email: "solo@test.com", Name: "Solo", Password: "pass-solo"})
+		if err != nil {
+			t.Fatalf("create user: %v", err)
+		}
+		return st, ws.ID, doc.ID, u.ID
+	}
+
+	type write struct {
+		actor   string // "user" or "agent"
+		agent   string // agent display name, "" for a human write
+		changes string
+	}
+	// want is the (actor, agent-name) pair per surviving row, oldest first.
+	for _, tc := range []struct {
+		name   string
+		writes []write
+		want   []write
+	}{
+		{
+			name:   "human then agent",
+			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
+			want:   []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
+		},
+		{
+			name:   "agent then human",
+			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "user", changes: "priority: low → high"}},
+			want:   []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "user", changes: "priority: low → high"}},
+		},
+		{
+			name:   "two agents on one account",
+			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "rook", changes: "priority: low → high"}},
+			want:   []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "rook", changes: "priority: low → high"}},
+		},
+		// The control legs. Without them, a "never coalesce" implementation —
+		// or one that split on any difference at all, including the `changes`
+		// text — passes every leg above.
+		{
+			// The leg that makes the actor comparison independently
+			// load-bearing. Through the only production caller today, actor
+			// and agent name both derive from the X-Pad-Agent header, so they
+			// cannot disagree and the agent-name comparison alone would catch
+			// every case above — removing the actor half survives the rest of
+			// this matrix. The store's own API admits the decoupled state, and
+			// this is what it means: a caller declaring an agent write without
+			// stamping a name is still not the human, and must not merge into
+			// the human's row.
+			name:   "agent kind without a name is still not the human",
+			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", changes: "priority: low → high"}},
+			want:   []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", changes: "priority: low → high"}},
+		},
+		{
+			name:   "same agent twice still coalesces (control)",
+			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
+			want:   []write{{actor: "agent", agent: "wren"}},
+		},
+		{
+			name:   "same human twice still coalesces (control)",
+			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "user", changes: "priority: low → high"}},
+			want:   []write{{actor: "user"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, wsID, docID, userID := oneAccount(t)
+
+			for i, w := range tc.writes {
+				meta := fmt.Sprintf(`{"changes":%q}`, w.changes)
+				if w.agent != "" {
+					meta = fmt.Sprintf(`{"agent":%q,"changes":%q}`, w.agent, w.changes)
+				}
+				source := "web"
+				if w.actor == "agent" {
+					source = "cli"
+				}
+				if _, err := s.CreateActivityDebounced(models.Activity{
+					WorkspaceID: wsID,
+					DocumentID:  docID,
+					Action:      "updated",
+					Actor:       w.actor,
+					Source:      source,
+					Metadata:    meta,
+					UserID:      userID,
+				}); err != nil {
+					t.Fatalf("write %d (%s/%s): %v", i, w.actor, w.agent, err)
+				}
+			}
+
+			activities, _ := s.ListDocumentActivity(docID, models.ActivityListParams{Action: "updated"})
+			if len(activities) != len(tc.want) {
+				t.Fatalf("got %d activity rows, want %d: %+v", len(activities), len(tc.want), activities)
+			}
+			// Matched by the change each write recorded, never by position:
+			// both writes land in the same second and ListDocumentActivity
+			// orders by created_at alone, so ties come back in whatever order
+			// the driver chooses — stable enough on SQLite to look fine and
+			// unordered on Postgres, where this suite also runs.
+			byChanges := map[string]models.Activity{}
+			for _, a := range activities {
+				byChanges[changesOfActivity(t, a.Metadata)] = a
+			}
+			for _, w := range tc.want {
+				got := activities[0]
+				if w.changes != "" {
+					var ok bool
+					got, ok = byChanges[w.changes]
+					if !ok {
+						t.Fatalf("no row recording %q; rows: %v", w.changes, byChanges)
+					}
+				}
+				if got.Actor != w.actor {
+					t.Errorf("row for %q: actor = %q, want %q", w.changes, got.Actor, w.actor)
+				}
+				if name := models.AgentNameFromMetadata(got.Metadata); name != w.agent {
+					t.Errorf("row for %q: agent name = %q, want %q (metadata %s)", w.changes, name, w.agent, got.Metadata)
+				}
+			}
+		})
+	}
+}
+
+// changesOfActivity reads the "changes" string an activity's metadata carries.
+// It identifies WHICH write produced a row, which is what lets the assertions
+// above ignore row order.
+func changesOfActivity(t *testing.T, metadata string) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		t.Fatalf("metadata %s: %v", metadata, err)
+	}
+	c, _ := m["changes"].(string)
+	return c
+}
+
+// Codex round 1 on BUG-2763: with the identity guard added but the candidate
+// query still taking only the newest row overall, a writer that returns inside
+// the window lands on the OTHER writer's row, is refused on identity, and
+// starts a third row — so the guard fixed the attribution and broke the
+// coalescing it is guarding.
+//
+// Written with real 1.1s gaps rather than three writes in one second, because
+// created_at is whole-second and the same-second form of this sequence is
+// ordered by whatever the driver happens to return: it would fail on one
+// backend and pass on the other for reasons unrelated to the fix. Strictly
+// increasing timestamps make the WRONG candidate deterministically the newest
+// row, which is what turns this into an instrument. Verified against the
+// pre-fix code, where it produced 3 rows.
+func TestCreateActivityDebounced_WriterRejoinsItsOwnRun(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
+	u, err := s.CreateUser(models.UserCreate{Email: "rejoin@test.com", Name: "Solo", Password: "pass-rejoin"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	write := func(actor, agent, changes string) {
+		t.Helper()
+		meta := fmt.Sprintf(`{"changes":%q}`, changes)
+		if agent != "" {
+			meta = fmt.Sprintf(`{"agent":%q,"changes":%q}`, agent, changes)
+		}
+		if _, err := s.CreateActivityDebounced(models.Activity{
+			WorkspaceID: ws.ID,
+			DocumentID:  doc.ID,
+			Action:      "updated",
+			Actor:       actor,
+			Source:      "cli",
+			Metadata:    meta,
+			UserID:      u.ID,
+		}); err != nil {
+			t.Fatalf("write by %s/%s: %v", actor, agent, err)
+		}
+	}
+
+	write("agent", "wren", "status: open → active")
+	time.Sleep(1100 * time.Millisecond)
+	write("user", "", "title: a → b")
+	time.Sleep(1100 * time.Millisecond)
+	// The agent returns. The newest row in the window is now the human's, and
+	// this write must NOT start a third row because of it.
+	write("agent", "wren", "priority: low → high")
+
+	activities, _ := s.ListDocumentActivity(doc.ID, models.ActivityListParams{Action: "updated"})
+	if len(activities) != 2 {
+		t.Fatalf("got %d rows, want 2 (one per writer): %+v", len(activities), activities)
+	}
+
+	var agentRow *models.Activity
+	for i := range activities {
+		if activities[i].Actor == "agent" {
+			agentRow = &activities[i]
+		}
+	}
+	if agentRow == nil {
+		t.Fatalf("no agent row among %+v", activities)
+	}
+	// Both of the agent's writes must be ON that row — the point of rejoining
+	// is that the second one extends the run rather than sitting elsewhere.
+	changes := changesOfActivity(t, agentRow.Metadata)
+	if !strings.Contains(changes, "status") || !strings.Contains(changes, "priority") {
+		t.Errorf("agent row changes = %q, want both of the agent's writes", changes)
 	}
 }
