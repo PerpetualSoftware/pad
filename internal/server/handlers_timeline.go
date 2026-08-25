@@ -32,7 +32,14 @@ import (
 // consumer that pages from its last visible entry therefore either cannot form
 // a cursor at all or re-requests the same window forever (BUG-2765), and one
 // that forwards only `next_before` without `next_before_id` can repeat or skip
-// entries sharing that second. Both fields, or neither.
+// entries sharing that second. Send both fields, or neither.
+//
+// The two one-sided forms are NOT symmetric, and the validation reflects that
+// rather than the slogan (BUG-2774). `before` alone is accepted: it is the
+// external-client shape the id sentinel below exists to serve, at the cost of
+// the same-second ambiguity just described. `before_id` alone is REFUSED with
+// 400 — the id is only ever the tie-break at the cursor instant, so on its own
+// it matches nothing and silently pages from the beginning.
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {

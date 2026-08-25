@@ -1586,6 +1586,11 @@ export const api = {
 		 * ground. Deriving one from the last visible entry cannot advance past
 		 * such a page (BUG-2765). Send both fields or neither; the id is the
 		 * tie-break among entries sharing a second.
+		 *
+		 * The server is asymmetric about the one-sided forms (BUG-2774):
+		 * `before` alone is accepted for external clients that cannot produce
+		 * an id, while `before_id` alone is a 400 — it matches nothing on its
+		 * own and would silently page from the beginning.
 		 */
 		list: (ws: string, itemSlug: string, params?: { limit?: number; before?: string; before_id?: string }) => {
 			const qs = new URLSearchParams();
