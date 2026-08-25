@@ -231,6 +231,16 @@ type RedisBus struct {
 	// while proving nothing.
 	afterSubscribeRegister func()
 
+	// beforeSettleWait is a test-only seam, nil in production. It runs in
+	// resumeOutrunsLocalView after the first counter read has DISAGREED and
+	// immediately before the settle wait begins.
+	//
+	// POSITIONAL, like its neighbour. It is the only point at which a test can
+	// land a cancellation strictly inside the window rather than racing it with
+	// a sleep — and a sleep-timed cancellation that lands late does not fail
+	// safe here, it just measures a different path (BUG-2751).
+	beforeSettleWait func()
+
 	// knownFrom / lastAppendedID bound what this instance can HONESTLY
 	// replay — a failure mode MemoryBus structurally cannot have and this
 	// one can (codex rounds 3 and 4).
@@ -493,11 +503,34 @@ func (b *RedisBus) Subscribe() (chan Notification, <-chan struct{}) {
 // and the caller turns that into sync_required.
 //
 // The third return is the subscriber's GAP SIGNAL — see Subscribe.
-func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
 	// Consulted BEFORE the lock: it sleeps and does network I/O. See its
 	// comment for why that ordering is also the only one that preserves the
 	// subscribe-and-replay guarantee.
-	forceGap := b.resumeOutrunsLocalView(sinceID)
+	//
+	// ctx IS THE CALLER'S, and that is the whole of BUG-2751. This runs on the
+	// request path while the SSE handler holds a global AND a per-user
+	// admission slot (BUG-2726), released by defer when the handler returns —
+	// so every moment spent here is capacity held for a client that may
+	// already be gone.
+	forceGap := b.resumeOutrunsLocalView(ctx, sinceID)
+
+	// A CALLER THAT HAS GONE IS NOT REGISTERED (BUG-2751, codex round 1).
+	// resumeOutrunsLocalView answers false on cancellation — "no forced gap" —
+	// which on its own reads as an ordinary converged resume, so the rest of
+	// this function would go on to register a subscriber and build a replay
+	// slice for a connection that is unwinding. Ending the wait early and then
+	// doing the work anyway is half a fix.
+	//
+	// The shape returned is the SAME one the closed-bus branch below returns:
+	// a closed channel, no replay. That matters at the call site — the handler
+	// falls back to plain Subscribe() when it gets a NIL channel, so returning
+	// nil here would re-register the very caller this is declining to serve.
+	if ctx.Err() != nil {
+		sub := newSubscriber()
+		close(sub.ch)
+		return sub.ch, nil, sub.gaps
+	}
 
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire
 	// with no bus lock held. See Observer.
@@ -537,6 +570,24 @@ func (b *RedisBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []
 		pending.resumeGap()
 	}
 	return ch, missed, sub.gaps
+}
+
+// whicheverEndsFirst returns a context that ends when EITHER input does, and a
+// cancel that must be called to release the registration on the second one.
+//
+// It exists because the settle wait has two independent reasons to be
+// abandoned that live in different places: the client going away (BUG-2751)
+// and the bus closing. Deriving from one and ignoring the other silently drops
+// half the story — internal/events lost the shutdown half exactly that way in
+// its own first draft, which is why this is written as a merge rather than a
+// swap.
+func whicheverEndsFirst(caller, bus context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(caller)
+	stop := context.AfterFunc(bus, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // settleWindow is how long resumeOutrunsLocalView waits before deciding that
@@ -590,12 +641,26 @@ const settleWindow = 250 * time.Millisecond
 // out that it is not the per-workspace firehose) and by resumes only
 // happening on reconnect. If a workload ever makes this chatty in practice,
 // the fix is a longer settle window, not a magnitude threshold.
-func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
+func (b *RedisBus) resumeOutrunsLocalView(ctx context.Context, sinceID int64) bool {
 	if sinceID <= 0 || b.client == nil {
 		return false
 	}
 
-	remote, ok := b.sharedCounter()
+	// BOUNDED BY THE CALLER *AND* BY THE BUS, not by either alone (BUG-2751).
+	//
+	// It used to wait on b.ctx only — the bus's lifetime — so a client that
+	// disconnected during the settle window held its admission slots for the
+	// remainder of it plus two Redis round trips. The connection was gone; the
+	// capacity was not.
+	//
+	// Swapping to the caller's context alone would trade one leak for another:
+	// b.ctx is what lets Close cut a wait short, and dropping it would leave a
+	// shutdown blocked behind a client that is still connected. Both endings
+	// are reasons to stop, so the wait ends on either.
+	ctx, cancel := whicheverEndsFirst(ctx, b.ctx)
+	defer cancel()
+
+	remote, ok := b.sharedCounter(ctx)
 	if !ok {
 		return false
 	}
@@ -626,13 +691,22 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 	//
 	// Agreement between the authority and this instance is the condition, and
 	// it has to be evaluated on two fresh reads or it is not agreement at all.
-	select {
-	case <-b.ctx.Done():
-		return false
-	case <-time.After(settleWindow):
+	if b.beforeSettleWait != nil {
+		b.beforeSettleWait()
 	}
 
-	remote, ok = b.sharedCounter()
+	timer := time.NewTimer(settleWindow)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		// The caller left, or the bus is closing. Either way there is nobody
+		// to answer and no reason to hold the slot: returning false means "no
+		// forced gap", and the caller is about to unwind anyway.
+		return false
+	case <-timer.C:
+	}
+
+	remote, ok = b.sharedCounter(ctx)
 	if !ok {
 		return false
 	}
@@ -654,8 +728,8 @@ func (b *RedisBus) resumeOutrunsLocalView(sinceID int64) bool {
 // sharedCounter reads the authoritative sequence value. The bool is false when
 // it could not be read, which callers treat as "answer from local knowledge" —
 // see resumeOutrunsLocalView for why failing closed here would be worse.
-func (b *RedisBus) sharedCounter() (int64, bool) {
-	v, err := b.client.Get(b.ctx, b.keys.Name(redisWatchSeqSuffix)).Int64()
+func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
+	v, err := b.client.Get(ctx, b.keys.Name(redisWatchSeqSuffix)).Int64()
 	switch {
 	case err == nil:
 		return v, true

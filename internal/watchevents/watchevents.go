@@ -47,6 +47,7 @@
 package watchevents
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -258,7 +259,14 @@ type Bus interface {
 	// only the replay is unavailable.
 	//
 	// The third return is the subscriber's GAP SIGNAL — see Subscribe.
-	SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{})
+	//
+	// ctx IS THE CALLER'S REQUEST CONTEXT, and it is load-bearing on the Redis
+	// implementation (BUG-2751): that one may WAIT — a settle window plus two
+	// Redis round trips — while the SSE handler holds admission slots that are
+	// only released when the handler returns. A caller that has gone must not
+	// go on paying for that. MemoryBus does no I/O here and accepts the
+	// parameter to keep one interface; see its implementation.
+	SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{})
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Notification)
 	// EventsSince returns buffered notifications with ID > sinceID, for
@@ -575,7 +583,24 @@ func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}) {
 // means a Notification is either: published before this call (and thus
 // only in the returned replay slice), or published after (and thus only
 // delivered on the returned channel) — never both.
-func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+// CHECKED RATHER THAN ASSUMED CLEAR (BUG-2751's scope note, which is also how
+// that bug was found — BUG-2749's filing asked for this package to be checked
+// rather than assumed). This path takes no context-bounded WAIT and does no
+// network I/O: it acquires b.mu, reads the local buffer, and returns. There is
+// nothing here for a cancelled caller to stop paying for.
+//
+// It still declines a cancelled caller, for uniformity rather than for cost:
+// the two implementations answer the same question and must not disagree about
+// whether a departed client ends up registered as a subscriber. Same shape as
+// the closed-bus branch — a closed channel, never nil, because the handler
+// treats nil as "fall back to plain Subscribe" and would re-register the very
+// caller this is declining.
+func (b *MemoryBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (chan Notification, []Notification, <-chan struct{}) {
+	if ctx.Err() != nil {
+		sub := newSubscriber()
+		close(sub.ch)
+		return sub.ch, nil, sub.gaps
+	}
 	// Reported with the lock released, like every other report in this
 	// package. RedisBus counts its own unservable resumes; MemoryBus did not,
 	// so pad_watchevents_resume_gaps_total read zero on a single-process

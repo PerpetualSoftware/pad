@@ -85,7 +85,7 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 		b.fanOutLocally(Notification{ID: i, Kind: KindComment, ItemRef: "TASK-1"})
 	}
 
-	ch, missed, _ := b.SubscribeAndReplaySince(1)
+	ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 
 	if len(missed) != 2 {
 		t.Fatalf("replay since 1 should carry ids 2,3; got %d entries: %+v", len(missed), missed)
@@ -149,7 +149,7 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 
 	// Join mid-flight.
 	time.Sleep(2 * time.Millisecond)
-	ch, missed, _ := b.SubscribeAndReplaySince(0)
+	ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), 0)
 
 	wg.Wait()
 
@@ -259,7 +259,7 @@ func TestRedisBusSubscribeAndReplayNeverDoubleDelivers(t *testing.T) {
 			}()
 		}
 
-		ch, missed, _ := b.SubscribeAndReplaySince(0)
+		ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), 0)
 		b.afterSubscribeRegister = nil
 
 		// Block until the forced fan-out has actually completed before

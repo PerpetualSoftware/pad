@@ -152,7 +152,12 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
 		if parsed, perr := strconv.ParseInt(lastIDStr, 10, 64); perr == nil && parsed > 0 {
 			lastID = parsed
-			ch, missed, gaps = s.watchEvents.SubscribeAndReplaySince(lastID)
+			// r.Context() rather than the bus's own lifetime (BUG-2751). The
+			// Redis implementation may wait a settle window plus two round trips
+			// here, and this handler is holding a global AND a per-user admission
+			// slot that only come back on return — so a client that disconnects
+			// mid-wait would otherwise keep both for the remainder of it.
+			ch, missed, gaps = s.watchEvents.SubscribeAndReplaySince(r.Context(), lastID)
 		} else {
 			unreadableCursor = true
 			slog.Info("watch-events: resume carried an unreadable Last-Event-ID, sending sync_required",

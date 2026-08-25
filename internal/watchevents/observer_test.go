@@ -1,6 +1,7 @@
 package watchevents
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -414,7 +415,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 			t.Fatalf("set counter: %v", err)
 		}
 
-		_, missed, _ := b.SubscribeAndReplaySince(1)
+		_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 		if missed != nil {
 			t.Fatalf("premise failed: the resume was served rather than reported as a gap; got %+v", missed)
 		}
@@ -455,7 +456,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		}
 		before := obs.snapshot().resumeGaps
 
-		_, missed, _ := b.SubscribeAndReplaySince(1)
+		_, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
 		if missed != nil {
 			t.Fatalf("premise failed: the resume was served rather than reported as a gap; got %+v", missed)
 		}
@@ -481,7 +482,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		}
 		b.Unsubscribe(ch)
 
-		if _, missed, _ := b.SubscribeAndReplaySince(1); missed == nil {
+		if _, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1); missed == nil {
 			t.Fatal("premise failed: a current instance reported a gap")
 		}
 		if got := obs.snapshot(); got.resumeGaps != 0 {
