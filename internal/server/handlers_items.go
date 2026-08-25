@@ -1702,9 +1702,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// create a comment linked to the activity entry. The comment reads its
 	// agent name through that link (TASK-2760); between the activity write
 	// above and the link below the row is still unlinked, so a concurrent
-	// update under the same user can debounce-merge into it and overlay the
-	// agent stamp the comment will then carry. Same non-atomic window as
-	// BUG-2716, which is where the one-transaction fix is tracked.
+	// update under the same user can debounce-merge into it and bump the
+	// created_at the comment will then sit against. It can no longer overlay a
+	// DIFFERENT agent's stamp: since BUG-2763 the debounce refuses to coalesce
+	// across writer identities, so whatever merges here declares the same name
+	// this comment will carry. Same non-atomic window as BUG-2716, which is
+	// where the one-transaction fix is tracked.
 	if input.Comment != nil && strings.TrimSpace(*input.Comment) != "" {
 		commentInput := models.CommentCreate{
 			Body:       strings.TrimSpace(*input.Comment),

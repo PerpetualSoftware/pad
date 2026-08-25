@@ -289,10 +289,21 @@ func TestListComments_AgentNameNeverReadAcrossItems(t *testing.T) {
 // Codex round 3 on TASK-2760: an item update that carries a comment links the
 // comment to its `updated` activity, and `updated` activities are debounced —
 // a later update by the same user merges INTO the most recent row, overlaying
-// its `agent` and bumping created_at. Two agents under one set of credentials
-// (the common shape: teammates on one account) would silently re-attribute
-// an earlier comment to the later agent. A comment-linked row must therefore
-// never be a merge target; the control leg pins that unlinked rows still are.
+// its `agent` and bumping created_at, silently re-attributing the earlier
+// comment. A comment-linked row must therefore never be a merge target; the
+// control leg pins that unlinked rows still are.
+//
+// EVERY WRITE HERE DECLARES THE SAME AGENT NAME, and that is the point since
+// BUG-2763. The original wrote as two different agents on one account, which
+// can now no longer merge for a SECOND reason — the debounce refuses to
+// coalesce across writer identities — so the second assertion below
+// (`second != first`) was left passing on the identity guard alone. Measured
+// rather than assumed: with the comment-link predicate deleted and the two
+// names restored, that assertion still passed and only the final leg caught
+// the deletion. One name puts the refusal back as the only mechanism that can
+// split those two rows, so each leg fails for its own reason. The cross-agent
+// shape this test used to carry is now the BUG-2763 identity matrix's, in
+// activities_test.go.
 func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 	s, item := agentNameFixture(t)
 	user, err := s.CreateUser(models.UserCreate{Email: "shared@test.com", Name: "Dave", Password: "correct-horse-battery-staple"})
@@ -318,7 +329,7 @@ func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 		t.Fatalf("create comment: %v", err)
 	}
 
-	second := update("rook")
+	second := update("wren")
 	if second == first {
 		t.Fatalf("second update merged into the comment-linked activity %s", first)
 	}
@@ -333,7 +344,7 @@ func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 
 	// Control: with no comment on the newest row, the next update still
 	// coalesces — the refusal is scoped to linked rows, not a debounce switch.
-	third := update("rook")
+	third := update("wren")
 	if third != second {
 		t.Errorf("unlinked recent update did not merge: got %s, want %s", third, second)
 	}
