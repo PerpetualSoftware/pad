@@ -14,6 +14,8 @@ package watchevents
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -515,37 +517,54 @@ func TestClosingTheBusStillEndsTheSettleWindow(t *testing.T) {
 	}
 }
 
-// TestAResumeCancelledDuringTheCounterReadDoesNotLookLikeRedisTrouble is the
-// in-flight twin of the entry-path test (codex round 3).
+// TestACancelledCounterReadIsNotReportedAsRedisTrouble covers the in-flight
+// twin of the entry-path decline (codex round 3).
 //
 // The entry-side decline catches a caller that was ALREADY gone. A caller can
-// also leave while the first GET is in flight, and the error that comes back is
-// context.Canceled — which, at the sequence-counter WARN, is indistinguishable
-// from Redis being unreachable. On a stream where clients hang up mid-resume
-// that would manufacture exactly the alarm an operator would chase.
-func TestAResumeCancelledDuringTheCounterReadDoesNotLookLikeRedisTrouble(t *testing.T) {
-	b, mr := newMiniredisBus(t, 64)
-
-	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
-	waitFor(t, "the notification to be buffered", func() bool { return len(b.EventsSince(0)) == 1 })
-	if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "99"); err != nil {
-		t.Fatalf("set counter: %v", err)
-	}
+// also leave while the counter GET is in flight, and the error that comes back
+// is context.Canceled — indistinguishable, at the sequence-counter WARN, from
+// Redis being unreachable. On a stream where clients hang up mid-resume that
+// would manufacture exactly the alarm an operator would chase.
+//
+// DRIVEN AT sharedCounter RATHER THAN THROUGH THE HANDLER, deliberately. What
+// is under test is the CLASSIFICATION of the returned error, and staging a real
+// mid-flight cancellation means racing go-redis's read against a hook — which
+// decides, by timing, whether the error is a context error or a server error.
+// That is the thing being classified, so a test that leaves it to chance
+// measures whichever case it happened to produce.
+func TestACancelledCounterReadIsNotReportedAsRedisTrouble(t *testing.T) {
+	b, _ := newMiniredisBus(t, 64)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	cancel()
 
-	// CANCELLED FROM INSIDE THE COMMAND, which is what makes this the in-flight
-	// case rather than the entry case: the hook runs while the GET is being
-	// served, cancels the caller, and then fails the command so go-redis
-	// surfaces an error with ctx already dead.
+	var logged logCapture
+	restore := captureSlog(&logged)
+	defer restore()
+
+	if _, ok := b.sharedCounter(ctx); ok {
+		t.Fatal("a cancelled read must not be reported as a usable counter value")
+	}
+	if msg := logged.firstAtLeast(slog.LevelWarn); msg != "" {
+		t.Errorf("a cancelled counter read logged %q at WARN or above: disconnect churn is being reported as Redis trouble", msg)
+	}
+}
+
+// TestAGenuineCounterFailureIsStillReported is the control, and the reason the
+// test above is not simply a hole. Codex round 4 BLOCKED the first version of
+// this pair because the suppression keyed on ctx.Err() rather than on the
+// error: a real Redis failure that merely coincided with a cancellation would
+// have been downgraded to Debug and disappeared. Without this leg, "no WARN"
+// is satisfied by a bus that has stopped reporting Redis trouble at all.
+func TestAGenuineCounterFailureIsStillReported(t *testing.T) {
+	b, mr := newMiniredisBus(t, 64)
+
 	var hooked atomic.Bool
 	mr.Server().SetPreHook(func(p *server.Peer, cmd string, _ ...string) bool {
 		if !strings.EqualFold(cmd, "GET") || !hooked.CompareAndSwap(false, true) {
 			return false
 		}
-		cancel()
-		p.WriteError("simulated in-flight failure")
+		p.WriteError("simulated counter failure")
 		return true
 	})
 
@@ -553,14 +572,50 @@ func TestAResumeCancelledDuringTheCounterReadDoesNotLookLikeRedisTrouble(t *test
 	restore := captureSlog(&logged)
 	defer restore()
 
-	_, _, _ = b.SubscribeAndReplaySince(ctx, 1)
-
-	if !hooked.Load() {
-		t.Fatal("the counter read was never intercepted; this test did not reach the in-flight window")
+	if _, ok := b.sharedCounter(context.Background()); ok {
+		t.Fatal("a failed read must not be reported as a usable counter value")
 	}
-	if msg := logged.firstAtLeast(slog.LevelWarn); msg != "" {
-		t.Errorf("a caller that left during the counter read logged %q at WARN or above: "+
-			"disconnect churn is being reported as Redis trouble", msg)
+	if !hooked.Load() {
+		t.Fatal("the counter read was never intercepted; this test did not exercise a failure")
+	}
+	if msg := logged.firstAtLeast(slog.LevelWarn); msg == "" {
+		t.Error("a genuine Redis failure logged nothing at WARN: the cancellation suppression is hiding real trouble")
+	}
+}
+
+// TestCallerIsGoneClassifiesOnTheErrorNotTheContext is the test codex round 4's
+// BLOCK actually calls for, and the two integration legs above cannot provide.
+//
+// The blocked form asked ctx.Err(). Both forms agree on every case a live
+// client can be made to produce on demand — a cancelled context yields a
+// context error, a live one yields a server error — so the integration pair
+// passes against either. They disagree on exactly one case: a GENUINE Redis
+// failure whose error arrives while the context happens to be dead. Staging
+// that through a client is a race by construction, because go-redis decides by
+// timing which error it returns.
+//
+// Pinning it as a predicate removes the timing. The case that matters is the
+// last row.
+func TestCallerIsGoneClassifiesOnTheErrorNotTheContext(t *testing.T) {
+	serverErr := errors.New("READONLY You can't write against a read only replica")
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"a cancelled caller", context.Canceled, true},
+		{"a caller whose deadline passed", context.DeadlineExceeded, true},
+		{"a wrapped cancellation", fmt.Errorf("get counter: %w", context.Canceled), true},
+		{"a redis server error", serverErr, false},
+		// THE ROW THE BLOCK WAS ABOUT. Under the ctx.Err() form this was
+		// suppressed whenever a disconnect coincided with it, which is the one
+		// combination an operator cannot afford to lose.
+		{"a redis failure that merely coincides with a disconnect", fmt.Errorf("counter unreadable: %w", serverErr), false},
+	} {
+		if got := callerIsGone(tc.err); got != tc.want {
+			t.Errorf("%s: callerIsGone = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

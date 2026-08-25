@@ -581,6 +581,25 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 	return ch, missed, sub.gaps
 }
 
+// callerIsGone reports whether a Redis error is our own cancellation rather
+// than a fault worth telling an operator about.
+//
+// A FUNCTION OF THE ERROR ALONE, AND THAT IS THE FIX (codex round 4, which
+// BLOCKED on the earlier form). The first version asked ctx.Err() instead —
+// which cannot distinguish "the caller left" from "Redis failed while the
+// caller happened to be leaving", so a genuine failure coinciding with a
+// disconnect was downgraded to Debug and disappeared. That is the signal an
+// operator most needs, hidden by the change meant to reduce noise.
+//
+// Written as a predicate rather than inlined so the classification can be
+// tested for what it IS: the racing case cannot be staged deterministically
+// through a live client — go-redis decides, by timing, whether it returns the
+// context error or the server error — so the property is pinned here, where
+// timing plays no part.
+func callerIsGone(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // declineCancelledResume answers a caller that has already gone.
 //
 // SAME SHAPE AS THE CLOSED-BUS BRANCH — a closed channel, no replay, never nil.
@@ -781,15 +800,22 @@ func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
 		// comparison: an instance holding 101 disagrees with an authority at
 		// 0, does not converge, and the resume is answered with a gap.
 		return 0, true
-	case ctx.Err() != nil:
+	case callerIsGone(err):
 		// OUR OWN CANCELLATION IS NOT A REDIS FAULT (codex round 3). The
 		// caller can disconnect while this GET is IN FLIGHT, and the error
-		// that comes back is context.Canceled — indistinguishable, at the
-		// WARN below, from Redis being unreachable. That line is read as "the
+		// that comes back is context.Canceled — indistinguishable, at the WARN
+		// below, from Redis being unreachable. That line is read as "the
 		// sequence counter is unhealthy", so on a stream where clients hang up
 		// mid-resume it would manufacture exactly the alarm an operator would
 		// chase. The entry-side decline catches a caller that was already
 		// gone; this catches one that left while we were asking.
+		//
+		// CLASSIFIED ON THE ERROR, NOT ON ctx.Err() (codex round 4, which
+		// BLOCKED on this). Asking the context instead asks the wrong
+		// question: a GENUINE Redis failure that merely coincides with a
+		// cancellation would be downgraded to Debug and vanish — precisely the
+		// signal an operator needs, hidden by the fix meant to reduce noise.
+		// The error itself is the only thing that says which happened.
 		slog.Debug("watchevents: resume abandoned while reading the sequence counter; the caller is gone",
 			"error", err)
 		return 0, false
