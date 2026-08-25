@@ -315,64 +315,34 @@ func readArmState() (st *ArmState, path string, err error) {
 // armStateOwnerAlive implements the mandatory liveness check (constraint
 // 2), hardened against owner-identity reuse (Codex R1 HIGH-2). A stale
 // armed file must never arm a future monitor, so "alive" means the
-// recorded owner is not merely present but the SAME owner:
+// recorded owner is not merely present but the SAME owner. The verdict
+// itself is OwnerLiveness (session_owner.go), shared with the session
+// registry since TASK-2767; this is the consent gate's posture on it:
+// ONLY an explicit alive counts. Dead is dead, and unknown — a platform
+// that cannot probe the owner — is treated as dead too, because a gate
+// that cannot verify consent must not grant it (fail closed). The
+// registry's pruner takes the opposite posture on the same unknown, and
+// that asymmetry is the reason the verdict is tri-state.
 //
-//   - Socket-keyed: the socket path must still exist AND its recorded
-//     identity must match — inode+device where available (the strongest
-//     signal: a rebound socket gets a new inode), else the socket's
-//     mtime. A reused path, a lingering stale node, or an mtime collision
-//     are all rejected. A file that recorded no mtime (only possible if
-//     the socket had vanished at arm time) can't prove identity and is
-//     dead.
-//   - Headless: the pid must be alive AND, when an owner-identity token
-//     was RECORDED, it must be re-readable now AND match — so a reused pid
-//     (or one whose /proc entry we can no longer verify) is rejected
-//     rather than trusted. Only a file that recorded NO token (a non-Linux
-//     arm) falls back to bare pid-liveness: the documented residual on the
-//     secondary path (the sanctioned headless arming path is auto_arm, not
-//     this file).
-//
-// Anything uncertain is dead (fail closed).
+// The mapping preserves this file's contract exactly: socket-keyed files
+// are judged by socket identity (inode+device, else mtime; a file that
+// recorded no mtime is dead), headless files by pid plus the recorded
+// start token when one was recorded — and a headless file with NO token
+// (a non-Linux arm) falls back to bare pid-liveness, the documented
+// residual on the secondary path.
 func armStateOwnerAlive(st *ArmState) bool {
 	if st == nil {
 		return false
 	}
-	if st.Socket != "" {
-		info, err := os.Stat(st.Socket)
-		if err != nil {
-			return false // socket vanished — session gone
-		}
-		if st.SocketMtimeUnixNano == 0 {
-			return false // no identity recorded — can't prove it's ours
-		}
-		// Prefer inode+device when both the file recorded them and the
-		// current node exposes them: it distinguishes a rebound socket at
-		// the same path from the original. Fall back to mtime only when
-		// identity isn't available on this platform.
-		if st.SocketIno != 0 {
-			if ino, dev, ok := statIdentity(info); ok {
-				return ino == st.SocketIno && dev == st.SocketDev
-			}
-		}
-		return info.ModTime().UnixNano() == st.SocketMtimeUnixNano
+	owner := SessionOwner{
+		PID:                 st.PID,
+		ProcStart:           st.ProcStart,
+		Socket:              st.Socket,
+		SocketMtimeUnixNano: st.SocketMtimeUnixNano,
+		SocketIno:           st.SocketIno,
+		SocketDev:           st.SocketDev,
 	}
-	// Headless fallback: the pid is the owner we have. A pid <= 0 is never
-	// a live owner; a short-lived arm command's pid will usually be gone
-	// by the time a reader looks, which is why this path is documented as
-	// secondary to auto_arm.
-	if st.PID <= 0 || !pidAlive(st.PID) {
-		return false
-	}
-	if st.ProcStart != "" {
-		// A token was recorded (a Linux arm), so it must be re-readable and
-		// match. If it can't be read now (pid gone from /proc, or a zombie —
-		// procStartToken reports not-ok for state 'Z'), fail closed rather
-		// than trusting bare pid-liveness, which a reused pid would pass
-		// (Codex R2 finding 3).
-		now, ok := procStartToken(st.PID)
-		return ok && now == st.ProcStart
-	}
-	return true
+	return OwnerLiveness(&owner) == LivenessAlive
 }
 
 // LocalArmState is the tri-state of THIS session's local arm-state file

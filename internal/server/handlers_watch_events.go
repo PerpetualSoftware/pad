@@ -74,8 +74,10 @@ type watchEventPayload struct {
 //     "human-gate-shaped collection targets your ... active role" half
 //     mechanically needs either a Collection.Kind field or a
 //     user→active-role binding, and this codebase has neither today
-//     (`pad session register` is the natural future hook for a
-//     session-carried role identity, see cmd_session.go).
+//     (`pad session register` carries a session-scoped AGENT NAME locally
+//     since TASK-2767 — the natural hook for a session-carried identity —
+//     but nothing puts it on the wire yet; that is IDEA-2750 part 2b, and
+//     a role binding is a further step past it).
 func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request) {
 	if s.watchEvents == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "Watch event streaming is not available")
