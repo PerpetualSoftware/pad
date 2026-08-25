@@ -559,4 +559,45 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 
 		expect(host.querySelector('.loading'), 'the spinner must not outlive the write').toBeNull();
 	});
+
+	it('uses the server cursor as the boundary, not the oldest row returned', async () => {
+		// The shape only the server can produce: one source exhausted its
+		// over-fetch window while another returned an older rendered row, so
+		// the cursor sits NEWER than the oldest entry on the page. Everything
+		// between them was never examined — a live entry there is not deleted,
+		// it was not looked for (codex round 10).
+		pages.push({
+			entries: [
+				entry('e-top', '2026-01-01T12:00:20Z', 'top'),
+				entry('e-unexamined', '2026-01-01T12:00:05Z', 'never looked for'),
+				entry('e-inside', '2026-01-01T12:00:15Z', 'inside the window'),
+			],
+			has_more: false,
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		// The refresh reaches only back to 12:00:10 — its cursor says so —
+		// while still RETURNING a row from 12:00:01.
+		pages.push({
+			entries: [
+				entry('e-top', '2026-01-01T12:00:20Z', 'top'),
+				entry('e-older-returned', '2026-01-01T12:00:01Z', 'older returned'),
+			],
+			has_more: true,
+			next_before: '2026-01-01T12:00:10Z',
+			next_before_id: 'e-cursor',
+		});
+		await fireRefresh();
+
+		expect(
+			shows('never looked for'),
+			'older than the cursor: the page never reached it, so its absence means nothing'
+		).toBe(true);
+		expect(
+			shows('inside the window'),
+			'newer than the cursor and absent from a page that examined that span — deleted'
+		).toBe(false);
+	});
 });

@@ -933,20 +933,36 @@
 			// nothing and therefore deletes nothing — it means every row in
 			// that window was dropped as unrenderable, not that the item's
 			// history was erased.
-			// The oldest entry the fresh page reached, found by the same
-			// ordering the server sorts by rather than by trusting the array's
-			// order.
+			// HOW FAR BACK THIS PAGE ACTUALLY LOOKED. The server's own cursor
+			// says it exactly — `next_before` is the position the next page
+			// starts strictly before, so everything at or newer than it was
+			// examined — and that is NOT the same as the oldest row it
+			// RETURNED. The handler over-fetches per source and drops what
+			// cannot render, and when one source exhausts its window while
+			// another returns an older row, the cursor sits NEWER than the
+			// oldest entry on the page. Treating the returned floor as the
+			// boundary then judges a live entry from the exhausted source —
+			// one this page never reached — as deleted (codex round 10).
+			//
+			// The fallback is that returned floor, for a server predating
+			// BUG-2765's cursor. It is the old, slightly-too-eager rule, and
+			// it is still narrower than the one this unit replaces.
 			const sortedFresh = byNewestFirst(resp.entries);
-			const coverageFloor = sortedFresh[sortedFresh.length - 1] ?? null;
+			const returnedFloor = sortedFresh[sortedFresh.length - 1] ?? null;
+			const coverageFloor =
+				resp.next_before && resp.next_before_id
+					? { created_at: resp.next_before, id: resp.next_before_id }
+					: returnedFloor;
 			const hasMoreInFresh = resp.has_more;
-			const coveredByFreshPage = (e: TimelineEntry) => {
+			const coveredByFreshPage = (e: { created_at: string; id: string }) => {
 				// A final page covers the WHOLE history: has_more false means
-				// the server returned everything, so an entry it does not
-				// contain is not out of window — it is gone, whether deleted
-				// or no longer renderable (codex round 1). This is also what
-				// makes an empty final page clear the view rather than freeze
-				// it, while an empty page with more behind it still deletes
-				// nothing.
+				// the server reached the end of the item's rows — it may have
+				// dropped some as unrenderable on the way, which is exactly
+				// why "not returned" still means "not on this timeline" — so
+				// an entry it does not contain is gone rather than out of
+				// window (codex round 1). This is also what makes an empty
+				// final page clear the view rather than freeze it, while an
+				// empty page with more behind it still deletes nothing.
 				if (!hasMoreInFresh) return true;
 				if (!coverageFloor) return false;
 				const et = new Date(e.created_at).getTime();
