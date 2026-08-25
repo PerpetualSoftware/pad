@@ -138,21 +138,37 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 
 	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
-	// Determine if there are more entries beyond this page.
+	// Determine if there are more entries beyond this page, and where the
+	// next one starts. The cursor is the server's to compute: it over-fetched
+	// per source and dropped rows above, so the client cannot see the
+	// position it must continue from (BUG-2765).
 	hasMore := false
+	var nextBefore time.Time
+	var nextBeforeID string
 	if len(entries) > limit {
+		// Truncation: the entries beyond `limit` were rendered and then cut,
+		// so the next page resumes at the last one KEPT — anything else would
+		// skip the ones just dropped.
 		entries = entries[:limit]
 		hasMore = true
-	} else {
-		// Even if merged result is <= limit, there may be more in individual sources.
-		// If any source returned its full limit, there's likely more data.
-		hasMore = len(comments) >= perSource || len(activities) >= perSource || len(versions) >= perSource
+		last := entries[len(entries)-1]
+		nextBefore, nextBeforeID = last.CreatedAt, last.ID
+	} else if at, id, ok := exhaustedWindowCursor(comments, activities, versions, perSource); ok {
+		// The merged page fit, but at least one source filled its window, so
+		// rows older than that source's tail were never examined.
+		hasMore = true
+		nextBefore, nextBeforeID = at, id
 	}
 
-	writeJSON(w, http.StatusOK, models.TimelineResponse{
+	resp := models.TimelineResponse{
 		Entries: entries,
 		HasMore: hasMore,
-	})
+	}
+	if hasMore {
+		resp.NextBefore = nextBefore.UTC().Format(time.RFC3339Nano)
+		resp.NextBeforeID = nextBeforeID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // structuredTimelineEntries turns the item's implementation notes and
@@ -485,4 +501,59 @@ func collapseAutosaveBursts(entries []models.TimelineEntry) []models.TimelineEnt
 		kept = append(kept, e)
 	}
 	return kept
+}
+
+// exhaustedWindowCursor returns the position the next timeline page must start
+// strictly before, when the merged page fit inside `limit` but at least one
+// source filled its over-fetch window.
+//
+// WHICH tail is the subtle part. A source that returned fewer than `perSource`
+// rows is EXHAUSTED — there is nothing older than its tail to come back for —
+// so it puts no constraint on the cursor. A source that filled its window has
+// unexamined rows strictly older than its own tail. Resuming at the NEWEST
+// such tail therefore skips nothing: every full source is picked up exactly
+// where it stopped, and the sources whose tails are older simply get rows
+// re-examined that this page already rendered. Choosing the oldest tail
+// instead would step over the newer source's unexamined rows and lose them
+// permanently, which is the failure this cursor exists to prevent — repeats
+// are absorbed by the client's dedup-by-id, gaps are not recoverable.
+//
+// Progress is guaranteed because every candidate is a row this page FETCHED,
+// and the store's cursor predicate is strict: any tail is strictly older than
+// the cursor that produced it, so the next request cannot re-ask this one.
+//
+// The structured kinds (notes, decisions) are deliberately absent: they live
+// in the item's fields blob, are filtered by the same cursor predicate, and
+// arrive complete rather than windowed — there is never an unexamined
+// remainder of them to page toward.
+func exhaustedWindowCursor(
+	comments []models.Comment,
+	activities []models.Activity,
+	versions []models.Version,
+	perSource int,
+) (time.Time, string, bool) {
+	var at time.Time
+	var id string
+	found := false
+
+	consider := func(t time.Time, rowID string, full bool) {
+		if !full {
+			return
+		}
+		if !found || t.After(at) || (t.Equal(at) && rowID > id) {
+			at, id, found = t, rowID, true
+		}
+	}
+
+	if n := len(comments); n > 0 {
+		consider(comments[n-1].CreatedAt, comments[n-1].ID, n >= perSource)
+	}
+	if n := len(activities); n > 0 {
+		consider(activities[n-1].CreatedAt, activities[n-1].ID, n >= perSource)
+	}
+	if n := len(versions); n > 0 {
+		consider(versions[n-1].CreatedAt, versions[n-1].ID, n >= perSource)
+	}
+
+	return at, id, found
 }
