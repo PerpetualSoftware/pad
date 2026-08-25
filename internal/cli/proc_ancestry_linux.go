@@ -3,15 +3,13 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"strconv"
-	"strings"
 )
 
 // pidIsSelfOrAncestor reports whether pid is this process or one of its
-// ancestors, walking /proc/<pid>/stat's ppid field (4th field; parsed
-// after the last ')' for the same reason procStartTokenErr does). It is
+// ancestors, walking /proc/<pid>/stat's ppid field (via procStatFields,
+// the parser shared with the start-token reader). It is
 // how a registration's CLAUDE_PID / PAD_SESSION_PID claim is checked on
 // Linux (TASK-2767, codex round 3): a `pad session register` run by a
 // harness — as a hook, a monitor, or a tool shell — is a DESCENDANT of
@@ -39,16 +37,10 @@ func pidIsSelfOrAncestor(pid int) (bool, error) {
 }
 
 func procParentPID(pid int) (int, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	fields, err := procStatFields(pid)
 	if err != nil {
 		return 0, err
 	}
-	s := string(data)
-	rparen := strings.LastIndexByte(s, ')')
-	if rparen < 0 || rparen+1 >= len(s) {
-		return 0, errProcStatMalformed
-	}
-	fields := strings.Fields(s[rparen+1:])
 	const ppidIndexAfterComm = 1 // field 4: state(3), ppid(4)
 	if len(fields) <= ppidIndexAfterComm {
 		return 0, errProcStatMalformed

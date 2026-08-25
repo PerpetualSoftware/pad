@@ -267,10 +267,14 @@ func readSessionRecord(path string) (SessionRecord, error) {
 // registrationWellFormed rejects files that parse as JSON but are not
 // something this code wrote (codex round 1 P2): `{}` would otherwise read
 // as a dead legacy record (owner pid 0) and be pruned with no age bound,
-// and `{"session_pid":1}` as a live one. A v2 record has a positive
-// session_pid; a v1 record has none and a positive registrar pid; both
-// carry an RFC3339 registered_at. Anything else is malformed — listed,
-// unknown, and removed only under an explicit age bound.
+// and `{"session_pid":1}` as a live one. Every record carries a cwd, a
+// positive registrar pid and an RFC3339 registered_at; session_pid is
+// positive for a v2 record and absent for a v1 one — and since JSON
+// cannot tell an absent zero from an explicit one, an explicit
+// session_pid:0 is accepted and read as legacy by recordFor (which then
+// strips the name such a file cannot legitimately carry). A negative
+// session_pid, or a missing field, is malformed — listed, unknown, and
+// removed only under an explicit age bound.
 func registrationWellFormed(reg *SessionRegistration) bool {
 	// Fields every writer (v1 and v2) always emitted: a cwd, a positive
 	// registrar pid, an RFC3339 timestamp.

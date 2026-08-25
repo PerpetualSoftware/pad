@@ -52,15 +52,16 @@ import (
 //     dies with the command). See armStateOwnerAlive.
 //
 //   - LIFECYCLE (constraint 3). arm writes/overwrites the file
-//     (idempotent). disarm and a clean monitor exit remove it. Both are
-//     ordinary CLI actions visible in the session transcript (D7).
+//     (idempotent). disarm REWRITES it as an explicit OFF marker (S3 —
+//     see ArmState.Disarmed; removing it would let auto_arm re-arm), and
+//     a dead owner gets it reaped. Both verbs are ordinary CLI actions
+//     visible in the session transcript (D7).
 
 // ArmState is one session's on-disk arm declaration. Presence of the file
-// (with a live owner) is what "armed" means; the fields exist to prove
-// the owner is still alive, not to carry a mutable armed bit. Armed is
-// serialized as a constant true purely so a human inspecting this
-// security artifact reads intent at a glance — a file that exists always
-// means armed, and disarm removes it rather than flipping it.
+// (with a live owner) identifies the session; Armed/Disarmed say what it
+// declared (S3 made this tri-state — see Disarmed), and the other fields
+// exist to prove the owner is still alive. Armed is serialized explicitly
+// so a human inspecting this security artifact reads intent at a glance.
 type ArmState struct {
 	Armed bool `json:"armed"`
 	// Disarmed makes the file TRI-STATE (PLAN-2613 S3). S2 had two states:
@@ -328,8 +329,10 @@ func readArmState() (st *ArmState, path string, err error) {
 // are judged by socket identity (inode+device, else mtime; a file that
 // recorded no mtime is dead), headless files by pid plus the recorded
 // start token when one was recorded — and a headless file with NO token
-// (a non-Linux arm) falls back to bare pid-liveness, the documented
-// residual on the secondary path.
+// (a non-Linux unix arm, e.g. macOS) falls back to bare pid-liveness, the
+// documented residual on the secondary path. On Windows the pid cannot be
+// probed at all: the verdict is unknown, which this gate treats as not
+// alive — the same effective result as before the shared verdict.
 func armStateOwnerAlive(st *ArmState) bool {
 	if st == nil {
 		return false
@@ -376,10 +379,12 @@ const (
 
 // SessionArmState reads THIS session's local arm-state file and returns
 // its tri-state. It applies the mandatory liveness check and reaps a
-// dead-owner or malformed file, so a crashed session's override — armed OR
-// disarmed — can't linger (constraint 2). It never errors: every failure
-// path is LocalArmAbsent, which falls back to auto_arm, because this gates
-// consent and must fail to the safe, config-decided answer.
+// dead-owner file, so a crashed session's override — armed OR disarmed —
+// can't linger (constraint 2). A file that exists but cannot be read or
+// is not well-formed is NOT reaped and resolves to LocalArmError (fail
+// closed, see below); every other failure path is LocalArmAbsent, which
+// falls back to auto_arm, because this gates consent and must fail to the
+// safe, config-decided answer.
 //
 // This is the reader half of the file contract. The full announced value
 // (folding in auto_arm) is ResolveAnnouncedArmed — see cmd/pad's monitor
