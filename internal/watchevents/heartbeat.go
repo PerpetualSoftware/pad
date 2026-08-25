@@ -290,6 +290,24 @@ func (b *RedisBus) publishHeartbeats() {
 // loop metering the failure rather than recovering from it.
 func (b *RedisBus) cycleIfIdle() {
 	b.mu.Lock()
+	// NO SUBSCRIPTION AT ALL: a previous pass dropped coverage and its
+	// resubscribe failed. THE RE-DIAL IS ALL THAT IS OWED HERE (codex round
+	// 5). Falling through would re-run the whole cycle, and the cycle's
+	// precondition stays true for the entire outage — the probe fails so
+	// nothing stamps lastProbeOK, nothing arrives so nothing stamps lastSeen,
+	// and both are frozen either side of the threshold. Coverage would be
+	// dropped once per cadence, each time on an already-empty buffer, each
+	// time re-announcing a hole every subscriber has been told about, and each
+	// time moving the counter an operator is told to read as an incident
+	// count. Retrying is genuinely owed; re-deciding is not.
+	if b.pubsub == nil && !b.closed && b.client != nil {
+		b.mu.Unlock()
+		if err := b.resubscribe(); err != nil {
+			slog.Warn("watchevents: still cannot re-establish the watch subscription; this instance receives no "+
+				"notifications until an attempt succeeds", "error", err)
+		}
+		return
+	}
 	switch {
 	case !b.publishHeartbeat, b.closed, b.client == nil:
 		b.mu.Unlock()
@@ -351,6 +369,15 @@ func (b *RedisBus) cycleIfIdle() {
 	if oldPubsub != nil {
 		_ = oldPubsub.Close()
 	}
+
+	// FORGOTTEN AS WELL AS CLOSED. resubscribe overwrites both on success, so
+	// this only matters when it fails — and then the fields would otherwise go
+	// on naming a PubSub that is already closed, which Close closes a second
+	// time and which makes "this instance has no subscription" unrepresentable.
+	// The retry arm at the top of this function reads exactly that state.
+	b.mu.Lock()
+	b.pubsub, b.subCancel = nil, nil
+	b.mu.Unlock()
 
 	if err := b.resubscribe(); err != nil {
 		// NOT "until restarted" — that was wrong (codex round 2). No generation

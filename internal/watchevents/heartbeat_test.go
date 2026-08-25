@@ -859,3 +859,95 @@ func TestClosingTheBusDuringAnIdleCycleIsSafe(t *testing.T) {
 			"wrong moment, so the loop outlives the bus", got)
 	}
 }
+
+// TestAFailedResubscribeDoesNotReDropCoverageEveryPass is codex round 5's P2,
+// and it is a full-outage behaviour rather than a logic slip.
+//
+// The probe-failure suspension does not cover this. Suspension asks "did our
+// last probe get through", and the answer can be YES with the route already
+// gone: the last successful publish stamps lastProbeOK, Redis dies before that
+// frame comes back, and lastSeen stays behind it. From there the timestamps are
+// frozen — the probe fails, so nothing stamps lastProbeOK, and nothing arrives,
+// so nothing stamps lastSeen — and the cycle's own precondition stays true for
+// the whole outage. Every pass then drops coverage, announces to every
+// subscriber, and re-dials.
+//
+// Only the RE-DIAL should repeat. Dropping coverage a second time drops a
+// buffer that is already empty and re-announces a hole every subscriber has
+// already been told about, and it moves the reset counter once per cadence for
+// as long as Redis is away — turning one outage into an unbounded incident
+// count on the very series an operator is asked to alert on.
+func TestAFailedResubscribeDoesNotReDropCoverageEveryPass(t *testing.T) {
+	b, mr, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	// Redis goes away entirely: the resubscribe inside the cycle cannot
+	// succeed, which is the state this test is about.
+	mr.Close()
+
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+	b.cycleIfIdle()
+	if got := obs.snapshot().resets[ResetReasonIdleTimeout]; got != 1 {
+		t.Fatalf("fixture: the first pass did not cycle (%d resets), so a second pass proves nothing", got)
+	}
+
+	// Two more passes, exactly as the maintenance loop would run them.
+	clock.advance(DefaultWatchIdleTimeout + time.Second)
+	b.cycleIfIdle()
+	clock.advance(DefaultWatchIdleTimeout + time.Second)
+	b.cycleIfIdle()
+
+	if got := obs.snapshot().resets[ResetReasonIdleTimeout]; got != 1 {
+		t.Fatalf("coverage was dropped %d times across three passes with Redis away: each pass after the first "+
+			"re-drops an already-empty buffer and re-announces a hole every subscriber has been told about, and "+
+			"an operator sees the outage as that many separate incidents", got)
+	}
+}
+
+// TestRecoveryAfterAFailedResubscribeStillReplacesTheConnection is the other
+// half, and the reason the fix above cannot simply suspend the cycle. Retrying
+// the re-dial IS the recovery path — the comment in cycleIfIdle says so — so a
+// fix that stops the pass from running at all would trade a noisy outage for
+// one the instance never comes back from.
+func TestRecoveryAfterAFailedResubscribeStillReplacesTheConnection(t *testing.T) {
+	b, mr, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	addr := mr.Addr()
+	mr.Close()
+
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+	b.cycleIfIdle()
+	if b.currentPubSub() != nil {
+		t.Fatal("a failed resubscribe left a subscription behind; Close would close it a second time")
+	}
+
+	// Redis comes back at the same address.
+	revived, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+	t.Cleanup(revived.Close)
+	if err := revived.StartAddr(addr); err != nil {
+		// Already listening from Run(); StartAddr on a running instance is the
+		// error path, so fall back to pointing the client at the new address.
+		b.mu.Lock()
+		b.client = redis.NewClient(&redis.Options{Addr: revived.Addr()})
+		b.mu.Unlock()
+	}
+
+	clock.advance(DefaultWatchIdleTimeout + time.Second)
+	b.cycleIfIdle()
+
+	if b.currentPubSub() == nil {
+		t.Fatal("the instance never re-established its subscription after Redis came back: the retry that makes " +
+			"this self-healing is the same pass the noise fix touches")
+	}
+	if got := obs.snapshot().resets[ResetReasonIdleTimeout]; got != 1 {
+		t.Fatalf("recovery moved the reset counter to %d; the coverage drop belongs to the outage, not to coming back", got)
+	}
+}

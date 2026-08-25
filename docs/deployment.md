@@ -964,6 +964,17 @@ else:
   fires when a buffer existed to drop. The watch bus drops its buffer
   unconditionally, so `pad_watchevents_sequence_resets_total{reason="idle_timeout"}`
   is already a complete count and a second metric would be noise.
+- **A failed re-dial retries without re-deciding.** Read
+  `pad_watchevents_sequence_resets_total{reason="idle_timeout"}` as **one per
+  outage, not one per cadence**. When the cycle's replacement cannot be
+  established — Redis away, the path still blackholed — the watch bus keeps
+  retrying the dial every interval but does not drop coverage or announce
+  again: coverage is already ended and the buffer is already empty, so a second
+  drop would re-announce a hole every subscriber has been told about and turn
+  one outage into an incident per cadence on the series you alert on. The
+  activity stream reaches the same place by a different road: its teardown
+  removes the workspace's subscription entry outright, so the next scan finds
+  nothing to cycle and its recovery runs off the request path instead.
 
 `pad_watchevents_heartbeat_publish_failures_total` is the watch twin of the
 activity stream's probe-failure counter and reads the same way: detection
