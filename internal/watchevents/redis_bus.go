@@ -1331,10 +1331,19 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification, gen int64) {
 	}
 	b.mu.Unlock()
 
-	b.fanOutLocally(n)
+	b.fanOutLocally(n, gen)
 }
 
-func (b *RedisBus) fanOutLocally(n Notification) {
+// gen is the subscription this notification arrived on, or currentGen() for a
+// caller that is not the receive loop.
+//
+// CHECKED HERE, under the lock that APPENDS — not only in fanOutFromRedis
+// (codex round 3). That function checks, unlocks to do its epoch bookkeeping,
+// and calls this one, which locks again; a replacement in between let a stale
+// notification into the fresh buffer. The rule that actually holds is per
+// MUTATION, not per call chain: every place that writes re-checks under the
+// lock in which it writes.
+func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 	// Registered FIRST so it runs LAST — after the Unlock below. See
 	// Observer: reports fire with no bus lock held, so an observer may
 	// call back into the bus without deadlocking it.
@@ -1343,6 +1352,13 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.subGen != gen {
+		// A straggler from a replaced subscription. Checked HERE, under the
+		// lock that appends, because fanOutFromRedis's check happens in a
+		// different acquisition.
+		return
+	}
 
 	// Coverage bookkeeping before the append — see knownFrom's comment.
 	switch {
@@ -1559,21 +1575,25 @@ func (b *RedisBus) fanOutLocally(n Notification) {
 // other detections need something to HAPPEN (a reachable Redis, or a later
 // publish), and the live subscriber on a stream that then goes quiet has
 // neither. That client is what this function exists for.
-// dropCoverageForGen is dropCoverage for a caller that learned of the problem
-// from a specific subscription. A frame from a replaced one says nothing about
-// the replacement's coverage, and ending it would resync every client on the
-// instance because a dead socket's buffered tail arrived late.
+// dropCoverageForGen ends coverage on behalf of a caller that learned of the
+// problem from a specific subscription. A frame from a replaced one says
+// nothing about the replacement's coverage, and ending it would resync every
+// client on the instance because a dead socket's buffered tail arrived late.
+//
+// The generation is checked INSIDE dropCoverage's own critical section rather
+// than in a separate acquisition here (codex round 3) — a check and a reset in
+// two locks is the TOCTOU this fence exists to close.
 func (b *RedisBus) dropCoverageForGen(reason string, gen int64) {
-	b.mu.Lock()
-	current := b.subGen == gen
-	b.mu.Unlock()
-	if !current {
-		return
-	}
-	b.dropCoverage(reason)
+	b.dropCoverageChecked(reason, &gen)
 }
 
 func (b *RedisBus) dropCoverage(reason string) {
+	b.dropCoverageChecked(reason, nil)
+}
+
+// dropCoverageChecked is dropCoverage with an optional generation guard. A nil
+// gen means the caller is not acting on a frame and no guard applies.
+func (b *RedisBus) dropCoverageChecked(reason string, gen *int64) {
 	// Registered FIRST so it runs LAST, after the Unlock — reports fire with
 	// no bus lock held. See Observer.
 	var pending pendingReports
@@ -1581,6 +1601,10 @@ func (b *RedisBus) dropCoverage(reason string) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if gen != nil && b.subGen != *gen {
+		return
+	}
 
 	b.replay = newReplayBuffer(b.replaySize)
 	b.lastAppendedID = 0

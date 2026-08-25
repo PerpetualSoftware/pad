@@ -636,3 +636,86 @@ func TestAStragglerCannotEnterTheReplacementsBuffer(t *testing.T) {
 			"instance would then vouch for a span it never received", len(got))
 	}
 }
+
+// TestEachMutationRefusesAStragglerOnItsOwn is the per-mutation half of the
+// fence, and the mutation matrix is why it exists as three separate assertions
+// rather than one.
+//
+// The fence is not "check once and pass the frame along" — that was the shape
+// codex round 3 blocked, because a check in one lock acquisition and a write in
+// another is a TOCTOU. Each of the three things a frame can mutate re-checks
+// under the lock in which it writes, and each is therefore reachable on its own:
+// driving only fanOutFromRedis leaves dropCoverageForGen's check unexercised,
+// and its outer early-return masks fanOutLocally's.
+func TestEachMutationRefusesAStragglerOnItsOwn(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	staleGen := b.currentGen()
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+	b.cycleIfIdle()
+	if b.currentGen() == staleGen {
+		t.Fatal("fixture: nothing was replaced")
+	}
+	resetsAfterCycle := obs.snapshot().resets[ResetReasonIdleTimeout]
+
+	t.Run("the append refuses it", func(t *testing.T) {
+		// fanOutLocally directly, because fanOutFromRedis's own guard would
+		// return before reaching it — that guard protects the EPOCH fields it
+		// writes, and this one protects the buffer.
+		b.fanOutLocally(Notification{ID: 77, Kind: KindComment, ItemRef: "TASK-stale"}, staleGen)
+		if got := b.EventsSince(0); len(got) != 0 {
+			t.Fatalf("a straggler entered the replacement's buffer (%d entries)", len(got))
+		}
+	})
+
+	t.Run("the coverage drop refuses it", func(t *testing.T) {
+		b.dropCoverageForGen(ResetReasonUndecodableMessage, staleGen)
+		got := obs.snapshot()
+		if got.resets[ResetReasonUndecodableMessage] != 0 {
+			t.Fatalf("a straggler ended the replacement's coverage: undecodable_message resets = %d",
+				got.resets[ResetReasonUndecodableMessage])
+		}
+		if got.resets[ResetReasonIdleTimeout] != resetsAfterCycle {
+			t.Fatal("the straggler moved the idle_timeout count")
+		}
+	})
+
+	t.Run("the epoch bookkeeping refuses it", func(t *testing.T) {
+		// fanOutFromRedis writes b.epoch and, on a mismatch, drops the WHOLE
+		// buffer and reports epoch_change. A straggler carrying the old id
+		// space would therefore resync every client on the instance — a
+		// distinct mutation from the append below it, with its own guard.
+		b.mu.Lock()
+		epochBefore := b.epoch
+		b.mu.Unlock()
+
+		b.fanOutFromRedis("some-other-epoch", Notification{ID: 5, Kind: KindComment, ItemRef: "TASK-x"}, staleGen)
+
+		b.mu.Lock()
+		epochAfter := b.epoch
+		b.mu.Unlock()
+		if epochAfter != epochBefore {
+			t.Fatalf("a straggler rewrote the id space (%q → %q)", epochBefore, epochAfter)
+		}
+		if got := obs.snapshot().resets[ResetReasonEpochChange]; got != 0 {
+			t.Fatalf("a straggler reported an epoch change (%d): every client on the instance would resync", got)
+		}
+	})
+
+	t.Run("the liveness stamp refuses it", func(t *testing.T) {
+		b.mu.Lock()
+		before := b.lastSeen
+		b.mu.Unlock()
+		clock.advance(time.Minute)
+		b.stampLastSeen(staleGen)
+		b.mu.Lock()
+		after := b.lastSeen
+		b.mu.Unlock()
+		if !after.Equal(before) {
+			t.Fatalf("a straggler refreshed the replacement's liveness (%v → %v)", before, after)
+		}
+	})
+}

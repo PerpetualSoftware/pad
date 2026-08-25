@@ -82,7 +82,7 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 
 	// Three notifications land before anyone subscribes.
 	for i := int64(1); i <= 3; i++ {
-		b.fanOutLocally(Notification{ID: i, Kind: KindComment, ItemRef: "TASK-1"})
+		b.fanOutLocally(Notification{ID: i, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 	}
 
 	ch, missed, _ := b.SubscribeAndReplaySince(context.Background(), 1)
@@ -106,7 +106,7 @@ func TestRedisBusSubscribeAndReplayIsAtomic(t *testing.T) {
 
 	// A notification fanned out after the subscribe goes to the channel and
 	// must NOT be something the caller already had.
-	b.fanOutLocally(Notification{ID: 4, Kind: KindComment, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 4, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 	select {
 	case n := <-ch:
 		if n.ID != 4 {
@@ -135,7 +135,7 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := int64(1); i <= total; i++ {
-			b.fanOutLocally(Notification{ID: i, Kind: KindStatusChange, ItemRef: "TASK-1"})
+			b.fanOutLocally(Notification{ID: i, Kind: KindStatusChange, ItemRef: "TASK-1"}, b.currentGen())
 			// Deliberately paced. The first version of this test fired all
 			// of them as fast as a map iteration allows and then slept 1ms
 			// before subscribing — so the producer was always FINISHED by
@@ -238,7 +238,7 @@ func TestRedisBusSubscribeAndReplayNeverDoubleDelivers(t *testing.T) {
 	// grow it further for every later attempt.
 	nextID := int64(1)
 	for ; nextID <= 5; nextID++ {
-		b.fanOutLocally(Notification{ID: nextID, Kind: KindStatusChange, ItemRef: "TASK-1"})
+		b.fanOutLocally(Notification{ID: nextID, Kind: KindStatusChange, ItemRef: "TASK-1"}, b.currentGen())
 	}
 
 	straddled := 0
@@ -254,7 +254,7 @@ func TestRedisBusSubscribeAndReplayNeverDoubleDelivers(t *testing.T) {
 			// this goroutine is holding — see afterSubscribeRegister's
 			// comment.
 			go func() {
-				b.fanOutLocally(Notification{ID: liveID, Kind: KindStatusChange, ItemRef: "TASK-1"})
+				b.fanOutLocally(Notification{ID: liveID, Kind: KindStatusChange, ItemRef: "TASK-1"}, b.currentGen())
 				close(producerDone)
 			}()
 		}
@@ -460,10 +460,10 @@ func TestRedisBusReplayReportsAHoleAsAGap(t *testing.T) {
 	b := newLocalOnlyBus(64)
 	defer b.Close()
 
-	b.fanOutLocally(Notification{ID: 99, Kind: KindComment, ItemRef: "TASK-1"})
-	b.fanOutLocally(Notification{ID: 100, Kind: KindComment, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 99, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
+	b.fanOutLocally(Notification{ID: 100, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 	// 101 is never received — the subscription blipped.
-	b.fanOutLocally(Notification{ID: 102, Kind: KindComment, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 102, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 
 	if got := b.EventsSince(100); got != nil {
 		t.Errorf("a resume from 100 must span the missing 101 and report a gap; got %+v", got)
@@ -529,8 +529,8 @@ func TestRedisBusColdStartReplayReportsAGap(t *testing.T) {
 	defer b.Close()
 
 	// This instance's first sight of the stream is id 102.
-	b.fanOutLocally(Notification{ID: 102, Kind: KindComment, ItemRef: "TASK-1"})
-	b.fanOutLocally(Notification{ID: 103, Kind: KindComment, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 102, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
+	b.fanOutLocally(Notification{ID: 103, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
 
 	if got := b.EventsSince(100); got != nil {
 		t.Errorf("a resume from 100 asks for 101, which this instance never saw; want a gap, got %+v", got)
@@ -605,12 +605,12 @@ func TestRedisBusCounterResetDropsTheStaleReplayBuffer(t *testing.T) {
 	defer b.Close()
 
 	for _, id := range []int64{99, 100, 101} {
-		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-old"})
+		b.fanOutLocally(Notification{ID: id, Kind: KindComment, ItemRef: "TASK-old"}, b.currentGen())
 	}
 
 	// Redis counter reset: ids restart.
-	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-new"})
-	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-new"})
+	b.fanOutLocally(Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-new"}, b.currentGen())
+	b.fanOutLocally(Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-new"}, b.currentGen())
 
 	// A client from the OLD id space must be told to resync, not handed
 	// entries from the new one (or, worse, the stale ones it already saw).

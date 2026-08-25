@@ -337,15 +337,10 @@ func (b *RedisBus) cycleIfIdle() {
 		b.reportReset(report)
 	}
 
-	// THE GENERATION IS RETIRED AT TEARDOWN, not after the replacement is
-	// confirmed (codex round 2). Incrementing later left a window — the cancel,
-	// the close, the dial and the confirmation round trip — in which the OLD
-	// generation was still the current one, so its buffered stragglers passed
-	// every fence. Retiring it here means that during resubscribe NO generation
-	// is current and a late frame is ignored by all three mutation sites.
-	b.mu.Lock()
-	b.subGen++
-	b.mu.Unlock()
+	// The generation was retired inside dropCoverageIfStillIdle, atomically with
+	// the buffer reset. From here until resubscribe installs a new one, NO
+	// generation is current, so a late frame from the old subscription is
+	// ignored by all three mutation sites.
 
 	// The replaced loop must leave by the quiet door BEFORE its subscription is
 	// closed, or it reports the instance deaf on a closure we caused.
@@ -446,6 +441,12 @@ func (b *RedisBus) dropCoverageIfStillIdle(decidedGen int64) (string, bool) {
 		b.mu.Unlock()
 		return "", false
 	}
+	// RETIRED IN THE SAME CRITICAL SECTION AS THE RESET (codex round 3).
+	// Retiring it afterwards left a window between the fresh buffer and the
+	// generation bump in which a straggler from the old subscription still
+	// passed every fence and landed in the buffer we had just emptied — which
+	// is precisely the stale coverage this cycle exists to end.
+	b.subGen++
 	b.replay = newReplayBuffer(b.replaySize)
 	b.lastAppendedID = 0
 	b.knownFrom = 0

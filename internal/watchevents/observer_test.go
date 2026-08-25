@@ -185,7 +185,7 @@ func TestRedisBusReportsSlowSubscriberDrop(t *testing.T) {
 	// PREMISE: a subscriber with room is delivered to and reports
 	// nothing, so the assertion below is about the OVERFLOW rather than
 	// about a bus that reports on every notification.
-	b.fanOutLocally(Notification{ID: 1, Kind: KindPush, ItemRef: "TASK-1"})
+	b.fanOutLocally(Notification{ID: 1, Kind: KindPush, ItemRef: "TASK-1"}, b.currentGen())
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
@@ -199,13 +199,13 @@ func TestRedisBusReportsSlowSubscriberDrop(t *testing.T) {
 	// Ids stay contiguous so no gap is reported and the drop is the only
 	// event in the snapshot.
 	for i := int64(2); i <= 65; i++ {
-		b.fanOutLocally(Notification{ID: i, Kind: KindPush, ItemRef: "TASK-2"})
+		b.fanOutLocally(Notification{ID: i, Kind: KindPush, ItemRef: "TASK-2"}, b.currentGen())
 	}
 	if got := obs.snapshot(); got.totalEvents != 0 {
 		t.Fatalf("premise failed: filling to capacity reported %d events (%+v)", got.totalEvents, got)
 	}
 
-	b.fanOutLocally(Notification{ID: 66, Kind: KindPush, ItemRef: "TASK-3"})
+	b.fanOutLocally(Notification{ID: 66, Kind: KindPush, ItemRef: "TASK-3"}, b.currentGen())
 
 	got := obs.snapshot()
 	if got.dropped[DropReasonSlowSubscriber] != 1 {
@@ -230,14 +230,14 @@ func TestRedisBusReportsSequenceGap(t *testing.T) {
 
 	// PREMISE: contiguous ids report nothing. Without this leg a bus that
 	// reported a gap on every notification would pass the assertion below.
-	b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
-	b.fanOutLocally(Notification{ID: 2, Kind: KindPush})
+	b.fanOutLocally(Notification{ID: 1, Kind: KindPush}, b.currentGen())
+	b.fanOutLocally(Notification{ID: 2, Kind: KindPush}, b.currentGen())
 	if got := obs.snapshot(); got.totalEvents != 0 {
 		t.Fatalf("premise failed: contiguous ids 1,2 reported %d observer events, want 0 (%+v)", got.totalEvents, got)
 	}
 
 	// 3 and 4 are missing.
-	b.fanOutLocally(Notification{ID: 5, Kind: KindPush})
+	b.fanOutLocally(Notification{ID: 5, Kind: KindPush}, b.currentGen())
 
 	got := obs.snapshot()
 	if got.gaps != 1 {
@@ -280,14 +280,14 @@ func TestRedisBusReportsSequenceResets(t *testing.T) {
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
 
-		b.fanOutLocally(Notification{ID: 100, Kind: KindPush})
+		b.fanOutLocally(Notification{ID: 100, Kind: KindPush}, b.currentGen())
 		if got := obs.snapshot(); got.totalEvents != 0 {
 			t.Fatalf("premise failed: a cold start reported %d events, want 0 (%+v)", got.totalEvents, got)
 		}
 
 		// The shared counter restarted: an id at or below the high-water
 		// mark.
-		b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
+		b.fanOutLocally(Notification{ID: 1, Kind: KindPush}, b.currentGen())
 
 		got := obs.snapshot()
 		if got.resets[ResetReasonCounterBackward] != 1 {
@@ -455,7 +455,7 @@ func TestRedisBusReportsResumeGaps(t *testing.T) {
 		b.Unsubscribe(ch)
 
 		// A HOLE moves knownFrom up past the cursor...
-		b.fanOutLocally(Notification{ID: 9, Kind: KindComment, ItemRef: "TASK-9"})
+		b.fanOutLocally(Notification{ID: 9, Kind: KindComment, ItemRef: "TASK-9"}, b.currentGen())
 		// ...and the shared counter is set to AGREE with what this
 		// instance has seen, so resumeOutrunsLocalView finds no
 		// disagreement and does NOT report. Without this the gap comes
@@ -550,8 +550,8 @@ func TestObserverMayReenterTheBus(t *testing.T) {
 	go func() {
 		defer close(done)
 		// A gap: ids 1 then 3.
-		b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
-		b.fanOutLocally(Notification{ID: 3, Kind: KindPush})
+		b.fanOutLocally(Notification{ID: 1, Kind: KindPush}, b.currentGen())
+		b.fanOutLocally(Notification{ID: 3, Kind: KindPush}, b.currentGen())
 		// An epoch change, through the other locked path.
 		b.fanOutFromRedis("epoch-a", Notification{ID: 4, Kind: KindPush}, b.currentGen())
 		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush}, b.currentGen())
