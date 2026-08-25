@@ -40,6 +40,23 @@ import (
 )
 
 type Server struct {
+	// afterItemPreRead is a TEST-ONLY seam, nil in production. When set, the
+	// item-update handler calls it after loading its own copy of the item and
+	// before handing the write to the store — the window in which another
+	// writer can commit a change this request did not make (BUG-2776). A hook
+	// makes that interleaving deterministic; two real goroutines produce it
+	// only sometimes, and a test that reproduces a race sometimes is a
+	// detector with an unknown rate rather than a regression test.
+	//
+	// Set it only while no other request is in flight against this Server: it
+	// is read on a request path with no synchronisation.
+	//
+	// It fires once per item-update REQUEST, so a hook that issues its own
+	// update must nil the field for the duration of that nested call or it
+	// recurses without end. Every test here does exactly that; the pattern is
+	// load-bearing, not incidental (codex round 3).
+	afterItemPreRead func(itemID string)
+
 	store                 *store.Store
 	router                *chi.Mux
 	routerOnce            sync.Once            // ensures setupRouter runs once, after all config

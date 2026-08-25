@@ -916,6 +916,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Test seam (BUG-2776): everything from the ResolveItem above to the
+	// store's locked re-read is the window a concurrent writer can commit in.
+	// Nil in production.
+	if s.afterItemPreRead != nil {
+		s.afterItemPreRead(item.ID)
+	}
+
 	var input models.ItemUpdate
 	if err := decodeJSON(r, &input); err != nil {
 		// Surface the domain-level errors from ItemUpdate.UnmarshalJSON
@@ -1672,25 +1679,61 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// through the shared error handling above, so there is no remaining
 	// partial-commit window and nothing to do in this post-commit stage.
 
-	// Build rich metadata describing what changed
-	var meta string
-	if changes := diffFields(item.Fields, updated.Fields); changes != "" {
-		meta = fmt.Sprintf(`{"changes":%q}`, changes)
+	// Build rich metadata describing what changed.
+	//
+	// BUG-2776: the before-image is the store's IN-TRANSACTION pre-write
+	// view, not this handler's `item`. `item` was read at the top of this
+	// function — before the permission checks, before the store's locks —
+	// so anything a concurrent writer committed in between shows up in the
+	// difference and is attributed, with this request's actor and agent
+	// name, to whoever sent this PATCH. The store already re-reads the row
+	// under its own locks (that snapshot is what it diffs for the status and
+	// assignment signals); PreUpdate is that same snapshot, handed back.
+	//
+	// It also makes the comparisons committed-vs-committed: `updated` is
+	// what this transaction wrote, `before` is what it wrote over, so the
+	// change list describes the transaction rather than the request's
+	// intent. That is why the title arm below compares updated.Title
+	// instead of input.Title.
+	// No pre-image means no defensible change list. The obvious fallback —
+	// diff the handler's own stale `item` — is EXACTLY the defect, so a
+	// future update path that returns an item without a pre-image must lose
+	// the change list rather than quietly resume inventing wrong ones: an
+	// entry that says nothing is recoverable, an entry that names the wrong
+	// author is not, and this bug exists because the second failure is
+	// invisible. The activity row itself is still written; only its
+	// human-readable detail is dropped, and the warning names the invariant
+	// so the cause is one grep away (codex round 3).
+	before := updated.PreUpdate
+	if before == nil {
+		slog.Warn("item update returned no pre-image; writing the activity without a change list",
+			"item_id", updated.ID, "workspace_id", workspaceID,
+			"invariant", "models.Item.PreUpdate is set by UpdateItemWithParentLink on every successful update")
 	}
-	if input.Title != nil && *input.Title != item.Title {
-		if meta == "" {
-			titleChange := fmt.Sprintf("title: %s → %s", item.Title, *input.Title)
-			meta = fmt.Sprintf(`{"changes":%q}`, titleChange)
+
+	var meta string
+	if before != nil {
+		if changes := diffFields(before.Fields, updated.Fields); changes != "" {
+			meta = fmt.Sprintf(`{"changes":%q}`, changes)
 		}
 	}
-	// Track role and assignment changes
-	if updated.AgentRoleSlug != item.AgentRoleSlug {
-		roleChange := fmt.Sprintf("role: %s → %s", valueOrEmpty(item.AgentRoleName), valueOrEmpty(updated.AgentRoleName))
-		meta = appendChange(meta, roleChange)
-	}
-	if updated.AssignedUserName != item.AssignedUserName {
-		assignChange := fmt.Sprintf("assigned: %s → %s", valueOrEmpty(item.AssignedUserName), valueOrEmpty(updated.AssignedUserName))
-		meta = appendChange(meta, assignChange)
+	// appendChange, not the old "only when meta is empty" form: a PATCH that
+	// renamed the item AND changed a field used to report the field change
+	// and silently drop the rename. Adjacent to the lines this fix rewrites,
+	// so folded in rather than filed.
+	if before != nil {
+		if updated.Title != before.Title {
+			meta = appendChange(meta, fmt.Sprintf("title: %s → %s", before.Title, updated.Title))
+		}
+		// Track role and assignment changes
+		if updated.AgentRoleSlug != before.AgentRoleSlug {
+			roleChange := fmt.Sprintf("role: %s → %s", valueOrEmpty(before.AgentRoleName), valueOrEmpty(updated.AgentRoleName))
+			meta = appendChange(meta, roleChange)
+		}
+		if updated.AssignedUserName != before.AssignedUserName {
+			assignChange := fmt.Sprintf("assigned: %s → %s", valueOrEmpty(before.AssignedUserName), valueOrEmpty(updated.AssignedUserName))
+			meta = appendChange(meta, assignChange)
+		}
 	}
 	actor, source := actorFromRequest(r)
 	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
