@@ -629,6 +629,11 @@
 		// state being thrown away that would have survived.
 		nextCursor = null;
 		hasMore = false;
+		// A paging request in flight belongs to the view being replaced. Its
+		// own cleanup is identity-guarded, so if it resolves while the reader
+		// is on another item nothing ever clears this and the button comes
+		// back permanently disabled (codex round 9).
+		loadingMore = false;
 		const ticket = ++viewDispatch;
 		// Whether this request owns the view right now: it either WROTE (in
 		// which case it also moved the high-water mark, so a bare comparison

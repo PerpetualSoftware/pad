@@ -371,4 +371,49 @@ describe('timeline pagination past dropped windows (BUG-2765)', () => {
 		).not.toContain('A older page');
 		expect(host.textContent, 'the current view is intact').toContain('A page one');
 	});
+
+	it('re-enables Load More when a paging request resolved while away', async () => {
+		// loadMore's own cleanup is identity-guarded, so a page resolving on
+		// another item leaves loadingMore set. Coming back found the button
+		// permanently disabled (codex round 9) — a dead control, which reads
+		// as "there is nothing more" rather than as a bug.
+		pages.push({
+			entries: [entry('e-a1', '2026-01-01T00:00:09Z', 'A page one')],
+			has_more: true,
+			next_before: '2026-01-01T00:00:09Z',
+			next_before_id: 'e-a1',
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		let releaseStale: (r: TimelineResponse) => void = () => {};
+		const stale = new Promise<TimelineResponse>((r) => {
+			releaseStale = r;
+		});
+		timelineListMock.mockImplementationOnce(async () => stale);
+		loadMoreButton()!.click();
+		await settle();
+
+		// Away, and the paging request resolves WHILE away.
+		pages.push({ entries: [entry('e-b1', '2026-02-01T00:00:09Z', 'B page one')], has_more: false });
+		props.itemSlug = 'TASK-2';
+		await settle();
+		releaseStale({ entries: [entry('e-a2', '2026-01-01T00:00:01Z', 'A older')], has_more: false });
+		await settle();
+
+		// Back to A, which still has more behind page one.
+		pages.push({
+			entries: [entry('e-a1', '2026-01-01T00:00:09Z', 'A page one')],
+			has_more: true,
+			next_before: '2026-01-01T00:00:09Z',
+			next_before_id: 'e-a1',
+		});
+		props.itemSlug = 'TASK-1';
+		await settle();
+
+		const btn = loadMoreButton();
+		expect(btn, 'the button is offered again').not.toBeNull();
+		expect(btn!.disabled, 'and is not stuck disabled by a page that resolved elsewhere').toBe(false);
+	});
 });
