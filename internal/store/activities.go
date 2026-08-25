@@ -93,7 +93,10 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// can link the row between this read and that write (codex round 6) — a
 	// check here would be a second guard that only looks load-bearing. What
 	// this does NOT close is the opposite order, an update that completes
-	// before the comment links its row at all: BUG-2716's transaction.
+	// before the link is VISIBLE to it — the comment row is written in its
+	// own transaction, so on Postgres a link committing while this UPDATE's
+	// snapshot is already open is missed exactly as an unwritten one is.
+	// Closing that needs both rows in one transaction: BUG-2716.
 	//
 	// THE WRITER, NOT THE ACCOUNT (BUG-2763). One account is shared by the
 	// human and by every agent authenticating as them, so user_id does not
@@ -102,7 +105,9 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// other. Coalescing across either produces a row naming the wrong writer
 	// in both directions, because the UPDATE writes only metadata and
 	// created_at — the surviving row keeps the FIRST write's actor — while
-	// mergeActivityMeta overlays `agent` last-writer-wins. Both are visible:
+	// mergeActivityMeta overlays `agent` only when the incoming write carries
+	// one and leaves the stale name standing when it does not — which is the
+	// two directions. Both are visible:
 	// TimelineActivityCard reads the stamped name only when actor == "agent"
 	// and prints the person otherwise.
 	//
@@ -111,10 +116,11 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// column's `agent` key on both backends — but because
 	// models.AgentNameFromMetadata is the twin of the accessor the RENDERER
 	// uses, and the two disagree exactly where a stored value is odd: a
-	// non-string `agent` reads as absent in Go and as its text form in SQL,
-	// and malformed metadata is one skipped row in Go versus a failed query
-	// on SQLite. Matching on the value the timeline will actually display
-	// keeps the merge decision and the rendering in agreement.
+	// non-string `agent` reads as absent in Go, while json_extract yields a
+	// native number or boolean that no text comparison matches, and malformed
+	// metadata is one skipped row in Go versus a failed query on SQLite.
+	// Matching on the value the timeline will actually display keeps the
+	// merge decision and the rendering in agreement.
 	incomingAgent := models.AgentNameFromMetadata(a.Metadata)
 
 	rows, err := s.db.Query(s.q(`
