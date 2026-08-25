@@ -14,8 +14,11 @@ import type { Comment, TimelineEntry, TimelineResponse } from '$lib/types';
  * Load More.
  *
  * Deletion is now inferred only for a position the fresh page still COVERS.
- * Every leg below pairs a roll-off with a real deletion, because a fix that
- * simply stopped removing anything passes the roll-off half on its own.
+ * The first leg pairs a roll-off with a real deletion, because a fix that
+ * simply stopped removing anything passes the roll-off half on its own; the
+ * legs after it isolate one boundary each, and the later ones cover the
+ * request-ordering work that grew out of this rule rather than the rule
+ * itself.
  */
 
 type ListParams = { limit?: number; before?: string; before_id?: string } | undefined;
@@ -259,10 +262,11 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	});
 
 	it('a FINAL page covers the whole history, so an older missing entry is gone', async () => {
-		// has_more false means the server returned everything it has. An entry
-		// the client holds and that page does not contain cannot have merely
-		// rolled off — there is nothing behind it to roll off into. Without
-		// this, the coverage rule would keep a genuinely deleted entry
+		// has_more false means the server reached the end of the item's rows.
+		// It may have dropped some on the way as unrenderable — which is why
+		// "not returned" still means "not on this timeline" — but there is
+		// nothing behind the page for an entry to have rolled off into.
+		// Without this, the coverage rule would keep a genuinely deleted entry
 		// indefinitely (codex round 1).
 		pages.push({
 			entries: [
@@ -287,9 +291,11 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	});
 
 	it('an empty FINAL page clears the view, unlike an empty page with more behind it', async () => {
-		// The pair matters: both refreshes are empty, and only the final one
-		// means "nothing is left". Asserting either alone would let "empty
-		// always clears" or "empty never clears" pass.
+		// Reads against the leg above it: an empty NON-final refresh deletes
+		// nothing ("deletes nothing when the refreshed page is empty"), an
+		// empty FINAL one clears the view. Either leg alone would let "empty
+		// always clears" or "empty never clears" pass; the pair is what pins
+		// has_more as the thing that decides.
 		pages.push({
 			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'subject')],
 			has_more: false,

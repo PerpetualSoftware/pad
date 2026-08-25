@@ -889,8 +889,11 @@
 		// debounced one is already running — and they can resolve out of
 		// order. An older response applying last re-adds an entry the newer
 		// one removed, or removes one it added, and the view then disagrees
-		// with the server until something else redraws it. Only the newest
-		// dispatched refresh may write (codex round 2).
+		// with the server until something else redraws it. A response may
+		// write only if its ticket beats what has already written, so the
+		// NEWEST response wins whichever order they land in — an older one
+		// arriving first does write, and is then replaced (codex rounds 2
+		// and 8).
 		const ticket = ++viewDispatch;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
