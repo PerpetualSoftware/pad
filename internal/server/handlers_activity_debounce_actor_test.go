@@ -1,7 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -19,12 +23,68 @@ import (
 // alone cannot show it — TimelineActivityCard reads the stamped name only when
 // actor == "agent" and otherwise prints the person (CONVE-19).
 
-// patchStatusAs performs the item PATCH the web UI performs, as an agent when
-// `agent` is non-empty and as the plain human account when it is not. Both
-// legs authenticate as the same account either way, which is the whole point.
-func patchStatusAs(t *testing.T, srv *Server, ws, slug, agent, status string) {
+// authedAgentRequest performs a request as a real logged-in account, optionally
+// declaring an agent. The account is what makes these tests meaningful: the
+// debounce keys on user_id, and an unauthenticated request writes NULL there —
+// which coalesces by a different branch of the predicate and would let a
+// regression in the handler→store user-id flow pass unnoticed (codex round 5).
+func authedAgentRequest(t *testing.T, srv *Server, token, agent, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
-	doAttributionRequest(t, srv, agent, "PATCH",
+	var r io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		r = bytes.NewReader(data)
+	}
+	req := httptest.NewRequest(method, path, r)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if agent != "" {
+		req.Header.Set("X-Pad-Agent", agent)
+	}
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+		t.Fatalf("%s %s = %d: %s", method, path, rr.Code, rr.Body.String())
+	}
+	return rr
+}
+
+// debounceFixture bootstraps one account and gives it a workspace and an item.
+// Every write below rides this one account, which is the shape the bug needs:
+// an agent authenticates as the human it works for, so user_id cannot tell the
+// two apart.
+func debounceFixture(t *testing.T, srv *Server) (token, ws, itemSlug string) {
+	t.Helper()
+	token = bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
+
+	var wsResp struct {
+		Slug string `json:"slug"`
+	}
+	rr := authedAgentRequest(t, srv, token, "", "POST", "/api/v1/workspaces",
+		map[string]any{"name": "Debounce", "slug": "debounce", "template": "startup"})
+	decodeAttributionBody(t, rr, &wsResp)
+
+	var item models.Item
+	rr = authedAgentRequest(t, srv, token, "", "POST",
+		"/api/v1/workspaces/"+wsResp.Slug+"/collections/tasks/items",
+		map[string]any{"title": "debounce subject", "fields": `{"status":"open"}`})
+	decodeAttributionBody(t, rr, &item)
+
+	return token, wsResp.Slug, item.Slug
+}
+
+// patchStatusAs performs the item PATCH the web UI performs, as an agent when
+// `agent` is non-empty and as the plain human otherwise — on the same account
+// either way, which is the whole point.
+func patchStatusAs(t *testing.T, srv *Server, token, ws, slug, agent, status string) {
+	t.Helper()
+	authedAgentRequest(t, srv, token, agent, "PATCH",
 		"/api/v1/workspaces/"+ws+"/items/"+slug,
 		map[string]any{"fields": `{"status":"` + status + `"}`})
 }
@@ -124,18 +184,17 @@ func TestTimeline_DebounceDoesNotMergeAcrossWriters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := testServer(t)
-			ws := createTestWorkspaceViaAPI(t, srv)
-			item := timelineItemWithStructured(t, srv, ws, "", "")
+			token, ws, itemSlug := debounceFixture(t, srv)
 
 			// Distinct status values so each PATCH is a real change and
 			// therefore writes `changes` metadata — an "updated" activity with
 			// empty metadata is dropped by the timeline before it can be read.
 			statuses := []string{"in-progress", "done"}
 			for i, w := range tc.writers {
-				patchStatusAs(t, srv, ws, item.Slug, w.agent, statuses[i])
+				patchStatusAs(t, srv, token, ws, itemSlug, w.agent, statuses[i])
 			}
 
-			got := updatedActivityEntries(fetchTimeline(t, srv, ws, item.Slug, "").Entries)
+			got := updatedActivityEntries(fetchTimelineAuthed(t, srv, token, ws, itemSlug).Entries)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d updated entries, want %d", len(got), len(tc.want))
 			}
@@ -160,7 +219,26 @@ func TestTimeline_DebounceDoesNotMergeAcrossWriters(t *testing.T) {
 					t.Errorf("entry for %q: agent name = %q, want %q (metadata %s)",
 						w.changes, name, w.agentName, e.Activity.Metadata)
 				}
+				// The premise, asserted rather than assumed: every row is the
+				// SAME real account. If the writes landed under NULL user_ids
+				// the split above would prove nothing about writers sharing an
+				// account, which is the only case this bug is about.
+				if e.Activity.UserID == "" || e.Activity.UserID != got[0].Activity.UserID {
+					t.Errorf("entry for %q: user_id = %q, want the one non-empty account %q",
+						w.changes, e.Activity.UserID, got[0].Activity.UserID)
+				}
 			}
 		})
 	}
+}
+
+// fetchTimelineAuthed is fetchTimeline with a session, since these tests run on
+// an instance that has an owner and therefore requires auth.
+func fetchTimelineAuthed(t *testing.T, srv *Server, token, wsSlug, itemSlug string) models.TimelineResponse {
+	t.Helper()
+	rr := authedAgentRequest(t, srv, token, "", "GET",
+		"/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug+"/timeline", nil)
+	var resp models.TimelineResponse
+	decodeAttributionBody(t, rr, &resp)
+	return resp
 }
