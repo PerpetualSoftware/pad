@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -30,7 +32,14 @@ import (
 // consumer that pages from its last visible entry therefore either cannot form
 // a cursor at all or re-requests the same window forever (BUG-2765), and one
 // that forwards only `next_before` without `next_before_id` can repeat or skip
-// entries sharing that second. Both fields, or neither.
+// entries sharing that second. Send both fields, or neither.
+//
+// The two one-sided forms are NOT symmetric, and the validation reflects that
+// rather than the slogan (BUG-2774). `before` alone is accepted: it is the
+// external-client shape the id sentinel below exists to serve, at the cost of
+// the same-second ambiguity just described. `before_id` alone is REFUSED with
+// 400 — the id is only ever the tie-break at the cursor instant, so on its own
+// it matches nothing and silently pages from the beginning.
 func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -97,6 +106,24 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if v := r.URL.Query().Get("before_id"); v != "" {
+		if !validCursorID(v) {
+			writeError(w, http.StatusBadRequest, "invalid_cursor",
+				"before_id must be valid UTF-8 with no NUL byte")
+			return
+		}
+		// The id is the tie-break AT the cursor instant, so on its own it can
+		// never match anything: `before` defaults to now+1m and no row shares
+		// that timestamp. It was therefore accepted and silently ignored, and
+		// the caller paged from the beginning believing they had a cursor
+		// (codex round 4). The documented contract is both fields or neither.
+		//
+		// The other direction stays supported on purpose: `before` alone is
+		// the external-client case the sentinel above exists for.
+		if !hasBefore {
+			writeError(w, http.StatusBadRequest, "invalid_cursor",
+				"before_id requires before — send both fields of the cursor or neither")
+			return
+		}
 		beforeID = v
 	}
 	if hasBefore && beforeID == "" {
@@ -267,7 +294,16 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// within a kind does.
 	usedIDs := make(map[string]bool, len(item.ImplementationNotes)+len(item.DecisionLog))
 	entryID := func(raw, prefix string, i int) string {
-		if raw != "" && !usedIDs[raw] {
+		// A raw id must be usable as a CURSOR, not merely unique: the client
+		// sends it back as `before_id` and the handler now refuses a value the
+		// database would refuse (BUG-2774's validCursorID). These ids come
+		// from the item's fields blob and nothing validates them on write, so
+		// a JSON `\u0000` reaches here intact on SQLite — Postgres's jsonb
+		// rejects it at the door, which is why this is a one-backend hazard.
+		// Emitting such an id would make the server hand out a cursor it then
+		// answers 400 to, wedging paging on that item (codex round 1). It gets
+		// the positional fallback the empty and duplicate cases already take.
+		if raw != "" && validCursorID(raw) && !usedIDs[raw] {
 			usedIDs[raw] = true
 			return raw
 		}
@@ -581,4 +617,30 @@ func exhaustedWindowCursor(
 	}
 
 	return at, id, found
+}
+
+// validCursorID reports whether a caller-supplied `before_id` can be bound
+// into the cursor predicate at all.
+//
+// It rejects exactly what the DATABASE rejects rather than what an id
+// "should" look like. Postgres refuses a text parameter that is not valid
+// UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx surfaces
+// that as a query error, which this handler turns into a 500 — an operator's
+// alerting reads that as the server breaking when a client sent a bad cursor.
+// SQLite accepts both and simply matches nothing, so the same request is a
+// 200 there: a dialect divergence in the failure mode, from one line of
+// unvalidated input. Same failure the BUG-1086 comment above records, whose
+// fix covered the sentinel this handler synthesizes and not the value a
+// caller supplies.
+//
+// DELIBERATELY NO LENGTH BOUND. The obvious cap is the one thing here that
+// could reject a LEGITIMATE cursor: the structured kinds' ids come from the
+// item's own fields blob (see entryID below), nothing validates them on
+// write, and an imported artifact may carry any string. Real ids are far
+// shorter — a UUID is 36 bytes, `note-<nanos>` about 24 — but "far shorter
+// than any cap I would pick" is not a guarantee, and the cost of an over-long
+// one is a single indexed comparison against a parameter the URL length limit
+// already bounds. A bound that can only fire on a valid id is not protection.
+func validCursorID(v string) bool {
+	return utf8.ValidString(v) && !strings.ContainsRune(v, 0)
 }
