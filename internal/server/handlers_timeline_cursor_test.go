@@ -272,3 +272,65 @@ func TestExhaustedWindowCursor_PicksTheNewestFullTail(t *testing.T) {
 		})
 	}
 }
+
+// Codex round 1: truncation and an exhausted window are INDEPENDENT reasons to
+// bound the cursor, and the second is not implied by the first. A source whose
+// rows all drop contributes nothing to the page, so the truncation cursor can
+// sit older than that source's tail — and every unexamined row between the two
+// falls in a gap neither page fetches.
+//
+// The fixture puts one renderable activity in exactly that gap:
+//
+//	t0  item created            (activity, renderable, oldest)
+//	t1  two comments            (render; two entries at limit=1 forces truncation)
+//	t2  one `updated` activity  (renderable — the row at risk)
+//	t3  three `read` activities (fill the activity window, all dropped)
+//
+// The activity window is the three reads, so t2 is never examined; the
+// truncation cursor is a comment at t1, older than the reads' tail at t3.
+// Resuming there steps straight over t2.
+func TestTimeline_TruncationDoesNotStepOverAnExhaustedWindow(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	item := timelineItemWithStructured(t, srv, ws, "", "")
+
+	time.Sleep(1100 * time.Millisecond)
+	for i, body := range []string{"first", "second"} {
+		if _, err := srv.store.CreateComment(item.WorkspaceID, item.ID, "", models.CommentCreate{
+			Body: body, Author: "tester", CreatedBy: "user", Source: "web",
+		}); err != nil {
+			t.Fatalf("seed comment %d: %v", i, err)
+		}
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	atRisk := seedUpdateActivity(t, srv, item.ID, "status: open → in-progress")
+
+	time.Sleep(1100 * time.Millisecond)
+	seedReadActivities(t, srv, item.ID, 3)
+
+	seen := map[string]int{}
+	before, beforeID := "", ""
+	for i := 0; ; i++ {
+		if i == 8 {
+			t.Fatal("paging did not terminate within 8 requests")
+		}
+		page := timelinePage(t, srv, ws, item.Slug, before, beforeID)
+		for _, e := range page.Entries {
+			seen[e.ID]++
+		}
+		if !page.HasMore {
+			break
+		}
+		if page.NextBefore == before && page.NextBeforeID == beforeID {
+			t.Fatalf("cursor did not advance past %s/%s", before, beforeID)
+		}
+		before, beforeID = page.NextBefore, page.NextBeforeID
+	}
+
+	if seen[atRisk] != 1 {
+		t.Errorf("the activity between the truncation point and the dropped window was returned %d times, want 1 — paging stepped over it",
+			seen[atRisk])
+	}
+}

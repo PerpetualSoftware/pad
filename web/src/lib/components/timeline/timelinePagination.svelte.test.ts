@@ -64,13 +64,13 @@ vi.mock('$lib/components/CommentEditor.svelte', async () => ({
 
 const { default: ItemTimeline } = await import('./ItemTimeline.svelte');
 
-function entry(id: string, createdAt: string): TimelineEntry {
+function entry(id: string, createdAt: string, body = 'hello'): TimelineEntry {
 	const c: Comment = {
 		id,
 		item_id: 'item-a',
 		workspace_id: 'ws-1',
 		author: 'alice',
-		body: 'hello',
+		body,
 		created_by: 'alice',
 		source: 'web',
 		created_at: createdAt,
@@ -220,5 +220,47 @@ describe('timeline pagination past dropped windows (BUG-2765)', () => {
 		await settle();
 
 		expect(calls[1]).toEqual({ before: '2026-01-01T00:00:09Z', before_id: 'e-1' });
+	});
+
+	it('merges a later page into date order instead of appending it', async () => {
+		// The overlap the server's cursor deliberately creates: one source's
+		// window ran out before another's, so page 2 legitimately carries an
+		// entry NEWER than the oldest one page 1 showed. Concatenating prints
+		// it below — a comment from 12:00:07 sitting under one from 12:00:01.
+		pages.push({
+			entries: [
+				entry('e-newest', '2026-01-01T12:00:09Z', 'newest'),
+				entry('e-oldest-shown', '2026-01-01T12:00:01Z', 'oldest shown'),
+			],
+			has_more: true,
+			next_before: '2026-01-01T12:00:08Z',
+			next_before_id: 'raw-tail',
+		});
+		pages.push({
+			entries: [
+				// Newer than the last entry already on screen, older than the
+				// cursor — the shape only the server can produce.
+				entry('e-between', '2026-01-01T12:00:07Z', 'in between'),
+				entry('e-older', '2026-01-01T12:00:00Z', 'older'),
+			],
+			has_more: false,
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		loadMoreButton()!.click();
+		await settle();
+
+		const bodies = Array.from(host.querySelectorAll('.comment-card')).map((el) =>
+			(el.textContent ?? '').trim()
+		);
+		const order = ['newest', 'in between', 'oldest shown', 'older'].map((label) =>
+			bodies.findIndex((b) => b.includes(label))
+		);
+		expect(order.every((i) => i >= 0), `all four entries rendered: ${bodies}`).toBe(true);
+		expect(order, 'entries must read newest-first after the merge').toEqual(
+			[...order].sort((a, b) => a - b)
+		);
 	});
 });

@@ -691,7 +691,26 @@
 				// an earlier page already rendered (see cursorFrom).
 				const existingIds = new Set(entries.map((e) => e.id));
 				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
-				entries = [...entries, ...newEntries];
+				// Merge, do not concatenate. The server's cursor deliberately
+				// re-covers ground when one source's window ran out before
+				// another's, so a later page can carry entries NEWER than the
+				// oldest one already shown — appending those would print them
+				// below it (codex round 1). Same order the server sorts by:
+				// created_at descending, id descending as the tie-break.
+				//
+				// Compared as INSTANTS, not as strings: these timestamps do
+				// not all carry the same precision — the store writes whole
+				// seconds, but a structured note or decision can carry a
+				// hand-written sub-second one — and lexicographically
+				// "…:05.123Z" sorts BEFORE "…:05Z", which would place the more
+				// precise entry an hour's worth of rows away from where it
+				// belongs.
+				entries = [...entries, ...newEntries].sort((a, b) => {
+					const at = new Date(a.created_at).getTime();
+					const bt = new Date(b.created_at).getTime();
+					if (at !== bt) return bt - at;
+					return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+				});
 				hasMore = resp.has_more;
 				nextCursor = cursorFrom(resp, entries);
 				// Stop as soon as the press produced something to look at.

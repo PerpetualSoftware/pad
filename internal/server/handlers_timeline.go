@@ -142,22 +142,31 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// next one starts. The cursor is the server's to compute: it over-fetched
 	// per source and dropped rows above, so the client cannot see the
 	// position it must continue from (BUG-2765).
-	hasMore := false
-	var nextBefore time.Time
-	var nextBeforeID string
+	// Two independent reasons the next page must not start further back than
+	// a given position, and the cursor is the NEWEST of them:
+	//
+	//   - truncation: entries past `limit` were rendered and then cut, so they
+	//     have to be re-delivered — the cursor cannot be older than the last
+	//     entry KEPT.
+	//   - an exhausted window: a source that filled its over-fetch has rows
+	//     older than its tail that were never examined — the cursor cannot be
+	//     older than that tail, or those rows fall between the two pages and
+	//     are never fetched by either (codex round 1).
+	//
+	// Both can hold at once, and the second is not implied by the first: a
+	// source whose rows all DROP contributes nothing to `entries`, so the
+	// truncation cursor can easily sit older than its tail. Taking the newest
+	// candidate re-covers ground the client dedups away; taking anything
+	// older loses rows permanently.
+	cursorAt, cursorID, hasMore := exhaustedWindowCursor(comments, activities, versions, perSource)
 	if len(entries) > limit {
-		// Truncation: the entries beyond `limit` were rendered and then cut,
-		// so the next page resumes at the last one KEPT — anything else would
-		// skip the ones just dropped.
 		entries = entries[:limit]
 		hasMore = true
 		last := entries[len(entries)-1]
-		nextBefore, nextBeforeID = last.CreatedAt, last.ID
-	} else if at, id, ok := exhaustedWindowCursor(comments, activities, versions, perSource); ok {
-		// The merged page fit, but at least one source filled its window, so
-		// rows older than that source's tail were never examined.
-		hasMore = true
-		nextBefore, nextBeforeID = at, id
+		if cursorID == "" || last.CreatedAt.After(cursorAt) ||
+			(last.CreatedAt.Equal(cursorAt) && last.ID > cursorID) {
+			cursorAt, cursorID = last.CreatedAt, last.ID
+		}
 	}
 
 	resp := models.TimelineResponse{
@@ -165,8 +174,8 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		HasMore: hasMore,
 	}
 	if hasMore {
-		resp.NextBefore = nextBefore.UTC().Format(time.RFC3339Nano)
-		resp.NextBeforeID = nextBeforeID
+		resp.NextBefore = cursorAt.UTC().Format(time.RFC3339Nano)
+		resp.NextBeforeID = cursorID
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
