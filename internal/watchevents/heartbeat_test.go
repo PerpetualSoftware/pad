@@ -951,3 +951,92 @@ func TestRecoveryAfterAFailedResubscribeStillReplacesTheConnection(t *testing.T)
 		t.Fatalf("recovery moved the reset counter to %d; the coverage drop belongs to the outage, not to coming back", got)
 	}
 }
+
+// TestTwoConcurrentRetriesInstallOneSubscription is codex round 6's P2.
+//
+// Both the cycle and its retry arm dial with the lock RELEASED — deliberately,
+// since a Redis round trip under the bus's hot mutex would stall every fan-out
+// on the instance — so two passes can each find no subscription and each dial
+// one. Installing both is wrong twice over: two receive loops would run on the
+// SAME generation, so both accept every frame and each notification is
+// processed twice, and the loser's PubSub would be untracked — nothing closes
+// it, Close included.
+//
+// Only ONE goroutine calls this in production, so this is a guard on an
+// invariant rather than a fix for an observed fault. It is written down because
+// the invariant lives in a different file from the code that depends on it, and
+// because the failure it prevents is silent duplication rather than a crash.
+func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	// Get the bus into the no-subscription state the retry arm exists for, by
+	// the only route that produces it: a cycle whose resubscribe failed.
+	//
+	// WAITED FOR, NOT SAMPLED. The count is incremented inside the goroutine,
+	// so reading it straight after the constructor returns catches zero — as
+	// the first version of this test did, and then measured every later count
+	// against that wrong baseline.
+	waitFor(t, "the constructor's receive loop to be running", func() bool { return liveReceiveLoops.Load() == 1 })
+
+	b.mu.Lock()
+	good := b.client
+	b.client = redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	b.mu.Unlock()
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+	b.cycleIfIdle()
+	if b.currentPubSub() != nil {
+		t.Fatal("fixture: the teardown left a subscription behind, so there is nothing to race for")
+	}
+	waitFor(t, "the torn-down loop to leave", func() bool { return liveReceiveLoops.Load() == 0 })
+
+	b.mu.Lock()
+	b.client = good
+	b.mu.Unlock()
+
+	// Both dial before either installs: the seam fires with the dial done and
+	// the lock released, which is precisely the window.
+	release := make(chan struct{})
+	// DEFERRED, so a failing run unblocks the seam on its way out. Without it
+	// t.Fatal below leaves both callers parked in the callback, the bus's Close
+	// waits on receive loops that cannot start, and the failure arrives as a
+	// package-wide hang with no message — which is how the guard's mutation
+	// first "passed".
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	b.afterResubscribeInstall = func() {
+		arrived.Done()
+		<-release
+	}
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = b.resubscribe() }()
+	}
+	// Only the WINNER reaches the seam — the loser abandons before it — so
+	// waiting for both would hang by design. Wait for one, then let it through.
+	done := make(chan struct{})
+	go func() { arrived.Wait(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("both callers installed a subscription: two receive loops now share a generation, so every " +
+			"notification is delivered twice and one PubSub is untracked")
+	case <-time.After(500 * time.Millisecond):
+	}
+	releaseOnce()
+	wg.Wait()
+
+	if b.currentPubSub() == nil {
+		t.Fatal("neither caller installed anything: the guard rejected both and the instance is now deaf")
+	}
+	waitFor(t, "exactly one receive loop to be running", func() bool { return liveReceiveLoops.Load() == 1 })
+	if got := liveReceiveLoops.Load(); got != 1 {
+		t.Fatalf("%d receive loops are running: two on one generation deliver every notification twice", got)
+	}
+}

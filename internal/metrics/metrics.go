@@ -94,13 +94,16 @@ type Metrics struct {
 	// WatchSequenceResetsTotal counts this instance's watch replay
 	// coverage being dropped, by reason. Two of the reasons mean the id
 	// SPACE changed under us (epoch_change, counter_backward). The other
-	// two mean it did not: subscription_resumed, where the outage's
-	// notifications demonstrably never arrived; and undecodable_message,
+	// three mean it did not: subscription_resumed, where the outage's
+	// notifications demonstrably never arrived; undecodable_message,
 	// where the instance knows only that something it could not read
 	// arrived on its channel — it may or may not have been ours, and
-	// stopping vouching is the honest answer to not being able to tell.
-	// All four make resumes across them answer sync_required. Kept in
-	// sync with watchevents' Reset* constants.
+	// stopping vouching is the honest answer to not being able to tell;
+	// and idle_timeout (BUG-2769), where nothing arrived at all for
+	// longer than the idle timeout, so the socket stopped proving it
+	// works and a replacement was attempted. All five make resumes
+	// across them answer sync_required. Kept in sync with watchevents'
+	// Reset* constants.
 	WatchSequenceResetsTotal *prometheus.CounterVec
 
 	// WatchReceiveLoopExitsTotal counts the receive loop stopping. Any
@@ -556,7 +559,7 @@ func New() *Metrics {
 
 	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_watchevents_sequence_resets_total",
-		Help: "Times this instance's watch-stream replay coverage was dropped, by reason: epoch_change (the watch epoch token changed, so the IDs are from a different sequence — an opaque UUID here, not a numeric generation), counter_backward (an ID arrived at or below the high-water mark with the epoch unchanged), subscription_resumed (go-redis reconnected and re-subscribed, so whatever was published during the outage never arrived — expect these during a Redis failover and expect them to stop afterwards), undecodable_message (a message on the watch channel could not be parsed; the instance cannot tell whether it was a notification it should have had or something foreign, which is exactly why it stops vouching — expect zero, and suspect a namespace collision), idle_timeout (the subscription received nothing at all — no notification, no heartbeat, no subscription confirmation — for longer than the idle timeout, so this instance stopped vouching for its buffer and attempted to replace the connection — attempted, because the resubscribe can fail, in which case it is retried on a later pass and this counter has already moved; it means the socket stopped PROVING it works, not that notifications were observed going missing, and it is structurally never emitted on watch-heartbeat phase 1. Unlike the activity stream it needs no companion counter, because dropCoverage here replaces the buffer and reports unconditionally). The first two mean the ID space changed under this instance; the last two mean it did not and this instance can no longer account for part of it. Each also announces to the watch subscribers connected at that moment, so each moves pad_watchevents_midstream_resyncs_total by AT MOST one per such subscriber — at most, because that signal is capacity-1 and coalescing, so a second cause firing before a client acts on the first adds no announcement.",
+		Help: "Times this instance's watch-stream replay coverage was dropped, by reason: epoch_change (the watch epoch token changed, so the IDs are from a different sequence — an opaque UUID here, not a numeric generation), counter_backward (an ID arrived at or below the high-water mark with the epoch unchanged), subscription_resumed (go-redis reconnected and re-subscribed, so whatever was published during the outage never arrived — expect these during a Redis failover and expect them to stop afterwards), undecodable_message (a message on the watch channel could not be parsed; the instance cannot tell whether it was a notification it should have had or something foreign, which is exactly why it stops vouching — expect zero, and suspect a namespace collision), idle_timeout (the subscription received nothing at all — no notification, no heartbeat, no subscription confirmation — for longer than the idle timeout, so this instance stopped vouching for its buffer and attempted to replace the connection — attempted, because the resubscribe can fail, in which case it is retried on a later pass and this counter has already moved; it means the socket stopped PROVING it works, not that notifications were observed going missing, and it is structurally never emitted on watch-heartbeat phase 1. Unlike the activity stream it needs no companion counter, because dropCoverage here replaces the buffer and reports unconditionally). The first two mean the ID space changed under this instance; the other three mean it did not and this instance can no longer account for part of it. Each also announces to the watch subscribers connected at that moment, so each moves pad_watchevents_midstream_resyncs_total by AT MOST one per such subscriber — at most, because that signal is capacity-1 and coalescing, so a second cause firing before a client acts on the first adds no announcement.",
 	}, []string{"reason"})
 
 	watchReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{

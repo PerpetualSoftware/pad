@@ -410,6 +410,25 @@ func (b *RedisBus) resubscribe() error {
 		_ = pubsub.Close()
 		return errors.New("bus closed during resubscribe")
 	}
+	// SOMEONE ELSE GOT THERE FIRST (codex round 6). Both callers dial with the
+	// lock released — deliberately, since a Redis round trip under the bus's
+	// hot mutex would stall every fan-out on the instance — so two passes can
+	// each find no subscription and each dial one. Installing both would leave
+	// two receive loops on the SAME generation, so both accept frames and every
+	// notification is processed twice, and the loser's PubSub would be
+	// untracked: nothing closes it, including Close.
+	//
+	// The install is what needs serialising, not the dial, so the loser
+	// discards its own connection here rather than the two racing to overwrite
+	// b.pubsub. In production one goroutine runs this — the idle scanner — and
+	// that is exactly the sort of invariant a later caller breaks without
+	// noticing, which is why this does not rely on it.
+	if b.pubsub != nil {
+		b.mu.Unlock()
+		subCancel()
+		_ = pubsub.Close()
+		return nil
+	}
 	b.pubsub = pubsub
 	b.subCancel = subCancel
 	// Already retired by the caller when it tore the old one down; on the

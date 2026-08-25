@@ -235,8 +235,9 @@ type Bus interface {
 	// The per-instance causes are implementation-specific and are ALL
 	// RedisBus's, because they are all transport faults: a hole in the
 	// received id sequence, a counter reset, an epoch change, a pub/sub
-	// resubscription, and a message that could not be decoded (the last two
-	// from BUG-2739). MemoryBus raises only the per-subscriber cause — it
+	// resubscription, a message that could not be decoded (those two from
+	// BUG-2739), and a subscription that received nothing at all for longer
+	// than the idle timeout (BUG-2769). MemoryBus raises only the per-subscriber cause — it
 	// has no transport to lose anything in, so its sequence is contiguous by
 	// construction. A caller must not read "no instance-wide signal" as
 	// evidence of anything beyond which bus it is talking to.
