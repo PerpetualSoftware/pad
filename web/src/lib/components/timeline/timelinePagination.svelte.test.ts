@@ -284,4 +284,42 @@ describe('timeline pagination past dropped windows (BUG-2765)', () => {
 		expect(calls).toHaveLength(2);
 		expect(calls[1]).toEqual({ before: '2026-01-01T00:00:09Z', before_id: 'e-1' });
 	});
+
+	it('does not offer the previous item\'s cursor while a switch is in flight', async () => {
+		// The old entries stay on screen while the new item's page 1 is in
+		// flight, so the button is still clickable. Its cursor must not be the
+		// previous item's position, aimed at the new item.
+		pages.push({
+			entries: [entry('e-a', '2026-01-01T00:00:09Z')],
+			has_more: true,
+			next_before: '2026-01-01T00:00:09Z',
+			next_before_id: 'e-a',
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+		expect(loadMoreButton(), 'page one offered Load More').not.toBeNull();
+
+		// Switch items; hold the new load unresolved.
+		let release: (r: TimelineResponse) => void = () => {};
+		const pending = new Promise<TimelineResponse>((r) => {
+			release = r;
+		});
+		timelineListMock.mockImplementationOnce(async (_ws, _slug, params) => {
+			calls.push(params);
+			return pending;
+		});
+		props.itemSlug = 'TASK-2';
+		await settle();
+
+		const callsDuringSwitch = calls.length;
+		expect(loadMoreButton(), 'no paging is offered until the new page lands').toBeNull();
+
+		release({ entries: [entry('e-b', '2026-02-01T00:00:09Z')], has_more: false });
+		await settle();
+
+		// Nothing was requested with the old item's cursor in between.
+		expect(calls).toHaveLength(callsDuringSwitch);
+		props.itemSlug = 'TASK-1';
+	});
 });

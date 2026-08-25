@@ -623,6 +623,16 @@
 		const reqWs = wsSlug;
 		loading = true;
 		error = '';
+		// Paging state belongs to the page-1 fetch below and is unknown until
+		// it lands. Clearing it BEFORE the await matters because the entries
+		// from the previous load stay on screen while this one is in flight
+		// (`{#if !loading || entries.length > 0}`), so Load More is still
+		// clickable — and its cursor would be the OLD item's position sent
+		// against the NEW one (codex round 6). This function replaces entries
+		// with page 1 when it resolves anyway, so there is no deeper paging
+		// state being thrown away that would have survived.
+		nextCursor = null;
+		hasMore = false;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
