@@ -18,9 +18,15 @@ import (
 //
 // Linux-only by build tag. Reading SO_KEEPALIVE off the accepted socket is the
 // only way to observe this from outside, and the syscall surface is not
-// portable — the Smoke jobs on macOS and Windows simply skip the file. That is
-// an honest partial: the property is platform-independent, the observation is
-// not, and Pad's servers are Linux.
+// portable — the Smoke jobs on macOS and Windows skip the file entirely.
+//
+// WHAT THAT GAP ACTUALLY COSTS, since Pad ships darwin and windows binaries
+// too (codex round 2, P3): nothing in regression terms. The behaviour is
+// platform-independent — net.Dialer applies KeepAliveConfig on every platform
+// Go supports — so a removal would be caught here, on the Go and Go (PostgreSQL)
+// CI jobs, which are the ones that run the full suite. The macOS and Windows
+// Smoke jobs are build-and-start checks and were never the guard for this.
+// The gap is in OBSERVATION on those platforms, not in coverage of the change.
 func TestKeepAliveIsActuallyAppliedToTheSocket(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

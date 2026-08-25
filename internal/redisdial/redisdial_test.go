@@ -13,6 +13,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // tlsServerFor starts a TLS listener whose certificate is valid for the given
@@ -327,12 +329,23 @@ func TestAZeroTimeoutStillDialsSuccessfully(t *testing.T) {
 	_ = conn.Close()
 }
 
-// TestConnectAndHandshakeShareOneBudget is codex round 1's other P2. Applying
-// the timeout to the TCP connect and then starting a fresh one for the
-// handshake allows up to 2x DialTimeout — masked on the pooled path by an outer
-// deadline, but not on the pub/sub path, which has none.
-// tls.DialWithDialer bounds both as one interval, and this must not be laxer
-// than the code it replaces.
+// TestConnectAndHandshakeShareOneBudget covers codex round 1's other P2:
+// applying the timeout to the TCP connect and then starting a fresh one for the
+// handshake allows up to 2x DialTimeout on the pub/sub path, which has no outer
+// deadline to mask it.
+//
+// IT DOES NOT DISCRIMINATE, and codex round 2 was right to say so. The server
+// here accepts immediately, so the connect consumes none of the budget and the
+// two-budget implementation finishes in the same time as the one-budget one.
+// Making it discriminate needs a connect that is itself slow, which cannot be
+// staged reliably against a local listener — a full backlog is the only lever
+// and it is not deterministic.
+//
+// So what holds the property is STRUCTURAL, not this test: one context is
+// created before the connect and passed through the handshake, which is
+// checkable by reading six lines. This is kept as a smoke check that the dial
+// completes within a sane multiple of the budget, and is labelled rather than
+// left to look like coverage it does not provide.
 func TestConnectAndHandshakeShareOneBudget(t *testing.T) {
 	addr := stalledTLSServer(t)
 	const dialTimeout = 200 * time.Millisecond
@@ -379,5 +392,49 @@ func TestKeepAliveIsNotSilentlyDropped(t *testing.T) {
 	}
 	if keepAliveConfig.Count != 3 {
 		t.Errorf("keep-alive Count = %d, want 3", keepAliveConfig.Count)
+	}
+}
+
+// TestAnExplicitlyDisabledTimeoutIsHonoured is codex round 2's P2. ParseURL
+// turns an explicit dial_timeout of zero or negative into -1, which go-redis
+// preserves as "no timeout"; collapsing every non-positive value to the default
+// would overrule an operator who had deliberately disabled the bound.
+//
+// Asserted through ParseURL rather than by passing -1 directly, so the test
+// pins the actual production path — the value this dialer receives is whatever
+// that function produced.
+func TestAnExplicitlyDisabledTimeoutIsHonoured(t *testing.T) {
+	opts, err := redis.ParseURL("redis://127.0.0.1:6379?dial_timeout=0")
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	if opts.DialTimeout >= 0 {
+		t.Fatalf("fixture: ParseURL gave DialTimeout=%v; this test assumes it encodes an explicit zero as negative",
+			opts.DialTimeout)
+	}
+
+	addr, trust := tlsServerFor(t, "127.0.0.1")
+	conn, err := New(trust, opts.DialTimeout)(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("an explicitly disabled timeout broke the dial: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// TestTheCopiedDefaultStillMatchesGoRedis is the drift guard codex round 2
+// asked for (P3). Both constants in this package are copies of unexported or
+// internal go-redis values, and a copy that silently diverges from what it
+// mirrors is exactly the maintenance trap that makes this package worse than
+// no package.
+//
+// Compared against go-redis's RESOLVED options rather than against a literal:
+// NewClient runs init() on its clone, and Options() hands back the result, so
+// this reads the same default the library would have applied.
+func TestTheCopiedDefaultStillMatchesGoRedis(t *testing.T) {
+	resolved := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"}).Options()
+	if resolved.DialTimeout != defaultDialTimeout {
+		t.Fatalf("go-redis now defaults DialTimeout to %v, this package still copies %v — the copy has drifted from "+
+			"what it mirrors, so a client built without an explicit timeout gets a different bound than go-redis intends",
+			resolved.DialTimeout, defaultDialTimeout)
 	}
 }

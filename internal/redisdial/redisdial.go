@@ -72,7 +72,13 @@ import (
 //     ("Apply DialTimeout per attempt, but never extend an existing earlier
 //     deadline") and this must not quietly disagree with it.
 func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
-	if dialTimeout <= 0 {
+	// == 0, NOT <= 0 (codex round 2). ParseURL represents an EXPLICIT
+	// dial_timeout of zero or negative as -1, and go-redis preserves that as
+	// "no timeout" rather than treating it as unset. Collapsing every
+	// non-positive value to the default would silently overrule an operator who
+	// had deliberately disabled the bound — a different defect from the one
+	// this branch exists to fix, in the opposite direction.
+	if dialTimeout == 0 {
 		// GO-REDIS'S OWN DEFAULT, APPLIED HERE BECAUSE WE CANNOT SEE IT
 		// (codex round 1, P1 — and the first draft of this shipped the bug).
 		// Options.init() sets DialTimeout to 5s when it is zero
@@ -90,6 +96,13 @@ func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context,
 		dialTimeout = defaultDialTimeout
 	}
 
+	// A negative value is go-redis's "no timeout at all", so it must not become
+	// a net.Dialer timeout or a context deadline.
+	var budget time.Duration
+	if dialTimeout > 0 {
+		budget = dialTimeout
+	}
+
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// ONE BUDGET FOR CONNECT AND HANDSHAKE TOGETHER (codex round 1, P2).
 		// Applying DialTimeout to the TCP connect and then starting a FRESH
@@ -97,8 +110,11 @@ func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context,
 		// path, which has no outer deadline to mask it. tls.DialWithDialer
 		// bounds both as one interval by handing the handshake the net.Dialer's
 		// deadline, and this must not be laxer than the code it replaces.
-		ctx, cancel := context.WithTimeout(ctx, dialTimeout)
-		defer cancel()
+		if budget > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, budget)
+			defer cancel()
+		}
 
 		// KeepAliveConfig REPLICATED, not dropped (codex round 1, P2).
 		// go-redis's default dialer sets it (options.go:608) and it governs how
@@ -107,7 +123,7 @@ func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context,
 		// behaviour across the whole client as a side effect of a cancellation
 		// fix — and would do it invisibly, since nothing here would fail.
 		netDialer := &net.Dialer{
-			Timeout:         dialTimeout,
+			Timeout:         budget,
 			KeepAliveConfig: keepAliveConfig,
 		}
 		conn, err := netDialer.DialContext(ctx, network, addr)
