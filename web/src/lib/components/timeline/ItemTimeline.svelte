@@ -629,6 +629,8 @@
 		// state being thrown away that would have survived.
 		nextCursor = null;
 		hasMore = false;
+		// The tombstones describe the view being replaced.
+		removedByRefresh = new Set();
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
@@ -721,7 +723,9 @@
 				// and because the server's cursor can deliberately re-cover rows
 				// an earlier page already rendered (see cursorFrom).
 				const existingIds = new Set(entries.map((e) => e.id));
-				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
+				const newEntries = resp.entries.filter(
+					(e) => !existingIds.has(e.id) && !removedByRefresh.has(e.id)
+				);
 				// Merge, do not concatenate. The server's cursor deliberately
 				// re-covers ground when one source's window ran out before
 				// another's, so a later page can carry entries NEWER than the
@@ -826,6 +830,15 @@
 	 * (CONVE-1688).
 	 */
 	let sseRefreshSeq = 0;
+	/**
+	 * Entries a refresh has removed as deleted. A page fetched by Load More
+	 * can be in flight while that happens, and appending its rows verbatim
+	 * would put a deleted entry back on screen — the paging response is older
+	 * than the refresh and does not know (codex round 4). Cleared whenever
+	 * loadTimeline resets the view, so it is bounded by one mount's deletions.
+	 * A plain `let` for the same reason as sseRefreshSeq.
+	 */
+	let removedByRefresh = new Set<string>();
 
 	// Named rather than inline so the failure path can re-invoke it once. The
 	// `isRetry` flag is what bounds that to ONE extra attempt.
@@ -941,7 +954,11 @@
 			//     for any first-page comparison.
 			const freshById = new Map(resp.entries.map((e) => [e.id, e]));
 			const updatedExisting = entries
-				.filter((e) => !(!freshIds.has(e.id) && coveredByFreshPage(e)))
+				.filter((e) => {
+					if (freshIds.has(e.id) || !coveredByFreshPage(e)) return true;
+					removedByRefresh.add(e.id);
+					return false;
+				})
 				.map((e) => freshById.get(e.id) ?? e);
 
 			entries = byNewestFirst([...newEntries, ...updatedExisting]);

@@ -394,4 +394,54 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 		);
 		expect(shows('page one')).toBe(true);
 	});
+
+	it('a Load More response in flight cannot resurrect an entry a refresh deleted', async () => {
+		// The paging request is older than the refresh and does not know: its
+		// page still contains the deleted entry, and appending it verbatim
+		// puts it back on screen (codex round 4).
+		pages.push({
+			entries: [
+				entry('e-top', '2026-01-01T12:00:20Z', 'top'),
+				entry('e-doomed', '2026-01-01T12:00:10Z', 'about to be deleted'),
+			],
+			has_more: true,
+			next_before: '2026-01-01T12:00:10Z',
+			next_before_id: 'e-doomed',
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+		expect(shows('about to be deleted')).toBe(true);
+
+		// Load More goes out and is held.
+		let releasePage: (r: TimelineResponse) => void = () => {};
+		const heldPage = new Promise<TimelineResponse>((r) => {
+			releasePage = r;
+		});
+		timelineListMock.mockImplementationOnce(async () => heldPage);
+		host.querySelector<HTMLButtonElement>('.load-more-btn')!.click();
+		await settle();
+
+		// While it is in flight, a refresh deletes the entry. Its page is
+		// FINAL, so coverage removes it.
+		pages.push({
+			entries: [entry('e-top', '2026-01-01T12:00:20Z', 'top')],
+			has_more: false,
+		});
+		await fireRefresh();
+		expect(shows('about to be deleted'), 'the refresh removed it').toBe(false);
+
+		// The paging response lands, still carrying the deleted row.
+		releasePage({
+			entries: [
+				entry('e-doomed', '2026-01-01T12:00:10Z', 'about to be deleted'),
+				entry('e-older', '2026-01-01T12:00:01Z', 'genuinely older'),
+			],
+			has_more: false,
+		});
+		await settle();
+
+		expect(shows('about to be deleted'), 'a stale page must not resurrect it').toBe(false);
+		expect(shows('genuinely older'), 'the rest of the page still lands').toBe(true);
+	});
 });
