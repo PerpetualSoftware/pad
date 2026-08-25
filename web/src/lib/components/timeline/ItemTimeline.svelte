@@ -683,9 +683,15 @@
 	 * — the paging cursor deliberately re-covers ground, and a structured note
 	 * can carry a backdated timestamp.
 	 *
-	 * Compared as INSTANTS, not as strings: precision is not uniform — the
-	 * store writes whole seconds, a hand-written note timestamp need not — and
-	 * lexicographically `…:05.123Z` sorts BEFORE `…:05Z`.
+	 * Compared as INSTANTS, not as strings. Every timestamp this endpoint
+	 * emits is currently whole-second — the store writes RFC3339 seconds and
+	 * the handler truncates the structured kinds' hand-written ones to match —
+	 * so a string comparison would work TODAY. It is not what the ordering
+	 * means, though, and nothing enforces the uniform precision it depends on:
+	 * lexicographically `…:05.123Z` sorts BEFORE `…:05Z`, so the day one
+	 * writer stops truncating, a string sort silently reorders. Correcting a
+	 * claim this comment used to make: sub-second values are not reachable
+	 * from the current server (codex round 3 on BUG-2773).
 	 */
 	function byNewestFirst(list: TimelineEntry[]): TimelineEntry[] {
 		return [...list].sort((a, b) => {
@@ -723,13 +729,10 @@
 				// below it (codex round 1). Same order the server sorts by:
 				// created_at descending, id descending as the tie-break.
 				//
-				// Compared as INSTANTS, not as strings: these timestamps do
-				// not all carry the same precision — the store writes whole
-				// seconds, but a structured note or decision can carry a
-				// hand-written sub-second one — and lexicographically
-				// "…:05.123Z" sorts BEFORE "…:05Z", which would place the more
-				// precise entry an hour's worth of rows away from where it
-				// belongs.
+				// Ordering lives in byNewestFirst, which compares instants
+				// rather than strings — see the note there, including the
+				// correction that sub-second timestamps are not reachable from
+				// today's server.
 				entries = byNewestFirst([...entries, ...newEntries]);
 				hasMore = resp.has_more;
 				nextCursor = cursorFrom(resp, entries);
@@ -852,9 +855,10 @@
 
 			// Genuinely new entries. Normally these ARE the newest — the
 			// refresh re-fetches the newest window — but "normally" is not
-			// "always": a structured note or decision carries a hand-written
-			// created_at and can arrive backdated, so they are merged into
-			// order rather than prepended on the assumption (codex round 3).
+			// "always": the structured kinds carry a hand-written created_at
+			// and can arrive BACKDATED — truncated to whole seconds, but not
+			// forced to be recent — so they are merged into order rather than
+			// prepended on the assumption (codex round 3 on BUG-2765).
 			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
 			// Update existing entries from the fresh response (e.g., reaction
@@ -926,12 +930,15 @@
 			//     old rule removed it — by removing every rolled-off entry
 			//     with it, which is the bug being fixed. Strictly better, not
 			//     complete.
-			//   - Whether a row renders depends on the WINDOW it was fetched
-			//     in: the cross-source drops (an activity a version or comment
-			//     stands in for) need both rows in the same fetch. So an entry
-			//     that rendered on an older page can be absent-and-covered
-			//     here and will be dropped. That matches what a fresh load
-			//     shows, which is the best any first-page comparison can do.
+			//   - Whether a row renders can depend on the WINDOW it was
+			//     fetched in: an `updated` activity is suppressed when a
+			//     version snapshot shares its second, and that needs both rows
+			//     in the same fetch. (Comment-linked activities are NOT such a
+			//     case — the store excludes them in SQL whether or not the
+			//     comment is in the window.) So an entry that rendered on an
+			//     older page can be absent-and-covered here and will be
+			//     dropped, which matches what a fresh load shows — the ceiling
+			//     for any first-page comparison.
 			const freshById = new Map(resp.entries.map((e) => [e.id, e]));
 			const updatedExisting = entries
 				.filter((e) => !(!freshIds.has(e.id) && coveredByFreshPage(e)))

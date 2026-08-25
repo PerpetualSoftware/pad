@@ -229,10 +229,15 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	});
 
 	it('compares instants, not strings, at the coverage boundary', async () => {
-		// Sub-second precision is reachable: a structured note carries a
-		// hand-written created_at. `12:00:05.500Z` is NEWER than `12:00:05Z`
-		// as an instant and SMALLER as a string, so a string comparison judges
-		// it out of window and keeps an entry that really was deleted.
+		// A GUARD, not a live scenario, and labelled as one after codex round
+		// 3 corrected me: every timestamp this endpoint emits is whole-second
+		// today — the store writes RFC3339 seconds and the handler truncates
+		// the structured kinds' hand-written ones — so nothing currently
+		// produces this input. It pins the comparison the ordering MEANS:
+		// `12:00:05.500Z` is NEWER than `12:00:05Z` as an instant and SMALLER
+		// as a string, so the day a writer stops truncating, a string
+		// comparison would judge it out of window and keep an entry that was
+		// really deleted.
 		pages.push({
 			entries: [entry('e-sub', '2026-01-01T12:00:05.500Z', 'sub second')],
 			has_more: false,
@@ -351,5 +356,42 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 		await settle();
 
 		expect(shows('posted by someone else'), 'a stale refresh must not write').toBe(true);
+	});
+
+	it('removes an entry loaded via Load More when the refreshed page is FINAL', async () => {
+		// The leg that fails against the OLD rule rather than only against an
+		// intermediate version of the new one. The old gate only ever removed
+		// entries it had seen on a first page, so an entry the reader paged
+		// back to was preserved unconditionally — including after it was
+		// deleted. Coverage on a final page removes it, and coverage is also
+		// what keeps it while the page is NOT final (the leg above).
+		pages.push({
+			entries: [entry('e-new', '2026-01-01T12:00:09Z', 'page one')],
+			has_more: true,
+			next_before: '2026-01-01T12:00:09Z',
+			next_before_id: 'e-new',
+		});
+		pages.push({
+			entries: [entry('e-older', '2026-01-01T12:00:01Z', 'paged back to')],
+			has_more: false,
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+		host.querySelector<HTMLButtonElement>('.load-more-btn')!.click();
+		await settle();
+		expect(shows('paged back to'), 'the older page loaded').toBe(true);
+
+		// The refresh: a FINAL page that no longer contains it.
+		pages.push({
+			entries: [entry('e-new', '2026-01-01T12:00:09Z', 'page one')],
+			has_more: false,
+		});
+		await fireRefresh();
+
+		expect(shows('paged back to'), 'a final page contains everything — its absence is a deletion').toBe(
+			false
+		);
+		expect(shows('page one')).toBe(true);
 	});
 });
