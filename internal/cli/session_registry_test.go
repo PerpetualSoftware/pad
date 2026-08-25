@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -15,9 +17,25 @@ import (
 func registryEnv(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t, home)
 	clearSessionEnv(t)
 	return filepath.Join(home, ".pad", "sessions")
+}
+
+// livingChildPID starts a process that outlives the test body (killed in
+// cleanup) and returns its pid: a LIVE pid that is not an ancestor.
+func livingChildPID(t *testing.T) int {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no shell to spawn a child from")
+	}
+	c := exec.Command(sh, "-c", "sleep 60")
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+	return c.Process.Pid
 }
 
 func numericFiles(t *testing.T, dir string) []string {
@@ -382,12 +400,12 @@ func TestSessionRecord_JSONShape(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"session_pid", "session_pid_source", "agent", "cwd", "liveness", "registered_at", "path"} {
+	for _, key := range []string{"session_pid", "session_pid_source", "session_pid_verified", "agent", "cwd", "liveness", "registered_at", "path"} {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("record JSON missing %q: %s", key, data)
 		}
 	}
-	if raw["agent"] != "" || raw["liveness"] != "alive" || raw["session_pid"] != float64(os.Getpid()) {
+	if raw["agent"] != "" || raw["liveness"] != "alive" || raw["session_pid"] != float64(os.Getpid()) || raw["session_pid_verified"] != true {
 		t.Fatalf("record JSON values wrong: %s", data)
 	}
 	for _, absent := range []string{"legacy", "malformed", "session_id"} {
@@ -514,14 +532,18 @@ func TestListSessions_OrdersByInstantAcrossFormats(t *testing.T) {
 		t.Fatal(err)
 	}
 	if first.RegisteredAt == second.RegisteredAt {
-		t.Fatalf("nanosecond stamps must differ across two registrations: %q", first.RegisteredAt)
-	}
-	records, err := ListSessions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 2 || records[0].Cwd != "/second" {
-		t.Fatalf("newest first within one second: %+v", records)
+		// A coarse clock can hand two calls the same instant; the sort
+		// then falls to path order by design, and this leg has nothing to
+		// say. Only the mixed-format leg below is asserted in that case.
+		t.Logf("two registrations shared one stamp (%q); skipping the same-second ordering leg", first.RegisteredAt)
+	} else {
+		records, err := ListSessions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 2 || records[0].Cwd != "/second" {
+			t.Fatalf("newest first within one second: %+v", records)
+		}
 	}
 
 	// Mixed formats: a v1 row at 08Z and a v2 row at 08.5Z in the same
@@ -531,11 +553,84 @@ func TestListSessions_OrdersByInstantAcrossFormats(t *testing.T) {
 	}
 	writeV1Record(t, dir, 50001, "") // registered_at 2026-08-20T00:00:00Z
 	writeV2Record(t, dir, SessionRegistration{SessionOwner: SessionOwner{PID: 50002, PIDSource: "self"}, Cwd: "/v2", RegisteredAt: "2026-08-20T00:00:00.5Z"})
-	records, err = ListSessions()
+	records, err := ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(records) != 2 || records[0].Cwd != "/v2" {
 		t.Fatalf("v2 half-second-later row must list before the v1 whole-second row: %+v", records)
+	}
+}
+
+// TestListSessions_SymlinkIsNotASession: a session-shaped symlink is not
+// read — it would present some other file (another record, or anything
+// the link points at) as a session.
+func TestListSessions_SymlinkIsNotASession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on windows")
+	}
+	dir := registryEnv(t)
+	rec, err := RegisterSession("/real", "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(rec.Path, filepath.Join(dir, "31337.json")); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Path != rec.Path {
+		t.Fatalf("the symlink must not list as a second session: %+v", records)
+	}
+}
+
+// TestListSessions_ExplicitZeroPidIsLegacyWithoutName: JSON cannot tell
+// session_pid:0 from an omitted one, so a crafted v2-looking file with a
+// zero owner and an agent name is a LEGACY row — and a legacy row carries
+// no name and no session id, whatever the file says.
+func TestListSessions_ExplicitZeroPidIsLegacyWithoutName(t *testing.T) {
+	dir := registryEnv(t)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"session_pid":0,"session_pid_verified":true,"agent":"impostor","session_id":"x","pid":%d,"cwd":"/c","registered_at":"2026-08-01T00:00:00Z"}`, os.Getpid())
+	if err := os.WriteFile(filepath.Join(dir, "777.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one row, got %+v", records)
+	}
+	r := records[0]
+	if !r.Legacy || r.Agent != "" || r.SessionID != "" || r.SessionPIDVerified || r.SessionPID != os.Getpid() {
+		t.Fatalf("zero-pid row must be legacy with no name/id/verification: %+v", r)
+	}
+}
+
+// TestSessionsDir_TightensExistingMode: a pre-existing permissive
+// directory is re-tightened to 0700 on every use.
+func TestSessionsDir_TightensExistingMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	want := registryEnv(t)
+	if err := os.MkdirAll(want, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := SessionsDir()
+	if err != nil || dir != want {
+		t.Fatalf("SessionsDir: %q %v", dir, err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("existing directory must be tightened to 0700, got %o", info.Mode().Perm())
 	}
 }

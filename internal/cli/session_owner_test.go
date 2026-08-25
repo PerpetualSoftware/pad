@@ -19,6 +19,15 @@ func clearSessionEnv(t *testing.T) {
 	}
 }
 
+// isolateHome points BOTH home variables at dir: os.UserHomeDir reads
+// HOME on unix and USERPROFILE on Windows, and a test that sets only one
+// would mutate the real registry on the other platform.
+func isolateHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
 func TestCaptureSessionOwner_PidPrecedence(t *testing.T) {
 	self, parent := os.Getpid(), os.Getppid()
 	tests := []struct {
@@ -227,5 +236,34 @@ func TestOwnerLiveness_SocketProbeErrorIsUnknown(t *testing.T) {
 	o.PID = os.Getpid()
 	if got := OwnerLiveness(&o); got != LivenessUnknown {
 		t.Fatalf("unstat-able socket + live pid: got %s, want unknown", got)
+	}
+}
+
+// TestCaptureSessionOwner_PidVerified: on Linux a harness pid claim is
+// checked against the registering process's ancestry. Self and the
+// parent verify; a live pid that is NOT an ancestor (a child we spawn) is
+// recorded but unverified — the honest reading of a wrong-pid claim.
+func TestCaptureSessionOwner_PidVerified(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("ancestry walk is linux-only; elsewhere every harness claim records unverified")
+	}
+	clearSessionEnv(t)
+	o, err := CaptureSessionOwner()
+	if err != nil || !o.PIDVerified {
+		t.Fatalf("self must be verified: %+v %v", o, err)
+	}
+	t.Setenv("CLAUDE_PID", itoa(os.Getppid()))
+	o, err = CaptureSessionOwner()
+	if err != nil || !o.PIDVerified {
+		t.Fatalf("the parent (an ancestor) must verify: %+v %v", o, err)
+	}
+	child := livingChildPID(t)
+	t.Setenv("CLAUDE_PID", itoa(child))
+	o, err = CaptureSessionOwner()
+	if err != nil {
+		t.Fatalf("a wrong-pid claim still registers: %v", err)
+	}
+	if o.PID != child || o.PIDVerified {
+		t.Fatalf("a live non-ancestor pid must record UNVERIFIED: %+v", o)
 	}
 }

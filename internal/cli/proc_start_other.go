@@ -2,6 +2,10 @@
 
 package cli
 
+import "errors"
+
+var errProcStartUnsupported = errors.New("process start token unsupported on this platform")
+
 // procStartToken has no portable non-Linux implementation, so it returns
 // ok=false and the headless arm-state liveness check falls back to bare
 // pid-liveness. This is the documented residual on the secondary

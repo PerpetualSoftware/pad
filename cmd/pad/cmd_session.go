@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -146,7 +148,7 @@ prune').`,
 			if name == "" {
 				name = "(anonymous)"
 			}
-			fmt.Printf("Registered session pid %d as %s at %s\n", rec.SessionPID, name, rec.Path)
+			fmt.Printf("Registered session pid %d as %s at %s\n", rec.SessionPID, printableCell(name), rec.Path)
 			return nil
 		},
 	}
@@ -181,6 +183,12 @@ that cannot probe pids, a socket that cannot be stat'ed). A legacy row
 (registered before sessions carried an agent name) is judged by its pid
 alone: it can say a session exists but not who it is, and it matches no
 --agent filter.
+
+Everything a row says about WHO — agent, session id, and (unless
+session_pid_verified is true) the owner pid itself — is what the session
+declared. On Linux the pid claim is checked against the registering
+process's ancestry; a consumer that needs that check reads
+session_pid_verified in the JSON.
 
 Newest first. Use --format json for the stable shape.`,
 		Args: cobra.NoArgs,
@@ -243,9 +251,28 @@ func printSessionList(records []cli.SessionRecord) {
 		case r.Legacy:
 			state += " (legacy)"
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", agent, r.SessionPID, state, r.Cwd, r.RegisteredAt)
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", printableCell(agent), r.SessionPID, state, printableCell(r.Cwd), printableCell(r.RegisteredAt))
 	}
 	tw.Flush()
+}
+
+// printableCell makes a self-declared value safe for the terminal table:
+// every non-printable rune (newline, carriage return, ESC, ...) becomes
+// '?', so a hostile agent name or directory cannot forge a row or drive
+// the terminal (codex round 3). Replaced, not dropped, so the value is
+// visibly odd rather than silently shortened. JSON output is untouched —
+// encoding/json escapes on its own.
+func printableCell(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
 }
 
 // sessionPruneCmd is `pad session prune` (TASK-2767): removes the records

@@ -11,9 +11,8 @@ import (
 // Probe failures that mean "the owner is GONE" (as opposed to "the owner
 // could not be examined"). See pidLiveness.
 var (
-	errProcZombie           = errors.New("process is a zombie")
-	errProcStatMalformed    = errors.New("/proc stat is malformed")
-	errProcStartUnsupported = errors.New("process start token unsupported on this platform")
+	errProcZombie        = errors.New("process is a zombie")
+	errProcStatMalformed = errors.New("/proc stat is malformed")
 )
 
 // Session owner identity (TASK-2767, IDEA-2750 part 2).
@@ -74,6 +73,14 @@ type SessionOwner struct {
 	// command is dead by the time anyone reads it, and a reader should be
 	// able to see that this is why.
 	PIDSource string `json:"session_pid_source,omitempty"`
+	// PIDVerified is true when the claimed pid was checked against this
+	// process's ancestry at capture time (pidIsSelfOrAncestor — Linux) or
+	// is this process itself. A harness-supplied pid is otherwise a bare
+	// claim: any positive integer names SOME process, and the start token
+	// only guards against later reuse, not against a wrong pid in the
+	// first place (codex round 3). False on platforms without an ancestry
+	// walk, and for legacy rows.
+	PIDVerified bool `json:"session_pid_verified,omitempty"`
 	// ProcStart is the owner's process start token (procStartToken) when
 	// the platform supplies one — the pid-reuse defence. Empty elsewhere.
 	ProcStart string `json:"proc_start,omitempty"`
@@ -116,6 +123,13 @@ func CaptureSessionOwner() (SessionOwner, error) {
 		}
 		o.PID, o.PIDSource = n, env
 		break
+	}
+	if o.PIDSource == "self" {
+		o.PIDVerified = true
+	} else {
+		// A wrong-but-live pid must not be recorded as if it were checked;
+		// an unreadable /proc leaves it unverified too.
+		o.PIDVerified, _ = pidIsSelfOrAncestor(o.PID)
 	}
 	// Best effort: empty where the platform has no token, and empty when
 	// the pid cannot be read (a harness pid we cannot see is recorded

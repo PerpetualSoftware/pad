@@ -20,6 +20,7 @@ func sessionRegistryTestEnv(t *testing.T) (home string) {
 	t.Helper()
 	home = t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on windows
 	for _, k := range []string{"PAD_SESSION_PID", "CLAUDE_PID", "CLAUDE_CODE_MESSAGING_SOCKET", "PAD_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "PAD_AGENT", "CLAUDECODE"} {
 		t.Setenv(k, "")
 	}
@@ -326,5 +327,26 @@ func TestSessionList_EmptyAgentFilterExcludesLegacyAndMalformed(t *testing.T) {
 	recs := decodeRecords(t, runSessionCmd(t, "list", "--agent", ""))
 	if len(recs) != 1 || recs[0].Legacy || recs[0].Malformed || recs[0].SessionPID != os.Getpid() {
 		t.Fatalf("--agent \"\" must return only the anonymous v2 row: %+v", recs)
+	}
+}
+
+// TestSessionList_TableNeutralizesControlCharacters: a self-declared
+// agent name carrying a newline and an ANSI escape must not forge a row
+// or drive the terminal; each such rune renders as '?'.
+func TestSessionList_TableNeutralizesControlCharacters(t *testing.T) {
+	sessionRegistryTestEnv(t)
+	hostile := "ev\x1b[31mil\nghost  1  alive"
+	registerAs(t, os.Getpid(), hostile, t.TempDir())
+	formatFlag = "table"
+	out := runSessionCmd(t, "list")
+	if strings.Contains(out, "\x1b") || strings.Count(out, "\n") != 2 { // header + one row
+		t.Fatalf("table must neutralize control characters (got ESC or an extra line):\n%q", out)
+	}
+	if !strings.Contains(out, "ev?[31mil?ghost") {
+		t.Fatalf("control runes must render as '?':\n%q", out)
+	}
+	regOut := runSessionCmd(t, "register", "--agent", hostile)
+	if strings.Contains(regOut, "\x1b") || strings.Count(regOut, "\n") != 1 {
+		t.Fatalf("register's confirmation line must neutralize control characters:\n%q", regOut)
 	}
 }

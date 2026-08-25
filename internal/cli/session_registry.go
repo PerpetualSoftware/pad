@@ -80,6 +80,11 @@ type SessionRecord struct {
 	// "CLAUDE_PID", "self", or for legacy files "legacy-socket" (parsed
 	// from the socket basename) / "legacy-registrar" (the v1 pid field).
 	SessionPIDSource string `json:"session_pid_source,omitempty"`
+	// SessionPIDVerified is true when the recorded pid was checked against
+	// the registering process's ancestry (Linux) or is that process. Always
+	// present in JSON so a consumer that requires a verified claim can see
+	// an explicit false. A legacy row is never verified.
+	SessionPIDVerified bool `json:"session_pid_verified"`
 	// Agent is the declared agent name; always present in JSON, "" when
 	// anonymous or legacy.
 	Agent string `json:"agent"`
@@ -116,6 +121,14 @@ func SessionsDir() (string, error) {
 	dir := filepath.Join(homeDir, ".pad", "sessions")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("create sessions directory: %w", err)
+	}
+	// MkdirAll applies the mode only on creation; a directory that already
+	// existed with a looser mode keeps it. The registry's records are
+	// 0600 each, but a permissive directory would let another local user
+	// see the filenames (pids) and plant files — tighten it every time
+	// (codex round 3). Best effort: the caller's own directory.
+	if info, err := os.Stat(dir); err == nil && info.Mode().Perm() != 0700 {
+		_ = os.Chmod(dir, 0700)
 	}
 	return dir, nil
 }
@@ -173,7 +186,7 @@ func RegisterSession(cwd, agent string) (SessionRecord, error) {
 	// age bound (PruneSessions), which register has no business choosing.
 	// Under the same lock as the write, so no other mutator interleaves.
 	_, _ = pruneLocked(0, time.Now())
-	return recordFor(path, reg, nil), nil
+	return recordFor(path, reg), nil
 }
 
 func firstEnv(names ...string) string {
@@ -200,7 +213,10 @@ func ListSessions() ([]SessionRecord, error) {
 	}
 	var out []SessionRecord
 	for _, e := range entries {
-		if e.IsDir() || !registryFileName.MatchString(e.Name()) {
+		// Regular files only: a symlink under a session-shaped name would
+		// read some other file as a record (duplicating a live row, or
+		// injecting one), and a directory is not a file at all.
+		if !e.Type().IsRegular() || !registryFileName.MatchString(e.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -245,7 +261,7 @@ func readSessionRecord(path string) (SessionRecord, error) {
 	if err := json.Unmarshal(data, &reg); err != nil || !registrationWellFormed(&reg) {
 		return malformedRecord(path), nil
 	}
-	return recordFor(path, reg, nil), nil
+	return recordFor(path, reg), nil
 }
 
 // registrationWellFormed rejects files that parse as JSON but are not
@@ -280,12 +296,11 @@ func malformedRecord(path string) SessionRecord {
 }
 
 // recordFor projects a registration into a record, computing liveness.
-// liveness may be pre-supplied by a caller that already knows it (a
-// register that just wrote the file); nil computes it.
-func recordFor(path string, reg SessionRegistration, liveness *Liveness) SessionRecord {
+func recordFor(path string, reg SessionRegistration) SessionRecord {
 	rec := SessionRecord{
 		SessionPID:          reg.PID,
 		SessionPIDSource:    reg.PIDSource,
+		SessionPIDVerified:  reg.PIDVerified,
 		Agent:               reg.Agent,
 		Cwd:                 reg.Cwd,
 		SessionID:           reg.SessionID,
@@ -295,15 +310,17 @@ func recordFor(path string, reg SessionRegistration, liveness *Liveness) Session
 	}
 	owner := reg.SessionOwner
 	if reg.PID == 0 {
+		// A v1 file — or a crafted file with an explicit session_pid of 0,
+		// which JSON cannot tell from an omitted one. Either way the row
+		// is legacy: it carries no verifiable owner, so it carries no
+		// agent name and no session id either (codex round 3 — a legacy
+		// row must never present a name it cannot have recorded).
 		rec.Legacy = true
+		rec.Agent, rec.SessionID, rec.SessionPIDVerified = "", "", false
 		owner = legacyOwner(reg)
 		rec.SessionPID, rec.SessionPIDSource = owner.PID, owner.PIDSource
 	}
-	if liveness != nil {
-		rec.Liveness = *liveness
-	} else {
-		rec.Liveness = OwnerLiveness(&owner)
-	}
+	rec.Liveness = OwnerLiveness(&owner)
 	return rec
 }
 
