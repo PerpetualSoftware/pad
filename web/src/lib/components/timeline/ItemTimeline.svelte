@@ -629,21 +629,35 @@
 		// state being thrown away that would have survived.
 		nextCursor = null;
 		hasMore = false;
-		// This reload replaces the view; anything already in flight against
-		// the old one must not land on it.
-		const reqGen = ++viewGen;
+		const reqGen = viewGen;
+		// Whether this request is the one that owns the view right now: it
+		// either wrote (and advanced the generation ITSELF, so a bare
+		// reqGen === viewGen check would then read as stale — the trap the
+		// first version of this fell into, blocking its own `loading = false`
+		// and leaving an empty page under a permanent spinner) or nothing else
+		// has written since it started.
+		let owned = false;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			if (reqGen !== viewGen) return;
+			owned = true;
+			viewGen++;
 			entries = resp.entries;
 			hasMore = resp.has_more;
 			nextCursor = cursorFrom(resp, resp.entries);
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			// A newer load or refresh has landed since; its error state, or
+			// its success, is the one that counts.
+			if (!owned && reqGen !== viewGen) return;
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
-			if (reqSlug === itemSlug && reqWs === wsSlug) loading = false;
+			// Identity AND ownership: a stale request's cleanup must not clear
+			// the spinner a newer one owns (codex round 7).
+			if (reqSlug === itemSlug && reqWs === wsSlug && (owned || reqGen === viewGen)) {
+				loading = false;
+			}
 		}
 	}
 
@@ -833,10 +847,17 @@
 	/** Set by onDestroy; checked by every continuation that outlives the mount. */
 	let destroyed = false;
 	/**
-	 * Monotonic id of the newest thing that may REPLACE what is on screen —
-	 * an SSE refresh or a full reload. Every continuation that writes entries
-	 * captures it before its await and drops its result if it moved, so a
-	 * response assembled against an older view can never land on a newer one.
+	 * Counts REPLACEMENTS APPLIED to what is on screen — a full reload or an
+	 * SSE refresh. Every continuation that writes entries captures it before
+	 * its await and drops its result if it moved, so a response assembled
+	 * against an older view can never land on a newer one.
+	 *
+	 * Incremented where the write LANDS, not where the request is dispatched.
+	 * Dispatch-time counting made a merely-attempted refresh invalidate an
+	 * in-flight reload, so a refresh that then FAILED left the reload's good
+	 * response discarded and the view empty until something else redrew it
+	 * (codex round 7). A request that never writes must not count as a
+	 * replacement.
 	 *
 	 * It counts reloads as well as refreshes deliberately: a local comment
 	 * delete calls loadTimeline, which removes the entry from page 1, and a
@@ -868,12 +889,13 @@
 		// one removed, or removes one it added, and the view then disagrees
 		// with the server until something else redraws it. Only the newest
 		// dispatched refresh may write (codex round 2).
-		const reqSeq = ++viewGen;
+		const reqSeq = viewGen;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			if (reqSeq !== viewGen) return;
+			viewGen++;
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
 

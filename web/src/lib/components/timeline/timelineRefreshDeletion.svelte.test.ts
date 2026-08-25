@@ -453,4 +453,37 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 			'the cursor is untouched, so the reader can simply click again'
 		).not.toBeNull();
 	});
+
+	it('a FAILED refresh does not discard the load it overlapped', async () => {
+		// The generation counts writes that LANDED, not requests that were
+		// sent. Counting dispatches made a refresh that then failed invalidate
+		// an in-flight reload, so its good response was thrown away and the
+		// view stayed empty until something else redrew it (codex round 7).
+		let releaseLoad: (r: TimelineResponse) => void = () => {};
+		const heldLoad = new Promise<TimelineResponse>((r) => {
+			releaseLoad = r;
+		});
+		timelineListMock.mockImplementationOnce(async () => heldLoad);
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		// A refresh goes out while the first load is still in flight, and fails.
+		timelineListMock.mockImplementationOnce(async () => {
+			throw new Error('network');
+		});
+		itemEventCb?.({ type: 'comment_created' });
+		await new Promise((r) => setTimeout(r, 700));
+		await settle();
+
+		releaseLoad({
+			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'the loaded entry')],
+			has_more: false,
+		});
+		await settle();
+
+		expect(shows('the loaded entry'), 'a request that never wrote must not count as a replacement').toBe(
+			true
+		);
+	});
 });
