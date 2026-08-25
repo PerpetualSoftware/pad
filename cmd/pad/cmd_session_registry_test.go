@@ -19,6 +19,9 @@ import (
 // it mutates env, cwd, and the formatFlag global.
 func sessionRegistryTestEnv(t *testing.T) (home string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("registry tests assert unix liveness verdicts (unknown on windows)")
+	}
 	home = t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // os.UserHomeDir on windows
@@ -398,7 +401,7 @@ func TestSessionList_TableMarksUnverifiedPid(t *testing.T) {
 	if err != nil {
 		t.Skip("no shell")
 	}
-	c := exec.Command(sh, "-c", "sleep 60")
+	c := exec.Command(sh, "-c", "exec sleep 60") // exec: killing the pid kills the sleeper, not an orphaning shell
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}

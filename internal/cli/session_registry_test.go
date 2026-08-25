@@ -17,6 +17,13 @@ import (
 // a clean session environment, returning the sessions dir.
 func registryEnv(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Every verdict here is unknown on Windows (pids cannot be probed),
+		// and these tests assert the unix alive/dead verdicts. The
+		// registry's Windows behaviour is covered by its stated posture
+		// (unknown is never reaped without a bound), not by this suite.
+		t.Skip("registry tests assert unix liveness verdicts")
+	}
 	home := t.TempDir()
 	isolateHome(t, home)
 	clearSessionEnv(t)
@@ -31,7 +38,9 @@ func livingChildPID(t *testing.T) int {
 	if err != nil {
 		t.Skip("no shell to spawn a child from")
 	}
-	c := exec.Command(sh, "-c", "sleep 60")
+	// exec so the shell is REPLACED by sleep: killing the pid then kills
+	// the sleeper itself, not a shell that would orphan it.
+	c := exec.Command(sh, "-c", "exec sleep 60")
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -430,6 +439,9 @@ func TestListSessions_SemanticallyMalformedIsUnknown(t *testing.T) {
 		"1002.json": `{"session_pid":1}`,
 		"1003.json": `{"session_pid":1,"registered_at":"not-a-time"}`,
 		"1004.json": `{"session_pid":-5,"registered_at":"2026-08-01T00:00:00Z"}`,
+		// Negative owner pid with every other required field present, so
+		// the pid check alone must reject it.
+		"1008.json": `{"session_pid":-5,"pid":1,"cwd":"/x","registered_at":"2026-08-01T00:00:00Z"}`,
 		"1005.json": `{"pid":0,"registered_at":"2026-08-01T00:00:00Z"}`,
 		// Fields every writer emits, missing: no cwd; no registrar pid.
 		"1006.json": `{"session_pid":1,"pid":1,"registered_at":"2026-08-01T00:00:00Z"}`,

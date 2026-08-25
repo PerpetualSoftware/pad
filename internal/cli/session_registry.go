@@ -284,8 +284,9 @@ func registrationWellFormed(reg *SessionRegistration) bool {
 	if _, err := time.Parse(time.RFC3339, reg.RegisteredAt); err != nil {
 		return false
 	}
-	// v2 additionally has a positive owner pid; v1 has none at all.
-	return reg.PID > 0 || reg.PID == 0
+	// v2 has a positive owner pid; v1 has none (zero). Negative is a file
+	// nobody wrote.
+	return reg.PID >= 0
 }
 
 // malformedRecord describes a file this code cannot read as a
