@@ -441,7 +441,16 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 		});
 		await settle();
 
+		// The whole page is discarded, not filtered: it was assembled before
+		// the deletion and nothing in it can be trusted to reflect the current
+		// view. The cost is one wasted click, and the assertion below is what
+		// makes that a deliberate choice rather than a silent drop — the
+		// cursor is untouched, so Load More is still offered.
 		expect(shows('about to be deleted'), 'a stale page must not resurrect it').toBe(false);
-		expect(shows('genuinely older'), 'the rest of the page still lands').toBe(true);
+		expect(shows('genuinely older'), 'the stale page is discarded whole').toBe(false);
+		expect(
+			host.querySelector('.load-more-btn'),
+			'the cursor is untouched, so the reader can simply click again'
+		).not.toBeNull();
 	});
 });
