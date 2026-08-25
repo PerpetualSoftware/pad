@@ -123,16 +123,21 @@ type Observer interface {
 	// ERROR log rather than a silent return.
 	ReceiveLoopExited()
 
-	// HeartbeatPublishFailed reports that this instance could not publish a
-	// liveness heartbeat (BUG-2769).
+	// HeartbeatPublishFailed reports that this instance could not CONFIRM a
+	// liveness heartbeat publish (BUG-2769). Not the same as "did not
+	// publish": the call returning an error can also mean Redis accepted the
+	// frame and the reply was lost.
 	//
 	// IT IS THE DETECTOR SAYING IT CANNOT SEE, not a finding about any peer.
 	// While it fires, idle detection is SUSPENDED — silence cannot be read as
-	// evidence when we could not ask — so a healthy-looking absence of
-	// idle_timeout resets means less than usual. PUBLISH and pub/sub use
-	// different connection pools, so this points at the OUTBOUND path, and an
-	// instance in that state is also failing to deliver its own notifications
-	// to every other instance.
+	// evidence when we cannot say a probe went out — so a healthy-looking
+	// absence of idle_timeout resets means less than usual.
+	//
+	// PUBLISH and pub/sub use different connection pools, so a SUSTAINED rate
+	// points at the OUTBOUND path, and an instance whose outbound path is
+	// genuinely broken is also failing to deliver its own notifications to
+	// every other instance. One firing establishes neither: it says only that
+	// one call did not come back.
 	//
 	// Expect zero.
 	HeartbeatPublishFailed()

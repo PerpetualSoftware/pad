@@ -265,7 +265,7 @@ func (b *RedisBus) publishHeartbeats() {
 		// unconfirmed probe is not evidence about the receive path, so
 		// detection suspends on it exactly as on a definite failure.
 		slog.Warn("watchevents: could not confirm a liveness heartbeat publish; idle detection is suspended until a "+
-			"probe succeeds, because silence cannot be read as a finding when we could not ask",
+			"probe succeeds, because silence cannot be read as a finding when we cannot say a probe went out",
 			"channel", channel, "error", err)
 		b.reportHeartbeatPublishFailed()
 		return
