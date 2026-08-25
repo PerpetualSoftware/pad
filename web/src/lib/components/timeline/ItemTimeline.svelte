@@ -671,6 +671,26 @@
 	 */
 	const MAX_EMPTY_HOPS = 5;
 
+	/**
+	 * The server's own ordering: created_at descending, id descending as the
+	 * tie-break. Applied wherever entries from two fetches are combined, since
+	 * neither side can assume the other's are strictly older or strictly newer
+	 * — the paging cursor deliberately re-covers ground, and a structured note
+	 * can carry a backdated timestamp.
+	 *
+	 * Compared as INSTANTS, not as strings: precision is not uniform — the
+	 * store writes whole seconds, a hand-written note timestamp need not — and
+	 * lexicographically `…:05.123Z` sorts BEFORE `…:05Z`.
+	 */
+	function byNewestFirst(list: TimelineEntry[]): TimelineEntry[] {
+		return [...list].sort((a, b) => {
+			const at = new Date(a.created_at).getTime();
+			const bt = new Date(b.created_at).getTime();
+			if (at !== bt) return bt - at;
+			return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+		});
+	}
+
 	async function loadMore() {
 		if (loadingMore || !nextCursor) return;
 		// Capture identity before the await so a switch mid-flight can't append
@@ -705,12 +725,7 @@
 				// "…:05.123Z" sorts BEFORE "…:05Z", which would place the more
 				// precise entry an hour's worth of rows away from where it
 				// belongs.
-				entries = [...entries, ...newEntries].sort((a, b) => {
-					const at = new Date(a.created_at).getTime();
-					const bt = new Date(b.created_at).getTime();
-					if (at !== bt) return bt - at;
-					return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
-				});
+				entries = byNewestFirst([...entries, ...newEntries]);
 				hasMore = resp.has_more;
 				nextCursor = cursorFrom(resp, entries);
 				// Stop as soon as the press produced something to look at.
@@ -813,7 +828,11 @@
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
 
-			// Prepend genuinely new entries.
+			// Genuinely new entries. Normally these ARE the newest — the
+			// refresh re-fetches the newest window — but "normally" is not
+			// "always": a structured note or decision carries a hand-written
+			// created_at and can arrive backdated, so they are merged into
+			// order rather than prepended on the assumption (codex round 3).
 			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
 			// Update existing entries from the fresh response (e.g., reaction changes).
@@ -827,7 +846,7 @@
 				})
 				.map((e) => freshById.get(e.id) ?? e);
 
-			entries = [...newEntries, ...updatedExisting];
+			entries = byNewestFirst([...newEntries, ...updatedExisting]);
 			firstPageIds = freshIds;
 		} catch (err) {
 			// A failed SSE-driven refresh is not fatal — the timeline keeps
