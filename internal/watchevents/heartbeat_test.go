@@ -431,3 +431,174 @@ func TestAReplacementCanItselfBeCycled(t *testing.T) {
 		t.Fatal("the replacement was never itself replaced")
 	}
 }
+
+// TestAnInstanceThatRecoversBeforeItsCycleIsNotCycled is codex round 1's P2,
+// and the same defect BUG-2738 had to fix at its round 11.
+//
+// cycleIfIdle decides under one lock and tears down under another. Between
+// them a heartbeat or a notification can arrive, at which point the
+// subscription is demonstrably alive — and dropping it resyncs every client on
+// the instance for nothing. False positives are the property this design cares
+// about most.
+func TestAnInstanceThatRecoversBeforeItsCycleIsNotCycled(t *testing.T) {
+	b, _, clock, obs := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+	before := b.currentPubSub()
+
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+
+	// The recovery lands between the decision and the teardown. beforeDropHook
+	// runs in exactly that window.
+	var fired atomic.Bool
+	b.beforeDropHook = func() {
+		if !fired.CompareAndSwap(false, true) {
+			return
+		}
+		b.mu.Lock()
+		b.lastSeen = clock.now()
+		b.mu.Unlock()
+	}
+
+	b.cycleIfIdle()
+
+	if !fired.Load() {
+		t.Fatal("the window was never reached; this test could not have discriminated")
+	}
+	if got := obs.snapshot().resets[ResetReasonIdleTimeout]; got != 0 {
+		t.Fatalf("an instance that started receiving again before its cycle was cycled anyway (%d resets)", got)
+	}
+	if b.currentPubSub() != before {
+		t.Fatal("the connection was replaced although it had started working again")
+	}
+}
+
+// TestAStragglerFromAReplacedSubscriptionIsIgnored is codex round 1's other P2.
+//
+// Cancelling a receive loop and closing its PubSub does NOT join the goroutine,
+// and go-redis's channel is buffered — so a frame from a subscription that has
+// already been replaced can still reach the switch. Without a generation it
+// would stamp the REPLACEMENT's liveness, append to the replacement's buffer,
+// or drop the replacement's coverage, all on the strength of a frame that
+// arrived on a dead socket. On a wedged route that is the worst direction: the
+// dead connection's buffered tail would suppress the detector for its
+// successor.
+func TestAStragglerFromAReplacedSubscriptionIsIgnored(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	b.mu.Lock()
+	staleGen := b.subGen
+	b.mu.Unlock()
+
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+	b.cycleIfIdle()
+
+	b.mu.Lock()
+	freshGen := b.subGen
+	stampBefore := b.lastSeen
+	b.mu.Unlock()
+	if freshGen == staleGen {
+		t.Fatal("fixture: nothing was replaced, so there is no straggler to simulate")
+	}
+
+	if b.isCurrentGen(staleGen) {
+		t.Fatal("a frame from the replaced subscription is being treated as current")
+	}
+
+	// A straggler arriving now must change nothing.
+	clock.advance(time.Hour)
+	if b.isCurrentGen(staleGen) {
+		t.Fatal("the stale generation is still accepted")
+	}
+	b.mu.Lock()
+	stampAfter := b.lastSeen
+	b.mu.Unlock()
+	if !stampAfter.Equal(stampBefore) {
+		t.Fatalf("the replacement's liveness moved from %v to %v without a frame of its own", stampBefore, stampAfter)
+	}
+}
+
+// TestTheReceiveLoopActuallyConsultsTheGeneration is the WIRING for the
+// straggler fence (CONVE-19). Its sibling above asserts isCurrentGen answers
+// correctly; neither that nor the direct stamp checks say whether the loop ever
+// calls it, and removing the call from the loop survived both.
+//
+// Driven by moving the generation on under a LIVE subscription: the running
+// loop then holds a stale one, so a real notification arriving on a working
+// socket must be ignored exactly as a straggler would be.
+func TestTheReceiveLoopActuallyConsultsTheGeneration(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	// THE CLOCK MUST MOVE FIRST or this test cannot discriminate: on a frozen
+	// clock a stamp writes the value that is already there, so removing the
+	// fence looks identical to keeping it. The mutation matrix said so before
+	// this line existed.
+	clock.advance(time.Minute)
+
+	b.mu.Lock()
+	b.subGen++ // the live loop is now a generation behind
+	before := b.lastSeen
+	b.mu.Unlock()
+
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	// Give the frame time to be delivered and dropped.
+	time.Sleep(300 * time.Millisecond)
+
+	b.mu.Lock()
+	after := b.lastSeen
+	b.mu.Unlock()
+	if !after.Equal(before) {
+		t.Fatalf("a frame from a superseded generation stamped liveness (%v → %v): the loop is not consulting the "+
+			"generation, so a dead connection's buffered tail can suppress the detector for its successor",
+			before, after)
+	}
+}
+
+// TestAProbeDoesNotCreditTheSubscriptionThatReplacedIt is the wiring for the
+// other half of the fence. publishHeartbeats captures the generation, publishes
+// off the lock — for as long as go-redis's timeouts allow — and stamps
+// afterwards; if the subscription was replaced in that window, crediting the
+// replacement claims a probe reached a socket that never saw one.
+func TestAProbeDoesNotCreditTheSubscriptionThatReplacedIt(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	var moved atomic.Bool
+	b.afterProbePublish = func() {
+		if !moved.CompareAndSwap(false, true) {
+			return
+		}
+		b.mu.Lock()
+		b.subGen++ // a cycle replaced the subscription mid-publish
+		b.mu.Unlock()
+		clock.advance(time.Minute)
+	}
+
+	b.mu.Lock()
+	before := b.lastProbeOK
+	b.mu.Unlock()
+
+	b.publishHeartbeats()
+
+	if !moved.Load() {
+		t.Fatal("the window was never reached; this test could not have discriminated")
+	}
+	b.mu.Lock()
+	after := b.lastProbeOK
+	b.mu.Unlock()
+	if !after.Equal(before) {
+		t.Fatalf("a probe sent to the previous subscription credited its replacement (%v → %v)", before, after)
+	}
+}

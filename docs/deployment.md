@@ -923,6 +923,13 @@ fleet, watch database load alongside
 `pad_event_sequence_resets_total` after any network event that could wedge many
 routes simultaneously. Tracked as BUG-2761.
 
+**Cost on the activity stream.** Each workspace has its own Redis subscription —
+and therefore its own connection — so liveness is genuinely per-workspace and
+there is no cheaper shared probe. An instance subscribed to N workspaces
+publishes N frames every 30s; at N=1000 that is roughly 33 publishes/sec, which
+is noise for Redis. If fleet workspace counts ever make it matter, the fix is
+connection consolidation, not a longer interval.
+
 **How the watch stream differs.** It holds ONE process-wide subscription on one
 channel rather than one per workspace, which changes three things and nothing
 else:
@@ -945,13 +952,6 @@ else:
 `pad_watchevents_heartbeat_publish_failures_total` is the watch twin of the
 activity stream's probe-failure counter and reads the same way: detection
 degraded, not a peer broken.
-
-**Cost.** Each workspace has its own Redis subscription — and therefore its own
-connection — so liveness is genuinely per-workspace and there is no cheaper
-shared probe. An instance subscribed to N workspaces publishes N frames every
-30s; at N=1000 that is roughly 33 publishes/sec, which is noise for Redis. If
-fleet workspace counts ever make it matter, the fix is connection
-consolidation, not a longer interval.
 
 ### Security
 

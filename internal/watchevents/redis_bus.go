@@ -303,6 +303,30 @@ type RedisBus struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
+	// afterProbePublish is a test-only seam, nil in production. It runs in
+	// publishHeartbeats after the publish and BEFORE lastProbeOK is stamped —
+	// the window in which a slow publish can have its subscription replaced
+	// underneath it, and the only place a test can force that interleave.
+	afterProbePublish func()
+
+	// beforeDropHook is a test-only seam, nil in production. It runs in
+	// cycleIfIdle after the decision to cycle and BEFORE the re-validation that
+	// precedes the drop — the only point at which a test can land a recovery
+	// strictly inside that window rather than racing it.
+	beforeDropHook func()
+
+	// subGen numbers subscriptions so a frame can be matched to the one it
+	// arrived on (BUG-2769, codex round 1).
+	//
+	// stopping a receive loop only SIGNALS it — cancelling its context and
+	// closing its PubSub does not join the goroutine, and go-redis's channel is
+	// buffered — so a straggler from a subscription that has already been
+	// replaced can still reach the switch. Without a generation it would stamp
+	// the REPLACEMENT's liveness, append to the replacement's buffer, or drop
+	// the replacement's coverage, all on the strength of a frame that arrived
+	// on a dead socket. Guarded by mu.
+	subGen int64
+
 	// subCancel ends the CURRENT subscription's receive loop without ending the
 	// bus. The idle cycle calls it before closing the old PubSub so the
 	// replaced loop exits quietly instead of reporting the instance deaf
@@ -451,7 +475,8 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 	b.lastSeen = b.now()
 	b.lastProbeOK = b.now()
 	b.wg.Add(1)
-	go b.receiveMessages(subLoopCtx, b.pubsub)
+	b.subGen++
+	go b.receiveMessages(subLoopCtx, b.pubsub, b.subGen)
 
 	// Started unconditionally; each half returns immediately unless this
 	// instance is on heartbeat phase 2. See publishHeartbeats.
@@ -1055,7 +1080,7 @@ func (b *RedisBus) Close() {
 // and moves a counter documented to mean the instance has gone deaf. Passing
 // both in makes the distinction structural: the cycle cancels this ctx before
 // it closes the old PubSub, so the replaced loop leaves by the quiet door.
-func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub) {
+func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, gen int64) {
 	defer b.wg.Done()
 	ch := pubsub.ChannelWithSubscriptions()
 	for {
@@ -1071,6 +1096,15 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub) {
 			// unreadable message means coverage is broken, which dropCoverage
 			// handles; it does not mean the connection is dead, and cycling it
 			// would be the wrong remedy.
+			// ONE GENERATION CHECK, COVERING EVERYTHING THIS FRAME COULD DO.
+			// Placed here rather than at each mutation site because the three
+			// things a frame touches — the liveness stamp, the replay buffer
+			// and this instance's coverage — must agree about whether it
+			// belongs to the live subscription. A straggler from a replaced one
+			// is not evidence about anything.
+			if ok && !b.isCurrentGen(gen) {
+				continue
+			}
 			if ok {
 				b.stampLastSeen()
 			}

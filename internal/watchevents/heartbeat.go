@@ -243,6 +243,10 @@ func (b *RedisBus) publishHeartbeats() {
 		return
 	}
 
+	b.mu.Lock()
+	gen := b.subGen
+	b.mu.Unlock()
+
 	channel := b.keys.Name(redisWatchChannelSuffix)
 	if err := b.client.Publish(b.ctx, channel, watchHeartbeatPayload).Err(); err != nil {
 		// Logged and dropped, never retried, and DELIBERATELY NOT STAMPED:
@@ -256,8 +260,19 @@ func (b *RedisBus) publishHeartbeats() {
 		return
 	}
 
+	if b.afterProbePublish != nil {
+		b.afterProbePublish()
+	}
+
+	// STAMPED ONLY IF IT IS STILL THE SAME SUBSCRIPTION. The publish happens off
+	// the lock and can take as long as go-redis's timeouts allow, during which a
+	// cycle may have replaced the subscription this probe was sent for.
+	// Crediting the replacement would say a probe reached a socket that never
+	// saw one.
 	b.mu.Lock()
-	b.lastProbeOK = b.now()
+	if b.subGen == gen {
+		b.lastProbeOK = b.now()
+	}
 	b.mu.Unlock()
 }
 
@@ -288,11 +303,33 @@ func (b *RedisBus) cycleIfIdle() {
 	}
 	oldCancel, oldPubsub := b.subCancel, b.pubsub
 	idleTimeout := b.idleTimeout
+	decidedGen := b.subGen
 	b.mu.Unlock()
 
 	slog.Warn("watchevents: no traffic on this instance's Redis subscription within the idle timeout; ending its "+
 		"replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
 		"idle_timeout", idleTimeout)
+
+	if b.beforeDropHook != nil {
+		b.beforeDropHook()
+	}
+
+	// RE-VALIDATED IMMEDIATELY BEFORE THE DROP (codex round 1). The decision
+	// above was taken under a lock this function then released, and a heartbeat
+	// or notification can arrive in that window — at which point the
+	// subscription is demonstrably alive and dropping it would resync every
+	// client on the instance for nothing. False positives are the property this
+	// design cares about most, and BUG-2738 had to learn the same thing at its
+	// round 11: "idle when we looked" is not "idle now".
+	b.mu.Lock()
+	stillIdle := b.subGen == decidedGen &&
+		b.now().Sub(b.lastSeen) >= b.idleTimeout &&
+		b.lastProbeOK.After(b.lastSeen)
+	b.mu.Unlock()
+	if !stillIdle {
+		slog.Info("watchevents: the subscription started receiving again before its cycle ran; leaving it alone")
+		return
+	}
 
 	// Coverage first, and through the ordinary path: dropCoverage resets the
 	// buffer, reports the reason and announces to every live subscriber, which
@@ -337,6 +374,8 @@ func (b *RedisBus) resubscribe() error {
 	}
 	b.pubsub = pubsub
 	b.subCancel = subCancel
+	b.subGen++
+	gen := b.subGen
 	// STAMPED AT INSTALL, both of them. A zero lastSeen reads as 1970 and the
 	// detector would cycle the replacement on its next pass; and lastProbeOK
 	// equal to lastSeen is what stops it being cycled before its first
@@ -346,7 +385,7 @@ func (b *RedisBus) resubscribe() error {
 	b.mu.Unlock()
 
 	b.wg.Add(1)
-	go b.receiveMessages(subCtx, pubsub)
+	go b.receiveMessages(subCtx, pubsub, gen)
 	return nil
 }
 
@@ -355,3 +394,11 @@ func (b *RedisBus) resubscribe() error {
 // carries unchanged: classify on the ERROR, never on the caller's context
 // state, because asking the context cannot distinguish "we stopped" from "Redis
 // failed while we happened to be stopping".
+
+// isCurrentGen reports whether a frame arrived on the subscription this
+// instance is currently reading.
+func (b *RedisBus) isCurrentGen(gen int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.subGen == gen
+}
