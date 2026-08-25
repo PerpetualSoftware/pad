@@ -302,24 +302,27 @@ reading the metrics below, and for anyone writing a third-party consumer:
   whole message into memory before Pad sees it; bound it with Redis's
   `proto-max-bulk-len` and with who holds `PUBLISH`.
 
-  **One gap in that detection remains everywhere, and a second remains on the
-  watch stream only.** A message lost in transit with the connection intact —
-  no flap, no decode failure, just a message that never arrived (BUG-2735): on
-  the watch stream a LATER notification exposes it as an ID gap, while on the
-  activity stream, whose per-workspace IDs are non-consecutive by construction,
-  nothing local ever does. That one is open on both.
+  **One gap in that detection remains, and it remains on both streams.** A
+  message lost in transit with the connection intact — no flap, no decode
+  failure, just a message that never arrived (BUG-2735): on the watch stream a
+  LATER notification exposes it as an ID gap, while on the activity stream,
+  whose per-workspace IDs are non-consecutive by construction, nothing local
+  ever does. (Until BUG-2769 there was a SECOND gap, on the watch stream only —
+  the half-open connection immediately below. It is closed on both streams
+  now.)
 
   A HALF-OPEN connection — a route that stopped carrying traffic without
   closing, so nothing ever resubscribes and no message ever arrives to be
   non-consecutive with — is **closed on both streams**: on the activity stream
-  by BUG-2738 and on the watch stream by BUG-2769. Do not assume go-redis's
-  pub/sub health check covers it on either: `PubSub.Ping` writes the command and
-  never reads a reply, so it reports healthy for as long as the socket accepts
-  writes. What closes it is application-level idle tracking with a heartbeat
-  that makes the threshold answerable — see *Half-open connection detection*,
-  which covers both buses and their two independent phase flags.
+  by BUG-2738 and on the watch stream by BUG-2769, each behind its own phase-2
+  flag, so it is closed on a given deployment only once that flag is on. Do not
+  assume go-redis's pub/sub health check covers it on either: `PubSub.Ping`
+  writes the command and never reads a reply, so it reports healthy for as long
+  as the socket accepts writes. What closes it is application-level idle
+  tracking with a heartbeat that makes the threshold answerable — see *Half-open
+  connection detection*, which covers both buses.
 
-  **A third residual affects RESUMES rather than open streams** (BUG-2743): if
+  **A further residual affects RESUMES rather than open streams** (BUG-2743): if
   the watch counter restarts without the epoch rotating — evicted under
   `maxmemory`, lost to a `FLUSHDB`, restored from a stale snapshot — the old
   and new ID spaces overlap, and a `Last-Event-ID` inside that overlap cannot
@@ -336,7 +339,7 @@ reading the metrics below, and for anyone writing a third-party consumer:
   entirely: that check reads the counter at one instant, so a notification
   published AFTER the read and missed is invisible to it — an at-most-once
   pub/sub residual with no per-connection ack, documented on
-  `resumeOutrunsLocalView` and again in the CLI. What these two gaps reliably
+  `resumeOutrunsLocalView` and again in the CLI. What these gaps reliably
   leave stale is the client holding a stream OPEN.
 
 The second case is newer — before it, a held-open stream that missed events was
@@ -419,7 +422,7 @@ Alert on these instead:
 | `pad_watchevents_midstream_resyncs_total` (see also, listed above) | Same meaning for the watch stream. Its causes are a slow-subscriber drop and a received sequence gap or reset; a gap announces to EVERY subscriber on the instance, so it can exceed all of its cause counters |
 | `pad_event_sequence_resets_total` | Activity replay coverage dropped, by reason. `subscription_resumed` — a pub/sub connection dropped and resubscribed, dropping that workspace's buffer; expect it during a Redis failover and expect it to stop afterwards. `epoch_change` — the shared counter's ID space changed generation, dropping every buffer; expect a handful per cutover. `counter_backward` — an ID arrived at or below a buffer's high-water mark with no generation change; see *Event ID-space migration* for what to expect per phase. `epoch_regressed` — a LOWER generation was seen, so this instance stopped vouching for its buffers. One alongside an `epoch_change` is a message that was in flight when the generation rotated; a RUN of them means the counter itself went backwards — usually Redis lost writes, and since BUG-2740 possibly a repaired generation key (see *A repaired generation counter*). `undecodable_message` — a message on these channels could not be parsed, so that workspace's coverage ended; expect zero, and suspect a namespace collision. `subscription_unconfirmed` — a subscription was admitted before Redis acknowledged the SUBSCRIBE and the acknowledgement then arrived, so the span in between is one that stream cannot account for; it reaches THIS counter only when a buffer existed to drop, so read `pad_event_subscription_unconfirmed_total` for the dependable count. `idle_timeout` — a subscription received nothing at all (no event, no heartbeat, no acknowledgement) for longer than the idle timeout, so this instance stopped vouching for its buffer. It means **coverage ended, not that the connection was replaced**: the replacement is attempted afterwards and installs nothing if the instance is shutting down or the workspace loses its last subscriber, so only `pad_event_subscription_cycled_total` proves a replacement. Unlike `subscription_resumed` it does NOT establish that events went missing, only that the socket stopped proving it works, and like `subscription_unconfirmed` it reaches this counter only when a buffer existed to drop |
 | `pad_event_events_dropped_total` | Activity events not delivered to a live subscriber, by reason — today only `slow_subscriber` (that connection's 64-deep channel was full). Per-SUBSCRIBER: every subscriber that was keeping up received the event. Pairs with `pad_event_midstream_resyncs_total`, though not one-for-one in either direction — see that row. New in BUG-2730, along with the fix that stops the drop being silent, so a deploy that starts reporting these is not necessarily a regression — it may be the first time they were countable |
-| `pad_event_subscription_cycled_total` | Activity-stream workspace subscriptions torn down **and replaced** because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout. It counts replacements, not teardowns: a cycle that installed nothing because the instance was shutting down or the workspace lost its last subscriber does not increment it, so a restart cannot manufacture this signal. Detects a **half-open connection**: no FIN, no RST, just a route that stopped working, which go-redis cannot see because its pub/sub health check writes a PING and never reads the reply. **Expect zero.** Read this rather than `pad_event_sequence_resets_total{reason="idle_timeout"}`, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — a NAT idle timeout, a stateful firewall, an overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval. **On heartbeat phase 1 this counter is structurally zero** — detection is part of phase 2, so a zero there says nothing at all about whether any route has wedged. Read `heartbeat_phase` off the startup log before drawing any conclusion from it |
+| `pad_event_subscription_cycled_total` | Activity-stream workspace subscriptions torn down **and replaced** because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout. It counts replacements, not teardowns: a cycle that installed nothing because the instance was shutting down or the workspace lost its last subscriber does not increment it, so a restart cannot manufacture this signal. Detects a **half-open connection**: no FIN, no RST, just a route that stopped working, which go-redis cannot see because its pub/sub health check writes a PING and never reads the reply. **Expect zero.** Read this rather than `pad_event_sequence_resets_total{reason="idle_timeout"}`, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — a NAT idle timeout, a stateful firewall, an overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval. **On heartbeat phase 1 this counter is structurally zero** — detection is part of phase 2, so a zero there says nothing at all about whether any route has wedged. Read `heartbeat_phase` off the startup log before drawing any conclusion from it, and take it from the **"Event bus using Redis pub/sub"** line: since BUG-2769 the watch bus logs a `heartbeat_phase` of its own, on its own line, under a separate flag, and it has no bearing on this counter |
 | `pad_event_subscription_unconfirmed_total` | Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait for it timed out (BUG-2747). **Expect zero.** Counts ESTABLISHMENTS, not clients — one workspace subscription that timed out increments it once however many subscribers were waiting on it. Nothing is known to have been lost; what it says is that a stream was admitted whose coverage this instance cannot describe, and that every subscriber waiting on it will be told to reconcile when the acknowledgement lands. A non-zero rate means the SUBSCRIBE round trip is slow or stalling — read it alongside SSE connect latency rather than alongside `pad_event_sequence_resets_total` |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
