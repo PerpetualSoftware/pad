@@ -1032,6 +1032,11 @@
 			// a retry loop would reintroduce exactly that.
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			// A newer refresh has already written the view, so this failure
+			// has nothing left to repair: retrying it would be traffic for a
+			// question that has been answered, and its answer would arrive
+			// staler than what is on screen (codex round 13).
+			if (ticket <= viewApplied) return;
 			console.error('[timeline] SSE-driven refresh failed', err);
 			if (isRetry) return;
 			clearTimeout(sseRefreshTimer);

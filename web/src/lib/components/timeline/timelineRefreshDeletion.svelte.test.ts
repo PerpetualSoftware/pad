@@ -606,4 +606,40 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 			'newer than the cursor and absent from a page that examined that span — deleted'
 		).toBe(false);
 	});
+
+	it('does not retry a refresh that failed after a newer one succeeded', async () => {
+		// The retry exists so a transient failure does not leave the panel
+		// quietly stale (BUG-2508). Once a newer refresh has written, there is
+		// nothing stale to repair, and the retry is traffic whose answer would
+		// arrive older than the view (codex round 13).
+		pages.push({ entries: [entry('e-1', '2026-01-01T12:00:09Z', 'original')], has_more: false });
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		let failOld: (e: Error) => void = () => {};
+		const oldFlight = new Promise<TimelineResponse>((_, reject) => {
+			failOld = reject;
+		});
+		timelineListMock.mockImplementationOnce(async () => oldFlight);
+		timelineListMock.mockImplementationOnce(async () => ({
+			entries: [entry('e-2', '2026-01-01T12:00:20Z', 'newer state')],
+			has_more: false,
+		}));
+
+		itemEventCb?.({ type: 'comment_created' });
+		await new Promise((r) => setTimeout(r, 700));
+		itemEventCb?.({ type: 'comment_created' });
+		await new Promise((r) => setTimeout(r, 700));
+		expect(shows('newer state'), 'the newer refresh landed').toBe(true);
+
+		const before = timelineListMock.mock.calls.length;
+		failOld(new Error('network'));
+		// Past the retry backoff.
+		await new Promise((r) => setTimeout(r, 2400));
+		await settle();
+
+		expect(timelineListMock.mock.calls.length, 'no retry for a superseded refresh').toBe(before);
+		expect(shows('newer state'), 'and the newer view is untouched').toBe(true);
+	});
 });
