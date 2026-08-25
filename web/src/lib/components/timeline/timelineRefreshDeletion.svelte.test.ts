@@ -299,4 +299,57 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 
 		expect(shows('subject'), 'an empty FINAL page means the history is empty').toBe(false);
 	});
+
+	it('ignores an older refresh that resolves after a newer one', async () => {
+		// Two refreshes of the SAME item can overlap — the retry path fires
+		// while a newly debounced one is running — and resolve out of order.
+		// The older one landing last would undo the newer one's view.
+		pages.push({
+			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'original')],
+			has_more: false,
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		let releaseOld: (r: TimelineResponse) => void = () => {};
+		let releaseNew: (r: TimelineResponse) => void = () => {};
+		const oldFlight = new Promise<TimelineResponse>((r) => {
+			releaseOld = r;
+		});
+		const newFlight = new Promise<TimelineResponse>((r) => {
+			releaseNew = r;
+		});
+		timelineListMock.mockImplementationOnce(async () => oldFlight);
+		timelineListMock.mockImplementationOnce(async () => newFlight);
+
+		// Dispatch both, each past the 500ms debounce so both are in flight.
+		itemEventCb?.({ type: 'comment_created' });
+		await new Promise((r) => setTimeout(r, 700));
+		itemEventCb?.({ type: 'comment_created' });
+		await new Promise((r) => setTimeout(r, 700));
+		expect(timelineListMock.mock.calls.length, 'both refreshes dispatched').toBeGreaterThanOrEqual(3);
+
+		// The NEWER one lands first and adds a comment...
+		releaseNew({
+			entries: [
+				entry('e-2', '2026-01-01T12:00:20Z', 'posted by someone else'),
+				entry('e-1', '2026-01-01T12:00:09Z', 'original'),
+			],
+			has_more: false,
+		});
+		await settle();
+		expect(shows('posted by someone else')).toBe(true);
+
+		// ...then the OLDER one resolves with the pre-comment view. Applying
+		// it would delete a live entry: its page is FINAL and does not contain
+		// e-2, so without the fence the coverage rule removes it.
+		releaseOld({
+			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'original')],
+			has_more: false,
+		});
+		await settle();
+
+		expect(shows('posted by someone else'), 'a stale refresh must not write').toBe(true);
+	});
 });

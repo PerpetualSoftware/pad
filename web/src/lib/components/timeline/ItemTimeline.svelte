@@ -816,6 +816,13 @@
 	const SSE_REFRESH_RETRY_MS = 2000;
 	/** Set by onDestroy; checked by every continuation that outlives the mount. */
 	let destroyed = false;
+	/**
+	 * Monotonic id of the newest dispatched SSE refresh. A plain `let`, not
+	 * `$state`: it is read and written only inside the refresh itself, and a
+	 * `$state` written by an effect that also reads it self-invalidates
+	 * (CONVE-1688).
+	 */
+	let sseRefreshSeq = 0;
 
 	// Named rather than inline so the failure path can re-invoke it once. The
 	// `isRetry` flag is what bounds that to ONE extra attempt.
@@ -826,10 +833,20 @@
 		// refresh resolving late must not merge A's entries into B (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// FRESHNESS, not just identity. The item/workspace check below catches
+		// a switch, but two refreshes of the SAME item can be in flight at
+		// once — the retry path fires 2s after a failure while a newly
+		// debounced one is already running — and they can resolve out of
+		// order. An older response applying last re-adds an entry the newer
+		// one removed, or removes one it added, and the view then disagrees
+		// with the server until something else redraws it. Only the newest
+		// dispatched refresh may write (codex round 2).
+		const reqSeq = ++sseRefreshSeq;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (reqSeq !== sseRefreshSeq) return;
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
 
@@ -898,6 +915,23 @@
 			// a slow leak — an entry preserved as a roll-off dropped out of
 			// the tracked set, so a later window that expanded back over it
 			// could never remove it again (codex round 1).
+			// WHAT INFERENCE CANNOT DO, stated so the next reader does not take
+			// this for a complete reconciliation (both raised by codex round 2
+			// and left open deliberately — the lead ruled option 1 for this
+			// unit and option 2, honouring deletion EVENTS, out of scope
+			// because it changes the SSE contract):
+			//
+			//   - An entry deleted BELOW a non-final page's floor is never
+			//     inspected again, so it stays on screen until a reload. The
+			//     old rule removed it — by removing every rolled-off entry
+			//     with it, which is the bug being fixed. Strictly better, not
+			//     complete.
+			//   - Whether a row renders depends on the WINDOW it was fetched
+			//     in: the cross-source drops (an activity a version or comment
+			//     stands in for) need both rows in the same fetch. So an entry
+			//     that rendered on an older page can be absent-and-covered
+			//     here and will be dropped. That matches what a fresh load
+			//     shows, which is the best any first-page comparison can do.
 			const freshById = new Map(resp.entries.map((e) => [e.id, e]));
 			const updatedExisting = entries
 				.filter((e) => !(!freshIds.has(e.id) && coveredByFreshPage(e)))
