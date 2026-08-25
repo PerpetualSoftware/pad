@@ -310,6 +310,11 @@ type RedisBus struct {
 	// underneath it, and the only place a test can force that interleave.
 	afterProbePublish func()
 
+	// beforeInstallLock fires inside resubscribe once the new connection is
+	// dialled and before the install takes the lock. Tests only; see the call
+	// site.
+	beforeInstallLock func()
+
 	// afterResubscribeInstall fires inside resubscribe, after the new
 	// subscription is installed and counted and the lock is released, before
 	// the receive goroutine starts. Tests only; see the call site.

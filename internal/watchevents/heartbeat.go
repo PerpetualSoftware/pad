@@ -406,6 +406,16 @@ func (b *RedisBus) resubscribe() error {
 
 	subCtx, subCancel := context.WithCancel(b.ctx)
 
+	// A TEST SEAM AT THE DIAL/INSTALL BOUNDARY. The window the install guard
+	// below closes opens here: the connection exists and the lock has not been
+	// taken. A test cannot open it from outside — starting two goroutines only
+	// makes overlap likely, and one can finish before the other begins (codex
+	// round 8) — so this is where a barrier has to go for the guard to be
+	// exercised rather than assumed. nil in production.
+	if b.beforeInstallLock != nil {
+		b.beforeInstallLock()
+	}
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()

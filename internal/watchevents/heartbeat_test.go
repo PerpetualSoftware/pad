@@ -996,6 +996,17 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 	b.client = good
 	b.mu.Unlock()
 
+	// WHAT THIS DETECTS, MEASURED. Removing the guard entirely: 10 runs, 10
+	// failures. A guard that checks b.pubsub in its OWN acquisition and then
+	// takes the lock again to install — the regression codex round 8 asked
+	// about — is NOT detected: 10 runs, 0 failures. The barrier below opens the
+	// window, but landing the second caller inside the mutant's own
+	// check-to-install gap needs a seam that exists only in the mutant, and
+	// after the barrier releases, the winner crosses that gap with nothing to
+	// yield on. Said here rather than left implied: this test covers "a guard
+	// exists", not "the guard is in the right critical section". The latter is
+	// held by the comment at the guard and by review.
+	//
 	// COUNTED, NOT SYNCHRONISED ON. The seam fires only for a caller that
 	// actually installs, so a WaitGroup expecting both arrivals can never
 	// complete in the passing case — the waiter on it is a goroutine leaked by
@@ -1005,15 +1016,40 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 	var installs atomic.Int32
 	b.afterResubscribeInstall = func() { installs.Add(1) }
 
-	// Started from a barrier so the two dials genuinely overlap; the window
-	// this guards is open from the dial until the install takes the lock.
-	start := make(chan struct{})
+	// BOTH HELD AT THE DIAL/INSTALL BOUNDARY, which is the only place the
+	// window is actually open. Starting two goroutines together makes overlap
+	// likely and guarantees nothing — one can finish before the other begins,
+	// and a guard that checked b.pubsub OUTSIDE the install lock would pass
+	// (codex round 8). Each caller announces its arrival and waits for the
+	// other, so both are past the dial and neither has taken the lock.
+	atBoundary := make(chan struct{}, 2)
+	bothDialled := make(chan struct{})
+	b.beforeInstallLock = func() {
+		atBoundary <- struct{}{}
+		select {
+		case <-bothDialled:
+		case <-time.After(3 * time.Second):
+			// Bounded so a caller that never gets a partner fails the test
+			// below rather than wedging the package.
+		}
+	}
+
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Add(1)
-		go func() { defer wg.Done(); <-start; _ = b.resubscribe() }()
+		go func() { defer wg.Done(); _ = b.resubscribe() }()
 	}
-	close(start)
+	for range 2 {
+		select {
+		case <-atBoundary:
+		case <-time.After(5 * time.Second):
+			close(bothDialled)
+			wg.Wait()
+			t.Fatal("both callers never reached the dial/install boundary together, so the window this test exists " +
+				"for was never open and nothing below is evidence")
+		}
+	}
+	close(bothDialled)
 	wg.Wait()
 
 	// THE DISCRIMINATING ASSERTION, and it is on the install count rather than
