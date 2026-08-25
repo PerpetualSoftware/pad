@@ -133,6 +133,8 @@
 	);
 	let showComposer = $derived(!visibleKinds || visibleKinds.includes('comment'));
 	let hasMore: boolean = $state(false);
+	// Server-supplied position of the next page; see cursorFrom (BUG-2765).
+	let nextCursor: { before: string; before_id: string } | null = $state(null);
 	let loading: boolean = $state(false);
 	let loadingMore: boolean = $state(false);
 	let error: string = $state('');
@@ -626,6 +628,7 @@
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			entries = resp.entries;
 			hasMore = resp.has_more;
+			nextCursor = cursorFrom(resp, resp.entries);
 			firstPageIds = new Set(resp.entries.map((e) => e.id));
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
@@ -635,25 +638,65 @@
 		}
 	}
 
+	/**
+	 * Where the next page starts. The SERVER decides this (BUG-2765): it
+	 * over-fetches per source and drops rows that cannot render, so a page can
+	 * carry fewer entries than the rows it consumed — or none, with more
+	 * history behind them. Deriving the cursor from the last rendered entry
+	 * then either cannot be done (an empty page) or does not advance (a page
+	 * whose rows all dropped), and the same window is requested forever.
+	 *
+	 * The fallback to the last entry is for a server that predates the field;
+	 * it is exactly what this component did before, including its wedge.
+	 */
+	function cursorFrom(
+		resp: TimelineResponse,
+		known: TimelineEntry[]
+	): { before: string; before_id: string } | null {
+		if (!resp.has_more) return null;
+		if (resp.next_before && resp.next_before_id) {
+			return { before: resp.next_before, before_id: resp.next_before_id };
+		}
+		const last = known[known.length - 1];
+		return last ? { before: last.created_at, before_id: last.id } : null;
+	}
+
+	/**
+	 * How many pages one press of Load More may walk through while every row
+	 * comes back droppable. This is a UX bound, not the fix: the cursor above
+	 * is what makes paging complete, and a single hop is already correct. It
+	 * exists so a user crossing a long run of `read` activity sees entries
+	 * appear rather than a spinner and nothing, and it is small so a
+	 * pathological item cannot turn one click into an unbounded request fan.
+	 */
+	const MAX_EMPTY_HOPS = 5;
+
 	async function loadMore() {
-		if (loadingMore || entries.length === 0) return;
+		if (loadingMore || !nextCursor) return;
 		// Capture identity before the await so a switch mid-flight can't append
 		// A's older page onto B's entries (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
-		const oldest = entries[entries.length - 1];
 		loadingMore = true;
 		try {
-			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
-				before: oldest.created_at,
-				before_id: oldest.id
-			});
-			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			// Deduplicate by ID to handle boundary overlap from <= queries.
-			const existingIds = new Set(entries.map((e) => e.id));
-			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
-			entries = [...entries, ...newEntries];
-			hasMore = resp.has_more;
+			for (let hop = 0; hop < MAX_EMPTY_HOPS && nextCursor; hop++) {
+				const cursor = nextCursor;
+				const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
+					before: cursor.before,
+					before_id: cursor.before_id
+				});
+				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+				// Deduplicate by ID to handle boundary overlap from <= queries,
+				// and because the server's cursor can deliberately re-cover rows
+				// an earlier page already rendered (see cursorFrom).
+				const existingIds = new Set(entries.map((e) => e.id));
+				const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
+				entries = [...entries, ...newEntries];
+				hasMore = resp.has_more;
+				nextCursor = cursorFrom(resp, entries);
+				// Stop as soon as the press produced something to look at.
+				if (newEntries.length > 0) break;
+			}
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to load more';
