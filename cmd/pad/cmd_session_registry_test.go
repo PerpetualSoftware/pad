@@ -154,6 +154,25 @@ func registerAs(t *testing.T, pid int, agent, cwd string) {
 	t.Setenv("PAD_SESSION_PID", "")
 }
 
+// backdateRecord rewrites a record's registered_at so ordering assertions
+// do not rest on sub-second luck.
+func backdateRecord(t *testing.T, path, registeredAt string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["registered_at"] = registeredAt
+	out, _ := json.Marshal(raw)
+	if err := os.WriteFile(path, out, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionList_FiltersOrderAndAll(t *testing.T) {
 	sessionRegistryTestEnv(t)
 	dirA, dirB := t.TempDir(), t.TempDir()
@@ -161,6 +180,10 @@ func TestSessionList_FiltersOrderAndAll(t *testing.T) {
 	// and this one must be written by hand after the live ones instead.
 	registerAs(t, os.Getpid(), "self-agent", dirA)
 	registerAs(t, os.Getppid(), "parent-agent", dirB)
+	// Make the order STRICT: both registered within one RFC3339 second,
+	// which would leave "newest first" to a tie broken by directory order
+	// (a coin flip that passes on its own). Backdate the first record.
+	backdateRecord(t, filepath.Join(os.Getenv("HOME"), ".pad", "sessions", strconv.Itoa(os.Getpid())+".json"), "2026-08-01T00:00:00Z")
 	// A dead session, written directly (register would prune it on the
 	// next call — and the point of --all is to show what a prune would
 	// take).
@@ -228,6 +251,11 @@ func TestSessionList_TableMarksLegacyAndAnonymous(t *testing.T) {
 	out := runSessionCmd(t, "list")
 	if !strings.Contains(out, "alive (legacy)") || !strings.Contains(out, "\n-\t") && !strings.Contains(out, "\n-  ") {
 		t.Fatalf("table must mark the legacy row and show '-' for its missing agent:\n%s", out)
+	}
+	// The PID column is the socket-derived owner (ours), not the v1 file's
+	// registrar pid (1) — the row must name the session that exists.
+	if !strings.Contains(out, strconv.Itoa(os.Getpid())) || strings.Contains(out, "\t1\t") || strings.Contains(out, "  1  ") {
+		t.Fatalf("legacy row must show the socket-derived pid %d, not the registrar pid:\n%s", os.Getpid(), out)
 	}
 	if !strings.Contains(out, "AGENT") || !strings.Contains(out, "STATE") {
 		t.Fatalf("table header missing:\n%s", out)
