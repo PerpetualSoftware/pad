@@ -274,7 +274,16 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// within a kind does.
 	usedIDs := make(map[string]bool, len(item.ImplementationNotes)+len(item.DecisionLog))
 	entryID := func(raw, prefix string, i int) string {
-		if raw != "" && !usedIDs[raw] {
+		// A raw id must be usable as a CURSOR, not merely unique: the client
+		// sends it back as `before_id` and the handler now refuses a value the
+		// database would refuse (BUG-2774's validCursorID). These ids come
+		// from the item's fields blob and nothing validates them on write, so
+		// a JSON `\u0000` reaches here intact on SQLite — Postgres's jsonb
+		// rejects it at the door, which is why this is a one-backend hazard.
+		// Emitting such an id would make the server hand out a cursor it then
+		// answers 400 to, wedging paging on that item (codex round 1). It gets
+		// the positional fallback the empty and duplicate cases already take.
+		if raw != "" && validCursorID(raw) && !usedIDs[raw] {
 			usedIDs[raw] = true
 			return raw
 		}

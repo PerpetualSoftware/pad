@@ -94,3 +94,42 @@ func TestListBeforeTime_InvalidUTF8CursorIsADialectDivergence(t *testing.T) {
 		t.Error("Postgres accepted an invalid-UTF-8 cursor: the 500 this validation prevents is no longer reachable, so either the driver changed or the premise moved")
 	}
 }
+
+// The other direction of the same rule: the server must never EMIT a cursor it
+// would then refuse. A structured id comes from the item's fields blob, which
+// nothing validates on write, so a JSON \u0000 escape reaches the timeline as
+// a real NUL on SQLite (Postgres's jsonb refuses it at the door — a
+// one-backend hazard). Handing that out as next_before_id would wedge paging
+// on the item: the client sends it back and gets a 400 from the validation
+// above.
+func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+
+	// Two notes: one whose id carries a NUL, one clean, so the assertions
+	// distinguish "replaced the unusable id" from "stopped using raw ids".
+	notes := `[{"id":"note-\u0000-bad","summary":"first","created_at":"2026-04-02T10:00:00Z"},` +
+		`{"id":"note-clean","summary":"second","created_at":"2026-04-02T10:00:01Z"}]`
+	item := timelineItemWithStructured(t, srv, ws, notes, "")
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "limit=50")
+	var sawClean, sawFallback bool
+	for _, e := range resp.Entries {
+		if !validCursorID(e.ID) {
+			t.Errorf("entry %q is not a usable cursor — a client sending it back would be refused", e.ID)
+		}
+		switch e.ID {
+		case "note-clean":
+			sawClean = true
+		case "note-idx-0":
+			sawFallback = true
+		}
+	}
+	if !sawClean {
+		t.Error("the clean id was not used verbatim — the fallback is for unusable ids only")
+	}
+	if !sawFallback {
+		t.Errorf("the NUL-bearing id did not take the positional fallback; entries: %+v", resp.Entries)
+	}
+}
