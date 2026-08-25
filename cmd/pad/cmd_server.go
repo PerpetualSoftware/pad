@@ -745,6 +745,17 @@ func serveCmd() *cobra.Command {
 			// doc for what each implementation does and does not fix.
 			var watchBus watchevents.Bus
 			if watchRedis != nil {
+				// The watch bus's phase is logged for the same reason the
+				// activity bus's is (BUG-2769): an operator reading
+				// pad_watchevents_sequence_resets_total cannot interpret an
+				// absence of idle_timeout without knowing whether the detector
+				// was running, and the two flags are independent.
+				watchPhase := 1
+				if cfg.WatchHeartbeat {
+					watchPhase = 2
+				}
+				slog.Info("Watch bus using Redis pub/sub", "namespace", redisKeys.Namespace(),
+					"heartbeat_phase", watchPhase)
 				redisWatchBus := watchevents.NewRedisBusWithKeys(watchRedis, watchevents.DefaultReplayBufferSize, redisKeys, cfg.WatchHeartbeat)
 				// Operational instrumentation (BUG-2727). Attached to the
 				// concrete type because the conditions it reports —

@@ -602,3 +602,37 @@ func TestAProbeDoesNotCreditTheSubscriptionThatReplacedIt(t *testing.T) {
 		t.Fatalf("a probe sent to the previous subscription credited its replacement (%v → %v)", before, after)
 	}
 }
+
+// TestAStragglerCannotEnterTheReplacementsBuffer is the fan-out half of the
+// generation fence. The straggler test above covers the liveness stamp; nothing
+// covered the buffer, and removing fanOutFromRedis's check survived.
+//
+// A notification from a replaced subscription entering the new buffer is worse
+// than a wasted stamp: it makes the instance vouch for a span it never received
+// on a socket it has stopped believing, which is precisely the false coverage
+// claim this whole family exists to remove.
+func TestAStragglerCannotEnterTheReplacementsBuffer(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	staleGen := b.currentGen()
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+	b.cycleIfIdle()
+
+	if b.currentGen() == staleGen {
+		t.Fatal("fixture: nothing was replaced, so there is no straggler to simulate")
+	}
+	if got := len(b.EventsSince(0)); got != 0 {
+		t.Fatalf("fixture: the buffer should be empty after a cycle, has %d", got)
+	}
+
+	// The old loop's buffered tail arrives late.
+	b.fanOutFromRedis("epoch-a", Notification{ID: 99, Kind: KindComment, ItemRef: "TASK-stale"}, staleGen)
+
+	if got := b.EventsSince(0); len(got) != 0 {
+		t.Fatalf("a notification from the replaced subscription entered the replacement's buffer (%d entries): this "+
+			"instance would then vouch for a span it never received", len(got))
+	}
+}

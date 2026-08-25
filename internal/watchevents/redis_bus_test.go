@@ -567,11 +567,11 @@ func TestRedisBusEpochChangeDropsTheStaleReplayBuffer(t *testing.T) {
 	defer b.Close()
 
 	for _, id := range []int64{99, 100} {
-		b.fanOutFromRedis("epoch-one", Notification{ID: id, Kind: KindComment, ItemRef: "TASK-old"})
+		b.fanOutFromRedis("epoch-one", Notification{ID: id, Kind: KindComment, ItemRef: "TASK-old"}, b.currentGen())
 	}
 
 	// New id space, and its first id we see happens to be 100+1.
-	b.fanOutFromRedis("epoch-two", Notification{ID: 101, Kind: KindComment, ItemRef: "TASK-new"})
+	b.fanOutFromRedis("epoch-two", Notification{ID: 101, Kind: KindComment, ItemRef: "TASK-new"}, b.currentGen())
 
 	// A client from the OLD epoch must resync rather than be handed an id
 	// from a sequence it was never part of.

@@ -262,12 +262,12 @@ func TestRedisBusReportsSequenceResets(t *testing.T) {
 		obs := newRecordingObserver()
 		b.SetObserver(obs)
 
-		b.fanOutFromRedis("epoch-a", Notification{ID: 1, Kind: KindPush})
+		b.fanOutFromRedis("epoch-a", Notification{ID: 1, Kind: KindPush}, b.currentGen())
 		if got := obs.snapshot(); got.totalEvents != 0 {
 			t.Fatalf("premise failed: the first epoch seen reported %d events, want 0 (%+v)", got.totalEvents, got)
 		}
 
-		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush})
+		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush}, b.currentGen())
 
 		got := obs.snapshot()
 		if got.resets[ResetReasonEpochChange] != 1 {
@@ -553,8 +553,8 @@ func TestObserverMayReenterTheBus(t *testing.T) {
 		b.fanOutLocally(Notification{ID: 1, Kind: KindPush})
 		b.fanOutLocally(Notification{ID: 3, Kind: KindPush})
 		// An epoch change, through the other locked path.
-		b.fanOutFromRedis("epoch-a", Notification{ID: 4, Kind: KindPush})
-		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush})
+		b.fanOutFromRedis("epoch-a", Notification{ID: 4, Kind: KindPush}, b.currentGen())
+		b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindPush}, b.currentGen())
 	}()
 
 	select {

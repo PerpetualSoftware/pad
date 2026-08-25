@@ -787,19 +787,22 @@ proxy that silently stopped forwarding, with the health check running, there
 was no reconnect in 24 seconds.
 
 **What the fix does.** Every subscription records when it last received
-anything — an event, a subscription acknowledgement, or a heartbeat. When that
-goes stale past the idle timeout, the instance ends the workspace's replay
-coverage (so the next resume answers `sync_required` rather than "caught up")
+anything — an event or notification, a subscription acknowledgement, or a
+heartbeat. When that goes stale past the idle timeout, the instance ends that
+subscription's replay coverage (a workspace's on the activity stream, the
+instance's on the watch stream — so the next resume answers `sync_required`
+rather than "caught up")
 **and replaces the connection**. Dropping coverage alone would not recover: the
 resync it demands is served from the same dead socket, and the detector fires
 again on the next pass — a loop metering the failure rather than fixing it.
 
 **Why a heartbeat, rather than just a threshold on real traffic.** "Is this
-workspace quiet, or is the route dead?" cannot be answered from traffic — it
+stream quiet, or is the route dead?" cannot be answered from traffic — it
 depends on your publish rate, and no constant is right for every deployment.
 Publishing our own frame replaces it with "did our heartbeat arrive?", which is
-answerable everywhere. The instance publishes one frame per subscribed workspace
-every **30 seconds** (T), and cycles a subscription that has received nothing for
+answerable everywhere. The instance publishes one frame every **30 seconds**
+(T) — per subscribed workspace on the activity stream, once per instance on the
+watch stream, and cycles a subscription that has received nothing for
 **90 seconds** (3T). Three intervals rather than two so a single lost or late
 frame is not a cycle. Detection latency measured from the last frame that got
 through is 90–120s — the scan runs on its own 30s cadence, which adds up to one
@@ -822,8 +825,8 @@ every deployment lands in first.
 
 | Phase | What you do | What instances publish | What they do with a frame |
 |-------|-------------|------------------------|---------------------------|
-| 1 | Roll the new binary everywhere. Leave `PAD_EVENTS_HEARTBEAT` unset. | No heartbeats | Recognise and ignore it. **No idle detection.** |
-| 2 | Set `PAD_EVENTS_HEARTBEAT=true` and roll again. | One frame per subscribed workspace per 30s | Recognise and ignore it. **Idle detection active.** |
+| 1 | Roll the new binary everywhere. Leave both flags unset. | No heartbeats | Recognise and ignore it. **No idle detection.** |
+| 2 | Set the flag (`PAD_EVENTS_HEARTBEAT` and/or `PAD_WATCH_HEARTBEAT`) and roll again. | One frame per 30s — per subscribed workspace on the activity bus, once per instance on the watch bus | Recognise and ignore it. **Idle detection active.** |
 
 **What happens if you run them out of order.** The frame has to travel on the
 workspace's *event* channel, because that channel's connection is the thing

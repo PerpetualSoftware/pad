@@ -135,9 +135,11 @@ func (b *RedisBus) now() time.Time {
 // whether the SOCKET carries traffic, so a frame that turns out to be
 // undecodable is still proof the route works. Ending coverage is the right
 // answer to an unreadable message; cycling the connection is not.
-func (b *RedisBus) stampLastSeen() {
+func (b *RedisBus) stampLastSeen(gen int64) {
 	b.mu.Lock()
-	b.lastSeen = b.now()
+	if b.subGen == gen {
+		b.lastSeen = b.now()
+	}
 	b.mu.Unlock()
 }
 
@@ -321,20 +323,29 @@ func (b *RedisBus) cycleIfIdle() {
 	// client on the instance for nothing. False positives are the property this
 	// design cares about most, and BUG-2738 had to learn the same thing at its
 	// round 11: "idle when we looked" is not "idle now".
-	b.mu.Lock()
-	stillIdle := b.subGen == decidedGen &&
-		b.now().Sub(b.lastSeen) >= b.idleTimeout &&
-		b.lastProbeOK.After(b.lastSeen)
-	b.mu.Unlock()
-	if !stillIdle {
+	// RE-VALIDATED AND DROPPED UNDER ONE LOCK (codex round 2). Checking and
+	// then dropping in two acquisitions leaves an interval in which a frame can
+	// arrive and be discarded by a drop already decided on — which is the same
+	// class of defect as the stale decision this re-check exists to fix, one
+	// level down.
+	report, ok := b.dropCoverageIfStillIdle(decidedGen)
+	if !ok {
 		slog.Info("watchevents: the subscription started receiving again before its cycle ran; leaving it alone")
 		return
 	}
+	if report != "" {
+		b.reportReset(report)
+	}
 
-	// Coverage first, and through the ordinary path: dropCoverage resets the
-	// buffer, reports the reason and announces to every live subscriber, which
-	// is what this bus already does for a resubscription.
-	b.dropCoverage(ResetReasonIdleTimeout)
+	// THE GENERATION IS RETIRED AT TEARDOWN, not after the replacement is
+	// confirmed (codex round 2). Incrementing later left a window — the cancel,
+	// the close, the dial and the confirmation round trip — in which the OLD
+	// generation was still the current one, so its buffered stragglers passed
+	// every fence. Retiring it here means that during resubscribe NO generation
+	// is current and a late frame is ignored by all three mutation sites.
+	b.mu.Lock()
+	b.subGen++
+	b.mu.Unlock()
 
 	// The replaced loop must leave by the quiet door BEFORE its subscription is
 	// closed, or it reports the instance deaf on a closure we caused.
@@ -346,8 +357,12 @@ func (b *RedisBus) cycleIfIdle() {
 	}
 
 	if err := b.resubscribe(); err != nil {
+		// NOT "until restarted" — that was wrong (codex round 2). No generation
+		// is current after the teardown above, so the next idle tick finds the
+		// instance idle and tries again. It is degraded until one succeeds, and
+		// every attempt is reported, which is the honest claim.
 		slog.Error("watchevents: could not re-establish the watch subscription after an idle cycle; this instance "+
-			"will receive no further notifications until it is restarted", "error", err)
+			"receives no notifications until a later attempt succeeds", "error", err)
 		return
 	}
 }
@@ -374,7 +389,9 @@ func (b *RedisBus) resubscribe() error {
 	}
 	b.pubsub = pubsub
 	b.subCancel = subCancel
-	b.subGen++
+	// Already retired by the caller when it tore the old one down; on the
+	// constructor path this is the first generation. Either way the loop below
+	// reads the CURRENT value rather than minting another.
 	gen := b.subGen
 	// STAMPED AT INSTALL, both of them. A zero lastSeen reads as 1970 and the
 	// detector would cycle the replacement on its next pass; and lastProbeOK
@@ -401,4 +418,41 @@ func (b *RedisBus) isCurrentGen(gen int64) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.subGen == gen
+}
+
+// currentGen reports the live subscription's generation. Test helper in spirit
+// but unexported and used by production code's own checks; a direct caller that
+// is standing in for the receive loop passes this.
+func (b *RedisBus) currentGen() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.subGen
+}
+
+// dropCoverageIfStillIdle re-validates and ends coverage without releasing the
+// lock in between, returning the reason to report once it is released.
+//
+// The report has to happen off the lock — observer callbacks may call back into
+// the bus — but the DECISION and the DROP must not be separable, or a frame
+// arriving between them is silently discarded by a drop that was already
+// decided.
+func (b *RedisBus) dropCoverageIfStillIdle(decidedGen int64) (string, bool) {
+	var pending pendingReports
+	b.mu.Lock()
+	stillIdle := b.subGen == decidedGen &&
+		b.now().Sub(b.lastSeen) >= b.idleTimeout &&
+		b.lastProbeOK.After(b.lastSeen)
+	if !stillIdle {
+		b.mu.Unlock()
+		return "", false
+	}
+	b.replay = newReplayBuffer(b.replaySize)
+	b.lastAppendedID = 0
+	b.knownFrom = 0
+	pending.reset(ResetReasonIdleTimeout)
+	b.signalAllLocked()
+	b.mu.Unlock()
+
+	b.flush(&pending)
+	return "", true
 }

@@ -654,11 +654,11 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 	obs := newRecordingObserver()
 	b.SetObserver(obs)
 
-	b.fanOutFromRedis("epoch-a", Notification{ID: 90, Kind: KindComment, ItemRef: "TASK-1"})
-	b.fanOutFromRedis("epoch-a", Notification{ID: 91, Kind: KindComment, ItemRef: "TASK-2"})
+	b.fanOutFromRedis("epoch-a", Notification{ID: 90, Kind: KindComment, ItemRef: "TASK-1"}, b.currentGen())
+	b.fanOutFromRedis("epoch-a", Notification{ID: 91, Kind: KindComment, ItemRef: "TASK-2"}, b.currentGen())
 
 	// The migration: new epoch, ids restart from 1.
-	b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-3"})
+	b.fanOutFromRedis("epoch-b", Notification{ID: 1, Kind: KindComment, ItemRef: "TASK-3"}, b.currentGen())
 
 	got := obs.snapshot()
 	if got.resets[ResetReasonEpochChange] != 1 {
@@ -676,9 +676,9 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 	// ordinary id of the new space falls below the OLD space's peak and is
 	// read as a reset. Verified by mutation: without this leg, deleting
 	// `highWaterID = 0` from the epoch arm survives the whole suite.
-	b.fanOutFromRedis("epoch-b", Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-4"})
+	b.fanOutFromRedis("epoch-b", Notification{ID: 2, Kind: KindComment, ItemRef: "TASK-4"}, b.currentGen())
 	b.dropCoverage(ResetReasonSubscriptionResumed)
-	b.fanOutFromRedis("epoch-b", Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-5"})
+	b.fanOutFromRedis("epoch-b", Notification{ID: 3, Kind: KindComment, ItemRef: "TASK-5"}, b.currentGen())
 
 	if after := obs.snapshot().resets[ResetReasonCounterBackward]; after != 0 {
 		t.Fatalf("an ordinary id of the new epoch must not be read as a counter reset after a coverage drop, got %d — "+

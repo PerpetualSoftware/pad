@@ -161,7 +161,7 @@ func TestEpochChangeSignalsEverySubscriber(t *testing.T) {
 	defer b.Unsubscribe(chA)
 	defer b.Unsubscribe(chB)
 
-	b.fanOutFromRedis("epoch-1", Notification{ID: 1, Kind: "test"})
+	b.fanOutFromRedis("epoch-1", Notification{ID: 1, Kind: "test"}, b.currentGen())
 	<-chA
 	<-chB
 	if raised(gapsA) || raised(gapsB) {
@@ -170,7 +170,7 @@ func TestEpochChangeSignalsEverySubscriber(t *testing.T) {
 
 	// A different epoch: the id space this instance was tracking is gone, so
 	// every buffered id is meaningless and every subscriber has a hole.
-	b.fanOutFromRedis("epoch-2", Notification{ID: 1, Kind: "test"})
+	b.fanOutFromRedis("epoch-2", Notification{ID: 1, Kind: "test"}, b.currentGen())
 
 	if !raised(gapsA) || !raised(gapsB) {
 		t.Error("an epoch change invalidates the whole buffer, so every subscriber must be told")
