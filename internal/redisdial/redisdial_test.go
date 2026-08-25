@@ -298,3 +298,86 @@ func TestTheTimeoutStillBoundsAStalledHandshake(t *testing.T) {
 		t.Fatalf("failed with %v; want context.DeadlineExceeded, which is what proves the TIMEOUT ended it", err)
 	}
 }
+
+// TestAZeroTimeoutStillDialsSuccessfully is codex round 1's P1, restated after
+// the mutation matrix refused to confirm the failure mode it was named for.
+//
+// The setup is real: go-redis's Options.init() defaults DialTimeout to 5s, but
+// NewClient CLONES the options first, so a caller reading opt.DialTimeout in
+// order to build a Dialer — the only time it can — reads ZERO for the ordinary
+// URL that sets none.
+//
+// What an unresolved zero does here is NOT the hang the finding described, and
+// the difference matters because it changes what the test has to assert. This
+// dialer wraps the dial in context.WithTimeout, and a zero duration makes the
+// deadline already past — so every dial would fail INSTANTLY instead of
+// hanging. Worse in a different direction: nothing connects at all. The
+// original draft, which set only net.Dialer.Timeout, would have hung; this one
+// would refuse. Either way the default is required, and the assertion that
+// separates them is that a healthy server is reached, not that a stalled one
+// gives up.
+func TestAZeroTimeoutStillDialsSuccessfully(t *testing.T) {
+	addr, trust := tlsServerFor(t, "127.0.0.1")
+
+	conn, err := New(trust, 0)(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("a dial built with DialTimeout=0 failed against a healthy server (%v): the zero is reaching "+
+			"context.WithTimeout as an already-expired deadline, so no Redis connection would ever succeed", err)
+	}
+	_ = conn.Close()
+}
+
+// TestConnectAndHandshakeShareOneBudget is codex round 1's other P2. Applying
+// the timeout to the TCP connect and then starting a fresh one for the
+// handshake allows up to 2x DialTimeout — masked on the pooled path by an outer
+// deadline, but not on the pub/sub path, which has none.
+// tls.DialWithDialer bounds both as one interval, and this must not be laxer
+// than the code it replaces.
+func TestConnectAndHandshakeShareOneBudget(t *testing.T) {
+	addr := stalledTLSServer(t)
+	const dialTimeout = 200 * time.Millisecond
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = New(&tls.Config{InsecureSkipVerify: true}, dialTimeout)(context.Background(), "tcp", addr) //nolint:gosec // as above
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the dial never returned")
+	}
+
+	// The connect succeeds immediately here, so essentially the whole budget is
+	// available to the handshake — but the two together must still fit inside
+	// ONE DialTimeout, with slack for scheduling.
+	if elapsed := time.Since(start); elapsed > 2*dialTimeout {
+		t.Fatalf("connect plus handshake took %v with a %v timeout: the two are being given separate budgets, so the "+
+			"pub/sub path can wait twice as long as tls.DialWithDialer would", elapsed, dialTimeout)
+	}
+}
+
+// TestKeepAliveIsNotSilentlyDropped pins a behaviour this dialer inherited
+// rather than chose. go-redis's default sets KeepAliveConfig on every
+// connection; reverting to OS defaults would change how quickly a dead peer is
+// noticed across the whole client, as an invisible side effect of a
+// cancellation fix — invisible because nothing would fail.
+//
+// Asserted against go-redis's published values rather than against our copy, so
+// the test fails if the copy drifts from what it mirrors.
+func TestKeepAliveIsNotSilentlyDropped(t *testing.T) {
+	if !keepAliveConfig.Enable {
+		t.Error("keep-alive is disabled; go-redis's default enables it")
+	}
+	if keepAliveConfig.Idle != 30*time.Second {
+		t.Errorf("keep-alive Idle = %v, want 30s to match go-redis's default", keepAliveConfig.Idle)
+	}
+	if keepAliveConfig.Interval != 5*time.Second {
+		t.Errorf("keep-alive Interval = %v, want 5s", keepAliveConfig.Interval)
+	}
+	if keepAliveConfig.Count != 3 {
+		t.Errorf("keep-alive Count = %d, want 3", keepAliveConfig.Count)
+	}
+}

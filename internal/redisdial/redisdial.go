@@ -72,8 +72,44 @@ import (
 //     ("Apply DialTimeout per attempt, but never extend an existing earlier
 //     deadline") and this must not quietly disagree with it.
 func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
+	if dialTimeout <= 0 {
+		// GO-REDIS'S OWN DEFAULT, APPLIED HERE BECAUSE WE CANNOT SEE IT
+		// (codex round 1, P1 — and the first draft of this shipped the bug).
+		// Options.init() sets DialTimeout to 5s when it is zero
+		// (options.go:31), but NewClient CLONES the options first
+		// (redis.go:1924), so a caller reading opt.DialTimeout before
+		// construction — which is the only time it can install a Dialer —
+		// reads zero for the ordinary URL that does not set one.
+		//
+		// A zero here would mean no bound at all, and PubSubPool.NewConn calls
+		// the dialer DIRECTLY without applying DialTimeout of its own
+		// (internal/pool/pubsub.go:45). So an unresolved zero makes SSE
+		// subscription establishment hang indefinitely on a stalled server —
+		// on plaintext as well as TLS, which is strictly worse than the defect
+		// this package exists to fix.
+		dialTimeout = defaultDialTimeout
+	}
+
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		netDialer := &net.Dialer{Timeout: dialTimeout}
+		// ONE BUDGET FOR CONNECT AND HANDSHAKE TOGETHER (codex round 1, P2).
+		// Applying DialTimeout to the TCP connect and then starting a FRESH
+		// one for the handshake allows up to 2×DialTimeout on the pub/sub
+		// path, which has no outer deadline to mask it. tls.DialWithDialer
+		// bounds both as one interval by handing the handshake the net.Dialer's
+		// deadline, and this must not be laxer than the code it replaces.
+		ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+		defer cancel()
+
+		// KeepAliveConfig REPLICATED, not dropped (codex round 1, P2).
+		// go-redis's default dialer sets it (options.go:608) and it governs how
+		// quickly a dead peer is noticed on every Redis connection this process
+		// holds. Silently reverting to OS defaults would change liveness
+		// behaviour across the whole client as a side effect of a cancellation
+		// fix — and would do it invisibly, since nothing here would fail.
+		netDialer := &net.Dialer{
+			Timeout:         dialTimeout,
+			KeepAliveConfig: keepAliveConfig,
+		}
 		conn, err := netDialer.DialContext(ctx, network, addr)
 		if err != nil || tlsConfig == nil {
 			return conn, err
@@ -85,20 +121,28 @@ func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context,
 			cfg.ServerName = hostnameFor(addr)
 		}
 
-		handshakeCtx := ctx
-		if dialTimeout > 0 {
-			var cancel context.CancelFunc
-			handshakeCtx, cancel = context.WithTimeout(ctx, dialTimeout)
-			defer cancel()
-		}
-
 		tlsConn := tls.Client(conn, cfg)
-		if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = conn.Close()
 			return nil, err
 		}
 		return tlsConn, nil
 	}
+}
+
+// defaultDialTimeout mirrors go-redis's own (options.go:31). Named rather than
+// inlined so the coupling is visible: if that default moves, this is the line
+// that has to move with it.
+const defaultDialTimeout = 5 * time.Second
+
+// keepAliveConfig mirrors go-redis's defaultKeepAliveConfig (options.go:608),
+// which is unexported and therefore has to be copied rather than referenced.
+// Same coupling note as defaultDialTimeout.
+var keepAliveConfig = net.KeepAliveConfig{
+	Enable:   true,
+	Idle:     30 * time.Second,
+	Interval: 5 * time.Second,
+	Count:    3,
 }
 
 // hostnameFor strips the port from a dial address, matching what
