@@ -421,3 +421,51 @@ func TestWatchHeartbeatRoundTripsThroughTheConfigFile(t *testing.T) {
 		t.Error("watch_heartbeat did not survive a save/load round trip through config.toml")
 	}
 }
+
+// TestEventsHeartbeatDoesNotMoveTheWatchFlag is the OTHER direction of the
+// cross-check above, and it exists because verifying one direction of a
+// two-flag independence claim and then writing the symmetric conclusion is a
+// mistake I have already made. "The two roll independently" is a biconditional;
+// one leg does not establish it.
+func TestEventsHeartbeatDoesNotMoveTheWatchFlag(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_EVENTS_HEARTBEAT", "true")
+	t.Setenv("PAD_WATCH_HEARTBEAT", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.EventsHeartbeat {
+		t.Fatal("fixture: PAD_EVENTS_HEARTBEAT did not take effect, so this test proves nothing")
+	}
+	if cfg.WatchHeartbeat {
+		t.Error("PAD_EVENTS_HEARTBEAT moved WatchHeartbeat: the activity bus's phase 2 would silently flip the " +
+			"watch bus's, publishing into a fleet that may not recognise the frame")
+	}
+}
+
+// TestWatchHeartbeatEnvBeatsTheConfigFile pins the precedence its events twin
+// has. The direction that matters is env=false over file=true: that is the
+// rollback, and an operator reaching for it during an incident needs it to work
+// without editing a file on every host.
+func TestWatchHeartbeatEnvBeatsTheConfigFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_WATCH_HEARTBEAT", "")
+
+	cfg := DefaultConfig()
+	cfg.WatchHeartbeat = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	t.Setenv("PAD_WATCH_HEARTBEAT", "false")
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.WatchHeartbeat {
+		t.Error("PAD_WATCH_HEARTBEAT=false did not override watch_heartbeat=true in config.toml; the rollback " +
+			"path for a bad phase-2 flip goes through this")
+	}
+}
