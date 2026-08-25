@@ -263,4 +263,25 @@ describe('timeline pagination past dropped windows (BUG-2765)', () => {
 			[...order].sort((a, b) => a - b)
 		);
 	});
+
+	it('makes ONE request per click when a cursorless server cannot advance', async () => {
+		// The pre-cursor server, on a page it emptied: has_more with no
+		// cursor, so the fallback re-derives the same last entry forever. The
+		// component cannot fix that server — but it must not amplify it into a
+		// request per hop either.
+		pages.push({ entries: [entry('e-1', '2026-01-01T00:00:09Z')], has_more: true });
+		pages.push({ entries: [], has_more: true });
+		pages.push({ entries: [], has_more: true });
+		pages.push({ entries: [], has_more: true });
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		loadMoreButton()!.click();
+		await settle();
+
+		// Initial load + exactly one Load More request.
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toEqual({ before: '2026-01-01T00:00:09Z', before_id: 'e-1' });
+	});
 });

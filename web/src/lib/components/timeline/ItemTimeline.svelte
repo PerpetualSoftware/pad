@@ -715,6 +715,19 @@
 				nextCursor = cursorFrom(resp, entries);
 				// Stop as soon as the press produced something to look at.
 				if (newEntries.length > 0) break;
+				// A cursor that did not move cannot make progress, so asking
+				// again would only repeat this request. Reachable against a
+				// server that predates next_before: the fallback re-derives
+				// the same last entry every time, and without this the hop
+				// loop turns one click into five identical requests instead of
+				// the single one this component used to make (codex round 2).
+				if (
+					nextCursor &&
+					nextCursor.before === cursor.before &&
+					nextCursor.before_id === cursor.before_id
+				) {
+					break;
+				}
 			}
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
