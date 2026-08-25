@@ -663,8 +663,13 @@ func TestReadSessionRecord_InputHardening(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
+	// Oversized but otherwise VALID: without the size bound this parses as
+	// a well-formed live record (owner pid = ours), so only the bound can
+	// make it malformed — a fixture that also failed to parse would not
+	// discriminate (the first draft of this test did exactly that).
 	big := filepath.Join(dir, "2001.json")
-	if err := os.WriteFile(big, append([]byte(`{"session_pid":1,"pid":1,"cwd":"/x","registered_at":"2026-08-01T00:00:00Z","agent":"`), append(make([]byte, maxRegistryRecordBytes), '"', '}')...), 0600); err != nil {
+	bigBody := fmt.Sprintf(`{"session_pid":%d,"pid":1,"cwd":"/x","registered_at":"2026-08-01T00:00:00Z","agent":"%s"}`, os.Getpid(), strings.Repeat("a", maxRegistryRecordBytes))
+	if err := os.WriteFile(big, []byte(bigBody), 0600); err != nil {
 		t.Fatal(err)
 	}
 	bad := filepath.Join(dir, "2002.json")
