@@ -678,21 +678,35 @@ func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
 		{
 			name:   "human then agent",
 			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
-			want:   []write{{actor: "user"}, {actor: "agent", agent: "wren"}},
+			want:   []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
 		},
 		{
 			name:   "agent then human",
 			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "user", changes: "priority: low → high"}},
-			want:   []write{{actor: "agent", agent: "wren"}, {actor: "user"}},
+			want:   []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "user", changes: "priority: low → high"}},
 		},
 		{
 			name:   "two agents on one account",
 			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "rook", changes: "priority: low → high"}},
-			want:   []write{{actor: "agent", agent: "wren"}, {actor: "agent", agent: "rook"}},
+			want:   []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "rook", changes: "priority: low → high"}},
 		},
 		// The control legs. Without them, a "never coalesce" implementation —
 		// or one that split on any difference at all, including the `changes`
 		// text — passes every leg above.
+		{
+			// The leg that makes the actor comparison independently
+			// load-bearing. Through the only production caller today, actor
+			// and agent name both derive from the X-Pad-Agent header, so they
+			// cannot disagree and the agent-name comparison alone would catch
+			// every case above — removing the actor half survives the rest of
+			// this matrix. The store's own API admits the decoupled state, and
+			// this is what it means: a caller declaring an agent write without
+			// stamping a name is still not the human, and must not merge into
+			// the human's row.
+			name:   "agent kind without a name is still not the human",
+			writes: []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", changes: "priority: low → high"}},
+			want:   []write{{actor: "user", changes: "status: open → active"}, {actor: "agent", changes: "priority: low → high"}},
+		},
 		{
 			name:   "same agent twice still coalesces (control)",
 			writes: []write{{actor: "agent", agent: "wren", changes: "status: open → active"}, {actor: "agent", agent: "wren", changes: "priority: low → high"}},
@@ -733,16 +747,44 @@ func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
 			if len(activities) != len(tc.want) {
 				t.Fatalf("got %d activity rows, want %d: %+v", len(activities), len(tc.want), activities)
 			}
-			// ListDocumentActivity returns newest first; compare oldest first.
-			for i, w := range tc.want {
-				got := activities[len(activities)-1-i]
+			// Matched by the change each write recorded, never by position:
+			// both writes land in the same second and ListDocumentActivity
+			// orders by created_at alone, so ties come back in whatever order
+			// the driver chooses — stable enough on SQLite to look fine and
+			// unordered on Postgres, where this suite also runs.
+			byChanges := map[string]models.Activity{}
+			for _, a := range activities {
+				byChanges[changesOfActivity(t, a.Metadata)] = a
+			}
+			for _, w := range tc.want {
+				got := activities[0]
+				if w.changes != "" {
+					var ok bool
+					got, ok = byChanges[w.changes]
+					if !ok {
+						t.Fatalf("no row recording %q; rows: %v", w.changes, byChanges)
+					}
+				}
 				if got.Actor != w.actor {
-					t.Errorf("row %d actor = %q, want %q", i, got.Actor, w.actor)
+					t.Errorf("row for %q: actor = %q, want %q", w.changes, got.Actor, w.actor)
 				}
 				if name := models.AgentNameFromMetadata(got.Metadata); name != w.agent {
-					t.Errorf("row %d agent name = %q, want %q (metadata %s)", i, name, w.agent, got.Metadata)
+					t.Errorf("row for %q: agent name = %q, want %q (metadata %s)", w.changes, name, w.agent, got.Metadata)
 				}
 			}
 		})
 	}
+}
+
+// changesOfActivity reads the "changes" string an activity's metadata carries.
+// It identifies WHICH write produced a row, which is what lets the assertions
+// above ignore row order.
+func changesOfActivity(t *testing.T, metadata string) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(metadata), &m); err != nil {
+		t.Fatalf("metadata %s: %v", metadata, err)
+	}
+	c, _ := m["changes"].(string)
+	return c
 }
