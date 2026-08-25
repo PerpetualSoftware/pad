@@ -128,19 +128,23 @@ func TestTimeline_PagingTraversesADroppedWindow(t *testing.T) {
 		}
 	}
 
-	for _, tc := range []struct {
-		name, id string
-	}{
-		{"newest renderable", newest},
-		{"oldest renderable", oldest},
-	} {
-		switch seen[tc.id] {
-		case 1:
-			// exactly once, as required
-		case 0:
-			t.Errorf("%s activity %s was never returned — paging stepped over it", tc.name, tc.id)
-		default:
-			t.Errorf("%s activity %s returned %d times", tc.name, tc.id, seen[tc.id])
+	// The expected set is DERIVED from the rows, not listed by hand: naming
+	// the two seeded ids would leave the item's own `created` activity free to
+	// vanish or repeat while the test still claimed "every renderable entry
+	// exactly once" (codex round 4).
+	want := renderableActivityIDs(t, srv, item.ID)
+	if len(want) < 3 {
+		t.Fatalf("fixture is thinner than the test assumes: %d renderable rows, want the created activity plus %s and %s",
+			len(want), oldest, newest)
+	}
+	for id := range want {
+		if seen[id] != 1 {
+			t.Errorf("renderable activity %s was returned %d times, want exactly 1", id, seen[id])
+		}
+	}
+	for id, n := range seen {
+		if !want[id] {
+			t.Errorf("paging returned %s (%d times), which is not a renderable activity of this item", id, n)
 		}
 	}
 }
@@ -333,4 +337,24 @@ func TestTimeline_TruncationDoesNotStepOverAnExhaustedWindow(t *testing.T) {
 		t.Errorf("the activity between the truncation point and the dropped window was returned %d times, want 1 — paging stepped over it",
 			seen[atRisk])
 	}
+}
+
+// renderableActivityIDs is every activity on the item that the timeline is
+// expected to render — i.e. all of them except the kinds buildTimeline drops
+// unconditionally. Derived from the store so a fixture that grows a row cannot
+// silently fall outside what a test claims to cover.
+func renderableActivityIDs(t *testing.T, srv *Server, itemID string) map[string]bool {
+	t.Helper()
+	acts, err := srv.store.ListDocumentActivity(itemID, models.ActivityListParams{Limit: 500})
+	if err != nil {
+		t.Fatalf("list activities: %v", err)
+	}
+	out := map[string]bool{}
+	for _, a := range acts {
+		if a.Action == "read" || a.Action == "searched" {
+			continue
+		}
+		out[a.ID] = true
+	}
+	return out
 }
