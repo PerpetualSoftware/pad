@@ -629,20 +629,20 @@
 		// state being thrown away that would have survived.
 		nextCursor = null;
 		hasMore = false;
-		const reqGen = viewGen;
-		// Whether this request is the one that owns the view right now: it
-		// either wrote (and advanced the generation ITSELF, so a bare
-		// reqGen === viewGen check would then read as stale — the trap the
-		// first version of this fell into, blocking its own `loading = false`
-		// and leaving an empty page under a permanent spinner) or nothing else
-		// has written since it started.
+		const ticket = ++viewDispatch;
+		// Whether this request owns the view right now: it either WROTE (in
+		// which case it also moved the high-water mark, so a bare comparison
+		// against that mark would read as stale — the trap the first version
+		// of this fell into, blocking its own spinner clear and leaving an
+		// empty page under a permanent one) or nothing newer has written since
+		// it started.
 		let owned = false;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			if (reqGen !== viewGen) return;
+			if (ticket <= viewApplied) return;
 			owned = true;
-			viewGen++;
+			viewApplied = ticket;
 			entries = resp.entries;
 			hasMore = resp.has_more;
 			nextCursor = cursorFrom(resp, resp.entries);
@@ -650,12 +650,12 @@
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			// A newer load or refresh has landed since; its error state, or
 			// its success, is the one that counts.
-			if (!owned && reqGen !== viewGen) return;
+			if (!owned && ticket <= viewApplied) return;
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
 			// Identity AND ownership: a stale request's cleanup must not clear
 			// the spinner a newer one owns (codex round 7).
-			if (reqSlug === itemSlug && reqWs === wsSlug && (owned || reqGen === viewGen)) {
+			if (reqSlug === itemSlug && reqWs === wsSlug && (owned || ticket > viewApplied)) {
 				loading = false;
 			}
 		}
@@ -737,13 +737,13 @@
 				// round 4). Discard such a page rather than merge it — the
 				// cursor is untouched, so the button is still there and the
 				// next click fetches the same page against the current view.
-				const seqAtDispatch = viewGen;
+				const appliedAtDispatch = viewApplied;
 				const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
 					before: cursor.before,
 					before_id: cursor.before_id
 				});
 				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-				if (viewGen !== seqAtDispatch) return;
+				if (viewApplied !== appliedAtDispatch) return;
 				// Deduplicate by ID to handle boundary overlap from <= queries,
 				// and because the server's cursor can deliberately re-cover rows
 				// an earlier page already rendered (see cursorFrom).
@@ -847,29 +847,26 @@
 	/** Set by onDestroy; checked by every continuation that outlives the mount. */
 	let destroyed = false;
 	/**
-	 * Counts REPLACEMENTS APPLIED to what is on screen — a full reload or an
-	 * SSE refresh. Every continuation that writes entries captures it before
-	 * its await and drops its result if it moved, so a response assembled
-	 * against an older view can never land on a newer one.
+	 * Request ordering for everything that can REPLACE what is on screen — a
+	 * full reload or an SSE refresh. `viewDispatch` hands each one a unique
+	 * increasing ticket at dispatch; `viewApplied` is the highest ticket that
+	 * has actually WRITTEN. A response may write only if its ticket beats
+	 * `viewApplied`, and then owns it.
 	 *
-	 * Incremented where the write LANDS, not where the request is dispatched.
-	 * Dispatch-time counting made a merely-attempted refresh invalidate an
-	 * in-flight reload, so a refresh that then FAILED left the reload's good
-	 * response discarded and the view empty until something else redrew it
-	 * (codex round 7). A request that never writes must not count as a
-	 * replacement.
+	 * Two counters rather than one, because one cannot express both halves and
+	 * each single-counter version failed a different way (codex rounds 7-8):
+	 * counting DISPATCHES let a refresh that then FAILED invalidate an
+	 * in-flight reload, leaving its good response discarded; counting APPLIES
+	 * let an OLDER response landing first claim the view and discard the newer
+	 * one behind it. Ticket-versus-high-water gives newest-wins among
+	 * concurrent responses AND costs nothing for a request that never lands.
 	 *
-	 * It counts reloads as well as refreshes deliberately: a local comment
-	 * delete calls loadTimeline, which removes the entry from page 1, and a
-	 * Load More page in flight from before that would otherwise re-add it
-	 * (codex round 6). One counter for both, because "the view was replaced"
-	 * is the same fact whichever path replaced it.
-	 *
-	 * A plain `let`, not `$state`: it is read and written inside the same
+	 * Plain `let`s, not `$state`: read and written inside the same
 	 * continuations, and a `$state` written by an effect that also reads it
 	 * self-invalidates (CONVE-1688).
 	 */
-	let viewGen = 0;
+	let viewDispatch = 0;
+	let viewApplied = 0;
 
 
 	// Named rather than inline so the failure path can re-invoke it once. The
@@ -889,13 +886,17 @@
 		// one removed, or removes one it added, and the view then disagrees
 		// with the server until something else redraws it. Only the newest
 		// dispatched refresh may write (codex round 2).
-		const reqSeq = viewGen;
+		const ticket = ++viewDispatch;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			if (reqSeq !== viewGen) return;
-			viewGen++;
+			if (ticket <= viewApplied) return;
+			viewApplied = ticket;
+			// This refresh has produced the view, so it owns the spinner an
+			// overlapped initial load will now decline to clear (codex round
+			// 8) — otherwise an empty result sits under a permanent one.
+			loading = false;
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
 

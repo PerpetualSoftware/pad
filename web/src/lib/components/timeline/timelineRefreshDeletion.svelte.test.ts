@@ -486,4 +486,77 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 			true
 		);
 	});
+
+	it('the NEWER of two refreshes wins even when the older lands first', async () => {
+		// The mirror of the out-of-order test above, and the case a single
+		// applied-writes counter got backwards: the older response landing
+		// first claimed the view and discarded the newer one behind it (codex
+		// round 8).
+		pages.push({
+			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'original')],
+			has_more: false,
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		let releaseOld: (r: TimelineResponse) => void = () => {};
+		let releaseNew: (r: TimelineResponse) => void = () => {};
+		const oldFlight = new Promise<TimelineResponse>((r) => {
+			releaseOld = r;
+		});
+		const newFlight = new Promise<TimelineResponse>((r) => {
+			releaseNew = r;
+		});
+		timelineListMock.mockImplementationOnce(async () => oldFlight);
+		timelineListMock.mockImplementationOnce(async () => newFlight);
+
+		itemEventCb?.({ type: 'comment_created' });
+		await new Promise((r) => setTimeout(r, 700));
+		itemEventCb?.({ type: 'comment_created' });
+		await new Promise((r) => setTimeout(r, 700));
+
+		// Older first...
+		releaseOld({
+			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'original')],
+			has_more: false,
+		});
+		await settle();
+
+		// ...then the newer, which must still be allowed to write.
+		releaseNew({
+			entries: [
+				entry('e-2', '2026-01-01T12:00:20Z', 'the newest state'),
+				entry('e-1', '2026-01-01T12:00:09Z', 'original'),
+			],
+			has_more: false,
+		});
+		await settle();
+
+		expect(shows('the newest state'), 'an older response landing first must not lock the newer out').toBe(
+			true
+		);
+	});
+
+	it('a refresh that replaces an in-flight load clears the spinner', async () => {
+		// The overlapped load declines to clear it — a newer write has landed
+		// — so the writer must, or an empty result sits under a permanent
+		// spinner and the list never renders (codex round 8).
+		let releaseLoad: (r: TimelineResponse) => void = () => {};
+		const heldLoad = new Promise<TimelineResponse>((r) => {
+			releaseLoad = r;
+		});
+		timelineListMock.mockImplementationOnce(async () => heldLoad);
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+
+		pages.push({ entries: [], has_more: false });
+		await fireRefresh();
+
+		releaseLoad({ entries: [], has_more: false });
+		await settle();
+
+		expect(host.querySelector('.loading'), 'the spinner must not outlive the write').toBeNull();
+	});
 });
