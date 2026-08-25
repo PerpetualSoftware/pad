@@ -139,6 +139,49 @@ func TestAPayloadWearingThePrefixStillEndsCoverage(t *testing.T) {
 	}
 }
 
+// TestAPayloadWearingThePrefixEndsCoverageThroughTheRealPath is the wiring half
+// of the test above (CONVE-19), and it exists because that one only calls
+// isWatchHeartbeat. The predicate can be perfect while the receive loop routes
+// every "hb|…" payload to the ignore arm without asking it — a mutant that
+// checks the PREFIX rather than the shape survives every assertion up there,
+// and the name of the test above promises coverage ends, which is a claim about
+// the loop.
+func TestAPayloadWearingThePrefixEndsCoverageThroughTheRealPath(t *testing.T) {
+	b, mr, _, obs := newHeartbeatBus(t, false)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	raw := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer func() { _ = raw.Close() }()
+	channel := b.keys.Name(redisWatchChannelSuffix)
+
+	// Wears the prefix, fails the shape.
+	if err := raw.Publish(context.Background(), channel, "hb|not-a-version").Err(); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	waitFor(t, "the malformed frame to end coverage", func() bool {
+		return obs.snapshot().resets[ResetReasonUndecodableMessage] == 1
+	})
+
+	// CONTROL: the well-formed frame on the same path, same connection, must
+	// NOT move it. Without this leg the assertion above also passes on a loop
+	// that treats every payload as undecodable, which is the opposite defect
+	// and equally wrong.
+	if err := raw.Publish(context.Background(), channel, watchHeartbeatPayload).Err(); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	// Ordering barrier: same channel, so seeing the notification proves the
+	// heartbeat ahead of it has already been through the loop.
+	waitFor(t, "the notification published after the heartbeat", func() bool { return len(b.EventsSince(0)) == 1 })
+	if got := obs.snapshot().resets[ResetReasonUndecodableMessage]; got != 1 {
+		t.Fatalf("a well-formed heartbeat ended coverage too (%d): the loop is matching the prefix, not the shape", got)
+	}
+}
+
 // TestAnIdleSubscriptionEndsCoverageAndIsReplaced is the remedy. The generation
 // check is what separates "coverage dropped" from "connection replaced";
 // without it a drop-only implementation passes.
@@ -177,18 +220,23 @@ func TestAReplacedLoopExitsQuietly(t *testing.T) {
 	ch, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
+	before := liveReceiveLoops.Load()
 	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
 	b.cycleIfIdle()
 
-	// Give the replaced loop time to notice its closed channel and take
-	// whichever exit it is going to take.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if obs.snapshot().loopExits > 0 {
-			t.Fatal("a deliberately replaced receive loop reported itself as a failure: an operator would read that " +
-				"counter as this instance having gone deaf")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// IT LEFT, and this leg is why the test is not just an absence (codex round
+	// 4). "No exit was reported" is also what a replaced goroutine that never
+	// exits at all produces — a leak, and a worse outcome than the noisy exit
+	// this test exists to rule out. The count returns to where it started: one
+	// loop torn down, one replacement installed.
+	waitFor(t, "the replaced receive loop to leave", func() bool { return liveReceiveLoops.Load() == before })
+
+	// ...AND IT LEFT BY THE QUIET DOOR. Checked after the join above, so this
+	// is a statement about a goroutine that has finished rather than one that
+	// has not got there yet.
+	if got := obs.snapshot().loopExits; got != 0 {
+		t.Fatalf("a deliberately replaced receive loop reported itself as a failure %d time(s): an operator would "+
+			"read that counter as this instance having gone deaf", got)
 	}
 }
 
@@ -280,10 +328,26 @@ func TestAFailedProbeSuspendsDetection(t *testing.T) {
 	}
 }
 
-// TestTheMaintenanceLoopRunsBothHalves is the wiring (CONVE-19): every test
-// above calls the halves directly, and none would notice if the constructor
-// stopped starting the loop.
-func TestTheMaintenanceLoopRunsBothHalves(t *testing.T) {
+// TestTheMaintenanceLoopStartsThePublisher is the wiring (CONVE-19) for ONE of
+// the loop's two halves: every test above calls publishHeartbeats directly, and
+// none would notice if the constructor stopped starting the loop.
+//
+// ONE HALF, AND THE NAME SAYS SO. An earlier version claimed both and observed
+// only a heartbeat, which a loop that started just the publisher satisfies —
+// and a shared kick channel between the two halves, the defect this file's
+// first draft actually had, is precisely that shape (codex round 4).
+//
+// The idle half is not provable here. Its scanner needs an instance that has
+// received nothing, and against a live miniredis this bus's own heartbeats come
+// straight back and refresh liveness every cadence — an attempt to wedge it
+// with the loop running is a race against the publisher, which is what the
+// first fix for this finding turned out to be. TestAWedgedWatchRouteIsDetected-
+// EndToEnd is the honest proof: it darkens the route with the blackhole proxy,
+// never calls cycleIfIdle, and waits for the scanner to reach it. Verified
+// against both mutations — starting only the publisher, and pointing the
+// scanner at the publisher's kick channel — each of which that test detects and
+// this one cannot.
+func TestTheMaintenanceLoopStartsThePublisher(t *testing.T) {
 	b, mr, _, _ := newHeartbeatBus(t, true)
 
 	raw := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -474,54 +538,6 @@ func TestAnInstanceThatRecoversBeforeItsCycleIsNotCycled(t *testing.T) {
 	}
 }
 
-// TestAStragglerFromAReplacedSubscriptionIsIgnored is codex round 1's other P2.
-//
-// Cancelling a receive loop and closing its PubSub does NOT join the goroutine,
-// and go-redis's channel is buffered — so a frame from a subscription that has
-// already been replaced can still reach the switch. Without a generation it
-// would stamp the REPLACEMENT's liveness, append to the replacement's buffer,
-// or drop the replacement's coverage, all on the strength of a frame that
-// arrived on a dead socket. On a wedged route that is the worst direction: the
-// dead connection's buffered tail would suppress the detector for its
-// successor.
-func TestAStragglerFromAReplacedSubscriptionIsIgnored(t *testing.T) {
-	b, _, clock, _ := newHeartbeatBus(t, true)
-
-	ch, _ := b.Subscribe()
-	defer b.Unsubscribe(ch)
-
-	b.mu.Lock()
-	staleGen := b.subGen
-	b.mu.Unlock()
-
-	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
-	b.cycleIfIdle()
-
-	b.mu.Lock()
-	freshGen := b.subGen
-	stampBefore := b.lastSeen
-	b.mu.Unlock()
-	if freshGen == staleGen {
-		t.Fatal("fixture: nothing was replaced, so there is no straggler to simulate")
-	}
-
-	if b.isCurrentGen(staleGen) {
-		t.Fatal("a frame from the replaced subscription is being treated as current")
-	}
-
-	// A straggler arriving now must change nothing.
-	clock.advance(time.Hour)
-	if b.isCurrentGen(staleGen) {
-		t.Fatal("the stale generation is still accepted")
-	}
-	b.mu.Lock()
-	stampAfter := b.lastSeen
-	b.mu.Unlock()
-	if !stampAfter.Equal(stampBefore) {
-		t.Fatalf("the replacement's liveness moved from %v to %v without a frame of its own", stampBefore, stampAfter)
-	}
-}
-
 // TestTheReceiveLoopActuallyConsultsTheGeneration is the WIRING for the
 // straggler fence (CONVE-19). Its sibling above asserts isCurrentGen answers
 // correctly; neither that nor the direct stamp checks say whether the loop ever
@@ -542,17 +558,47 @@ func TestTheReceiveLoopActuallyConsultsTheGeneration(t *testing.T) {
 	// this line existed.
 	clock.advance(time.Minute)
 
+	// Buffered by one so the loop never blocks on a test that has stopped
+	// reading, and drained exactly once per published frame below.
+	handled := make(chan struct{}, 1)
+	b.afterFrameHandled = func() {
+		select {
+		case handled <- struct{}{}:
+		default:
+		}
+	}
+	// BOUNDED, because the failure this barrier exists to catch is a loop that
+	// never handles the frame — and a bare receive turns that into a package
+	// timeout with no message attached to the test that found it.
+	awaitFrame := func(what string) {
+		t.Helper()
+		select {
+		case <-handled:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("the receive loop never handled %s: it is stalled or was never started, so nothing this test "+
+				"asserts about the generation means anything", what)
+		}
+	}
+
 	b.mu.Lock()
 	b.subGen++ // the live loop is now a generation behind
 	before := b.lastSeen
 	b.mu.Unlock()
 
-	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-refused"}); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
-	// Give the frame time to be delivered and dropped.
-	time.Sleep(300 * time.Millisecond)
+	// A REAL BARRIER, NOT A SLEEP (codex round 4). The original waited 300ms
+	// and asserted nothing had changed — which a loop that stalled, or never
+	// started, satisfies perfectly. There is no natural signal to wait on
+	// instead, because a frame the fence refuses is by design invisible: that
+	// is the whole property. Hence the afterFrameHandled seam, which fires
+	// after the loop has handled a frame whichever arm it took.
+	awaitFrame("the refused notification")
+	if got := len(b.EventsSince(0)); got != 0 {
+		t.Fatalf("a frame from a superseded generation entered the replacement's buffer (%d entries)", got)
+	}
 
 	b.mu.Lock()
 	after := b.lastSeen
@@ -561,6 +607,22 @@ func TestTheReceiveLoopActuallyConsultsTheGeneration(t *testing.T) {
 		t.Fatalf("a frame from a superseded generation stamped liveness (%v → %v): the loop is not consulting the "+
 			"generation, so a dead connection's buffered tail can suppress the detector for its successor",
 			before, after)
+	}
+
+	// CONTROL. Everything above is an absence, and an absence is what a dead
+	// loop produces too — the seam proves a frame was handled, this proves the
+	// same loop still ACCEPTS one when the generation matches, so the refusal
+	// was the fence and not paralysis.
+	b.mu.Lock()
+	b.subGen--
+	b.mu.Unlock()
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-accepted"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	awaitFrame("the accepted notification")
+	got := b.EventsSince(0)
+	if len(got) != 1 || got[0].ItemRef != "TASK-accepted" {
+		t.Fatalf("buffer holds %v, want exactly the accepted notification", got)
 	}
 }
 
@@ -718,4 +780,82 @@ func TestEachMutationRefusesAStragglerOnItsOwn(t *testing.T) {
 			t.Fatalf("a straggler refreshed the replacement's liveness (%v → %v)", before, after)
 		}
 	})
+}
+
+// TestClosingTheBusDuringAnIdleCycleIsSafe drives the one interleave the cycle
+// path created and nothing else exercises: Close running while a cycle is
+// between tearing the old subscription down and installing its replacement.
+//
+// Both hazards there are mine, and both came from making b.pubsub REASSIGNABLE.
+// Before BUG-2769 it was written once in the constructor, so Close could read
+// it without the lock and resubscribe did not exist. Now:
+//
+//   - Close's read of b.pubsub races the cycle's write of it, and the value
+//     that races is the one whose Close unblocks the loop Close then waits for.
+//   - resubscribe's wg.Add can land after Close has set closed and reached
+//     Wait. A WaitGroup forbids an Add that takes the counter off zero from
+//     racing a Wait, and the cycle has just torn the only other loop down, so
+//     zero is exactly where the counter is.
+//
+// WHAT THIS TEST DOES AND DOES NOT PROVE, because the mutation matrix was
+// clear about it. It proves Close survives a cycle in flight and returns with
+// no receive loop running — both real assertions, and the second fails against
+// a Close that stops waiting properly. It does NOT prove either ordering fix
+// above is load-bearing: reverting each in turn leaves this green, and that is
+// not a gap in the test but a fact about the code. resubscribe checks b.closed
+// and takes its count under ONE lock acquisition, and Close cannot do anything
+// destructive without that same lock, so the window each fix guards is already
+// shut by the b.closed check. Both changes are kept as defence — the invariant
+// they rely on is three functions away and an easy one to lose — and this
+// comment exists so nobody later reads them as fixes for an observed race.
+// Run with -race and -count>1; the interleave is worth exercising even so.
+func TestClosingTheBusDuringAnIdleCycleIsSafe(t *testing.T) {
+	b, _, clock, _ := newHeartbeatBus(t, true)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	// HELD OPEN AT THE POINT THE WINDOW ACTUALLY IS. A first version started
+	// Close from beforeDropHook and slept, which never overlapped anything:
+	// the cycle had not reached resubscribe yet, so Close simply won the race,
+	// resubscribe found b.closed and returned its error, and the two mutations
+	// below both survived. The seam fires inside resubscribe with the new
+	// subscription installed and counted and the lock released — the state
+	// Close's read of b.pubsub and its Wait have to be correct against.
+	closed := make(chan struct{})
+	b.afterResubscribeInstall = func() {
+		go func() {
+			defer close(closed)
+			b.Close()
+		}()
+		// Close blocks on the mutex only until this function's caller released
+		// it, which it already has, so this is long enough for Close to be
+		// inside its own body — reading b.pubsub, or in Wait.
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
+	b.cycleIfIdle()
+
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never returned: a cycle in flight deadlocked it, or a receive loop it is waiting for never left")
+	}
+
+	// AND IT WAITED FOR WHAT IT PROMISED. This is the assertion with teeth:
+	// Close's contract is that no receive goroutine is running when it
+	// returns, and an Add that lands after Close has reached Wait breaks it
+	// silently — Wait returns on a counter that was zero at the wrong moment
+	// and the loop outlives the bus. Returning at all is not evidence of that;
+	// the count is.
+	// CHECKED THE INSTANT Close RETURNS, not eventually. Eventually is what a
+	// leaked goroutine also satisfies once its context is cancelled, so a
+	// waitFor here passes against the very defect this asserts. Sound because
+	// receiveMessages drops this count before it calls wg.Done, so Wait
+	// returning means the count has already reached zero.
+	if got := liveReceiveLoops.Load(); got != 0 {
+		t.Fatalf("Close returned with %d receive loop(s) still running: it waited on a counter that was zero at the "+
+			"wrong moment, so the loop outlives the bus", got)
+	}
 }

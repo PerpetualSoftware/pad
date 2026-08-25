@@ -93,11 +93,13 @@ type Observer interface {
 	// "counter_backward" (an id arrived at or below the high-water mark
 	// with the epoch unchanged), "subscription_resumed" (go-redis
 	// reconnected and re-subscribed, so the outage's notifications never
-	// arrived) or "undecodable_message" (a message on the channel could
-	// not be parsed).
+	// arrived), "undecodable_message" (a message on the channel could
+	// not be parsed) or "idle_timeout" (nothing arrived at all for longer
+	// than the idle timeout, so the subscription stopped proving it works
+	// and a replacement was attempted — BUG-2769).
 	//
-	// The first two mean the ID SPACE changed under us; the last two mean it
-	// did not and we can no longer account for part of it. All end coverage,
+	// The first two mean the ID SPACE changed under us; the other three mean
+	// it did not and we can no longer account for part of it. All end coverage,
 	// because the buffer cannot vouch for the span either way.
 	SequenceReset(reason string)
 
@@ -257,7 +259,9 @@ const (
 	// ResetReasonIdleTimeout means this instance's watch subscription received
 	// nothing at all — no notification, no heartbeat, no subscription
 	// confirmation — for longer than the idle timeout, so it stopped vouching
-	// for its replay buffer and replaced the connection (BUG-2769).
+	// for its replay buffer and ATTEMPTED to replace the connection
+	// (BUG-2769). Attempted: the resubscribe can fail, and this has already
+	// been reported by then — a later pass tries again.
 	//
 	// WHAT IT ESTABLISHES IS NOT THAT NOTIFICATIONS WERE LOST, unlike
 	// subscription_resumed: nothing was observed going missing. What it says is

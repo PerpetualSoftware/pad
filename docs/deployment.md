@@ -412,7 +412,7 @@ Alert on these instead:
 | `pad_watchevents_midstream_resyncs_total` | Watch-stream subscribers told MID-STREAM that they missed notifications, on a connection that stayed open. New in BUG-2730 |
 | `pad_watchevents_notifications_missed_total` | How many notifications those gaps spanned |
 | `pad_watchevents_notifications_dropped_total` | Received but not delivered to a local subscriber — that connection's buffer was full. Since BUG-2730 that subscriber is told (`sync_required`, mid-stream) rather than silently under-served, so a rise here produces a rise in `pad_watchevents_midstream_resyncs_total`, one client at a time |
-| `pad_watchevents_sequence_resets_total` | Watch replay coverage dropped, by reason. `epoch_change` — the watch epoch token changed, so the IDs now come from a different sequence; the token is an opaque UUID here, not a numeric generation. `counter_backward` — an ID arrived at or below the high-water mark with the epoch unchanged. (This label was spelled `counter_backwards` while BUG-2739 was in development. If you are reading a dashboard that uses the plural, it was built against an unreleased build — see the note below.) `subscription_resumed` — a pub/sub connection dropped and re-subscribed, so whatever was published during the outage never arrived; expect these during a Redis failover and expect them to stop afterwards. `undecodable_message` — a message on the watch channel could not be parsed. The instance cannot tell whether that was a notification it should have had or something foreign, and it stops vouching because it cannot tell; expect zero, and suspect a namespace collision. `idle_timeout` — the subscription received nothing at all (no notification, no heartbeat, no subscription confirmation) for longer than the idle timeout, so this instance stopped vouching for its buffer and replaced the connection; it means the socket stopped PROVING it works, not that notifications were observed going missing, and it is structurally never emitted on watch-heartbeat phase 1. Unlike the activity stream's twin it needs no companion counter, because `dropCoverage` here replaces the buffer and reports unconditionally rather than only when one existed. The first two mean the ID space changed under this instance. `subscription_resumed` means it did not and something demonstrably went missing. `undecodable_message` means neither is established — only that coverage can no longer be proved. Each also announces to the watch subscribers connected at that moment, so each moves `pad_watchevents_midstream_resyncs_total` by AT MOST one per such subscriber — at most, because the signal is capacity-1 and coalescing, so a second cause firing before a client has acted on the first adds no announcement. For the same reason the announcement counter is not a ratio against this one in aggregate: it also counts gaps and slow-subscriber drops, and only a reset observed in isolation, against idle clients, lets you read the fan-out off these two counters |
+| `pad_watchevents_sequence_resets_total` | Watch replay coverage dropped, by reason. `epoch_change` — the watch epoch token changed, so the IDs now come from a different sequence; the token is an opaque UUID here, not a numeric generation. `counter_backward` — an ID arrived at or below the high-water mark with the epoch unchanged. (This label was spelled `counter_backwards` while BUG-2739 was in development. If you are reading a dashboard that uses the plural, it was built against an unreleased build — see the note below.) `subscription_resumed` — a pub/sub connection dropped and re-subscribed, so whatever was published during the outage never arrived; expect these during a Redis failover and expect them to stop afterwards. `undecodable_message` — a message on the watch channel could not be parsed. The instance cannot tell whether that was a notification it should have had or something foreign, and it stops vouching because it cannot tell; expect zero, and suspect a namespace collision. `idle_timeout` — the subscription received nothing at all (no notification, no heartbeat, no subscription confirmation) for longer than the idle timeout, so this instance stopped vouching for its buffer and attempted to replace the connection — attempted, because the resubscribe can fail, in which case a later pass tries again and this counter has already moved; it means the socket stopped PROVING it works, not that notifications were observed going missing, and it is structurally never emitted on watch-heartbeat phase 1. Unlike the activity stream's twin it needs no companion counter, because `dropCoverage` here replaces the buffer and reports unconditionally rather than only when one existed. The first two mean the ID space changed under this instance. `subscription_resumed` means it did not and something demonstrably went missing. `undecodable_message` means neither is established — only that coverage can no longer be proved. Each also announces to the watch subscribers connected at that moment, so each moves `pad_watchevents_midstream_resyncs_total` by AT MOST one per such subscriber — at most, because the signal is capacity-1 and coalescing, so a second cause firing before a client has acted on the first adds no announcement. For the same reason the announcement counter is not a ratio against this one in aggregate: it also counts gaps and slow-subscriber drops, and only a reset observed in isolation, against idle clients, lets you read the fan-out off these two counters |
 | `pad_watchevents_receive_loop_exits_total` | Non-zero outside shutdown means an instance publishes but receives nothing |
 | `pad_event_resume_gaps_total` | The ACTIVITY stream's (`/api/v1/events`) twin of the watch resume counter above. **Expect a step around a deploy, with the RATE settling back to baseline** (the counter itself only ever increases) — each instance starts with no replay coverage, so an early resume against a workspace it has not seen yet is a warranted resync. It counts RESUMES, not clients: a deploy with no reconnects does not move it at all, and a client that reconnects several times is counted several times. A rate that does not settle is the thing to alert on |
 | `pad_event_midstream_resyncs_total` | Activity-stream subscribers told MID-STREAM that they missed events, on a connection that stayed open. New in BUG-2730, and the counter to watch when judging whether that fix is costing more resyncs than it is worth. It counts ANNOUNCEMENTS, not causes and not distinct clients: a reset that drops buffers moves it once per live subscriber (and that ratio against `pad_event_sequence_resets_total` is the fan-out); a burst of drops on ONE connection moves it once, because signals coalesce and are rate-limited per connection; and a coverage loss on a workspace with no buffer yet moves it while every cause counter stays flat, because there was no coverage to end but the subscribers still have a hole |
@@ -854,9 +854,12 @@ a wedged route going unnoticed, not a worse one. The same two wrinkles as
 the ID-space migration apply, for the same reasons:
 
 - **Setting the value to false is not the same as unsetting the environment
-  variable.** `events_heartbeat` can also be set in `~/.pad/config.toml`, and
-  the file's value stands when the environment variable is absent. Clear both,
-  or set the environment variable explicitly to `false`.
+  variable.** `events_heartbeat` and `watch_heartbeat` can each also be set in
+  `~/.pad/config.toml`, and the file's value stands when the environment
+  variable is absent — so unsetting `PAD_WATCH_HEARTBEAT` on a host whose config
+  file says `watch_heartbeat = true` leaves that instance on phase 2. Clear
+  both, or set the environment variable explicitly to `false`, which wins over
+  the file.
 - **Downgrading past phase 1 is a SECOND step, in the reverse order.** A
   pre-phase-1 binary still cannot classify the frame. Roll every instance to
   phase 1 (new binary, flip off), let it finish, *then* downgrade the binary.
@@ -864,9 +867,11 @@ the ID-space migration apply, for the same reasons:
 **The frame is validated, not just prefix-matched.** A liveness frame is
 `hb|<version>` plus optional short tokens, under a length cap. Anything else
 that happens to begin with `hb|` is treated exactly as any other unreadable
-payload: that workspace's coverage ends and
-`pad_event_sequence_resets_total{reason="undecodable_message"}` moves, which is
-the signal that says *suspect a namespace collision*. A forged frame cannot
+payload: coverage ends — that workspace's on the activity bus, the instance's
+on the watch bus — and the bus's own reset counter moves with
+`reason="undecodable_message"` (`pad_event_sequence_resets_total` or
+`pad_watchevents_sequence_resets_total`), which is the signal that says *suspect
+a namespace collision*. A forged frame cannot
 fake liveness in any case — liveness means "this socket carried traffic", and a
 frame that arrives demonstrates that whoever sent it.
 
@@ -879,10 +884,12 @@ derived from the shared ID counter, so a probe that consumed IDs would
 manufacture the resets it exists to avoid.
 
 **Which phase an instance publishes in is in its startup log**, as
-`heartbeat_phase=1` or `heartbeat_phase=2` on the "Event bus using Redis pub/sub"
-line, alongside `id_space_phase`. The two migrations are independent — any
-combination is valid. An unparseable `PAD_EVENTS_HEARTBEAT` is ignored and logs
-a warning naming the value.
+`heartbeat_phase=1` or `heartbeat_phase=2`. Each bus logs its own: the activity
+bus on the "Event bus using Redis pub/sub" line, alongside `id_space_phase`; the
+watch bus on a separate "Watch bus using Redis pub/sub" line, which has no
+`id_space_phase` because that migration does not apply to it. All of these are
+independent — any combination is valid. An unparseable `PAD_EVENTS_HEARTBEAT` or
+`PAD_WATCH_HEARTBEAT` is ignored and logs a warning naming the value.
 
 **What this covers, and what it does not.** It is a *receive-side* detector,
 not a round-trip health check. It measures whether frames arrive on a
@@ -906,9 +913,13 @@ workspace's subscription, so:
   that looks live and is subscribed to nothing. The detector cycles it again on
   the next pass, which is why this self-heals on phase 2 and does not on phase 1.
 
-**What to watch.** `pad_event_subscription_cycled_total` — expect zero. Read it
-rather than the `idle_timeout` reset label, which only moves when there was a
-buffer to drop and therefore misses the early-wedge case. A non-zero rate is a
+**What to watch.** On the activity bus,
+`pad_event_subscription_cycled_total` — expect zero. Read it rather than that
+bus's `idle_timeout` reset label, which only moves when there was a buffer to
+drop and therefore misses the early-wedge case. **The watch bus has no such
+metric and needs none**: its `dropCoverage` has no early return, so
+`pad_watchevents_sequence_resets_total{reason="idle_timeout"}` is already the
+complete count — that is the series to watch there. A non-zero rate is a
 network fact about the path between your instances and Redis, not a Pad
 condition: compare it against TCP keepalive settings on that path before
 changing the interval, because a shorter interval treats the symptom and a

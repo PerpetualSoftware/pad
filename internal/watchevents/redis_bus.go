@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/redisns"
@@ -308,6 +309,15 @@ type RedisBus struct {
 	// the window in which a slow publish can have its subscription replaced
 	// underneath it, and the only place a test can force that interleave.
 	afterProbePublish func()
+
+	// afterResubscribeInstall fires inside resubscribe, after the new
+	// subscription is installed and counted and the lock is released, before
+	// the receive goroutine starts. Tests only; see the call site.
+	afterResubscribeInstall func()
+
+	// afterFrameHandled fires once per inbound frame, after whichever arm of
+	// receiveMessages handled it. Tests only; see the call site.
+	afterFrameHandled func()
 
 	// beforeDropHook is a test-only seam, nil in production. It runs in
 	// cycleIfIdle after the decision to cycle and BEFORE the re-validation that
@@ -1026,11 +1036,18 @@ func (b *RedisBus) Close() {
 		delete(b.subscribers, ch)
 		close(ch)
 	}
+	// READ UNDER THE LOCK. b.pubsub used to be written once, in the
+	// constructor, and an unsynchronised read here was safe. An idle cycle now
+	// REPLACES it (BUG-2769), so the read races the write — and the value that
+	// races is the one whose Close unblocks the loop this function then waits
+	// for. Captured here and closed below, outside the lock, because Close on a
+	// PubSub can block and the cycle path takes this same mutex.
+	pubsub := b.pubsub
 	b.mu.Unlock()
 
 	b.cancel()
-	if b.pubsub != nil {
-		_ = b.pubsub.Close()
+	if pubsub != nil {
+		_ = pubsub.Close()
 	}
 	b.wg.Wait()
 }
@@ -1095,8 +1112,26 @@ func (b *RedisBus) Close() {
 // and moves a counter documented to mean the instance has gone deaf. Passing
 // both in makes the distinction structural: the cycle cancels this ctx before
 // it closes the old PubSub, so the replaced loop leaves by the quiet door.
+// liveReceiveLoops counts receive goroutines currently running, across every
+// bus in the process. It exists for one test — that a REPLACED loop actually
+// terminates, which no other observable reports, because leaving quietly is
+// precisely leaving without a trace. b.wg cannot answer it: Wait is all-or-
+// nothing and a bus mid-cycle always has the replacement running.
+//
+// Kept in production rather than behind a seam because it is two atomic
+// operations per subscription lifetime, not per frame, and a leak is otherwise
+// invisible until the process runs out of them.
+var liveReceiveLoops atomic.Int64
+
 func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, gen int64) {
+	liveReceiveLoops.Add(1)
+	// ORDERED SO THE COUNT DROPS BEFORE Wait CAN RETURN. Defers run LIFO, so
+	// the one registered first runs last: wg.Done goes here and the decrement
+	// after it, leaving the count already at zero by the time Close's Wait
+	// unblocks. That is what lets a test read the count the instant Close
+	// returns and be asserting Close's contract rather than racing it.
 	defer b.wg.Done()
+	defer liveReceiveLoops.Add(-1)
 	ch := pubsub.ChannelWithSubscriptions()
 	for {
 		select {
@@ -1116,8 +1151,9 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, ge
 			// mutation inside stampLastSeen / fanOutFromRedis /
 			// dropCoverageForGen are two separate lock acquisitions, and a
 			// replacement between them is exactly the interleave the fence
-			// exists to stop. Each of the three re-checks under the same lock
-			// it mutates under.
+			// exists to stop. Each of the four — the liveness stamp, the
+			// epoch bookkeeping, the buffer append and the coverage drop —
+			// re-checks under the same lock it mutates under.
 			if ok {
 				b.stampLastSeen(gen)
 			}
@@ -1236,6 +1272,19 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, ge
 					continue
 				}
 				b.fanOutFromRedis(epoch, n, gen)
+			}
+
+			// A TEST BARRIER, and it has to be here rather than in any of the
+			// arms above. Every effect a frame can have is fenced by the
+			// generation, so a frame the fence REFUSES is by design invisible
+			// — which leaves a test no way to know the loop handled it rather
+			// than never having received it, and a fixed sleep in place of
+			// that knowledge passes just as well against a loop that stalled
+			// (codex round 4). Fires for every frame and every arm, including
+			// the refused ones, so waiting on it proves handling and nothing
+			// more. nil in production.
+			if b.afterFrameHandled != nil {
+				b.afterFrameHandled()
 			}
 		}
 	}

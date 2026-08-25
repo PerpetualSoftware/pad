@@ -251,7 +251,10 @@ func (b *RedisBus) publishHeartbeats() {
 
 	channel := b.keys.Name(redisWatchChannelSuffix)
 	if err := b.client.Publish(b.ctx, channel, watchHeartbeatPayload).Err(); err != nil {
-		// Logged and dropped, never retried, and DELIBERATELY NOT STAMPED:
+		// Logged and dropped without a retry OF OURS — go-redis retries the
+		// command internally before returning this error, so what reaches here
+		// has already been tried more than once — and DELIBERATELY NOT
+		// STAMPED:
 		// lastProbeOK stays where it was, so the detector stops treating this
 		// instance's silence as evidence. A failure to PROBE is not a finding
 		// about the peer.
@@ -396,9 +399,25 @@ func (b *RedisBus) resubscribe() error {
 	// successful probe.
 	b.lastSeen = b.now()
 	b.lastProbeOK = b.now()
+	// ADDED UNDER THE SAME LOCK AS THE b.closed CHECK ABOVE, deliberately.
+	// Close sets closed, then Waits; a WaitGroup forbids an Add that takes the
+	// counter off zero from racing a Wait, and between an Unlock here and an
+	// Add outside it, Close can run in full. Holding the lock across the Add
+	// makes "not closed" and "counted" one step, so Close either sees the
+	// count or has already turned this path into the error return above.
+	b.wg.Add(1)
 	b.mu.Unlock()
 
-	b.wg.Add(1)
+	// A TEST SEAM AT THE ONLY POINT THAT MATTERS. The hazard this ordering
+	// guards is Close running between the b.closed check above and the Add,
+	// and it is unreachable from outside: both sit under one lock, so nothing
+	// a test can call from another goroutine lands between them. Firing here,
+	// with the lock released and the Add already made, lets a test hold the
+	// window open and observe that Close survives it. nil in production.
+	if b.afterResubscribeInstall != nil {
+		b.afterResubscribeInstall()
+	}
+
 	go b.receiveMessages(subCtx, pubsub, gen)
 	return nil
 }
@@ -408,14 +427,6 @@ func (b *RedisBus) resubscribe() error {
 // carries unchanged: classify on the ERROR, never on the caller's context
 // state, because asking the context cannot distinguish "we stopped" from "Redis
 // failed while we happened to be stopping".
-
-// isCurrentGen reports whether a frame arrived on the subscription this
-// instance is currently reading.
-func (b *RedisBus) isCurrentGen(gen int64) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.subGen == gen
-}
 
 // currentGen reports the live subscription's generation. Test helper in spirit
 // but unexported and used by production code's own checks; a direct caller that
