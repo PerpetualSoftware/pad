@@ -331,13 +331,9 @@ func (b *RedisBus) cycleIfIdle() {
 	// arrive and be discarded by a drop already decided on — which is the same
 	// class of defect as the stale decision this re-check exists to fix, one
 	// level down.
-	report, ok := b.dropCoverageIfStillIdle(decidedGen)
-	if !ok {
+	if !b.dropCoverageIfStillIdle(decidedGen) {
 		slog.Info("watchevents: the subscription started receiving again before its cycle ran; leaving it alone")
 		return
-	}
-	if report != "" {
-		b.reportReset(report)
 	}
 
 	// The generation was retired inside dropCoverageIfStillIdle, atomically with
@@ -444,7 +440,7 @@ func (b *RedisBus) currentGen() int64 {
 // the bus — but the DECISION and the DROP must not be separable, or a frame
 // arriving between them is silently discarded by a drop that was already
 // decided.
-func (b *RedisBus) dropCoverageIfStillIdle(decidedGen int64) (string, bool) {
+func (b *RedisBus) dropCoverageIfStillIdle(decidedGen int64) bool {
 	var pending pendingReports
 	b.mu.Lock()
 	stillIdle := b.subGen == decidedGen &&
@@ -452,7 +448,7 @@ func (b *RedisBus) dropCoverageIfStillIdle(decidedGen int64) (string, bool) {
 		b.lastProbeOK.After(b.lastSeen)
 	if !stillIdle {
 		b.mu.Unlock()
-		return "", false
+		return false
 	}
 	// RETIRED IN THE SAME CRITICAL SECTION AS THE RESET (codex round 3).
 	// Retiring it afterwards left a window between the fresh buffer and the
@@ -468,5 +464,5 @@ func (b *RedisBus) dropCoverageIfStillIdle(decidedGen int64) (string, bool) {
 	b.mu.Unlock()
 
 	b.flush(&pending)
-	return "", true
+	return true
 }
