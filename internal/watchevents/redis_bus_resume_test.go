@@ -15,10 +15,13 @@ package watchevents
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2/server"
 )
 
 // TestResumeReportsAGapWhenThisInstanceMissedTheTail is the case the local
@@ -509,6 +512,55 @@ func TestClosingTheBusStillEndsTheSettleWindow(t *testing.T) {
 	if elapsed := time.Since(start); elapsed >= settleWindow {
 		t.Fatalf("a closing bus waited %v, the full settle window of %v: shutdown is blocked behind a connected client",
 			elapsed, settleWindow)
+	}
+}
+
+// TestAResumeCancelledDuringTheCounterReadDoesNotLookLikeRedisTrouble is the
+// in-flight twin of the entry-path test (codex round 3).
+//
+// The entry-side decline catches a caller that was ALREADY gone. A caller can
+// also leave while the first GET is in flight, and the error that comes back is
+// context.Canceled — which, at the sequence-counter WARN, is indistinguishable
+// from Redis being unreachable. On a stream where clients hang up mid-resume
+// that would manufacture exactly the alarm an operator would chase.
+func TestAResumeCancelledDuringTheCounterReadDoesNotLookLikeRedisTrouble(t *testing.T) {
+	b, mr := newMiniredisBus(t, 64)
+
+	b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"})
+	waitFor(t, "the notification to be buffered", func() bool { return len(b.EventsSince(0)) == 1 })
+	if err := mr.Set(b.keys.Name(redisWatchSeqSuffix), "99"); err != nil {
+		t.Fatalf("set counter: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// CANCELLED FROM INSIDE THE COMMAND, which is what makes this the in-flight
+	// case rather than the entry case: the hook runs while the GET is being
+	// served, cancels the caller, and then fails the command so go-redis
+	// surfaces an error with ctx already dead.
+	var hooked atomic.Bool
+	mr.Server().SetPreHook(func(p *server.Peer, cmd string, _ ...string) bool {
+		if !strings.EqualFold(cmd, "GET") || !hooked.CompareAndSwap(false, true) {
+			return false
+		}
+		cancel()
+		p.WriteError("simulated in-flight failure")
+		return true
+	})
+
+	var logged logCapture
+	restore := captureSlog(&logged)
+	defer restore()
+
+	_, _, _ = b.SubscribeAndReplaySince(ctx, 1)
+
+	if !hooked.Load() {
+		t.Fatal("the counter read was never intercepted; this test did not reach the in-flight window")
+	}
+	if msg := logged.firstAtLeast(slog.LevelWarn); msg != "" {
+		t.Errorf("a caller that left during the counter read logged %q at WARN or above: "+
+			"disconnect churn is being reported as Redis trouble", msg)
 	}
 }
 

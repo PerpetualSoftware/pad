@@ -781,6 +781,18 @@ func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
 		// comparison: an instance holding 101 disagrees with an authority at
 		// 0, does not converge, and the resume is answered with a gap.
 		return 0, true
+	case ctx.Err() != nil:
+		// OUR OWN CANCELLATION IS NOT A REDIS FAULT (codex round 3). The
+		// caller can disconnect while this GET is IN FLIGHT, and the error
+		// that comes back is context.Canceled — indistinguishable, at the
+		// WARN below, from Redis being unreachable. That line is read as "the
+		// sequence counter is unhealthy", so on a stream where clients hang up
+		// mid-resume it would manufacture exactly the alarm an operator would
+		// chase. The entry-side decline catches a caller that was already
+		// gone; this catches one that left while we were asking.
+		slog.Debug("watchevents: resume abandoned while reading the sequence counter; the caller is gone",
+			"error", err)
+		return 0, false
 	default:
 		slog.Warn("watchevents: could not read the sequence counter to validate a resume; "+
 			"answering from local knowledge only", "error", err)
