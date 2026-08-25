@@ -252,4 +252,51 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 			false
 		);
 	});
+
+	it('a FINAL page covers the whole history, so an older missing entry is gone', async () => {
+		// has_more false means the server returned everything it has. An entry
+		// the client holds and that page does not contain cannot have merely
+		// rolled off — there is nothing behind it to roll off into. Without
+		// this, the coverage rule would keep a genuinely deleted entry
+		// indefinitely (codex round 1).
+		pages.push({
+			entries: [
+				entry('e-keep', '2026-01-01T12:00:09Z', 'still there'),
+				entry('e-gone', '2026-01-01T12:00:01Z', 'deleted one'),
+			],
+			has_more: false,
+		});
+		pages.push({
+			entries: [entry('e-keep', '2026-01-01T12:00:09Z', 'still there')],
+			has_more: false,
+		});
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+		expect(shows('deleted one')).toBe(true);
+
+		await fireRefresh();
+
+		expect(shows('deleted one'), 'below the floor but the page is FINAL — it is gone').toBe(false);
+		expect(shows('still there')).toBe(true);
+	});
+
+	it('an empty FINAL page clears the view, unlike an empty page with more behind it', async () => {
+		// The pair matters: both refreshes are empty, and only the final one
+		// means "nothing is left". Asserting either alone would let "empty
+		// always clears" or "empty never clears" pass.
+		pages.push({
+			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'subject')],
+			has_more: false,
+		});
+		pages.push({ entries: [], has_more: false });
+
+		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+		await settle();
+		expect(shows('subject')).toBe(true);
+
+		await fireRefresh();
+
+		expect(shows('subject'), 'an empty FINAL page means the history is empty').toBe(false);
+	});
 });

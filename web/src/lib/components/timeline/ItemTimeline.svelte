@@ -610,10 +610,6 @@
 	let currentUserId = $derived(authStore.userId);
 	let isAdmin = $derived(authStore.user?.role === 'admin');
 
-	// Track IDs from the most recent first-page fetch, used by SSE merge
-	// to detect deletions without incorrectly removing older-page entries.
-	let firstPageIds = $state<Set<string>>(new Set());
-
 	async function loadTimeline() {
 		// Capture the request identity (item + workspace) BEFORE the await.
 		// ItemDetail reuses this panel across a no-{#key} item switch (its
@@ -639,7 +635,6 @@
 			entries = resp.entries;
 			hasMore = resp.has_more;
 			nextCursor = cursorFrom(resp, resp.entries);
-			firstPageIds = new Set(resp.entries.map((e) => e.id));
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to load timeline';
@@ -870,7 +865,16 @@
 			// order.
 			const sortedFresh = byNewestFirst(resp.entries);
 			const coverageFloor = sortedFresh[sortedFresh.length - 1] ?? null;
+			const hasMoreInFresh = resp.has_more;
 			const coveredByFreshPage = (e: TimelineEntry) => {
+				// A final page covers the WHOLE history: has_more false means
+				// the server returned everything, so an entry it does not
+				// contain is not out of window — it is gone, whether deleted
+				// or no longer renderable (codex round 1). This is also what
+				// makes an empty final page clear the view rather than freeze
+				// it, while an empty page with more behind it still deletes
+				// nothing.
+				if (!hasMoreInFresh) return true;
 				if (!coverageFloor) return false;
 				const et = new Date(e.created_at).getTime();
 				const ft = new Date(coverageFloor.created_at).getTime();
@@ -884,16 +888,22 @@
 				return e.id >= coverageFloor.id;
 			};
 
+			// COVERAGE REPLACES THE OLD "was it on the first page" GATE, and
+			// deliberately so. That gate existed to protect entries loaded via
+			// Load More from a first-page-shaped comparison, which coverage
+			// now does directly and better: an older-page entry sits below the
+			// floor and is left alone, while one INSIDE the fresh page's
+			// coverage that the page does not contain is gone regardless of
+			// which page first delivered it. Keeping both would also have been
+			// a slow leak — an entry preserved as a roll-off dropped out of
+			// the tracked set, so a later window that expanded back over it
+			// could never remove it again (codex round 1).
 			const freshById = new Map(resp.entries.map((e) => [e.id, e]));
 			const updatedExisting = entries
-				.filter((e) => {
-					const missing = firstPageIds.has(e.id) && !freshIds.has(e.id);
-					return !(missing && coveredByFreshPage(e));
-				})
+				.filter((e) => !(!freshIds.has(e.id) && coveredByFreshPage(e)))
 				.map((e) => freshById.get(e.id) ?? e);
 
 			entries = byNewestFirst([...newEntries, ...updatedExisting]);
-			firstPageIds = freshIds;
 		} catch (err) {
 			// A failed SSE-driven refresh is not fatal — the timeline keeps
 			// showing what it already has — but silently dropping it leaves
