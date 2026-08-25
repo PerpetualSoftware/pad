@@ -108,6 +108,20 @@ type Metrics struct {
 	// fine and receives nothing.
 	WatchReceiveLoopExitsTotal prometheus.Counter
 
+	// WatchHeartbeatPublishFailuresTotal counts liveness heartbeats this
+	// instance could not publish on the watch channel (BUG-2769).
+	//
+	// READ IT AS "DETECTION IS DEGRADED", not as a peer being broken. While it
+	// fires, idle detection is SUSPENDED — silence cannot be read as evidence
+	// of a dead receive path when the probe never went out — so an absence of
+	// idle_timeout resets means less than usual. PUBLISH and pub/sub use
+	// different connection pools, so this points at the OUTBOUND path, and such
+	// an instance is also failing to deliver its own notifications to every
+	// other instance.
+	//
+	// EXPECT ZERO.
+	WatchHeartbeatPublishFailuresTotal prometheus.Counter
+
 	// EventResumeGapsTotal counts activity-stream (/api/v1/events) resumes
 	// this instance could not serve, each of which sends a client
 	// sync_required (BUG-2731). The watch stream's twin is
@@ -542,12 +556,17 @@ func New() *Metrics {
 
 	watchSequenceResetsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_watchevents_sequence_resets_total",
-		Help: "Times this instance's watch-stream replay coverage was dropped, by reason: epoch_change (the watch epoch token changed, so the IDs are from a different sequence — an opaque UUID here, not a numeric generation), counter_backward (an ID arrived at or below the high-water mark with the epoch unchanged), subscription_resumed (go-redis reconnected and re-subscribed, so whatever was published during the outage never arrived — expect these during a Redis failover and expect them to stop afterwards), undecodable_message (a message on the watch channel could not be parsed; the instance cannot tell whether it was a notification it should have had or something foreign, which is exactly why it stops vouching — expect zero, and suspect a namespace collision). The first two mean the ID space changed under this instance; the last two mean it did not and this instance can no longer account for part of it. Each also announces to the watch subscribers connected at that moment, so each moves pad_watchevents_midstream_resyncs_total by AT MOST one per such subscriber — at most, because that signal is capacity-1 and coalescing, so a second cause firing before a client acts on the first adds no announcement.",
+		Help: "Times this instance's watch-stream replay coverage was dropped, by reason: epoch_change (the watch epoch token changed, so the IDs are from a different sequence — an opaque UUID here, not a numeric generation), counter_backward (an ID arrived at or below the high-water mark with the epoch unchanged), subscription_resumed (go-redis reconnected and re-subscribed, so whatever was published during the outage never arrived — expect these during a Redis failover and expect them to stop afterwards), undecodable_message (a message on the watch channel could not be parsed; the instance cannot tell whether it was a notification it should have had or something foreign, which is exactly why it stops vouching — expect zero, and suspect a namespace collision), idle_timeout (the subscription received nothing at all — no notification, no heartbeat, no subscription confirmation — for longer than the idle timeout, so this instance stopped vouching for its buffer and replaced the connection; it means the socket stopped PROVING it works, not that notifications were observed going missing, and it is structurally never emitted on watch-heartbeat phase 1. Unlike the activity stream it needs no companion counter, because dropCoverage here replaces the buffer and reports unconditionally). The first two mean the ID space changed under this instance; the last two mean it did not and this instance can no longer account for part of it. Each also announces to the watch subscribers connected at that moment, so each moves pad_watchevents_midstream_resyncs_total by AT MOST one per such subscriber — at most, because that signal is capacity-1 and coalescing, so a second cause firing before a client acts on the first adds no announcement.",
 	}, []string{"reason"})
 
 	watchReceiveLoopExitsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_watchevents_receive_loop_exits_total",
 		Help: "Times the Redis subscription receive loop stopped. Non-zero outside shutdown means this instance receives no notifications at all.",
+	})
+
+	watchHeartbeatPublishFailuresTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_watchevents_heartbeat_publish_failures_total",
+		Help: "Liveness heartbeats this instance could not publish on the watch channel (BUG-2769). Read as DETECTION DEGRADED, not as a peer being broken: while it fires, idle detection is suspended, because silence cannot be read as evidence of a dead receive path when the probe never went out. PUBLISH and pub/sub use different connection pools, so this points at the OUTBOUND path — pool exhaustion, a wedged outbound route, or Redis refusing writes. Such an instance is also failing to deliver its own notifications to every other instance. Expect zero.",
 	})
 
 	eventResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{
@@ -607,6 +626,7 @@ func New() *Metrics {
 		watchResumeGapsTotal,
 		watchSequenceResetsTotal,
 		watchReceiveLoopExitsTotal,
+		watchHeartbeatPublishFailuresTotal,
 		eventResumeGapsTotal,
 		eventEventsDroppedTotal,
 		eventMidstreamResyncsTotal,
@@ -652,6 +672,7 @@ func New() *Metrics {
 		EventSubscriptionCycledTotal:       eventSubscriptionCycledTotal,
 		EventHeartbeatPublishFailuresTotal: eventHeartbeatPublishFailuresTotal,
 		WatchReceiveLoopExitsTotal:         watchReceiveLoopExitsTotal,
+		WatchHeartbeatPublishFailuresTotal: watchHeartbeatPublishFailuresTotal,
 		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,
 
 		HTTPRequestsTotal:          httpRequestsTotal,

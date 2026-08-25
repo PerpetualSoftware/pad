@@ -17,13 +17,14 @@ import (
 type recordingObserver struct {
 	mu sync.Mutex
 
-	dropped     map[string]int
-	gaps        int
-	resumeGaps  int
-	missed      int64
-	resets      map[string]int
-	loopExits   int
-	totalEvents int
+	dropped       map[string]int
+	gaps          int
+	resumeGaps    int
+	missed        int64
+	resets        map[string]int
+	loopExits     int
+	probeFailures int
+	totalEvents   int
 }
 
 func newRecordingObserver() *recordingObserver {
@@ -69,32 +70,41 @@ func (o *recordingObserver) ReceiveLoopExited() {
 	o.totalEvents++
 }
 
+func (o *recordingObserver) HeartbeatPublishFailed() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.probeFailures++
+	o.totalEvents++
+}
+
 // observerCounts is the lock-free snapshot type. Separate from
 // recordingObserver so returning one does not copy a sync.Mutex — which
 // `go vet`'s copylocks check rejects, and which `go test`'s reduced vet
 // subset does NOT run, so the suite was green while `make lint` would
 // have failed.
 type observerCounts struct {
-	dropped     map[string]int
-	resets      map[string]int
-	gaps        int
-	resumeGaps  int
-	missed      int64
-	loopExits   int
-	totalEvents int
+	dropped       map[string]int
+	resets        map[string]int
+	gaps          int
+	resumeGaps    int
+	missed        int64
+	loopExits     int
+	probeFailures int
+	totalEvents   int
 }
 
 func (o *recordingObserver) snapshot() observerCounts {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	cp := observerCounts{
-		dropped:     map[string]int{},
-		resets:      map[string]int{},
-		gaps:        o.gaps,
-		resumeGaps:  o.resumeGaps,
-		missed:      o.missed,
-		loopExits:   o.loopExits,
-		totalEvents: o.totalEvents,
+		dropped:       map[string]int{},
+		resets:        map[string]int{},
+		gaps:          o.gaps,
+		resumeGaps:    o.resumeGaps,
+		missed:        o.missed,
+		loopExits:     o.loopExits,
+		probeFailures: o.probeFailures,
+		totalEvents:   o.totalEvents,
 	}
 	for k, v := range o.dropped {
 		cp.dropped[k] = v
@@ -520,6 +530,7 @@ func (o *reentrantObserver) SequenceGap(int64)          { o.reenter("gap") }
 func (o *reentrantObserver) SequenceReset(string)       { o.reenter("reset") }
 func (o *reentrantObserver) ResumeGap()                 { o.reenter("resume") }
 func (o *reentrantObserver) ReceiveLoopExited()         { o.reenter("exit") }
+func (o *reentrantObserver) HeartbeatPublishFailed()    { o.reenter("probe") }
 
 // TestObserverMayReenterTheBus pins Observer's contract: reports fire
 // with no bus lock held, so an observer that calls back into the bus

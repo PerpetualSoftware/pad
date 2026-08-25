@@ -120,6 +120,20 @@ type Observer interface {
 	// closed underneath the bus — which is why it is worth a counter and an
 	// ERROR log rather than a silent return.
 	ReceiveLoopExited()
+
+	// HeartbeatPublishFailed reports that this instance could not publish a
+	// liveness heartbeat (BUG-2769).
+	//
+	// IT IS THE DETECTOR SAYING IT CANNOT SEE, not a finding about any peer.
+	// While it fires, idle detection is SUSPENDED — silence cannot be read as
+	// evidence when we could not ask — so a healthy-looking absence of
+	// idle_timeout resets means less than usual. PUBLISH and pub/sub use
+	// different connection pools, so this points at the OUTBOUND path, and an
+	// instance in that state is also failing to deliver its own notifications
+	// to every other instance.
+	//
+	// Expect zero.
+	HeartbeatPublishFailed()
 }
 
 // observable is the shared, nil-safe Observer holder both bus
@@ -209,6 +223,12 @@ func (o *observable) reportReceiveLoopExited() {
 	}
 }
 
+func (o *observable) reportHeartbeatPublishFailed() {
+	if obs := o.observer(); obs != nil {
+		obs.HeartbeatPublishFailed()
+	}
+}
+
 // Drop reasons and reset reasons. Bounded by construction so they can be
 // metric labels without a cardinality risk.
 const (
@@ -233,4 +253,23 @@ const (
 	// longer provable, not that a specific notification was lost. Expect
 	// zero; suspect a namespace collision.
 	ResetReasonUndecodableMessage = "undecodable_message"
+
+	// ResetReasonIdleTimeout means this instance's watch subscription received
+	// nothing at all — no notification, no heartbeat, no subscription
+	// confirmation — for longer than the idle timeout, so it stopped vouching
+	// for its replay buffer and replaced the connection (BUG-2769).
+	//
+	// WHAT IT ESTABLISHES IS NOT THAT NOTIFICATIONS WERE LOST, unlike
+	// subscription_resumed: nothing was observed going missing. What it says is
+	// that the socket stopped proving it works, and a socket that cannot be
+	// proved cannot back a coverage claim. The silence includes this instance's
+	// own heartbeats, which is what makes it diagnostic rather than a guess
+	// about how busy the deployment is — and is why the detector runs only on
+	// heartbeat phase 2. On phase 1 this reason is structurally never emitted.
+	//
+	// Unlike the activity bus's twin it needs no companion counter: dropCoverage
+	// here replaces the replay buffer and reports unconditionally, with no
+	// "did a buffer exist" branch, so this reason is a complete count of the
+	// condition.
+	ResetReasonIdleTimeout = "idle_timeout"
 )

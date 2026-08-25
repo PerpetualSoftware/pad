@@ -346,3 +346,78 @@ func TestEventsHeartbeatPrecedenceBetweenEnvAndFile(t *testing.T) {
 		}
 	})
 }
+
+// TestWatchHeartbeatEnvMapping is the wiring for BUG-2769's phase-2 flip. The
+// watch bus's heartbeat behaviour has its own tests and every one passes with
+// Load() never populating this — the deployment simply stays on phase 1
+// forever, which is indistinguishable from a correct phase-1 deployment.
+func TestWatchHeartbeatEnvMapping(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_WATCH_HEARTBEAT", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.WatchHeartbeat {
+		t.Error("WatchHeartbeat = false, want true from PAD_WATCH_HEARTBEAT")
+	}
+	// The neighbour, because these two flags are the same SHAPE and are set in
+	// the same procedures — which is exactly when a copy-paste points both env
+	// vars at one field.
+	if cfg.EventsHeartbeat {
+		t.Error("PAD_WATCH_HEARTBEAT must not move EventsHeartbeat: the two buses roll independently")
+	}
+}
+
+// TestWatchHeartbeatIgnoresANonBooleanValue. Same inverted rationale as its
+// events twin: OFF is the SAFE direction here, because an instance that
+// publishes no watch heartbeat simply does no idle detection — the behaviour
+// that existed before the feature — while one that publishes into a mixed fleet
+// makes every un-upgraded peer drop its buffer and resync all its clients every
+// 30 seconds.
+func TestWatchHeartbeatIgnoresANonBooleanValue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_WATCH_HEARTBEAT", "yes-please")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WatchHeartbeat {
+		t.Error("an unparseable value must not turn the flip on; publishing into a mixed fleet resyncs every client " +
+			"of every un-upgraded instance")
+	}
+}
+
+// The default MUST be off, for the reason above.
+func TestWatchHeartbeatDefaultsOff(t *testing.T) {
+	if _, set := os.LookupEnv("PAD_WATCH_HEARTBEAT"); set {
+		t.Setenv("PAD_WATCH_HEARTBEAT", "")
+	}
+	if cfg := DefaultConfig(); cfg.WatchHeartbeat {
+		t.Error("default WatchHeartbeat = true, want false — phase 2 must be opted into after every instance " +
+			"recognises the frame")
+	}
+}
+
+// The TOML tag, for the same reason its neighbours have one: a wrong or missing
+// `toml:"watch_heartbeat"` keeps every other test green while an operator who
+// set the flag in ~/.pad/config.toml silently stays on phase 1.
+func TestWatchHeartbeatRoundTripsThroughTheConfigFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_WATCH_HEARTBEAT", "")
+
+	cfg := DefaultConfig()
+	cfg.WatchHeartbeat = true
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.WatchHeartbeat {
+		t.Error("watch_heartbeat did not survive a save/load round trip through config.toml")
+	}
+}

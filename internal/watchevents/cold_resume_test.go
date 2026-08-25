@@ -192,6 +192,7 @@ func (o *countingObserver) NotificationDropped(string) {}
 func (o *countingObserver) SequenceGap(int64)          {}
 func (o *countingObserver) SequenceReset(string)       {}
 func (o *countingObserver) ReceiveLoopExited()         {}
+func (o *countingObserver) HeartbeatPublishFailed()    {}
 
 func (o *countingObserver) ResumeGap() {
 	o.mu.Lock()

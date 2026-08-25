@@ -745,7 +745,7 @@ func serveCmd() *cobra.Command {
 			// doc for what each implementation does and does not fix.
 			var watchBus watchevents.Bus
 			if watchRedis != nil {
-				redisWatchBus := watchevents.NewRedisBusWithKeys(watchRedis, watchevents.DefaultReplayBufferSize, redisKeys)
+				redisWatchBus := watchevents.NewRedisBusWithKeys(watchRedis, watchevents.DefaultReplayBufferSize, redisKeys, cfg.WatchHeartbeat)
 				// Operational instrumentation (BUG-2727). Attached to the
 				// concrete type because the conditions it reports —
 				// dropped notifications, sequence gaps, id-space resets,

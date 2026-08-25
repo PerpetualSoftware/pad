@@ -302,6 +302,58 @@ type RedisBus struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// subCancel ends the CURRENT subscription's receive loop without ending the
+	// bus. The idle cycle calls it before closing the old PubSub so the
+	// replaced loop exits quietly instead of reporting the instance deaf
+	// (BUG-2769). Guarded by mu.
+	subCancel context.CancelFunc
+
+	// lastSeen is when this instance last received ANYTHING on its watch
+	// subscription — a notification, a subscription confirmation, or a
+	// heartbeat. Guarded by mu.
+	//
+	// ONE FIELD, NOT A MAP, and that is this bus's shape rather than a
+	// simplification: there is a single process-wide subscription on a single
+	// channel (see the type comment), so liveness is a property of the
+	// instance. internal/events needs a per-workspace stamp because it holds a
+	// PubSub per workspace; none of that structure exists here.
+	lastSeen time.Time
+
+	// lastProbeOK is when this instance last SUCCEEDED in publishing a
+	// heartbeat. Guarded by mu.
+	//
+	// It is the detector's PREMISE. Idle detection reasons "we published a
+	// frame and nothing came back, so the receive path is dead", which is only
+	// valid if the publish happened: PUBLISH travels on the client's ordinary
+	// connection pool while the subscription holds one from the separate
+	// pub/sub pool, so a publish-side failure says nothing about whether this
+	// subscription can receive. Without it the detector reads its own inability
+	// to probe as evidence about the peer.
+	lastProbeOK time.Time
+
+	// publishHeartbeat selects whether this instance emits liveness frames AND
+	// runs idle detection — one switch, because an instance detects off its own
+	// frames. Constructor parameter with no default, so every call site states
+	// its phase. See config.WatchHeartbeat.
+	publishHeartbeat bool
+
+	// heartbeatInterval is T and idleTimeout is 3T. Guarded by mu.
+	heartbeatInterval time.Duration
+	idleTimeout       time.Duration
+
+	// heartbeatKick and idleKick wake their loops when the cadence changes.
+	//
+	// ONE PER LOOP, and this was ported wrong first: a SHARED channel is
+	// consumed by whichever goroutine happens to be waiting, leaving the other
+	// on the stale cadence. internal/events' mutation matrix caught that there
+	// (M11c) and the fix did not come across with the structure — the wiring
+	// test here failed for exactly that reason.
+	heartbeatKick chan struct{}
+	idleKick      chan struct{}
+
+	// nowFunc overrides the clock behind idle detection. Nil in production.
+	nowFunc func() time.Time
 }
 
 // NewRedisBus creates a Redis-backed Bus with the default replay buffer size
@@ -315,7 +367,7 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 // NewRedisBusWithReplaySize is NewRedisBus with a custom replay capacity
 // (tests use a small one, exactly like NewWithReplaySize).
 func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
-	return NewRedisBusWithKeys(client, size, redisns.Default)
+	return NewRedisBusWithKeys(client, size, redisns.Default, false)
 }
 
 // NewRedisBusWithKeys is NewRedisBusWithReplaySize with an explicit key
@@ -329,7 +381,13 @@ func NewRedisBusWithReplaySize(client *redis.Client, size int) *RedisBus {
 // makes that safe rather than silent, but plan the cutover; it is not a
 // free config change. Presence keys, by contrast, are transient (90s TTL)
 // and cost nothing to rename.
-func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *RedisBus {
+// publishHeartbeat selects whether this instance emits liveness frames AND runs
+// idle detection (BUG-2769) — one switch, because an instance detects off its
+// own frames. A constructor parameter with no default, the same shape
+// internal/events uses for its two rollout flags, so every call site states
+// which phase it is in. See config.WatchHeartbeat for why the order of the two
+// rolls is not optional.
+func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publishHeartbeat bool) *RedisBus {
 	if size <= 0 {
 		// newReplayBuffer(0) returns a buffer whose first append panics on a
 		// zero-length backing slice. That was reachable here in a way it is
@@ -349,6 +407,12 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *Red
 		replaySize:  size,
 		ctx:         ctx,
 		cancel:      cancel,
+
+		publishHeartbeat:  publishHeartbeat,
+		heartbeatInterval: DefaultWatchHeartbeatInterval,
+		idleTimeout:       DefaultWatchIdleTimeout,
+		heartbeatKick:     make(chan struct{}, 1),
+		idleKick:          make(chan struct{}, 1),
 	}
 	// Eager subscription — see the type comment (2).
 	b.pubsub = client.Subscribe(ctx, keys.Name(redisWatchChannelSuffix))
@@ -382,8 +446,17 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys) *Red
 			"error", err, "channel", keys.Name(redisWatchChannelSuffix))
 	}
 
+	subLoopCtx, subLoopCancel := context.WithCancel(ctx)
+	b.subCancel = subLoopCancel
+	b.lastSeen = b.now()
+	b.lastProbeOK = b.now()
 	b.wg.Add(1)
-	go b.receiveMessages()
+	go b.receiveMessages(subLoopCtx, b.pubsub)
+
+	// Started unconditionally; each half returns immediately unless this
+	// instance is on heartbeat phase 2. See publishHeartbeats.
+	b.wg.Add(1)
+	go b.maintenanceLoop()
 	return b
 }
 
@@ -975,14 +1048,32 @@ func (b *RedisBus) Close() {
 // does: that is BUG-2727's standing boundary, unchanged in both directions
 // by this work. A reconnecting client is covered either way, since
 // resumeOutrunsLocalView asks the shared counter rather than local state.
-func (b *RedisBus) receiveMessages() {
+// TAKES ITS SUBSCRIPTION AND ITS OWN CONTEXT, rather than reading b.pubsub
+// (BUG-2769). An idle cycle replaces the subscription under a running bus, and
+// the loop reading the OLD one has to be able to tell "I was replaced" from "the
+// client died", because those take different exits — the second logs an ERROR
+// and moves a counter documented to mean the instance has gone deaf. Passing
+// both in makes the distinction structural: the cycle cancels this ctx before
+// it closes the old PubSub, so the replaced loop leaves by the quiet door.
+func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub) {
 	defer b.wg.Done()
-	ch := b.pubsub.ChannelWithSubscriptions()
+	ch := pubsub.ChannelWithSubscriptions()
 	for {
 		select {
-		case <-b.ctx.Done():
+		case <-ctx.Done():
 			return
 		case raw, ok := <-ch:
+			// STAMPED FOR EVERY FRAME, ahead of the type switch and ahead of
+			// any decode (BUG-2769). What idle detection measures is whether
+			// the SOCKET carries traffic, so a frame that turns out to be
+			// undecodable is still proof the route works — and that path
+			// continues, so stamping inside the switch would miss it. An
+			// unreadable message means coverage is broken, which dropCoverage
+			// handles; it does not mean the connection is dead, and cycling it
+			// would be the wrong remedy.
+			if ok {
+				b.stampLastSeen()
+			}
 			if !ok {
 				// The subscription's message channel closed. go-redis
 				// (v9.22.0) closes it ONLY on pool.ErrClosed — the client
@@ -1011,7 +1102,11 @@ func (b *RedisBus) receiveMessages() {
 				// with Close's ordering reversed as well. Kept because
 				// select's randomness is real and this makes the outcome
 				// independent of that ordering.
-				if b.ctx.Err() != nil {
+				// ctx covers BOTH endings now: bus shutdown, which cancels
+				// b.ctx and is inherited here, and a deliberate replacement by
+				// the idle cycle, which cancels this subscription's own ctx
+				// first. Either way the closure is ours and not a fault.
+				if ctx.Err() != nil {
 					return
 				}
 				slog.Error("watchevents: Redis subscription closed; this instance will receive no further notifications " +
@@ -1045,6 +1140,16 @@ func (b *RedisBus) receiveMessages() {
 				b.dropCoverage(ResetReasonSubscriptionResumed)
 
 			case *redis.Message:
+				if isWatchHeartbeat(msg.Payload) {
+					// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
+					// has already done its whole job by arriving — the stamp
+					// above is the entire effect. It consumes no id, drops no
+					// buffer, reaches no subscriber and moves no counter, so an
+					// instance that publishes none is still a correct receiver
+					// for one that does. That is what makes the two-phase roll
+					// zero-loss.
+					continue
+				}
 				epoch, n, err := decodePayload(msg.Payload)
 				if err != nil {
 					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS INSTANCE'S
