@@ -610,10 +610,6 @@
 	let currentUserId = $derived(authStore.userId);
 	let isAdmin = $derived(authStore.user?.role === 'admin');
 
-	// Track IDs from the most recent first-page fetch, used by SSE merge
-	// to detect deletions without incorrectly removing older-page entries.
-	let firstPageIds = $state<Set<string>>(new Set());
-
 	async function loadTimeline() {
 		// Capture the request identity (item + workspace) BEFORE the await.
 		// ItemDetail reuses this panel across a no-{#key} item switch (its
@@ -633,18 +629,40 @@
 		// state being thrown away that would have survived.
 		nextCursor = null;
 		hasMore = false;
+		// A paging request in flight belongs to the view being replaced. Its
+		// own cleanup is identity-guarded, so if it resolves while the reader
+		// is on another item nothing ever clears this and the button comes
+		// back permanently disabled (codex round 9).
+		loadingMore = false;
+		const ticket = ++viewDispatch;
+		// Whether this request owns the view right now: it either WROTE (in
+		// which case it also moved the high-water mark, so a bare comparison
+		// against that mark would read as stale — the trap the first version
+		// of this fell into, blocking its own spinner clear and leaving an
+		// empty page under a permanent one) or nothing newer has written since
+		// it started.
+		let owned = false;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (ticket <= viewApplied) return;
+			owned = true;
+			viewApplied = ticket;
 			entries = resp.entries;
 			hasMore = resp.has_more;
 			nextCursor = cursorFrom(resp, resp.entries);
-			firstPageIds = new Set(resp.entries.map((e) => e.id));
 		} catch (err: any) {
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			// A newer load or refresh has landed since; its error state, or
+			// its success, is the one that counts.
+			if (!owned && ticket <= viewApplied) return;
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
-			if (reqSlug === itemSlug && reqWs === wsSlug) loading = false;
+			// Identity AND ownership: a stale request's cleanup must not clear
+			// the spinner a newer one owns (codex round 7).
+			if (reqSlug === itemSlug && reqWs === wsSlug && (owned || ticket > viewApplied)) {
+				loading = false;
+			}
 		}
 	}
 
@@ -688,9 +706,15 @@
 	 * — the paging cursor deliberately re-covers ground, and a structured note
 	 * can carry a backdated timestamp.
 	 *
-	 * Compared as INSTANTS, not as strings: precision is not uniform — the
-	 * store writes whole seconds, a hand-written note timestamp need not — and
-	 * lexicographically `…:05.123Z` sorts BEFORE `…:05Z`.
+	 * Compared as INSTANTS, not as strings. Every timestamp this endpoint
+	 * emits is currently whole-second — the store writes RFC3339 seconds and
+	 * the handler truncates the structured kinds' hand-written ones to match —
+	 * so a string comparison would work TODAY. It is not what the ordering
+	 * means, though, and nothing enforces the uniform precision it depends on:
+	 * lexicographically `…:05.123Z` sorts BEFORE `…:05Z`, so the day one
+	 * writer stops truncating, a string sort silently reorders. Correcting a
+	 * claim this comment used to make: sub-second values are not reachable
+	 * from the current server (codex round 3 on BUG-2773).
 	 */
 	function byNewestFirst(list: TimelineEntry[]): TimelineEntry[] {
 		return [...list].sort((a, b) => {
@@ -711,11 +735,20 @@
 		try {
 			for (let hop = 0; hop < MAX_EMPTY_HOPS && nextCursor; hop++) {
 				const cursor = nextCursor;
+				// A refresh applying while this page is in flight makes the
+				// page STALE: it was assembled before the refresh and can
+				// still contain an entry the refresh has since removed as
+				// deleted, which appending would put back on screen (codex
+				// round 4). Discard such a page rather than merge it — the
+				// cursor is untouched, so the button is still there and the
+				// next click fetches the same page against the current view.
+				const appliedAtDispatch = viewApplied;
 				const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
 					before: cursor.before,
 					before_id: cursor.before_id
 				});
 				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+				if (viewApplied !== appliedAtDispatch) return;
 				// Deduplicate by ID to handle boundary overlap from <= queries,
 				// and because the server's cursor can deliberately re-cover rows
 				// an earlier page already rendered (see cursorFrom).
@@ -728,13 +761,10 @@
 				// below it (codex round 1). Same order the server sorts by:
 				// created_at descending, id descending as the tie-break.
 				//
-				// Compared as INSTANTS, not as strings: these timestamps do
-				// not all carry the same precision — the store writes whole
-				// seconds, but a structured note or decision can carry a
-				// hand-written sub-second one — and lexicographically
-				// "…:05.123Z" sorts BEFORE "…:05Z", which would place the more
-				// precise entry an hour's worth of rows away from where it
-				// belongs.
+				// Ordering lives in byNewestFirst, which compares instants
+				// rather than strings — see the note there, including the
+				// correction that sub-second timestamps are not reachable from
+				// today's server.
 				entries = byNewestFirst([...entries, ...newEntries]);
 				hasMore = resp.has_more;
 				nextCursor = cursorFrom(resp, entries);
@@ -821,6 +851,28 @@
 	const SSE_REFRESH_RETRY_MS = 2000;
 	/** Set by onDestroy; checked by every continuation that outlives the mount. */
 	let destroyed = false;
+	/**
+	 * Request ordering for everything that can REPLACE what is on screen — a
+	 * full reload or an SSE refresh. `viewDispatch` hands each one a unique
+	 * increasing ticket at dispatch; `viewApplied` is the highest ticket that
+	 * has actually WRITTEN. A response may write only if its ticket beats
+	 * `viewApplied`, and then owns it.
+	 *
+	 * Two counters rather than one, because one cannot express both halves and
+	 * each single-counter version failed a different way (codex rounds 7-8):
+	 * counting DISPATCHES let a refresh that then FAILED invalidate an
+	 * in-flight reload, leaving its good response discarded; counting APPLIES
+	 * let an OLDER response landing first claim the view and discard the newer
+	 * one behind it. Ticket-versus-high-water gives newest-wins among
+	 * concurrent responses AND costs nothing for a request that never lands.
+	 *
+	 * Plain `let`s, not `$state`: read and written inside the same
+	 * continuations, and a `$state` written by an effect that also reads it
+	 * self-invalidates (CONVE-1688).
+	 */
+	let viewDispatch = 0;
+	let viewApplied = 0;
+
 
 	// Named rather than inline so the failure path can re-invoke it once. The
 	// `isRetry` flag is what bounds that to ONE extra attempt.
@@ -831,33 +883,139 @@
 		// refresh resolving late must not merge A's entries into B (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// FRESHNESS, not just identity. The item/workspace check below catches
+		// a switch, but two refreshes of the SAME item can be in flight at
+		// once — the retry path fires 2s after a failure while a newly
+		// debounced one is already running — and they can resolve out of
+		// order. An older response applying last re-adds an entry the newer
+		// one removed, or removes one it added, and the view then disagrees
+		// with the server until something else redraws it. A response may
+		// write only if its ticket beats what has already written, so the
+		// NEWEST response wins whichever order they land in — an older one
+		// arriving first does write, and is then replaced (codex rounds 2
+		// and 8).
+		const ticket = ++viewDispatch;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (ticket <= viewApplied) return;
+			viewApplied = ticket;
+			// This refresh has produced the view, so it owns the spinner an
+			// overlapped initial load will now decline to clear (codex round
+			// 8) — otherwise an empty result sits under a permanent one.
+			loading = false;
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
 
 			// Genuinely new entries. Normally these ARE the newest — the
 			// refresh re-fetches the newest window — but "normally" is not
-			// "always": a structured note or decision carries a hand-written
-			// created_at and can arrive backdated, so they are merged into
-			// order rather than prepended on the assumption (codex round 3).
+			// "always": the structured kinds carry a hand-written created_at
+			// and can arrive BACKDATED — truncated to whole seconds, but not
+			// forced to be recent — so they are merged into order rather than
+			// prepended on the assumption (codex round 3 on BUG-2765).
 			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
-			// Update existing entries from the fresh response (e.g., reaction changes).
-			// Remove entries that were previously on the first page but are now gone (deleted).
-			// Keep all entries from older pages (loaded via "Load more") untouched.
+			// Update existing entries from the fresh response (e.g., reaction
+			// changes), and drop the ones that were genuinely deleted.
+			//
+			// ABSENT FROM THE FRESH PAGE IS NOT THE SAME AS DELETED (BUG-2773).
+			// The refresh re-fetches the FIRST page, which is the newest N
+			// entries — so once enough newer entries exist, an entry that is
+			// perfectly alive ROLLS OFF that window. Treating its absence as a
+			// deletion made it disappear from the reader's view, and for
+			// anyone who had pressed Load More it vanished from the MIDDLE of
+			// a timeline whose neighbours on both sides were still shown. A
+			// full reload brought it back, which is the tell that this was
+			// display state and not data.
+			//
+			// So deletion is inferred only for a position the fresh page still
+			// COVERS: at or newer than its oldest entry, compared in the same
+			// (created_at, id) space the server's cursor uses. Anything older
+			// is out of window and left alone. An empty fresh page covers
+			// nothing and therefore deletes nothing — it means every row in
+			// that window was dropped as unrenderable, not that the item's
+			// history was erased.
+			// HOW FAR BACK THIS PAGE ACTUALLY LOOKED. The server's own cursor
+			// says it exactly — `next_before` is the position the next page
+			// starts strictly before, so everything at or newer than it was
+			// examined — and that is NOT the same as the oldest row it
+			// RETURNED. The handler over-fetches per source and drops what
+			// cannot render, and when one source exhausts its window while
+			// another returns an older row, the cursor sits NEWER than the
+			// oldest entry on the page. Treating the returned floor as the
+			// boundary then judges a live entry from the exhausted source —
+			// one this page never reached — as deleted (codex round 10).
+			//
+			// The fallback is that returned floor, for a server predating
+			// BUG-2765's cursor. It is the old, slightly-too-eager rule, and
+			// it is still narrower than the one this unit replaces.
+			const sortedFresh = byNewestFirst(resp.entries);
+			const returnedFloor = sortedFresh[sortedFresh.length - 1] ?? null;
+			const coverageFloor =
+				resp.next_before && resp.next_before_id
+					? { created_at: resp.next_before, id: resp.next_before_id }
+					: returnedFloor;
+			const hasMoreInFresh = resp.has_more;
+			const coveredByFreshPage = (e: { created_at: string; id: string }) => {
+				// A final page covers the WHOLE history: has_more false means
+				// the server reached the end of the item's rows — it may have
+				// dropped some as unrenderable on the way, which is exactly
+				// why "not returned" still means "not on this timeline" — so
+				// an entry it does not contain is gone rather than out of
+				// window (codex round 1). This is also what makes an empty
+				// final page clear the view rather than freeze it, while an
+				// empty page with more behind it still deletes nothing.
+				if (!hasMoreInFresh) return true;
+				if (!coverageFloor) return false;
+				const et = new Date(e.created_at).getTime();
+				const ft = new Date(coverageFloor.created_at).getTime();
+				if (et !== ft) return et > ft;
+				// Same instant: the id is the tie-break, descending, exactly as
+				// the cursor predicate orders it. The `>=` vs `>` distinction
+				// is unobservable from here — the floor is by construction one
+				// of the fresh page's own entries, so it never reaches this
+				// branch — and is written inclusive to match the ordering
+				// rather than because a case depends on it.
+				return e.id >= coverageFloor.id;
+			};
+
+			// COVERAGE REPLACES THE OLD "was it on the first page" GATE, and
+			// deliberately so. That gate existed to protect entries loaded via
+			// Load More from a first-page-shaped comparison, which coverage
+			// now does directly and better: an older-page entry sits below the
+			// floor and is left alone, while one INSIDE the fresh page's
+			// coverage that the page does not contain is gone regardless of
+			// which page first delivered it. Keeping both would also have been
+			// a slow leak — an entry preserved as a roll-off dropped out of
+			// the tracked set, so a later window that expanded back over it
+			// could never remove it again (codex round 1).
+			// WHAT INFERENCE CANNOT DO, stated so the next reader does not take
+			// this for a complete reconciliation (both raised by codex round 2
+			// and left open deliberately — the lead ruled option 1 for this
+			// unit and option 2, honouring deletion EVENTS, out of scope
+			// because it changes the SSE contract):
+			//
+			//   - An entry deleted BELOW a non-final page's floor is never
+			//     inspected again, so it stays on screen until a reload. The
+			//     old rule removed it — by removing every rolled-off entry
+			//     with it, which is the bug being fixed. Strictly better, not
+			//     complete.
+			//   - Whether a row renders can depend on the WINDOW it was
+			//     fetched in: an `updated` activity is suppressed when a
+			//     version snapshot shares its second, and that needs both rows
+			//     in the same fetch. (Comment-linked activities are NOT such a
+			//     case — the store excludes them in SQL whether or not the
+			//     comment is in the window.) So an entry that rendered on an
+			//     older page can be absent-and-covered here and will be
+			//     dropped, which matches what a fresh load shows — the ceiling
+			//     for any first-page comparison.
 			const freshById = new Map(resp.entries.map((e) => [e.id, e]));
 			const updatedExisting = entries
-				.filter((e) => {
-					if (firstPageIds.has(e.id) && !freshIds.has(e.id)) return false;
-					return true;
-				})
+				.filter((e) => !(!freshIds.has(e.id) && coveredByFreshPage(e)))
 				.map((e) => freshById.get(e.id) ?? e);
 
 			entries = byNewestFirst([...newEntries, ...updatedExisting]);
-			firstPageIds = freshIds;
 		} catch (err) {
 			// A failed SSE-driven refresh is not fatal — the timeline keeps
 			// showing what it already has — but silently dropping it leaves
@@ -874,6 +1032,11 @@
 			// a retry loop would reintroduce exactly that.
 			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			// A newer refresh has already written the view, so this failure
+			// has nothing left to repair: retrying it would be traffic for a
+			// question that has been answered, and its answer would arrive
+			// staler than what is on screen (codex round 13).
+			if (ticket <= viewApplied) return;
 			console.error('[timeline] SSE-driven refresh failed', err);
 			if (isRetry) return;
 			clearTimeout(sseRefreshTimer);
