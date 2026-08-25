@@ -340,7 +340,9 @@ func (b *RedisBus) cycleIfIdle() {
 	// The generation was retired inside dropCoverageIfStillIdle, atomically with
 	// the buffer reset. From here until resubscribe installs a new one, NO
 	// generation is current, so a late frame from the old subscription is
-	// ignored by all three mutation sites.
+	// ignored at all four places it could otherwise mutate shared state: the
+	// epoch bookkeeping and the buffer append (redis_bus.go), the coverage drop
+	// (dropCoverageChecked), and the liveness stamp (stampLastSeen).
 
 	// The replaced loop must leave by the quiet door BEFORE its subscription is
 	// closed, or it reports the instance deaf on a closure we caused.

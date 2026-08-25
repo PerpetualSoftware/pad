@@ -638,12 +638,12 @@ func TestAStragglerCannotEnterTheReplacementsBuffer(t *testing.T) {
 }
 
 // TestEachMutationRefusesAStragglerOnItsOwn is the per-mutation half of the
-// fence, and the mutation matrix is why it exists as three separate assertions
+// fence, and the mutation matrix is why it exists as four separate assertions
 // rather than one.
 //
 // The fence is not "check once and pass the frame along" — that was the shape
 // codex round 3 blocked, because a check in one lock acquisition and a write in
-// another is a TOCTOU. Each of the three things a frame can mutate re-checks
+// another is a TOCTOU. Each of the four things a frame can mutate re-checks
 // under the lock in which it writes, and each is therefore reachable on its own:
 // driving only fanOutFromRedis leaves dropCoverageForGen's check unexercised,
 // and its outer early-return masks fanOutLocally's.
