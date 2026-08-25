@@ -1202,96 +1202,105 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, ge
 				b.reportReceiveLoopExited()
 				return
 			}
-			switch msg := raw.(type) {
-			case *redis.Subscription:
-				if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
-					// Unsubscribe confirmations. DEFENCE, AND NO TEST FAILS
-					// IF IT IS DELETED — measured, not assumed, and the
-					// reason is doubled: nothing in this bus produces one.
-					// It never calls pubsub.Unsubscribe, and PubSub.Close
-					// (go-redis v9.22.0) closes the connection without
-					// sending UNSUBSCRIBE at all, so no confirmation is
-					// emitted on the way out either. Kept because a Kind
-					// switch that names only the case it handles is a
-					// switch waiting to mis-handle the others, and because
-					// the alternative failure — a graceful stop
-					// incrementing an operator's failover counter — is
-					// silent.
-					continue
-				}
-				// A RESUBSCRIPTION: the connection dropped and came back, and
-				// whatever was published in between never reached us. See the
-				// function comment for why there is no "skip the first" here.
-				slog.Warn("watchevents: pub/sub resubscribed; dropping the replay buffer — "+
-					"resumes across the gap will report sync_required",
-					"channel", msg.Channel)
-				b.dropCoverageForGen(ResetReasonSubscriptionResumed, gen)
+			b.handleFrame(raw, gen)
 
-			case *redis.Message:
-				if isWatchHeartbeat(msg.Payload) {
-					// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
-					// has already done its whole job by arriving — the stamp
-					// above is the entire effect. It consumes no id, drops no
-					// buffer, reaches no subscriber and moves no counter, so an
-					// instance that publishes none is still a correct receiver
-					// for one that does. That is what makes the two-phase roll
-					// zero-loss.
-					continue
-				}
-				epoch, n, err := decodePayload(msg.Payload)
-				if err != nil {
-					// A MESSAGE WE CANNOT READ IS A HOLE IN THIS INSTANCE'S
-					// COVERAGE. Discarding it and carrying on was the original
-					// behaviour and left the buffer claiming a span it no
-					// longer had.
-					//
-					// WHAT WE KNOW is narrower than "a notification was
-					// lost": something arrived on our channel that we could
-					// not read. It may have been ours, or it may be foreign
-					// — another installation sharing this Redis without
-					// PAD_REDIS_NAMESPACE (BUG-2724), a probe, an older
-					// publisher. Coverage ends because we cannot TELL, which
-					// is a claim about our own evidence rather than about the
-					// stream.
-					//
-					// It is NOT enough that this bus's ids are consecutive by
-					// construction — one channel, one counter — so IF the
-					// message was ours the next notification's id would expose
-					// the miss through the gap arm below. That detection needs
-					// a LATER notification to arrive, and an unreadable NEWEST
-					// message on a stream that then goes quiet is exactly the
-					// case with no later one. (internal/events cannot lean on
-					// id arithmetic at all, since its per-workspace ids are
-					// non-consecutive by construction; it reaches the same
-					// drop by a different road.)
-					//
-					// knownFrom = 0 is the honest value because there is no id
-					// to raise it to — we cannot name what we may have missed,
-					// which is the same fact from the other side. Recovery is
-					// bounded by the next publish, which re-establishes
-					// coverage through the cold-start arm.
-					slog.Error("watchevents: failed to decode notification from Redis; "+
-						"dropping the replay buffer — resumes across it will report sync_required",
-						"error", err, "channel", msg.Channel)
-					b.dropCoverageForGen(ResetReasonUndecodableMessage, gen)
-					continue
-				}
-				b.fanOutFromRedis(epoch, n, gen)
-			}
-
-			// A TEST BARRIER, and it has to be here rather than in any of the
-			// arms above. Every effect a frame can have is fenced by the
+			// A TEST BARRIER, and it has to be outside handleFrame rather than
+			// at the end of it. Every effect a frame can have is fenced by the
 			// generation, so a frame the fence REFUSES is by design invisible
 			// — which leaves a test no way to know the loop handled it rather
 			// than never having received it, and a fixed sleep in place of
 			// that knowledge passes just as well against a loop that stalled
-			// (codex round 4). Fires for every frame and every arm, including
-			// the refused ones, so waiting on it proves handling and nothing
-			// more. nil in production.
+			// (codex round 4). Placed here it fires for EVERY frame and every
+			// arm; when the arms were `continue`s in this loop it silently
+			// skipped heartbeats, undecodable payloads and unsubscribe
+			// confirmations while the comment claimed otherwise (codex round
+			// 9). nil in production.
 			if b.afterFrameHandled != nil {
 				b.afterFrameHandled()
 			}
 		}
+	}
+}
+
+// handleFrame applies one inbound frame. Split out of receiveMessages so each
+// arm ENDS the frame by returning: the arms that decline to act were `continue`
+// statements in the loop, which skipped everything after the switch.
+func (b *RedisBus) handleFrame(raw any, gen int64) {
+	switch msg := raw.(type) {
+	case *redis.Subscription:
+		if msg.Kind != "subscribe" && msg.Kind != "psubscribe" {
+			// Unsubscribe confirmations. DEFENCE, AND NO TEST FAILS
+			// IF IT IS DELETED — measured, not assumed, and the
+			// reason is doubled: nothing in this bus produces one.
+			// It never calls pubsub.Unsubscribe, and PubSub.Close
+			// (go-redis v9.22.0) closes the connection without
+			// sending UNSUBSCRIBE at all, so no confirmation is
+			// emitted on the way out either. Kept because a Kind
+			// switch that names only the case it handles is a
+			// switch waiting to mis-handle the others, and because
+			// the alternative failure — a graceful stop
+			// incrementing an operator's failover counter — is
+			// silent.
+			return
+		}
+		// A RESUBSCRIPTION: the connection dropped and came back, and
+		// whatever was published in between never reached us. See the
+		// function comment for why there is no "skip the first" here.
+		slog.Warn("watchevents: pub/sub resubscribed; dropping the replay buffer — "+
+			"resumes across the gap will report sync_required",
+			"channel", msg.Channel)
+		b.dropCoverageForGen(ResetReasonSubscriptionResumed, gen)
+
+	case *redis.Message:
+		if isWatchHeartbeat(msg.Payload) {
+			// PHASE 1 IS EXACTLY THIS: recognise and ignore. The frame
+			// has already done its whole job by arriving — the stamp
+			// above is the entire effect. It consumes no id, drops no
+			// buffer, reaches no subscriber and moves no counter, so an
+			// instance that publishes none is still a correct receiver
+			// for one that does. That is what makes the two-phase roll
+			// zero-loss.
+			return
+		}
+		epoch, n, err := decodePayload(msg.Payload)
+		if err != nil {
+			// A MESSAGE WE CANNOT READ IS A HOLE IN THIS INSTANCE'S
+			// COVERAGE. Discarding it and carrying on was the original
+			// behaviour and left the buffer claiming a span it no
+			// longer had.
+			//
+			// WHAT WE KNOW is narrower than "a notification was
+			// lost": something arrived on our channel that we could
+			// not read. It may have been ours, or it may be foreign
+			// — another installation sharing this Redis without
+			// PAD_REDIS_NAMESPACE (BUG-2724), a probe, an older
+			// publisher. Coverage ends because we cannot TELL, which
+			// is a claim about our own evidence rather than about the
+			// stream.
+			//
+			// It is NOT enough that this bus's ids are consecutive by
+			// construction — one channel, one counter — so IF the
+			// message was ours the next notification's id would expose
+			// the miss through the gap arm below. That detection needs
+			// a LATER notification to arrive, and an unreadable NEWEST
+			// message on a stream that then goes quiet is exactly the
+			// case with no later one. (internal/events cannot lean on
+			// id arithmetic at all, since its per-workspace ids are
+			// non-consecutive by construction; it reaches the same
+			// drop by a different road.)
+			//
+			// knownFrom = 0 is the honest value because there is no id
+			// to raise it to — we cannot name what we may have missed,
+			// which is the same fact from the other side. Recovery is
+			// bounded by the next publish, which re-establishes
+			// coverage through the cold-start arm.
+			slog.Error("watchevents: failed to decode notification from Redis; "+
+				"dropping the replay buffer — resumes across it will report sync_required",
+				"error", err, "channel", msg.Channel)
+			b.dropCoverageForGen(ResetReasonUndecodableMessage, gen)
+			return
+		}
+		b.fanOutFromRedis(epoch, n, gen)
 	}
 }
 

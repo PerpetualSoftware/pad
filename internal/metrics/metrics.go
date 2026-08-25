@@ -569,7 +569,7 @@ func New() *Metrics {
 
 	watchHeartbeatPublishFailuresTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_watchevents_heartbeat_publish_failures_total",
-		Help: "Liveness heartbeats this instance could not publish on the watch channel (BUG-2769). Read as DETECTION DEGRADED, not as a peer being broken: while it fires, idle detection is suspended, because silence cannot be read as evidence of a dead receive path when the probe never went out. PUBLISH and pub/sub use different connection pools, so this points at the OUTBOUND path — pool exhaustion, a wedged outbound route, or Redis refusing writes. Such an instance is also failing to deliver its own notifications to every other instance. Expect zero.",
+		Help: "Liveness heartbeat publishes on the watch channel this instance could not CONFIRM (BUG-2769) — the call returned an error, which can also mean the reply was lost after Redis accepted it, so read it as unconfirmed rather than as certainly undelivered. Read as DETECTION DEGRADED, not as a peer being broken: while it fires, idle detection is suspended, because silence cannot be read as evidence of a dead receive path when we cannot say the probe went out. PUBLISH and pub/sub use different connection pools, so this points at the OUTBOUND path — pool exhaustion, a wedged outbound route, or Redis refusing writes. Such an instance is also failing to deliver its own notifications to every other instance. Expect zero.",
 	})
 
 	eventResumeGapsTotal := prometheus.NewCounter(prometheus.CounterOpts{

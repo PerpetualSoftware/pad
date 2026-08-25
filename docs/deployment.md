@@ -947,7 +947,7 @@ is noise for Redis. If fleet workspace counts ever make it matter, the fix is
 connection consolidation, not a longer interval.
 
 **How the watch stream differs.** It holds ONE process-wide subscription on one
-channel rather than one per workspace, which changes three things and nothing
+channel rather than one per workspace, which changes the following and nothing
 else:
 
 - **Cost is flat.** One frame per instance per interval regardless of how many

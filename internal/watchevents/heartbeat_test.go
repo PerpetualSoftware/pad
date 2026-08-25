@@ -220,7 +220,18 @@ func TestAReplacedLoopExitsQuietly(t *testing.T) {
 	ch, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
+	// WAITED FOR, NOT SAMPLED (codex round 9). The count is incremented inside
+	// the goroutine, so reading it straight after the constructor returns can
+	// catch zero — and then "the count returned to where it started" is
+	// satisfied by a loop that never ran, which is the assertion below going
+	// vacuous. The sibling concurrency test had the same defect and was fixed
+	// a commit earlier; this one was missed because only the named test was
+	// looked at. LATENT, not observed: sampling instead of waiting survives 10
+	// runs here, because the goroutine does get going in time in practice.
+	// This removes the possibility rather than a failure anyone has seen.
+	waitFor(t, "the constructor's receive loop to be running", func() bool { return liveReceiveLoops.Load() == 1 })
 	before := liveReceiveLoops.Load()
+
 	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
 	b.cycleIfIdle()
 
@@ -1065,4 +1076,48 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 		t.Fatal("neither caller installed anything: the guard rejected both and the instance is now deaf")
 	}
 	waitFor(t, "the installed receive loop to be running", func() bool { return liveReceiveLoops.Load() == 1 })
+}
+
+// TestTheFrameSeamFiresForEveryArm pins what the seam's comment claims, after
+// the comment was found claiming more than the code did (codex round 9). The
+// arms that decline to act were `continue` statements in the receive loop, so
+// the seam after the switch never ran for a heartbeat, an undecodable payload,
+// or a subscription confirmation — and a test waiting on it for one of those
+// would have hung rather than failed, which is the worst way to learn this.
+func TestTheFrameSeamFiresForEveryArm(t *testing.T) {
+	b, mr, _, _ := newHeartbeatBus(t, false)
+
+	ch, _ := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	var handled atomic.Int32
+	b.afterFrameHandled = func() { handled.Add(1) }
+
+	raw := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer func() { _ = raw.Close() }()
+	channel := b.keys.Name(redisWatchChannelSuffix)
+
+	// One frame per arm the switch has, in the order they appear in it. The
+	// subscription-confirmation arm is not driveable from here — go-redis emits
+	// it on its own reconnect — so this covers the three a publisher can cause.
+	for _, payload := range []string{
+		watchHeartbeatPayload, // the recognise-and-ignore arm
+		"not a notification",  // the undecodable arm
+	} {
+		if err := raw.Publish(context.Background(), channel, payload).Err(); err != nil {
+			t.Fatalf("publish %q: %v", payload, err)
+		}
+	}
+	// The acting arm last, so its arrival is an ordering barrier for the two
+	// above: same channel, so Redis delivers in order.
+	if err := b.Publish(Notification{Kind: KindComment, ItemRef: "TASK-1"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	waitFor(t, "the notification to arrive", func() bool { return len(b.EventsSince(0)) == 1 })
+	waitFor(t, "all three frames to be reported handled", func() bool { return handled.Load() == 3 })
+
+	if got := handled.Load(); got != 3 {
+		t.Fatalf("the seam fired %d times for 3 frames: an arm that declines to act skips it, so a test waiting on "+
+			"it for such a frame hangs instead of failing", got)
+	}
 }

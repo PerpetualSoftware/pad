@@ -258,8 +258,14 @@ func (b *RedisBus) publishHeartbeats() {
 		// lastProbeOK stays where it was, so the detector stops treating this
 		// instance's silence as evidence. A failure to PROBE is not a finding
 		// about the peer.
-		slog.Warn("watchevents: failed to publish a liveness heartbeat; idle detection is suspended until a probe "+
-			"succeeds, because silence cannot be read as a finding when we could not ask",
+		// "NOT CONFIRMED", NOT "NOT DELIVERED" (codex round 9). A publish that
+		// returns an error may still have been accepted — the reply can be
+		// what was lost — so the honest claim is about our knowledge, not
+		// about Redis. It does not change the response either way: an
+		// unconfirmed probe is not evidence about the receive path, so
+		// detection suspends on it exactly as on a definite failure.
+		slog.Warn("watchevents: could not confirm a liveness heartbeat publish; idle detection is suspended until a "+
+			"probe succeeds, because silence cannot be read as a finding when we could not ask",
 			"channel", channel, "error", err)
 		b.reportHeartbeatPublishFailed()
 		return
@@ -332,10 +338,6 @@ func (b *RedisBus) cycleIfIdle() {
 	decidedGen := b.subGen
 	b.mu.Unlock()
 
-	slog.Warn("watchevents: no traffic on this instance's Redis subscription within the idle timeout; ending its "+
-		"replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
-		"idle_timeout", idleTimeout)
-
 	if b.beforeDropHook != nil {
 		b.beforeDropHook()
 	}
@@ -356,6 +358,19 @@ func (b *RedisBus) cycleIfIdle() {
 		slog.Info("watchevents: the subscription started receiving again before its cycle ran; leaving it alone")
 		return
 	}
+
+	// LOGGED AFTER THE DECISION IS FINAL, not before it (codex round 9).
+	// internal/events learned this at its own round 6 and the reason did not
+	// come across with the port: the revalidation above can abandon the cycle,
+	// and a warning emitted ahead of it describes coverage ending and resumes
+	// answering sync_required for a subscription that was then left alone.
+	// An operator correlating this line with
+	// pad_watchevents_sequence_resets_total would find the log without the
+	// counter and go hunting a bug that is not there. It still says ATTEMPTING
+	// to replace, because the resubscribe below can fail.
+	slog.Warn("watchevents: no traffic on this instance's Redis subscription within the idle timeout; ended its "+
+		"replay coverage and attempting to replace the connection, resumes across the silence will report sync_required",
+		"idle_timeout", idleTimeout)
 
 	// The generation was retired inside dropCoverageIfStillIdle, atomically with
 	// the buffer reset. From here until resubscribe installs a new one, NO
