@@ -177,7 +177,21 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// still have to be filtered through the SAME (created_at, id) predicate
 	// the SQL above uses, or paging would show them on every page instead of
 	// exactly one (BUG-2301).
-	notes, decisions := structuredTimelineEntries(item, before, beforeID, sentinelBeforeID)
+	// Ids claimed by the SQL sources, so a structured entry cannot be handed
+	// one of them (BUG-2783). All three slices are already in hand above —
+	// this needs no extra query and no re-ordering.
+	reserved := make(map[string]bool, len(comments)+len(activities)+len(versions))
+	for _, c := range comments {
+		reserved[c.ID] = true
+	}
+	for _, a := range activities {
+		reserved[a.ID] = true
+	}
+	for _, v := range versions {
+		reserved[v.ID] = true
+	}
+
+	notes, decisions := structuredTimelineEntries(item, before, beforeID, sentinelBeforeID, reserved)
 
 	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
@@ -250,7 +264,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 // `sentinelBeforeID` says the caller synthesized beforeID rather than
 // receiving it, which means "keep every entry at this instant" — see the
 // comparison note inside.
-func structuredTimelineEntries(item *models.Item, before time.Time, beforeID string, sentinelBeforeID bool) ([]models.TimelineEntry, []models.TimelineEntry) {
+func structuredTimelineEntries(item *models.Item, before time.Time, beforeID string, sentinelBeforeID bool, reserved map[string]bool) ([]models.TimelineEntry, []models.TimelineEntry) {
 	if item == nil {
 		return nil, nil
 	}
@@ -292,7 +306,30 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// Notes and decisions share this map — they land in one merged stream and
 	// a collision ACROSS the two kinds breaks the client exactly as one
 	// within a kind does.
-	usedIDs := make(map[string]bool, len(item.ImplementationNotes)+len(item.DecisionLog))
+	usedIDs := make(map[string]bool, len(reserved)+len(item.ImplementationNotes)+len(item.DecisionLog))
+	// Seed with the ids the SQL sources already own. A note or decision id
+	// comes from the item's fields blob, which nothing validates on write, so
+	// it can equal a comment/activity/version id on the same item — and then
+	// two entries in ONE payload share an id, which the client's keyed
+	// {#each} and its by-id page dedupe resolve by hiding one of them
+	// (BUG-2783).
+	//
+	// The structured side is the one that yields, and that is a decision
+	// rather than an accident: comment, activity and version ids are real
+	// primary keys AND are what the client sends back as `before_id`, so
+	// moving one would break paging. The unvalidated side moves.
+	//
+	// Seeding also covers the positional fallback, without new code: the
+	// `for usedIDs[id]` loop below tests `note-idx-0` against this same map.
+	// That half is DEFENCE, not a live vector, and the difference is worth
+	// stating rather than implying — all three SQL sources mint ids with
+	// store.newID() (uuid.New().String()), including the import path, which
+	// re-mints rather than preserving an artifact's ids. A UUID cannot equal
+	// `note-idx-N`. The fallback is covered because it costs nothing to
+	// cover, not because a request can reach it today.
+	for id := range reserved {
+		usedIDs[id] = true
+	}
 	entryID := func(raw, prefix string, i int) string {
 		// A raw id must be usable as a CURSOR, not merely unique: the client
 		// sends it back as `before_id` and the handler now refuses a value the

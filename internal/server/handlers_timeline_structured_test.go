@@ -635,14 +635,14 @@ func TestStructuredTimelineEntries_CursorPredicate(t *testing.T) {
 	}
 
 	t.Run("first page keeps everything older than now", func(t *testing.T) {
-		notes, decisions := structuredTimelineEntries(item, at("2026-05-01T00:00:00Z"), "", false)
+		notes, decisions := structuredTimelineEntries(item, at("2026-05-01T00:00:00Z"), "", false, nil)
 		if len(notes) != 2 || len(decisions) != 1 {
 			t.Fatalf("got %d notes / %d decisions, want 2 / 1", len(notes), len(decisions))
 		}
 	})
 
 	t.Run("cursor drops everything at or newer than it", func(t *testing.T) {
-		notes, decisions := structuredTimelineEntries(item, at("2026-04-02T11:00:00Z"), "", false)
+		notes, decisions := structuredTimelineEntries(item, at("2026-04-02T11:00:00Z"), "", false, nil)
 		if len(notes) != 1 || notes[0].ID != "note-1" {
 			t.Errorf("notes = %+v, want only note-1", notes)
 		}
@@ -652,7 +652,7 @@ func TestStructuredTimelineEntries_CursorPredicate(t *testing.T) {
 	})
 
 	t.Run("nil item is not a panic", func(t *testing.T) {
-		notes, decisions := structuredTimelineEntries(nil, at("2026-05-01T00:00:00Z"), "", false)
+		notes, decisions := structuredTimelineEntries(nil, at("2026-05-01T00:00:00Z"), "", false, nil)
 		if notes != nil || decisions != nil {
 			t.Errorf("nil item returned %v / %v", notes, decisions)
 		}
