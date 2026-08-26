@@ -429,7 +429,9 @@ func init() {
 		// over MCP. `create` POSTs to /api/v1/workspaces; the handler's
 		// auto-add side effect uses the request context's OAuth identity
 		// (WithMCPTokenIdentity) to insert into oauth_connection_workspaces
-		// when may_create_workspaces=true. `claim` POSTs to
+		// when may_create_workspaces=true. That same identity now also
+		// DECIDES the call: with may_create_workspaces=false the handler
+		// 403s before creating anything (IDEA-2756). `claim` POSTs to
 		// /api/v1/oauth/claim with the same payload shape.
 		"workspace create": mapWorkspaceCreate,
 		"workspace claim":  mapWorkspaceClaim,

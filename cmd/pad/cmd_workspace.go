@@ -356,7 +356,10 @@ that just want the workspace row.
 When called over an OAuth-bound MCP session whose grant has
 may_create_workspaces=true, the new workspace is auto-added to that
 connection's allow-list (PLAN-1519 / TASK-1521 / IDEA-1517 §1) so
-the agent can use it immediately without re-auth.`,
+the agent can use it immediately without re-auth. When that grant has
+may_create_workspaces=false the create is REFUSED with a 403 and no
+workspace is made (IDEA-2756) — the user must re-authorize the
+connection with workspace creation enabled.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

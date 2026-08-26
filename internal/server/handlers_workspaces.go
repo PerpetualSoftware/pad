@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -290,7 +291,84 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// requireWorkspaceCreationConsent gates every endpoint that MINTS a
+// workspace under the caller's account on the calling OAuth connection's
+// `may_create_workspaces` grant. Returns true when the request may
+// proceed; on false it has already written the response.
+//
+// Ruled by Dave on IDEA-2756 (2026-08-26): the consent screen's "may
+// create workspaces" checkbox is a permission on whether the connected
+// token has the right to CREATE a workspace, and it has to be true to
+// what a user would honestly expect from the option. Before this, the
+// flag gated only maybeAutoAddCreatorConnection's allow-list insert —
+// so a connection whose user explicitly left the box unticked could
+// still create workspaces, it just could not then see them. A
+// permission that does not prevent the action it names is a consent
+// mismatch, and the behaviour-change-for-existing-connections argument
+// lost to honest consent semantics.
+//
+// Shape mirrors handleAuditLog's consent refusal (BUG-2102): a hard 403
+// rather than a narrowed response, because there is no narrower version
+// of creating a workspace.
+//
+// Three non-refusal cases, each deliberate:
+//
+//   - Not an OAuth grant (PAT, CLI session token, local stdio — no
+//     request_id in context). Creation rides on ordinary account
+//     authority; this flag has no opinion about it.
+//   - ErrOAuthConnectionNotFound — a pre-Phase-C grant whose row has
+//     not been backfilled yet. The backfill mints these with
+//     may_create_workspaces ON (oauth_connections_backfill.go), so
+//     allowing here is that same default applied early, not a gap.
+//     Note the deliberate asymmetry with maybeAutoAddCreatorConnection,
+//     which treats not-found as "no auto-add": that path is declining a
+//     convenience, this one would be inventing a refusal.
+//   - Flag set — proceeds, and the auto-add downstream is unchanged.
+//
+// A real I/O error reading the connection FAILS CLOSED with a 500. The
+// alternative — allowing the create when the deciding state could not
+// be read — silently grants a permission the user declined, on the
+// strength of a database blip. It is a 500 and not stored_state_
+// unreadable because the state is not unreadable-in-principle; the read
+// failed, the fault is ours, and a retry can legitimately succeed.
+func (s *Server) requireWorkspaceCreationConsent(w http.ResponseWriter, r *http.Request) bool {
+	kind, requestID := MCPTokenIdentityFromContext(r.Context())
+	if kind != "oauth" || requestID == "" {
+		return true
+	}
+	conn, err := s.store.GetOAuthConnection(requestID)
+	if err != nil {
+		if errors.Is(err, store.ErrOAuthConnectionNotFound) {
+			return true
+		}
+		slog.Error("workspace creation consent check failed to read connection",
+			"request_id", requestID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Could not verify this connection's workspace-creation permission")
+		return false
+	}
+	if !conn.MayCreateWorkspaces {
+		// The quoted string is the checkbox's ACTUAL label, verbatim from
+		// the consent template (handlers_oauth.go) and the connections
+		// page (web console). A remedy that names a control the user
+		// cannot find is not a remedy; if either label is reworded, this
+		// message is part of that change.
+		writeError(w, http.StatusForbidden, "forbidden",
+			"This connection is not permitted to create workspaces. "+
+				"Re-authorize it with \"Let this app create new workspaces\" enabled, "+
+				"or enable it for this connection under /console/connected-apps.")
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	// Consent gate first — before decoding the body, so a refusal never
+	// depends on body validity and cannot be probed by shape.
+	if !s.requireWorkspaceCreationConsent(w, r) {
+		return
+	}
+
 	var input models.WorkspaceCreate
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -382,7 +460,15 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 //   - The grant's connection row doesn't exist (pre-Phase-C tokens
 //     fall here until backfill).
 //   - The flag is off (user explicitly scoped out creation power at
-//     consent time or via the connections-page mutation UI).
+//     consent time or via the connections-page mutation UI). Since
+//     IDEA-2756 this branch is UNREACHABLE from the only caller —
+//     handleCreateWorkspace now refuses the create outright before it
+//     gets here, so a flag-off connection never reaches a create that
+//     could auto-add. It stays because this function's contract is "add
+//     only when the grant permits", and a helper whose safety depends on
+//     its single caller checking first is one refactor away from being
+//     wrong. It is dead code, not redundant logic: delete it only
+//     together with the guard.
 //
 // Errors are logged at WARN, never propagated. The caller's response
 // must not fail because of an auth-bookkeeping issue post-creation.
@@ -682,6 +768,17 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
+	// Consent gate — import is workspace creation through a second door
+	// (store.ImportWorkspace calls CreateWorkspace), so the same
+	// may_create_workspaces grant decides it. Ruled with the create-side
+	// gate on IDEA-2756. It sits ABOVE the Content-Type dispatch so it
+	// covers the tar.gz bundle path too — handleImportWorkspaceBundle is
+	// reachable only from here, so this is its only door — and above the
+	// 64 MiB body read, so a refused caller never uploads a bundle.
+	if !s.requireWorkspaceCreationConsent(w, r) {
+		return
+	}
+
 	// Content-Type dispatch:
 	//   application/gzip / application/x-gzip / application/x-tar
 	//     → tar.gz bundle path (TASK-885) — handles attachments.

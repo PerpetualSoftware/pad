@@ -190,9 +190,10 @@ var allowlistCoverage = map[string]allowlistClassification{
 			"data the allow-list protects is reachable through it. The consent model already has a dedicated capability " +
 			"for this — the connection's may_create_workspaces checkbox — and when it is set, " +
 			"maybeAutoAddCreatorConnection adds the new workspace to the allow-list (added_by='agent-create', " +
-			"PLAN-1519/TASK-1521) so the agent can use what it just made. NOTE the flag gates only that AUTO-ADD, not " +
-			"the creation itself; with it unset the create still succeeds and the workspace simply never joins the " +
-			"allow-list. Whether that should instead REFUSE is IDEA-2756 (codex round 2 corrected this entry's original " +
+			"PLAN-1519/TASK-1521) so the agent can use what it just made. Since IDEA-2756 that flag also DECIDES the " +
+			"call: with may_create_workspaces unset the create is refused outright with a 403 and no workspace is " +
+			"made — it no longer gates the auto-add alone. The classification is unchanged either way, because " +
+			"refusing to create is still not a disclosure question (codex round 2 corrected this entry's original " +
 			"reasoning, which wrongly claimed no capability existed)"},
 
 	// --- specialRoutes: observed via the recording handler ---
