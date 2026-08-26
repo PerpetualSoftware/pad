@@ -631,14 +631,18 @@ func exhaustedWindowCursor(
 // applied so the two backends stop disagreeing — only the sentence was
 // wrong. See ValidatePath in middleware_path.go, which inherited both the
 // rule and the overstatement.) Postgres refuses a text parameter that is
-// not valid UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx surfaces
-// that as a query error, which this handler turns into a 500 — an operator's
-// alerting reads that as the server breaking when a client sent a bad cursor.
-// SQLite accepts both and simply matches nothing, so the same request is a
-// 200 there: a dialect divergence in the failure mode, from one line of
-// unvalidated input. Same failure the BUG-1086 comment above records, whose
-// fix covered the sentinel this handler synthesizes and not the value a
-// caller supplies.
+// not valid UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx
+// surfaces that as a query error.
+//
+// What follows is the PRE-BUG-2774 behaviour this guard exists to prevent,
+// not what the endpoint does now — the caller above rejects such a cursor
+// with a 400 before any query runs. Unguarded, that query error became a
+// 500 on Postgres, which an operator's alerting read as the server breaking
+// when a client had merely sent a bad cursor; on SQLite the same request
+// matched nothing and returned 200. A dialect divergence in the failure
+// mode, from one line of unvalidated input. Same failure the BUG-1086
+// comment above records, whose fix covered the sentinel this handler
+// synthesizes and not the value a caller supplies.
 //
 // DELIBERATELY NO LENGTH BOUND. The obvious cap is the one thing here that
 // could reject a LEGITIMATE cursor: the structured kinds' ids come from the

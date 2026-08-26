@@ -23,9 +23,12 @@ import (
 // SQLite accepts both byte classes and simply matches nothing, so the SAME
 // request is a clean 404 there. That is a dialect divergence in the failure
 // mode, and it splits by BACKEND, not by deployment: a SQLite install never
-// sees it, and any Postgres install does — Pad Cloud and a self-hoster on
-// Postgres alike. An operator's alerting reads it as the server breaking
-// when a client sent a path that cannot name anything.
+// sees it, and a Postgres install whose database encoding is UTF8 does —
+// Pad Cloud and a self-hoster on Postgres alike, since UTF8 is initdb's
+// default. (Under SQL_ASCII, Postgres accepts the bytes too; see
+// validPathText below, which is where that qualification is spelled out.)
+// An operator's alerting reads it as the server breaking when a client
+// sent a path that cannot name anything.
 //
 // Measured before this middleware existed, driving every route that carries
 // a path parameter with one segment set to "bad-%FF-x" — one request per
