@@ -20,12 +20,16 @@ import (
 // `err != nil || item == nil`). The measurement below is what the
 // distribution actually was.
 //
-// SQLite accepts both byte classes and simply matches nothing, so the SAME
-// request is a clean 404 there. That is a dialect divergence in the failure
-// mode, and it splits by BACKEND, not by deployment: a SQLite install never
-// sees it, and a Postgres install whose database encoding is UTF8 does —
-// Pad Cloud and a self-hoster on Postgres alike, since UTF8 is initdb's
-// default. (Under SQL_ASCII, Postgres accepts the bytes too; see
+// SQLite accepts both byte classes and simply matches nothing, so a request
+// that reaches a store resolution answers 404 there instead. Not every
+// request does, on either backend — an authorization or configuration gate
+// that answers first keeps its own status, which is why the GET-only sweep
+// below found 102 × 404 but also 5 × 403, 2 × 200, 1 × 401 and 1 × 503 on
+// SQLite. The divergence is in what happens once the value REACHES the
+// store, and it splits by BACKEND rather than by deployment: a SQLite
+// install never sees the 500, and a Postgres install whose database
+// encoding is UTF8 does — Pad Cloud and a self-hoster on Postgres alike,
+// since UTF8 is initdb's default. (Under SQL_ASCII, Postgres accepts the bytes too; see
 // validPathText below, which is where that qualification is spelled out.)
 // An operator's alerting reads it as the server breaking when a client
 // sent a path that cannot name anything.
