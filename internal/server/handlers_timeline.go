@@ -293,6 +293,31 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// Notes and decisions share this map — they land in one merged stream and
 	// a collision ACROSS the two kinds breaks the client exactly as one
 	// within a kind does.
+	//
+	// WHAT IS CLOSED, enumerated so the next reader does not have to re-derive
+	// it (BUG-2783, review round 5):
+	//
+	//   - structured raw vs structured raw ....... the `!usedIDs[raw]` guard
+	//   - structured raw vs derived, same kind ... divert on the prefix
+	//   - structured raw vs derived, cross kind .. hasStructuredPrefix
+	//   - derived vs derived ..................... equal only if raws are
+	//   - structured vs a row id ................. divert on UUID shape
+	//   - fallback vs anything ................... the `for usedIDs[id]` loop
+	//
+	// WHAT IS NOT, deliberately and with somewhere to read about it:
+	//
+	//   - the positional fallback encodes an ARRAY INDEX, so an entry with no
+	//     usable id of its own can be renumbered by an insert or delete
+	//     earlier in the blob. That id is the cursor's tie-breaker, so a
+	//     renumbered entry can be skipped or re-shown across a page boundary.
+	//     Everything with something of its own to derive from was moved OFF
+	//     that path; what is left has nothing. Filed as BUG-2788.
+	//   - a row id that is not a UUID is outside what the shape test diverts,
+	//     and two rows in DIFFERENT tables are not deduped against each other
+	//     at all. Both are properties of the writers rather than of this
+	//     function, both are unreachable through any current write or import
+	//     path, and neither can be detected here without the row lookup this
+	//     design exists to avoid. See looksLikeRowID.
 	usedIDs := make(map[string]bool, len(item.ImplementationNotes)+len(item.DecisionLog))
 	entryID := func(raw, prefix string, i int) string {
 		// A raw id must be usable as a CURSOR, not merely unique: the client
@@ -750,9 +775,12 @@ func validCursorID(v string) bool {
 // migrations carry existing ids across verbatim. A row whose id is not a UUID
 // — written by some future path that does not go through newID(), or already
 // present in a database this code has never seen — would be outside what this
-// refuses, and a blob id equal to it would collide again. Nothing here can
-// detect that without consulting the rows, which is the dependency the whole
-// design exists to avoid. It is latent rather than reachable through any
+// refuses, and a blob id equal to it would collide again. The same gap has a
+// second face: the three SQL sources keep their own ids verbatim and are not
+// deduped against EACH OTHER, so two rows in different tables sharing an id
+// would collide in the merged stream without any structured entry involved.
+// Nothing here can detect either without consulting the rows, which is the
+// dependency the whole design exists to avoid. It is latent rather than reachable through any
 // current write or import path (codex round 2, P2), and the enforcement that
 // would close it belongs at the writers or the schema, not here.
 // The cost is that a blob id that happens to be a well-formed UUID loses its
