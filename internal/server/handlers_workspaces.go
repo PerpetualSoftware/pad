@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -290,7 +291,101 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// requireWorkspaceCreationConsent gates a request that MINTS a workspace
+// on the calling OAuth connection's `may_create_workspaces` grant.
+// Returns true when the request may proceed; on false it has already
+// written the response.
+//
+// Two callers, which are the two endpoints an OAuth-bound caller can
+// mint through: handleCreateWorkspace and handleImportWorkspace. NOT
+// every path to store.CreateWorkspace — autoCreateWorkspace
+// (handlers_cloud.go) mints a workspace during registration, bootstrap
+// and OAuth-login, and is deliberately outside this gate: it runs at
+// signup with no OAuth connection in context, provisioning the user's
+// own first workspace rather than acting for a connected app.
+//
+// Ruled by Dave on IDEA-2756 (2026-08-26): the consent screen's "may
+// create workspaces" checkbox is a permission on whether the connected
+// token has the right to CREATE a workspace, and it has to be true to
+// what a user would honestly expect from the option. Before this, the
+// flag gated only maybeAutoAddCreatorConnection's allow-list insert —
+// so a connection whose user explicitly left the box unticked could
+// still create workspaces, it just could not then see them. A
+// permission that does not prevent the action it names is a consent
+// mismatch, and the behaviour-change-for-existing-connections argument
+// lost to honest consent semantics.
+//
+// Shape mirrors handleAuditLog's consent refusal (BUG-2102): a hard 403
+// rather than a narrowed response, because there is no narrower version
+// of creating a workspace.
+//
+// Three non-refusal cases, each deliberate:
+//
+//   - Not an OAuth grant (PAT, CLI session token, local stdio — no
+//     request_id in context). Creation rides on ordinary account
+//     authority; this flag has no opinion about it.
+//   - ErrOAuthConnectionNotFound — no connection row for this grant.
+//     The expected cause is a pre-Phase-C grant not yet backfilled, and
+//     the backfill mints those with may_create_workspaces ON
+//     (oauth_connections_backfill.go), so allowing here is that same
+//     default applied early rather than a gap. Stated as the expected
+//     cause and not the only one, because the code cannot tell them
+//     apart: any missing row takes this branch.
+//     Note the deliberate asymmetry with maybeAutoAddCreatorConnection,
+//     which treats not-found as "no auto-add": that path is declining a
+//     convenience, this one would be inventing a refusal.
+//   - Flag set — proceeds, and the auto-add downstream is unchanged.
+//
+// A real I/O error reading the connection FAILS CLOSED with a 500. The
+// alternative — allowing the create when the deciding state could not
+// be read — silently grants a permission the user declined, on the
+// strength of a database blip. It is a 500 and not stored_state_
+// unreadable because the state is not unreadable-in-principle; the read
+// failed, the fault is ours, and a retry can legitimately succeed.
+func (s *Server) requireWorkspaceCreationConsent(w http.ResponseWriter, r *http.Request) bool {
+	kind, requestID := MCPTokenIdentityFromContext(r.Context())
+	if kind != "oauth" || requestID == "" {
+		return true
+	}
+	conn, err := s.store.GetOAuthConnection(requestID)
+	if err != nil {
+		if errors.Is(err, store.ErrOAuthConnectionNotFound) {
+			return true
+		}
+		slog.Error("workspace creation consent check failed to read connection",
+			"request_id", requestID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Could not verify this connection's workspace-creation permission")
+		return false
+	}
+	if !conn.MayCreateWorkspaces {
+		// The quoted string is the checkbox's ACTUAL label, verbatim from
+		// the consent template (handlers_oauth.go) and the connections
+		// page (web console). A remedy that names a control the user
+		// cannot find is not a remedy; if either label is reworded, this
+		// message is part of that change.
+		//
+		// Both remedies are named because there are two: a fresh
+		// authorization, and flipping the flag on the EXISTING
+		// connection via PATCH /connected-apps/{id}/flags, which the
+		// console page drives. Saying only "re-authorize" would send a
+		// user through a longer path than they need.
+		writeError(w, http.StatusForbidden, "forbidden",
+			"This connection is not permitted to create workspaces. "+
+				"Re-authorize it with \"Let this app create new workspaces\" enabled, "+
+				"or enable it for this connection under /console/connected-apps.")
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	// Consent gate first — before decoding the body, so a refusal never
+	// depends on body validity and cannot be probed by shape.
+	if !s.requireWorkspaceCreationConsent(w, r) {
+		return
+	}
+
 	var input models.WorkspaceCreate
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -379,10 +474,34 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 //
 //   - The calling token isn't an OAuth grant (PAT, CLI session token —
 //     they don't carry a request_id).
+//
 //   - The grant's connection row doesn't exist (pre-Phase-C tokens
 //     fall here until backfill).
+//
 //   - The flag is off (user explicitly scoped out creation power at
-//     consent time or via the connections-page mutation UI).
+//     consent time or via the connections-page mutation UI). Since
+//     IDEA-2756 handleCreateWorkspace refuses a flag-off connection
+//     before it reaches here, so in the common case this branch does
+//     not fire — but it is NOT unreachable, and calling it dead would
+//     be wrong twice over. The gate reads the connection, and this
+//     function reads it AGAIN after the workspace is created; a user
+//     revoking creation power from /console/connected-apps in between
+//     (PATCH /connected-apps/{id}/flags) lands exactly here, and the
+//     workspace then exists without silently joining a connection whose
+//     grant was withdrawn mid-flight.
+//
+//     What this check does NOT do is close that window — it narrows it.
+//     The read below and the AddConnectionWorkspace insert after it are
+//     separate unconditional statements, so a revocation landing between
+//     THEM still adds the workspace. That residual race is BUG-2792:
+//     pre-existing, unchanged by IDEA-2756, and needing an atomic
+//     check-and-insert at the store layer rather than another read here.
+//
+//     (Codex round 3 caught the earlier "unreachable / dead code" claim
+//     in this comment — written from the call graph alone, which cannot
+//     see a concurrent write between two reads. Round 4 then caught the
+//     replacement claiming more safety than the code delivers. Both
+//     errors were the same shape in opposite directions.)
 //
 // Errors are logged at WARN, never propagated. The caller's response
 // must not fail because of an auth-bookkeeping issue post-creation.
@@ -682,6 +801,31 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
+	// Consent gate — import is workspace creation through a second door
+	// (store.ImportWorkspace calls CreateWorkspace), so the same
+	// may_create_workspaces grant decides it. Ruled with the create-side
+	// gate on IDEA-2756. It sits ABOVE the Content-Type dispatch so it
+	// covers the tar.gz bundle path too — handleImportWorkspaceBundle is
+	// reachable only from here, so this is its only door — and above
+	// either body read, so a refused caller never uploads anything. The
+	// two reads have different bounds (the JSON path's 64 MiB
+	// decodeJSONWithLimit, the bundle path's own configurable and much
+	// larger limit); the gate precedes both, which is the property that
+	// matters here.
+	//
+	// Reachability, stated precisely because the create-side gate's is
+	// different: NO OAuth-bound caller can reach this handler today. The
+	// OAuth identity is stashed only by MCPBearerAuth, which is mounted
+	// on /mcp alone, so an OAuth connection reaches an /api/v1 handler
+	// only through the in-process MCP dispatcher — and its route table
+	// has no `workspace import` action. This gate is therefore correct
+	// but currently unexercised in production: it exists so that adding
+	// that action later cannot silently reopen the door, which is the
+	// failure mode a create-only fix would have left armed.
+	if !s.requireWorkspaceCreationConsent(w, r) {
+		return
+	}
+
 	// Content-Type dispatch:
 	//   application/gzip / application/x-gzip / application/x-tar
 	//     → tar.gz bundle path (TASK-885) — handles attachments.

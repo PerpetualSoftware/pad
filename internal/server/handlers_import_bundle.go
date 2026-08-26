@@ -63,7 +63,10 @@ func (s *Server) effectiveBlobMaxBytes() int64 {
 // The handler does the JSON / bundle dispatch; the actual work is
 // done by importBundle which is unit-testable without the http stack.
 //
-// Auth: any authenticated user. The global RequireAuth middleware
+// Auth: any authenticated user EXCEPT an OAuth-bound caller whose
+// connection carries may_create_workspaces=false — import mints a
+// workspace, so handleImportWorkspace's consent gate refuses it before
+// dispatching here (IDEA-2756). The global RequireAuth middleware
 // (server.go:539) gates this endpoint when users exist on the host.
 // There is no per-workspace role check because import CREATES a new
 // workspace — there's nothing pre-existing to authorize against.

@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.25)
+## Tool surface (v0.26)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
@@ -87,7 +87,7 @@ Filter by trigger (`always`, `on-implement`, `on-task-complete`, etc.) when rele
 
 If the user references a workspace this connection can't see (you'll get a 403 from workspace tools, or the workspace won't appear in `pad_workspace.list`), tell the user you can't see that workspace with your current permissions, then walk them through how to grant access: open Pad in their browser → switch to that workspace → avatar menu → "Connect project..." A 6-digit claim code will appear. Have them paste it back in chat, then call `pad_workspace.claim` with `{workspace: "<slug>", code: "<6 digits>"}`. The workspace joins this connection's allow-list and stays until the user revokes it via `/console/connected-apps`. No re-auth required.
 
-For brand-new workspaces, `pad_workspace.create` with `{name: "<name>"}` (and optional `template`) creates the workspace AND auto-adds it to this connection's allow-list in one call — no claim code needed. Only works when the user granted "may create workspaces" at consent time; if that scope was declined the create call still succeeds but the workspace doesn't auto-join — direct the user to the claim flow above to bring it in.
+For brand-new workspaces, `pad_workspace.create` with `{name: "<name>"}` (and optional `template`) creates the workspace AND auto-adds it to this connection's allow-list in one call — no claim code needed. Only works when the connection currently carries the "may create workspaces" grant — granted at consent time, or enabled later on the connections page. If the grant is present and set to false, the create is **refused with a 403 and no workspace is made** — retrying won't help and neither will the claim flow, since there is nothing to claim. Tell the user this connection isn't permitted to create workspaces, and offer them the two ways forward: create the workspace themselves in the browser and grant access with a claim code, or re-authorize this connection with "Let this app create new workspaces" enabled (`/console/connected-apps` can also flip it on an existing connection).
 
 ## New workspace: offer to set it up
 

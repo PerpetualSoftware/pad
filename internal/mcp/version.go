@@ -620,7 +620,43 @@ const CmdhelpVersion = "0.1"
 //     condition would stop matching. That client was retrying a
 //     permanent failure.
 
-//   - "0.25" — current. TASK-2657: `pad_library.activate` resolves its
+//   - "0.26" — current. IDEA-2756: `pad_workspace.action=create` is now
+//     REFUSED with a 403 when the calling OAuth connection's grant has
+//     `may_create_workspaces=false`. Previously that flag gated only the
+//     post-creation auto-add, so the create succeeded — and on a
+//     connection with an EXPLICIT workspace allow-list the agent was
+//     handed a workspace it could not then see. (Not universal: a
+//     connection with `all_current_workspaces=true` is not gated per
+//     slug, so it could see what it made. The consent mismatch is the
+//     constant across both; the invisibility was only its most visible
+//     symptom.)
+//
+//     BEHAVIOR bump, not a shape one — no tool name, action enum, or
+//     parameter changed. Same grounds as v0.25 (activation destination),
+//     v0.16 (empty-string clear) and v0.10, which is the closest
+//     precedent: a server-side gate that starts refusing a call it used
+//     to permit, with the refusal surfaced as a structured error.
+//
+//     Unlike v0.10 there is no `allow_draft`-style escape hatch, and
+//     deliberately so: the gate expresses a decision the USER made on
+//     the consent screen, so a parameter that let the caller bypass it
+//     would be the app overriding its own grant. Both remedies are the
+//     USER's and neither is the app's: re-authorize, or enable the flag
+//     on the existing connection via PATCH /connected-apps/{id}/flags
+//     (the console page). The refusal message names both, and
+//     instructions.md tells the agent not to retry and not to reach for
+//     the claim flow (there is nothing to claim when nothing was
+//     created).
+//
+//     Ruled by Dave on IDEA-2756: the consent checkbox is a permission
+//     on whether the connected token may CREATE, and has to be true to
+//     what a user would honestly expect from the option. Applied to
+//     `POST /workspaces/import` as well as `POST /workspaces` — import
+//     mints a workspace through store.ImportWorkspace, so it is the
+//     same permission at a second door — though import has no MCP
+//     action today and so is invisible from this surface.
+//
+//   - "0.25" — TASK-2657: `pad_library.activate` resolves its
 //     DESTINATION collection from the target's declared artifact kind
 //     (SPEC-5 collection traits) rather than from the literal slugs
 //     "conventions" / "playbooks".
@@ -678,7 +714,7 @@ const CmdhelpVersion = "0.1"
 //     That reliance was indistinguishable from a bug in the caller
 //     (the key never did anything), so the break is the fix. Single
 //     bump covers both halves; they are one contract change.
-const ToolSurfaceVersion = "0.25"
+const ToolSurfaceVersion = "0.26"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
