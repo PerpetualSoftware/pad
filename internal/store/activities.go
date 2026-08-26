@@ -73,9 +73,21 @@ func (s *Store) CreateActivity(a models.Activity) (string, error) {
 		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, ip_address, user_agent, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), a.ID, nilIfEmpty(a.WorkspaceID), nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), nilIfEmpty(a.IPAddress), nilIfEmpty(a.UserAgent), ts)
-	return a.ID, err
+	if err != nil {
+		// No id alongside an error (BUG-2779). The id in hand names a row
+		// that was NOT written, and a caller who ignores the error — as one
+		// did — gets a plausible-looking handle to nothing. Returning "" makes
+		// the misuse impossible instead of merely wrong.
+		return "", err
+	}
+	return a.ID, nil
 }
 
+// A non-nil error is always paired with an EMPTY id (BUG-2779). Neither this
+// function nor CreateActivity returns a usable-looking handle beside a
+// failure: the id a failed call has in hand names a row it did not write, and
+// a caller that ignores the error cannot then link anything to it.
+//
 // CreateActivityDebounced creates a new activity or updates an existing one if a
 // matching activity (same document, same action, and same WRITER — same user
 // account, same actor kind, and same agent name) was recorded within the
@@ -177,7 +189,14 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 
 		mergedOK, err := s.mergeIntoUnlinkedActivity(existingID, existingMeta, merged, ts)
 		if err != nil {
-			return existingID, err
+			// "" and not existingID (BUG-2779): that id names the row this
+			// call CHOSE, not one it wrote. Handing it back beside an error
+			// gave the item-update handler — which discarded the error — a
+			// real id for an OLDER activity, and a comment created in the
+			// same request linked to it. The comment then sits under an entry
+			// describing a different change, attributed by TASK-2760's
+			// agent-name rule to whoever wrote that entry.
+			return "", err
 		}
 		if mergedOK {
 			return existingID, nil
@@ -189,9 +208,21 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 		// frozen row must not be retried (the answer will not change), and
 		// a contended row must not start a new run (retrying merges into
 		// the winner's blob and keeps the timeline entry whole).
+		// Test seam (BUG-2779): between the refusal and the probe that
+		// classifies it. Nil in production.
+		if s.afterDebounceRefusal != nil {
+			s.afterDebounceRefusal()
+		}
+
 		unchanged, err := s.debounceRowUnchanged(existingID, existingMeta)
 		if err != nil {
-			return existingID, err
+			// Same contract as the merge failure above (BUG-2779). Reaching
+			// it needs the UPDATE to affect zero rows and THEN this probe to
+			// fail — two statements apart — which is what afterDebounceRefusal
+			// exists to schedule. An earlier version of this comment claimed
+			// no instrument could reach it; that was a fact about the seams I
+			// had written, not about the code, and review said so.
+			return "", err
 		}
 		if unchanged {
 			// The blob we read is still there, so the CAS arm held and the

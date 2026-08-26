@@ -114,8 +114,13 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	// Log activity first so we can link the comment to the activity record.
 	// This prevents duplicate timeline entries (one for the comment, one for the activity).
-	// Only set ActivityID on success — comments.activity_id has a FK constraint,
-	// and CreateActivity returns an ID even on insert failure.
+	// Only set ActivityID on success — comments.activity_id has a FK
+	// constraint. The guard used to be load-bearing for a second reason:
+	// CreateActivity returned an id even on insert failure. It no longer
+	// does (BUG-2779 made an empty id part of the contract for every error
+	// path), so this check is now belt on top of that contract rather than
+	// the only thing between a failed write and a dangling FK. Kept because
+	// it costs nothing and expresses the caller's own requirement.
 	//
 	// THE ORDER IS FORCED, and it leaves a window: the activity commits in its
 	// own transaction before CreateComment runs, so any CreateComment failure
