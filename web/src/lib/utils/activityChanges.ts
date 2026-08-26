@@ -9,10 +9,101 @@ export interface FieldChange {
 	to: string;
 }
 
+// Fields whose change pill is suppressed (BUG-2628, Dave's ruling, option 3).
+//
+// Implementation notes and decision-log entries have had their own timeline
+// cards since BUG-2301, so a pill for them can only ever restate what the card
+// above it already shows. On items whose notes predate the write-time
+// summarizer, it restates it badly: the frozen metadata holds the whole notes
+// array as a Go map literal, and the pill renders as a wall of text that
+// dwarfs every real change on the same card.
+//
+// Suppressed at RENDER time, deliberately not at write time. The activity row
+// legitimately records THAT notes changed and that belongs in the audit trail;
+// what option 3 rules out is showing it as a pill. Dropping it from the record
+// would be option 2 — which the filing rejected for destroying the original —
+// wearing a different hat.
+const SUPPRESSED_CHANGE_FIELDS = new Set(['implementation_notes', 'decision_log']);
+
+// A parsed segment is only a change if its field name is actually a field
+// name. The server joins segments with "; " and this splits on ";", so any
+// value containing a semicolon fragments — and the fragment's text before its
+// first colon then poses as a field name.
+//
+// This is not belt-and-braces on top of the suppression above; it is
+// load-bearing, and measured against the live database. Across the 97 legacy
+// rows, suppressing the two field names alone removes 77 of 78 oversized pills
+// and leaves the WORST one untouched at 2952 characters — a note's own prose
+// contains ";", ":" and "→", so a mid-blob fragment parses as a change whose
+// "field" is a paragraph of markdown. With this guard the longest surviving
+// pill on those rows is 15 characters.
+//
+// The test is STRUCTURAL — non-empty, no whitespace, bounded length — rather
+// than a lowercase-identifier pattern. The first version was
+// `^[a-z][a-z0-9_]*$` on the reasoning that the server emits schema keys plus
+// title/role/assigned, all lowercase. Too strong: nothing constrains a
+// collection's field keys to lowercase (handlers_collections.go compares them
+// with a plain `==`, no case folding), so `Status` or `resolution-v2` are
+// legal keys whose pills that pattern would silently drop. All 72 field keys
+// in the live database satisfy both forms, which is why the measurement below
+// could not tell them apart — a control showing a guard refuses nothing HERE
+// is not evidence that it cannot refuse something legitimate.
+//
+// IT IS A HEURISTIC AND BOTH OF ITS ERROR DIRECTIONS ARE REAL. No shape test
+// can be exact here, because the format is ambiguous by construction: the
+// server joins with "; " and this splits on ";", so a value containing a
+// semicolon is indistinguishable from two changes. Concretely —
+//
+//   - a fragment whose prose before the colon is a single word still passes,
+//     so `…[map[details:Root; foo: a → b]]` yields a stray `foo` pill. What
+//     the guard removes is the WALL; it does not promise zero fragments.
+//   - a legitimate key containing a space, or longer than 64 characters, is
+//     droppable. Nothing validates key shape on collection create, so such a
+//     key can be persisted even though none exists today.
+//
+// The bound is chosen against the real corpus rather than in principle:
+// across the 97 legacy rows the longest surviving pill is 15 characters and
+// none exceeds 200 (from 2952 and 77 respectively), and across 6000+
+// current-format rows carrying 6385 pills it drops zero. Both figures are
+// measurements of THIS database, not guarantees.
+//
+// The durable fix is to stop parsing a display string at all — the server
+// would emit changes as structured metadata. That is IDEA-2790; it does not
+// help the legacy rows either way, since their metadata is already frozen.
+//
+// EVERY WAY A LEGACY BLOB CAN REACH A READER, enumerated rather than
+// spot-checked (review round 5), across the three surfaces this covers — the
+// item timeline card, the workspace activity page (pills and its raw
+// fallback), and the dashboard's recent-activity list:
+//
+//   handled   the top-level implementation_notes / decision_log segment
+//   handled   arrowless serialized fields, e.g. `id:…`, `summary:…`
+//   handled   no colon, or an apparent key that is empty, spaced, or > 64
+//   OPEN      a key-shaped fragment with exactly one arrow (`foo: a → b`)
+//   OPEN      a key-shaped fragment with several arrows (fallback/text only)
+//
+// The two open rows are the format ambiguity and are not closable by any
+// shape test; both are pinned by tests so they are known limits rather than
+// latent surprises. They are bounded, which is the claim that matters: on the
+// 97 legacy rows the longest surviving pill is 15 characters and the longest
+// sanitized fallback string is 54, from 2952 and 285.
+const MAX_FIELD_KEY_LENGTH = 64;
+
+function looksLikeFieldKey(field: string): boolean {
+	return field.length > 0 && field.length <= MAX_FIELD_KEY_LENGTH && !/\s/.test(field);
+}
+
 // Split the server's "; "-joined "field: from → to" change string into
-// structured entries. Segments that don't carry a "from → to" transition
-// (e.g. a newly-set field rendered as "field: → value") are dropped so the
-// caller can render clean two-sided pills; use the raw string for those.
+// structured entries.
+//
+// A segment is kept when its value splits into EXACTLY TWO arrow-separated
+// parts. Note what that does and does not mean, because the comment here
+// previously said the opposite and it is worth being exact: a newly-set field
+// arrives as "field: → value", which splits into ["", "value"] — two parts —
+// so it IS kept, with an empty `from`. What gets dropped is a segment with no
+// arrow at all, or one whose value contains MORE than one arrow (a field whose
+// text happens to include "→"). Verified against the function rather than
+// inferred from its previous comment.
 export function parseFieldChanges(changesStr: string | undefined | null): FieldChange[] {
 	if (!changesStr) return [];
 	return changesStr
@@ -22,6 +113,8 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 			const colonIdx = trimmed.indexOf(':');
 			if (colonIdx === -1) return null;
 			const field = trimmed.slice(0, colonIdx).trim();
+			if (!looksLikeFieldKey(field)) return null;
+			if (SUPPRESSED_CHANGE_FIELDS.has(field)) return null;
 			const valuePart = trimmed.slice(colonIdx + 1).trim();
 			const arrowParts = valuePart.split('→');
 			if (arrowParts.length === 2) {
@@ -30,4 +123,66 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 			return null;
 		})
 		.filter((c): c is FieldChange => c !== null);
+}
+
+// Sanitize the raw change string for the surfaces that render it as TEXT
+// rather than as pills — the dashboard's recent-activity list, and the audit
+// page's fallback when nothing parsed.
+//
+// SCOPE, enumerated rather than sampled (BUG-2628 review round 2). This is a
+// DISPLAY rule, so it is applied where a human reads the string and nowhere
+// else. The REST endpoints, `--format json`, the bootstrap payload and the
+// MCP tools all return the activity metadata verbatim, and that is deliberate
+// and not an oversight: the row records THAT notes changed, the ruling was
+// about not showing it as a pill, and a client that wants the raw record must
+// still be able to get it. Sanitizing the wire would be the option the filing
+// rejected for destroying the original.
+//
+// Two human-facing surfaces are NOT covered here and are filed rather than
+// silently included: the CLI (`pad project activity`, `pad workspace
+// audit-log`) prints the string with no parsing at all, and the admin console
+// audit log renders it verbatim through a generic metadata fallback. Both are
+// Go / a different feature, and both need their own decision.
+//
+// Those surfaces are why suppressing inside parseFieldChanges alone does not
+// finish the job, and the audit page is the sharp case: it falls back to the
+// raw string when the parsed list is EMPTY, so suppressing every pill on a
+// legacy row made the wall of text reappear on the very surface the ruling was
+// about. The fix has to be a property of the string, not of the pill list.
+//
+// Segments are dropped on the same rules parseFieldChanges applies, and
+// survivors keep their CONTENT — including segments parseFieldChanges itself
+// will not turn into a pill, such as a value containing more than one arrow.
+// That is the point of a fallback, and this keeps it working.
+//
+// Not byte-for-byte, and the difference is worth naming rather than calling
+// this verbatim: survivors are trimmed and rejoined with a canonical "; ", so
+// unusual boundary whitespace and separator spacing are normalized. A segment
+// that fails the two rules is removed, which means a legitimate value that
+// itself contains a semicolon loses the part after it — the same format
+// ambiguity described above, seen from the other side.
+export function formatChangesForDisplay(changesStr: string | undefined | null): string {
+	if (!changesStr) return '';
+	return changesStr
+		.split(';')
+		.filter((part) => {
+			const trimmed = part.trim();
+			const colonIdx = trimmed.indexOf(':');
+			if (colonIdx === -1) return false;
+			const field = trimmed.slice(0, colonIdx).trim();
+			if (!looksLikeFieldKey(field) || SUPPRESSED_CHANGE_FIELDS.has(field)) return false;
+			// A segment with no arrow is not a change, it is a fragment — and
+			// the field-key rule alone does not catch the ones whose text
+			// before the colon is short and unspaced, like `id:note-1775…` or
+			// `summary:…` from inside a serialized notes array. Those were
+			// still reaching the audit page's fallback, which is the surface
+			// this function exists for (codex round 4).
+			//
+			// AT LEAST one arrow, not exactly one: a value containing "→" is
+			// a real change that parseFieldChanges declines to make a pill of,
+			// and showing it is precisely what the fallback is for.
+			return trimmed.slice(colonIdx + 1).includes('→');
+		})
+		.map((part) => part.trim())
+		.join('; ');
 }
