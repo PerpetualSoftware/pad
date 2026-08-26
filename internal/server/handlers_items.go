@@ -1736,7 +1736,32 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	actor, source := actorFromRequest(r)
-	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
+	// The error is CHECKED here (BUG-2779). The activity write is
+	// best-effort — a failed audit entry must not fail the user's update,
+	// which is why this logs rather than returns — but the failure has to be
+	// VISIBLE, because the comment below links to `activityID` and a silent
+	// failure means a user's comment quietly loses its link on a 200. The two
+	// comment handlers already guard the same way; this brings the third
+	// caller in line with them.
+	//
+	// The id is NOT re-zeroed here. The store's contract now guarantees an
+	// empty id beside a non-nil error, and re-zeroing it at the call site
+	// would be a second mechanism for a window the first already covers —
+	// which hides which one is load-bearing, and would keep passing if the
+	// store's contract regressed. The log is the part nothing else provides.
+	activityID, activityErr := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
+	if activityErr != nil {
+		// UNTESTED, and the reason is worth stating rather than leaving for
+		// the next reader to rediscover: asserting this line needs an
+		// activity write that FAILS while the item update SUCCEEDS, which no
+		// existing seam produces — the store-level tests induce failure by
+		// closing the database, which would fail the update too. A seam whose
+		// only purpose is to let a test read a log line is not worth a field
+		// on Server, so this is held by the store's contract plus review
+		// rather than by an assertion. A mutation deleting it survives.
+		slog.Warn("item update activity not recorded; a comment on this update will not be linked",
+			"item_id", updated.ID, "workspace_id", workspaceID, "error", activityErr)
+	}
 	actorNameForUpdate := actorNameFromRequest(r)
 	s.publishItemEventWithName(sseItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
 	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)

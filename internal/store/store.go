@@ -96,6 +96,15 @@ type Store struct {
 	// as the seams above.
 	afterDocumentPreWrite func(documentID string)
 
+	// afterDebounceRefusal is a TEST-ONLY seam, nil in production. When set,
+	// CreateActivityDebounced calls it after its merge UPDATE has affected
+	// ZERO rows and before the probe that decides which of the UPDATE's two
+	// arms refused (BUG-2779). It exists because that probe's error return is
+	// otherwise unreachable: the failure has to land between two statements,
+	// which no other seam can schedule. Same usage constraints as the seams
+	// above.
+	afterDebounceRefusal func()
+
 	// stopMaint signals the background WAL checkpointer to exit; maintDone
 	// is closed once it has. Both are nil on the Postgres path (no WAL
 	// file to checkpoint) and Close() guards on nil accordingly.
