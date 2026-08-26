@@ -576,46 +576,151 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 	defer rows.Close()
 
 	type docUpdate struct {
-		id      string
-		content string
+		id string
+		// read is the body this cascade rewrote FROM, kept verbatim: it is
+		// the compare-and-set token below, so it must be the exact string
+		// the column handed us and never a normalized form of it.
+		read      string
+		rewritten string
 	}
 	var updates []docUpdate
 	for rows.Next() {
 		var du docUpdate
-		if err := rows.Scan(&du.id, &du.content); err != nil {
+		if err := rows.Scan(&du.id, &du.read); err != nil {
 			return err
 		}
-		du.content = links.ReplaceTitle(du.content, oldTitle, newTitle)
+		du.rewritten = links.ReplaceTitle(du.read, oldTitle, newTitle)
 		updates = append(updates, du)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 
+	// Test seam (BUG-2785): the last moment at which a concurrent content
+	// edit to a linker can still commit ahead of the writes below, which is
+	// the whole window this function's compare-and-set exists to survive.
+	// Nil in production. No existing seam reaches here — afterDocumentPreLockRead
+	// fires before the transaction and afterDocumentPreWrite fires before the
+	// renamed document's OWN update, neither of which is this gap.
+	if s.afterLinkCascadeRead != nil {
+		s.afterLinkCascadeRead(workspaceID)
+	}
+
 	for _, du := range updates {
-		// deleted_at IS NULL here too (codex round 4): the SELECT above filters
-		// archived linkers, but a soft-delete can land between that read and
-		// this write, and an unqualified UPDATE would then rewrite the content
-		// of a document the user has already archived. A zero-row result is
-		// the NORMAL outcome of that race and not an error — the linker is
-		// gone, so there is no link left to keep consistent.
-		//
-		// UNTESTED, and deliberately kept anyway. A mutation removing this
-		// clause survives the suite: reaching it needs a delete landing
-		// between the SELECT a few lines above and this loop, which no
-		// existing seam can schedule and which would cost a fifth one. It
-		// stays because it closes a window NOTHING else covers — the opposite
-		// of the FOR UPDATE this unit deleted, which survived its mutation
-		// because another mechanism already covered the same window. Same
-		// signal, opposite disposition, and the difference is whether the
-		// guard is redundant or merely unreachable by the current
-		// instruments.
-		_, err = tx.Exec(s.q("UPDATE documents SET content = ? WHERE id = ? AND deleted_at IS NULL"), du.content, du.id)
-		if err != nil {
+		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// cascadeRewriteAttempts bounds rewriteLinkerCAS's retry loop.
+//
+// Three, matching debounceMergeAttempts' reasoning rather than copying its
+// number by coincidence: one attempt to lose, one to win against the writer
+// that beat it, and one of headroom for a second writer arriving mid-retry.
+// Exhausting it needs three consecutive commits to the SAME linker inside one
+// cascade, which is pathological contention rather than ordinary editing.
+//
+// It is a LIVENESS bound, not a correctness one: correctness comes from the
+// compare-and-set predicate, which cannot write a stale body however many
+// attempts it is given.
+const cascadeRewriteAttempts = 3
+
+// rewriteLinkerCAS applies a title rewrite to one linking document, retrying
+// on a lost compare-and-set.
+//
+// WHY A CAS AT ALL (BUG-2785). The cascade is a read-modify-write across two
+// statements: the SELECT above reads a linker's content, Go rewrites the
+// string, and this UPDATE writes the result. A content edit committing between
+// those two statements is silently erased by an unconditional UPDATE — the
+// same lost-update shape as BUG-2770's activity-metadata merge, one table over.
+//
+// DIALECT SCOPE, because it decides whether any test here means anything.
+// The lost update is reachable on POSTGRES only. The SQLite DSN sets
+// `_txlock=immediate` (see store.go), so UpdateDocument's db.Begin() takes the
+// write lock at BEGIN and holds it across this whole window; a concurrent
+// content edit cannot commit inside it and serializes on busy_timeout instead.
+// On Postgres under READ COMMITTED each statement takes a fresh snapshot, so
+// the edit commits between the two statements and the stale body wins. The CAS
+// is therefore a no-op on SQLite by construction — the predicate always matches,
+// because nobody else can have written — and load-bearing on Postgres.
+//
+// WHY THE ZERO-ROW RESULT NEEDS A PROBE. The UPDATE carries two predicates
+// that can each refuse it, and RowsAffected cannot say which did:
+//
+//   - deleted_at IS NULL — the linker was soft-deleted after the SELECT. That
+//     is the NORMAL outcome of a documented race (the guard predates this
+//     change): the linker is gone, so there is no link left to keep consistent,
+//     and the right response is to move on.
+//
+//     That guard used to carry a note saying it was UNTESTED and kept anyway,
+//     because reaching its window needed a seam no test could schedule "and
+//     which would cost a fifth one". This change adds that fifth seam for its
+//     own reasons, so the note is no longer true and has been removed rather
+//     than left to mislead: TestUpdateDocument_CascadeTreatsSoftDeletedLinkerAsDone
+//     now drives exactly that window, and a mutation removing the probe arm
+//     below dies to it. Recorded here because deleting a previous unit's
+//     deliberate "this is untestable" finding is a claim in its own right,
+//     and the next reader deserves to know it was closed rather than lost.
+//   - content = ? — a concurrent edit landed. The right response is the
+//     opposite: re-read, re-apply the rewrite to the NEW body, and try again.
+//
+// Treating the two alike would either retry forever against a deleted row or
+// discard a live linker's rewrite. So a refusal is followed by a probe that
+// distinguishes them, the same shape BUG-2770 needed for the same reason.
+// The probe reads through tx, never the pool: a pool read from inside a
+// transaction that holds row locks is BUG-2409's deadlock.
+func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle string) error {
+	expected := read
+	next := rewritten
+	for attempt := 0; attempt < cascadeRewriteAttempts; attempt++ {
+		res, err := tx.Exec(s.q(`
+			UPDATE documents SET content = ?
+			WHERE id = ? AND deleted_at IS NULL AND content = ?
+		`), next, id, expected)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+
+		var current string
+		err = tx.QueryRow(s.q(`
+			SELECT content FROM documents WHERE id = ? AND deleted_at IS NULL
+		`), id).Scan(&current)
+		if err == sql.ErrNoRows {
+			// Soft-deleted between the cascade's SELECT and now. Documented
+			// normal outcome, not an error.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		// A concurrent edit won. Rewrite ITS body rather than ours: replaying
+		// the original rewrite would reintroduce the very content this bug is
+		// about losing. If that edit already removed the link, ReplaceTitle is
+		// a no-op and the next attempt writes an identical body — which still
+		// affects one row and terminates.
+		expected = current
+		next = links.ReplaceTitle(current, oldTitle, newTitle)
+	}
+
+	// Exhaustion fails the RENAME, rather than leaving this one linker holding
+	// a title that no longer exists.
+	//
+	// The alternative — log and continue — was considered and rejected: it
+	// trades a loud, retryable failure for a silent inconsistency, and a
+	// rename is atomic in intent (either the title moves and its links follow,
+	// or neither). The user can retry a failed rename; nobody goes looking for
+	// a stale wiki-link.
+	return fmt.Errorf("store: link cascade lost the compare-and-set on document %s after %d attempts: the document is being edited concurrently", id, cascadeRewriteAttempts)
 }
 
 func (s *Store) DeleteDocument(id string) error {

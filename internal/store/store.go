@@ -96,6 +96,22 @@ type Store struct {
 	// as the seams above.
 	afterDocumentPreWrite func(documentID string)
 
+	// afterLinkCascadeRead is a TEST-ONLY seam, nil in production. When set,
+	// updateLinksInTx calls it after reading every linking document's content
+	// and before writing any of them back — the window in which a concurrent
+	// content edit to a linker is lost without a compare-and-set (BUG-2785).
+	//
+	// It is its own seam because no existing one reaches this gap:
+	// afterDocumentPreLockRead fires before the transaction opens, and
+	// afterDocumentPreWrite fires before the RENAMED document's own update,
+	// which is a different window on a different row.
+	//
+	// Same usage constraints as the seams above. Note that a test driving it
+	// only observes the defect on Postgres — SQLite's BEGIN IMMEDIATE holds
+	// the write lock across this window, so a concurrent write cannot commit
+	// inside it there.
+	afterLinkCascadeRead func(workspaceID string)
+
 	// afterDebounceRefusal is a TEST-ONLY seam, nil in production. When set,
 	// CreateActivityDebounced calls it after its merge UPDATE has affected
 	// ZERO rows and before the probe that decides which of the UPDATE's two

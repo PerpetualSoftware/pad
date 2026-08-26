@@ -516,7 +516,13 @@ func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
 //     their content. The renderer would no longer resolve those after
 //     the rename, breaking the user's click target. Rewrite each
 //     source's content via links.ReplaceTitle (matches the document
-//     rename behavior — see documents.go::updateLinksInTx), re-stamp
+//     rename behavior — see documents.go::updateLinksInTx, though NOT
+//     its concurrency behavior any more: that cascade got a
+//     compare-and-set on the source's content in BUG-2785, and this one
+//     still writes unconditionally, so a content edit committing inside
+//     its read→write window is still lost here. BUG-2795, kept separate
+//     because this cascade rewrites by POSITION and a retry has to
+//     re-derive offsets rather than re-run a search), re-stamp
 //     updated_at + content_flushed_at, bump the workspace seq, and
 //     re-run replaceWikiLinks so the source's own index rows refresh
 //     with the new literal AND the new target_item_id resolution.
