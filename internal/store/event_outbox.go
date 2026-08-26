@@ -499,9 +499,16 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 		// a full-table parse for a caller bug. Refuse instead.
 		return fmt.Errorf("outbox: scrub user refs: no user id")
 	}
+	// ORDER BY id: same reason as the attachment remap (BUG-2778 class
+	// sweep) — the scan order is the lock order for the per-row UPDATEs
+	// below, and two scrubs whose LIKE matches overlap must not take those
+	// locks in opposite orders. Scoped to those per-row updates: any bulk
+	// statement elsewhere in this transaction takes its own locks in its own
+	// order (codex round 6).
 	rows, err := tx.Query(s.q(`
 		SELECT id, payload FROM event_outbox
 		WHERE subject_id = ? OR CAST(payload AS TEXT) LIKE ?
+		ORDER BY id
 	`), userID, "%"+userID+"%")
 	if err != nil {
 		return fmt.Errorf("outbox: scrub user refs: find rows: %w", err)

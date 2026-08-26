@@ -175,7 +175,14 @@ func (s *Store) scanCollectionRow(q rowQueryer, query string, args ...any) (*mod
 }
 
 func (s *Store) GetCollection(id string) (*models.Collection, error) {
-	c, err := s.scanCollectionRow(s.db, getCollectionQuery, id)
+	return s.getCollectionQ(s.db, id)
+}
+
+// getCollectionQ is GetCollection against a caller-supplied executor, so an
+// in-transaction caller reads through its own transaction instead of asking
+// the pool for a second connection while holding the first (BUG-2778).
+func (s *Store) getCollectionQ(q Queryer, id string) (*models.Collection, error) {
+	c, err := s.scanCollectionRow(q, getCollectionQuery, id)
 	if err != nil {
 		return nil, fmt.Errorf("get collection: %w", err)
 	}
@@ -194,7 +201,21 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 // doneFiltersForWorkspace, both of which already include soft-deleted
 // collections for exactly this reason.
 func (s *Store) GetCollectionAnyState(id string) (*models.Collection, error) {
-	c, err := s.scanCollectionRow(s.db, getCollectionAnyStateQuery, id)
+	return s.getCollectionAnyStateQ(s.db, id)
+}
+
+// GetCollectionAnyStateTx is GetCollectionAnyState through an OPEN
+// TRANSACTION. Exported for the open-children guard, which runs inside the
+// item-update transaction and must not ask the pool for a second connection
+// while that transaction holds the first (BUG-2778).
+func (s *Store) GetCollectionAnyStateTx(tx *sql.Tx, id string) (*models.Collection, error) {
+	return s.getCollectionAnyStateQ(tx, id)
+}
+
+// getCollectionAnyStateQ is GetCollectionAnyState against a caller-supplied
+// executor.
+func (s *Store) getCollectionAnyStateQ(q Queryer, id string) (*models.Collection, error) {
+	c, err := s.scanCollectionRow(q, getCollectionAnyStateQuery, id)
 	if err != nil {
 		return nil, fmt.Errorf("get collection (any state): %w", err)
 	}
@@ -396,7 +417,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		if isReservedCollectionSlug(baseSlug) {
 			baseSlug = baseSlug + "-collection"
 		}
-		newSlug, err := s.uniqueSlugExcluding("collections", "workspace_id", existing.WorkspaceID, baseSlug, id)
+		newSlug, err := s.uniqueSlugExcluding(s.db, "collections", "workspace_id", existing.WorkspaceID, baseSlug, id)
 		if err != nil {
 			return nil, fmt.Errorf("unique slug: %w", err)
 		}

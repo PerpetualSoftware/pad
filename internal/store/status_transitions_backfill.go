@@ -66,7 +66,17 @@ func parseFieldChange(changes, fieldKey string) (from, to string, ok bool) {
 // field. Best-effort: any lookup/parse failure falls back to "status" so
 // capture degrades gracefully rather than dropping rows.
 func (s *Store) doneFieldKey(collectionID string) string {
-	col, err := s.GetCollection(collectionID)
+	return s.doneFieldKeyQ(s.db, collectionID)
+}
+
+// doneFieldKeyQ is doneFieldKey against a caller-supplied executor. The item
+// update and move paths call it from INSIDE their transaction, where a read
+// sent to the pool needs a second connection while the first is held
+// (BUG-2778) — an indirect instance of that class, reached through
+// GetCollection rather than by querying directly, which is why the first
+// sweep for `s.db` inside transactions did not find it.
+func (s *Store) doneFieldKeyQ(q Queryer, collectionID string) string {
+	col, err := s.getCollectionQ(q, collectionID)
 	if err != nil || col == nil {
 		return "status"
 	}
