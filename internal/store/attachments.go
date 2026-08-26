@@ -1495,7 +1495,23 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query(s.q(`SELECT id, content, fields FROM items WHERE workspace_id = ? AND deleted_at IS NULL`), workspaceID)
+	// ORDER BY id (BUG-2778 class sweep): this gathers rows and then UPDATEs
+	// them one by one inside a transaction, so the scan's order IS the lock
+	// order. Two concurrent remaps in one workspace would otherwise be free to
+	// take the same row locks in different orders — Postgres does not promise
+	// a stable seq-scan order, and synchronize_seqscans deliberately starts
+	// concurrent scans at different points.
+	//
+	// SCOPE OF THE CLAIM (codex round 6): this makes the CONTENT-ROW updates
+	// below take their locks in one order for every caller. It does not order
+	// the attachment rows stampAttachmentRefsTx locks elsewhere in the same
+	// transaction, so it is not "the whole deadlock class removed" — it
+	// removes the cycle between two concurrent remaps' own row updates, which
+	// is the one this sweep found. Unlike the rename path in documents.go,
+	// where the second stage locks the renamed row itself and ordering the
+	// cascade therefore cannot help, ordering IS sufficient for the cycle
+	// between these per-row updates.
+	rows, err := tx.Query(s.q(`SELECT id, content, fields FROM items WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id`), workspaceID)
 	if err != nil {
 		return fmt.Errorf("scan items for remap: %w", err)
 	}
@@ -1530,7 +1546,7 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	// while the freshly-cloned rows they should have pointed at end up
 	// referenced by nothing and eventually reclaimed (BUG-2615). Comments have
 	// no deleted_at column, hence no filter here.
-	crows, err := tx.Query(s.q(`SELECT id, body FROM comments WHERE workspace_id = ?`), workspaceID)
+	crows, err := tx.Query(s.q(`SELECT id, body FROM comments WHERE workspace_id = ? ORDER BY id`), workspaceID)
 	if err != nil {
 		return fmt.Errorf("scan comments for remap: %w", err)
 	}

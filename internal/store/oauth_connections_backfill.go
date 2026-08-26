@@ -323,7 +323,8 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	//     the partial scope permanent. Codex review #583 round 4
 	//     caught the gap.
 	for _, slug := range explicit {
-		ws, getErr := s.GetWorkspaceBySlug(slug)
+		// Through the open transaction (BUG-2778).
+		ws, getErr := s.getWorkspaceBySlugQ(tx, slug)
 		if getErr != nil {
 			return false, 0, 0, fmt.Errorf("workspace lookup %s: %w", slug, getErr)
 		}

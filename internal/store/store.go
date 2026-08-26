@@ -78,6 +78,24 @@ type Store struct {
 	// (codex round 3).
 	afterItemPreLockRead func(itemID string)
 
+	// afterDocumentPreLockRead is a TEST-ONLY seam, nil in production. When
+	// set, UpdateDocument calls it after its pre-transaction read and before
+	// it opens the transaction that takes the rename lock (BUG-2778) — the
+	// window in which another rename of the SAME document can commit, making
+	// the pre-read's title the WRONG old title for the backlink cascade.
+	//
+	// Same usage constraints as the seams above: set it only while no other
+	// request is in flight against this Store, and a hook that issues its own
+	// update must nil the field for the duration or it recurses.
+	afterDocumentPreLockRead func(documentID string)
+
+	// afterDocumentPreWrite is a TEST-ONLY seam, nil in production. When set,
+	// UpdateDocument calls it immediately before its final UPDATE — the last
+	// moment at which a concurrent soft-delete can still commit ahead of that
+	// write on a path holding no row lock (BUG-2778). Same usage constraints
+	// as the seams above.
+	afterDocumentPreWrite func(documentID string)
+
 	// stopMaint signals the background WAL checkpointer to exit; maintDone
 	// is closed once it has. Both are nil on the Postgres path (no WAL
 	// file to checkpoint) and Close() guards on nil accordingly.
@@ -856,12 +874,24 @@ func findStatementEnd(sql string) int {
 
 // uniqueSlugExcluding generates a unique slug, excluding a specific document ID
 // from the collision check. Used during title renames.
-func (s *Store) uniqueSlugExcluding(table, scopeCol, scopeVal, baseSlug, excludeID string) (string, error) {
+// It takes the executor rather than reaching for s.db, because TWO of its
+// three callers run inside a transaction that already holds locks — the item
+// update (items.go, under the workspace seq and parent-children locks) and
+// the document rename (documents.go, under the rename lock this bug added).
+// A read issued against the POOL from inside such a transaction needs a
+// SECOND connection while the first is held, and if the pool is saturated by
+// callers waiting on the very lock this transaction holds, that second
+// connection never arrives: the deadlock is then in the application rather
+// than in the database, where no SQLSTATE names it and no lock timeout breaks
+// it. The third caller (UpdateCollection) runs BEFORE its transaction opens
+// and correctly passes the pool — checked rather than assumed, after an
+// earlier version of this comment claimed all three were in-transaction.
+func (s *Store) uniqueSlugExcluding(q rowQueryer, table, scopeCol, scopeVal, baseSlug, excludeID string) (string, error) {
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ? AND id != ?", table, scopeCol)
-		err := s.db.QueryRow(s.q(query), scopeVal, slug, excludeID).Scan(&count)
+		err := q.QueryRow(s.q(query), scopeVal, slug, excludeID).Scan(&count)
 		if err != nil {
 			return "", err
 		}

@@ -2324,7 +2324,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		forceVersion := input.ForceVersion || (input.Title != nil && *input.Title != existing.Title)
 		shouldVersion := forceVersion
 		if !shouldVersion {
-			shouldVersion, err = s.shouldCreateItemVersion(id, createdBy, source)
+			shouldVersion, err = s.shouldCreateItemVersion(tx, id, createdBy, source)
 			if err != nil {
 				return nil, fmt.Errorf("check version throttle: %w", err)
 			}
@@ -2368,7 +2368,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		if baseSlug == "" {
 			baseSlug = "untitled"
 		}
-		newSlug, err := s.uniqueSlugExcluding("items", "workspace_id", existing.WorkspaceID, baseSlug, id)
+		newSlug, err := s.uniqueSlugExcluding(tx, "items", "workspace_id", existing.WorkspaceID, baseSlug, id)
 		if err != nil {
 			return nil, fmt.Errorf("unique slug: %w", err)
 		}
@@ -2511,7 +2511,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// see the new status and the hop would vanish.
 	var statusBefore, doneKey string
 	if input.Fields != nil {
-		doneKey = s.doneFieldKey(existing.CollectionID)
+		doneKey = s.doneFieldKeyQ(tx, existing.CollectionID)
 		statusBefore = extractFieldValue(existing.Fields, doneKey)
 	}
 
@@ -4702,7 +4702,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 	// (where the item now lives and which reports group by); for a move that
 	// also crosses to a collection with a different done field, the old value
 	// read through that key may be empty, which correctly reads as "entered".
-	moveDoneKey := s.doneFieldKey(targetCollectionID)
+	moveDoneKey := s.doneFieldKeyQ(tx, targetCollectionID)
 	oldFields := existing.Fields
 
 	// preMove is the item as it stands UNDER THE LOCK, immediately before the
@@ -4898,10 +4898,20 @@ func buildItemSort(sort string, dialect Dialect) string {
 	return " ORDER BY " + strings.Join(parts, ", ")
 }
 
-// shouldCreateItemVersion mirrors ShouldCreateVersion but queries item_versions.
-func (s *Store) shouldCreateItemVersion(itemID, actor, source string) (bool, error) {
+// shouldCreateItemVersion mirrors ShouldCreateVersion but queries
+// item_versions. It takes the executor for the same reason its document twin
+// does (BUG-2778): its only caller runs inside a transaction holding the
+// workspace seq and parent-children locks, and a read sent to the POOL from
+// there needs a second connection while the first is held.
+//
+// This one was MISSED by the first sweep and found in review: the sweep
+// followed uniqueSlugExcluding's call sites and the document version check,
+// and the pool test's item leg was a TITLE-only update, which never reaches
+// this branch. A test that exercises one arm of an optional path is not
+// evidence about the other arm.
+func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source string) (bool, error) {
 	var createdBy, src, createdAt string
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT created_by, source, created_at
 		FROM item_versions
 		WHERE item_id = ?

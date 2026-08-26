@@ -124,11 +124,18 @@ func (s *Store) uniqueWorkspaceSlug(baseSlug string) (string, error) {
 }
 
 func (s *Store) GetWorkspaceBySlug(slug string) (*models.Workspace, error) {
+	return s.getWorkspaceBySlugQ(s.db, slug)
+}
+
+// getWorkspaceBySlugQ is GetWorkspaceBySlug against a caller-supplied
+// executor, for callers already inside a transaction (BUG-2778: a pool read
+// from inside one needs a second connection while the first is held).
+func (s *Store) getWorkspaceBySlugQ(q rowQueryer, slug string) (*models.Workspace, error) {
 	var w models.Workspace
 	var createdAt, updatedAt string
 	var deletedAt *string
 
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id

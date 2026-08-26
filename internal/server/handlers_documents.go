@@ -106,6 +106,20 @@ func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
+// isRetryableLockError reports whether a store error is Postgres telling the
+// caller that a LOCK was not available, rather than that the request was
+// wrong. 55P03 is the lock_timeout this codebase sets on the document-rename
+// lock; 40P01 is a deadlock Postgres broke by aborting this transaction.
+// Matched on the SQLSTATE text because that is what pgx puts in the error
+// string, the same way the UNIQUE-constraint mapping above works.
+func isRetryableLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLSTATE 55P03") || strings.Contains(msg, "SQLSTATE 40P01")
+}
+
 func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "editor") {
 		return
@@ -134,6 +148,19 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			writeError(w, http.StatusConflict, "conflict", "A document with this title already exists in this workspace")
+			return
+		}
+		// Lock contention is RETRYABLE and must not look like a bug
+		// (BUG-2778, codex round 6). A rename serializes per workspace with a
+		// 5s lock timeout, so a burst produces SQLSTATE 55P03
+		// (lock_not_available); 40P01 is a deadlock Postgres chose to abort.
+		// Both mean "try again", and a generic 500 tells the caller the
+		// opposite — that the request will never succeed. Retry-After is
+		// deliberately short: the holder is one transaction, not a queue.
+		if isRetryableLockError(err) {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "lock_contention",
+				"The workspace is busy with another rename; retry in a moment")
 			return
 		}
 		writeInternalError(w, err)

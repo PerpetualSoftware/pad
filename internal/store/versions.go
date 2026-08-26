@@ -16,7 +16,17 @@ const VersionThrottleInterval = 1 * time.Hour
 // ShouldCreateVersion determines whether a new version snapshot should be created,
 // based on time since last version, actor/source changes, and content type.
 func (s *Store) ShouldCreateVersion(documentID, actor, source string) (bool, error) {
-	latest, err := s.getLatestVersionRaw(documentID)
+	return s.shouldCreateVersionQ(s.db, documentID, actor, source)
+}
+
+// shouldCreateVersionQ is ShouldCreateVersion against a caller-supplied
+// executor. UpdateDocument calls it from INSIDE its transaction, and a read
+// issued against the pool from there needs a second connection while the
+// first is held — the application-level deadlock BUG-2778's other half is
+// about. This is the more reachable instance of the two: it fires on any
+// content edit, not only a rename.
+func (s *Store) shouldCreateVersionQ(q rowQueryer, documentID, actor, source string) (bool, error) {
+	latest, err := s.getLatestVersionRawQ(q, documentID)
 	if err != nil {
 		return false, err
 	}
@@ -49,10 +59,16 @@ func (s *Store) GetLatestVersion(documentID string) (*models.Version, error) {
 
 // getLatestVersionRaw returns the most recent version without resolving diffs.
 func (s *Store) getLatestVersionRaw(documentID string) (*models.Version, error) {
+	return s.getLatestVersionRawQ(s.db, documentID)
+}
+
+// getLatestVersionRawQ is getLatestVersionRaw against a caller-supplied
+// executor, so an in-transaction caller reads through its own transaction.
+func (s *Store) getLatestVersionRawQ(q rowQueryer, documentID string) (*models.Version, error) {
 	var v models.Version
 	var createdAt string
 	var isDiff bool
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT id, document_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM versions
 		WHERE document_id = ?

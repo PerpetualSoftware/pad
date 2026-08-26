@@ -214,12 +214,35 @@ func (s *Store) CreateDocument(workspaceID string, input models.DocumentCreate) 
 }
 
 func (s *Store) GetDocument(id string) (*models.Document, error) {
+	return s.getDocumentQ(s.db, id)
+}
+
+// getDocumentTx reads a document through an OPEN TRANSACTION, so the caller
+// sees the row as its own transaction sees it and needs no second pool
+// connection while the first is held (BUG-2778). Same SELECT and hydration
+// as GetDocument.
+//
+// Deliberately NOT `FOR UPDATE`. An earlier version locked the row here to
+// stop a concurrent soft-delete committing before the write at the end of the
+// rename — but the rows-affected guard on that write already makes the
+// outcome atomic (the whole transaction, cascade included, rolls back), so
+// the lock changed only WHICH writer wins, not whether the result is
+// consistent. A mutation removing it survived the suite, which is the honest
+// signal that it was a second mechanism for a window one mechanism already
+// covers; the remaining guard has its own justification and its own test.
+func (s *Store) getDocumentTx(tx *sql.Tx, id string) (*models.Document, error) {
+	return s.getDocumentQ(tx, id)
+}
+
+// getDocumentQ is the one document-row read behind GetDocument and
+// getDocumentTx, differing only in executor.
+func (s *Store) getDocumentQ(q rowQueryer, id string) (*models.Document, error) {
 	var d models.Document
 	var createdAt, updatedAt string
 	var deletedAt *string
 	var pinned bool
 
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT id, workspace_id, title, slug, content, doc_type, status, tags,
 		       pinned, sort_order, created_by, last_modified_by, source,
 		       created_at, updated_at, deleted_at
@@ -253,11 +276,80 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 		return nil, nil
 	}
 
+	// Test seam (BUG-2778): the read above is stale by exactly this window,
+	// which is why the rename decision and the cascade's old title come from
+	// the re-read below. Nil in production.
+	if s.afterDocumentPreLockRead != nil {
+		s.afterDocumentPreLockRead(id)
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+
+	// BUG-2778: serialize TITLE RENAMES per workspace on Postgres, before
+	// this transaction takes any row lock.
+	//
+	// A rename locks rows in two stages: updateLinksInTx writes every OTHER
+	// document whose content links the old title, and the UPDATE at the end
+	// of this function writes THIS document. Two concurrent renames of
+	// documents that link to each other therefore take the same two row locks
+	// in opposite orders — tx1 locks B then wants A, tx2 locks A then wants B
+	// — and Postgres aborts one with SQLSTATE 40P01. Measured, not argued:
+	// before this lock, a probe that renamed two mutually-linking documents
+	// concurrently deadlocked on 12 of 12 rounds.
+	//
+	// WHY NOT `ORDER BY id` ON THE CASCADE, which is what BUG-2778 proposed
+	// when it was filed from reading rather than from a repro: the cycle does
+	// not come from the ORDER of the cascade's own rows. Each transaction's
+	// cascade set here is a single row, and the cycle is cascade-then-self.
+	// Ordering the cascade leaves it exactly as reachable; only a rule that
+	// covers BOTH stages removes it.
+	//
+	// A workspace-scoped advisory lock rather than a sorted lock batch,
+	// because the two stages touch different tables and different row sets
+	// (versions, the slug-uniqueness scan) and a sorted batch would have to
+	// predict all of them. It is the same instrument BUG-2074 uses for
+	// parent-edge writes, on its own namespaced key so renames contend only
+	// with renames. No-op on SQLite, whose single writer cannot produce the
+	// cycle at all (the probe found zero deadlocks there).
+	//
+	// It fires whenever a title is SUPPLIED, not only when the supplied title
+	// differs from what we read before the lock — deciding that from the
+	// pre-lock value is precisely the staleness this block exists to remove,
+	// and a same-title PATCH is a cheap uncontended lock acquisition.
+	if input.Title != nil {
+		if err := s.acquireWorkspaceDocumentRenameLock(tx, existing.WorkspaceID); err != nil {
+			return nil, err
+		}
+		// Re-read UNDER the lock and decide from that row, not from the
+		// pre-transaction read above (codex round 1). `existing` was loaded
+		// before this transaction and before this lock, so a rename that
+		// committed in between is invisible to it — and every decision below
+		// is made from it: whether to cascade at all, and which OLD TITLE the
+		// cascade rewrites. Two concurrent renames of the SAME document could
+		// therefore leave backlinks pointing at a title nothing carries any
+		// more, or skip the cascade entirely because the stale row's title
+		// happens to equal the requested one. This is the same defect family
+		// as BUG-2776 one layer down: a decision made from a snapshot taken
+		// before the lock that protects it.
+		//
+		// The lock is taken whenever a title is SUPPLIED rather than only
+		// when it differs from the stale read — deciding that from the stale
+		// value is exactly what this block exists to stop.
+		fresh, ferr := s.getDocumentTx(tx, id)
+		if ferr != nil {
+			return nil, fmt.Errorf("re-read document under rename lock: %w", ferr)
+		}
+		if fresh == nil {
+			// Deleted between the pre-tx read and the lock; the caller's 404
+			// path handles a nil document.
+			return nil, nil
+		}
+		existing = fresh
+	}
 
 	// Stamp the incoming content's attachment references first (BUG-2614,
 	// same protocol and ordering as items and comments). Only when content is
@@ -287,7 +379,10 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 		forceVersion := input.Title != nil && *input.Title != existing.Title
 		shouldVersion := forceVersion
 		if !shouldVersion {
-			shouldVersion, err = s.ShouldCreateVersion(id, createdBy, source)
+			// Through the transaction, not the pool (BUG-2778): this runs
+			// with the transaction open and, for a rename, with the rename
+			// lock held.
+			shouldVersion, err = s.shouldCreateVersionQ(tx, id, createdBy, source)
 			if err != nil {
 				return nil, fmt.Errorf("check version throttle: %w", err)
 			}
@@ -346,7 +441,7 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 		if baseSlug == "" {
 			baseSlug = "untitled"
 		}
-		newSlug, err := s.uniqueSlugExcluding("documents", "workspace_id", existing.WorkspaceID, baseSlug, id)
+		newSlug, err := s.uniqueSlugExcluding(tx, "documents", "workspace_id", existing.WorkspaceID, baseSlug, id)
 		if err != nil {
 			return nil, fmt.Errorf("unique slug: %w", err)
 		}
@@ -386,11 +481,34 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 		args = append(args, input.Source)
 	}
 
+	if s.afterDocumentPreWrite != nil {
+		s.afterDocumentPreWrite(id)
+	}
+
 	args = append(args, id)
-	query := fmt.Sprintf("UPDATE documents SET %s WHERE id = ?", strings.Join(sets, ", "))
-	_, err = tx.Exec(s.q(query), args...)
+	// deleted_at IS NULL, and the row count is CHECKED (BUG-2778): without
+	// it, a document soft-deleted since this transaction began is written
+	// anyway — and on the rename path the backlink cascade above has already
+	// rewritten every linker, so the caller is told not-found (GetDocument
+	// filters archived rows) while those rewrites stay behind. Returning
+	// early here leaves the deferred Rollback to undo the cascade with it, so
+	// the rename and its cascade land together or not at all.
+	//
+	// This is the ONLY thing standing between a concurrent soft-delete and a
+	// write to the archived row — on every path, rename or not. A
+	// content-only PATCH takes no rename lock and holds no row lock until
+	// this statement, so the delete can land at any point before it.
+	query := fmt.Sprintf("UPDATE documents SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(sets, ", "))
+	res, err := tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update document: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("update document: rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, nil
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -398,6 +516,51 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 	}
 
 	return s.GetDocument(id)
+}
+
+// acquireWorkspaceDocumentRenameLock serializes document TITLE RENAMES within
+// a workspace on Postgres (BUG-2778). Its key is namespaced so it contends
+// only with other renames — reusing acquireWorkspaceSeqLock's bare workspace
+// key would have made every rename wait behind every item-number and seq
+// write in the workspace, and vice versa, for no benefit: the cycle this
+// closes is rename-against-rename (codex round 2). Same shape and no-op
+// dialect gate as acquireWorkspaceParentLinkLock.
+func (s *Store) acquireWorkspaceDocumentRenameLock(tx *sql.Tx, workspaceID string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	// BOUNDED WAIT (codex round 5). The transaction has already taken a pool
+	// connection by the time it waits here, so an unbounded wait converts
+	// lock contention into pool exhaustion: a burst of renames in ONE
+	// workspace can pin connections and stall unrelated work, and a client
+	// disconnecting does not cancel the wait (the HTTP context is not
+	// threaded into this call).
+	//
+	// WHAT THE 5s DOES AND DOES NOT COVER, because a bound with no receipt
+	// invites more trust than it earns: it bounds each LOCK WAIT inside this
+	// transaction once the connection is already held. It does NOT bound the
+	// transaction's total duration, and it does NOT bound the wait for a pool
+	// connection BEFORE Begin() — a saturated pool still queues callers ahead
+	// of this code. The number is a safety cap chosen to be far above any
+	// plausible uncontended acquisition, NOT a tuned value: no rename-duration
+	// or cascade-size percentile has been measured, and this comment should
+	// not be read as if one had. Measure before treating 5s as meaningful.
+	//
+	// SET LOCAL, so it dies with the transaction rather than leaking back to
+	// the pool. It also bounds the row-lock waits later in this transaction,
+	// which is intended by the same argument.
+	if _, err := tx.Exec("SET LOCAL lock_timeout = '5s'"); err != nil {
+		return fmt.Errorf("set rename lock timeout: %w", err)
+	}
+	// An operator seeing contention here sees it as wait_event_type='Lock',
+	// wait_event='advisory' in pg_stat_activity, with this query text — the
+	// 'pad:document-rename:' literal is what identifies the class. The
+	// workspace id is a bound parameter and will not appear in the text;
+	// pg_blocking_pids() on the waiter finds the holder.
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:document-rename:' || $1))", workspaceID); err != nil {
+		return fmt.Errorf("acquire workspace document-rename lock: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle string) error {
@@ -430,7 +593,24 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 	}
 
 	for _, du := range updates {
-		_, err = tx.Exec(s.q("UPDATE documents SET content = ? WHERE id = ?"), du.content, du.id)
+		// deleted_at IS NULL here too (codex round 4): the SELECT above filters
+		// archived linkers, but a soft-delete can land between that read and
+		// this write, and an unqualified UPDATE would then rewrite the content
+		// of a document the user has already archived. A zero-row result is
+		// the NORMAL outcome of that race and not an error — the linker is
+		// gone, so there is no link left to keep consistent.
+		//
+		// UNTESTED, and deliberately kept anyway. A mutation removing this
+		// clause survives the suite: reaching it needs a delete landing
+		// between the SELECT a few lines above and this loop, which no
+		// existing seam can schedule and which would cost a fifth one. It
+		// stays because it closes a window NOTHING else covers — the opposite
+		// of the FOR UPDATE this unit deleted, which survived its mutation
+		// because another mechanism already covered the same window. Same
+		// signal, opposite disposition, and the difference is whether the
+		// guard is redundant or merely unreachable by the current
+		// instruments.
+		_, err = tx.Exec(s.q("UPDATE documents SET content = ? WHERE id = ? AND deleted_at IS NULL"), du.content, du.id)
 		if err != nil {
 			return err
 		}

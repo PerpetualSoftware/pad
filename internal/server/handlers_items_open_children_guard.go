@@ -207,7 +207,10 @@ func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) 
 			// the collection's done-field is e.g. `resolution` with
 			// custom terminal_options). Mirrors the inclusion rule
 			// childrenDoneFiltersForParent uses (items.go ≈2165).
-			if coll, cerr := s.store.GetCollectionAnyState(child.CollectionID); cerr == nil && coll != nil {
+			// Through the guard's OWN transaction (BUG-2778): this runs
+			// inside the item-update tx, and a pool read from here needs a
+			// second connection while that tx holds the first.
+			if coll, cerr := s.store.GetCollectionAnyStateTx(tx, child.CollectionID); cerr == nil && coll != nil {
 				_ = json.Unmarshal([]byte(coll.Schema), &dc.schema)
 				if coll.Settings != "" {
 					_ = json.Unmarshal([]byte(coll.Settings), &dc.settings)
