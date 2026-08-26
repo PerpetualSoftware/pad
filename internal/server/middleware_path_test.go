@@ -211,3 +211,88 @@ func TestValidatePathPostgresNoInternalError(t *testing.T) {
 			rr.Code, rr.Body.String())
 	}
 }
+
+// TestValidatePathRejectionLooksLikeEveryOtherAPIError pins the response
+// SHAPE, not just the status.
+//
+// ValidatePath runs on the root router, so its rejection short-circuits
+// above the /api/v1 group's cors.Handler and jsonContentType and gets
+// neither for free. Before this was handled, the 400 carried a JSON body
+// typed text/plain and no CORS headers at all, which on a cross-origin
+// deployment means the browser will not let the page read the response —
+// a debuggable 400 arrives as an opaque network error. Each header below
+// is compared against the SAME request path answered normally (404), so
+// the assertion is parity with the API's own errors rather than a list of
+// header names copied from a spec.
+func TestValidatePathRejectionLooksLikeEveryOtherAPIError(t *testing.T) {
+	const allowed = "https://app.example.com"
+
+	srv := testServer(t)
+	srv.SetCORSOrigins(allowed)
+	ws := createWSForTest(t, srv)
+
+	get := func(method, target, origin string, preflight bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, target, nil)
+		req.RemoteAddr = "10.9.9.9:1"
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if preflight {
+			req.Header.Set("Access-Control-Request-Method", "GET")
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+
+	badTarget := "/api/v1/workspaces/" + ws + "/items/" + badPathSeg
+	okTarget := "/api/v1/workspaces/" + ws + "/items/no-such-item"
+	compared := []string{
+		"Content-Type",
+		"Access-Control-Allow-Origin",
+		"Access-Control-Allow-Credentials",
+		"Vary",
+	}
+
+	// An allowed origin, and a disallowed one. Both directions matter: the
+	// second is what would fail if the rejection echoed origins the shared
+	// cors.Handler would refuse.
+	for _, origin := range []string{allowed, "https://evil.example"} {
+		assertPathVectorIntact(t, badTarget)
+		rejected := get("GET", badTarget, origin, false)
+		normal := get("GET", okTarget, origin, false)
+
+		if rejected.Code != http.StatusBadRequest {
+			t.Fatalf("origin %s: expected 400, got %d", origin, rejected.Code)
+		}
+		if normal.Code != http.StatusNotFound {
+			t.Fatalf("origin %s: control request expected 404, got %d", origin, normal.Code)
+		}
+		for _, h := range compared {
+			if got, want := rejected.Header().Get(h), normal.Header().Get(h); got != want {
+				t.Errorf("origin %s: header %s on the 400 = %q, but the 404 for the same route carries %q",
+					origin, h, got, want)
+			}
+		}
+		if ct := rejected.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("origin %s: expected a JSON content type on the 400, got %q", origin, ct)
+		}
+	}
+
+	// A genuine preflight is answered by the shared cors.Handler, exactly as
+	// it is for any other path: a preflight asks whether the METHOD and
+	// HEADERS are permitted, not whether the resource exists. The real
+	// request that follows still gets the 400 — and can now be read.
+	pre := get("OPTIONS", badTarget, allowed, true)
+	if pre.Code != http.StatusOK {
+		t.Fatalf("preflight for an invalid path: expected 200 from the CORS handler, got %d", pre.Code)
+	}
+	if got := pre.Header().Get("Access-Control-Allow-Origin"); got != allowed {
+		t.Fatalf("preflight: expected Access-Control-Allow-Origin %q, got %q", allowed, got)
+	}
+	follow := get("GET", badTarget, allowed, false)
+	if follow.Code != http.StatusBadRequest || follow.Header().Get("Access-Control-Allow-Origin") != allowed {
+		t.Fatalf("request after preflight: got %d with Access-Control-Allow-Origin %q; want 400 readable cross-origin",
+			follow.Code, follow.Header().Get("Access-Control-Allow-Origin"))
+	}
+}

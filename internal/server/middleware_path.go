@@ -55,19 +55,41 @@ import (
 // oracle. Scope is the PATH only; the query string is validated at its
 // points of use (BUG-2774's validCursorID is the model this follows).
 //
+// The rejection must not be shaped differently from the errors the API
+// writes for itself. Because this runs at the root, it short-circuits
+// BEFORE the /api/v1 group's cors.Handler and jsonContentType, so a naive
+// implementation answers with a JSON body typed text/plain and no CORS
+// headers — which on a cross-origin deployment (PAD_CORS_ORIGINS set) the
+// browser refuses to let the page read at all, turning a debuggable 400
+// into an opaque network error. Hence `decorate`: setupRouter passes the
+// SAME cors.Handler instance the group uses, and the rejection is served
+// through it, so there is one CORS configuration and not two.
+//
 // BUG-2782.
-func ValidatePath(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !validPathText(r.URL.Path) {
-			// Not "is not valid UTF-8": a NUL is valid UTF-8 and is
-			// rejected here too, so that wording would be false for
-			// half the inputs this refuses.
-			writeError(w, http.StatusBadRequest, "invalid_path",
-				"Request path contains invalid UTF-8 or a NUL byte")
-			return
-		}
-		next.ServeHTTP(w, r)
+func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	var reject http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set explicitly rather than relying on jsonContentType, which is
+		// mounted below this middleware and never runs for a rejection.
+		// Without it net/http sniffs the JSON body as text/plain.
+		w.Header().Set("Content-Type", "application/json")
+		// Not "is not valid UTF-8": a NUL is valid UTF-8 and is rejected
+		// here too, so that wording would be false for half the inputs
+		// this refuses.
+		writeError(w, http.StatusBadRequest, "invalid_path",
+			"Request path contains invalid UTF-8 or a NUL byte")
 	})
+	if decorate != nil {
+		reject = decorate(reject)
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !validPathText(r.URL.Path) {
+				reject.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // validPathText reports whether a decoded request path can be bound into a
