@@ -296,3 +296,71 @@ func TestValidatePathRejectionLooksLikeEveryOtherAPIError(t *testing.T) {
 			follow.Code, follow.Header().Get("Access-Control-Allow-Origin"))
 	}
 }
+
+// TestValidatePathRejectsBeforeAuthAndRateLimit pins an ORDERING decision,
+// not an accident.
+//
+// ValidatePath sits on the root router, so a rejected request never reaches
+// the /api/v1 group's TokenAuth, SessionAuth, RateLimit or CSRFProtect. That
+// is deliberate, and the direction is the opposite of what "bypasses the
+// rate limiter" usually implies: BEFORE this middleware existed the same
+// request ran SessionAuth — which is a store.ValidateSession round trip —
+// then the limiter, then a handler that issued a query the database refused,
+// and answered 500. It now costs a UTF-8 scan over the path and a short JSON
+// write, with no database contact at all, so the unmetered path is strictly
+// cheaper than every path the limiter protects. There is also nothing to
+// learn by flooding it: the answer is constant for all inputs of this shape,
+// independent of authentication and of whether anything exists.
+//
+// Placing the check inside the group instead — where the limiter would meter
+// it — would trade this for a real coverage hole, since the SPA catch-all
+// and /api/v1/collab/{itemID} are mounted outside that group.
+//
+// The limiter itself is a plain token bucket per key (no escalating ban, no
+// durable block), so skipping it for a rejected request defeats no state
+// that outlives the request.
+func TestValidatePathRejectsBeforeAuthAndRateLimit(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	const attacker = "198.51.100.7:1234"
+	const bystander = "198.51.100.8:1234"
+	// Comfortably above the general API limiter's burst of 60, so a metered
+	// request stream would certainly have started returning 429 by the end.
+	const flood = 80
+
+	badTarget := "/api/v1/workspaces/" + ws + "/items/" + badPathSeg
+	okTarget := "/api/v1/workspaces/" + ws + "/items/no-such-item"
+
+	assertPathVectorIntact(t, badTarget)
+	for i := 0; i < flood; i++ {
+		rr := doRequestFromRemoteAddr(srv, "GET", badTarget, nil, attacker)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("invalid-path request %d/%d: expected 400, got %d: %s",
+				i+1, flood, rr.Code, rr.Body.String())
+		}
+	}
+
+	// The same IP's budget is intact: a legitimate request still gets the
+	// resolver's answer rather than a 429.
+	if rr := doRequestFromRemoteAddr(srv, "GET", okTarget, nil, attacker); rr.Code != http.StatusNotFound {
+		t.Fatalf("valid request from an IP that just sent %d invalid paths: expected 404, got %d: %s",
+			flood, rr.Code, rr.Body.String())
+	}
+
+	// PREMISE CHECK. Everything above is vacuous if the limiter is not armed
+	// in this configuration — an inert limiter produces the identical
+	// reading. The same volume of VALID requests from a different IP must
+	// actually hit it.
+	var limited bool
+	for i := 0; i < flood; i++ {
+		if doRequestFromRemoteAddr(srv, "GET", okTarget, nil, bystander).Code == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatalf("premise broken: %d valid requests from one IP were never rate limited, "+
+			"so this test cannot distinguish an unmetered rejection from a disabled limiter", flood)
+	}
+}
