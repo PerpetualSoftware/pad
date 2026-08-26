@@ -72,8 +72,11 @@ func pathErrorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
 // all 500 before" would have been the tidier sentence and false for
 // nearly a quarter of the table.
 //
-// The 500 is reproduced deliberately in one place, on the backend where it
-// happens: TestValidatePathPostgresNoInternalError below.
+// No test here reproduces that 500, and none can: every test runs the
+// FIXED server. TestValidatePathPostgresNoInternalError below drives the
+// vector on the backend where the 500 occurred and requires 400; what
+// keeps the 500 reachable as evidence is the mutation matrix, since
+// unwiring ValidatePath fails that test.
 func TestValidatePathRejectsUnbindablePathText(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
@@ -151,6 +154,20 @@ func TestValidatePathAllowsValidText(t *testing.T) {
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("GET item %q: expected 404 from the resolver, got %d: %s",
 				seg, rr.Code, rr.Body.String())
+		}
+	}
+
+	// The emoji reaction route, which is the real reason the rule permits
+	// non-ASCII rather than a hypothetical: the web client sends
+	// DELETE .../reactions/${encodeURIComponent(emoji)}, so a rule that
+	// refused non-ASCII paths would break removing a reaction. The comment
+	// id is bogus, so the expected answer is the handler's, not the
+	// middleware's — what matters is that it is not 400 invalid_path.
+	{
+		emojiRoute := "/api/v1/workspaces/" + ws + "/comments/00000000-0000-0000-0000-000000000000/reactions/%F0%9F%9A%80"
+		rr := doRequest(srv, "DELETE", emojiRoute, nil)
+		if rr.Code == http.StatusBadRequest && pathErrorCode(t, rr) == "invalid_path" {
+			t.Fatalf("the emoji reaction route was refused by ValidatePath: %d %s", rr.Code, rr.Body.String())
 		}
 	}
 

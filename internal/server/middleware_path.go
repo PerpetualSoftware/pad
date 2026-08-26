@@ -13,12 +13,19 @@ import (
 // attachment from a path segment hands that segment to the store verbatim,
 // and the store binds it into a text comparison. Postgres refuses a text
 // parameter that is not valid UTF-8 or that contains a NUL (SQLSTATE 22021
-// / 22P05); the driver surfaces that as a query error and the handler turns
-// it into a 500. SQLite accepts both bytes and simply matches nothing, so
-// the SAME request is a clean 404 there. That is a dialect divergence in
-// the failure mode: self-hosted installs never see it, Pad Cloud does, and
-// an operator's alerting reads it as the server breaking when a client sent
-// a path that cannot name anything.
+// / 22P05) and the driver surfaces that as a query error. MOST handlers
+// turn that into a 500, which is the defect; not all do, and the claim is
+// deliberately not universal — handlers that collapse a resolution error
+// into not-found already answer 404 (see handlers_timeline.go's
+// `err != nil || item == nil`). The measurement below is what the
+// distribution actually was.
+//
+// SQLite accepts both byte classes and simply matches nothing, so the SAME
+// request is a clean 404 there. That is a dialect divergence in the failure
+// mode, and it splits by BACKEND, not by deployment: a SQLite install never
+// sees it, and any Postgres install does — Pad Cloud and a self-hoster on
+// Postgres alike. An operator's alerting reads it as the server breaking
+// when a client sent a path that cannot name anything.
 //
 // Measured before this middleware existed, driving every route that carries
 // a path parameter with one segment set to "bad-%FF-x" — one request per
@@ -46,9 +53,15 @@ import (
 // that hangs on hex-digit case, and does not depend on chi continuing to
 // prefer RawPath.
 //
-// It cannot refuse Pad's own URLs. Every path segment Pad emits is ASCII:
-// slugs come from store.slugify, which appends only [a-z0-9-]; ids are
-// UUIDs or hex; issue refs are a collection prefix plus digits.
+// It cannot refuse Pad's own URLs — but NOT because they are all ASCII,
+// which was this comment's first claim and is false. Most are: slugs come
+// from store.slugify, which appends only [a-z0-9-]; ids are UUIDs or hex;
+// issue refs are a collection prefix plus digits. The exception is the one
+// that matters, because it is the case a careless rule would break:
+// DELETE /comments/{commentID}/reactions/{emoji} carries an EMOJI, which
+// the web client sends as encodeURIComponent(emoji). That is valid UTF-8
+// and must keep working, which is exactly what the rule permits and what
+// TestValidatePathAllowsValidText pins with an emoji segment.
 //
 // A path whose decoded form is valid UTF-8 — including non-ASCII — is left
 // for the router to handle, unchanged by this middleware. That is a

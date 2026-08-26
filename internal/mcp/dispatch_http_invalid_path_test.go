@@ -30,16 +30,23 @@ package mcp
 //	{"ref":"bad-<0x00>-x"}   → json: invalid character in string literal
 //	{"ref":"bad-\u0000-x"}   → a REAL NUL. The one that gets through.
 //
-// So over a JSON transport exactly one case below is reachable end to end:
-// the NUL. It is also the interesting one, since a NUL is valid UTF-8 and
-// only the second half of validPathText refuses it.
+// So over a JSON transport exactly one input CLASS below is reachable end
+// to end — the NUL, which two of the cases carry. It is also the
+// interesting one, since a NUL is valid UTF-8 and only the second half of
+// validPathText refuses it.
 //
-// The raw-byte cases are kept and are not theatre. Dispatch is a Go API,
-// and WithDispatchInput is how every caller reaches it — the JSON decode
-// is upstream of this boundary, not part of it. They assert the seam holds
-// for any caller, including the stdio path and any future transport that
-// does not launder its strings through encoding/json first. What they must
-// NOT be read as is evidence that a JSON client can deliver them.
+// The raw-byte cases are kept and are not theatre. Dispatch is a Go API and
+// WithDispatchInput is how a caller reaches it, so the JSON decode is
+// upstream of this boundary rather than part of it; they assert the seam
+// holds for a caller that does not launder its strings through
+// encoding/json first. What they must NOT be read as is evidence that a
+// JSON client can deliver them.
+//
+// Scope, stated because the obvious generalisation is wrong: this covers
+// HTTPHandlerDispatcher, the REMOTE /mcp transport. Local stdio MCP is
+// ExecDispatcher, which shells out to the `pad` binary and never goes
+// through WithDispatchInput or this in-process door at all — nothing here
+// says anything about it.
 //
 // Unfixed, the two backends answered DIFFERENTLY, and only one of the two
 // answers is dangerous — stated per backend because the tidier single
@@ -139,6 +146,14 @@ func TestHTTPDispatchInvalidPathTextIsAValidationError(t *testing.T) {
 			body := textOf(res)
 			if !strings.Contains(body, "validation_failed") {
 				t.Fatalf("expected validation_failed, got: %s", body)
+			}
+			// validation_failed is how the dispatcher classifies ANY 400,
+			// so on its own it does not show that ValidatePath is what
+			// refused this — a mapper-level check could produce the same
+			// code. Pin the middleware's own message, which rides through
+			// on the hint.
+			if !strings.Contains(body, "Request path contains invalid UTF-8") {
+				t.Fatalf("400 did not come from ValidatePath; got: %s", body)
 			}
 			// The specific thing that must NOT come back. Unfixed, this is
 			// upstream_error, whose hint says the failure is usually
