@@ -463,8 +463,10 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 //
 //   - The calling token isn't an OAuth grant (PAT, CLI session token —
 //     they don't carry a request_id).
+//
 //   - The grant's connection row doesn't exist (pre-Phase-C tokens
 //     fall here until backfill).
+//
 //   - The flag is off (user explicitly scoped out creation power at
 //     consent time or via the connections-page mutation UI). Since
 //     IDEA-2756 handleCreateWorkspace refuses a flag-off connection
