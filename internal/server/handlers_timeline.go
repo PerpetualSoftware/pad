@@ -330,7 +330,13 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 		// entry's own sort position depend on which page is being built, and
 		// paging can then skip or repeat it. The id has to be a function of
 		// the item alone, which is what the shape test is.
-		if raw != "" && validCursorID(raw) && !looksLikeRowID(raw) && !usedIDs[raw] {
+		// `divert` is true for a raw id that must not be emitted as-is:
+		// UUID-shaped (it could equal a row id), or already carrying the
+		// derived namespace (it could equal another entry's derived id). Both
+		// get the same treatment below.
+		divert := looksLikeRowID(raw) || strings.HasPrefix(raw, prefix+":")
+
+		if raw != "" && validCursorID(raw) && !divert && !usedIDs[raw] {
 			usedIDs[raw] = true
 			return raw
 		}
@@ -349,11 +355,23 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 		// existing hazard to a much larger population for no reason
 		// (codex round 2, P1).
 		//
-		// The prefix is what makes it safe: a row id is a bare UUID, so
-		// `note:<uuid>` cannot equal one. It is still run through the
-		// duplicate guard below, because a blob is free to contain a literal
-		// "note:<uuid>" string of its own.
-		if raw != "" && validCursorID(raw) && looksLikeRowID(raw) {
+		// The namespace is what makes it safe, and it is closed rather than
+		// merely unlikely (codex round 3). Two rules together:
+		//
+		//   - a raw id is KEPT only if it does NOT begin with `<prefix>:`
+		//   - a diverted id is `<prefix>:` + raw
+		//
+		// so a derived id always begins with the prefix and a kept one never
+		// does, and the two can never collide. Two derived ids are equal only
+		// when their raws are equal, which is the duplicate case. And a bare
+		// UUID row id cannot equal either form.
+		//
+		// The earlier version diverted only UUID-shaped ids, which left a
+		// hole: a blob holding both `note:<uuid>` and `<uuid>` had the second
+		// derive onto the first's kept id, fall through, and land on the
+		// positional path — two distinct, legitimate ids, one of them made
+		// unstable. Diverting the prefix form closes it.
+		if raw != "" && validCursorID(raw) && divert {
 			derived := prefix + ":" + raw
 			if !usedIDs[derived] {
 				usedIDs[derived] = true

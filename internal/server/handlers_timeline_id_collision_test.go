@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -437,5 +438,94 @@ func TestTimeline_DivertedIDIsStableAcrossBlobMutations(t *testing.T) {
 		t.Errorf("the subject note's id changed from %q to %q when an unrelated entry was inserted "+
 			"ahead of it; the id is the cursor's tie-breaker, so it must not depend on array position",
 			before, after)
+	}
+}
+
+// TestTimeline_DerivedIDContract pins the derived id's actual FORM and the
+// namespace property that makes it safe, not merely that it differs from
+// something.
+//
+// Round 3 of the review found the earlier tests too weak to distinguish the
+// fix from its alternatives: "stable and not the raw id" is satisfied by a
+// constant, and the collision tests' inequality checks are satisfied by the
+// positional fallback this deliberately replaced. These assert the contract.
+func TestTimeline_DerivedIDContract(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	uuidA := "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+	uuidB := "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+	notes := `[{"id":"` + uuidA + `","summary":"a","created_at":"2026-04-02T10:00:00Z"},
+	           {"id":"` + uuidB + `","summary":"b","created_at":"2026-04-02T11:00:00Z"},
+	           {"id":"note:` + uuidA + `","summary":"c","created_at":"2026-04-02T12:00:00Z"}]`
+	item := timelineItemWithStructured(t, srv, ws, notes, "")
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "")
+	bySummary := map[string]string{}
+	for _, e := range entriesByKind(resp.Entries, "note") {
+		if e.Note != nil {
+			bySummary[e.Note.Summary] = e.ID
+		}
+	}
+	if len(bySummary) != 3 {
+		t.Fatalf("expected 3 note entries, got %d (%v)", len(bySummary), bySummary)
+	}
+
+	// Exact form: prefix + ":" + raw. A constant, an ordinal, or the
+	// positional fallback all fail here.
+	if got, want := bySummary["a"], "note:"+uuidA; got != want {
+		t.Errorf("derived id for a UUID-shaped raw id = %q, want %q", got, want)
+	}
+	// Distinct raws derive to distinct ids — an ordinal scheme would collapse
+	// or reorder these.
+	if got, want := bySummary["b"], "note:"+uuidB; got != want {
+		t.Errorf("derived id for the second UUID = %q, want %q", got, want)
+	}
+	// The namespace is closed: a raw id that ALREADY carries the prefix is
+	// itself diverted, so it cannot land on the id entry "a" derived. Before
+	// round 3 this one was kept as-is, "a" collided with it, and "a" fell
+	// through to the unstable positional path.
+	if got, want := bySummary["c"], "note:note:"+uuidA; got != want {
+		t.Errorf("a raw id already in the derived namespace = %q, want %q", got, want)
+	}
+	for _, id := range bySummary {
+		if strings.Contains(id, "-idx-") {
+			t.Errorf("an entry with a usable raw id landed on the positional fallback: %q", id)
+		}
+	}
+}
+
+// TestTimeline_DerivedIDRoundTripsAsACursor closes the loop the derived form
+// has to survive: the client sends an entry id back as `before_id`, and
+// BUG-2774 made the server refuse a cursor the database would refuse. A
+// derived id is server-minted, so it must be one the server itself accepts —
+// the exact failure validation-must-not-refuse-your-own-output describes.
+func TestTimeline_DerivedIDRoundTripsAsACursor(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	uuidA := "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+	notes := `[{"id":"` + uuidA + `","summary":"older","created_at":"2026-04-02T10:00:00Z"},
+	           {"summary":"newer, no id","created_at":"2026-04-02T12:00:00Z"}]`
+	item := timelineItemWithStructured(t, srv, ws, notes, "")
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "")
+	var derived string
+	var at string
+	for _, e := range entriesByKind(resp.Entries, "note") {
+		if e.Note != nil && e.Note.Summary == "older" {
+			derived = e.ID
+			at = e.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+	}
+	if derived != "note:"+uuidA {
+		t.Fatalf("fixture: expected the derived id, got %q", derived)
+	}
+
+	// Paging FROM that id must be accepted, not 400ed.
+	path := "/api/v1/workspaces/" + ws + "/items/" + item.Slug + "/timeline?before=" + at + "&before_id=" + derived
+	rr := doRequest(srv, "GET", path, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("paging from a server-minted derived cursor = %d: %s", rr.Code, rr.Body.String())
 	}
 }
