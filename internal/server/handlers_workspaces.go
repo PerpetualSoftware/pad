@@ -775,6 +775,16 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// covers the tar.gz bundle path too — handleImportWorkspaceBundle is
 	// reachable only from here, so this is its only door — and above the
 	// 64 MiB body read, so a refused caller never uploads a bundle.
+	//
+	// Reachability, stated precisely because the create-side gate's is
+	// different: NO OAuth-bound caller can reach this handler today. The
+	// OAuth identity is stashed only by MCPBearerAuth, which is mounted
+	// on /mcp alone, so an OAuth connection reaches an /api/v1 handler
+	// only through the in-process MCP dispatcher — and its route table
+	// has no `workspace import` action. This gate is therefore correct
+	// but currently unexercised in production: it exists so that adding
+	// that action later cannot silently reopen the door, which is the
+	// failure mode a create-only fix would have left armed.
 	if !s.requireWorkspaceCreationConsent(w, r) {
 		return
 	}
