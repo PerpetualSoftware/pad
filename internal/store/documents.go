@@ -663,6 +663,7 @@ const cascadeRewriteAttempts = 3
 //     below dies to it. Recorded here because deleting a previous unit's
 //     deliberate "this is untestable" finding is a claim in its own right,
 //     and the next reader deserves to know it was closed rather than lost.
+//
 //   - content = ? — a concurrent edit landed. The right response is the
 //     opposite: re-read, re-apply the rewrite to the NEW body, and try again.
 //
