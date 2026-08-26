@@ -133,7 +133,7 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 // legacy row made the wall of text reappear on the very surface the ruling was
 // about. The fix has to be a property of the string, not of the pill list.
 //
-// Segments are dropped on the same two rules parseFieldChanges applies, and
+// Segments are dropped on the same rules parseFieldChanges applies, and
 // survivors keep their CONTENT — including segments parseFieldChanges itself
 // will not turn into a pill, such as a value containing more than one arrow.
 // That is the point of a fallback, and this keeps it working.
@@ -153,7 +153,18 @@ export function formatChangesForDisplay(changesStr: string | undefined | null): 
 			const colonIdx = trimmed.indexOf(':');
 			if (colonIdx === -1) return false;
 			const field = trimmed.slice(0, colonIdx).trim();
-			return looksLikeFieldKey(field) && !SUPPRESSED_CHANGE_FIELDS.has(field);
+			if (!looksLikeFieldKey(field) || SUPPRESSED_CHANGE_FIELDS.has(field)) return false;
+			// A segment with no arrow is not a change, it is a fragment — and
+			// the field-key rule alone does not catch the ones whose text
+			// before the colon is short and unspaced, like `id:note-1775…` or
+			// `summary:…` from inside a serialized notes array. Those were
+			// still reaching the audit page's fallback, which is the surface
+			// this function exists for (codex round 4).
+			//
+			// AT LEAST one arrow, not exactly one: a value containing "→" is
+			// a real change that parseFieldChanges declines to make a pill of,
+			// and showing it is precisely what the fallback is for.
+			return trimmed.slice(colonIdx + 1).includes('→');
 		})
 		.map((part) => part.trim())
 		.join('; ');

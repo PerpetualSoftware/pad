@@ -150,6 +150,18 @@ describe('parseFieldChanges', () => {
 			);
 		});
 
+		it('drops arrowless fragments from inside a serialized notes array', () => {
+			// The field-key rule alone does not catch these: `id` and `summary`
+			// are short and unspaced, so they pose as keys. Measured on the 97
+			// legacy rows, requiring an arrow takes the longest sanitized
+			// output from 285 characters to 54.
+			const blob =
+				'implementation_notes: → [map[created_at:2026-04-02T18:17:50Z; ' +
+				'id:note-1775153870894988317 summary:Proposed first-release CLI grouping and rename matrix]]; ' +
+				'status: open → done';
+			expect(formatChangesForDisplay(blob)).toBe('status: open → done');
+		});
+
 		it('loses the tail of a legitimate value containing a semicolon', () => {
 			// The format ambiguity from the other side, pinned so it is a known
 			// limit rather than a surprise: "a; b" cannot be told from two
