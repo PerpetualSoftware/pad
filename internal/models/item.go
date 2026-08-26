@@ -206,6 +206,27 @@ type Item struct {
 	// is deliberate: this is an internal signal for one in-process
 	// consumer, not a wire contract the API is committing to.
 	LastMutation *ItemMutationSignal `json:"-"`
+
+	// PreUpdate is the item as it stood immediately BEFORE this store call
+	// wrote it, read inside the same transaction and under the same locks as
+	// the write (BUG-2776). It exists so a caller can describe what IT
+	// changed rather than what changed since the caller last looked: the
+	// handler's own pre-read happens before permission checks and before the
+	// store's locks, so any concurrent writer's change lands between the two
+	// and, diffed naively, gets attributed to this request's author.
+	//
+	// Same contract as LastMutation above and for the same reasons: set only
+	// by UpdateItemWithParentLink, on the *models.Item it hands back, never
+	// persisted, never populated by GetItem or any list/search path, and
+	// `json:"-"` because it is an in-process signal rather than a wire
+	// contract. It is a COPY taken at re-read time, so it stays the
+	// pre-write view even though the store keeps reading `existing` after.
+	//
+	// Non-nil on every successful UpdateItemWithParentLink return. A consumer
+	// that finds it nil is looking at an item from some other path and must
+	// NOT silently fall back to its own stale snapshot — that fallback IS the
+	// defect this field exists to remove.
+	PreUpdate *Item `json:"-"`
 }
 
 // ItemMutationSignal is the race-free status/assignment delta attached to

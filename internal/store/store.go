@@ -61,6 +61,23 @@ type Store struct {
 	// every test that sets it does so synchronously and none is parallel).
 	afterDebounceRead func()
 
+	// afterItemPreLockRead is a TEST-ONLY seam, nil in production. When set,
+	// updateItemWithParentLinkOnce calls it after its pre-lock GetItem and
+	// before it opens the transaction — the window in which a concurrent
+	// writer can commit a change that this call must NOT attribute to its own
+	// caller (BUG-2776). It exists because that window is what makes the
+	// locked re-read load-bearing: without it a test cannot tell a pre-image
+	// taken from the pre-lock read apart from one taken under the lock, and a
+	// mutation swapping the two survives.
+	//
+	// Same usage constraint as afterDebounceRead: set it only while no other
+	// request is in flight against this Store. It fires once per ATTEMPT, so
+	// a hook that issues its own update must nil the field for the duration
+	// of that nested call — and note that updateItemWithParentLinkOnce runs
+	// under retryOnParentSetChanged, so a retried update fires it again
+	// (codex round 3).
+	afterItemPreLockRead func(itemID string)
+
 	// stopMaint signals the background WAL checkpointer to exit; maintDone
 	// is closed once it has. Both are nil on the Postgres path (no WAL
 	// file to checkpoint) and Close() guards on nil accordingly.

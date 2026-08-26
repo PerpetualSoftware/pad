@@ -2093,6 +2093,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, nil
 	}
 
+	// Test seam (BUG-2776): the pre-lock read above is stale by exactly this
+	// window, which is why the pre-image handed to the caller comes from the
+	// in-tx re-read below and not from here. Nil in production.
+	if s.afterItemPreLockRead != nil {
+		s.afterItemPreLockRead(id)
+	}
+
 	// Validate assignment scope before writing
 	if err := s.validateAssignmentScope(existing.WorkspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
 		return nil, err
@@ -2216,6 +2223,29 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 		existing = fresh
 	}
+
+	// BUG-2776: keep this locked pre-write view for the CALLER. Everything
+	// below already uses `existing` for its own deltas; the handler that
+	// builds the activity's human-readable change list used to have no way
+	// to reach it and diffed its own pre-permission-check read instead,
+	// which attributed a concurrent writer's change to this request's
+	// author. It now consumes this field — see the change-list block in
+	// handlers_items.go::handleUpdateItem.
+	//
+	// A COPY, not the pointer — and honestly, a DEFENSIVE one: nothing below
+	// mutates `existing` today, so a mutation replacing this copy with the
+	// pointer survives the whole suite, and no test can be written that kills
+	// it without first introducing the mutation it guards against. It stays
+	// because the cost is one struct copy per update and the failure it
+	// prevents is silent (a later edit that normalises `existing` in place
+	// would corrupt a caller's pre-image with no signal), but it is guarded
+	// by argument rather than by a test and that is worth stating. It is also
+	// SHALLOW: a future in-place mutation through a POINTER member of
+	// `existing` (AssignedUserID, AgentRoleID, ParentID, ItemNumber) would
+	// still reach the caller's pre-image. Everything the change list reads —
+	// Fields, Tags, Title, and the joined display names — is a string, and a
+	// string cannot be mutated in place, so today's consumers are covered.
+	preUpdate := *existing
 
 	// Optimistic-concurrency guard runs FIRST — before the open-children
 	// precheck — so a caller who lost the race gets the promised
@@ -2671,6 +2701,11 @@ func (s *Store) updateItemWithParentLinkOnce(
 		sig := mutSignal
 		updated.LastMutation = &sig
 	}
+	// Unconditional, unlike LastMutation above: a caller diffing against the
+	// pre-image needs it on EVERY successful update, and "nil means nothing
+	// changed" would be indistinguishable from "nil because this path forgot
+	// to set it" at exactly the call site that must not guess (BUG-2776).
+	updated.PreUpdate = &preUpdate
 
 	// The choke point (SPEC-3 / TASK-2658). Emitted here — after the in-tx
 	// read-back and after the status/assignment deltas are computed, before
