@@ -1256,6 +1256,35 @@ func (s *Server) setupRouter() {
 		r.Use(StrictTransportSecurity)
 	}
 
+	// One CORS handler, shared. The /api/v1 group mounts it as ordinary
+	// middleware; ValidatePath serves its REJECTION through the same
+	// instance, because that rejection short-circuits above the group and
+	// would otherwise answer a cross-origin caller without the CORS
+	// headers its siblings carry — see the middleware's doc comment.
+	corsMW := cors.Handler(cors.Options{
+		AllowedOrigins: parseCORSOrigins(s.corsOrigins),
+		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password", "X-Bootstrap-Token"},
+		// Credentials flag is gated on an operator explicitly listing
+		// PAD_CORS_ORIGINS. The CLI uses Bearer tokens so the default
+		// "no CORS_ORIGINS set" path doesn't need credential sharing;
+		// leaving it off by default prevents cross-origin fetches from
+		// a browser on a different site from piggy-backing cookies
+		// on the victim's session.
+		AllowCredentials: corsAllowCredentials(s.corsOrigins),
+		MaxAge:           300,
+	})
+
+	// Reject a request whose decoded path is not valid UTF-8 (or contains a
+	// NUL) before anything routes it, so no handler can hand such a segment
+	// to the store (BUG-2782). Placed at the END of the infrastructure block
+	// deliberately: after StructuredLogger and MetricsMiddleware so a
+	// rejection is still logged with a request id and still counted (as
+	// route "unmatched", status 400) rather than being invisible to an
+	// operator watching for a flood, and after SecurityHeaders so the 400
+	// carries them like every other response.
+	r.Use(ValidatePath(corsMW))
+
 	// MCP Streamable HTTP transport + OAuth discovery endpoints
 	// (PLAN-943 TASK-950). Mounted outside the standard /api/v1
 	// auth-required group because:
@@ -1325,19 +1354,7 @@ func (s *Server) setupRouter() {
 
 	// All other routes — full middleware stack
 	r.Group(func(r chi.Router) {
-		r.Use(cors.Handler(cors.Options{
-			AllowedOrigins: parseCORSOrigins(s.corsOrigins),
-			AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Share-Password", "X-Bootstrap-Token"},
-			// Credentials flag is gated on an operator explicitly listing
-			// PAD_CORS_ORIGINS. The CLI uses Bearer tokens so the default
-			// "no CORS_ORIGINS set" path doesn't need credential sharing;
-			// leaving it off by default prevents cross-origin fetches from
-			// a browser on a different site from piggy-backing cookies
-			// on the victim's session.
-			AllowCredentials: corsAllowCredentials(s.corsOrigins),
-			MaxAge:           300,
-		}))
+		r.Use(corsMW)
 		r.Use(s.TokenAuth)
 		r.Use(s.SessionAuth)
 		r.Use(s.RateLimit)
