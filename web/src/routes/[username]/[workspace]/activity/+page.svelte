@@ -6,7 +6,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
-	import { parseFieldChanges } from '$lib/utils/activityChanges';
+	import { parseFieldChanges, formatChangesForDisplay } from '$lib/utils/activityChanges';
 	import { agentNameOf } from '$lib/utils/agentActor';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
@@ -426,8 +426,10 @@
 												</span>
 											{/each}
 										</div>
-									{:else if meta.changes}
-										<div class="entry-detail entry-detail-raw">{meta.changes}</div>
+									{:else if formatChangesForDisplay(meta.changes)}
+										<div class="entry-detail entry-detail-raw">
+											{formatChangesForDisplay(meta.changes)}
+										</div>
 									{/if}
 								</div>
 								<div class="entry-meta">

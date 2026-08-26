@@ -26,9 +26,9 @@ export interface FieldChange {
 const SUPPRESSED_CHANGE_FIELDS = new Set(['implementation_notes', 'decision_log']);
 
 // A parsed segment is only a change if its field name is actually a field
-// name. The server emits schema keys plus `title`, `role` and `assigned` — all
-// lowercase identifiers — so anything else came from splitting a value that
-// happened to contain a ";".
+// name. The server joins segments with "; " and this splits on ";", so any
+// value containing a semicolon fragments — and the fragment's text before its
+// first colon then poses as a field name.
 //
 // This is not belt-and-braces on top of the suppression above; it is
 // load-bearing, and measured against the live database. Across the 97 legacy
@@ -38,9 +38,26 @@ const SUPPRESSED_CHANGE_FIELDS = new Set(['implementation_notes', 'decision_log'
 // "field" is a paragraph of markdown. With this guard the longest surviving
 // pill on those rows is 15 characters.
 //
-// It cannot refuse a legitimate pill: over 4000 current-format rows carrying
-// 4329 pills, it drops zero.
-const FIELD_KEY = /^[a-z][a-z0-9_]*$/;
+// The test is STRUCTURAL — non-empty, no whitespace, bounded length — rather
+// than a lowercase-identifier pattern. The first version of this guard was
+// `^[a-z][a-z0-9_]*$` on the reasoning that the server emits schema keys plus
+// title/role/assigned, all lowercase. That reasoning was too strong: nothing
+// constrains a collection's field keys to lowercase (handlers_collections.go
+// compares them with a plain `==`, no case folding), so `Status` or
+// `resolution-v2` are legal keys whose pills that pattern would silently drop.
+// All 72 field keys in the live database happen to satisfy both forms, which
+// is why the measurement below could not tell them apart — a control that
+// shows a guard refuses nothing HERE is not evidence that it cannot refuse
+// something legitimate.
+//
+// Measured both ways on the same data: identical on the legacy rows (longest
+// surviving pill 15 chars, none over 200) and identical on 6000+ current-format
+// rows (6385 pills kept, zero dropped). Same effect, strictly smaller risk.
+const MAX_FIELD_KEY_LENGTH = 64;
+
+function looksLikeFieldKey(field: string): boolean {
+	return field.length > 0 && field.length <= MAX_FIELD_KEY_LENGTH && !/\s/.test(field);
+}
 
 // Split the server's "; "-joined "field: from → to" change string into
 // structured entries.
@@ -62,7 +79,7 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 			const colonIdx = trimmed.indexOf(':');
 			if (colonIdx === -1) return null;
 			const field = trimmed.slice(0, colonIdx).trim();
-			if (!FIELD_KEY.test(field)) return null;
+			if (!looksLikeFieldKey(field)) return null;
 			if (SUPPRESSED_CHANGE_FIELDS.has(field)) return null;
 			const valuePart = trimmed.slice(colonIdx + 1).trim();
 			const arrowParts = valuePart.split('→');
@@ -72,4 +89,33 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 			return null;
 		})
 		.filter((c): c is FieldChange => c !== null);
+}
+
+// Sanitize the raw change string for the surfaces that render it as TEXT
+// rather than as pills — the dashboard's recent-activity list, and the audit
+// page's fallback when nothing parsed.
+//
+// Those surfaces are why suppressing inside parseFieldChanges alone does not
+// finish the job, and the audit page is the sharp case: it falls back to the
+// raw string when the parsed list is EMPTY, so suppressing every pill on a
+// legacy row made the wall of text reappear on the very surface the ruling was
+// about. The fix has to be a property of the string, not of the pill list.
+//
+// Segments are dropped on the same two rules parseFieldChanges applies, and
+// every survivor is preserved VERBATIM — including ones parseFieldChanges
+// itself will not turn into a pill, such as a value containing more than one
+// arrow. That is the point of a fallback, and this keeps it working.
+export function formatChangesForDisplay(changesStr: string | undefined | null): string {
+	if (!changesStr) return '';
+	return changesStr
+		.split(';')
+		.filter((part) => {
+			const trimmed = part.trim();
+			const colonIdx = trimmed.indexOf(':');
+			if (colonIdx === -1) return false;
+			const field = trimmed.slice(0, colonIdx).trim();
+			return looksLikeFieldKey(field) && !SUPPRESSED_CHANGE_FIELDS.has(field);
+		})
+		.map((part) => part.trim())
+		.join('; ');
 }

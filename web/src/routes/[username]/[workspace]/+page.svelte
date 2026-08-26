@@ -10,6 +10,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { agentNameFromMetadata } from '$lib/utils/agentActor';
+	import { formatChangesForDisplay } from '$lib/utils/activityChanges';
 	import OnboardingLaunchpad from '$lib/components/OnboardingLaunchpad.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
@@ -306,11 +307,14 @@
 		return '\u2022';
 	}
 
+	// Renders the change string as TEXT, so it needs the same suppression the
+	// pill surfaces get — otherwise a legacy notes blob shows here as a wall
+	// of Go map literal (BUG-2628).
 	function parseActivityChanges(metadata?: string): string {
 		if (!metadata) return '';
 		try {
 			const meta = JSON.parse(metadata);
-			return meta.changes || '';
+			return formatChangesForDisplay(meta.changes);
 		} catch {
 			return '';
 		}

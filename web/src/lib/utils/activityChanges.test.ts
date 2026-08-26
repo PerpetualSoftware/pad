@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseFieldChanges } from './activityChanges';
+import { parseFieldChanges, formatChangesForDisplay } from './activityChanges';
 
 // BUG-2628. Two rules, both about what must NOT become a pill:
 //
@@ -80,15 +80,67 @@ describe('parseFieldChanges', () => {
 		expect(parseFieldChanges(fragment)).toEqual([]);
 	});
 
-	it('refuses uppercase, spaced and empty field names', () => {
-		expect(parseFieldChanges('Status: open → done')).toEqual([]);
+	it('refuses spaced and empty field names but ACCEPTS unusual legal keys', () => {
 		expect(parseFieldChanges('two words: a → b')).toEqual([]);
 		expect(parseFieldChanges(': a → b')).toEqual([]);
+		// Nothing constrains a collection's field keys to lowercase — the
+		// server compares them with a plain `==`, no case folding — so these
+		// are legal keys and their pills must survive. An earlier version of
+		// the guard was a lowercase-identifier pattern and would have dropped
+		// them silently; every key in the live database happens to satisfy
+		// both forms, so the measurement could not tell them apart.
+		expect(parseFieldChanges('Status: open → done')).toEqual([
+			{ field: 'Status', from: 'open', to: 'done' },
+		]);
+		expect(parseFieldChanges('resolution-v2: a → b')).toEqual([
+			{ field: 'resolution-v2', from: 'a', to: 'b' },
+		]);
 	});
 
 	it('handles empty and absent input', () => {
 		expect(parseFieldChanges('')).toEqual([]);
 		expect(parseFieldChanges(null)).toEqual([]);
 		expect(parseFieldChanges(undefined)).toEqual([]);
+	});
+
+	// The surfaces that render the change string as TEXT rather than as pills.
+	// The audit page's fallback is the sharp one: it renders raw when the
+	// parsed list is empty, so suppressing every pill on a legacy row put the
+	// wall of text back on the very surface the ruling was about.
+	describe('formatChangesForDisplay', () => {
+		it('drops suppressed fields and keeps the rest verbatim', () => {
+			expect(
+				formatChangesForDisplay('status: open → done; implementation_notes: (1 note) → (2 notes)'),
+			).toBe('status: open → done');
+		});
+
+		it('returns empty when the only change was a suppressed field', () => {
+			// This is the case that triggers the audit page's raw fallback.
+			// It must produce nothing to render, not the raw string.
+			expect(formatChangesForDisplay('implementation_notes: → (1 note)')).toBe('');
+		});
+
+		it('drops a legacy Go-map-literal blob entirely', () => {
+			const legacy =
+				'implementation_notes: → [map[created_at:2026-04-02T18:17:50Z created_by:user ' +
+				'details:Root groups: auth, server; also see `foo: a → b` in the notes ' +
+				'id:note-1775153870894988317 summary:Proposed first-release CLI grouping]]; ' +
+				'status: open → done';
+			expect(formatChangesForDisplay(legacy)).toBe('status: open → done');
+		});
+
+		it('preserves a segment parseFieldChanges will not turn into a pill', () => {
+			// More than one arrow: no pill, but it is a real change and the
+			// fallback exists to show exactly this.
+			const s = 'status: a → b → c; priority: low → high';
+			expect(parseFieldChanges(s)).toEqual([{ field: 'priority', from: 'low', to: 'high' }]);
+			expect(formatChangesForDisplay(s)).toBe('status: a → b → c; priority: low → high');
+		});
+
+		it('handles empty and absent input', () => {
+			expect(formatChangesForDisplay('')).toBe('');
+			expect(formatChangesForDisplay(null)).toBe('');
+			expect(formatChangesForDisplay(undefined)).toBe('');
+		});
 	});
 });
