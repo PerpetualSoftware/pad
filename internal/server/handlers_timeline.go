@@ -331,10 +331,16 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 		// paging can then skip or repeat it. The id has to be a function of
 		// the item alone, which is what the shape test is.
 		// `divert` is true for a raw id that must not be emitted as-is:
-		// UUID-shaped (it could equal a row id), or already carrying the
-		// derived namespace (it could equal another entry's derived id). Both
-		// get the same treatment below.
-		divert := looksLikeRowID(raw) || strings.HasPrefix(raw, prefix+":")
+		// UUID-shaped (it could equal a row id), or already carrying EITHER
+		// structured kind's derived namespace (it could equal some entry's
+		// derived id). Both get the same treatment below.
+		//
+		// Both prefixes, not just this call's: notes and decisions share
+		// `usedIDs`, so a NOTE whose raw id is `decision:<uuid>` would be kept
+		// and then collide with the id a DECISION derives from `<uuid>`,
+		// pushing the decision onto the positional path — the round-3 hole
+		// again, one kind across (codex round 4).
+		divert := looksLikeRowID(raw) || hasStructuredPrefix(raw)
 
 		if raw != "" && validCursorID(raw) && !divert && !usedIDs[raw] {
 			usedIDs[raw] = true
@@ -755,4 +761,19 @@ func validCursorID(v string) bool {
 // rows this must not depend on.
 func looksLikeRowID(raw string) bool {
 	return uuid.Validate(raw) == nil
+}
+
+// structuredEntryPrefixes are the namespaces entryID mints derived ids in.
+// Both kinds share one uniqueness map, so a raw id carrying EITHER prefix has
+// to be diverted regardless of which kind is being numbered — otherwise one
+// kind's kept id can collide with the other kind's derived id.
+var structuredEntryPrefixes = []string{"note", "decision"}
+
+func hasStructuredPrefix(raw string) bool {
+	for _, p := range structuredEntryPrefixes {
+		if strings.HasPrefix(raw, p+":") {
+			return true
+		}
+	}
+	return false
 }

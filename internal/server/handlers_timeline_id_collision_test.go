@@ -529,3 +529,62 @@ func TestTimeline_DerivedIDRoundTripsAsACursor(t *testing.T) {
 		t.Fatalf("paging from a server-minted derived cursor = %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestTimeline_DerivedNamespaceIsClosedAcrossKinds is the cross-kind case.
+//
+// Notes and decisions are numbered by separate calls but share one uniqueness
+// map, so checking only the CALLING kind's prefix leaves the round-3 hole
+// intact one kind across: a note whose raw id is "decision:<uuid>" is kept,
+// and a decision whose raw id is "<uuid>" then derives onto exactly that
+// string, falls through, and lands on the index-dependent positional path.
+//
+// Asserted as a form, not merely as inequality, and with an entry inserted
+// afterwards to show the decision's id does not move.
+func TestTimeline_DerivedNamespaceIsClosedAcrossKinds(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	id := "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+	notes := `[{"id":"decision:` + id + `","summary":"a note wearing the decision namespace","created_at":"2026-04-02T10:00:00Z"}]`
+	decisions := `[{"id":"` + id + `","decision":"the decision","created_at":"2026-04-02T11:00:00Z"}]`
+	item := timelineItemWithStructured(t, srv, ws, notes, decisions)
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "")
+
+	noteEntries := entriesByKind(resp.Entries, "note")
+	decisionEntries := entriesByKind(resp.Entries, "decision")
+	if len(noteEntries) != 1 || len(decisionEntries) != 1 {
+		t.Fatalf("expected 1 note and 1 decision, got %d and %d (kinds: %v)",
+			len(noteEntries), len(decisionEntries), kindsOf(resp.Entries))
+	}
+
+	// The note's raw id carries a structured prefix, so it is diverted too.
+	if got, want := noteEntries[0].ID, "note:decision:"+id; got != want {
+		t.Errorf("note with a foreign structured prefix = %q, want %q", got, want)
+	}
+	// The decision keeps its own derived form rather than being pushed onto
+	// the positional path by the note.
+	if got, want := decisionEntries[0].ID, "decision:"+id; got != want {
+		t.Errorf("decision derived id = %q, want %q", got, want)
+	}
+	if strings.Contains(decisionEntries[0].ID, "-idx-") {
+		t.Errorf("the decision landed on the positional fallback: %q", decisionEntries[0].ID)
+	}
+
+	// And the decision's id survives a mutation of the notes array, which it
+	// could not if it were positional.
+	before := decisionEntries[0].ID
+	notes2 := `[{"summary":"inserted ahead, no id","created_at":"2026-04-02T09:00:00Z"},
+	            {"id":"decision:` + id + `","summary":"a note wearing the decision namespace","created_at":"2026-04-02T10:00:00Z"}]`
+	patchItemFields(t, srv, ws, item.Slug,
+		`{"status":"open","implementation_notes":`+notes2+`,"decision_log":`+decisions+`}`)
+
+	after := fetchTimeline(t, srv, ws, item.Slug, "")
+	afterDecisions := entriesByKind(after.Entries, "decision")
+	if len(afterDecisions) != 1 {
+		t.Fatalf("expected 1 decision after the insert, got %d", len(afterDecisions))
+	}
+	if afterDecisions[0].ID != before {
+		t.Errorf("the decision's id changed from %q to %q when a note was inserted", before, afterDecisions[0].ID)
+	}
+}
