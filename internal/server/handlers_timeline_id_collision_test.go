@@ -10,9 +10,18 @@ import (
 
 // BUG-2783: a structured entry's id can equal the id of a comment, activity or
 // version on the SAME item, and then two entries in one timeline payload share
-// an id. The client keys its {#each} on entry id and dedupes appended pages by
-// id, so one of the two is hidden — the same failure the intra-structured
-// dedupe already prevents, one source-boundary out.
+// an id — the failure the intra-structured dedupe already prevents, one
+// source-boundary out.
+//
+// The client breaks two different ways, and they are worth separating because
+// the first draft of this comment collapsed them into "one of the two is
+// hidden", which is only half true:
+//
+//   - WITHIN one page: ItemTimeline.svelte renders
+//     `{#each visibleEntries as entry (entry.id)}`. A keyed each with a
+//     duplicate key is a Svelte ERROR, not a silent drop.
+//   - ACROSS pages: the append path filters on `existingIds`, so the later
+//     copy is silently discarded — that is where something is hidden.
 //
 // Note and decision ids come from the item's fields blob and nothing validates
 // them on write: `pad item note` generates `note-<nanos>`, but an imported
@@ -23,8 +32,8 @@ import (
 // structuredTimelineEntries directly. That is deliberate and is the reason the
 // gap survived this long: the structured builder is CORRECT in isolation — it
 // dedupes perfectly against the other structured entries — and a unit test of
-// it vouches for the component rather than its binding to the other four
-// sources (team CONVE-19).
+// it vouches for the component rather than its binding to the three
+// SQL-backed sources (team CONVE-19).
 
 // patchItemFields overwrites the item's fields blob through the real PATCH
 // path, so the entries are hydrated exactly as production hydrates them.
@@ -134,7 +143,11 @@ func TestTimeline_StructuredIDCollidingWithAnActivityHidesNothing(t *testing.T) 
 	before := fetchTimeline(t, srv, ws, item.Slug, "")
 	acts := entriesByKind(before.Entries, "activity")
 	if len(acts) == 0 {
-		t.Skip("no activity entry on a freshly created item; nothing to collide with")
+		// NOT t.Skip. Creating an item writes an activity row, so an empty
+		// list means the fixture stopped building what this test needs — and
+		// a skip would report that as success forever.
+		t.Fatalf("fixture: a freshly created item must have an activity entry to collide with; kinds: %v",
+			kindsOf(before.Entries))
 	}
 	victim := acts[0].ID
 
@@ -231,5 +244,144 @@ func TestTimeline_StructuredIDEqualToAnotherEntrysFallback(t *testing.T) {
 		if n > 1 {
 			t.Errorf("entry id %q appears %d times in one page", id, n)
 		}
+	}
+}
+
+// TestTimeline_StructuredIDCollidingWithAVersionHidesNothing covers the third
+// SQL source. Without it, a fix that only knew about comments and activities
+// would pass the rest of this file — which is exactly what the first version
+// of the fix did, since it enumerated sources by hand.
+func TestTimeline_StructuredIDCollidingWithAVersionHidesNothing(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	item := timelineItemWithStructured(t, srv, ws, "", "")
+
+	// An update creates a version row.
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/items/"+item.Slug, map[string]any{
+		"content": "a revision, so a version row exists",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	before := fetchTimeline(t, srv, ws, item.Slug, "")
+	versions := entriesByKind(before.Entries, "version")
+	if len(versions) == 0 {
+		t.Fatalf("fixture: an updated item must have a version entry to collide with; kinds: %v",
+			kindsOf(before.Entries))
+	}
+	victim := versions[0].ID
+
+	notes, err := json.Marshal([]map[string]string{{
+		"id":         victim,
+		"summary":    "note that stole a version id",
+		"created_at": versions[0].CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+	}})
+	if err != nil {
+		t.Fatalf("marshal notes: %v", err)
+	}
+	patchItemFields(t, srv, ws, item.Slug, `{"status":"open","implementation_notes":`+string(notes)+`}`)
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "")
+
+	noteEntries := entriesByKind(resp.Entries, "note")
+	if len(noteEntries) != 1 {
+		t.Fatalf("expected exactly 1 note entry, got %d (kinds: %v)", len(noteEntries), kindsOf(resp.Entries))
+	}
+	if noteEntries[0].ID == victim {
+		t.Errorf("the note entry kept the colliding version id %q", noteEntries[0].ID)
+	}
+
+	stillThere := false
+	for _, e := range entriesByKind(resp.Entries, "version") {
+		if e.ID == victim {
+			stillThere = true
+		}
+	}
+	if !stillThere {
+		t.Errorf("the version that owned id %q is no longer in the payload", victim)
+	}
+
+	seen := map[string]int{}
+	for _, e := range resp.Entries {
+		seen[e.ID]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("entry id %q appears %d times in one page", id, n)
+		}
+	}
+}
+
+// TestTimeline_StructuredIDIsIndependentOfThePageWindow is the regression test
+// for the defect the FIRST version of this fix introduced, and the reason the
+// fix is a shape test rather than a lookup.
+//
+// That version seeded the dedupe map from the ids fetched for the current
+// page. The three SQL windows depend on the cursor, so a structured entry took
+// its raw id on a page where the colliding row was absent and a positional id
+// on one where it was present. That id is not merely a render key — it is the
+// second term of the cursor predicate, so a window-dependent id makes an
+// entry's own sort position depend on which page is being built.
+//
+// The assertion is that the same entry carries the SAME id on a first page and
+// on a narrow page fetched with a cursor, which is a property of the item
+// alone and cannot hold if the id consults the window.
+func TestTimeline_StructuredIDIsIndependentOfThePageWindow(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	item := timelineItemWithStructured(t, srv, ws, "", "")
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/"+item.Slug+"/comments",
+		map[string]any{"body": "the row whose id the note claims"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create comment = %d: %s", rr.Code, rr.Body.String())
+	}
+	var comment models.Comment
+	parseJSON(t, rr, &comment)
+
+	notes, err := json.Marshal([]map[string]string{{
+		"id":         comment.ID,
+		"summary":    "note claiming a row id",
+		"created_at": item.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+	}})
+	if err != nil {
+		t.Fatalf("marshal notes: %v", err)
+	}
+	patchItemFields(t, srv, ws, item.Slug, `{"status":"open","implementation_notes":`+string(notes)+`}`)
+
+	full := fetchTimeline(t, srv, ws, item.Slug, "")
+	fullNotes := entriesByKind(full.Entries, "note")
+	if len(fullNotes) != 1 {
+		t.Fatalf("expected 1 note on the full page, got %d", len(fullNotes))
+	}
+
+	// A page whose window is narrow enough to exclude the colliding comment.
+	narrow := fetchTimeline(t, srv, ws, item.Slug, "limit=1")
+	narrowNotes := entriesByKind(narrow.Entries, "note")
+	if len(narrowNotes) == 0 {
+		// The note may legitimately fall outside a 1-entry page; page from the
+		// cursor until it appears rather than asserting on an empty result.
+		if !narrow.HasMore || narrow.NextBefore == "" {
+			t.Fatalf("narrow page carried no note and no cursor to continue from; kinds: %v",
+				kindsOf(narrow.Entries))
+		}
+		next := fetchTimeline(t, srv, ws, item.Slug,
+			"before="+narrow.NextBefore+"&before_id="+narrow.NextBeforeID+"&limit=5")
+		narrowNotes = entriesByKind(next.Entries, "note")
+	}
+	if len(narrowNotes) == 0 {
+		// Not a skip: the note is older than the comment and the paged fetch
+		// covers it, so its absence means the fixture stopped exercising the
+		// window this test is named for.
+		t.Fatalf("note did not surface on a paged fetch, so the window comparison never ran")
+	}
+
+	if narrowNotes[0].ID != fullNotes[0].ID {
+		t.Errorf("the same note carried id %q on the full page and %q on a paged fetch; "+
+			"a structured entry's id must be a function of the item, not of the page window",
+			fullNotes[0].ID, narrowNotes[0].ID)
 	}
 }

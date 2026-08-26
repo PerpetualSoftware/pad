@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -177,21 +178,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// still have to be filtered through the SAME (created_at, id) predicate
 	// the SQL above uses, or paging would show them on every page instead of
 	// exactly one (BUG-2301).
-	// Ids claimed by the SQL sources, so a structured entry cannot be handed
-	// one of them (BUG-2783). All three slices are already in hand above —
-	// this needs no extra query and no re-ordering.
-	reserved := make(map[string]bool, len(comments)+len(activities)+len(versions))
-	for _, c := range comments {
-		reserved[c.ID] = true
-	}
-	for _, a := range activities {
-		reserved[a.ID] = true
-	}
-	for _, v := range versions {
-		reserved[v.ID] = true
-	}
-
-	notes, decisions := structuredTimelineEntries(item, before, beforeID, sentinelBeforeID, reserved)
+	notes, decisions := structuredTimelineEntries(item, before, beforeID, sentinelBeforeID)
 
 	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
@@ -264,7 +251,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 // `sentinelBeforeID` says the caller synthesized beforeID rather than
 // receiving it, which means "keep every entry at this instant" — see the
 // comparison note inside.
-func structuredTimelineEntries(item *models.Item, before time.Time, beforeID string, sentinelBeforeID bool, reserved map[string]bool) ([]models.TimelineEntry, []models.TimelineEntry) {
+func structuredTimelineEntries(item *models.Item, before time.Time, beforeID string, sentinelBeforeID bool) ([]models.TimelineEntry, []models.TimelineEntry) {
 	if item == nil {
 		return nil, nil
 	}
@@ -306,30 +293,7 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// Notes and decisions share this map — they land in one merged stream and
 	// a collision ACROSS the two kinds breaks the client exactly as one
 	// within a kind does.
-	usedIDs := make(map[string]bool, len(reserved)+len(item.ImplementationNotes)+len(item.DecisionLog))
-	// Seed with the ids the SQL sources already own. A note or decision id
-	// comes from the item's fields blob, which nothing validates on write, so
-	// it can equal a comment/activity/version id on the same item — and then
-	// two entries in ONE payload share an id, which the client's keyed
-	// {#each} and its by-id page dedupe resolve by hiding one of them
-	// (BUG-2783).
-	//
-	// The structured side is the one that yields, and that is a decision
-	// rather than an accident: comment, activity and version ids are real
-	// primary keys AND are what the client sends back as `before_id`, so
-	// moving one would break paging. The unvalidated side moves.
-	//
-	// Seeding also covers the positional fallback, without new code: the
-	// `for usedIDs[id]` loop below tests `note-idx-0` against this same map.
-	// That half is DEFENCE, not a live vector, and the difference is worth
-	// stating rather than implying — all three SQL sources mint ids with
-	// store.newID() (uuid.New().String()), including the import path, which
-	// re-mints rather than preserving an artifact's ids. A UUID cannot equal
-	// `note-idx-N`. The fallback is covered because it costs nothing to
-	// cover, not because a request can reach it today.
-	for id := range reserved {
-		usedIDs[id] = true
-	}
+	usedIDs := make(map[string]bool, len(item.ImplementationNotes)+len(item.DecisionLog))
 	entryID := func(raw, prefix string, i int) string {
 		// A raw id must be usable as a CURSOR, not merely unique: the client
 		// sends it back as `before_id` and the handler now refuses a value the
@@ -340,7 +304,33 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 		// Emitting such an id would make the server hand out a cursor it then
 		// answers 400 to, wedging paging on that item (codex round 1). It gets
 		// the positional fallback the empty and duplicate cases already take.
-		if raw != "" && validCursorID(raw) && !usedIDs[raw] {
+		// A raw id that is UUID-SHAPED is refused, because that is the only
+		// shape it could collide with (BUG-2783). Comments, activities and
+		// versions are the other sources in this merged stream, and every one
+		// of their rows takes its id from store.newID() — uuid.New().String()
+		// — at all six insert sites, the import path included, which re-mints
+		// rather than preserving an artifact's ids. So a blob id can only
+		// equal a row id by being a UUID, and refusing that shape makes the
+		// collision impossible.
+		//
+		// A collision is not cosmetic. Two entries sharing an id in ONE page
+		// hit `{#each visibleEntries as entry (entry.id)}` in
+		// ItemTimeline.svelte, and a keyed each with a duplicate key is a
+		// Svelte error, not a silent drop; across pages, the append path's
+		// `existingIds` filter silently discards the later one. Both are the
+		// failure the intra-structured dedupe already prevents.
+		//
+		// WHY NOT consult the ids actually fetched for this page: that is
+		// what the first version of this fix did, and it is wrong. The three
+		// SQL windows depend on the cursor, so a structured entry would take
+		// its raw id on one page and a positional id on another, depending on
+		// whether the colliding row happened to be inside that page's window.
+		// This id is not merely a render key — it is the SECOND TERM OF THE
+		// CURSOR PREDICATE above, so making it window-dependent makes an
+		// entry's own sort position depend on which page is being built, and
+		// paging can then skip or repeat it. The id has to be a function of
+		// the item alone, which is what the shape test is.
+		if raw != "" && validCursorID(raw) && !looksLikeRowID(raw) && !usedIDs[raw] {
 			usedIDs[raw] = true
 			return raw
 		}
@@ -691,4 +681,23 @@ func exhaustedWindowCursor(
 // already bounds. A bound that can only fire on a valid id is not protection.
 func validCursorID(v string) bool {
 	return utf8.ValidString(v) && !strings.ContainsRune(v, 0)
+}
+
+// looksLikeRowID reports whether a structured entry's raw id could be the id
+// of a comment, activity or version row on the same item.
+//
+// Those are the only ids a structured entry can collide with in the merged
+// timeline, and every one of them is minted by store.newID(), which is
+// uuid.New().String(). Enumerated rather than sampled: the six INSERT sites
+// into comments / activities / item_versions all pass newID(), and the import
+// path re-mints instead of carrying an artifact's ids across.
+//
+// So the test is the UUID SHAPE, not membership in any particular set — which
+// is what keeps the answer independent of which rows a given page fetched.
+// The cost is that a blob id that happens to be a well-formed UUID loses its
+// raw id even when nothing collides with it; that is accepted, because such an
+// id is indistinguishable from a colliding one without consulting the very
+// rows this must not depend on.
+func looksLikeRowID(raw string) bool {
+	return uuid.Validate(raw) == nil
 }
