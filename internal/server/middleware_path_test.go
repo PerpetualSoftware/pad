@@ -129,10 +129,13 @@ func TestValidatePathRejectsUnbindablePathText(t *testing.T) {
 	}
 }
 
-// TestValidatePathAllowsValidText is the control leg: the rule must reject
-// only what the database rejects. A middleware that answered 400 to every
-// path with a percent-escape, or to anything non-ASCII, would pass the test
-// above and break real clients — these cases are what tells the two apart.
+// TestValidatePathAllowsValidText is the control leg. The rule is not "only
+// what the database rejects" — it deliberately refuses bytes SQLite and a
+// SQL_ASCII Postgres would accept, because a uniform transport policy is
+// the point. What it must not do is refuse anything a CLIENT can
+// legitimately send: a middleware that answered 400 to every path with a
+// percent-escape, or to anything non-ASCII, would pass the test above and
+// break real callers. These cases are what tells the two apart.
 func TestValidatePathAllowsValidText(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
@@ -187,10 +190,18 @@ func TestValidPathText(t *testing.T) {
 	}
 }
 
-// TestValidatePathPostgresNoInternalError is the dialect half, and the only
-// leg that reproduces the ORIGINAL symptom: on Postgres the unfixed server
-// answered 500 to these requests (SQLITE answered 404, which is why the
-// defect was invisible to self-hosted installs and live on Pad Cloud).
+// TestValidatePathPostgresNoInternalError is the dialect half: it drives the
+// vector on the backend where the 500 occurred, against a real Postgres
+// store, and requires 400.
+//
+// It does NOT reproduce the original symptom, and the name should not be
+// read as claiming that — it runs the FIXED server, so the 500 is exactly
+// what it can never observe. The 500 was established by a counterfactual
+// sweep with the middleware unwired (the distribution is recorded above);
+// the mutation matrix is what keeps that reachable, since unwiring
+// ValidatePath fails this test. A test cannot both apply the fix and
+// witness the bug.
+//
 // Skips unless PAD_TEST_POSTGRES_URL is set; runs under `make test-pg`.
 func TestValidatePathPostgresNoInternalError(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
@@ -340,9 +351,18 @@ func TestValidatePathRejectsBeforeAuthAndRateLimit(t *testing.T) {
 
 	const attacker = "198.51.100.7:1234"
 	const bystander = "198.51.100.8:1234"
-	// Comfortably above the general API limiter's burst of 60, so a metered
-	// request stream would certainly have started returning 429 by the end.
-	const flood = 80
+	// The general API limiter is 600/min per key — rate 10/s, burst 60
+	// (NewRateLimiters, "API:"). A token bucket refills WHILE the loop runs,
+	// so the margin that matters is not flood-vs-burst but how long the loop
+	// would have to take for refill to cover the excess: at 10/s, 400
+	// requests are rescued only by a loop lasting longer than (400-60)/10 =
+	// 34 seconds. These are in-process httptest calls measured in
+	// microseconds each, so the margin is four orders of magnitude, and the
+	// test does not become flaky on a loaded box or under -race.
+	//
+	// 80 was the first value here and was wrong for exactly this reason: 20
+	// tokens of headroom is 2 seconds of tolerance.
+	const flood = 400
 
 	badTarget := "/api/v1/workspaces/" + ws + "/items/" + badPathSeg
 	okTarget := "/api/v1/workspaces/" + ws + "/items/no-such-item"

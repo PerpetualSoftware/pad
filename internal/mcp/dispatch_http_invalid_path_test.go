@@ -16,11 +16,30 @@ package mcp
 // socket one. That chain is load-bearing and unstated; this test is what
 // notices if any link in it changes.
 //
-// The behaviour it pins is not just "no 500". An MCP tool argument is a
-// JSON string, so an agent can put a raw invalid byte — or a JSON escape
-// naming U+0000 — into a ref or a workspace slug. Fixed, that is
+// The behaviour it pins is not just "no 500". Fixed, an unbindable ref is
 // validation_failed on both backends: the agent is told its INPUT is
 // wrong, which is true and actionable.
+//
+// WHAT A JSON CALLER CAN ACTUALLY SEND, measured with encoding/json rather
+// than assumed, because the first version of this comment claimed an agent
+// could put "a raw invalid byte" in a ref and that is false:
+//
+//	{"ref":"bad-<0xff>-x"}   → decodes to U+FFFD — valid UTF-8, not a vector
+//	{"ref":"bad-\ud800-x"}   → U+FFFD — not a vector
+//	{"ref":"bad-<0xc3><0x28>-x"} → U+FFFD — not a vector
+//	{"ref":"bad-<0x00>-x"}   → json: invalid character in string literal
+//	{"ref":"bad-\u0000-x"}   → a REAL NUL. The one that gets through.
+//
+// So over a JSON transport exactly one case below is reachable end to end:
+// the NUL. It is also the interesting one, since a NUL is valid UTF-8 and
+// only the second half of validPathText refuses it.
+//
+// The raw-byte cases are kept and are not theatre. Dispatch is a Go API,
+// and WithDispatchInput is how every caller reaches it — the JSON decode
+// is upstream of this boundary, not part of it. They assert the seam holds
+// for any caller, including the stdio path and any future transport that
+// does not launder its strings through encoding/json first. What they must
+// NOT be read as is evidence that a JSON client can deliver them.
 //
 // Unfixed, the two backends answered DIFFERENTLY, and only one of the two
 // answers is dangerous — stated per backend because the tidier single
@@ -47,17 +66,22 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 func newInvalidPathSeamFixture(t *testing.T) (*HTTPHandlerDispatcher, string) {
 	t.Helper()
-	s := storetest.NewSQLite(t)
+	// Under `make test-pg` this exercises the dangerous half — the
+	// retry-hostile upstream_error the fix removes. On SQLite the same
+	// assertions still discriminate, against the milder wrong answer.
+	// Branch before constructing, so Postgres mode does not also stand up
+	// a SQLite database and its cleanup for nothing.
+	var s *store.Store
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
-		// Under `make test-pg` this exercises the dangerous half — the
-		// retry-hostile upstream_error the fix removes. On SQLite the same
-		// assertions still discriminate, against the milder wrong answer.
 		s = storetest.NewPostgres(t)
+	} else {
+		s = storetest.NewSQLite(t)
 	}
 	srv := server.New(s)
 	t.Cleanup(srv.Stop)
