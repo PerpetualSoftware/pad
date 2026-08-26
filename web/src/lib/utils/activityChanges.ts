@@ -70,6 +70,23 @@ const SUPPRESSED_CHANGE_FIELDS = new Set(['implementation_notes', 'decision_log'
 // The durable fix is to stop parsing a display string at all — the server
 // would emit changes as structured metadata. That is IDEA-2790; it does not
 // help the legacy rows either way, since their metadata is already frozen.
+//
+// EVERY WAY A LEGACY BLOB CAN REACH A READER, enumerated rather than
+// spot-checked (review round 5), across the three surfaces this covers — the
+// item timeline card, the workspace activity page (pills and its raw
+// fallback), and the dashboard's recent-activity list:
+//
+//   handled   the top-level implementation_notes / decision_log segment
+//   handled   arrowless serialized fields, e.g. `id:…`, `summary:…`
+//   handled   no colon, or an apparent key that is empty, spaced, or > 64
+//   OPEN      a key-shaped fragment with exactly one arrow (`foo: a → b`)
+//   OPEN      a key-shaped fragment with several arrows (fallback/text only)
+//
+// The two open rows are the format ambiguity and are not closable by any
+// shape test; both are pinned by tests so they are known limits rather than
+// latent surprises. They are bounded, which is the claim that matters: on the
+// 97 legacy rows the longest surviving pill is 15 characters and the longest
+// sanitized fallback string is 54, from 2952 and 285.
 const MAX_FIELD_KEY_LENGTH = 64;
 
 function looksLikeFieldKey(field: string): boolean {
