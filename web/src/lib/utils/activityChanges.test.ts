@@ -57,7 +57,7 @@ describe('parseFieldChanges', () => {
 	// an arrow inside the note's own prose. Before the fix this rendered as a
 	// wall of text; suppressing only the field name leaves the FRAGMENT, whose
 	// apparent field is the prose before its colon.
-	it('emits no pill for a legacy Go-map-literal notes blob', () => {
+	it('removes the wall from a legacy Go-map-literal notes blob', () => {
 		const legacy =
 			'implementation_notes: → [map[created_at:2026-04-02T18:17:50Z created_by:user ' +
 			'details:Root groups: auth, server; also see `foo: a → b` in the notes ' +
@@ -70,6 +70,19 @@ describe('parseFieldChanges', () => {
 		for (const c of parsed) {
 			expect(c.from.length + c.to.length).toBeLessThan(100);
 		}
+	});
+
+	// The guard's OTHER error direction, pinned rather than left implicit: a
+	// fragment whose prose before the colon happens to be a single word still
+	// produces a pill. The guard removes the wall; it does not promise zero
+	// fragments, and no shape test could — the server joins with "; " and this
+	// splits on ";", so a value containing a semicolon is indistinguishable
+	// from two changes. IDEA-2790 is the durable fix (structured metadata).
+	it('does NOT catch a fragment whose apparent key is a single word', () => {
+		const parsed = parseFieldChanges('implementation_notes: → [map[details:Root; foo: a → b]]');
+		expect(parsed).toEqual([{ field: 'foo', from: 'a', to: 'b]]' }]);
+		// What matters is that the WALL is gone: the surviving pill is small.
+		expect(parsed[0].from.length + parsed[0].to.length).toBeLessThan(20);
 	});
 
 	it('refuses a segment whose field name is prose rather than a key', () => {
@@ -129,7 +142,22 @@ describe('parseFieldChanges', () => {
 			expect(formatChangesForDisplay(legacy)).toBe('status: open → done');
 		});
 
-		it('preserves a segment parseFieldChanges will not turn into a pill', () => {
+		it('normalizes separators and trims, rather than preserving bytes', () => {
+			// Named for what it does. Survivors keep their CONTENT, but the
+			// rejoin is canonical "; " and each segment is trimmed.
+			expect(formatChangesForDisplay('status:  open → done ;priority: low → high')).toBe(
+				'status:  open → done; priority: low → high',
+			);
+		});
+
+		it('loses the tail of a legitimate value containing a semicolon', () => {
+			// The format ambiguity from the other side, pinned so it is a known
+			// limit rather than a surprise: "a; b" cannot be told from two
+			// changes, and the orphaned tail fails the field-key rule.
+			expect(formatChangesForDisplay('status: open → a; b')).toBe('status: open → a');
+		});
+
+		it('keeps a segment parseFieldChanges will not turn into a pill', () => {
 			// More than one arrow: no pill, but it is a real change and the
 			// fallback exists to show exactly this.
 			const s = 'status: a → b → c; priority: low → high';

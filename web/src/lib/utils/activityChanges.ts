@@ -39,20 +39,37 @@ const SUPPRESSED_CHANGE_FIELDS = new Set(['implementation_notes', 'decision_log'
 // pill on those rows is 15 characters.
 //
 // The test is STRUCTURAL — non-empty, no whitespace, bounded length — rather
-// than a lowercase-identifier pattern. The first version of this guard was
+// than a lowercase-identifier pattern. The first version was
 // `^[a-z][a-z0-9_]*$` on the reasoning that the server emits schema keys plus
-// title/role/assigned, all lowercase. That reasoning was too strong: nothing
-// constrains a collection's field keys to lowercase (handlers_collections.go
-// compares them with a plain `==`, no case folding), so `Status` or
-// `resolution-v2` are legal keys whose pills that pattern would silently drop.
-// All 72 field keys in the live database happen to satisfy both forms, which
-// is why the measurement below could not tell them apart — a control that
-// shows a guard refuses nothing HERE is not evidence that it cannot refuse
-// something legitimate.
+// title/role/assigned, all lowercase. Too strong: nothing constrains a
+// collection's field keys to lowercase (handlers_collections.go compares them
+// with a plain `==`, no case folding), so `Status` or `resolution-v2` are
+// legal keys whose pills that pattern would silently drop. All 72 field keys
+// in the live database satisfy both forms, which is why the measurement below
+// could not tell them apart — a control showing a guard refuses nothing HERE
+// is not evidence that it cannot refuse something legitimate.
 //
-// Measured both ways on the same data: identical on the legacy rows (longest
-// surviving pill 15 chars, none over 200) and identical on 6000+ current-format
-// rows (6385 pills kept, zero dropped). Same effect, strictly smaller risk.
+// IT IS A HEURISTIC AND BOTH OF ITS ERROR DIRECTIONS ARE REAL. No shape test
+// can be exact here, because the format is ambiguous by construction: the
+// server joins with "; " and this splits on ";", so a value containing a
+// semicolon is indistinguishable from two changes. Concretely —
+//
+//   - a fragment whose prose before the colon is a single word still passes,
+//     so `…[map[details:Root; foo: a → b]]` yields a stray `foo` pill. What
+//     the guard removes is the WALL; it does not promise zero fragments.
+//   - a legitimate key containing a space, or longer than 64 characters, is
+//     droppable. Nothing validates key shape on collection create, so such a
+//     key can be persisted even though none exists today.
+//
+// The bound is chosen against the real corpus rather than in principle:
+// across the 97 legacy rows the longest surviving pill is 15 characters and
+// none exceeds 200 (from 2952 and 77 respectively), and across 6000+
+// current-format rows carrying 6385 pills it drops zero. Both figures are
+// measurements of THIS database, not guarantees.
+//
+// The durable fix is to stop parsing a display string at all — the server
+// would emit changes as structured metadata. That is IDEA-2790; it does not
+// help the legacy rows either way, since their metadata is already frozen.
 const MAX_FIELD_KEY_LENGTH = 64;
 
 function looksLikeFieldKey(field: string): boolean {
@@ -117,9 +134,16 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 // about. The fix has to be a property of the string, not of the pill list.
 //
 // Segments are dropped on the same two rules parseFieldChanges applies, and
-// every survivor is preserved VERBATIM — including ones parseFieldChanges
-// itself will not turn into a pill, such as a value containing more than one
-// arrow. That is the point of a fallback, and this keeps it working.
+// survivors keep their CONTENT — including segments parseFieldChanges itself
+// will not turn into a pill, such as a value containing more than one arrow.
+// That is the point of a fallback, and this keeps it working.
+//
+// Not byte-for-byte, and the difference is worth naming rather than calling
+// this verbatim: survivors are trimmed and rejoined with a canonical "; ", so
+// unusual boundary whitespace and separator spacing are normalized. A segment
+// that fails the two rules is removed, which means a legitimate value that
+// itself contains a semicolon loses the part after it — the same format
+// ambiguity described above, seen from the other side.
 export function formatChangesForDisplay(changesStr: string | undefined | null): string {
 	if (!changesStr) return '';
 	return changesStr
