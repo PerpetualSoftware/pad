@@ -353,6 +353,12 @@ func (s *Server) requireWorkspaceCreationConsent(w http.ResponseWriter, r *http.
 		// page (web console). A remedy that names a control the user
 		// cannot find is not a remedy; if either label is reworded, this
 		// message is part of that change.
+		//
+		// Both remedies are named because there are two: a fresh
+		// authorization, and flipping the flag on the EXISTING
+		// connection via PATCH /connected-apps/{id}/flags, which the
+		// console page drives. Saying only "re-authorize" would send a
+		// user through a longer path than they need.
 		writeError(w, http.StatusForbidden, "forbidden",
 			"This connection is not permitted to create workspaces. "+
 				"Re-authorize it with \"Let this app create new workspaces\" enabled, "+
@@ -461,14 +467,19 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 //     fall here until backfill).
 //   - The flag is off (user explicitly scoped out creation power at
 //     consent time or via the connections-page mutation UI). Since
-//     IDEA-2756 this branch is UNREACHABLE from the only caller —
-//     handleCreateWorkspace now refuses the create outright before it
-//     gets here, so a flag-off connection never reaches a create that
-//     could auto-add. It stays because this function's contract is "add
-//     only when the grant permits", and a helper whose safety depends on
-//     its single caller checking first is one refactor away from being
-//     wrong. It is dead code, not redundant logic: delete it only
-//     together with the guard.
+//     IDEA-2756 handleCreateWorkspace refuses a flag-off connection
+//     before it reaches here, so in the common case this branch does
+//     not fire — but it is NOT unreachable, and calling it dead would
+//     be wrong twice over. The gate reads the connection, and this
+//     function reads it AGAIN after the workspace is created; a user
+//     revoking creation power from /console/connected-apps in between
+//     (PATCH /connected-apps/{id}/flags) lands exactly here. So this is
+//     a real second check across a real TOCTOU window, and it fails in
+//     the safe direction: the workspace exists but does not silently
+//     join a connection whose grant was withdrawn mid-flight.
+//     (Codex round 3 caught the earlier "unreachable / dead code"
+//     claim in this comment. It was written from the call graph alone,
+//     which cannot see a concurrent write between two reads.)
 //
 // Errors are logged at WARN, never propagated. The caller's response
 // must not fail because of an auth-bookkeeping issue post-creation.

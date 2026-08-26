@@ -258,12 +258,18 @@ func TestCreateWorkspace_OAuthConnectionWithCreateConsent_CreatesAndAutoAdds(t *
 	}
 }
 
-// Control leg 2: a caller that is not an OAuth grant at all. PATs, CLI session
-// tokens and local stdio carry no request_id, so creation rides on ordinary
-// account authority and this flag has no opinion about it. A guard that read
-// the flag off the wrong identity source — or defaulted a missing one to
-// false — would break every CLI `pad init` on the platform, which is the most
+// Control leg 2: a caller that is not an OAuth grant. A guard that read the
+// flag off the wrong identity source — or defaulted a missing one to false —
+// would break every CLI `pad init` on the platform, which is the most
 // expensive way this change could go wrong.
+//
+// Scope of this fixture, stated because the name is broader than it: it drives
+// ONE non-OAuth caller, a PAT. CLI session tokens and local stdio are not
+// separately exercised. They are the same case by construction rather than by
+// coincidence — the guard branches on the MCP token identity, which only
+// MCPBearerAuth sets, so every caller that did not pass through it is
+// indistinguishable here. A second fixture would re-test the same branch.
+// (Codex round 3 flagged the original comment for claiming all three.)
 func TestCreateWorkspace_NonOAuthCallerUnaffected(t *testing.T) {
 	e := newConsentEnv(t, false)
 
@@ -330,6 +336,24 @@ func TestImportWorkspace_OAuthConnectionWithoutCreateConsent_403(t *testing.T) {
 	e.mustNotExist(t, "Imported-Refused")
 }
 
+// The JSON leg above proves the refusal but NOT its placement: it sends a valid
+// export, which a gate sitting after decodeJSONWithLimit would also refuse. This
+// leg sends a malformed body, so a gate below the decode answers 400 and only a
+// gate above it answers 403 — the same discrimination the create-side ordering
+// legs make, which the import side was missing. (Codex round 3.)
+func TestImportWorkspace_ConsentRefusalPrecedesBodyDecode(t *testing.T) {
+	e := newConsentEnv(t, false)
+
+	rr := e.do("POST", "/api/v1/workspaces/import?name=Malformed-Refused",
+		"application/json", []byte(`{"version":`), e.requestID)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 on a malformed import body from a connection "+
+			"that may not create (body=%s)", rr.Code, rr.Body.String())
+	}
+	e.mustNotExist(t, "Malformed-Refused")
+}
+
 // The gzip Content-Type branch dispatches to handleImportWorkspaceBundle from
 // inside handleImportWorkspace. The guard sits above that dispatch, so the
 // bundle path is covered by the same check — and a refused caller is turned
@@ -366,8 +390,10 @@ func TestImportWorkspace_WithCreateConsent_Imports(t *testing.T) {
 	e.mustExist(t, "Imported-Allowed")
 }
 
-// Control: a non-OAuth caller importing is unaffected, same reasoning as the
-// create-side PAT leg.
+// Control: a non-OAuth caller importing is unaffected — same reasoning, and the
+// same fixture scope, as the create-side PAT leg: one PAT stands for the whole
+// non-OAuth class because the guard branches on an identity only MCPBearerAuth
+// sets.
 func TestImportWorkspace_NonOAuthCallerUnaffected(t *testing.T) {
 	e := newConsentEnv(t, false)
 	body := e.exportBody(t)

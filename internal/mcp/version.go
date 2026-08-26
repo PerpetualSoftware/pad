@@ -635,11 +635,13 @@ const CmdhelpVersion = "0.1"
 //     Unlike v0.10 there is no `allow_draft`-style escape hatch, and
 //     deliberately so: the gate expresses a decision the USER made on
 //     the consent screen, so a parameter that let the caller bypass it
-//     would be the app overriding its own grant. The remedy is
-//     re-authorization, which only the user can perform — the refusal
-//     message says so, and instructions.md tells the agent not to retry
-//     and not to reach for the claim flow (there is nothing to claim
-//     when nothing was created).
+//     would be the app overriding its own grant. Both remedies are the
+//     USER's and neither is the app's: re-authorize, or enable the flag
+//     on the existing connection via PATCH /connected-apps/{id}/flags
+//     (the console page). The refusal message names both, and
+//     instructions.md tells the agent not to retry and not to reach for
+//     the claim flow (there is nothing to claim when nothing was
+//     created).
 //
 //     Ruled by Dave on IDEA-2756: the consent checkbox is a permission
 //     on whether the connected token may CREATE, and has to be true to
