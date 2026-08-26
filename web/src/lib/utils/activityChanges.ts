@@ -95,6 +95,21 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 // rather than as pills — the dashboard's recent-activity list, and the audit
 // page's fallback when nothing parsed.
 //
+// SCOPE, enumerated rather than sampled (BUG-2628 review round 2). This is a
+// DISPLAY rule, so it is applied where a human reads the string and nowhere
+// else. The REST endpoints, `--format json`, the bootstrap payload and the
+// MCP tools all return the activity metadata verbatim, and that is deliberate
+// and not an oversight: the row records THAT notes changed, the ruling was
+// about not showing it as a pill, and a client that wants the raw record must
+// still be able to get it. Sanitizing the wire would be the option the filing
+// rejected for destroying the original.
+//
+// Two human-facing surfaces are NOT covered here and are filed rather than
+// silently included: the CLI (`pad project activity`, `pad workspace
+// audit-log`) prints the string with no parsing at all, and the admin console
+// audit log renders it verbatim through a generic metadata fallback. Both are
+// Go / a different feature, and both need their own decision.
+//
 // Those surfaces are why suppressing inside parseFieldChanges alone does not
 // finish the job, and the audit page is the sharp case: it falls back to the
 // raw string when the parsed list is EMPTY, so suppressing every pill on a
