@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -153,5 +154,78 @@ func TestUpdateDocument_CascadeTreatsSoftDeletedLinkerAsDone(t *testing.T) {
 	}
 	if got == nil || got.Title != newTitle {
 		t.Errorf("target title = %v, want %q", got, newTitle)
+	}
+}
+
+// TestUpdateDocument_CascadeExhaustionRollsBackTheWholeRename pins the
+// disposition chosen when the retry budget runs out: the rename FAILS rather
+// than leaving one linker pointing at a title that no longer exists.
+//
+// The alternative considered was log-and-continue, which trades a loud
+// retryable failure for a silent inconsistency. Without this test that choice
+// is only a comment — and the comment is exactly the kind that stays true-
+// looking after someone changes the code under it.
+//
+// Exhaustion is forced by lowering the retry bound to 1 rather than by
+// arranging three consecutive commits, which would need a per-attempt hook in
+// production code. Same disposition, less test-only surface.
+func TestUpdateDocument_CascadeExhaustionRollsBackTheWholeRename(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("needs a write to commit inside the cascade's window, which SQLite's BEGIN IMMEDIATE prevents")
+	}
+	ws := createTestWorkspace(t, s, "CascadeExhaustion")
+
+	const originalTitle = "Epsilon"
+	target := createTestDoc(t, s, ws.ID, originalTitle, "the document being renamed")
+	linker := createTestDoc(t, s, ws.ID, "EpsilonLinker", "before [[Epsilon]] after")
+
+	restore := cascadeRewriteAttempts
+	cascadeRewriteAttempts = 1
+	defer func() { cascadeRewriteAttempts = restore }()
+
+	var once sync.Once
+	edited := "before [[Epsilon]] after — edit that beats the single attempt"
+	s.afterLinkCascadeRead = func(string) {
+		once.Do(func() {
+			if _, err := s.UpdateDocument(linker.ID, models.DocumentUpdate{Content: &edited}); err != nil {
+				t.Errorf("concurrent edit: %v", err)
+			}
+		})
+	}
+	defer func() { s.afterLinkCascadeRead = nil }()
+
+	newTitle := "Zeta"
+	_, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle})
+	if err == nil {
+		t.Fatal("rename succeeded after the cascade exhausted its retries; it must fail rather " +
+			"than leave a linker pointing at a title that no longer exists")
+	}
+	// The error has to be CLASSIFIABLE as contention, not just non-nil: the
+	// HTTP layer answers 503 + Retry-After on this sentinel and 500 otherwise,
+	// so losing the wrap turns a retryable outcome into "this will never work".
+	if !errors.Is(err, ErrLinkCascadeContention) {
+		t.Errorf("error does not wrap ErrLinkCascadeContention, so the HTTP layer will report an "+
+			"opaque 500 instead of a retryable 503: %v", err)
+	}
+
+	// Rollback: the target keeps its original title.
+	got, err := s.GetDocument(target.ID)
+	if err != nil {
+		t.Fatalf("GetDocument(target): %v", err)
+	}
+	if got.Title != originalTitle {
+		t.Errorf("target title = %q, want %q — the failed rename did not roll back", got.Title, originalTitle)
+	}
+
+	// And the concurrent editor's text is intact, which is the property this
+	// whole unit exists to protect. A rollback that also reverted the OTHER
+	// transaction's committed write would be a worse bug than the one fixed.
+	link, err := s.GetDocument(linker.ID)
+	if err != nil {
+		t.Fatalf("GetDocument(linker): %v", err)
+	}
+	if link.Content != edited {
+		t.Errorf("the concurrent edit did not survive the rolled-back rename.\n got: %q\nwant: %q", link.Content, edited)
 	}
 }

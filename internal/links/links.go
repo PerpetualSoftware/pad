@@ -161,24 +161,32 @@ func RewriteBracketAt(content string, position int, targetTitle, newTitle, collS
 	return content
 }
 
+// replaceAll substitutes every occurrence of old with new, scanning the INPUT
+// once rather than re-scanning its own output.
+//
+// The previous implementation looped `find old in result; splice new in` until
+// no match remained — re-searching the string it was building, including the
+// text it had just inserted. When `new` CONTAINS `old` that never terminates
+// and the string grows without bound.
+//
+// Reachable from a user-supplied document title, and measured rather than
+// argued: ReplaceTitle("x [[A]] y", "A", "A]] [[A") builds `[[A]] [[A]]`, which
+// still contains `[[A]]`, and a probe against the old implementation ran for 3s
+// without terminating before being killed. The caller is inside the rename
+// transaction AND holds the workspace rename advisory lock (BUG-2778), so the
+// hang would take out every other rename in that workspace behind it, on top of
+// exhausting memory in the one that triggered it.
+//
+// strings.Replace with n = -1 has the semantics that were actually wanted:
+// non-overlapping, left-to-right, over the input, so inserted text is never
+// re-examined. A title that re-embeds the old token now produces one
+// substitution per original occurrence and stops.
+//
+// Found by Codex round 2 on BUG-2785 while enumerating ways the cascade's retry
+// could fail to terminate. Pre-existing — but folded into that fix rather than
+// filed, because it is three lines against a server hang, and BUG-2785's retry
+// calls this helper again per attempt, which makes it reachable more often than
+// before.
 func replaceAll(s, old, new string) string {
-	// Simple string replacement, not regex-based
-	result := s
-	for {
-		i := indexOf(result, old)
-		if i < 0 {
-			break
-		}
-		result = result[:i] + new + result[i+len(old):]
-	}
-	return result
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+	return strings.Replace(s, old, new, -1)
 }

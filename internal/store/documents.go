@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -614,6 +615,16 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 	return nil
 }
 
+// ErrLinkCascadeContention reports that a rename's link cascade lost its
+// compare-and-set on the same linking document too many times in a row.
+//
+// It is a CONTENTION signal, not a fault: the rename rolled back cleanly and
+// retrying it can succeed. Exported so the HTTP layer can answer 503 with a
+// Retry-After instead of the 500 that "an internal error occurred" implies —
+// a caller told the request will never succeed will not retry, which is the
+// opposite of the truth here (codex round 2 on BUG-2785).
+var ErrLinkCascadeContention = errors.New("store: link cascade lost the compare-and-set")
+
 // cascadeRewriteAttempts bounds rewriteLinkerCAS's retry loop.
 //
 // Three, matching debounceMergeAttempts' reasoning rather than copying its
@@ -625,7 +636,13 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 // It is a LIVENESS bound, not a correctness one: correctness comes from the
 // compare-and-set predicate, which cannot write a stale body however many
 // attempts it is given.
-const cascadeRewriteAttempts = 3
+// A var rather than a const — deliberately diverging from its sibling
+// debounceMergeAttempts, which is a const — so a test can lower it to 1 and
+// drive exhaustion deterministically. Forcing exhaustion at 3 would need a
+// concurrent commit between each attempt, which needs a per-attempt hook in
+// production code; lowering the bound tests the same disposition with less
+// test-only surface. Never written outside tests.
+var cascadeRewriteAttempts = 3
 
 // rewriteLinkerCAS applies a title rewrite to one linking document, retrying
 // on a lost compare-and-set.
@@ -672,6 +689,25 @@ const cascadeRewriteAttempts = 3
 // distinguishes them, the same shape BUG-2770 needed for the same reason.
 // The probe reads through tx, never the pool: a pool read from inside a
 // transaction that holds row locks is BUG-2409's deadlock.
+//
+// WHAT THIS DOES NOT FIX, named because "the cascade is now safe" is the claim
+// that would rot silently (codex round 2 enumerated both):
+//
+//   - THE MIRROR DIRECTION. This stops the cascade losing a content writer's
+//     edit. It does not stop a content writer losing the CASCADE's rewrite: a
+//     writer that read the body BEFORE this transaction, then blocked on the
+//     row lock, commits its own unconditional UPDATE afterwards and reinstates
+//     the old title. Fixing that means giving ordinary content writes a
+//     compare-and-set too, which is a much wider change than a rename cascade
+//     and belongs to whoever takes it on.
+//   - DELETE-THEN-RESTORE. The ErrNoRows arm returns without taking a row
+//     lock, so a linker soft-deleted during the cascade and RESTORED before
+//     this transaction commits comes back holding the old title. RestoreDocument
+//     takes no rename lock, so nothing serializes it against this.
+//
+// Both are pre-existing and neither is made worse here. They are recorded
+// because the next reader's question is "is the cascade correct now", and the
+// honest answer is "for the direction this bug named".
 func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle string) error {
 	expected := read
 	next := rewritten
@@ -721,7 +757,11 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 	// rename is atomic in intent (either the title moves and its links follow,
 	// or neither). The user can retry a failed rename; nobody goes looking for
 	// a stale wiki-link.
-	return fmt.Errorf("store: link cascade lost the compare-and-set on document %s after %d attempts: the document is being edited concurrently", id, cascadeRewriteAttempts)
+	//
+	// Wrapped around ErrLinkCascadeContention so the HTTP layer can tell this
+	// from a genuine fault. It is CONTENTION, not a bug: retrying can succeed,
+	// and a 500 would tell the caller the opposite (codex round 2).
+	return fmt.Errorf("%w: document %s after %d attempts", ErrLinkCascadeContention, id, cascadeRewriteAttempts)
 }
 
 func (s *Store) DeleteDocument(id string) error {
