@@ -334,6 +334,32 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 			usedIDs[raw] = true
 			return raw
 		}
+		// A raw id that is only unusable because of its SHAPE gets a derived
+		// id rather than the positional fallback, so the entry keeps an
+		// identity tied to itself instead of to its index.
+		//
+		// This matters because the positional fallback is index-dependent and
+		// therefore unstable across mutations of the blob: inserting or
+		// removing an earlier entry renumbers every later one, and since the
+		// id is the cursor's tie-breaker, a renumbered entry can be skipped or
+		// re-shown across a page boundary. That instability predates this fix
+		// and still applies to entries with an ABSENT or DUPLICATE id, which
+		// have nothing else to derive from — but a UUID-shaped id does, and
+		// diverting those onto the positional path would have widened an
+		// existing hazard to a much larger population for no reason
+		// (codex round 2, P1).
+		//
+		// The prefix is what makes it safe: a row id is a bare UUID, so
+		// `note:<uuid>` cannot equal one. It is still run through the
+		// duplicate guard below, because a blob is free to contain a literal
+		// "note:<uuid>" string of its own.
+		if raw != "" && validCursorID(raw) && looksLikeRowID(raw) {
+			derived := prefix + ":" + raw
+			if !usedIDs[derived] {
+				usedIDs[derived] = true
+				return derived
+			}
+		}
 		id := fmt.Sprintf("%s-idx-%d", prefix, i)
 		for usedIDs[id] {
 			id += "x"
@@ -694,6 +720,17 @@ func validCursorID(v string) bool {
 //
 // So the test is the UUID SHAPE, not membership in any particular set — which
 // is what keeps the answer independent of which rows a given page fetched.
+//
+// SCOPE, because this is a property of the WRITERS and not of the schema: all
+// three tables declare `id TEXT PRIMARY KEY` with no format constraint, and
+// migrations carry existing ids across verbatim. A row whose id is not a UUID
+// — written by some future path that does not go through newID(), or already
+// present in a database this code has never seen — would be outside what this
+// refuses, and a blob id equal to it would collide again. Nothing here can
+// detect that without consulting the rows, which is the dependency the whole
+// design exists to avoid. It is latent rather than reachable through any
+// current write or import path (codex round 2, P2), and the enforcement that
+// would close it belongs at the writers or the schema, not here.
 // The cost is that a blob id that happens to be a well-formed UUID loses its
 // raw id even when nothing collides with it; that is accepted, because such an
 // id is indistinguishable from a colliding one without consulting the very

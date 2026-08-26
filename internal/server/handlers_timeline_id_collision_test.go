@@ -385,3 +385,57 @@ func TestTimeline_StructuredIDIsIndependentOfThePageWindow(t *testing.T) {
 			fullNotes[0].ID, narrowNotes[0].ID)
 	}
 }
+
+// TestTimeline_DivertedIDIsStableAcrossBlobMutations pins the property the
+// derived id exists for.
+//
+// A UUID-shaped raw id cannot be emitted as-is (it could equal a row id), but
+// it must not be pushed onto the POSITIONAL fallback either: that fallback
+// encodes the array index, so inserting an entry ahead of it renumbers it, and
+// the entry id is the cursor's tie-breaker. An entry whose id changes under an
+// unrelated insert can be skipped or re-shown across a page boundary.
+//
+// The assertion is that the same entry keeps the same id after another entry
+// is inserted BEFORE it — which holds for a derived id and cannot hold for a
+// positional one.
+func TestTimeline_DivertedIDIsStableAcrossBlobMutations(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	// A note whose id is UUID-shaped, so it takes the diverted path.
+	subject := "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+	one := `[{"id":"` + subject + `","summary":"the subject","created_at":"2026-04-02T11:00:00Z"}]`
+	item := timelineItemWithStructured(t, srv, ws, one, "")
+
+	first := fetchTimeline(t, srv, ws, item.Slug, "")
+	notes := entriesByKind(first.Entries, "note")
+	if len(notes) != 1 {
+		t.Fatalf("expected 1 note, got %d (kinds: %v)", len(notes), kindsOf(first.Entries))
+	}
+	before := notes[0].ID
+	if before == subject {
+		t.Fatalf("a UUID-shaped raw id must not be emitted as-is; got %q", before)
+	}
+
+	// Insert another note AHEAD of it. Under a positional id this renumbers
+	// the subject from index 0 to index 1.
+	two := `[{"summary":"inserted ahead, no id","created_at":"2026-04-02T10:00:00Z"},
+	         {"id":"` + subject + `","summary":"the subject","created_at":"2026-04-02T11:00:00Z"}]`
+	patchItemFields(t, srv, ws, item.Slug, `{"status":"open","implementation_notes":`+two+`}`)
+
+	second := fetchTimeline(t, srv, ws, item.Slug, "")
+	var after string
+	for _, e := range entriesByKind(second.Entries, "note") {
+		if e.Note != nil && e.Note.Summary == "the subject" {
+			after = e.ID
+		}
+	}
+	if after == "" {
+		t.Fatalf("the subject note is missing after the insert; kinds: %v", kindsOf(second.Entries))
+	}
+	if after != before {
+		t.Errorf("the subject note's id changed from %q to %q when an unrelated entry was inserted "+
+			"ahead of it; the id is the cursor's tie-breaker, so it must not depend on array position",
+			before, after)
+	}
+}
