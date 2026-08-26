@@ -473,13 +473,22 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 //     be wrong twice over. The gate reads the connection, and this
 //     function reads it AGAIN after the workspace is created; a user
 //     revoking creation power from /console/connected-apps in between
-//     (PATCH /connected-apps/{id}/flags) lands exactly here. So this is
-//     a real second check across a real TOCTOU window, and it fails in
-//     the safe direction: the workspace exists but does not silently
-//     join a connection whose grant was withdrawn mid-flight.
-//     (Codex round 3 caught the earlier "unreachable / dead code"
-//     claim in this comment. It was written from the call graph alone,
-//     which cannot see a concurrent write between two reads.)
+//     (PATCH /connected-apps/{id}/flags) lands exactly here, and the
+//     workspace then exists without silently joining a connection whose
+//     grant was withdrawn mid-flight.
+//
+//     What this check does NOT do is close that window — it narrows it.
+//     The read below and the AddConnectionWorkspace insert after it are
+//     separate unconditional statements, so a revocation landing between
+//     THEM still adds the workspace. That residual race is BUG-2792:
+//     pre-existing, unchanged by IDEA-2756, and needing an atomic
+//     check-and-insert at the store layer rather than another read here.
+//
+//     (Codex round 3 caught the earlier "unreachable / dead code" claim
+//     in this comment — written from the call graph alone, which cannot
+//     see a concurrent write between two reads. Round 4 then caught the
+//     replacement claiming more safety than the code delivers. Both
+//     errors were the same shape in opposite directions.)
 //
 // Errors are logged at WARN, never propagated. The caller's response
 // must not fail because of an auth-bookkeeping issue post-creation.
