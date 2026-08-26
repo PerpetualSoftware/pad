@@ -57,8 +57,23 @@ func pathErrorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
 // as its logic — a direct call would pass even if nobody had wired it into
 // the chain (CONVE-19).
 //
-// Every case is a 400 before any handler runs. Against unfixed code these
-// are 500 on Postgres and 404 on SQLite; either way, not 400.
+// Every case is a 400 before any handler runs.
+//
+// What this test proves is that claim and no more. It does NOT reproduce
+// the unfixed behaviour, and the sweep it comes from found no single
+// answer to replace it with. The pre-fix distribution across 247 probes on
+// Postgres, pasted from the run:
+//
+//	500: 191   404: 34   403: 12   401: 4   503: 4   400: 2
+//
+// The 56 non-500s are routes whose authorization or configuration gate
+// answers before any store call is reached — admin user lookup, the
+// attachment routes on a server with no storage configured. "These were
+// all 500 before" would have been the tidier sentence and false for
+// nearly a quarter of the table.
+//
+// The 500 is reproduced deliberately in one place, on the backend where it
+// happens: TestValidatePathPostgresNoInternalError below.
 func TestValidatePathRejectsUnbindablePathText(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)

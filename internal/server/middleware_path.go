@@ -20,12 +20,15 @@ import (
 // an operator's alerting reads it as the server breaking when a client sent
 // a path that cannot name anything.
 //
-// Measured before this middleware existed, driving every GET route that
-// carries a path parameter with one segment set to "bad-%FF-x" (111 probes,
-// one per parameter position, real values in the other positions):
-// Postgres answered 500 to 94 of them, SQLite to 0. This is a cross-cutting
-// input rule, not a per-handler bug, which is why it lives here rather than
-// at ~112 `chi.URLParam` call sites that each have to remember.
+// Measured before this middleware existed, driving every route that carries
+// a path parameter with one segment set to "bad-%FF-x" — one request per
+// parameter position, real values in the other positions. GET routes alone:
+// 111 probes, Postgres answered 500 to 94, SQLite to 0. All methods: 247
+// probes, Postgres 191, SQLite 0. (Both figures appear in this branch's
+// history; they are the same sweep at two widths, not a disagreement.) This
+// is a cross-cutting input rule, not a per-handler bug, which is why it
+// lives here rather than at ~112 `chi.URLParam` call sites that each have
+// to remember.
 //
 // WHY THE DECODED PATH, not what chi hands the handler. chi routes on
 // r.URL.RawPath when it is non-empty and on r.URL.Path otherwise, and Go
@@ -45,15 +48,25 @@ import (
 //
 // It cannot refuse Pad's own URLs. Every path segment Pad emits is ASCII:
 // slugs come from store.slugify, which appends only [a-z0-9-]; ids are
-// UUIDs or hex; issue refs are a collection prefix plus digits. A path
-// segment that is valid UTF-8 — including non-ASCII — is passed through
-// untouched, because the database accepts it and it may legitimately name
-// something.
+// UUIDs or hex; issue refs are a collection prefix plus digits.
 //
-// 400 rather than 404: the request is malformed as a URI, and the answer
+// A path whose decoded form is valid UTF-8 — including non-ASCII — is left
+// for the router to handle, unchanged by this middleware. That is a
+// statement about THIS middleware only, and not a promise that the handler
+// sees the decoded text: by the RawPath rule above, "caf%C3%A9" reaches
+// URLParam as "café" while the non-canonical "caf%c3%a9" reaches it as the
+// literal text "caf%c3%a9", and an escaped "%2F" never becomes a separator.
+// That is chi's pre-existing behaviour, unaffected either way by this
+// change; it is written down here because the obvious reading of "passes
+// through" is stronger than what is true.
+//
+// 400 rather than 404: not because the URI is malformed — "%FF" and "%00"
+// are syntactically valid percent-encoded octets — but because the decoded
+// value cannot be a resource identifier in this system at all. The answer
 // does not depend on whether anything exists, so it is not an existence
 // oracle. Scope is the PATH only; the query string is validated at its
-// points of use (BUG-2774's validCursorID is the model this follows).
+// points of use (BUG-2774's validCursorID is the model this follows), and
+// is measurably still open at the time of writing — see BUG-2784.
 //
 // The rejection must not be shaped differently from the errors the API
 // writes for itself. Because this runs at the root, it short-circuits
@@ -93,10 +106,26 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 }
 
 // validPathText reports whether a decoded request path can be bound into a
-// text comparison at all. It rejects exactly what the DATABASE rejects
-// rather than what a path "should" look like — no length bound, no
+// text comparison. The rule is derived from what the database refuses
+// rather than from what a path "should" look like — no length bound, no
 // character allow-list — for the reason validCursorID records: a bound that
 // can only fire on a legitimate value is not protection.
+//
+// "What the database refuses" is narrower than it sounds, and the phrasing
+// inherited from validCursorID overstated it. Postgres rejects these two
+// classes when the database encoding is UTF8; under SQL_ASCII it would
+// accept the same bytes. Pad does not create or configure that database —
+// nothing here issues CREATE DATABASE or sets client_encoding, so the
+// encoding is the operator's. UTF8 is initdb's default and is what the
+// measurements above were taken against (postgres:17-alpine, defaults).
+// SQLite is looser again: sqlite3_bind_text accepts arbitrary byte
+// sequences, and an embedded NUL truncates or is otherwise undefined
+// rather than erroring.
+//
+// So this is not the intersection of two engines' rules, and it is not a
+// rule the database hands us. It is the strictest reading, applied
+// uniformly at the transport, so that a request cannot get one answer on
+// SQLite and another on Postgres — which is the actual defect being fixed.
 func validPathText(p string) bool {
 	return utf8.ValidString(p) && !strings.ContainsRune(p, 0)
 }

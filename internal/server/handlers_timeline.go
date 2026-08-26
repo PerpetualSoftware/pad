@@ -622,9 +622,16 @@ func exhaustedWindowCursor(
 // validCursorID reports whether a caller-supplied `before_id` can be bound
 // into the cursor predicate at all.
 //
-// It rejects exactly what the DATABASE rejects rather than what an id
-// "should" look like. Postgres refuses a text parameter that is not valid
-// UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx surfaces
+// The rule is derived from what the database refuses rather than from what
+// an id "should" look like. (It said "exactly what the DATABASE rejects"
+// until BUG-2782 checked that claim and found it too strong: Postgres
+// refuses these two classes under a UTF8 database encoding, not under
+// SQL_ASCII, and SQLite's bind_text accepts arbitrary bytes outright. The
+// rule here is unchanged and still right — it is the stricter reading,
+// applied so the two backends stop disagreeing — only the sentence was
+// wrong. See ValidatePath in middleware_path.go, which inherited both the
+// rule and the overstatement.) Postgres refuses a text parameter that is
+// not valid UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx surfaces
 // that as a query error, which this handler turns into a 500 — an operator's
 // alerting reads that as the server breaking when a client sent a bad cursor.
 // SQLite accepts both and simply matches nothing, so the same request is a
