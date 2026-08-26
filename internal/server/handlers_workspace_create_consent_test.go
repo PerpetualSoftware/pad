@@ -16,24 +16,40 @@ import (
 //
 // The OAuth consent screen's `may_create_workspaces` checkbox used to gate
 // only maybeAutoAddCreatorConnection's allow-list insert: a connection whose
-// user left the box unticked could still create workspaces, it just could not
-// then see them. The ruling: the checkbox is a permission on whether the
+// user left the box unticked could still create workspaces — invisible to it
+// when the connection carried an explicit allow-list, visible when it carried
+// the all_current_workspaces wildcard, and unconsented either way. The ruling: the checkbox is a permission on whether the
 // connected token may CREATE, so an unset flag refuses outright with a 403,
 // mirroring handleAuditLog's consent refusal (BUG-2102).
 //
-// Two doors mint a workspace under the caller's account, both guarded here by
-// the shared requireWorkspaceCreationConsent helper:
+// Two doors let an OAuth-bound caller mint a workspace, both guarded here by
+// the shared requireWorkspaceCreationConsent helper. (Not every path to
+// store.CreateWorkspace: autoCreateWorkspace mints one at signup, outside this
+// gate and deliberately so — no OAuth connection is in context there.)
 //
 //   - POST /api/v1/workspaces        — handleCreateWorkspace
 //   - POST /api/v1/workspaces/import — handleImportWorkspace, which reaches
 //     CreateWorkspace via store.ImportWorkspace, and whose gzip Content-Type
 //     branch dispatches to handleImportWorkspaceBundle from inside itself.
 //
-// Every refusal leg asserts the WRONG behaviour's observable consequence — that
-// no workspace by that slug exists afterwards — and not merely the status code
-// (CONVE-12). A guard that 403s AFTER store.CreateWorkspace would pass a
-// status-only assertion while leaving the workspace behind, which is the exact
-// failure this endpoint's users would report.
+// Every refusal leg whose request COULD have created something asserts the
+// wrong behaviour's observable consequence — that no workspace of that NAME
+// exists afterwards — and not merely the status code (CONVE-12). A guard that
+// 403s AFTER store.CreateWorkspace would pass a status-only assertion while
+// leaving the workspace behind, which is the exact failure this endpoint's
+// users would report.
+//
+// The two ORDERING legs are the deliberate exception, and adding the assertion
+// there would be worse than omitting it: a malformed body and an empty name are
+// rejected before creation under every guard placement, so "no such workspace
+// exists" is true of broken and working code alike. Those legs discriminate on
+// the STATUS instead — 400 if the gate is late, 403 if it is early — which is
+// the only signal that separates the two placements. (Round 8 flagged the
+// original blanket claim; the first fix added the vacuous assertions, which is
+// the failure that claim was warning about.)
+//
+// By NAME rather than by slug: the name is what the request supplies verbatim,
+// while the slug is derived differently on the two paths (see lookupByName).
 //
 // Everything drives the real router via srv.ServeHTTP rather than calling the
 // handler directly, so the tests have an opinion about the ROUTE and not only
@@ -58,9 +74,12 @@ func newConsentEnv(t *testing.T, mayCreate bool) *consentEnv {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	// The PAT needs a workspace to bind to, and the handler under test is the
-	// one that makes workspaces — so seed this one through the store directly.
-	// It is the token's home, never the workspace any test asserts about.
+	// A PAT does not require a workspace (CreateAPIToken takes WorkspaceID as
+	// optional), but binding one keeps this fixture close to a real CLI token
+	// and gives the auth chain something ordinary to resolve. Seeded through
+	// the store directly because the handler under test is the one that makes
+	// workspaces. It is the token's home, never the workspace any test asserts
+	// about.
 	home, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
 		Name: "Consent Home", OwnerID: user.ID,
 	})
@@ -91,9 +110,16 @@ func newConsentEnv(t *testing.T, mayCreate bool) *consentEnv {
 }
 
 // do issues a request with Bearer PAT auth. When requestID is non-empty the
-// request context is decorated with an OAuth grant identity AFTER TokenAuth
-// runs, which is what makes the caller look like an OAuth-bound MCP session.
-// Mirrors handlers_oauth_claim_test.go's doClaim.
+// request context is decorated with an OAuth grant identity, which is what
+// makes the caller look like an OAuth-bound MCP session.
+//
+// The wrapper sets the identity BEFORE srv.ServeHTTP, so it is in place before
+// TokenAuth runs — and survives, because nothing on the /api/v1 chain writes
+// that context key. Only MCPBearerAuth does, and it is mounted on /mcp alone.
+// (The sibling helper this is modelled on, handlers_oauth_claim_test.go's
+// doClaim, describes the same wrapper as decorating the context "AFTER
+// TokenAuth runs"; that ordering claim is wrong for both, and the mechanism
+// works for the reason given above instead.)
 func (e *consentEnv) do(method, path, contentType string, body []byte, requestID string) *httptest.ResponseRecorder {
 	var req *http.Request
 	if body != nil {
@@ -128,9 +154,10 @@ func (e *consentEnv) createWorkspace(name, requestID string) *httptest.ResponseR
 // lookupByName finds a workspace by its NAME rather than its slug. Name is
 // what the request supplies verbatim; slug is derived, and the derivation
 // differs between the create path (normalizeWorkspaceInput) and the import
-// path (which takes the ?name= override as the slug and lets CreateWorkspace
-// normalize it). Asserting on the name keeps these tests about the guard
-// instead of about slugification.
+// path, which passes the ?name= override through as the SLUG — and
+// CreateWorkspace slugifies only when the supplied slug is empty, so an
+// imported workspace keeps that value verbatim. Asserting on the name keeps
+// these tests about the guard instead of about slug derivation.
 func (e *consentEnv) lookupByName(t *testing.T, name string) *models.Workspace {
 	t.Helper()
 	all, err := e.srv.store.ListWorkspaces()
@@ -419,4 +446,5 @@ func TestCreateWorkspace_RefusalMessageNamesTheRemedy(t *testing.T) {
 	if !strings.Contains(strings.ToLower(body), "re-authorize") {
 		t.Errorf("refusal message does not tell the caller how to fix it: %s", body)
 	}
+	e.mustNotExist(t, "Message WS")
 }

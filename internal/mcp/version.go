@@ -623,8 +623,13 @@ const CmdhelpVersion = "0.1"
 //   - "0.26" — current. IDEA-2756: `pad_workspace.action=create` is now
 //     REFUSED with a 403 when the calling OAuth connection's grant has
 //     `may_create_workspaces=false`. Previously that flag gated only the
-//     post-creation auto-add, so the create succeeded and the agent was
-//     handed a workspace it could not then see.
+//     post-creation auto-add, so the create succeeded — and on a
+//     connection with an EXPLICIT workspace allow-list the agent was
+//     handed a workspace it could not then see. (Not universal: a
+//     connection with `all_current_workspaces=true` is not gated per
+//     slug, so it could see what it made. The consent mismatch is the
+//     constant across both; the invisibility was only its most visible
+//     symptom.)
 //
 //     BEHAVIOR bump, not a shape one — no tool name, action enum, or
 //     parameter changed. Same grounds as v0.25 (activation destination),

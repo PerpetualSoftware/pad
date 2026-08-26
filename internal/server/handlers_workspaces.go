@@ -291,10 +291,18 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// requireWorkspaceCreationConsent gates every endpoint that MINTS a
-// workspace under the caller's account on the calling OAuth connection's
-// `may_create_workspaces` grant. Returns true when the request may
-// proceed; on false it has already written the response.
+// requireWorkspaceCreationConsent gates a request that MINTS a workspace
+// on the calling OAuth connection's `may_create_workspaces` grant.
+// Returns true when the request may proceed; on false it has already
+// written the response.
+//
+// Two callers, which are the two endpoints an OAuth-bound caller can
+// mint through: handleCreateWorkspace and handleImportWorkspace. NOT
+// every path to store.CreateWorkspace — autoCreateWorkspace
+// (handlers_cloud.go) mints a workspace during registration, bootstrap
+// and OAuth-login, and is deliberately outside this gate: it runs at
+// signup with no OAuth connection in context, provisioning the user's
+// own first workspace rather than acting for a connected app.
 //
 // Ruled by Dave on IDEA-2756 (2026-08-26): the consent screen's "may
 // create workspaces" checkbox is a permission on whether the connected
@@ -316,10 +324,13 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 //   - Not an OAuth grant (PAT, CLI session token, local stdio — no
 //     request_id in context). Creation rides on ordinary account
 //     authority; this flag has no opinion about it.
-//   - ErrOAuthConnectionNotFound — a pre-Phase-C grant whose row has
-//     not been backfilled yet. The backfill mints these with
-//     may_create_workspaces ON (oauth_connections_backfill.go), so
-//     allowing here is that same default applied early, not a gap.
+//   - ErrOAuthConnectionNotFound — no connection row for this grant.
+//     The expected cause is a pre-Phase-C grant not yet backfilled, and
+//     the backfill mints those with may_create_workspaces ON
+//     (oauth_connections_backfill.go), so allowing here is that same
+//     default applied early rather than a gap. Stated as the expected
+//     cause and not the only one, because the code cannot tell them
+//     apart: any missing row takes this branch.
 //     Note the deliberate asymmetry with maybeAutoAddCreatorConnection,
 //     which treats not-found as "no auto-add": that path is declining a
 //     convenience, this one would be inventing a refusal.
@@ -795,8 +806,12 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// may_create_workspaces grant decides it. Ruled with the create-side
 	// gate on IDEA-2756. It sits ABOVE the Content-Type dispatch so it
 	// covers the tar.gz bundle path too — handleImportWorkspaceBundle is
-	// reachable only from here, so this is its only door — and above the
-	// 64 MiB body read, so a refused caller never uploads a bundle.
+	// reachable only from here, so this is its only door — and above
+	// either body read, so a refused caller never uploads anything. The
+	// two reads have different bounds (the JSON path's 64 MiB
+	// decodeJSONWithLimit, the bundle path's own configurable and much
+	// larger limit); the gate precedes both, which is the property that
+	// matters here.
 	//
 	// Reachability, stated precisely because the create-side gate's is
 	// different: NO OAuth-bound caller can reach this handler today. The
