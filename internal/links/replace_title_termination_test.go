@@ -11,10 +11,12 @@ import (
 // searched again. When the NEW title contains the OLD link token that never
 // terminates and the string grows without bound.
 //
-// The caller runs inside the rename transaction while holding the workspace
-// rename advisory lock (BUG-2778), so a hang here does not merely wedge one
-// request: it holds that lock and blocks every other rename in the workspace
-// behind it while exhausting memory.
+// The caller runs inside the rename transaction, so a hang here does not merely
+// wedge one request — it holds that transaction open while exhausting memory.
+// On Postgres it also holds the workspace rename advisory lock (BUG-2778) and
+// blocks every other rename in the workspace; on SQLite that lock is a no-op
+// and the transaction's own BEGIN IMMEDIATE write lock does the equivalent
+// damage.
 //
 // Found by Codex round 2 on BUG-2785, while enumerating the ways the cascade's
 // retry loop could fail to terminate.

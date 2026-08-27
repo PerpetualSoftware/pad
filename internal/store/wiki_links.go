@@ -525,8 +525,11 @@ func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
 //     on Postgres and an ordinary content edit cannot commit inside
 //     this window at all. The one writer that can is
 //     RemapAttachmentReferencesInWorkspace, which rewrites items.content
-//     in its own transaction without that lock — narrow, and tracked as
-//     BUG-2795), re-stamp
+//     in its own transaction without that lock. That writer is missing a
+//     guard outright — it races ordinary item edits too, reachable during
+//     a bundle import while the workspace is already visible to its owner
+//     — so the fix belongs there, at BUG-2797, and BUG-2795 tracks this
+//     cascade's pairing as a consequence of it), re-stamp
 //     updated_at + content_flushed_at, bump the workspace seq, and
 //     re-run replaceWikiLinks so the source's own index rows refresh
 //     with the new literal AND the new target_item_id resolution.
