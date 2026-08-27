@@ -410,7 +410,18 @@ func (b *RedisBus) cycleIfIdle() {
 
 // resubscribe installs a fresh subscription and receive loop.
 func (b *RedisBus) resubscribe() error {
-	pubsub := b.client.Subscribe(b.ctx, b.keys.Name(redisWatchChannelSuffix))
+	// ISSUED WHERE THE ERROR IS VISIBLE (BUG-2764): Client.Subscribe with
+	// channels discards the SUBSCRIBE write's error (go-redis v9.22.0,
+	// redis.go), so a refused or dropped command used to come back as a
+	// healthy-looking PubSub and surface only as the confirmation below
+	// timing out five seconds later, with a deadline error that named the
+	// wrong thing. With no channels the first call neither dials nor writes;
+	// the second does both and says what happened.
+	pubsub := b.client.Subscribe(b.ctx)
+	if err := pubsub.Subscribe(b.ctx, b.keys.Name(redisWatchChannelSuffix)); err != nil {
+		_ = pubsub.Close()
+		return err
+	}
 
 	confirmCtx, cancelConfirm := context.WithTimeout(b.ctx, 5*time.Second)
 	defer cancelConfirm()

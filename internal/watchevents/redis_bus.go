@@ -453,36 +453,51 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 		heartbeatKick:     make(chan struct{}, 1),
 		idleKick:          make(chan struct{}, 1),
 	}
-	// Eager subscription — see the type comment (2).
-	b.pubsub = client.Subscribe(ctx, keys.Name(redisWatchChannelSuffix))
-
-	// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
-	// establishes the subscription asynchronously, so without this the
-	// constructor hands back a bus that is not yet listening — and Redis
-	// pub/sub is at-most-once, so everything published in that window is
-	// lost to this instance, silently.
-	//
-	// Found as a test flake (a second bus constructed and published to
-	// immediately received nothing), which is exactly the shape a rolling
-	// deploy has: a replica comes up, and traffic reaches it before its
-	// subscription is live. The window is small and entirely real.
-	//
-	// A failure here is logged rather than fatal: the receive loop's
-	// ChannelWithSubscriptions() re-subscribes on reconnect, so a bus that
-	// missed its first confirmation still recovers — it just cannot promise
-	// it was listening from the moment it was constructed.
-	//
-	// THIS RECEIVE IS LOAD-BEARING FOR receiveMessages, which has no
-	// "skip the first confirmation" flag precisely because this consumes the
-	// initial one. Removing it makes every bus announce a hole at startup.
-	// See that function's comment, and TestNoCoverageIsDroppedAtStartup,
-	// which fails if this line goes away.
-	subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer subCancel()
-	if _, err := b.pubsub.Receive(subCtx); err != nil {
-		slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
-			"notifications published before it establishes will be missed by this instance",
+	// Eager subscription — see the type comment (2). Issued in two calls so
+	// the SUBSCRIBE write's error is visible (BUG-2764; see resubscribe): a
+	// refused command used to be indistinguishable from a healthy one here
+	// and surfaced only as the confirmation wait below timing out. The bus is
+	// still constructed on failure — the same non-fatal contract as an
+	// unconfirmed subscription — but the cause is logged at once and the
+	// five-second wait for an acknowledgement that cannot come is skipped.
+	b.pubsub = client.Subscribe(ctx)
+	if err := b.pubsub.Subscribe(ctx, keys.Name(redisWatchChannelSuffix)); err != nil {
+		slog.Warn("watchevents: Redis refused or dropped the SUBSCRIBE at construction; "+
+			"this instance receives no notifications until the subscription is re-established",
 			"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+	} else {
+		// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
+		// establishes the subscription asynchronously, so without this the
+		// constructor hands back a bus that is not yet listening — and Redis
+		// pub/sub is at-most-once, so everything published in that window is
+		// lost to this instance, silently.
+		//
+		// Found as a test flake (a second bus constructed and published to
+		// immediately received nothing), which is exactly the shape a rolling
+		// deploy has: a replica comes up, and traffic reaches it before its
+		// subscription is live. The window is small and entirely real.
+		//
+		// A failure here is logged rather than fatal: the receive loop's
+		// ChannelWithSubscriptions() re-subscribes on reconnect, so a bus that
+		// missed its first confirmation still recovers — it just cannot promise
+		// it was listening from the moment it was constructed.
+		//
+		// THIS RECEIVE IS LOAD-BEARING FOR receiveMessages, which has no
+		// "skip the first confirmation" flag precisely because this consumes the
+		// initial one. Removing it makes every bus announce a hole at startup.
+		// See that function's comment, and TestNoCoverageIsDroppedAtStartup,
+		// which fails if this line goes away. Skipped only when the SUBSCRIBE
+		// itself failed above: there is then no initial acknowledgement to
+		// consume, and the first one the loop ever sees — after a
+		// re-establishment — IS a resubscription, so announcing a hole for it
+		// is the truth.
+		subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
+		if _, err := b.pubsub.Receive(subCtx); err != nil {
+			slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
+				"notifications published before it establishes will be missed by this instance",
+				"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+		}
+		subCancel()
 	}
 
 	subLoopCtx, subLoopCancel := context.WithCancel(ctx)
