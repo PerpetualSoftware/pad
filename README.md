@@ -614,6 +614,13 @@ make install    # Build, install to ~/.local/bin, restart server
 
 See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
+**Pushes into agent sessions are consent-gated.** `pad push` (and the web push composer) puts an item — and a message — in front of a running Claude Code session as direction from its own user. That is deliberate terminal instruction injection, so since v0.15.0 (PLAN-2613) receiving it is opt-in per session, not a side effect of installing the plugin:
+
+- **No consent, no stream.** Nothing streams and nothing listens — watches and pushes alike — until the session consents (the plugin's always-on wrapper only registers presence and exits). `/pad:connect` arms the session locally and starts the monitor, which announces the armed state when its stream connects; `/pad:disconnect` withdraws; `/pad:status` reports the state. A repo can opt its sessions in at start with `push.auto_arm = true` in `.pad.toml` — an explicit file edit, never a machine-global default, and vetoable per user in `~/.pad/config.toml`.
+- **Self-addressed only.** The server forces every push's target to the caller's own sessions; nobody can push into a session that isn't theirs. Delivery is filtered to armed sessions, and the surfaces are honest about it: the web composer shows the split ("2 connected, 0 accepting pushes") and withholds a send it knows nobody would accept; a CLI broadcast still publishes and reports `delivered_sessions` (in JSON output), and a targeted push to a session that is not accepting skips the publish rather than pretending.
+- **No grandfathering.** Updating the plugin replaces the v0.14 always-on monitor with the gated one for everyone. Sessions that used to receive pushes receive none until they connect; the web composer's counts make that visible rather than silent.
+- **The accepted caveat.** An agent can run the arm command from inside its own session. That is visible in the transcript, within the operator's sight: the gate protects sessions from the outside and does not police the inside. A push can inject text; it cannot click a permission prompt.
+
 ## License
 
 [Apache License 2.0](LICENSE)
