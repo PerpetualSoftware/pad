@@ -47,31 +47,44 @@ func TestAFailedSubscriptionIsRefusedWithARetryableStatus(t *testing.T) {
 
 	slug := createTestWorkspace(t, ts.URL, "Test")
 
-	resp, err := http.Get(ts.URL + "/api/v1/events?workspace=" + slug)
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
+	// BOTH BRANCHES of the handler's subscribe (codex round 5 on BUG-2764):
+	// a fresh connection goes through SubscribeIfAllowed, a resume through
+	// SubscribeAndReplaySince, and each has its own call site that could
+	// have missed the mapping.
+	for name, lastID := range map[string]string{"fresh": "", "resume": "7"} {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/events?workspace="+slug, nil)
+		if err != nil {
+			t.Fatalf("%s: new request: %v", name, err)
+		}
+		if lastID != "" {
+			req.Header.Set("Last-Event-ID", lastID)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: GET: %v", name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Retry-After"); got == "" {
-		t.Fatal("no Retry-After on a refusal the client is meant to retry")
-	}
-	body, _ := io.ReadAll(resp.Body)
-	var payload struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("body is not the JSON error shape: %v (%q)", err, body)
-	}
-	if payload.Error.Code != "subscription_failed" {
-		t.Fatalf("error code = %q, want subscription_failed (body %q)", payload.Error.Code, body)
-	}
-	if held := srv.admission().heldTotal(); held != 0 {
-		t.Fatalf("admission slots held after the refusal = %d, want 0", held)
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status = %d, want 503 (body %q)", name, resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("Retry-After"); got == "" {
+			t.Fatalf("%s: no Retry-After on a refusal the client is meant to retry", name)
+		}
+		var payload struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("%s: body is not the JSON error shape: %v (%q)", name, err, body)
+		}
+		if payload.Error.Code != "subscription_failed" {
+			t.Fatalf("%s: error code = %q, want subscription_failed (body %q)", name, payload.Error.Code, body)
+		}
+		if held := srv.admission().heldTotal(); held != 0 {
+			t.Fatalf("%s: admission slots held after the refusal = %d, want 0", name, held)
+		}
 	}
 }

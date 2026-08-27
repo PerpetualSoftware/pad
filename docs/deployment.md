@@ -915,11 +915,15 @@ workspace's subscription, so:
   discards the error from a `SUBSCRIBE` issued through `Client.Subscribe`, so a
   failed subscribe yielded a connection that looked live and was subscribed to
   nothing, and only a later reconnect or the detector's next pass (phase 2)
-  ever replaced it. Pad now
-  issues the `SUBSCRIBE` where its error is visible: a failed one installs
-  nothing, is logged with the error, and its callers are refused with a 503
-  (`subscription_failed`, `Retry-After`) rather than admitted into a stream
-  that would carry nothing — on both phases, with no detector involved.
+  ever replaced it. Pad now issues the `SUBSCRIBE` where its error is
+  visible: a failed one installs nothing and is logged with the error. On the
+  **activity stream** (`/api/v1/events`) its callers are then refused with a
+  503 (`subscription_failed`, `Retry-After`) rather than admitted into a
+  stream that would carry nothing — on both phases, with no detector
+  involved. The **watch stream** cannot refuse yet: its bus has no failure
+  outcome, so a watch client on an instance whose single subscription could
+  not be established is still admitted and hears nothing (BUG-2800); phase 2
+  re-establishes on the next maintenance pass, phase 1 does not.
 
 **What to watch.** On the activity bus,
 `pad_event_subscription_cycled_total` — expect zero. Read it rather than that
