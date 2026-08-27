@@ -13,8 +13,10 @@ import (
 // Every handler that resolves a workspace, collection, item, comment or
 // attachment from a path segment hands that segment to the store verbatim,
 // and the store binds it into a text comparison. Postgres refuses a text
-// parameter that is not valid UTF-8 or that contains a NUL (SQLSTATE 22021
-// / 22P05) and the driver surfaces that as a query error. MOST handlers
+// parameter that is not valid UTF-8 — under a UTF8 database encoding; see
+// bindableText for the encoding table and what governs it — or that
+// contains a NUL, under any encoding (SQLSTATE 22021 / 22P05), and the
+// driver surfaces that as a query error. MOST handlers
 // turn that into a 500, which is the defect; not all do, and the claim is
 // deliberately not universal — handlers that collapse a resolution error
 // into not-found already answer 404 (see handlers_timeline.go's
@@ -153,10 +155,27 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 // while `SELECT length(E'bad-\x00-x')` errors with `invalid byte sequence
 // for encoding "SQL_ASCII": 0x00`. So SQL_ASCII relaxes the encoding check,
 // not the NUL rule — a NUL terminates a C string and no encoding makes it
-// storable in a text column. Pad does not create or configure that database —
-// nothing here issues CREATE DATABASE or sets client_encoding, so the
-// encoding is the operator's. UTF8 is initdb's default and is what the
-// measurements above were taken against (postgres:17-alpine, defaults).
+// storable in a text column.
+//
+// WHAT GOVERNS IS THE DATABASE'S ENCODING, NOT THE CONNECTION'S. A review
+// round argued the invalid-UTF-8 row is really about a permissive
+// client_encoding; measured on the same container, it is not — the server
+// encoding decides both ways:
+//
+//	SQL_ASCII db, client_encoding=SQL_ASCII → length 7 (accepted)
+//	SQL_ASCII db, client_encoding=UTF8      → length 7 (accepted)
+//	UTF8 db,      client_encoding=SQL_ASCII → ERROR: invalid byte sequence
+//	                                          for encoding "UTF8": 0xff
+//
+// Pad does not create or configure that database — nothing here issues
+// CREATE DATABASE or sets client_encoding, so the encoding is the
+// operator's. For completeness, what Pad's own connections declare was
+// measured rather than assumed: `SHOW client_encoding` over the pgx pool
+// this store opens reports UTF8, against a UTF8 server. initdb's default
+// encoding is LOCALE-dependent rather than always UTF8, so a self-hoster
+// can end up on either row of the table above; the measurements in this
+// file were taken against postgres:17-alpine at its image defaults, which
+// give UTF8.
 // SQLite is looser again: sqlite3_bind_text accepts arbitrary byte
 // sequences, and an embedded NUL truncates or is otherwise undefined
 // rather than erroring.
@@ -192,8 +211,13 @@ func bindableText(s string) bool {
 // UTF-8 with no NUL. Every legitimate value in this system is text, and
 // text is valid UTF-8 in any language; a byte sequence that is not valid
 // UTF-8 is not text that got narrowed, it is not text at all. So the rule
-// rejects exactly what Postgres refuses in a parameter and nothing a
-// client can legitimately send.
+// refuses nothing a client can legitimately send — which is the claim that
+// matters here. It is NOT "exactly what Postgres refuses": it is stricter
+// in two known ways, both deliberate and both written down rather than
+// glossed. It refuses invalid UTF-8 that a SQL_ASCII database would have
+// accepted (see bindableText's table), and it refuses a bad byte sitting
+// in a query pair that url.ParseQuery discards, which no handler would
+// ever have seen (see validQueryText).
 //
 // Measured on Postgres 17 (server_encoding UTF8) at 19330410, before this
 // middleware existed: 8 GET endpoints x 54 parameter names — every name any
@@ -263,11 +287,13 @@ func ValidateQuery(decorate func(http.Handler) http.Handler) func(http.Handler) 
 // runs over the whole raw query before any decoding, so a bad byte sitting
 // inside a pair that ParseQuery would DROP still rejects the request — e.g.
 // `search=ok&ignored=<NUL>%`, where no handler could ever see the NUL.
-// Kept, for two reasons. It is the only check that sees a raw unescaped
-// byte in a pair the decode step DISCARDS — a raw byte in a pair that
-// survives parsing reaches bindableText through the loop below as well, so
-// "the only check that sees a raw 0xff" would be too strong; the dropped
-// pairs and the fast path are where it is the only one. And a legitimate
+// Kept, for two reasons. It is the ONLY check that runs at all on the fast
+// path, and the only one that sees a raw unescaped byte in a pair the
+// decode step DISCARDS. It is not the only check in general — when the
+// decode step runs, a raw byte in a pair that SURVIVES parsing reaches
+// bindableText through the loop below too — so neither "the only check
+// that sees a raw 0xff" nor "everything surviving reaches the loop" is
+// true on its own; which one applies depends on the fast path. And a legitimate
 // request has no such byte anywhere in its query whether or not the pair
 // carrying it survives parsing, so the extra strictness can only fire on a
 // request that was already malformed — the safe direction to be wrong in.

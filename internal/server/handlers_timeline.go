@@ -746,8 +746,11 @@ func exhaustedWindowCursor(
 // wrong. See ValidatePath in middleware_request_text.go, which inherited
 // both the rule and the overstatement; bindableText there is this same
 // predicate, and BUG-2784 gave it a second caller over the query string.)
-// Postgres refuses a text parameter that is not valid UTF-8 or that contains
-// a NUL (SQLSTATE 22021 / 22P05), and pgx surfaces that as a query error.
+// Postgres refuses a text parameter that is not valid UTF-8 when the
+// DATABASE encoding is UTF8 — bindableText's comment carries the measured
+// encoding table, including that the connection's client_encoding is not
+// what decides — and refuses an embedded NUL under any encoding (SQLSTATE
+// 22021 / 22P05). pgx surfaces either as a query error.
 //
 // STILL LIVE, despite BUG-2784's transport rule subsuming the query-string
 // caller above. Two of this function's three call sites (see entryID's loop
