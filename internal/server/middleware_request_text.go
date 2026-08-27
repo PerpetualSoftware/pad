@@ -75,8 +75,14 @@ import (
 // and must keep working, which is exactly what the rule permits and what
 // TestValidatePathAllowsValidText pins with an emoji segment.
 //
-// A path whose decoded form is valid UTF-8 — including non-ASCII — is left
-// for the router to handle, unchanged by this middleware. That is a
+// A path whose decoded form is valid UTF-8 AND CARRIES NO NUL — including
+// non-ASCII — is left for the router to handle, unchanged by this
+// middleware. The NUL half of that sentence is not redundant and was
+// missing until BUG-2784's ninth review round: a NUL IS valid UTF-8, so
+// "valid UTF-8 passes" is false for exactly the inputs the second half of
+// bindableText exists to catch. The reject message a few lines below says
+// the same thing in the other direction and has said so since BUG-2782 —
+// this sentence simply did not match it. That is a
 // statement about THIS middleware only, and not a promise that the handler
 // sees the decoded text: by the RawPath rule above, "caf%C3%A9" reaches
 // URLParam as "café" while the non-canonical "caf%c3%a9" reaches it as the
