@@ -158,12 +158,13 @@ const (
 	SubscribeCancelled
 
 	// SubscribeFailed means this instance could not open a Redis subscription
-	// for the workspace — the SUBSCRIBE itself failed (BUG-2764) — and the
-	// caller's registration has been undone. Unlike an acknowledgement that
-	// merely arrives late (admitted, counted, reconciled when it lands), this
-	// is a stream that would never carry anything, so it is refused: the
-	// client can reconnect, and a refusal it can see beats a silence it
-	// cannot. MemoryBus never returns it.
+	// for the workspace — the SUBSCRIBE could not be delivered (BUG-2764), or
+	// the bus is shutting down — and the caller's registration has been
+	// undone. Unlike an acknowledgement that merely arrives late (admitted,
+	// counted, reconciled when it lands), this is a stream that would never
+	// carry anything, so it is refused: the client can reconnect, and a
+	// refusal it can see beats a silence it cannot. MemoryBus never returns
+	// it.
 	SubscribeFailed
 )
 

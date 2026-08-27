@@ -1607,13 +1607,14 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	// in THIS critical section (codex round 2, both P1s; BUG-2764 for the
 	// third).
 	//
-	// SUBSCRIBE failed: there is no subscription to install — Redis never
-	// received the command — so installing the PubSub would be installing a
-	// receive loop that can only ever time out. The callers are not admitted
-	// into it: the establisher and every joiner find no live subscription and
-	// no record when their loop ends and return SubscribeFailed, after the
-	// loop's one built-in retry has had its go. The record is retired here
-	// for exactly the reason the other two retire theirs.
+	// SUBSCRIBE failed: the client could not deliver the command (a refused
+	// dial, a write that failed, a caller's context ending mid-dial), so
+	// there is no subscription to install and the PubSub would only carry a
+	// receive loop that can never be acknowledged. Nobody is admitted into
+	// it: once the loop's one built-in retry has had its go, a caller whose
+	// loop ends with no live subscription and no record returns
+	// SubscribeFailed. The record is retired here for exactly the reason the
+	// other two retire theirs.
 	//
 	// Nobody left: everyone who wanted this workspace disconnected while we
 	// were dialling. Installing now would leave a receive loop and a Redis

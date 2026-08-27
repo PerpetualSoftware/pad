@@ -263,9 +263,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	case events.SubscribeFailed:
 		// This instance could not open the workspace's Redis subscription
-		// (BUG-2764): the stream would carry nothing, so refuse it and let
-		// the client reconnect rather than hold a connection that looks live.
-		// The bus has already logged the cause with the error.
+		// (BUG-2764), or is shutting down: the stream would carry nothing,
+		// so refuse it and let the client reconnect rather than hold a
+		// connection that looks live. A Redis failure is logged by the bus
+		// with its error; a shutdown is quiet by design.
 		slog.Warn("SSE subscribe refused: no Redis subscription could be established", "workspace", ws.Slug)
 		w.Header().Set("Retry-After", "5")
 		writeError(w, http.StatusServiceUnavailable, "subscription_failed", "Event subscription could not be established; retry shortly")
