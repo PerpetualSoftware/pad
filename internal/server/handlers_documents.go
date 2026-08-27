@@ -66,8 +66,8 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Title == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "Title is required")
+	if msg := models.ValidateDocumentTitle(input.Title); msg != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
 	if input.DocType != "" && !models.IsValidDocType(input.DocType) {
@@ -137,6 +137,16 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A title write here is the RENAME door — the one that cascades into every
+	// linking document — so it carries the same validation as create. Update
+	// had none at all before BUG-2798/BUG-2796: doc_type and status were
+	// checked and the field that drives the cascade was not.
+	if input.Title != nil {
+		if msg := models.ValidateDocumentTitle(*input.Title); msg != "" {
+			writeError(w, http.StatusBadRequest, "bad_request", msg)
+			return
+		}
+	}
 	if input.DocType != nil && !models.IsValidDocType(*input.DocType) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid doc_type")
 		return
@@ -165,6 +175,21 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// 500 would be actively misleading — it says the request will never
 		// work. Distinguished by sentinel rather than message text, because
 		// this one is ours to name (codex round 2).
+		// A projected-output refusal is PERMANENT-shaped, and must not join
+		// the retryable family below it. Retrying this rename unchanged fails
+		// identically until the workspace's content changes, so it gets a 4xx
+		// with no Retry-After — and it carries the projection, because the
+		// only actionable information is what was projected against what is
+		// allowed. 413 follows this codebase's own precedent for a bound on
+		// output rather than on the request body (`image_too_large` in
+		// handlers_attachments_transform.go, where the request is likewise
+		// small and the thing refused is what it would produce).
+		if errors.Is(err, store.ErrRenameCascadeTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
+				"This rename would rewrite more linked content than the server will process in one operation. "+
+					"Reduce the number of documents linking this title, or shorten the new title, and try again. ("+err.Error()+")")
+			return
+		}
 		if isRetryableLockError(err) || errors.Is(err, store.ErrLinkCascadeContention) {
 			w.Header().Set("Retry-After", "1")
 			// Deliberately does NOT name the holder. The previous wording said

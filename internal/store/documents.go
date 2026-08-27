@@ -585,11 +585,39 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		rewritten string
 	}
 	var updates []docUpdate
+	var projected int64
 	for rows.Next() {
 		var du docUpdate
 		if err := rows.Scan(&du.id, &du.read); err != nil {
 			return err
 		}
+
+		// Project this linker's rewritten size BEFORE building it, and refuse
+		// on the running TOTAL across the linking set (BUG-2798).
+		//
+		// The quantity is exact rather than an estimate: strings.Replace
+		// substitutes every non-overlapping occurrence, so the output is
+		// len(read) + occurrences * (len(new) - len(old)) to the byte.
+		//
+		// The total is the right thing to bound, and a per-document cap would
+		// not be. Measured: with the title bound in place, one linker holding
+		// the largest body a 2 MiB request can carry projects 108,632,370
+		// bytes — 51.8x — and the cascade holds EVERY rewritten body in
+		// `updates` before it writes any of them, so k linkers hold k times
+		// that (measured linear at k = 1/2/4). A per-document cap of C still
+		// admits k * C, which is the same unbounded shape one level up.
+		//
+		// Refusing here rather than after the loop is what makes the bound
+		// real: at the moment of refusal the process holds the linkers already
+		// projected (under the cap by construction) plus this one row's body,
+		// and none of the amplified output.
+		occurrences := int64(strings.Count(du.read, searchTerm))
+		projected += int64(len(du.read)) + occurrences*int64(len(newTitle)-len(oldTitle))
+		if projected > MaxRenameCascadeProjectedBytes {
+			return fmt.Errorf("%w: renaming to %q projects at least %d bytes across linked documents, maximum %d",
+				ErrRenameCascadeTooLarge, newTitle, projected, MaxRenameCascadeProjectedBytes)
+		}
+
 		du.rewritten = links.ReplaceTitle(du.read, oldTitle, newTitle)
 		updates = append(updates, du)
 	}
@@ -624,6 +652,50 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 // a caller told the request will never succeed will not retry, which is the
 // opposite of the truth here (codex round 2 on BUG-2785).
 var ErrLinkCascadeContention = errors.New("store: link cascade lost the compare-and-set")
+
+// ErrRenameCascadeTooLarge reports that a rename was refused because the work
+// it projects across linking documents exceeds
+// MaxRenameCascadeProjectedBytes.
+//
+// Deliberately NOT in ErrLinkCascadeContention's family, and the distinction
+// is the caller-visible one: contention means "someone else got there first,
+// try again"; this means "this rename cannot be performed as asked, and
+// retrying it unchanged will fail identically until the workspace's content
+// changes." One wants 503 + Retry-After, the other a permanent 4xx carrying
+// the projection so the caller can see what it asked for. Blurring the two
+// vocabularies would tell a client to retry forever (BUG-2798, lead ruling
+// day-63).
+var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the projected-output bound")
+
+// MaxRenameCascadeProjectedBytes bounds the TOTAL bytes a single rename may
+// project across every document linking the renamed title.
+//
+// 16 MiB, and the basis is measured rather than picked:
+//
+//   - Legitimate ceiling. In this development instance's database — a mature
+//     workspace set, 206 MB on disk — the ENTIRE corpus of wiki-linking
+//     content is 2,949 items totalling 10,077,476 bytes (largest single body
+//     86,147 bytes). That is the absolute ceiling on any conceivable single
+//     cascade there: it assumes every wiki-linking document links the one
+//     title being renamed, which no real workspace does. 16 MiB is above
+//     that impossible worst case, so the guard cannot fire on honest use.
+//     (Measured on `items`, the live surface; the `documents` table in that
+//     instance is empty, which is why the proxy — the two carry the same kind
+//     of content through the same kind of cascade.)
+//   - Hostile floor. A single linking document holding the largest body a
+//     2 MiB request can carry projects 108,632,370 bytes once the title bound
+//     is in place — 6.5x this cap — so the attack is refused at k = 1 and
+//     every k above it, rather than at some threshold count of documents.
+//   - Cost of the bound itself. The cascade holds read and rewritten bodies
+//     concurrently, so the cap is a promise about resident memory: at most
+//     ~2x this per in-flight rename, which is a bounded, budgetable number
+//     for a server that previously had none.
+//
+// The gap between the two figures is deliberate and wide: a cap has to be far
+// enough above real use that nobody meets it by accident, and far enough
+// below the hazard that meeting it costs nothing. 16 MiB is ~1.6x the former
+// and ~0.15x the latter.
+const MaxRenameCascadeProjectedBytes = 16 << 20
 
 // cascadeRewriteAttempts bounds rewriteLinkerCAS's retry loop.
 //
