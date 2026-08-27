@@ -260,8 +260,14 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 //
 // When beforeID is empty (first page / no cursor), the secondary id tie-breaker
 // is omitted. Earlier code passed a "\xff" sentinel intended to sort after any
-// UUID, but Postgres rejects that as an invalid UTF-8 byte sequence in a TEXT
-// bind parameter (SQLSTATE 22021). See BUG-1086.
+// UUID, but a UTF8 Postgres rejects that as an invalid UTF-8 byte sequence in a
+// TEXT bind parameter (SQLSTATE 22021). See BUG-1086.
+//
+// The UTF8 qualifier is load-bearing: a SQL_ASCII database ACCEPTS those bytes
+// (BUG-2784 measured both; the table is in internal/server's bindableText
+// comment). So the sentinel was not universally fatal — it was fatal on the
+// encoding most deployments run, and silently fine on the other, which is
+// exactly the kind of dialect divergence that makes a bug look unreproducible.
 func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Comment, error) {
 	ts := before.Format(time.RFC3339)
 	const orderLimit = `ORDER BY c.created_at DESC, c.id DESC LIMIT ?`
