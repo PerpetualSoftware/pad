@@ -56,6 +56,7 @@ func assertQueryVectorIntact(t *testing.T, target string) {
 // and what keeps it reachable as evidence is the mutation matrix, since
 // unwiring ValidateQuery fails TestValidateQueryPostgresNoInternalError.
 func TestValidateQueryRejectsUnbindableQueryText(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -127,6 +128,7 @@ func TestValidateQueryRejectsUnbindableQueryText(t *testing.T) {
 // A middleware that answered 400 to any query with a percent-escape, or to
 // anything non-ASCII, would pass the test above and break real clients.
 func TestValidateQueryAllowsValidText(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -164,6 +166,7 @@ func TestValidateQueryAllowsValidText(t *testing.T) {
 // asserts the decoded value reached the handler intact by requiring it to
 // MATCH an item it can only match if it did.
 func TestValidateQueryDeliversEscapedUnicodeToTheHandler(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -213,6 +216,7 @@ func TestValidateQueryDeliversEscapedUnicodeToTheHandler(t *testing.T) {
 // is the more specific fault; swapping the two Use() calls flips the code and
 // fails here.
 func TestValidateQueryRunsAfterValidatePath(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	target := "/api/v1/workspaces/" + badPathSeg + "/items?search=" + badQueryVal
 	assertPathVectorIntact(t, target)
@@ -237,6 +241,7 @@ func TestValidateQueryRunsAfterValidatePath(t *testing.T) {
 // the assertion is parity with the API's own responses rather than a list of
 // header names copied from a spec — the same construction the path half uses.
 func TestValidateQueryRejectionLooksLikeEveryOtherAPIError(t *testing.T) {
+	t.Parallel()
 	const allowed = "https://app.example.com"
 
 	srv := testServer(t)
@@ -334,6 +339,7 @@ func TestValidateQueryPostgresNoInternalError(t *testing.T) {
 }
 
 func TestValidQueryText(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -383,6 +389,7 @@ func TestValidQueryText(t *testing.T) {
 // disagreement here means the reasoning in validQueryText's comment is
 // wrong, not merely that a case was missed.
 func TestValidQueryTextFastPathAgreesWithTheSlowPath(t *testing.T) {
+	t.Parallel()
 	slow := func(rawQuery string) bool {
 		q, _ := url.ParseQuery(rawQuery)
 		for key, values := range q {
