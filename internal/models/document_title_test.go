@@ -80,8 +80,6 @@ func TestDocumentTitleValidationMatchesTheRoundTripProperty(t *testing.T) {
 		// them breaks anything.
 		{"open bracket", `Alpha[Beta`},
 		{"double open bracket", `Alpha[[Beta`},
-		{"literal pipe", `Alpha|Beta`},
-		{"lone backslash", `Alpha\Beta`},
 		{"collection-qualified shape", `collection/Title`},
 		{"colons", `Ratio 1:2`},
 		{"ordinary punctuation", `Title (draft) — v2`},
@@ -149,6 +147,37 @@ func TestDocumentTitleLengthBoundCountsRunesNotBytes(t *testing.T) {
 		}
 		if !tc.accept && msg == "" {
 			t.Errorf("%s: accepted, want rejected", tc.name)
+		}
+	}
+}
+
+// TestDocumentTitleRejectsFormsTheCascadeCannotFind covers the two characters
+// whose refusal the round-trip property above does NOT explain — and that gap
+// is the finding, not an oversight in the table.
+//
+// `Alpha|Beta` and `Alpha\Beta` both round-trip perfectly: the renderer reads
+// each back as exactly the title it started from. The first version of this
+// validator accepted them for precisely that reason, and it was wrong (codex
+// round 9). A link to such a title can be STORED in escaped form —
+// `[[Alpha\|Beta]]` — which the rename cascade, searching for the raw
+// `[[Alpha|Beta]]`, will not find. The rename then succeeds and leaves those
+// links pointing at a title that no longer exists.
+//
+// So the property a title must satisfy is stricter than "the renderer reads it
+// back": it must also be one whose links the cascade can FIND. Validating
+// against the display layer while the maintenance layer disagrees is the same
+// mistake as the unescaped LIKE, met from the other side.
+func TestDocumentTitleRejectsFormsTheCascadeCannotFind(t *testing.T) {
+	for _, title := range []string{`Alpha|Beta`, `Alpha\Beta`} {
+		// The premise: each of these DOES round-trip. If that ever stops being
+		// true they are rejected for the ordinary syntax reason and this test
+		// is no longer testing what it says.
+		if !roundTrips(title) {
+			t.Fatalf("premise: %q must round-trip, or its rejection needs no separate justification", title)
+		}
+		if ValidateDocumentTitle(title) == "" {
+			t.Errorf("ValidateDocumentTitle(%q) accepted a title whose links the cascade cannot find; "+
+				"a rename would leave them stale", title)
 		}
 	}
 }

@@ -54,9 +54,12 @@ func TestDocumentTitleValidation_IsWiredOnBothWriteDoors(t *testing.T) {
 
 		// Controls. Without these a handler that rejected every title — or
 		// one that rejected any title containing punctuation — passes the
-		// legs above.
+		// legs above. (`Alpha|Beta` was a control here until codex round 9:
+		// it renders correctly but its links can be stored in a form the
+		// cascade cannot find, so it moved to the refused side. The remaining
+		// controls carry the load.)
 		{"at the length bound", strings.Repeat("a", models.MaxDocumentTitleRunes), http.StatusOK},
-		{"contains a literal pipe", `Alpha|Beta`, http.StatusOK},
+		{"contains a literal pipe", `Alpha|Beta`, http.StatusBadRequest},
 		{"ordinary", "A Renamed Document", http.StatusOK},
 	} {
 		t.Run("update/"+tc.name, func(t *testing.T) {

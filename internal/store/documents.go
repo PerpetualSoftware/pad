@@ -948,6 +948,8 @@ var cascadeRewriteAttempts = 3
 func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle, searchTerm string, scanTotal int64) error {
 	expected := read
 	next := rewritten
+	// Total charged by retries so far — see the accumulation below.
+	var retriesSpent int64
 	for attempt := 0; attempt < cascadeRewriteAttempts; attempt++ {
 		res, err := tx.Exec(s.q(`
 			UPDATE documents SET content = ?
@@ -985,7 +987,16 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 		// rename straight back into the amplification it was refused for
 		// (BUG-2798, codex round 1 P1).
 		grownOccurrences := int64(strings.Count(current, searchTerm))
-		grown := cascadeRetainedBytes(current, grownOccurrences, oldTitle, newTitle)
+		// ACCUMULATED across attempts, not just this one. Each retry's
+		// buffers become unreachable when `expected`/`next` are reassigned
+		// below, but unreachable is not the same as reclaimed — the runtime
+		// may not have collected them yet, so a run of failures can hold
+		// several copies at once (codex round 9). Counting every attempt is
+		// the conservative reading, and it errs toward refusing, which is the
+		// safe direction for a memory bound. The loop is capped at
+		// cascadeRewriteAttempts, so this cannot accumulate without end.
+		retriesSpent += cascadeRetainedBytes(current, grownOccurrences, oldTitle, newTitle)
+		grown := retriesSpent
 		if scanTotal+grown > MaxRenameCascadeRetainedBytes {
 			// Report the AGGREGATE, not this body alone. The bodies the scan
 			// counted are still held, so the operation's real size is their

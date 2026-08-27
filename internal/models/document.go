@@ -122,28 +122,29 @@ const MaxDocumentTitleRunes = 255
 //     with the first `]` of the terminator and the bracket never closes.
 //
 //  2. THE UNESCAPER (markdown.ts:753, `\\(\\|\]|\|)` → `$1`): resolution
-//     unescapes the body before comparing it to a title. A title containing
-//     `\\` or `\|` is emitted raw, unescaped on the way back in, and the
-//     result no longer equals the title — so the link resolves to nothing,
-//     or to a different document.
+//     unescapes the body before comparing it to a title, and the editor may
+//     therefore STORE a link in escaped form. That matters twice over: a
+//     title containing `\\` or `\|` emitted raw comes back as a different
+//     string, AND a link stored as `[[Alpha\|Beta]]` is invisible to the
+//     rename cascade, which searches for the raw `[[Alpha|Beta]]` only.
+//
+// The second half is why `|` and a lone `\` are refused (codex round 9),
+// having been ALLOWED in the first version of this validator. The property
+// tested there was "does the renderer read this back as the same title", and
+// both characters pass it. That was the wrong property: a title also has to be
+// one whose links the cascade can FIND, or a rename silently leaves them
+// pointing at a name that no longer exists. The stricter property is the one
+// that matters, and it is the same mistake as validating against the renderer
+// while the cascade used an unescaped LIKE — checking the layer that displays
+// a title instead of the layer that has to maintain it.
 //
 // Deliberately NOT rejected, because the code these titles pass through
 // handles them and refusing them would be a validator inventing a defect:
 //
 //   - `[` — the grammar excludes only `]` and `\`, so `[[A[B]]` carries the
-//     body `A[B` intact. BUG-2796's filing proposed rejecting "`[[` or `]]`";
-//     measured against the grammar, the `[[` half of that is overreach.
-//   - `|` — resolveWikiBody tries a FULL-BODY title match before the pipe
-//     split, a branch whose comment says it exists precisely to handle
-//     "stored legacy titles that contain a literal `|`". Banning it would
-//     refuse what that branch was written to support.
-//   - a lone `\` not followed by `\`, `]` or `|` — passes the grammar as an
-//     escape pair and survives the unescaper unchanged. Note this one depends
-//     on store.escapeLikePattern: the rename cascade finds linking documents
-//     with `content LIKE`, where Postgres reads `\` as an escape character, so
-//     before that escaping landed a backslash title rendered fine and then
-//     silently failed to cascade on one dialect. Allowing it here is only
-//     correct while the cascade's pattern stays escaped.
+//     body `A[B` intact, and the cascade's search term matches it literally.
+//     BUG-2796's filing proposed rejecting "`[[` or `]]`"; measured against
+//     the grammar, the `[[` half of that is overreach.
 //
 // Boundary, stated rather than papered over: this is derived from the SHARED
 // stored-syntax path in markdown.ts. The legacy documents surface has no
@@ -158,9 +159,10 @@ func wikiTitleRoundTripFailure(title string) string {
 		return `Title may not end with "\" — it would escape the closing bracket of the [[wiki-links]] that point ` +
 			`at this document`
 	}
-	if strings.Contains(title, `\\`) || strings.Contains(title, `\|`) {
-		return `Title may not contain "\\" or "\|" — those are escape sequences in [[wiki-link]] syntax, so the ` +
-			`links that point at this document would resolve to a different title`
+	if strings.ContainsAny(title, `\|`) {
+		return `Title may not contain "\" or "|" — a link to a title containing them can be stored in ` +
+			`escaped form, which the rename cascade would not find, silently leaving those links pointing ` +
+			`at a title that no longer exists`
 	}
 	return ""
 }
