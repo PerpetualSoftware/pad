@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -1144,6 +1145,58 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 	}
 
 	b.mu.Lock()
+	// A CALLER WHOSE LOOP ENDED WITH NOTHING BEHIND ITS CHANNEL HAS FAILED
+	// (BUG-2764). The two abandon reasons that predate this check only fire
+	// when there is nobody to tell — the workspace emptied, or the bus is
+	// closing — so a channel wired to nothing was harmless. A failed
+	// SUBSCRIBE abandons with callers still registered, and this is the only
+	// place every one of them passes through, establisher and joiner alike,
+	// after the loop's built-in retry.
+	//
+	// AN IN-FLIGHT RECORD IS WAITED ON, NOT TAKEN AS SUCCESS (codex round 1
+	// P2): an idle cycle re-establishing in its dial window owns one, and
+	// this caller's registration is served only if that attempt installs —
+	// so the caller waits for it and looks again, and returns failed only
+	// when there is neither a live subscription nor anyone still trying.
+	//
+	// A CLOSED BUS IS A REFUSAL TOO (codex round 1 P2). Close drains the
+	// subscriber maps; a caller that registers after that holds a channel
+	// nothing will ever close, and a handler holding it would outlive the
+	// shutdown. Nothing this instance can promise is worth a 200 here.
+	for {
+		if b.ctx.Err() != nil {
+			b.unsubscribeLocked(sub.ch)
+			b.mu.Unlock()
+			resuming = false
+			return nil, nil, nil, SubscribeFailed
+		}
+		// PENDING BEFORE WSSUBS, the same order section 1 uses and for the
+		// same reason (codex round 2 P1): a replacement installs its wsSubs
+		// entry BEFORE Redis acknowledges it and holds its record until the
+		// acknowledgement lands, so "live" alone can be a subscription in its
+		// unconfirmed window. A record in flight is waited on first; only a
+		// live entry with nobody establishing is a subscription to return.
+		p, inFlight := b.pendingSubs[workspaceID]
+		if !inFlight {
+			if _, live := b.wsSubs[workspaceID]; live {
+				break
+			}
+			b.unsubscribeLocked(sub.ch)
+			b.mu.Unlock()
+			resuming = false
+			return nil, nil, nil, SubscribeFailed
+		}
+		b.mu.Unlock()
+		select {
+		case <-p.done:
+		case <-ctx.Done():
+			b.Unsubscribe(sub.ch)
+			resuming = false
+			return nil, nil, nil, SubscribeCancelled
+		case <-b.ctx.Done():
+		}
+		b.mu.Lock()
+	}
 	defer b.mu.Unlock()
 	if b.afterSubscribeRegister != nil {
 		b.afterSubscribeRegister()
@@ -1529,7 +1582,20 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	//
 	// The cancellation check below is repeated after the dial anyway: it costs
 	// nothing and does not depend on the dialer being the one we think it is.
-	pubsub := b.client.Subscribe(dialCtx, channel)
+	//
+	// ISSUED WHERE THE ERROR IS VISIBLE (BUG-2764). Client.Subscribe with
+	// channels discards the write's error — go-redis v9.22.0, redis.go:
+	// `_ = pubsub.Subscribe(ctx, channels...)` — so a SUBSCRIBE that failed to
+	// reach Redis (dial refused, connection dying mid-command, the caller's
+	// context ending mid-dial) came back as a PubSub indistinguishable from a
+	// healthy one. It was then installed, its acknowledgement never arrived,
+	// and its callers were admitted as an unconfirmed subscription promised a
+	// reconcile that could never come: a stream subscribed to nothing, for
+	// the life of the process on heartbeat phase 1. With no channels the
+	// first call neither dials nor writes; the second does both and returns
+	// what happened.
+	pubsub := b.client.Subscribe(dialCtx)
+	subscribeErr := pubsub.Subscribe(dialCtx, channel)
 	subCtx, subCancel := context.WithCancel(b.ctx)
 
 	if b.beforeInstallSubscription != nil {
@@ -1537,8 +1603,18 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	}
 
 	b.mu.Lock()
-	// TWO REASONS TO ABANDON, and both must retire the establishment record in
-	// THIS critical section (codex round 2, both P1s).
+	// THREE REASONS TO ABANDON, and all must retire the establishment record
+	// in THIS critical section (codex round 2, both P1s; BUG-2764 for the
+	// third).
+	//
+	// SUBSCRIBE failed: the client could not deliver the command (a refused
+	// dial, a write that failed, a caller's context ending mid-dial), so
+	// there is no subscription to install and the PubSub would only carry a
+	// receive loop that can never be acknowledged. Nobody is admitted into
+	// it: once the loop's one built-in retry has had its go, a caller whose
+	// loop ends with no live subscription and no record returns
+	// SubscribeFailed. The record is retired here for exactly the reason the
+	// other two retire theirs.
 	//
 	// Nobody left: everyone who wanted this workspace disconnected while we
 	// were dialling. Installing now would leave a receive loop and a Redis
@@ -1583,12 +1659,23 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 	if establisher != nil && ctx.Err() != nil {
 		b.unsubscribeLocked(establisher.ch)
 	}
-	if b.wsCounts[workspaceID] == 0 || b.ctx.Err() != nil {
+	if subscribeErr != nil || b.wsCounts[workspaceID] == 0 || b.ctx.Err() != nil {
 		b.retirePendingLocked(workspaceID, pending)
 		b.mu.Unlock()
 		subCancel()
 		_ = pubsub.Close()
 		close(pending.done)
+		// Logged after the unlock, and only for the reason that is a fault:
+		// an emptied workspace and a closing bus are both quiet by design. A
+		// cancelled caller's dial ends in a context error here too — that is
+		// its departure, not Redis failing, and its own path reports it.
+		// CLASSIFIED BY THE ERROR, not by the contexts (codex round 1 P2): a
+		// genuine Redis failure that happens to race the caller leaving is
+		// still a Redis failure, and gating on ctx.Err() would swallow it.
+		if subscribeErr != nil && !errors.Is(subscribeErr, context.Canceled) && !errors.Is(subscribeErr, context.DeadlineExceeded) {
+			slog.Error("events: Redis refused or dropped the SUBSCRIBE; no subscription was installed and its callers are being refused rather than admitted into a stream that would carry nothing",
+				"workspace", workspaceID, "error", subscribeErr)
+		}
 		return false
 	}
 	b.subGen++

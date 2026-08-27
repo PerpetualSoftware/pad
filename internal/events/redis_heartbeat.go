@@ -569,6 +569,37 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 		b.pendingSubs[ws] = pending
 		due = append(due, idleCycle{workspaceID: ws, gen: sub.gen, pending: pending})
 	}
+	// UNCOVERED WORKSPACES ARE RE-ESTABLISHED ON THE SAME PASS (BUG-2764,
+	// codex round 1 P1). A workspace can have subscribers counted and no
+	// subscription behind them: its last establishment — a cycle's
+	// replacement, or a caller's — abandoned because Redis refused the
+	// SUBSCRIBE. Before BUG-2764 that failure INSTALLED the dead PubSub, so
+	// this loop saw it as idle and cycled it again next pass; now nothing is
+	// installed, the loop above walks wsSubs and never sees the workspace,
+	// and its already-admitted subscribers would sit on a live-looking stream
+	// until a new caller happened to arrive and establish. This pass is that
+	// retry, on the same cadence and under the same record discipline: the
+	// record is minted here so a caller arriving now joins this attempt
+	// rather than starting its own.
+	//
+	// Not a cycle: nothing is torn down and no coverage is dropped (there is
+	// none to drop), so it is dispatched to reestablishUncovered rather than
+	// cycleOne and does not move pad_event_subscription_cycled_total.
+	var uncovered []idleCycle
+	for ws, count := range b.wsCounts {
+		if count == 0 {
+			continue
+		}
+		if _, live := b.wsSubs[ws]; live {
+			continue
+		}
+		if _, inFlight := b.pendingSubs[ws]; inFlight {
+			continue
+		}
+		pending := &pendingSub{done: make(chan struct{})}
+		b.pendingSubs[ws] = pending
+		uncovered = append(uncovered, idleCycle{workspaceID: ws, pending: pending})
+	}
 	b.mu.Unlock()
 
 	// BOUNDED-PARALLEL, NOT SERIAL (codex round 5, P2). Each cycle re-dials,
@@ -602,9 +633,49 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 			b.cycleOne(c, idleTimeout)
 		}(c)
 	}
+	for _, c := range uncovered {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c idleCycle) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			b.reestablishUncovered(c)
+		}(c)
+	}
 	// WAITED ON, so one pass cannot overlap the next and so a direct caller —
 	// every test here — observes a finished pass rather than a started one.
 	wg.Wait()
+}
+
+// reestablishUncovered opens a subscription for a workspace that has
+// subscribers and no subscription (BUG-2764) — the retry for an
+// establishment that abandoned because Redis refused the SUBSCRIBE. The
+// caller minted c.pending under the lock; establishSubscription owns it from
+// here and retires it whether it installs or abandons, exactly as on the
+// cycle path, so no joiner is stranded by a failed retry either.
+func (b *RedisBus) reestablishUncovered(c idleCycle) {
+	// QUIET ON SHUTDOWN (codex round 6 on BUG-2764): a pass queued before
+	// Close began would otherwise log, per workspace, that subscribers exist
+	// and that the next pass will retry — both false once the bus is
+	// closing, and at 200 workspaces that is a wall of misleading lines in
+	// the one log window an operator is reading. establishSubscription still
+	// runs so the record is retired and the PubSub closed either way.
+	if b.ctx.Err() == nil {
+		slog.Warn("events: a workspace has subscribers but no Redis subscription behind them (its last establishment failed); re-establishing",
+			"workspace", c.workspaceID)
+	}
+	if !b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending) && b.ctx.Err() == nil {
+		// The cause is logged by establishSubscription when it is Redis
+		// refusing; a workspace that emptied meanwhile is quiet by design —
+		// and is NOT retried, since the next pass skips zero-count
+		// workspaces (codex round 7), so the line says so rather than
+		// promising a retry that only happens while subscribers remain.
+		slog.Warn("events: re-establishing an uncovered workspace installed nothing; while it still has subscribers the next idle pass will retry",
+			"workspace", c.workspaceID)
+	}
+	if b.afterCycleEstablish != nil {
+		b.afterCycleEstablish(c.workspaceID)
+	}
 }
 
 // nextTick returns the deadline for the pass after one that was scheduled for
@@ -768,7 +839,7 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 		// line above says "attempting"; without this an on-call correlating it
 		// with pad_event_subscription_cycled_total finds a log with no counter
 		// and no explanation, on the one path where that is expected.
-		slog.Warn("events: the idle cycle installed no replacement subscription; the workspace was left uncovered because the bus is closing or it lost its last subscriber",
+		slog.Warn("events: the idle cycle installed no replacement subscription; the workspace was left uncovered because the bus is closing, it lost its last subscriber, or Redis refused the SUBSCRIBE (logged separately)",
 			"workspace", c.workspaceID)
 	}
 
@@ -778,8 +849,9 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 
 	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED (codex round 3). The counter's
 	// documented meaning is "torn down AND replaced", and establishSubscription
-	// has two reasons to install nothing: the bus closed under us, or the
-	// workspace emptied while we dialled. Reporting unconditionally would count
+	// has three reasons to install nothing: the bus closed under us, the
+	// workspace emptied while we dialled, or Redis refused the SUBSCRIBE
+	// (BUG-2764). Reporting unconditionally would count
 	// those as cycles, which is wrong in the direction that matters — an
 	// operator reading a non-zero rate concludes connections are being
 	// blackholed, and a shutdown would manufacture that signal. The teardown is

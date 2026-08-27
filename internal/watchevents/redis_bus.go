@@ -453,45 +453,78 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 		heartbeatKick:     make(chan struct{}, 1),
 		idleKick:          make(chan struct{}, 1),
 	}
-	// Eager subscription — see the type comment (2).
-	b.pubsub = client.Subscribe(ctx, keys.Name(redisWatchChannelSuffix))
-
-	// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
-	// establishes the subscription asynchronously, so without this the
-	// constructor hands back a bus that is not yet listening — and Redis
-	// pub/sub is at-most-once, so everything published in that window is
-	// lost to this instance, silently.
+	// Eager subscription — see the type comment (2). Issued in two calls so
+	// the SUBSCRIBE write's error is visible (BUG-2764; see resubscribe): a
+	// refused command used to be indistinguishable from a healthy one here
+	// and surfaced only as the confirmation wait below timing out. The bus is
+	// still constructed on failure — the same non-fatal contract as an
+	// unconfirmed subscription — but the cause is logged at once and the
+	// five-second wait for an acknowledgement that cannot come is skipped.
 	//
-	// Found as a test flake (a second bus constructed and published to
-	// immediately received nothing), which is exactly the shape a rolling
-	// deploy has: a replica comes up, and traffic reaches it before its
-	// subscription is live. The window is small and entirely real.
-	//
-	// A failure here is logged rather than fatal: the receive loop's
-	// ChannelWithSubscriptions() re-subscribes on reconnect, so a bus that
-	// missed its first confirmation still recovers — it just cannot promise
-	// it was listening from the moment it was constructed.
-	//
-	// THIS RECEIVE IS LOAD-BEARING FOR receiveMessages, which has no
-	// "skip the first confirmation" flag precisely because this consumes the
-	// initial one. Removing it makes every bus announce a hole at startup.
-	// See that function's comment, and TestNoCoverageIsDroppedAtStartup,
-	// which fails if this line goes away.
-	subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer subCancel()
-	if _, err := b.pubsub.Receive(subCtx); err != nil {
-		slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
-			"notifications published before it establishes will be missed by this instance",
+	// THE FAILED PUBSUB IS NOT KEPT (codex round 1 P1). go-redis's own
+	// reconnect after a failed write leaves a fresh connection with no
+	// subscription on it, and this bus's only retry — cycleIfIdle's
+	// resubscribe — fires on `b.pubsub == nil`. Retaining the dead PubSub
+	// and starting a receive loop on it would satisfy every liveness stamp
+	// while receiving nothing, and would leave the retry gate closed for the
+	// life of the process. Closing it and leaving the slot empty is what
+	// makes the next maintenance pass re-establish (phase 2); on phase 1
+	// there is no maintenance pass, which is the pre-existing posture for
+	// every failure this bus cannot see, and now at least a logged one.
+	b.pubsub = client.Subscribe(ctx)
+	if err := b.pubsub.Subscribe(ctx, keys.Name(redisWatchChannelSuffix)); err != nil {
+		slog.Warn("watchevents: Redis refused or dropped the SUBSCRIBE at construction; "+
+			"this instance receives no notifications until the subscription is re-established",
 			"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+		_ = b.pubsub.Close()
+		b.pubsub = nil
+	} else {
+		// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
+		// establishes the subscription asynchronously, so without this the
+		// constructor hands back a bus that is not yet listening — and Redis
+		// pub/sub is at-most-once, so everything published in that window is
+		// lost to this instance, silently.
+		//
+		// Found as a test flake (a second bus constructed and published to
+		// immediately received nothing), which is exactly the shape a rolling
+		// deploy has: a replica comes up, and traffic reaches it before its
+		// subscription is live. The window is small and entirely real.
+		//
+		// A failure here is logged rather than fatal: the receive loop's
+		// ChannelWithSubscriptions() re-subscribes on reconnect, so a bus that
+		// missed its first confirmation still recovers — it just cannot promise
+		// it was listening from the moment it was constructed.
+		//
+		// THIS RECEIVE IS LOAD-BEARING FOR receiveMessages, which has no
+		// "skip the first confirmation" flag precisely because this consumes the
+		// initial one. Removing it makes every bus announce a hole at startup.
+		// See that function's comment, and TestNoCoverageIsDroppedAtStartup,
+		// which fails if this line goes away. Skipped only when the SUBSCRIBE
+		// itself failed above: there is then no initial acknowledgement to
+		// consume, and the first one the loop ever sees — after a
+		// re-establishment — IS a resubscription, so announcing a hole for it
+		// is the truth.
+		subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
+		if _, err := b.pubsub.Receive(subCtx); err != nil {
+			slog.Warn("watchevents: Redis subscription not confirmed at construction; "+
+				"notifications published before it establishes will be missed by this instance",
+				"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+		}
+		subCancel()
 	}
 
-	subLoopCtx, subLoopCancel := context.WithCancel(ctx)
-	b.subCancel = subLoopCancel
-	b.lastSeen = b.now()
-	b.lastProbeOK = b.now()
-	b.wg.Add(1)
-	b.subGen++
-	go b.receiveMessages(subLoopCtx, b.pubsub, b.subGen)
+	// No receive loop without a subscription to receive on: resubscribe
+	// starts one when it installs, and reads the current generation rather
+	// than minting its own, so nothing is owed here on the failed path.
+	if b.pubsub != nil {
+		subLoopCtx, subLoopCancel := context.WithCancel(ctx)
+		b.subCancel = subLoopCancel
+		b.lastSeen = b.now()
+		b.lastProbeOK = b.now()
+		b.wg.Add(1)
+		b.subGen++
+		go b.receiveMessages(subLoopCtx, b.pubsub, b.subGen)
+	}
 
 	// NOT STARTED AT ALL ON PHASE 1 (codex round 2). Both halves are gated on
 	// publishHeartbeat and would be guaranteed no-ops there, so the loop would

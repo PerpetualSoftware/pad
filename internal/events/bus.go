@@ -156,6 +156,16 @@ const (
 	// be reported against it: it is not a refusal, not a resume this instance
 	// failed to serve, and not evidence about Redis.
 	SubscribeCancelled
+
+	// SubscribeFailed means this instance could not open a Redis subscription
+	// for the workspace — the SUBSCRIBE could not be delivered (BUG-2764), or
+	// the bus is shutting down — and the caller's registration has been
+	// undone. Unlike an acknowledgement that merely arrives late (admitted,
+	// counted, reconciled when it lands), this is a stream that would never
+	// carry anything, so it is refused: the client can reconnect, and a
+	// refusal it can see beats a silence it cannot. MemoryBus never returns
+	// it.
+	SubscribeFailed
 )
 
 func (o SubscribeOutcome) String() string {
@@ -166,6 +176,8 @@ func (o SubscribeOutcome) String() string {
 		return "workspace_limit"
 	case SubscribeCancelled:
 		return "cancelled"
+	case SubscribeFailed:
+		return "failed"
 	default:
 		return "unknown"
 	}
