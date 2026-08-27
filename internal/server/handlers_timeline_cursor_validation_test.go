@@ -51,8 +51,13 @@ func TestTimeline_MalformedBeforeIDIsClientError(t *testing.T) {
 		rawID string
 		want  int
 	}{
-		// %FF is not valid UTF-8 in any encoding of it; %00 is a NUL. Both are
-		// what Postgres refuses, and both are reachable from a plain URL.
+		// %FF is not valid UTF-8 in any encoding of it; %00 is a NUL. Both
+		// are refused by a UTF8 Postgres (the NUL under every encoding
+		// tested, the %FF only under UTF8 — see the header), and both are
+		// reachable from a plain URL. The 400s below do not depend on that
+		// distinction: since BUG-2784 the transport refuses both before any
+		// backend is consulted, which is why these expectations hold on
+		// SQLite too.
 		{name: "invalid utf-8", rawID: "%FF", want: http.StatusBadRequest},
 		{name: "embedded NUL", rawID: "note%001", want: http.StatusBadRequest},
 		{name: "invalid utf-8 mid-string", rawID: "note-%FF-1", want: http.StatusBadRequest},

@@ -86,8 +86,11 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// If you add a source whose ids are not UUIDs, this is the line to check.
 	//
 	// The previous code defaulted beforeID to "\xff" in all three cases.
-	// That worked on SQLite but Postgres rejects "\xff" as an invalid UTF-8
-	// byte sequence (SQLSTATE 22021), causing every timeline load to 500.
+	// That worked on SQLite but a UTF8 Postgres rejects "\xff" as an invalid
+	// UTF-8 byte sequence (SQLSTATE 22021), causing every timeline load to
+	// 500. (A SQL_ASCII database accepts it — see bindableText's measured
+	// table in middleware_request_text.go. The synthesized sentinel was
+	// wrong on any encoding; the 500 is what a UTF8 one turned it into.)
 	// See BUG-1086.
 	before := time.Now().UTC().Add(time.Minute)
 	beforeID := ""
@@ -755,9 +758,13 @@ func exhaustedWindowCursor(
 // STILL LIVE, despite BUG-2784's transport rule subsuming the query-string
 // caller above. Two of this function's three call sites (see entryID's loop
 // below) apply it to a structured entry's raw id read from the ITEM'S OWN
-// FIELDS BLOB — data that arrives from the database or an imported artifact,
-// never from the request — which no request-level middleware can see. Only
-// the `before_id` caller is preempted. Deleting this function on the
+// FIELDS BLOB. That blob is not beyond a client's reach — a request BODY
+// writes it, and BUG-2803 is exactly that: an escaped NUL through a JSON
+// body reaching the store. What it is beyond is the reach of THIS
+// middleware, which validates the request path and query string and never
+// looks at a body; and the blob is also filled from the database and from
+// imported artifacts, which no request-level rule sees at all. Only the
+// `before_id` caller is preempted. Deleting this function on the
 // strength of that one caller would silently unguard the other two.
 //
 // What follows is the PRE-BUG-2774 behaviour this guard exists to prevent,
