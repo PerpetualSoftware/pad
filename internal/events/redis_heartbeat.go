@@ -666,9 +666,11 @@ func (b *RedisBus) reestablishUncovered(c idleCycle) {
 	}
 	if !b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending) && b.ctx.Err() == nil {
 		// The cause is logged by establishSubscription when it is Redis
-		// refusing; a workspace that emptied meanwhile is quiet by design.
-		// Either way the next pass looks again.
-		slog.Warn("events: re-establishing an uncovered workspace installed nothing; the next idle pass will retry",
+		// refusing; a workspace that emptied meanwhile is quiet by design —
+		// and is NOT retried, since the next pass skips zero-count
+		// workspaces (codex round 7), so the line says so rather than
+		// promising a retry that only happens while subscribers remain.
+		slog.Warn("events: re-establishing an uncovered workspace installed nothing; while it still has subscribers the next idle pass will retry",
 			"workspace", c.workspaceID)
 	}
 	if b.afterCycleEstablish != nil {
