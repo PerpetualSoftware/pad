@@ -654,12 +654,20 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 // here and retires it whether it installs or abandons, exactly as on the
 // cycle path, so no joiner is stranded by a failed retry either.
 func (b *RedisBus) reestablishUncovered(c idleCycle) {
-	slog.Warn("events: a workspace has subscribers but no Redis subscription behind them (its last establishment failed); re-establishing",
-		"workspace", c.workspaceID)
-	if !b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending) {
+	// QUIET ON SHUTDOWN (codex round 6 on BUG-2764): a pass queued before
+	// Close began would otherwise log, per workspace, that subscribers exist
+	// and that the next pass will retry — both false once the bus is
+	// closing, and at 200 workspaces that is a wall of misleading lines in
+	// the one log window an operator is reading. establishSubscription still
+	// runs so the record is retired and the PubSub closed either way.
+	if b.ctx.Err() == nil {
+		slog.Warn("events: a workspace has subscribers but no Redis subscription behind them (its last establishment failed); re-establishing",
+			"workspace", c.workspaceID)
+	}
+	if !b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending) && b.ctx.Err() == nil {
 		// The cause is logged by establishSubscription when it is Redis
-		// refusing; the other two reasons (bus closing, workspace emptied)
-		// are quiet by design. Either way the next pass looks again.
+		// refusing; a workspace that emptied meanwhile is quiet by design.
+		// Either way the next pass looks again.
 		slog.Warn("events: re-establishing an uncovered workspace installed nothing; the next idle pass will retry",
 			"workspace", c.workspaceID)
 	}
