@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {
@@ -157,10 +159,22 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// Both mean "try again", and a generic 500 tells the caller the
 		// opposite — that the request will never succeed. Retry-After is
 		// deliberately short: the holder is one transaction, not a queue.
-		if isRetryableLockError(err) {
+		// Same disposition for a cascade that exhausted its compare-and-set
+		// retries (BUG-2785): the rename rolled back cleanly because a linking
+		// document kept being edited underneath it. Retrying can succeed, so a
+		// 500 would be actively misleading — it says the request will never
+		// work. Distinguished by sentinel rather than message text, because
+		// this one is ours to name (codex round 2).
+		if isRetryableLockError(err) || errors.Is(err, store.ErrLinkCascadeContention) {
 			w.Header().Set("Retry-After", "1")
+			// Deliberately does NOT name the holder. The previous wording said
+			// "another rename", but 55P03 here is just as likely to be an
+			// ordinary content edit holding the row — and after BUG-2785 the
+			// cascade-contention arm is definitely a content edit. Claiming a
+			// cause the server has not established sends the reader looking in
+			// the wrong place.
 			writeError(w, http.StatusServiceUnavailable, "lock_contention",
-				"The workspace is busy with another rename; retry in a moment")
+				"The workspace is busy with a concurrent edit; retry in a moment")
 			return
 		}
 		writeInternalError(w, err)
