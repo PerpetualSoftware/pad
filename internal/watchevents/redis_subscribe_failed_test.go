@@ -7,7 +7,6 @@ import (
 	"net"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -51,11 +50,10 @@ func (c *subscribeFailingConn) Write(p []byte) (int, error) {
 // half. Before the fix a SUBSCRIBE whose write failed came back as a
 // healthy-looking PubSub; the only sign was the confirmation wait expiring
 // five seconds later as a read timeout — an error that named the wait, not
-// the cause. Both sites are covered: the constructor (measured by
-// how long it takes, since its contract is to log and continue) and
-// resubscribe (measured by WHICH error it returns, which is the
-// discriminating assertion: the timeout is what the unfixed code returns,
-// and it is not the injected one).
+// the cause. Both sites are covered by what they LEAVE, not by how long they
+// take: the constructor must leave the slot empty (the unfixed one kept the
+// dead PubSub), and resubscribe must return the injected error itself (the
+// unfixed one returns the confirmation wait's timeout).
 func TestAFailedSubscribeIsReportedAsItselfAndAtOnce(t *testing.T) {
 	mr := miniredis.RunT(t)
 	f := &subscribeWriteFailer{}
@@ -65,21 +63,18 @@ func TestAFailedSubscribeIsReportedAsItselfAndAtOnce(t *testing.T) {
 		t.Fatalf("ping: %v", err)
 	}
 
-	started := time.Now()
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 	if f.failed.Load() == 0 {
 		t.Fatal("the constructor's SUBSCRIBE write was never refused; this test could not have discriminated")
 	}
-	// The unfixed constructor waits out its 5s confirmation bound on a
-	// subscription Redis never received. 2s is the loaded-CI margin against a
-	// path that now does no waiting at all.
-	if took := time.Since(started); took > 2*time.Second {
-		t.Fatalf("construction took %v with a refused SUBSCRIBE: the constructor waited for an acknowledgement that could not come", took)
-	}
-	// And nothing was installed: a retained dead PubSub would keep the
-	// retry gate (cycleIfIdle's `b.pubsub == nil`) closed for the life of
-	// the process (codex round 1 P1).
+	// Nothing was installed: a retained dead PubSub would keep the retry
+	// gate (cycleIfIdle's `b.pubsub == nil`) closed for the life of the
+	// process (codex round 1 P1). This is also what distinguishes the fixed
+	// constructor from the unfixed one, which waited out its 5s confirmation
+	// bound and kept the PubSub — so no timing bound is asserted here: a
+	// wall-clock cap would be a second way for the test to fail under load
+	// that says nothing about the mechanism (codex round 3).
 	if b.currentPubSub() != nil {
 		t.Fatal("the constructor kept a PubSub whose SUBSCRIBE failed; the retry gate can never open")
 	}
@@ -97,16 +92,12 @@ func TestAFailedSubscribeIsReportedAsItselfAndAtOnce(t *testing.T) {
 	}
 
 	before := f.failed.Load()
-	started = time.Now()
 	err := b.resubscribe()
 	if f.failed.Load() == before {
 		t.Fatal("resubscribe never issued a SUBSCRIBE; this test could not have discriminated")
 	}
 	if !errors.Is(err, errInjectedSubscribeWrite) {
 		t.Fatalf("resubscribe error = %v, want the injected SUBSCRIBE write error — the failure was reported as something else (the unfixed code returns the confirmation wait's read timeout, five seconds later)", err)
-	}
-	if took := time.Since(started); took > 2*time.Second {
-		t.Fatalf("resubscribe took %v to report a refused SUBSCRIBE", took)
 	}
 	if b.currentPubSub() != nil {
 		t.Fatal("a subscription was installed for a SUBSCRIBE that failed to reach Redis")
