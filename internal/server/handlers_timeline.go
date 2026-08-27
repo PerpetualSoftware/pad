@@ -747,10 +747,10 @@ func exhaustedWindowCursor(
 // both the rule and the overstatement; bindableText there is this same
 // predicate, and BUG-2784 gave it a second caller over the query string.)
 // Postgres refuses a text parameter that is not valid UTF-8 when the
-// DATABASE encoding is UTF8 — bindableText's comment carries the measured
-// encoding table, including that the connection's client_encoding is not
-// what decides — and refuses an embedded NUL under any encoding (SQLSTATE
-// 22021 / 22P05). pgx surfaces either as a query error.
+// DATABASE encoding is UTF8, and refuses an embedded NUL under every
+// encoding tested (SQLSTATE 22021 / 22P05); bindableText's comment carries
+// the measurements and is explicit about how far they generalise. pgx
+// surfaces either as a query error.
 //
 // STILL LIVE, despite BUG-2784's transport rule subsuming the query-string
 // caller above. Two of this function's three call sites (see entryID's loop

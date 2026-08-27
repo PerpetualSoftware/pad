@@ -15,7 +15,7 @@ import (
 // and the store binds it into a text comparison. Postgres refuses a text
 // parameter that is not valid UTF-8 — under a UTF8 database encoding; see
 // bindableText for the encoding table and what governs it — or that
-// contains a NUL, under any encoding (SQLSTATE 22021 / 22P05), and the
+// contains a NUL, under every encoding tested (SQLSTATE 22021 / 22P05), and the
 // driver surfaces that as a query error. MOST handlers
 // turn that into a 500, which is the defect; not all do, and the claim is
 // deliberately not universal — handlers that collapse a resolution error
@@ -32,9 +32,10 @@ import (
 // store, and it splits by BACKEND rather than by deployment: a SQLite
 // install never sees the 500, and a Postgres install whose database
 // encoding is UTF8 does — Pad Cloud and a self-hoster on Postgres alike,
-// since UTF8 is initdb's default. (Under SQL_ASCII, Postgres accepts the
-// invalid-UTF-8 bytes — but NOT a NUL, which it refuses in every encoding;
-// see bindableText below, where that split is spelled out and measured.)
+// since a UTF8 database is the common self-host and Cloud case — though
+// NOT because initdb always picks it, which is locale-dependent. (Under
+// SQL_ASCII, Postgres accepts the invalid-UTF-8 bytes — but not a NUL; see
+// bindableText below, where that split is measured and its scope bounded.)
 // An operator's alerting reads it as the server breaking when a client
 // sent a path that cannot name anything.
 //
@@ -157,25 +158,26 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 // not the NUL rule — a NUL terminates a C string and no encoding makes it
 // storable in a text column.
 //
-// WHAT GOVERNS IS THE DATABASE'S ENCODING, NOT THE CONNECTION'S. A review
-// round argued the invalid-UTF-8 row is really about a permissive
-// client_encoding; measured on the same container, it is not — the server
-// encoding decides both ways:
+// THE SCOPE OF THAT TABLE, stated because two review rounds pushed on it
+// from opposite directions and the honest answer is narrower than either.
+// Those rows were produced with `E'…'` escapes, which the SERVER expands —
+// the byte never crosses the wire as itself. So they establish what a given
+// DATABASE encoding does with a byte once it exists server-side, and they
+// say nothing about client_encoding conversion, where a connection that
+// declared a single-byte encoding could give 0xff a meaning instead of
+// refusing it. Treat the table as covering the tested encodings and no
+// others; it is not a general account of Postgres.
 //
-//	SQL_ASCII db, client_encoding=SQL_ASCII → length 7 (accepted)
-//	SQL_ASCII db, client_encoding=UTF8      → length 7 (accepted)
-//	UTF8 db,      client_encoding=SQL_ASCII → ERROR: invalid byte sequence
-//	                                          for encoding "UTF8": 0xff
-//
-// Pad does not create or configure that database — nothing here issues
-// CREATE DATABASE or sets client_encoding, so the encoding is the
-// operator's. For completeness, what Pad's own connections declare was
-// measured rather than assumed: `SHOW client_encoding` over the pgx pool
-// this store opens reports UTF8, against a UTF8 server. initdb's default
-// encoding is LOCALE-dependent rather than always UTF8, so a self-hoster
-// can end up on either row of the table above; the measurements in this
-// file were taken against postgres:17-alpine at its image defaults, which
-// give UTF8.
+// None of that changes what this middleware is for, which is why the
+// argument is recorded and then dropped rather than settled. Pad does not
+// create or configure the database — nothing here issues CREATE DATABASE
+// or sets client_encoding, so the encoding is the operator's, and a
+// self-hoster can be on either row (initdb's default encoding is
+// LOCALE-dependent, not always UTF8). What Pad's own connections declare
+// was measured rather than assumed: `SHOW client_encoding` over the pgx
+// pool this store opens reports UTF8 against a UTF8 server. The rule below
+// is uniform across every one of these cases, which is the property that
+// makes the deployment's configuration stop mattering.
 // SQLite is looser again: sqlite3_bind_text accepts arbitrary byte
 // sequences, and an embedded NUL truncates or is otherwise undefined
 // rather than erroring.
