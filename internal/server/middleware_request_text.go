@@ -30,8 +30,9 @@ import (
 // store, and it splits by BACKEND rather than by deployment: a SQLite
 // install never sees the 500, and a Postgres install whose database
 // encoding is UTF8 does — Pad Cloud and a self-hoster on Postgres alike,
-// since UTF8 is initdb's default. (Under SQL_ASCII, Postgres accepts the bytes too; see
-// validPathText below, which is where that qualification is spelled out.)
+// since UTF8 is initdb's default. (Under SQL_ASCII, Postgres accepts the
+// bytes too; see bindableText below, which is where that qualification is
+// spelled out.)
 // An operator's alerting reads it as the server breaking when a client
 // sent a path that cannot name anything.
 //
@@ -237,24 +238,36 @@ func ValidateQuery(decorate func(http.Handler) http.Handler) func(http.Handler) 
 // out of this raw query string is bindableText.
 //
 // WHAT IT CHECKS AGAINST. url.ParseQuery is the same call r.URL.Query()
-// makes, so the pairs checked here are exactly the pairs a handler can see
-// — there is no equivalent of the RawPath divergence ValidatePath's comment
-// has to reason about, where the value checked and the value delivered can
-// differ. ParseQuery's error is deliberately discarded: on a malformed
-// escape it returns the pairs that DID parse and drops the rest, and
-// r.URL.Query() discards the error identically, so the dropped pairs are
-// unreachable by any handler and validating what survived is validating
-// the reachable set. Rejecting the whole request on that error would refuse
-// requests whose reachable parameters are all perfectly fine.
+// makes, so the pairs checked in the decode step are exactly the pairs a
+// handler can see — there is no equivalent of the RawPath divergence
+// ValidatePath's comment has to reason about, where the value checked and
+// the value delivered can differ. ParseQuery's error is deliberately
+// discarded: on a malformed escape it returns the pairs that DID parse and
+// drops the rest, and r.URL.Query() discards the error identically, so
+// rejecting the whole request on that error would refuse requests whose
+// reachable parameters are all perfectly fine.
 //
-// THE FAST PATH is not an optimisation detail, it is most requests. A raw
-// query with no '%' cannot decode to anything outside itself: decoding then
-// only turns '+' into ' ' and splits on '&' and '=', all ASCII, so every
-// decoded key and value is a substring of a string already checked — and a
-// substring of valid UTF-8 split at ASCII boundaries is valid UTF-8, while
-// a string with no NUL has no substring with one. Checking the raw string
-// first also covers the case percent-decoding never sees: a client is free
-// to put a raw 0xff byte in the query string without escaping it.
+// THE RAW CHECK IS DELIBERATELY STRICTER THAN THE REACHABLE SET, and it is
+// worth being exact about that rather than claiming the two coincide. It
+// runs over the whole raw query before any decoding, so a bad byte sitting
+// inside a pair that ParseQuery would DROP still rejects the request — e.g.
+// `search=ok&ignored=<NUL>%`, where no handler could ever see the NUL.
+// Kept, for two reasons: it is the only check that sees a raw unescaped
+// 0xff (percent-decoding never produces one, because there is nothing to
+// decode), and a legitimate request has no such byte anywhere in its query
+// whether or not the pair carrying it survives parsing. So the extra
+// strictness can only fire on a request that was already malformed, which
+// is the safe direction to be wrong in.
+//
+// THE FAST PATH is not an optimisation detail, it is most requests. When
+// the raw query holds no '%', decoding it performs no percent-decoding at
+// all: it splits on '&' and '=' and substitutes ' ' for '+'. Every decoded
+// key and value is therefore a substring of the raw string with some ASCII
+// '+' bytes swapped for ASCII ' ' bytes — NOT a plain substring, which is
+// what an earlier draft of this comment claimed. The conclusion survives
+// the correction: splitting valid UTF-8 at ASCII boundaries yields valid
+// UTF-8, replacing one ASCII byte with another preserves that, and neither
+// operation can introduce a NUL into a string that had none.
 func validQueryText(rawQuery string) bool {
 	if rawQuery == "" {
 		return true

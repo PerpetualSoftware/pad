@@ -170,13 +170,38 @@ func TestValidateQueryDeliversEscapedUnicodeToTheHandler(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
-	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/collections/tasks/items",
-		map[string]interface{}{"title": "Le café serves 🚀 rockets"})
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
+	create := func(title string) models.Item {
+		t.Helper()
+		rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/collections/tasks/items",
+			map[string]interface{}{"title": title})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create item %q: %d %s", title, rr.Code, rr.Body.String())
+		}
+		var it models.Item
+		parseJSON(t, rr, &it)
+		return it
 	}
-	var created models.Item
-	parseJSON(t, rr, &created)
+
+	created := create("Le café serves 🚀 rockets")
+	// A DECOY that must not match. Without it this test is vacuous: with one
+	// item in the workspace, a handler that ignored `search` entirely — or a
+	// middleware that stripped the query — would return that item and pass
+	// every assertion below. The decoy is what makes "the value reached the
+	// handler" distinguishable from "the endpoint returned everything".
+	decoy := create("Plain teahouse, no pastries")
+
+	// Premise: the decoy is visible to THIS endpoint when nothing filters it
+	// out. If the unfiltered list did not return both, the exact-set
+	// assertions below would be satisfied by an endpoint that simply never
+	// returns the decoy, and the decoy would prove nothing.
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items", nil)
+	var all []models.Item
+	parseJSON(t, rr, &all)
+	if len(all) != 2 {
+		t.Fatalf("premise broken: the unfiltered list returned %d items, want the 2 just "+
+			"created — the decoy cannot discriminate a filtered result from an unfiltered one",
+			len(all))
+	}
 
 	// NOT an emoji case, deliberately, though the status-code table above has
 	// one. `?search=%F0%9F%9A%80` matches zero items — and so does the same
@@ -197,15 +222,17 @@ func TestValidateQueryDeliversEscapedUnicodeToTheHandler(t *testing.T) {
 			}
 			var got []models.Item
 			parseJSON(t, rr, &got)
-			found := false
-			for _, it := range got {
-				if it.ID == created.ID {
-					found = true
+			// The EXACT result set, not merely "contains". Asserting only
+			// membership would pass for a handler that returned every item.
+			if len(got) != 1 || got[0].ID != created.ID {
+				ids := make([]string, len(got))
+				for i, it := range got {
+					ids[i] = it.Title
 				}
-			}
-			if !found {
-				t.Fatalf("?%s matched %d items but not the one it names — the decoded "+
-					"value did not reach the handler intact", tc.query, len(got))
+				t.Fatalf("?%s returned %d items (%v), want exactly the one it names (%q). "+
+					"Returning the decoy %q too means the filter was not applied; returning "+
+					"none means the decoded value did not reach the handler intact.",
+					tc.query, len(got), ids, created.Title, decoy.Title)
 			}
 		})
 	}
@@ -372,6 +399,13 @@ func TestValidQueryText(t *testing.T) {
 		// still decide the answer — both directions.
 		{"malformed escape, rest fine", "search=100%off&status=open", true},
 		{"malformed escape, rest bad", "search=100%off&status=bad-%FF-x", false},
+
+		// The raw check is STRICTER than the reachable set, deliberately: the
+		// bad byte here sits in a pair url.ParseQuery drops, so no handler
+		// could see it, and the request is refused anyway. Pinned because it
+		// is documented behaviour, not an accident — see validQueryText.
+		{"raw NUL inside a dropped pair", "search=ok&ignored=\x00%", false},
+		{"raw 0xff inside a dropped pair", "search=ok&ignored=\xff%", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
