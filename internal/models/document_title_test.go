@@ -89,6 +89,27 @@ func TestDocumentTitleValidationMatchesTheRoundTripProperty(t *testing.T) {
 	}
 }
 
+// TestDocumentTitleBoundIsTheRuledNumber pins the VALUE, not just the
+// behaviour around it.
+//
+// Every other length test derives its inputs from MaxDocumentTitleRunes, so
+// changing the constant to 512 would leave them all green (codex round 4).
+// That is fine for arithmetic but wrong for this number: 255 is a product
+// decision Dave ruled on for BUG-2798, and a silent change to it is a silent
+// change to how much amplification the cheap door lets through. Changing it
+// should require editing this line and noticing why.
+//
+// Deliberately NOT done for store.MaxRenameCascadeRetainedBytes: that one is
+// mine, chosen with a measured receipt in its doc comment, and is expected to
+// be tuned if the measurements change.
+func TestDocumentTitleBoundIsTheRuledNumber(t *testing.T) {
+	if MaxDocumentTitleRunes != 255 {
+		t.Errorf("MaxDocumentTitleRunes = %d, want 255 (Dave's day-63 ruling on BUG-2798). "+
+			"If this is a deliberate product change, update the ruling reference too.",
+			MaxDocumentTitleRunes)
+	}
+}
+
 // TestDocumentTitleLengthBoundCountsRunesNotBytes pins the bound at 255
 // CHARACTERS, which is what the ruling says and what a UI counter shows.
 //

@@ -2,6 +2,9 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -90,8 +93,15 @@ func TestRenameCascade_RefusesOnProjectedTOTAL_NotPerDocument(t *testing.T) {
 	//    information for a caller is what the rename would hold against what
 	//    is allowed; an error that says "too large" and nothing else sends
 	//    them guessing.
-	if msg := err.Error(); !strings.Contains(msg, "maximum") || !strings.Contains(msg, "bytes") {
-		t.Errorf("error message lacks the projection: %q", msg)
+	// The ACTUAL numbers, not the words around them. Checking only for
+	// "maximum" and "bytes" would pass a message that says "too large, maximum
+	// bytes exceeded" and tells the caller nothing (codex round 4).
+	msg := err.Error()
+	if !strings.Contains(msg, fmt.Sprint(MaxRenameCascadeRetainedBytes)) {
+		t.Errorf("error message does not state the cap %d: %q", MaxRenameCascadeRetainedBytes, msg)
+	}
+	if !regexp.MustCompile(`hold at least (\d+) bytes`).MatchString(msg) {
+		t.Errorf("error message does not state what the rename would hold: %q", msg)
 	}
 
 	// 3. The rename ROLLED BACK. A guard that refused after writing some of
@@ -525,5 +535,105 @@ func TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename(t 
 	if err != nil {
 		t.Fatalf("rename refused after a concurrent edit REMOVED the link: %v — "+
 			"the guard charged for a rewritten copy that ReplaceTitle never allocates", err)
+	}
+}
+
+// TestRenameCascade_CountsBothStringsNotTheLargerOne closes codex round 4's P1:
+// every other retained-byte case here exceeds the cap under `max(read,
+// rewritten)` as well as under `read + rewritten`, so none of them can tell the
+// two arithmetics apart.
+//
+// This one can. An ordinary same-length rename over content totalling ~60% of
+// the cap holds ~120% of it (both strings alive), and ~60% under the max
+// reading — so summing refuses and taking the larger admits.
+//
+// That the refusal is CORRECT here is the point, not a side effect: the
+// cascade really does hold both copies, and a workspace with that much linking
+// content really is at the bound. The cap's doc comment says so explicitly.
+func TestRenameCascade_CountsBothStringsNotTheLargerOne(t *testing.T) {
+	oldTitle := "Alpha"
+	newTitle := "Bravo" // same length: the rewrite neither grows nor shrinks
+
+	const linkers = 3
+	// ~60% of the cap in total READ bytes, split across the linkers.
+	perDoc := (MaxRenameCascadeRetainedBytes * 6 / 10) / linkers
+	body := strings.Repeat("[["+oldTitle+"]]", perDoc/(len(oldTitle)+4))
+
+	readTotal := int64(len(body)) * linkers
+	sumTotal := readTotal * 2 // read + an equal-length rewritten copy
+	if readTotal > MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: under max(read,rewritten) the total %d must stay UNDER the cap %d, "+
+			"or this test cannot tell summing from taking the larger", readTotal, MaxRenameCascadeRetainedBytes)
+	}
+	if sumTotal <= MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: the summed total %d must EXCEED the cap %d", sumTotal, MaxRenameCascadeRetainedBytes)
+	}
+
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "CascadeSumNotMax")
+	target := createTestDoc(t, s, ws.ID, oldTitle, "the document being renamed")
+	for i := 0; i < linkers; i++ {
+		createTestDoc(t, s, ws.ID, "Linker"+string(rune('a'+i)), body)
+	}
+
+	if _, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle}); !errors.Is(err, ErrRenameCascadeTooLarge) {
+		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge — a guard that charged only the "+
+			"larger of the two strings admits this and then holds twice the cap", err)
+	}
+}
+
+// TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody closes codex round
+// 4's P2: every other oversize test asserts only THAT the rename is refused,
+// so moving links.ReplaceTitle above the guard would keep them all green while
+// destroying the point of the guard — the refusal exists so the amplified
+// string is never built.
+//
+// The instrument is cumulative allocation (TotalAlloc), not peak memory, and
+// the margin is ~20x: refusing allocates the one read body it had to scan
+// (~2 MiB plus overhead), while building the rewrite first allocates
+// ~108 MB. The threshold sits far from both.
+//
+// BUG-2798's own filing warned that "a test that tries to prove the ABSENCE of
+// amplification by measuring memory would be flaky by construction", and that
+// still holds for the thing it described — asserting a peak-RSS floor to show
+// nothing blew up. This is the opposite shape: a generous ceiling on a
+// deterministic counter, with the two outcomes twenty times apart, whose
+// failure names exactly what went wrong.
+func TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
+	const newTitleLen = 255
+	// The single-document attack: one linker holding the largest body a 2 MiB
+	// request can carry.
+	occurrences := (2 << 20) / len("[[A]]")
+	body := strings.Repeat("[[A]]", occurrences)
+	rewrittenSize := int64(len(body)) + int64(occurrences)*int64(newTitleLen-1)
+
+	// Well above what refusing costs, well below what building the rewrite
+	// costs. Stated as a ratio so the numbers stay honest if sizes move.
+	const allocCeiling = 50 << 20
+	if rewrittenSize < 2*allocCeiling {
+		t.Fatalf("precondition: the rewritten body %d must be far above the ceiling %d, "+
+			"or this test cannot distinguish refusing from building", rewrittenSize, allocCeiling)
+	}
+
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "CascadeNoBuild")
+	target := createTestDoc(t, s, ws.ID, "A", "the document being renamed")
+	createTestDoc(t, s, ws.ID, "Linker", body)
+
+	newTitle := strings.Repeat("T", newTitleLen)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle})
+	runtime.ReadMemStats(&after)
+
+	if !errors.Is(err, ErrRenameCascadeTooLarge) {
+		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge", err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocCeiling {
+		t.Errorf("the refused rename allocated %d bytes, ceiling %d — the projected rewrite is "+
+			"%d bytes, so the guard is running AFTER the body it was supposed to prevent",
+			allocated, allocCeiling, rewrittenSize)
 	}
 }
