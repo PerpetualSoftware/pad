@@ -416,13 +416,24 @@ func TestValidQueryText(t *testing.T) {
 	}
 }
 
-// TestValidQueryTextFastPathAgreesWithTheSlowPath is the differential check
-// behind the '%' fast path. The fast path returns true for any raw query
-// with no escapes that is itself bindableText; the claim is that this can
-// never disagree with decoding every pair and checking each one. Any
-// disagreement here means the reasoning in validQueryText's comment is
-// wrong, not merely that a case was missed.
-func TestValidQueryTextFastPathAgreesWithTheSlowPath(t *testing.T) {
+// TestValidQueryTextFastPathIsNeverMorePermissive is the differential check
+// behind the '%' fast path.
+//
+// AN EARLIER VERSION OF THIS TEST CLAIMED EQUIVALENCE — that the fast path
+// "can never disagree" with decoding every pair and checking each one — and
+// that claim is FALSE. `ignored=\xff;bad` disagrees: url.ParseQuery refuses
+// an unescaped ';' ("invalid semicolon separator in query"), drops every
+// pair, and the per-pair comparator then finds nothing to object to and
+// returns true, while validQueryText rejects on the raw check. The old
+// corpus happened not to contain a semicolon, so a false contract passed.
+//
+// The property that is actually true, and the one worth pinning, is
+// ONE-DIRECTIONAL: the fast path is never MORE PERMISSIVE than the per-pair
+// check. That is the safety direction — it may not let through anything the
+// decode path would reject. The other direction is the deliberate extra
+// strictness validQueryText documents, and the semicolon case is now in the
+// corpus so the case that falsified the old contract exercises the new one.
+func TestValidQueryTextFastPathIsNeverMorePermissive(t *testing.T) {
 	t.Parallel()
 	slow := func(rawQuery string) bool {
 		q, _ := url.ParseQuery(rawQuery)
@@ -438,15 +449,38 @@ func TestValidQueryTextFastPathAgreesWithTheSlowPath(t *testing.T) {
 		}
 		return true
 	}
-	for _, raw := range []string{
+	corpus := []string{
 		"", "a=b", "a=b&c=d", "search=café", "search=two+words", "a", "a=", "=b",
 		"a=b&a=c", "&&", "a=b&", "search=a b", "x=\xff", "\xff=x", "x=a\x00b",
 		"a=b&c=\xc3", "søk=svar", "a=%", "s=100%off",
-	} {
-		if !strings.Contains(raw, "%") {
-			if got, want := validQueryText(raw), slow(raw); got != want {
-				t.Errorf("fast path disagrees for %q: validQueryText=%v, per-pair=%v", raw, got, want)
-			}
+		// The cases that falsified the old equivalence contract: ParseQuery
+		// drops every pair on an unescaped ';', so the per-pair check has
+		// nothing left to reject and returns true while the raw check
+		// rejects. Permitted under the one-directional property, and a
+		// regression to equivalence fails here.
+		"ignored=\xff;bad", "a=b;c=\xff", "x=\x00;y", "a=b;c=d",
+	}
+	sawStricter := false
+	for _, raw := range corpus {
+		if strings.Contains(raw, "%") {
+			continue
 		}
+		fast, perPair := validQueryText(raw), slow(raw)
+		if fast && !perPair {
+			t.Errorf("fast path is MORE PERMISSIVE for %q: validQueryText=true, per-pair=false — "+
+				"it let through something the decode path rejects", raw)
+		}
+		if !fast && perPair {
+			sawStricter = true
+		}
+	}
+	// The corpus must actually contain a case where the two differ, or the
+	// assertion above is satisfied by an equivalence that would make this
+	// test's whole premise pointless — which is exactly the state the old
+	// version was in.
+	if !sawStricter {
+		t.Error("premise broken: no corpus entry exercises the stricter-than-per-pair " +
+			"direction, so this test would pass against a fast path that simply mirrored " +
+			"the decode path and the one-directional contract is untested")
 	}
 }
