@@ -737,8 +737,10 @@ func exhaustedWindowCursor(
 // The rule is derived from what the database refuses rather than from what
 // an id "should" look like. (It said "exactly what the DATABASE rejects"
 // until BUG-2782 checked that claim and found it too strong: Postgres
-// refuses these two classes under a UTF8 database encoding, not under
-// SQL_ASCII, and SQLite's bind_text accepts arbitrary bytes outright. The
+// refuses INVALID UTF-8 under a UTF8 database encoding but accepts it under
+// SQL_ASCII — while refusing a NUL under both, a split BUG-2784 measured
+// and bindableText's comment tabulates — and SQLite's bind_text accepts
+// arbitrary bytes outright. The
 // rule here is unchanged and still right — it is the stricter reading,
 // applied so the two backends stop disagreeing — only the sentence was
 // wrong. See ValidatePath in middleware_request_text.go, which inherited

@@ -31,8 +31,8 @@ import (
 // install never sees the 500, and a Postgres install whose database
 // encoding is UTF8 does — Pad Cloud and a self-hoster on Postgres alike,
 // since UTF8 is initdb's default. (Under SQL_ASCII, Postgres accepts the
-// bytes too; see bindableText below, which is where that qualification is
-// spelled out.)
+// invalid-UTF-8 bytes — but NOT a NUL, which it refuses in every encoding;
+// see bindableText below, where that split is spelled out and measured.)
 // An operator's alerting reads it as the server breaking when a client
 // sent a path that cannot name anything.
 //
@@ -140,9 +140,20 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 // protection.
 //
 // "What the database refuses" is narrower than it sounds, and the phrasing
-// inherited from validCursorID overstated it. Postgres rejects these two
-// classes when the database encoding is UTF8; under SQL_ASCII it would
-// accept the same bytes. Pad does not create or configure that database —
+// inherited from validCursorID overstated it. The two classes do NOT behave
+// alike across encodings, which an earlier version of this comment (and
+// validCursorID's) got wrong by treating them as one case:
+//
+//	                     UTF8 database        SQL_ASCII database
+//	invalid UTF-8 byte   refused (22021)      ACCEPTED
+//	NUL byte             refused (22021)      refused (22021)
+//
+// Measured on postgres:17-alpine against a `CREATE DATABASE … ENCODING
+// 'SQL_ASCII' TEMPLATE template0`: `SELECT length(E'bad-\xff-x')` returns 7,
+// while `SELECT length(E'bad-\x00-x')` errors with `invalid byte sequence
+// for encoding "SQL_ASCII": 0x00`. So SQL_ASCII relaxes the encoding check,
+// not the NUL rule — a NUL terminates a C string and no encoding makes it
+// storable in a text column. Pad does not create or configure that database —
 // nothing here issues CREATE DATABASE or sets client_encoding, so the
 // encoding is the operator's. UTF8 is initdb's default and is what the
 // measurements above were taken against (postgres:17-alpine, defaults).
@@ -252,22 +263,29 @@ func ValidateQuery(decorate func(http.Handler) http.Handler) func(http.Handler) 
 // runs over the whole raw query before any decoding, so a bad byte sitting
 // inside a pair that ParseQuery would DROP still rejects the request — e.g.
 // `search=ok&ignored=<NUL>%`, where no handler could ever see the NUL.
-// Kept, for two reasons: it is the only check that sees a raw unescaped
-// 0xff (percent-decoding never produces one, because there is nothing to
-// decode), and a legitimate request has no such byte anywhere in its query
-// whether or not the pair carrying it survives parsing. So the extra
-// strictness can only fire on a request that was already malformed, which
-// is the safe direction to be wrong in.
+// Kept, for two reasons. It is the only check that sees a raw unescaped
+// byte in a pair the decode step DISCARDS — a raw byte in a pair that
+// survives parsing reaches bindableText through the loop below as well, so
+// "the only check that sees a raw 0xff" would be too strong; the dropped
+// pairs and the fast path are where it is the only one. And a legitimate
+// request has no such byte anywhere in its query whether or not the pair
+// carrying it survives parsing, so the extra strictness can only fire on a
+// request that was already malformed — the safe direction to be wrong in.
 //
 // THE FAST PATH is not an optimisation detail, it is most requests. When
-// the raw query holds no '%', decoding it performs no percent-decoding at
-// all: it splits on '&' and '=' and substitutes ' ' for '+'. Every decoded
-// key and value is therefore a substring of the raw string with some ASCII
-// '+' bytes swapped for ASCII ' ' bytes — NOT a plain substring, which is
-// what an earlier draft of this comment claimed. The conclusion survives
-// the correction: splitting valid UTF-8 at ASCII boundaries yields valid
-// UTF-8, replacing one ASCII byte with another preserves that, and neither
-// operation can introduce a NUL into a string that had none.
+// the raw query holds no '%', decoding performs no percent-decoding at all.
+// What it does do is split on '&', split each pair on '=', substitute ' '
+// for '+', and — on an unescaped ';' — return an error and DROP the pairs
+// it could not parse. Every decoded key and value is therefore a substring
+// of the raw string with some ASCII '+' bytes swapped for ASCII ' ' bytes,
+// and possibly fewer of them than the raw string contains. It is NOT a
+// plain substring, which is what an earlier draft of this comment claimed,
+// and dropping is not a case that needs handling because a subset of a
+// checked set is still checked. The conclusion survives both corrections:
+// splitting valid UTF-8 at ASCII boundaries yields valid UTF-8, replacing
+// one ASCII byte with another preserves that, discarding pairs cannot
+// introduce anything, and none of these can put a NUL into a string that
+// had none.
 func validQueryText(rawQuery string) bool {
 	if rawQuery == "" {
 		return true
