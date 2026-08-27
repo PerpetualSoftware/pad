@@ -138,7 +138,12 @@ const MaxDocumentTitleRunes = 255
 //     "stored legacy titles that contain a literal `|`". Banning it would
 //     refuse what that branch was written to support.
 //   - a lone `\` not followed by `\`, `]` or `|` — passes the grammar as an
-//     escape pair and survives the unescaper unchanged.
+//     escape pair and survives the unescaper unchanged. Note this one depends
+//     on store.escapeLikePattern: the rename cascade finds linking documents
+//     with `content LIKE`, where Postgres reads `\` as an escape character, so
+//     before that escaping landed a backslash title rendered fine and then
+//     silently failed to cascade on one dialect. Allowing it here is only
+//     correct while the cascade's pattern stays escaped.
 //
 // Boundary, stated rather than papered over: this is derived from the SHARED
 // stored-syntax path in markdown.ts. The legacy documents surface has no

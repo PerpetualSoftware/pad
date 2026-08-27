@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -11,30 +12,33 @@ import (
 // BUG-2798. A document rename rewrites `[[oldTitle]]` → `[[newTitle]]` in
 // every linking document, and the cascade holds every rewritten body in memory
 // before it writes any of them. Neither the title length nor the number of
-// linking documents was bounded, so one rename could project more output than
-// the process could hold — measured at 20,000x on the filing, and still 51.8x
-// per document after the title bound alone.
+// linking documents was bounded, so one rename could hold more content than the
+// process could carry — measured at 20,000x amplification on the filing, and
+// still 51.8x per document after the title bound alone.
 //
 // The title bound (models.MaxDocumentTitleRunes) is the cheap door. This file
-// covers the wall: the cascade refuses when its projected TOTAL exceeds
-// MaxRenameCascadeProjectedBytes.
+// covers the wall: the cascade refuses when the TOTAL it would retain across
+// the linking set — every read body plus every written body — exceeds
+// MaxRenameCascadeRetainedBytes.
 
 // linkerBody returns a body containing exactly n `[[A]]` occurrences, and the
-// number of bytes renaming "A" to a title of length newLen would project for
-// it: len(content) + occurrences * (len(new) - len(old)).
+// number of bytes the cascade would RETAIN for it when renaming "A" to a title
+// of length newLen: the body it reads plus the body it writes.
 //
-// Exact, not an estimate — strings.Replace substitutes every non-overlapping
-// occurrence, so this is the output size to the byte.
+// Deliberately computed here rather than by calling cascadeRetainedBytes — a
+// test that reuses the implementation's arithmetic cannot catch that
+// arithmetic being wrong.
 func linkerBody(n, newLen int) (string, int) {
 	body := strings.Repeat("[[A]]", n)
-	return body, len(body) + n*(newLen-1)
+	rewritten := len(body) + n*(newLen-1)
+	return body, len(body) + rewritten
 }
 
 // TestRenameCascade_RefusesOnProjectedTOTAL_NotPerDocument is the load-bearing
 // test, and its shape is the finding it encodes: a per-document cap would not
 // close this bug.
 //
-// Every linking document here projects comfortably UNDER the cap on its own.
+// Every linking document here retains comfortably UNDER the cap on its own.
 // Only the total is over. A guard that tested each document in isolation would
 // admit all three, allocate the sum, and pass a test that merely asserted "a
 // huge single document is refused" — which is why this test asserts the
@@ -47,20 +51,20 @@ func TestRenameCascade_RefusesOnProjectedTOTAL_NotPerDocument(t *testing.T) {
 	// Size each linker so that linkers-1 of them fit under the cap and all of
 	// them do not. Derived from the cap rather than hardcoded, so the test
 	// keeps discriminating if the cap moves.
-	perDocTarget := (MaxRenameCascadeProjectedBytes / linkers) + (MaxRenameCascadeProjectedBytes / (linkers * 4))
-	occurrences := perDocTarget / (5 + (newTitleLen - 1))
-	body, perDocProjected := linkerBody(occurrences, newTitleLen)
+	perDocTarget := (MaxRenameCascadeRetainedBytes / linkers) + (MaxRenameCascadeRetainedBytes / (linkers * 4))
+	occurrences := perDocTarget / (5 + 5 + (newTitleLen - 1))
+	body, perDocRetained := linkerBody(occurrences, newTitleLen)
 
 	// Preconditions — these are what make the test discriminate. If either
 	// fails the test is no longer testing what its name says.
-	if perDocProjected >= MaxRenameCascadeProjectedBytes {
-		t.Fatalf("precondition: per-document projection %d must be UNDER the cap %d, "+
+	if perDocRetained >= MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: per-document retention %d must be UNDER the cap %d, "+
 			"otherwise a per-document guard would also pass this test",
-			perDocProjected, MaxRenameCascadeProjectedBytes)
+			perDocRetained, MaxRenameCascadeRetainedBytes)
 	}
-	if total := perDocProjected * linkers; total <= MaxRenameCascadeProjectedBytes {
-		t.Fatalf("precondition: total projection %d must EXCEED the cap %d",
-			total, MaxRenameCascadeProjectedBytes)
+	if total := perDocRetained * linkers; total <= MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: total retention %d must EXCEED the cap %d",
+			total, MaxRenameCascadeRetainedBytes)
 	}
 
 	s := testStore(t)
@@ -83,9 +87,9 @@ func TestRenameCascade_RefusesOnProjectedTOTAL_NotPerDocument(t *testing.T) {
 	}
 
 	// 2. Refused with the projection in the message. The only actionable
-	//    information for a caller is what was projected against what is
-	//    allowed; an error that says "too large" and nothing else sends them
-	//    guessing.
+	//    information for a caller is what the rename would hold against what
+	//    is allowed; an error that says "too large" and nothing else sends
+	//    them guessing.
 	if msg := err.Error(); !strings.Contains(msg, "maximum") || !strings.Contains(msg, "bytes") {
 		t.Errorf("error message lacks the projection: %q", msg)
 	}
@@ -142,19 +146,19 @@ func TestRenameCascade_AllowsAnOrdinaryRename(t *testing.T) {
 
 // TestRenameCascade_RefusesTheSingleDocumentAttack covers the k=1 case
 // directly: one linking document holding the largest body a 2 MiB request can
-// carry still projects 108,632,370 bytes once the title bound is in place
-// (measured), which is 6.5x the cap. The attack is refused at every k, not
-// only at a threshold count of documents.
+// carry still retains 110,729,522 bytes once the title bound is in place
+// (108,632,370 written plus the 2,097,152 read), which is 3.3x the cap. The
+// attack is refused at every k, not only at a threshold count of documents.
 //
 // Kept separate from the total-versus-per-document test because it is the one
 // case a per-document guard WOULD catch — asserting both makes it explicit
 // that the total guard is a superset, not a replacement of unclear scope.
 func TestRenameCascade_RefusesTheSingleDocumentAttack(t *testing.T) {
 	const newTitleLen = 255
-	occurrences := (MaxRenameCascadeProjectedBytes / (5 + (newTitleLen - 1))) * 2 // 2x the cap
-	body, projected := linkerBody(occurrences, newTitleLen)
-	if projected <= MaxRenameCascadeProjectedBytes {
-		t.Fatalf("precondition: single-document projection %d must exceed the cap %d", projected, MaxRenameCascadeProjectedBytes)
+	occurrences := (MaxRenameCascadeRetainedBytes / (5 + 5 + (newTitleLen - 1))) * 2 // 2x the cap
+	body, retained := linkerBody(occurrences, newTitleLen)
+	if retained <= MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: single-document retention %d must exceed the cap %d", retained, MaxRenameCascadeRetainedBytes)
 	}
 
 	s := testStore(t)
@@ -166,5 +170,216 @@ func TestRenameCascade_RefusesTheSingleDocumentAttack(t *testing.T) {
 	_, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle})
 	if !errors.Is(err, ErrRenameCascadeTooLarge) {
 		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge", err)
+	}
+}
+
+// TestRenameCascade_CountsRetainedBytesNotJustOutput pins codex round 1's P1
+// against the guard that shipped in the first commit, which summed only the
+// PROJECTED OUTPUT.
+//
+// The counterexample is a rename to a SHORTER title. Every linker here holds a
+// large body, but the rewrite shrinks it, so an output-only counter reports a
+// small number while the cascade still retains every read body for its
+// compare-and-set. Under the old guard the total below reported far under the
+// cap and the rename proceeded; the retained-bytes guard refuses it.
+//
+// This is why the direction of the rename matters and why the constant is
+// named for retention rather than for projection.
+func TestRenameCascade_CountsRetainedBytesNotJustOutput(t *testing.T) {
+	// Old title long, new title short — the shrinking direction.
+	oldTitle := strings.Repeat("O", 200)
+	newTitle := "n"
+
+	// Each linker is ~2 MiB of `[[<200-char title>]]`, the shape a single 2 MiB
+	// request can deliver.
+	occurrencesPerDoc := (2 << 20) / (len(oldTitle) + 4)
+	body := strings.Repeat("[["+oldTitle+"]]", occurrencesPerDoc)
+
+	// Enough linkers that the RETAINED total is over the cap while the
+	// projected OUTPUT total stays under it. That gap is the finding.
+	linkers := (MaxRenameCascadeRetainedBytes / len(body)) + 2
+
+	outputTotal := 0
+	retainedTotal := 0
+	for i := 0; i < linkers; i++ {
+		rewritten := len(body) + occurrencesPerDoc*(len(newTitle)-len(oldTitle))
+		outputTotal += rewritten
+		retainedTotal += len(body) + rewritten
+	}
+	if outputTotal > MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: projected OUTPUT total %d must stay UNDER the cap %d, "+
+			"otherwise an output-only guard would also refuse this and the test proves nothing",
+			outputTotal, MaxRenameCascadeRetainedBytes)
+	}
+	if retainedTotal <= MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: RETAINED total %d must exceed the cap %d", retainedTotal, MaxRenameCascadeRetainedBytes)
+	}
+
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "CascadeShrinking")
+	target := createTestDoc(t, s, ws.ID, oldTitle, "the document being renamed")
+	for i := 0; i < linkers; i++ {
+		createTestDoc(t, s, ws.ID, "Linker"+string(rune('a'+i)), body)
+	}
+
+	if _, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle}); !errors.Is(err, ErrRenameCascadeTooLarge) {
+		t.Fatalf("shrinking rename: got %v, want ErrRenameCascadeTooLarge — an output-only guard admits this", err)
+	}
+}
+
+// TestRenameCascade_FindsLinkersWhoseTitleContainsABackslash pins codex round
+// 1's P2. POSTGRES ONLY, and skipped loudly elsewhere rather than passing
+// quietly — the defect is a DIALECT DIVERGENCE, and SQLite is the dialect that
+// was accidentally right.
+//
+// The cascade finds linkers with `content LIKE ?`. Postgres LIKE treats
+// backslash as the default escape character; SQLite LIKE has no default escape
+// character at all. So an unescaped search term for a title containing `\` was
+// searched for as the literal it is on SQLite, and as a DIFFERENT literal on
+// Postgres — `[[Alpha\Beta]]` became `[[AlphaBeta]]`, the linking documents
+// were not found, the cascade rewrote nothing, and the rename reported success
+// leaving every link pointing at a title that no longer exists.
+//
+// A green run on SQLite is therefore a property of the DSN, not evidence about
+// this fix, which is why this skips instead.
+func TestRenameCascade_FindsLinkersWhoseTitleContainsABackslash(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("asserts a Postgres LIKE-escape property; SQLite LIKE has no default escape character, so the unescaped pattern is accidentally correct there")
+	}
+
+	ws := createTestWorkspace(t, s, "CascadeLikeBackslash")
+	title := `Alpha\Beta`
+	target := createTestDoc(t, s, ws.ID, title, "the document being renamed")
+	linker := createTestDoc(t, s, ws.ID, "RealLinker", "see [["+title+"]] here")
+
+	newTitle := "Renamed"
+	if _, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	got, err := s.GetDocument(linker.ID)
+	if err != nil {
+		t.Fatalf("read back linker: %v", err)
+	}
+	if want := "see [[Renamed]] here"; got.Content != want {
+		t.Errorf("the linker was not rewritten — the cascade's LIKE pattern did not find it:\n got: %q\nwant: %q",
+			got.Content, want)
+	}
+}
+
+// TestRenameCascade_DoesNotSpendTheBudgetOnDocumentsThatDoNotLinkTheTitle is
+// the rest of the class codex's backslash finding was an instance of
+// (CONVE-18): `%` and `_` are LIKE wildcards in BOTH dialects, so an unescaped
+// search term for a title containing them selects documents that do not link
+// it.
+//
+// Over-matching cannot be caught by asserting content — the extra rows rewrite
+// to themselves, because ReplaceTitle looks for the literal. It is observable
+// through the guard, which is computed from this result set: unrelated
+// documents inflate the retained total, and a rename that fits the cap is
+// refused because of content it was never going to touch. That is the harm,
+// and it is what this asserts.
+//
+// The first version of this test asserted the decoy's content was untouched
+// and passed against the unescaped pattern — a vacuous green. Recorded here
+// because the fix was to find the observable consequence, not to trust the
+// mechanism.
+func TestRenameCascade_DoesNotSpendTheBudgetOnDocumentsThatDoNotLinkTheTitle(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		title string
+		decoy string // matches the title read as a PATTERN, not as a literal
+	}{
+		{"percent", `Alpha%Beta`, `[[AlphaXYZBeta]]`},
+		{"underscore", `Alpha_Beta`, `[[AlphaZBeta]]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t)
+			ws := createTestWorkspace(t, s, "CascadeLike"+tc.name)
+			target := createTestDoc(t, s, ws.ID, tc.title, "the document being renamed")
+			linker := createTestDoc(t, s, ws.ID, "RealLinker", "see [["+tc.title+"]] here")
+
+			// Decoys big enough that INCLUDING them blows the cap, while the
+			// real linker alone is negligible. With the pattern escaped they
+			// are not selected and the rename is comfortably under budget.
+			decoyBody := strings.Repeat("x", 1<<20) + " " + tc.decoy
+			decoys := (MaxRenameCascadeRetainedBytes / len(decoyBody)) + 2
+			for i := 0; i < decoys; i++ {
+				createTestDoc(t, s, ws.ID, "Decoy"+string(rune('a'+i)), decoyBody)
+			}
+
+			newTitle := "Renamed"
+			if _, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle}); err != nil {
+				t.Fatalf("a rename well under the cap was refused because of documents that do not link it: %v", err)
+			}
+
+			got, err := s.GetDocument(linker.ID)
+			if err != nil {
+				t.Fatalf("read back linker: %v", err)
+			}
+			if want := "see [[Renamed]] here"; got.Content != want {
+				t.Errorf("the real linker was not rewritten:\n got: %q\nwant: %q", got.Content, want)
+			}
+		})
+	}
+}
+
+// TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody pins codex round
+// 1's other P1: the guard used to cover only the cascade's SCAN, while the
+// compare-and-set's retry path re-read a linker's body and called ReplaceTitle
+// on it with no bound at all.
+//
+// The re-read body is a NEW input supplied by whoever won the race, so a
+// content edit landing inside the cascade's window could grow a linker from
+// harmless to enormous and walk the rename straight back into the
+// amplification it would have been refused for.
+//
+// POSTGRES ONLY, for the same structural reason as
+// TestUpdateDocument_CascadeDoesNotOverwriteConcurrentEdit: SQLite's
+// `_txlock=immediate` DSN takes the write lock at BEGIN and holds it across the
+// cascade's whole read→write window, so a concurrent edit cannot commit inside
+// it. A green run there would be a property of the DSN, not evidence about this
+// guard.
+func TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("needs a concurrent edit to commit inside the cascade's read→write window; SQLite's BEGIN IMMEDIATE closes it structurally")
+	}
+
+	ws := createTestWorkspace(t, s, "CascadeRetryBudget")
+	target := createTestDoc(t, s, ws.ID, "A", "the document being renamed")
+
+	// Small at scan time — the cascade counts a few bytes and proceeds.
+	linker := createTestDoc(t, s, ws.ID, "Linker", "before [[A]] after")
+
+	// The winner's body is over the cap on its own, so the retry's re-read is
+	// the first and only place this can be caught.
+	newTitleLen := 255
+	occurrences := (MaxRenameCascadeRetainedBytes / (5 + 5 + (newTitleLen - 1))) * 2
+	grownBody, grownRetained := linkerBody(occurrences, newTitleLen)
+	if grownRetained <= MaxRenameCascadeRetainedBytes {
+		t.Fatalf("precondition: the grown body's retention %d must exceed the cap %d", grownRetained, MaxRenameCascadeRetainedBytes)
+	}
+
+	var once sync.Once
+	var editErr error
+	s.afterLinkCascadeRead = func(string) {
+		once.Do(func() {
+			// Content-only, so it takes no rename lock and can commit inside
+			// the cascade's window (BUG-2785's seam, same mechanism).
+			_, editErr = s.UpdateDocument(linker.ID, models.DocumentUpdate{Content: &grownBody})
+		})
+	}
+	defer func() { s.afterLinkCascadeRead = nil }()
+
+	newTitle := strings.Repeat("T", newTitleLen)
+	_, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle})
+
+	if editErr != nil {
+		t.Fatalf("the concurrent edit itself failed, so this run never exercised the retry path: %v", editErr)
+	}
+	if !errors.Is(err, ErrRenameCascadeTooLarge) {
+		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge — the retry re-read an unbounded body", err)
 	}
 }

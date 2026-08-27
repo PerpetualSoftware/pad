@@ -564,13 +564,40 @@ func (s *Store) acquireWorkspaceDocumentRenameLock(tx *sql.Tx, workspaceID strin
 	return nil
 }
 
+// escapeLikePattern escapes the three characters that carry meaning inside a
+// LIKE pattern, for use with an explicit `ESCAPE '\'` clause.
+//
+// Without this the cascade's own search term is interpreted as a pattern, and
+// a document TITLE decides how (BUG-2798, codex round 1 P2 — plus the rest of
+// the class it was an instance of):
+//
+//   - `_` and `%` are wildcards in BOTH dialects, so a title containing them
+//     selects documents that do not link it. Those extra rows rewrite to
+//     themselves, so the damage is not corruption — it is that the guard below
+//     is computed from this result set, so an over-broad pattern spends a
+//     caller's budget on rows that were never going to change.
+//   - `\` is where the two dialects DISAGREE, which is the dangerous half.
+//     Postgres LIKE treats backslash as the default escape character; SQLite
+//     LIKE has no default escape character at all. So `[[Alpha\Beta]]` is
+//     searched for as the literal it is on SQLite and as `[[AlphaBeta]]` on
+//     Postgres — the linking documents are simply not found, the cascade
+//     rewrites nothing, and the rename succeeds leaving every link stale. A
+//     silent, dialect-dependent data defect.
+//
+// The explicit ESCAPE clause makes both dialects agree, rather than leaving
+// SQLite correct by accident and Postgres wrong by default.
+func escapeLikePattern(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
 func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle string) error {
 	// Find all documents in the workspace that contain [[oldTitle]]
 	searchTerm := "[[" + oldTitle + "]]"
 	rows, err := tx.Query(s.q(`
 		SELECT id, content FROM documents
-		WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ?
-	`), workspaceID, "%"+searchTerm+"%")
+		WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ? ESCAPE '\'
+	`), workspaceID, "%"+escapeLikePattern(searchTerm)+"%")
 	if err != nil {
 		return err
 	}
@@ -583,39 +610,48 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// the column handed us and never a normalized form of it.
 		read      string
 		rewritten string
+		// retained is what this row contributed to the running total, kept so
+		// the compare-and-set below can be given ITS share of the budget when
+		// a concurrent edit forces it to re-read and re-rewrite.
+		retained int64
 	}
 	var updates []docUpdate
-	var projected int64
+	var retained int64
 	for rows.Next() {
 		var du docUpdate
 		if err := rows.Scan(&du.id, &du.read); err != nil {
 			return err
 		}
 
-		// Project this linker's rewritten size BEFORE building it, and refuse
-		// on the running TOTAL across the linking set (BUG-2798).
-		//
-		// The quantity is exact rather than an estimate: strings.Replace
-		// substitutes every non-overlapping occurrence, so the output is
-		// len(read) + occurrences * (len(new) - len(old)) to the byte.
+		// Project what this linker will make the cascade HOLD, before building
+		// it, and refuse on the running TOTAL across the linking set
+		// (BUG-2798).
 		//
 		// The total is the right thing to bound, and a per-document cap would
 		// not be. Measured: with the title bound in place, one linker holding
 		// the largest body a 2 MiB request can carry projects 108,632,370
-		// bytes — 51.8x — and the cascade holds EVERY rewritten body in
-		// `updates` before it writes any of them, so k linkers hold k times
-		// that (measured linear at k = 1/2/4). A per-document cap of C still
-		// admits k * C, which is the same unbounded shape one level up.
+		// bytes of output — 51.8x — and the loop below holds EVERY rewritten
+		// body in `updates` before it writes any of them, so k linkers hold k
+		// times that (measured linear at k = 1/2/4). A per-document cap of C
+		// still admits k * C, which is the same unbounded shape one level up.
+		//
+		// RETAINED bytes, not output bytes. An earlier version of this guard
+		// summed only the projected output, which bounds nothing when the new
+		// title is SHORTER than the old one: renaming a 255-character title to
+		// a one-character title makes each 2 MiB linker project about 40 KiB
+		// while the cascade still retains its 2 MiB read for the
+		// compare-and-set, so hundreds of linkers exhaust memory while the
+		// counter reports well under the cap (codex round 1 P1). Both strings
+		// are alive at once, so both are counted.
 		//
 		// Refusing here rather than after the loop is what makes the bound
 		// real: at the moment of refusal the process holds the linkers already
-		// projected (under the cap by construction) plus this one row's body,
+		// counted (under the cap by construction) plus this one row's body,
 		// and none of the amplified output.
-		occurrences := int64(strings.Count(du.read, searchTerm))
-		projected += int64(len(du.read)) + occurrences*int64(len(newTitle)-len(oldTitle))
-		if projected > MaxRenameCascadeProjectedBytes {
-			return fmt.Errorf("%w: renaming to %q projects at least %d bytes across linked documents, maximum %d",
-				ErrRenameCascadeTooLarge, newTitle, projected, MaxRenameCascadeProjectedBytes)
+		du.retained = cascadeRetainedBytes(du.read, searchTerm, oldTitle, newTitle)
+		retained += du.retained
+		if retained > MaxRenameCascadeRetainedBytes {
+			return newRenameCascadeTooLargeError(newTitle, retained)
 		}
 
 		du.rewritten = links.ReplaceTitle(du.read, oldTitle, newTitle)
@@ -636,11 +672,38 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 	}
 
 	for _, du := range updates {
-		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle); err != nil {
+		// Budget handed to this document's compare-and-set: the cap, less
+		// everything the OTHER documents are holding. A retry that re-reads a
+		// body grown by a concurrent edit is checked against it, so the
+		// aggregate bound survives the retry path as well as the scan (codex
+		// round 1 P1 — the guard used to cover only the scan, and the retry
+		// called ReplaceTitle on an unbounded re-read).
+		budget := MaxRenameCascadeRetainedBytes - (retained - du.retained)
+		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle, searchTerm, budget); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// cascadeRetainedBytes is what one linking document makes the cascade hold:
+// the body it read (kept verbatim as the compare-and-set token) plus the body
+// it will write.
+//
+// Exact rather than an estimate. strings.Replace substitutes every
+// non-overlapping occurrence, so the rewritten length is
+// len(read) + occurrences * (len(new) - len(old)) to the byte, and this
+// function is the only place that arithmetic lives — the scan and the retry
+// path must not be allowed to drift apart on it.
+func cascadeRetainedBytes(read, searchTerm, oldTitle, newTitle string) int64 {
+	occurrences := int64(strings.Count(read, searchTerm))
+	rewritten := int64(len(read)) + occurrences*int64(len(newTitle)-len(oldTitle))
+	return int64(len(read)) + rewritten
+}
+
+func newRenameCascadeTooLargeError(newTitle string, retained int64) error {
+	return fmt.Errorf("%w: renaming to %q would hold at least %d bytes of linked-document content, maximum %d",
+		ErrRenameCascadeTooLarge, newTitle, retained, MaxRenameCascadeRetainedBytes)
 }
 
 // ErrLinkCascadeContention reports that a rename's link cascade lost its
@@ -653,9 +716,8 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 // opposite of the truth here (codex round 2 on BUG-2785).
 var ErrLinkCascadeContention = errors.New("store: link cascade lost the compare-and-set")
 
-// ErrRenameCascadeTooLarge reports that a rename was refused because the work
-// it projects across linking documents exceeds
-// MaxRenameCascadeProjectedBytes.
+// ErrRenameCascadeTooLarge reports that a rename was refused because the
+// linked-document content it would hold exceeds MaxRenameCascadeRetainedBytes.
 //
 // Deliberately NOT in ErrLinkCascadeContention's family, and the distinction
 // is the caller-visible one: contention means "someone else got there first,
@@ -665,37 +727,47 @@ var ErrLinkCascadeContention = errors.New("store: link cascade lost the compare-
 // the projection so the caller can see what it asked for. Blurring the two
 // vocabularies would tell a client to retry forever (BUG-2798, lead ruling
 // day-63).
-var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the projected-output bound")
+var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the retained-content bound")
 
-// MaxRenameCascadeProjectedBytes bounds the TOTAL bytes a single rename may
-// project across every document linking the renamed title.
+// MaxRenameCascadeRetainedBytes bounds the TOTAL linked-document content a
+// single rename may hold in memory: for every linking document, the body read
+// plus the body written.
 //
-// 16 MiB, and the basis is measured rather than picked:
+// RETAINED rather than merely projected-output, because output alone is not
+// the resource. A rename to a SHORTER title projects less output than its
+// input while still holding every read body for the compare-and-set — so an
+// output-only counter reports ~40 KiB per 2 MiB linker and bounds nothing in
+// that direction (codex round 1). Counting both strings makes the cap a
+// statement about resident memory, which is what actually runs out.
+//
+// 32 MiB, and both bounds of the gap are measured rather than picked:
 //
 //   - Legitimate ceiling. In this development instance's database — a mature
 //     workspace set, 206 MB on disk — the ENTIRE corpus of wiki-linking
 //     content is 2,949 items totalling 10,077,476 bytes (largest single body
-//     86,147 bytes). That is the absolute ceiling on any conceivable single
-//     cascade there: it assumes every wiki-linking document links the one
-//     title being renamed, which no real workspace does. 16 MiB is above
+//     86,147 bytes). A cascade over all of it would retain read + rewritten,
+//     so ~20,154,952 bytes. That is the absolute ceiling on any conceivable
+//     single cascade there: it assumes every wiki-linking document links the
+//     one title being renamed, which no real workspace does. 32 MiB is ~1.6x
 //     that impossible worst case, so the guard cannot fire on honest use.
-//     (Measured on `items`, the live surface; the `documents` table in that
-//     instance is empty, which is why the proxy — the two carry the same kind
-//     of content through the same kind of cascade.)
+//     (Measured on `items`, the live surface; that instance's `documents`
+//     table is empty, which is why the proxy — the two carry the same kind of
+//     content through the same kind of cascade.)
 //   - Hostile floor. A single linking document holding the largest body a
-//     2 MiB request can carry projects 108,632,370 bytes once the title bound
-//     is in place — 6.5x this cap — so the attack is refused at k = 1 and
+//     2 MiB request can carry retains 110,729,522 bytes once the title bound
+//     is in place — 3.3x this cap — so the attack is refused at k = 1 and
 //     every k above it, rather than at some threshold count of documents.
-//   - Cost of the bound itself. The cascade holds read and rewritten bodies
-//     concurrently, so the cap is a promise about resident memory: at most
-//     ~2x this per in-flight rename, which is a bounded, budgetable number
-//     for a server that previously had none.
 //
-// The gap between the two figures is deliberate and wide: a cap has to be far
-// enough above real use that nobody meets it by accident, and far enough
-// below the hazard that meeting it costs nothing. 16 MiB is ~1.6x the former
-// and ~0.15x the latter.
-const MaxRenameCascadeProjectedBytes = 16 << 20
+// The gap is deliberate and wide: a cap has to be far enough above real use
+// that nobody meets it by accident, and far enough below the hazard that
+// meeting it costs nothing.
+//
+// What it does NOT cover, stated so the next reader does not over-read it:
+// this bounds ONE rename's linked-document content, not concurrent renames (N
+// of them may each hold up to this), and not the base cost of a workspace
+// whose linking documents are legitimately large — a cascade under the cap
+// still allocates whatever it holds.
+const MaxRenameCascadeRetainedBytes = 32 << 20
 
 // cascadeRewriteAttempts bounds rewriteLinkerCAS's retry loop.
 //
@@ -789,7 +861,7 @@ var cascadeRewriteAttempts = 3
 // Both are pre-existing and neither is made worse here. They are recorded
 // because the next reader's question is "is the cascade correct now", and the
 // honest answer is "for the direction this bug named".
-func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle string) error {
+func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle, searchTerm string, budget int64) error {
 	expected := read
 	next := rewritten
 	for attempt := 0; attempt < cascadeRewriteAttempts; attempt++ {
@@ -819,6 +891,17 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 		}
 		if err != nil {
 			return err
+		}
+
+		// The re-read body is a NEW input, supplied by whoever won the race,
+		// and it is bounded by nothing this cascade has already checked. Its
+		// budget is the cap less what the other linkers are holding, so the
+		// aggregate bound holds across retries too — without this, an editor
+		// could grow a linker between the scan and the retry and walk the
+		// rename straight back into the amplification it was refused for
+		// (BUG-2798, codex round 1 P1).
+		if grown := cascadeRetainedBytes(current, searchTerm, oldTitle, newTitle); grown > budget {
+			return newRenameCascadeTooLargeError(newTitle, grown)
 		}
 
 		// A concurrent edit won. Rewrite ITS body rather than ours: replaying

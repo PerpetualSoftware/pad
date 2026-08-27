@@ -109,8 +109,8 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 	// request cap, which is the point: the hostile input is cheap to deliver.
 	const newTitleLen = 255
 	const linkers = 3
-	perDoc := (store.MaxRenameCascadeProjectedBytes / linkers) + (store.MaxRenameCascadeProjectedBytes / (linkers * 4))
-	occurrences := perDoc / (5 + (newTitleLen - 1))
+	perDoc := (store.MaxRenameCascadeRetainedBytes / linkers) + (store.MaxRenameCascadeRetainedBytes / (linkers * 4))
+	occurrences := perDoc / (5 + 5 + (newTitleLen - 1))
 	body := strings.Repeat("[[A]]", occurrences)
 
 	for i := 0; i < linkers; i++ {
