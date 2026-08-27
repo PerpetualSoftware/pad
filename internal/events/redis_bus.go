@@ -1170,11 +1170,17 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 			resuming = false
 			return nil, nil, nil, SubscribeFailed
 		}
-		if _, live := b.wsSubs[workspaceID]; live {
-			break
-		}
+		// PENDING BEFORE WSSUBS, the same order section 1 uses and for the
+		// same reason (codex round 2 P1): a replacement installs its wsSubs
+		// entry BEFORE Redis acknowledges it and holds its record until the
+		// acknowledgement lands, so "live" alone can be a subscription in its
+		// unconfirmed window. A record in flight is waited on first; only a
+		// live entry with nobody establishing is a subscription to return.
 		p, inFlight := b.pendingSubs[workspaceID]
 		if !inFlight {
+			if _, live := b.wsSubs[workspaceID]; live {
+				break
+			}
 			b.unsubscribeLocked(sub.ch)
 			b.mu.Unlock()
 			resuming = false
