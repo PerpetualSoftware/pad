@@ -173,10 +173,12 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// until the workspace's content changes, so it gets a 4xx with no
 		// Retry-After, carrying the projection because that is the only
 		// actionable information. 413 follows this codebase's own precedent
-		// for a bound on OUTPUT rather than on the request body
+		// for refusing work whose COST is not in the request body
 		// (`image_too_large` in handlers_attachments_transform.go, where the
-		// request is likewise small and the thing refused is what it would
-		// produce).
+		// request is likewise small and what is refused is what handling it
+		// would take). The precedent's quantity is output size and this
+		// guard's is retained content; what carries across is the shape —
+		// a small request refused for what it would cost, not for its size.
 		var tooLarge *store.RenameCascadeTooLargeError
 		if errors.As(err, &tooLarge) {
 			// Composed from TYPED fields, never by splicing err.Error(). The

@@ -10,9 +10,13 @@ import (
 // web/src/lib/utils/markdown.ts so this test can derive the validator's rule
 // from them instead of from an opinion about which characters look dangerous.
 //
-// Duplicated rather than approximated. If the TypeScript changes, these should
-// start disagreeing with ValidateDocumentTitle — that is the signal wanted,
-// not a nuisance.
+// Duplicated rather than approximated — and duplication is exactly the risk
+// here, stated rather than papered over: these are STATIC copies, so a change
+// to the TypeScript does not reach them. Nothing in this repository fails when
+// the two drift (codex round 6). What this buys is that the Go rule is derived
+// from a written-down grammar rather than from an opinion, and that a reader
+// can check the two by eye at the cited line numbers. Closing the drift for
+// real would need a shared fixture driven from both languages.
 var (
 	// markdown.ts:327 — shared by renderMarkdown and wikiLinksToMarkdown.
 	storedWikiLinkBracket = regexp.MustCompile(`\[\[((?:\\.|[^\]\\])+)\]\]`)
@@ -41,8 +45,16 @@ func roundTrips(title string) bool {
 }
 
 // TestDocumentTitleValidationMatchesTheRoundTripProperty is the justification
-// for the rule, in executable form: the validator must reject a title if and
-// only if that title's links would not survive being rewritten to it.
+// for the SYNTAX rule, in executable form: of the titles this table covers —
+// all of them within the length bound — the validator must reject one if and
+// only if its links would not survive being rewritten to it.
+//
+// Scoped to syntax deliberately. ValidateDocumentTitle also enforces length
+// and non-emptiness, and those are NOT round-trip properties: a 300-rune title
+// round-trips perfectly and is still refused, for the unrelated reason that it
+// is an amplification factor on other documents. Stating the biconditional
+// over the whole validator would be false (codex round 6); the length rule has
+// its own tests below.
 //
 // Both directions are asserted, because either alone permits a wrong answer.
 // Without the reject leg, a validator that accepted everything passes.

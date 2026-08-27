@@ -155,10 +155,18 @@ func TestRenameCascade_AllowsAnOrdinaryRename(t *testing.T) {
 }
 
 // TestRenameCascade_RefusesTheSingleDocumentAttack covers the k=1 case
-// directly: one linking document holding the largest body a 2 MiB request can
-// carry still retains 110,729,522 bytes once the title bound is in place
-// (108,632,370 written plus the 2,097,152 read), which is 3.3x the cap. The
-// attack is refused at every k, not only at a threshold count of documents.
+// directly: a single linking document is refused on its own, so the guard does
+// not depend on reaching some threshold COUNT of documents.
+//
+// The body here is sized from the cap (2x it, 1,271,000 bytes retaining
+// 67,108,800) rather than from the request limit, so the test keeps
+// discriminating if the cap moves. The full-strength version of this attack —
+// the largest body a 2 MiB request can carry, retaining 110,729,520 bytes,
+// 3.3x the cap — is exercised by
+// TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody, which needs that
+// exact shape for its allocation margin. Kept separate rather than described
+// here, because a comment naming a shape the test does not build is how
+// figures rot (codex round 6).
 //
 // Kept separate from the total-versus-per-document test because it is the one
 // case a per-document guard WOULD catch — asserting both makes it explicit
@@ -589,9 +597,16 @@ func TestRenameCascade_CountsBothStringsNotTheLargerOne(t *testing.T) {
 // string is never built.
 //
 // The instrument is cumulative allocation (TotalAlloc), not peak memory, and
-// the margin is ~20x: refusing allocates the one read body it had to scan
-// (~2 MiB plus overhead), while building the rewrite first allocates
-// ~108 MB. The threshold sits far from both.
+// both sides of the threshold are measured rather than estimated. Refusing
+// allocates 2,114,624 bytes — the one body it had to scan, plus overhead —
+// against a ceiling of 52,428,800, so the passing case sits ~24.8x under it.
+// Building the rewrite first allocates 110,748,144, which is ~2.1x OVER the
+// ceiling; that figure comes from running this test against a mutation with
+// links.ReplaceTitle moved above the guard, not from arithmetic.
+//
+// The two margins are deliberately asymmetric and the smaller one is the
+// binding constraint: 2.1x is the headroom that matters, since it is the gap a
+// regression has to cross to be caught.
 //
 // BUG-2798's own filing warned that "a test that tries to prove the ABSENCE of
 // amplification by measuring memory would be flaky by construction", and that
@@ -631,7 +646,10 @@ func TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 	if !errors.Is(err, ErrRenameCascadeTooLarge) {
 		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge", err)
 	}
-	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocCeiling {
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("refused rename allocated %d bytes; ceiling %d; the rewrite it declined to build is %d",
+		allocated, allocCeiling, rewrittenSize)
+	if allocated > allocCeiling {
 		t.Errorf("the refused rename allocated %d bytes, ceiling %d — the projected rewrite is "+
 			"%d bytes, so the guard is running AFTER the body it was supposed to prevent",
 			allocated, allocCeiling, rewrittenSize)

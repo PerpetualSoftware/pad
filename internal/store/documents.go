@@ -806,14 +806,23 @@ var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the ret
 //     content is 2,949 items totalling 10,077,476 bytes (largest single body
 //     86,147 bytes). A cascade over all of it would retain read + rewritten,
 //     so ~20,154,952 bytes. That is the absolute ceiling on any conceivable
-//     single cascade there: it assumes every wiki-linking document links the
-//     one title being renamed, which no real workspace does. 32 MiB is ~1.6x
-//     that impossible worst case, so the guard cannot fire on honest use.
-//     (Measured on `items`, the live surface; that instance's `documents`
-//     table is empty, which is why the proxy — the two carry the same kind of
-//     content through the same kind of cascade.)
+//     single cascade over that corpus: it assumes every wiki-linking document
+//     links the one title being renamed, which no real workspace does. 32 MiB
+//     is ~1.6x that impossible worst case.
+//
+//     The INFERENCE is worth naming rather than hiding, because the guard it
+//     justifies is on documents and the measurement is not (codex round 6):
+//     that instance's `documents` table is EMPTY, so there is no direct
+//     figure to take. `items` is used as the proxy on the grounds that the
+//     two hold the same kind of prose and cascade the same way — a reasonable
+//     assumption, not a measurement of the guarded path. What can be said
+//     without the proxy is narrower and still useful: a workspace whose
+//     documents linking one title total more than ~16 MB of content will meet
+//     this cap. If real document corpora ever get that large, this number is
+//     the thing to re-measure.
+//
 //   - Hostile floor. A single linking document holding the largest body a
-//     2 MiB request can carry retains 110,729,522 bytes once the title bound
+//     2 MiB request can carry retains 110,729,520 bytes once the title bound
 //     is in place — 3.3x this cap — so the attack is refused at k = 1 and
 //     every k above it, rather than at some threshold count of documents.
 //

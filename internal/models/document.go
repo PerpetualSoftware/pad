@@ -92,8 +92,8 @@ type DocumentListParams struct {
 // RUNES, not bytes, because "255 characters" is what a user and a UI counter
 // mean. That makes the byte-level residual up to 4x this number, which is
 // precisely why the title bound is the cheap door and NOT the wall: the
-// cascade's own projection guard (store.MaxRenameCascadeProjectedBytes) is
-// byte-accurate and is what actually bounds the work.
+// cascade's own guard (store.MaxRenameCascadeRetainedBytes) is byte-accurate
+// and is what actually bounds the work.
 //
 // Enforced at WRITE time only. Titles already over the bound stay valid and
 // keep working until their next rename — no retro-breakage of stored data

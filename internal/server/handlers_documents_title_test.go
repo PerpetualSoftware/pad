@@ -105,10 +105,11 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 
 	target := createDocForTest(t, srv, slug, "A", "the document being renamed")
 
-	// Three linking documents, each projecting under the cap, together over
-	// it — the same total-not-per-document shape the store test pins, driven
-	// through real requests. Each body is ~135 KB, well inside the 2 MiB
-	// request cap, which is the point: the hostile input is cheap to deliver.
+	// Three linking documents, each retaining under the cap, together over it
+	// — the same total-not-per-document shape the store test pins, driven
+	// through real requests. Each body is 264,790 bytes, well inside the
+	// 2 MiB request cap, which is the point: the hostile input is cheap to
+	// deliver.
 	const newTitleLen = 255
 	const linkers = 3
 	perDoc := (store.MaxRenameCascadeRetainedBytes / linkers) + (store.MaxRenameCascadeRetainedBytes / (linkers * 4))
