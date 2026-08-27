@@ -720,9 +720,49 @@ func cascadeRetainedBytes(read, searchTerm, oldTitle, newTitle string) int64 {
 	return int64(len(read)) + rewritten
 }
 
+// RenameCascadeTooLargeError carries the refusal's NUMBERS as typed fields, so
+// a caller-facing layer can compose its own sentence instead of splicing this
+// error's text into a response.
+//
+// The distinction matters (codex round 5): the HTTP handler used to append
+// err.Error() verbatim, which meant every wrapper any caller added on the way
+// up — "update links: " today, anything at all tomorrow — was published to the
+// client as part of a public message. The two figures ARE meant to reach the
+// caller (Dave's day-63 ruling: the refusal states what it would hold and what
+// the cap is, so "split the rename" is actionable advice rather than a shrug);
+// the internal call path is not.
+//
+// This is the round-3 lesson applied in the other direction: there, prose was
+// being used to CLASSIFY an error and should have been identity; here, prose
+// was being used to REPORT one and should have been data.
+type RenameCascadeTooLargeError struct {
+	// NewTitle is the caller's own requested title. Echoed back deliberately:
+	// it is theirs, and it is what they need to see to understand which
+	// rename was refused.
+	NewTitle string
+	// Retained is the lower bound on bytes the cascade would have held. A
+	// lower bound, not a total: the scan stops at the first row that crosses
+	// the cap, so the true figure is larger.
+	Retained int64
+	// Max is the cap in force.
+	Max int64
+}
+
+func (e *RenameCascadeTooLargeError) Error() string {
+	return fmt.Sprintf("%s: renaming to %q would hold at least %d bytes of linked-document content, maximum %d",
+		ErrRenameCascadeTooLarge.Error(), e.NewTitle, e.Retained, e.Max)
+}
+
+// Unwrap makes errors.Is(err, ErrRenameCascadeTooLarge) hold, so every existing
+// sentinel check keeps working.
+func (e *RenameCascadeTooLargeError) Unwrap() error { return ErrRenameCascadeTooLarge }
+
 func newRenameCascadeTooLargeError(newTitle string, retained int64) error {
-	return fmt.Errorf("%w: renaming to %q would hold at least %d bytes of linked-document content, maximum %d",
-		ErrRenameCascadeTooLarge, newTitle, retained, MaxRenameCascadeRetainedBytes)
+	return &RenameCascadeTooLargeError{
+		NewTitle: newTitle,
+		Retained: retained,
+		Max:      MaxRenameCascadeRetainedBytes,
+	}
 }
 
 // ErrLinkCascadeContention reports that a rename's link cascade lost its

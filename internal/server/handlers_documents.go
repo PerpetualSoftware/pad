@@ -177,10 +177,17 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// (`image_too_large` in handlers_attachments_transform.go, where the
 		// request is likewise small and the thing refused is what it would
 		// produce).
-		if errors.Is(err, store.ErrRenameCascadeTooLarge) {
+		var tooLarge *store.RenameCascadeTooLargeError
+		if errors.As(err, &tooLarge) {
+			// Composed from TYPED fields, never by splicing err.Error(). The
+			// two figures are meant to reach the caller — the refusal has to
+			// be actionable — but the internal call path wrapped around them
+			// is not, and appending the error text published whatever any
+			// layer had prefixed (codex round 5).
 			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
-				"This rename would rewrite more linked content than the server will process in one operation. "+
-					"Reduce the number of documents linking this title, or shorten the new title, and try again. ("+err.Error()+")")
+				fmt.Sprintf("This rename would rewrite more linked content than the server will process in one "+
+					"operation: at least %d bytes, and the limit is %d. Reduce the number of documents linking "+
+					"this title, or shorten the new title, and try again.", tooLarge.Retained, tooLarge.Max))
 			return
 		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") {

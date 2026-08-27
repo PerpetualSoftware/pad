@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -127,11 +129,30 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 	if got := rr.Header().Get("Retry-After"); got != "" {
 		t.Errorf("Retry-After = %q; a permanent refusal must not invite a retry", got)
 	}
-	if b := rr.Body.String(); !strings.Contains(b, "rename_cascade_too_large") {
-		t.Errorf("response lacks the error code a client would switch on: %s", b)
+	respBody := rr.Body.String()
+	if !strings.Contains(respBody, "rename_cascade_too_large") {
+		t.Errorf("response lacks the error code a client would switch on: %s", respBody)
 	}
-	if b := rr.Body.String(); !strings.Contains(b, "maximum") {
-		t.Errorf("response lacks the projection; the caller cannot tell how far over they are: %s", b)
+
+	// The actual CAP, not the word "maximum" — a message reading "maximum
+	// exceeded" would satisfy a word check and tell the caller nothing about
+	// how far over they are (codex round 4).
+	if !strings.Contains(respBody, fmt.Sprint(store.MaxRenameCascadeRetainedBytes)) {
+		t.Errorf("response does not state the limit %d: %s", store.MaxRenameCascadeRetainedBytes, respBody)
+	}
+	if !regexp.MustCompile(`at least \d+ bytes`).MatchString(respBody) {
+		t.Errorf("response does not state what the rename would hold: %s", respBody)
+	}
+
+	// And NOT the store's internal wrapping. The handler composes this message
+	// from typed fields; splicing err.Error() published whatever prefix any
+	// layer had added on the way up (codex round 5). These two strings are the
+	// wrapping that was reaching clients before.
+	for _, leak := range []string{"update links:", "store:"} {
+		if strings.Contains(respBody, leak) {
+			t.Errorf("response carries internal error wrapping %q — the message must be composed "+
+				"from typed fields, not spliced from err.Error(): %s", leak, respBody)
+		}
 	}
 }
 
