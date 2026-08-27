@@ -177,16 +177,21 @@ func TestCancelDuringConfirmationTearsDownWhenNobodyElseIsWaiting(t *testing.T) 
 // everything settled would pass this test while proving nothing.
 func TestCancelledEstablisherStillFinishesTheWaitForItsJoiners(t *testing.T) {
 	mr := miniredis.RunT(t)
-	// Parked for longer than the confirmation bound below, so the hand-off
-	// runs into the bound and must mark the admission unconfirmed — the state
-	// that later becomes the joiner's sync_required.
-	proxy := newSubscribeDelayProxy(t, mr.Addr(), 3*time.Second)
+	// Parked until the hand-off has run into the confirmation bound and marked
+	// the admission unconfirmed — the state that later becomes the joiner's
+	// sync_required. Held at the wire and released only once the observer
+	// has reported that mark (below), rather than for a fixed interval, so
+	// the timer arm is the only one that can win and the acknowledgement is
+	// late by construction (BUG-2786).
+	proxy := newSubscribeGateProxy(t, mr.Addr())
 	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 	b.confirmTimeout = 200 * time.Millisecond
+	obs := &recordingObserver{}
+	b.SetObserver(obs)
 
 	unconfirmed := make(chan struct{}, 1)
 	b.beforeUnconfirmedMark = func() {
@@ -254,6 +259,21 @@ func TestCancelledEstablisherStillFinishesTheWaitForItsJoiners(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the confirmation wait was abandoned with the establisher: the joiner was admitted into an unacknowledged subscription and told nothing (BUG-2747's defect, re-created at the seam)")
 	}
+	// The hook fires BEFORE the mark takes b.mu; the observer reports AFTER
+	// it is set. Release the acknowledgement only on the second signal, or it
+	// can beat the mark and turn it into a no-op (codex round 3 P1).
+	deadline := time.Now().Add(5 * time.Second)
+	for obs.unconfirmedCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the hook ran but the unconfirmed mark was never reported; this test could not have discriminated")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	proxy.waitParked(t)
+	if proxy.forcedOpen.Load() {
+		t.Fatal("the failsafe opened the gate before the test released it; the acknowledgement was not held by construction, so this test could not have discriminated")
+	}
+	proxy.release()
 
 	// And it reaches the joiner as a reconcile signal once the acknowledgement
 	// finally lands.
