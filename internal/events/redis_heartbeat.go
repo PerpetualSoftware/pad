@@ -768,7 +768,7 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 		// line above says "attempting"; without this an on-call correlating it
 		// with pad_event_subscription_cycled_total finds a log with no counter
 		// and no explanation, on the one path where that is expected.
-		slog.Warn("events: the idle cycle installed no replacement subscription; the workspace was left uncovered because the bus is closing or it lost its last subscriber",
+		slog.Warn("events: the idle cycle installed no replacement subscription; the workspace was left uncovered because the bus is closing, it lost its last subscriber, or Redis refused the SUBSCRIBE (logged separately)",
 			"workspace", c.workspaceID)
 	}
 
@@ -778,8 +778,9 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 
 	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED (codex round 3). The counter's
 	// documented meaning is "torn down AND replaced", and establishSubscription
-	// has two reasons to install nothing: the bus closed under us, or the
-	// workspace emptied while we dialled. Reporting unconditionally would count
+	// has three reasons to install nothing: the bus closed under us, the
+	// workspace emptied while we dialled, or Redis refused the SUBSCRIBE
+	// (BUG-2764). Reporting unconditionally would count
 	// those as cycles, which is wrong in the direction that matters — an
 	// operator reading a non-zero rate concludes connections are being
 	// blackholed, and a shutdown would manufacture that signal. The teardown is
