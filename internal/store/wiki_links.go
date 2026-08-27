@@ -516,13 +516,17 @@ func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
 //     their content. The renderer would no longer resolve those after
 //     the rename, breaking the user's click target. Rewrite each
 //     source's content via links.ReplaceTitle (matches the document
-//     rename behavior — see documents.go::updateLinksInTx, though NOT
-//     its concurrency behavior any more: that cascade got a
-//     compare-and-set on the source's content in BUG-2785, and this one
-//     still writes unconditionally, so a content edit committing inside
-//     its read→write window is still lost here. BUG-2795, kept separate
-//     because this cascade rewrites by POSITION and a retry has to
-//     re-derive offsets rather than re-run a search), re-stamp
+//     rename behavior — see documents.go::updateLinksInTx, though not
+//     its concurrency behavior: that cascade got a compare-and-set in
+//     BUG-2785 and this one still writes unconditionally. That is NOT
+//     the same exposure, and the difference is a lock: UpdateItem takes
+//     acquireWorkspaceSeqLock unconditionally at the top of its tx and
+//     holds it to COMMIT, so two item updates in a workspace serialize
+//     on Postgres and an ordinary content edit cannot commit inside
+//     this window at all. The one writer that can is
+//     RemapAttachmentReferencesInWorkspace, which rewrites items.content
+//     in its own transaction without that lock — narrow, and tracked as
+//     BUG-2795), re-stamp
 //     updated_at + content_flushed_at, bump the workspace seq, and
 //     re-run replaceWikiLinks so the source's own index rows refresh
 //     with the new literal AND the new target_item_id resolution.

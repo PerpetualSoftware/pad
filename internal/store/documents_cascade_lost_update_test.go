@@ -229,3 +229,49 @@ func TestUpdateDocument_CascadeExhaustionRollsBackTheWholeRename(t *testing.T) {
 		t.Errorf("the concurrent edit did not survive the rolled-back rename.\n got: %q\nwant: %q", link.Content, edited)
 	}
 }
+
+// TestUpdateDocument_CascadeRewritesEveryLinkOnBothDialects is the only test in
+// this file that does NOT skip on SQLite, and it exists because the other three
+// do.
+//
+// The compare-and-set predicate runs on SQLite in production. The concurrency
+// tests cannot exercise it there — BEGIN IMMEDIATE closes the window they need
+// — so without this, the new UPDATE would have no coverage at all on the
+// dialect where it is claimed to be an inert no-op. "Inert" is a claim about
+// code, and it deserves a test rather than a comment: a predicate comparing
+// against the wrong string (the rewritten body instead of the body that was
+// read) affects zero rows on BOTH dialects, silently skipping the rewrite with
+// no concurrency involved.
+//
+// Multiple links in one body, and a second linker, so it also covers the loop
+// rather than a single-row happy path.
+func TestUpdateDocument_CascadeRewritesEveryLinkOnBothDialects(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "CascadeBothDialects")
+
+	target := createTestDoc(t, s, ws.ID, "Iota", "the document being renamed")
+	linkerA := createTestDoc(t, s, ws.ID, "IotaLinkerA", "a [[Iota]] b [[Iota]] c")
+	linkerB := createTestDoc(t, s, ws.ID, "IotaLinkerB", "only [[Iota]] here")
+	untouched := createTestDoc(t, s, ws.ID, "IotaStranger", "mentions Iota without brackets")
+
+	newTitle := "Kappa"
+	if _, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	for _, tc := range []struct{ id, want string }{
+		{linkerA.ID, "a [[Kappa]] b [[Kappa]] c"},
+		{linkerB.ID, "only [[Kappa]] here"},
+		// The cascade must not touch a document that merely contains the word.
+		// Without this, a fix that widened the match would pass everything above.
+		{untouched.ID, "mentions Iota without brackets"},
+	} {
+		got, err := s.GetDocument(tc.id)
+		if err != nil {
+			t.Fatalf("GetDocument(%s): %v", tc.id, err)
+		}
+		if got.Content != tc.want {
+			t.Errorf("content = %q, want %q", got.Content, tc.want)
+		}
+	}
+}

@@ -173,9 +173,12 @@ func RewriteBracketAt(content string, position int, targetTitle, newTitle, collS
 // argued: ReplaceTitle("x [[A]] y", "A", "A]] [[A") builds `[[A]] [[A]]`, which
 // still contains `[[A]]`, and a probe against the old implementation ran for 3s
 // without terminating before being killed. The caller is inside the rename
-// transaction AND holds the workspace rename advisory lock (BUG-2778), so the
-// hang would take out every other rename in that workspace behind it, on top of
-// exhausting memory in the one that triggered it.
+// transaction, so the hang holds that transaction open indefinitely on either
+// dialect. On POSTGRES it also holds the workspace rename advisory lock
+// (BUG-2778), blocking every other rename in that workspace behind it; on
+// SQLITE that advisory lock is a no-op and the equivalent damage is the
+// database-wide write lock the transaction already holds under BEGIN IMMEDIATE.
+// Different mechanism, same outcome for everyone else.
 //
 // strings.Replace with n = -1 has the semantics that were actually wanted:
 // non-overlapping, left-to-right, over the input, so inserted text is never

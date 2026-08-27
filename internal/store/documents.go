@@ -641,7 +641,16 @@ var ErrLinkCascadeContention = errors.New("store: link cascade lost the compare-
 // drive exhaustion deterministically. Forcing exhaustion at 3 would need a
 // concurrent commit between each attempt, which needs a per-attempt hook in
 // production code; lowering the bound tests the same disposition with less
-// test-only surface. Never written outside tests.
+// test-only surface.
+//
+// Never written outside tests, and a test that writes it must not run under
+// t.Parallel() alongside anything that renames a DOCUMENT — same constraint the
+// Store's test seams carry, for the same reason: it is process-global state
+// with no synchronization. internal/store does contain parallel tests
+// (items_empty_assignment, item_mutation_signal, watches), and none of them
+// reaches this cascade today — but that is a fact about the current test
+// corpus, not an invariant, which is why the constraint is written here rather
+// than inferred from the absence of a collision.
 var cascadeRewriteAttempts = 3
 
 // rewriteLinkerCAS applies a title rewrite to one linking document, retrying
