@@ -86,8 +86,11 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// If you add a source whose ids are not UUIDs, this is the line to check.
 	//
 	// The previous code defaulted beforeID to "\xff" in all three cases.
-	// That worked on SQLite but Postgres rejects "\xff" as an invalid UTF-8
-	// byte sequence (SQLSTATE 22021), causing every timeline load to 500.
+	// That worked on SQLite but a UTF8 Postgres rejects "\xff" as an invalid
+	// UTF-8 byte sequence (SQLSTATE 22021), causing every timeline load to
+	// 500. (A SQL_ASCII database accepts it — see bindableText's measured
+	// table in middleware_request_text.go. The synthesized sentinel was
+	// wrong on any encoding; the 500 is what a UTF8 one turned it into.)
 	// See BUG-1086.
 	before := time.Now().UTC().Add(time.Minute)
 	beforeID := ""
@@ -107,6 +110,16 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if v := r.URL.Query().Get("before_id"); v != "" {
+		// UNREACHABLE FROM THE WIRE since BUG-2784: ValidateQuery applies the
+		// same predicate to every decoded query value at the root router, so a
+		// before_id that fails here was already answered 400 invalid_query
+		// before this handler ran. Kept rather than deleted because it is the
+		// handler's own precondition and costs one comparison, and because
+		// the transport rule's scope is a routing decision this file does not
+		// own. Not defence in depth against the same threat twice: the guard
+		// is a statement about what this handler requires of its input, and
+		// the tests that used to reach it now assert the transport's answer
+		// (handlers_timeline_cursor_validation_test.go records that).
 		if !validCursorID(v) {
 			writeError(w, http.StatusBadRequest, "invalid_cursor",
 				"before_id must be valid UTF-8 with no NUL byte")
@@ -727,14 +740,32 @@ func exhaustedWindowCursor(
 // The rule is derived from what the database refuses rather than from what
 // an id "should" look like. (It said "exactly what the DATABASE rejects"
 // until BUG-2782 checked that claim and found it too strong: Postgres
-// refuses these two classes under a UTF8 database encoding, not under
-// SQL_ASCII, and SQLite's bind_text accepts arbitrary bytes outright. The
+// refuses INVALID UTF-8 under a UTF8 database encoding but accepts it under
+// SQL_ASCII — while refusing a NUL under both, a split BUG-2784 measured
+// and bindableText's comment tabulates — and SQLite's bind_text accepts
+// arbitrary bytes outright. The
 // rule here is unchanged and still right — it is the stricter reading,
 // applied so the two backends stop disagreeing — only the sentence was
-// wrong. See ValidatePath in middleware_path.go, which inherited both the
-// rule and the overstatement.) Postgres refuses a text parameter that is
-// not valid UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx
-// surfaces that as a query error.
+// wrong. See ValidatePath in middleware_request_text.go, which inherited
+// both the rule and the overstatement; bindableText there is this same
+// predicate, and BUG-2784 gave it a second caller over the query string.)
+// Postgres refuses a text parameter that is not valid UTF-8 when the
+// DATABASE encoding is UTF8, and refuses an embedded NUL under every
+// encoding tested (SQLSTATE 22021 / 22P05); bindableText's comment carries
+// the measurements and is explicit about how far they generalise. pgx
+// surfaces either as a query error.
+//
+// STILL LIVE, despite BUG-2784's transport rule subsuming the query-string
+// caller above. Two of this function's three call sites (see entryID's loop
+// below) apply it to a structured entry's raw id read from the ITEM'S OWN
+// FIELDS BLOB. That blob is not beyond a client's reach — a request BODY
+// writes it, and BUG-2803 is exactly that: an escaped NUL through a JSON
+// body reaching the store. What it is beyond is the reach of THIS
+// middleware, which validates the request path and query string and never
+// looks at a body; and the blob is also filled from the database and from
+// imported artifacts, which no request-level rule sees at all. Only the
+// `before_id` caller is preempted. Deleting this function on the
+// strength of that one caller would silently unguard the other two.
 //
 // What follows is the PRE-BUG-2774 behaviour this guard exists to prevent,
 // not what the endpoint does now — the caller above rejects such a cursor

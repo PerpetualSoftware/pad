@@ -11,14 +11,23 @@ import (
 )
 
 // BUG-2774. `before_id` went from the query string into the cursor predicate
-// unchecked. Postgres refuses a text parameter that is not valid UTF-8 or that
-// carries a NUL, so a malformed cursor came back 500 — the server announcing
-// its own failure for what is a client's bad input. SQLite accepts the same
-// bytes and matches nothing, so the identical request was a 200 there.
+// unchecked. Postgres refuses a text parameter that carries a NUL, and one
+// that is not valid UTF-8 when the DATABASE encoding is UTF8, so a malformed
+// cursor came back 500 — the server announcing its own failure for what is a
+// client's bad input. SQLite accepts the same bytes and matches nothing, so
+// the identical request was a 200 there.
+//
+// The UTF8 qualification is not pedantry inherited from BUG-2784's
+// measurements: a SQL_ASCII Postgres ACCEPTS the invalid-UTF-8 bytes (see
+// bindableText's comment for the table), so an unqualified "Postgres refuses
+// it" would make the store-level premise below false on a supported
+// deployment. The NUL half needs no qualification — it was refused under
+// every encoding tested.
 //
 // The store-level test below pins that premise on Postgres; these pin the
 // handler's answer, which is the same on both backends because validation
-// happens before any query.
+// happens before any query — since BUG-2784, at the transport, which is why
+// these now expect `invalid_query` rather than `invalid_cursor`.
 
 func timelineRaw(t *testing.T, srv *Server, ws, slug, rawQuery string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -42,8 +51,13 @@ func TestTimeline_MalformedBeforeIDIsClientError(t *testing.T) {
 		rawID string
 		want  int
 	}{
-		// %FF is not valid UTF-8 in any encoding of it; %00 is a NUL. Both are
-		// what Postgres refuses, and both are reachable from a plain URL.
+		// %FF is not valid UTF-8 in any encoding of it; %00 is a NUL. Both
+		// are refused by a UTF8 Postgres (the NUL under every encoding
+		// tested, the %FF only under UTF8 — see the header), and both are
+		// reachable from a plain URL. The 400s below do not depend on that
+		// distinction: since BUG-2784 the transport refuses both before any
+		// backend is consulted, which is why these expectations hold on
+		// SQLite too.
 		{name: "invalid utf-8", rawID: "%FF", want: http.StatusBadRequest},
 		{name: "embedded NUL", rawID: "note%001", want: http.StatusBadRequest},
 		{name: "invalid utf-8 mid-string", rawID: "note-%FF-1", want: http.StatusBadRequest},
@@ -78,8 +92,19 @@ func TestTimeline_MalformedBeforeIDIsClientError(t *testing.T) {
 			if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
 				t.Fatalf("decode error envelope: %v (body %s)", err, rr.Body.String())
 			}
-			if env.Error.Code != "invalid_cursor" {
-				t.Errorf("error code = %q, want %q", env.Error.Code, "invalid_cursor")
+			// invalid_query, NOT invalid_cursor, since BUG-2784. The same
+			// two byte classes are now refused for EVERY query parameter by
+			// ValidateQuery at the root router, which answers before this
+			// handler's own validCursorID check runs. The 400 and the
+			// client-error contract this test names are unchanged; the code
+			// is less specific, and that is the accepted cost of a rule that
+			// covers an unbounded parameter surface no per-site validator
+			// can. The handler's guard is kept as its own precondition —
+			// see the comment at its call site — and its other two call
+			// sites, over ids read from the item's fields blob, are not
+			// reachable from the wire at all and keep this code.
+			if env.Error.Code != "invalid_query" {
+				t.Errorf("error code = %q, want %q", env.Error.Code, "invalid_query")
 			}
 			if env.Error.Message == "" {
 				t.Error("error message is empty — the envelope has to say what was wrong")
@@ -117,8 +142,37 @@ func TestListBeforeTime_InvalidUTF8CursorIsADialectDivergence(t *testing.T) {
 
 	t.Run("postgres refuses it", func(t *testing.T) {
 		p := storetest.NewPostgres(t) // skips unless PAD_TEST_POSTGRES_URL is set
+
+		// This half holds only under a UTF8 DATABASE encoding: a SQL_ASCII
+		// Postgres accepts these bytes (BUG-2784 measured it; see
+		// bindableText's table).
+		//
+		// UNDER TODAY'S FIXTURE THE SKIP BELOW CANNOT FIRE, and saying so is
+		// the point of writing it. storetest.NewPostgres issues a bare
+		// `CREATE DATABASE`, which inherits TEMPLATE1's encoding rather than
+		// the encoding of the database PAD_TEST_POSTGRES_URL names — so the
+		// fixture hands back a UTF8 database even when pointed at a
+		// SQL_ASCII one. Verified: creating a database from inside a
+		// SQL_ASCII database yields UTF8 while template1 is UTF8. A review
+		// round read this test as able to FAIL on a SQL_ASCII deployment;
+		// it cannot, for that reason.
+		//
+		// The read stays anyway, because the premise is real even where the
+		// fixture currently forecloses it: if the fixture ever names the
+		// operator's database, or template1 is not UTF8, this reports "the
+		// premise does not apply here" instead of failing an assertion about
+		// bytes with a confusing message about drivers.
+		var enc string
+		if err := p.DB().QueryRow("SHOW server_encoding").Scan(&enc); err != nil {
+			t.Fatalf("could not read server_encoding, so this test cannot know whether its premise applies: %v", err)
+		}
+		if enc != "UTF8" {
+			t.Skipf("server_encoding is %s, not UTF8 — this divergence is a property of the "+
+				"UTF8 encoding, and the transport-level 400 (BUG-2784) does not depend on it either way", enc)
+		}
+
 		if _, err := p.ListDocumentActivityBeforeTime("no-such-doc", when, badID, 10); err == nil {
-			t.Error("Postgres accepted an invalid-UTF-8 cursor: the 500 this validation prevents is no longer reachable, so either the driver changed or the premise moved")
+			t.Error("Postgres on a UTF8 database accepted an invalid-UTF-8 cursor: the 500 this validation prevents is no longer reachable, so either the driver changed or the premise moved")
 		}
 	})
 }
