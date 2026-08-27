@@ -158,6 +158,31 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := s.store.UpdateDocument(doc.ID, input)
 	if err != nil {
+		// TYPED checks first, prose matching last. The UNIQUE-constraint arm
+		// below identifies its error by SUBSTRING, and the refusal error
+		// carries the caller's own title verbatim — so a document renamed to a
+		// title containing the words "UNIQUE constraint" came back as a 409
+		// title collision, telling the caller to pick a different name for a
+		// rename that was refused for size and would fail identically under
+		// any name (codex round 3 P2). Any sentinel this handler knows by
+		// identity is tested before an error is classified by what its text
+		// happens to contain.
+		//
+		// A size refusal is also PERMANENT-shaped, and must not join the
+		// retryable family below: retrying it unchanged fails identically
+		// until the workspace's content changes, so it gets a 4xx with no
+		// Retry-After, carrying the projection because that is the only
+		// actionable information. 413 follows this codebase's own precedent
+		// for a bound on OUTPUT rather than on the request body
+		// (`image_too_large` in handlers_attachments_transform.go, where the
+		// request is likewise small and the thing refused is what it would
+		// produce).
+		if errors.Is(err, store.ErrRenameCascadeTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
+				"This rename would rewrite more linked content than the server will process in one operation. "+
+					"Reduce the number of documents linking this title, or shorten the new title, and try again. ("+err.Error()+")")
+			return
+		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			writeError(w, http.StatusConflict, "conflict", "A document with this title already exists in this workspace")
 			return
@@ -175,21 +200,6 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// 500 would be actively misleading — it says the request will never
 		// work. Distinguished by sentinel rather than message text, because
 		// this one is ours to name (codex round 2).
-		// A projected-output refusal is PERMANENT-shaped, and must not join
-		// the retryable family below it. Retrying this rename unchanged fails
-		// identically until the workspace's content changes, so it gets a 4xx
-		// with no Retry-After — and it carries the projection, because the
-		// only actionable information is what was projected against what is
-		// allowed. 413 follows this codebase's own precedent for a bound on
-		// output rather than on the request body (`image_too_large` in
-		// handlers_attachments_transform.go, where the request is likewise
-		// small and the thing refused is what it would produce).
-		if errors.Is(err, store.ErrRenameCascadeTooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
-				"This rename would rewrite more linked content than the server will process in one operation. "+
-					"Reduce the number of documents linking this title, or shorten the new title, and try again. ("+err.Error()+")")
-			return
-		}
 		if isRetryableLockError(err) || errors.Is(err, store.ErrLinkCascadeContention) {
 			w.Header().Set("Retry-After", "1")
 			// Deliberately does NOT name the holder. The previous wording said

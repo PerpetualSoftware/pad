@@ -383,3 +383,147 @@ func TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody(t *testing.T) 
 		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge — the retry re-read an unbounded body", err)
 	}
 }
+
+// TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings pins codex round
+// 3's P1, and is deliberately separate from the test above: that one catches
+// the retry check being ABSENT, this one catches it being too GENEROUS.
+//
+// The first version credited this document's own contribution back into its
+// retry budget, on the reasoning that the retry replaces it. It does not — the
+// original read and rewritten bodies stay reachable through `updates` while
+// the write loop runs, so the re-read and its rewrite are allocated ON TOP of
+// them. The bound could then be exceeded by up to one document's share while
+// the arithmetic reported it satisfied.
+//
+// The grown body here is sized to fall BETWEEN the two budgets: under the
+// credited-back budget (which would admit it) and over the true headroom
+// (which refuses). A test using a body far over the cap cannot tell the two
+// apart, because both refuse it.
+//
+// POSTGRES ONLY, same structural reason as the test above.
+func TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("needs a concurrent edit to commit inside the cascade's read→write window; SQLite's BEGIN IMMEDIATE closes it structurally")
+	}
+
+	ws := createTestWorkspace(t, s, "CascadeRetryBudgetTight")
+	target := createTestDoc(t, s, ws.ID, "A", "the document being renamed")
+
+	const newTitleLen = 255
+	perOccurrence := 5 + 5 + (newTitleLen - 1) // retained bytes per `[[A]]`
+
+	// The single linker holds ~60% of the cap at scan time.
+	scanOccurrences := (MaxRenameCascadeRetainedBytes * 6 / 10) / perOccurrence
+	scanBody, scanRetained := linkerBody(scanOccurrences, newTitleLen)
+
+	// The winner's body retains ~50% of the cap: comfortably under the cap on
+	// its own, and under the OLD budget (which was the whole cap here, since
+	// this is the only linker), but over the true headroom of cap - scanned.
+	grownOccurrences := (MaxRenameCascadeRetainedBytes * 5 / 10) / perOccurrence
+	grownBody, grownRetained := linkerBody(grownOccurrences, newTitleLen)
+
+	// The credited-back budget was `cap - (retained - this document's share)`.
+	// With a single linker those two terms are the same number, so it reduced
+	// to the whole cap — which is exactly how a document could be handed a
+	// budget that ignored what it was already holding.
+	oldBudget := int64(MaxRenameCascadeRetainedBytes)
+	newBudget := int64(MaxRenameCascadeRetainedBytes) - int64(scanRetained)
+	if int64(grownRetained) > oldBudget {
+		t.Fatalf("precondition: grown retention %d must fit the credited-back budget %d, or this test "+
+			"cannot tell a too-generous budget from an absent one", grownRetained, oldBudget)
+	}
+	if int64(grownRetained) <= newBudget {
+		t.Fatalf("precondition: grown retention %d must exceed the true headroom %d", grownRetained, newBudget)
+	}
+
+	linker := createTestDoc(t, s, ws.ID, "Linker", scanBody)
+
+	var once sync.Once
+	var editErr error
+	s.afterLinkCascadeRead = func(string) {
+		once.Do(func() {
+			_, editErr = s.UpdateDocument(linker.ID, models.DocumentUpdate{Content: &grownBody})
+		})
+	}
+	defer func() { s.afterLinkCascadeRead = nil }()
+
+	newTitle := strings.Repeat("T", newTitleLen)
+	_, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle})
+
+	if editErr != nil {
+		t.Fatalf("the concurrent edit itself failed, so this run never exercised the retry path: %v", editErr)
+	}
+	if !errors.Is(err, ErrRenameCascadeTooLarge) {
+		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge — the retry budget credited back "+
+			"strings the cascade is still holding", err)
+	}
+}
+
+// TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename pins
+// codex round 3's P2.
+//
+// When a concurrent edit removes the link entirely, ReplaceTitle has nothing to
+// replace — strings.Replace returns its input unchanged, allocating nothing.
+// Charging that body twice (read + a rewritten copy that does not exist) could
+// push a legitimate rename over the cap and refuse it for memory the cascade
+// never allocates.
+//
+// The assertion is that the rename SUCCEEDS. POSTGRES ONLY, same reason as its
+// neighbours.
+func TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("needs a concurrent edit to commit inside the cascade's read→write window; SQLite's BEGIN IMMEDIATE closes it structurally")
+	}
+
+	ws := createTestWorkspace(t, s, "CascadeLinkRemoved")
+	target := createTestDoc(t, s, ws.ID, "A", "the document being renamed")
+
+	const newTitleLen = 255
+	perOccurrence := 5 + 5 + (newTitleLen - 1)
+
+	// Sized so that double-charging the link-free body would exceed the cap
+	// while charging it once does not — otherwise the test passes either way.
+	scanOccurrences := (MaxRenameCascadeRetainedBytes * 4 / 10) / perOccurrence
+	scanBody, scanRetained := linkerBody(scanOccurrences, newTitleLen)
+
+	// The winner's body has NO link left. Sized against the retry's real
+	// HEADROOM (the cap less what the scan is still holding), not against the
+	// cap: the first version of this test compared to the cap, and the body it
+	// chose was legitimately over the headroom, so the refusal it caught was
+	// correct behaviour rather than the double charge. Charged once it must
+	// fit; charged twice it must not.
+	headroom := int64(MaxRenameCascadeRetainedBytes) - int64(scanRetained)
+	grownBody := strings.Repeat("y", int(headroom*7/10))
+	if int64(len(grownBody)) > headroom {
+		t.Fatalf("precondition: the link-free body %d must fit the retry headroom %d when charged once",
+			len(grownBody), headroom)
+	}
+	if int64(2*len(grownBody)) <= headroom {
+		t.Fatalf("precondition: the link-free body %d must EXCEED the headroom %d when charged twice, "+
+			"or this test cannot detect the double charge", 2*len(grownBody), headroom)
+	}
+
+	linker := createTestDoc(t, s, ws.ID, "Linker", scanBody)
+
+	var once sync.Once
+	var editErr error
+	s.afterLinkCascadeRead = func(string) {
+		once.Do(func() {
+			_, editErr = s.UpdateDocument(linker.ID, models.DocumentUpdate{Content: &grownBody})
+		})
+	}
+	defer func() { s.afterLinkCascadeRead = nil }()
+
+	newTitle := strings.Repeat("T", newTitleLen)
+	_, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle})
+
+	if editErr != nil {
+		t.Fatalf("the concurrent edit itself failed, so this run never exercised the retry path: %v", editErr)
+	}
+	if err != nil {
+		t.Fatalf("rename refused after a concurrent edit REMOVED the link: %v — "+
+			"the guard charged for a rewritten copy that ReplaceTitle never allocates", err)
+	}
+}

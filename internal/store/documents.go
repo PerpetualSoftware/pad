@@ -672,13 +672,20 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 	}
 
 	for _, du := range updates {
-		// Budget handed to this document's compare-and-set: the cap, less
-		// everything the OTHER documents are holding. A retry that re-reads a
-		// body grown by a concurrent edit is checked against it, so the
-		// aggregate bound survives the retry path as well as the scan (codex
-		// round 1 P1 — the guard used to cover only the scan, and the retry
-		// called ReplaceTitle on an unbounded re-read).
-		budget := MaxRenameCascadeRetainedBytes - (retained - du.retained)
+		// Budget handed to this document's compare-and-set: the headroom that
+		// remains under the cap with everything ALREADY held subtracted —
+		// including this document's own read and rewritten bodies, which
+		// `updates` still references while the loop runs.
+		//
+		// An earlier version credited back du.retained on the reasoning that
+		// the retry replaces this document's contribution. It does not: the
+		// originals stay reachable through the slice, so the re-read and its
+		// rewrite are allocated ON TOP of them, and the bound could be
+		// exceeded by up to one document's share while the arithmetic still
+		// reported it satisfied (codex round 3 P1). A retry that cannot fit in
+		// the genuine headroom is refused, which is conservative in the rare
+		// contended case and honest about what the cap means.
+		budget := MaxRenameCascadeRetainedBytes - retained
 		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle, searchTerm, budget); err != nil {
 			return err
 		}
@@ -697,6 +704,18 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 // path must not be allowed to drift apart on it.
 func cascadeRetainedBytes(read, searchTerm, oldTitle, newTitle string) int64 {
 	occurrences := int64(strings.Count(read, searchTerm))
+	if occurrences == 0 {
+		// No second string exists to charge for: strings.Replace returns its
+		// input unchanged when there is nothing to replace, so ReplaceTitle
+		// allocates nothing and `rewritten` aliases `read`.
+		//
+		// This is not a micro-optimisation, it is a correctness case on the
+		// retry path (codex round 3 P2): a concurrent edit that REMOVES the
+		// link leaves a body with no occurrences, and charging it twice could
+		// refuse an otherwise valid rename for memory the cascade never
+		// allocates.
+		return int64(len(read))
+	}
 	rewritten := int64(len(read)) + occurrences*int64(len(newTitle)-len(oldTitle))
 	return int64(len(read)) + rewritten
 }

@@ -134,3 +134,47 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 		t.Errorf("response lacks the projection; the caller cannot tell how far over they are: %s", b)
 	}
 }
+
+// TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision pins codex round
+// 3's P2 at the handler.
+//
+// The UNIQUE-constraint arm identifies its error by SUBSTRING, and the refusal
+// error carries the caller's own title verbatim. So a document renamed to a
+// title containing the words "UNIQUE constraint" came back as a 409 title
+// collision — telling the caller to pick a different name for a rename that
+// was actually refused for size, and that would fail identically under any
+// name.
+//
+// The fix is ordering: sentinels this handler knows by identity are tested
+// before any error is classified by what its text happens to contain. The test
+// is here rather than in the store because the defect is entirely in the
+// handler's classification order.
+func TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	target := createDocForTest(t, srv, slug, "A", "the document being renamed")
+
+	const linkers = 3
+	perDoc := (store.MaxRenameCascadeRetainedBytes / linkers) + (store.MaxRenameCascadeRetainedBytes / (linkers * 4))
+	// The title is padded to the bound and CONTAINS the substring the other
+	// arm matches on.
+	newTitle := "UNIQUE constraint " + strings.Repeat("t", models.MaxDocumentTitleRunes-len("UNIQUE constraint "))
+	occurrences := perDoc / (5 + 5 + (len(newTitle) - 1))
+	body := strings.Repeat("[[A]]", occurrences)
+
+	for i := 0; i < linkers; i++ {
+		createDocForTest(t, srv, slug, "Linker"+string(rune('a'+i)), body)
+	}
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/documents/"+target, map[string]interface{}{
+		"title": newTitle,
+	})
+
+	if rr.Code == http.StatusConflict {
+		t.Fatalf("got 409 — the size refusal was classified by the title's own text as a name collision: %s", rr.Body.String())
+	}
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got %d, want 413: %s", rr.Code, rr.Body.String())
+	}
+}
