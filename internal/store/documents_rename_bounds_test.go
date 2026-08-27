@@ -476,6 +476,20 @@ func TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings(t *testing.T) 
 		t.Fatalf("rename: got %v, want ErrRenameCascadeTooLarge — the retry budget credited back "+
 			"strings the cascade is still holding", err)
 	}
+
+	// The refusal must JUSTIFY ITSELF: the figure it reports has to exceed the
+	// cap it cites. Reporting only the re-read body produced a refusal saying
+	// it would hold less than the limit, which reads as a server bug rather
+	// than as actionable advice (codex round 8).
+	var tooLarge *RenameCascadeTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("error does not carry the typed figures: %v", err)
+	}
+	if tooLarge.Retained <= tooLarge.Max {
+		t.Errorf("refusal reports %d bytes against a cap of %d — the reported figure does not "+
+			"justify the refusal, so it names the re-read alone rather than the whole operation",
+			tooLarge.Retained, tooLarge.Max)
+	}
 }
 
 // TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename pins

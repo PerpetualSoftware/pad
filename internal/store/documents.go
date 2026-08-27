@@ -691,21 +691,19 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 	}
 
 	for _, du := range updates {
-		// Budget handed to this document's compare-and-set: the headroom that
-		// remains under the cap with everything ALREADY held subtracted —
-		// including this document's own read and rewritten bodies, which
-		// `updates` still references while the loop runs.
+		// The compare-and-set is handed the scan's TOTAL, not a pre-computed
+		// budget, so it can both bound and REPORT correctly: a retry must fit
+		// in what remains under the cap, and a refusal must name the whole
+		// operation's size rather than the re-read alone (codex rounds 3, 8).
 		//
-		// An earlier version credited back du.retained on the reasoning that
-		// the retry replaces this document's contribution. It does not: the
-		// originals stay reachable through the slice, so the re-read and its
-		// rewrite are allocated ON TOP of them, and the bound could be
-		// exceeded by up to one document's share while the arithmetic still
-		// reported it satisfied (codex round 3 P1). A retry that cannot fit in
-		// the genuine headroom is refused, which is conservative in the rare
-		// contended case and honest about what the cap means.
-		budget := MaxRenameCascadeRetainedBytes - retained
-		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle, searchTerm, budget); err != nil {
+		// Everything the scan counted is still held — `updates` references the
+		// original read and rewritten bodies for every linker, this one
+		// included — so a re-read is allocated ON TOP of them. An earlier
+		// version credited this document's share back, on the reasoning that
+		// the retry replaces it; it does not, and the bound could be exceeded
+		// by up to one document's share while the arithmetic reported it
+		// satisfied.
+		if err := s.rewriteLinkerCAS(tx, du.id, du.read, du.rewritten, oldTitle, newTitle, searchTerm, retained); err != nil {
 			return err
 		}
 	}
@@ -947,7 +945,7 @@ var cascadeRewriteAttempts = 3
 // Both are pre-existing and neither is made worse here. They are recorded
 // because the next reader's question is "is the cascade correct now", and the
 // honest answer is "for the direction this bug named".
-func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle, searchTerm string, budget int64) error {
+func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newTitle, searchTerm string, scanTotal int64) error {
 	expected := read
 	next := rewritten
 	for attempt := 0; attempt < cascadeRewriteAttempts; attempt++ {
@@ -987,8 +985,16 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 		// rename straight back into the amplification it was refused for
 		// (BUG-2798, codex round 1 P1).
 		grownOccurrences := int64(strings.Count(current, searchTerm))
-		if grown := cascadeRetainedBytes(current, grownOccurrences, oldTitle, newTitle); grown > budget {
-			return newRenameCascadeTooLargeError(newTitle, grown)
+		grown := cascadeRetainedBytes(current, grownOccurrences, oldTitle, newTitle)
+		if scanTotal+grown > MaxRenameCascadeRetainedBytes {
+			// Report the AGGREGATE, not this body alone. The bodies the scan
+			// counted are still held, so the operation's real size is their
+			// total plus the re-read — and reporting only `grown` produced a
+			// refusal that contradicted itself, telling the caller it would
+			// hold 16 MiB against a 32 MiB limit (codex round 8). A refusal
+			// whose own numbers do not justify it reads as a bug in the
+			// server, which is the opposite of what an actionable error does.
+			return newRenameCascadeTooLargeError(newTitle, scanTotal+grown)
 		}
 
 		// A concurrent edit won. Rewrite ITS body rather than ours: replaying
