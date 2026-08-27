@@ -648,7 +648,26 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// real: at the moment of refusal the process holds the linkers already
 		// counted (under the cap by construction) plus this one row's body,
 		// and none of the amplified output.
-		du.retained = cascadeRetainedBytes(du.read, searchTerm, oldTitle, newTitle)
+		// The SELECT is a LIKE, and LIKE is not the rewriter. On SQLite it is
+		// ASCII case-INSENSITIVE by default (Postgres's is not), so renaming
+		// `Alpha` scans every body containing `[[alpha]]` — which
+		// links.ReplaceTitle, being case-sensitive, will not touch. Charging
+		// those bodies to the budget lets case-variant content that can never
+		// be rewritten push a legitimate rename over the cap, on one dialect
+		// only (codex round 7).
+		//
+		// Skipping them is the fix for both halves: no budget is spent, and no
+		// no-op UPDATE is issued for a row whose content the cascade was never
+		// going to change. Same class as the `%`/`_` over-matching the ESCAPE
+		// clause closed — the pattern selects a superset of the linkers, and
+		// the authority on what is actually a linker is the rewriter's own
+		// case-sensitive count.
+		occurrences := int64(strings.Count(du.read, searchTerm))
+		if occurrences == 0 {
+			continue
+		}
+
+		du.retained = cascadeRetainedBytes(du.read, occurrences, oldTitle, newTitle)
 		retained += du.retained
 		if retained > MaxRenameCascadeRetainedBytes {
 			return newRenameCascadeTooLargeError(newTitle, retained)
@@ -702,8 +721,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 // len(read) + occurrences * (len(new) - len(old)) to the byte, and this
 // function is the only place that arithmetic lives — the scan and the retry
 // path must not be allowed to drift apart on it.
-func cascadeRetainedBytes(read, searchTerm, oldTitle, newTitle string) int64 {
-	occurrences := int64(strings.Count(read, searchTerm))
+func cascadeRetainedBytes(read string, occurrences int64, oldTitle, newTitle string) int64 {
 	if occurrences == 0 {
 		// No second string exists to charge for: strings.Replace returns its
 		// input unchanged when there is nothing to replace, so ReplaceTitle
@@ -968,7 +986,8 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 		// could grow a linker between the scan and the retry and walk the
 		// rename straight back into the amplification it was refused for
 		// (BUG-2798, codex round 1 P1).
-		if grown := cascadeRetainedBytes(current, searchTerm, oldTitle, newTitle); grown > budget {
+		grownOccurrences := int64(strings.Count(current, searchTerm))
+		if grown := cascadeRetainedBytes(current, grownOccurrences, oldTitle, newTitle); grown > budget {
 			return newRenameCascadeTooLargeError(newTitle, grown)
 		}
 

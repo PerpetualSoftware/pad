@@ -655,3 +655,62 @@ func TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 			allocated, allocCeiling, rewrittenSize)
 	}
 }
+
+// TestRenameCascade_DoesNotChargeCaseVariantsTheRewriterWillNotTouch closes
+// codex round 7, and is the third instance of one class: the LIKE that finds
+// candidates is not the rewriter that changes them, so it selects a SUPERSET
+// and the difference gets charged to the caller's budget.
+//
+// The first two instances were `%` and `_` (wildcards on both dialects, closed
+// by the ESCAPE clause). This is the case half, and it is DIALECT-SPLIT the
+// other way from the backslash bug: SQLite's LIKE is ASCII case-insensitive by
+// default and Postgres's is case-sensitive, so renaming `Alpha` scans every
+// body containing `[[alpha]]` on SQLite only — bodies links.ReplaceTitle will
+// never touch, because it is case-sensitive on both.
+//
+// Runs on BOTH dialects deliberately, unlike its backslash sibling: on
+// Postgres it asserts the behaviour was already correct, which is what makes
+// it a regression test rather than a SQLite quirk shim.
+func TestRenameCascade_DoesNotChargeCaseVariantsTheRewriterWillNotTouch(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "CascadeCaseVariants")
+
+	target := createTestDoc(t, s, ws.ID, "Alpha", "the document being renamed")
+	linker := createTestDoc(t, s, ws.ID, "RealLinker", "see [[Alpha]] here")
+
+	// Case-variant bodies, big enough that charging them blows the cap. The
+	// rewriter cannot change them; only the SELECT thinks they are relevant.
+	decoyBody := strings.Repeat("z", 1<<20) + " [[alpha]]"
+	decoys := (MaxRenameCascadeRetainedBytes / len(decoyBody)) + 2
+	decoyIDs := make([]string, 0, decoys)
+	for i := 0; i < decoys; i++ {
+		d := createTestDoc(t, s, ws.ID, "Decoy"+string(rune('a'+i)), decoyBody)
+		decoyIDs = append(decoyIDs, d.ID)
+	}
+
+	newTitle := "Renamed"
+	if _, err := s.UpdateDocument(target.ID, models.DocumentUpdate{Title: &newTitle}); err != nil {
+		t.Fatalf("a rename well under the cap was refused because of case-variant content the "+
+			"rewriter cannot touch: %v", err)
+	}
+
+	got, err := s.GetDocument(linker.ID)
+	if err != nil {
+		t.Fatalf("read back linker: %v", err)
+	}
+	if want := "see [[Renamed]] here"; got.Content != want {
+		t.Errorf("the real linker was not rewritten:\n got: %q\nwant: %q", got.Content, want)
+	}
+
+	// And the case variants are still exactly as they were — the cascade is
+	// case-sensitive, so `[[alpha]]` is a different link, not a missed one.
+	for i, id := range decoyIDs {
+		gotDecoy, err := s.GetDocument(id)
+		if err != nil {
+			t.Fatalf("read back decoy %d: %v", i, err)
+		}
+		if gotDecoy.Content != decoyBody {
+			t.Errorf("decoy %d was rewritten; the cascade must not treat a case variant as a link", i)
+		}
+	}
+}
