@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 )
@@ -84,9 +85,12 @@ import (
 // are syntactically valid percent-encoded octets — but because the decoded
 // value cannot be a resource identifier in this system at all. The answer
 // does not depend on whether anything exists, so it is not an existence
-// oracle. Scope is the PATH only; the query string is validated at its
-// points of use (BUG-2774's validCursorID is the model this follows), and
-// is measurably still open at the time of writing — see BUG-2784.
+// oracle. Scope is the PATH only; the query string is the separate rule
+// ValidateQuery below applies, on the same terms and for the same reason
+// (BUG-2784). This comment previously said the query string was validated
+// at its points of use on BUG-2774's validCursorID model; that was the
+// plan, and measuring the query surface retired it — see ValidateQuery's
+// comment for why a per-site validator cannot be written there.
 //
 // The rejection must not be shaped differently from the errors the API
 // writes for itself. Because this runs at the root, it short-circuits
@@ -116,7 +120,7 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !validPathText(r.URL.Path) {
+			if !bindableText(r.URL.Path) {
 				reject.ServeHTTP(w, r)
 				return
 			}
@@ -125,11 +129,14 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 	}
 }
 
-// validPathText reports whether a decoded request path can be bound into a
-// text comparison. The rule is derived from what the database refuses
-// rather than from what a path "should" look like — no length bound, no
-// character allow-list — for the reason validCursorID records: a bound that
-// can only fire on a legitimate value is not protection.
+// bindableText reports whether a decoded string can be bound into a text
+// comparison. It is the shared predicate of both middlewares in this file:
+// ValidatePath applies it to the decoded path, ValidateQuery to each
+// decoded query key and value. The rule is derived from what the database
+// refuses rather than from what a path or a parameter "should" look like —
+// no length bound, no character allow-list — for the reason validCursorID
+// records: a bound that can only fire on a legitimate value is not
+// protection.
 //
 // "What the database refuses" is narrower than it sounds, and the phrasing
 // inherited from validCursorID overstated it. Postgres rejects these two
@@ -146,6 +153,128 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 // rule the database hands us. It is the strictest reading, applied
 // uniformly at the transport, so that a request cannot get one answer on
 // SQLite and another on Postgres — which is the actual defect being fixed.
-func validPathText(p string) bool {
-	return utf8.ValidString(p) && !strings.ContainsRune(p, 0)
+func bindableText(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
+}
+
+// ValidateQuery is the query-string half of the same rule ValidatePath
+// applies to the path: reject a request whose DECODED query keys or values
+// are not values the database can be asked about.
+//
+// WHY A TRANSPORT RULE HERE, when BUG-2782 said the query string would be
+// validated at its points of use. That was the plan, on BUG-2774's
+// validCursorID model, and reading the mechanism retired it: the set of
+// query parameter names that reaches the store is UNBOUNDED BY DESIGN.
+// parseItemListParams folds every parameter it does not recognise into
+// params.Fields, so `?email=`, `?type=` and `?anything-at-all=` become
+// field filters and reach a text comparison exactly as `?search=` does.
+// There is no finite list of points to validate, because the wildcard
+// branch is what turns an undeclared name into a filter in the first
+// place.
+//
+// WHY THIS RULE IS NOT A NARROWING of what callers may send, which is the
+// objection BUG-2782's comment raised against validating the query at the
+// transport. That objection is sound against a charset or ASCII rule:
+// query values carry user search text and a tag or title fragment can be
+// any language. It does not reach bindableText, which requires only valid
+// UTF-8 with no NUL. Every legitimate value in this system is text, and
+// text is valid UTF-8 in any language; a byte sequence that is not valid
+// UTF-8 is not text that got narrowed, it is not text at all. So the rule
+// rejects exactly what Postgres refuses in a parameter and nothing a
+// client can legitimately send.
+//
+// Measured on Postgres 17 (server_encoding UTF8) at 19330410, before this
+// middleware existed: 8 GET endpoints x 54 parameter names — every name any
+// handler reads — one request per pair, each from its own source IP because
+// the api limiter is keyed on ip: and a single-address sweep answers 429 to
+// everything.
+//
+//	invalid-UTF-8 value: 432 probes → 276 × 200, 56 × 400, 100 × 500
+//	NUL value:           432 probes → 276 × 200, 56 × 400, 100 × 500
+//	control:             432 probes → 376 × 200, 56 × 400,   0 × 500
+//
+// Zero 500s in the control, so the 100 are attributable to the value.
+// 98 of them are the two items-list endpoints (the parseItemListParams
+// funnel); the rest are /search?q, /activity?action|actor|source,
+// /attachments?collection and /items-index?collection. The error is
+// `invalid byte sequence for encoding "UTF8": 0xff (SQLSTATE 22021)` —
+// the same SQLSTATE as BUG-2782 and BUG-2774.
+//
+// KEYS ARE VALIDATED PRECAUTIONARILY, not because a bad key was observed to
+// fail. The same sweep drove an invalid-UTF-8 parameter NAME at all eight
+// endpoints and got 7 × 200 and 1 × 400 — no 500. Why a bad key survives
+// where a bad value does not is UNREAD, so "keys are safe" is a claim
+// nothing here supports; a sweep that did not reproduce is not a proof of
+// absence. Checking them costs nothing on the path that matters (see the
+// fast path in validQueryText) and removes the need to be right about it.
+//
+// 400 rather than 404, and the shared `decorate` CORS instance, for the
+// reasons ValidatePath's comment gives — a rejection at the root would
+// otherwise be shaped unlike every other API error.
+//
+// BUG-2784.
+func ValidateQuery(decorate func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	var reject http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		writeError(w, http.StatusBadRequest, "invalid_query",
+			"Request query string contains invalid UTF-8 or a NUL byte")
+	})
+	if decorate != nil {
+		reject = decorate(reject)
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !validQueryText(r.URL.RawQuery) {
+				reject.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// validQueryText reports whether every key and value a handler could read
+// out of this raw query string is bindableText.
+//
+// WHAT IT CHECKS AGAINST. url.ParseQuery is the same call r.URL.Query()
+// makes, so the pairs checked here are exactly the pairs a handler can see
+// — there is no equivalent of the RawPath divergence ValidatePath's comment
+// has to reason about, where the value checked and the value delivered can
+// differ. ParseQuery's error is deliberately discarded: on a malformed
+// escape it returns the pairs that DID parse and drops the rest, and
+// r.URL.Query() discards the error identically, so the dropped pairs are
+// unreachable by any handler and validating what survived is validating
+// the reachable set. Rejecting the whole request on that error would refuse
+// requests whose reachable parameters are all perfectly fine.
+//
+// THE FAST PATH is not an optimisation detail, it is most requests. A raw
+// query with no '%' cannot decode to anything outside itself: decoding then
+// only turns '+' into ' ' and splits on '&' and '=', all ASCII, so every
+// decoded key and value is a substring of a string already checked — and a
+// substring of valid UTF-8 split at ASCII boundaries is valid UTF-8, while
+// a string with no NUL has no substring with one. Checking the raw string
+// first also covers the case percent-decoding never sees: a client is free
+// to put a raw 0xff byte in the query string without escaping it.
+func validQueryText(rawQuery string) bool {
+	if rawQuery == "" {
+		return true
+	}
+	if !bindableText(rawQuery) {
+		return false
+	}
+	if !strings.Contains(rawQuery, "%") {
+		return true
+	}
+	q, _ := url.ParseQuery(rawQuery)
+	for key, values := range q {
+		if !bindableText(key) {
+			return false
+		}
+		for _, v := range values {
+			if !bindableText(v) {
+				return false
+			}
+		}
+	}
+	return true
 }

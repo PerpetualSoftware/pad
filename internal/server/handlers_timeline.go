@@ -107,6 +107,16 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if v := r.URL.Query().Get("before_id"); v != "" {
+		// UNREACHABLE FROM THE WIRE since BUG-2784: ValidateQuery applies the
+		// same predicate to every decoded query value at the root router, so a
+		// before_id that fails here was already answered 400 invalid_query
+		// before this handler ran. Kept rather than deleted because it is the
+		// handler's own precondition and costs one comparison, and because
+		// the transport rule's scope is a routing decision this file does not
+		// own. Not defence in depth against the same threat twice: the guard
+		// is a statement about what this handler requires of its input, and
+		// the tests that used to reach it now assert the transport's answer
+		// (handlers_timeline_cursor_validation_test.go records that).
 		if !validCursorID(v) {
 			writeError(w, http.StatusBadRequest, "invalid_cursor",
 				"before_id must be valid UTF-8 with no NUL byte")
@@ -731,10 +741,19 @@ func exhaustedWindowCursor(
 // SQL_ASCII, and SQLite's bind_text accepts arbitrary bytes outright. The
 // rule here is unchanged and still right — it is the stricter reading,
 // applied so the two backends stop disagreeing — only the sentence was
-// wrong. See ValidatePath in middleware_path.go, which inherited both the
-// rule and the overstatement.) Postgres refuses a text parameter that is
-// not valid UTF-8 or that contains a NUL (SQLSTATE 22021 / 22P05), and pgx
-// surfaces that as a query error.
+// wrong. See ValidatePath in middleware_request_text.go, which inherited
+// both the rule and the overstatement; bindableText there is this same
+// predicate, and BUG-2784 gave it a second caller over the query string.)
+// Postgres refuses a text parameter that is not valid UTF-8 or that contains
+// a NUL (SQLSTATE 22021 / 22P05), and pgx surfaces that as a query error.
+//
+// STILL LIVE, despite BUG-2784's transport rule subsuming the query-string
+// caller above. Two of this function's three call sites (see entryID's loop
+// below) apply it to a structured entry's raw id read from the ITEM'S OWN
+// FIELDS BLOB — data that arrives from the database or an imported artifact,
+// never from the request — which no request-level middleware can see. Only
+// the `before_id` caller is preempted. Deleting this function on the
+// strength of that one caller would silently unguard the other two.
 //
 // What follows is the PRE-BUG-2774 behaviour this guard exists to prevent,
 // not what the endpoint does now — the caller above rejects such a cursor

@@ -78,8 +78,19 @@ func TestTimeline_MalformedBeforeIDIsClientError(t *testing.T) {
 			if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
 				t.Fatalf("decode error envelope: %v (body %s)", err, rr.Body.String())
 			}
-			if env.Error.Code != "invalid_cursor" {
-				t.Errorf("error code = %q, want %q", env.Error.Code, "invalid_cursor")
+			// invalid_query, NOT invalid_cursor, since BUG-2784. The same
+			// two byte classes are now refused for EVERY query parameter by
+			// ValidateQuery at the root router, which answers before this
+			// handler's own validCursorID check runs. The 400 and the
+			// client-error contract this test names are unchanged; the code
+			// is less specific, and that is the accepted cost of a rule that
+			// covers an unbounded parameter surface no per-site validator
+			// can. The handler's guard is kept as its own precondition —
+			// see the comment at its call site — and its other two call
+			// sites, over ids read from the item's fields blob, are not
+			// reachable from the wire at all and keep this code.
+			if env.Error.Code != "invalid_query" {
+				t.Errorf("error code = %q, want %q", env.Error.Code, "invalid_query")
 			}
 			if env.Error.Message == "" {
 				t.Error("error message is empty — the envelope has to say what was wrong")

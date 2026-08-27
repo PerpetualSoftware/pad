@@ -1285,6 +1285,12 @@ func (s *Server) setupRouter() {
 	// carries them like every other response.
 	r.Use(ValidatePath(corsMW))
 
+	// The query-string half of the same rule (BUG-2784). Separate middleware
+	// rather than one combined check so the two rejections carry distinct
+	// error codes; ordered after ValidatePath so a request that is bad in
+	// both places is answered for its path, which is the more specific fault.
+	r.Use(ValidateQuery(corsMW))
+
 	// MCP Streamable HTTP transport + OAuth discovery endpoints
 	// (PLAN-943 TASK-950). Mounted outside the standard /api/v1
 	// auth-required group because:

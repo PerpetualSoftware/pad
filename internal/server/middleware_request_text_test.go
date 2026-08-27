@@ -103,7 +103,7 @@ func TestValidatePathRejectsUnbindablePathText(t *testing.T) {
 		{"POST comment", "POST", "/api/v1/workspaces/" + ws + "/items/" + badPathSeg + "/comments"},
 		// A NUL is VALID UTF-8 but Postgres refuses it in a text parameter,
 		// so the rule covers it too and this case would survive dropping the
-		// ContainsRune half of validPathText.
+		// ContainsRune half of bindableText.
 		{"NUL byte", "GET", "/api/v1/workspaces/" + ws + "/items/bad-%00-x"},
 		// Non-canonical escaping of the same byte. Harmless on today's chi
 		// (RawPath is populated, so the segment stays percent-encoded), and
@@ -184,7 +184,7 @@ func TestValidatePathAllowsValidText(t *testing.T) {
 	}
 }
 
-func TestValidPathText(t *testing.T) {
+func TestBindableText(t *testing.T) {
 	cases := []struct {
 		in   string
 		want bool
@@ -201,8 +201,8 @@ func TestValidPathText(t *testing.T) {
 		{"/api/v1/items/bad-\x00-x", false},   // NUL: valid UTF-8, refused by Postgres
 	}
 	for _, c := range cases {
-		if got := validPathText(c.in); got != c.want {
-			t.Errorf("validPathText(%q) = %v, want %v", c.in, got, c.want)
+		if got := bindableText(c.in); got != c.want {
+			t.Errorf("bindableText(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }
