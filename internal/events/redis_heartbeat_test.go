@@ -708,9 +708,11 @@ func TestAFreshlySubscribedWorkspaceIsNotCycled(t *testing.T) {
 // exactly the workspaces already having a bad time.
 func TestAnUnconfirmedAdmissionIsNotCycledAsIdle(t *testing.T) {
 	mr := miniredis.RunT(t)
-	// Park the SUBSCRIBE in flight for longer than the bus is willing to wait,
-	// so the caller is admitted with no acknowledgement behind it.
-	proxy := newSubscribeDelayProxy(t, mr.Addr(), 2*time.Second)
+	// Park the SUBSCRIBE in flight until this test is over (the gate proxy
+	// releases at cleanup), so the caller is admitted with no acknowledgement
+	// behind it — held at the wire rather than for a fixed interval, so the
+	// timer arm is the only one that can win (BUG-2786).
+	proxy := newSubscribeGateProxy(t, mr.Addr())
 	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -733,8 +735,9 @@ func TestAnUnconfirmedAdmissionIsNotCycledAsIdle(t *testing.T) {
 	}
 	defer b.Unsubscribe(ch)
 
-	if proxy.held.Load() == 0 {
-		t.Fatal("the SUBSCRIBE was never parked; this test could not have discriminated")
+	proxy.waitParked(t)
+	if proxy.forcedOpen.Load() {
+		t.Fatal("the failsafe opened the gate before the test released it; the acknowledgement was not held by construction, so this test could not have discriminated")
 	}
 	if obs.unconfirmedCount() == 0 {
 		t.Fatal("the admission was confirmed after all; this test is not exercising the unconfirmed case")

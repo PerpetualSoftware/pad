@@ -571,16 +571,28 @@ type RedisBus struct {
 	afterSubscriptionConfirmed func()
 
 	// beforeUnconfirmedMark is a TEST SEAM, nil in production. It runs in
-	// markUnconfirmedAdmission BEFORE it takes b.mu, which is the only way to
-	// make the timer-versus-acknowledgement race deterministic: a hook that
-	// waits for the acknowledgement here reproduces, every time, the interleave
-	// where the select chose the timer but confirmSubscription has already run.
+	// markUnconfirmedAdmission BEFORE it takes b.mu, which is half of what
+	// makes the timer-versus-acknowledgement race deterministic: a hook that
+	// waits for the acknowledgement here reproduces the interleave where the
+	// select chose the timer but confirmSubscription has already run.
+	//
+	// THE OTHER HALF IS THAT THE HOOK ONLY RUNS ON THE TIMER ARM (BUG-2786).
+	// If the acknowledgement has already landed when the select runs, both
+	// arms are ready and the runtime picks one at random — and on the
+	// confirmed arm this seam is never reached, so a test hooked here sees
+	// nothing. A test that depends on it must also keep the acknowledgement
+	// from arriving until the hook has run (the gated SUBSCRIBE proxy in
+	// redis_subscribe_confirm_test.go does that at the wire, bounded by a
+	// failsafe the test checks before trusting the ordering); "every time"
+	// is only true under that condition.
 	//
 	// REPETITION DOES NOT SUBSTITUTE FOR IT, measured rather than assumed.
 	// Against the mutation that removes the confirmClosed re-check, 500
 	// establishments per run caught it in 0 of 10 runs — a near-zero bound
 	// makes the timer win OUTRIGHT far more often than it ties, and winning
-	// outright is the ordinary timeout path. With this seam: 10 of 10.
+	// outright is the ordinary timeout path. With this seam AND the
+	// acknowledgement held until it has run: 10 of 10, unloaded and under
+	// load alike (re-measured for BUG-2786).
 	beforeUnconfirmedMark func()
 
 	// afterRegisterBeforeEstablish is a TEST SEAM, nil in production. It runs

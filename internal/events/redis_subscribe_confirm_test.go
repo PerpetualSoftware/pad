@@ -36,15 +36,34 @@ type subscribeDelayProxy struct {
 	// held counts SUBSCRIBE commands actually parked, so a test can assert its
 	// own premise rather than passing because the instrument never armed.
 	held atomic.Int64
+
+	// gate, when non-nil, replaces delay: a parked SUBSCRIBE is released when
+	// the channel is closed rather than after a fixed sleep (see
+	// newSubscribeGateProxy). forcedOpen records that the failsafe opened it
+	// instead of the test, so the test can name that as its own distinct
+	// failure rather than reading it as a pass.
+	gate        chan struct{}
+	releaseOnce sync.Once
+	forcedOpen  atomic.Bool
 }
 
 func newSubscribeDelayProxy(t *testing.T, backend string, delay time.Duration) *subscribeDelayProxy {
+	t.Helper()
+	return newSubscribeProxy(t, backend, delay, nil)
+}
+
+// newSubscribeProxy is the constructor behind both proxies. Every field the
+// forward goroutine reads is set BEFORE the accept loop starts (codex round
+// 5): a gate assigned after the goroutine is running is published to it
+// without synchronisation, and a stale nil there takes the delay path with
+// delay=0 — the gate silently not a gate.
+func newSubscribeProxy(t *testing.T, backend string, delay time.Duration, gate chan struct{}) *subscribeDelayProxy {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	p := &subscribeDelayProxy{ln: ln, delay: delay}
+	p := &subscribeDelayProxy{ln: ln, delay: delay, gate: gate}
 	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
@@ -67,6 +86,76 @@ func newSubscribeDelayProxy(t *testing.T, backend string, delay time.Duration) *
 
 func (p *subscribeDelayProxy) addr() string { return p.ln.Addr().String() }
 
+// subscribeGateFailsafe bounds how long a gated SUBSCRIBE stays parked when
+// nothing releases it. It exists so a test whose release never fires ends
+// bounded instead of at the package timeout; it must NOT be short enough to
+// open the gate on a slow but correct run, or it becomes a second way for
+// the test to fail that looks like the first. 20s is four orders of
+// magnitude past the loaded ack latency measured for BUG-2786 (sub-ms) and
+// past every wait the gated tests contain. It is NOT self-reporting: a test
+// that relies on the gate must check forcedOpen before it trusts the
+// ordering the gate was holding (codex round 4), or a failsafe release
+// shows up as an unrelated assertion failing. When it fires it opens the
+// gate for every connection, so the test records ONE forced open rather
+// than one per connection.
+const subscribeGateFailsafe = 20 * time.Second
+
+// newSubscribeGateProxy is the delay proxy with the release under the TEST'S
+// control: the first SUBSCRIBE per connection is parked until release() is
+// called — or the failsafe fires, which forcedOpen records — not for a fixed
+// interval.
+//
+// WHY A SIGNAL AND NOT A DURATION (BUG-2786). A test that needs the
+// establisher to take the TIMER arm of its confirmation select cannot get
+// there by making the bound tiny: a 1ns bound only guarantees the timer is
+// ready, not that the acknowledgement is NOT. Under load the receive goroutine
+// lands the ack before the establisher reaches its select, both arms are
+// ready, Go picks uniformly at random, and half the time the timer arm — and
+// everything the test hooked onto it — is skipped. The measured shape was 10
+// of 1000 loaded runs, every one of them the hook never running. Holding the
+// ack at the wire until the timer arm has been ENTERED makes the interleave a
+// construction instead of a coin toss.
+func newSubscribeGateProxy(t *testing.T, backend string) *subscribeDelayProxy {
+	t.Helper()
+	p := newSubscribeProxy(t, backend, 0, make(chan struct{}))
+	// A test that ends without releasing leaves forward parked on the gate,
+	// holding both sides of the connection until the failsafe (codex round
+	// 3). Release at cleanup so teardown is prompt whichever way the test
+	// went.
+	t.Cleanup(p.release)
+	return p
+}
+
+// release lets every parked and future SUBSCRIBE through. Idempotent and
+// safe to call concurrently — the hook and the failsafe, or two connections'
+// failsafes, can race to be first (codex round 2).
+func (p *subscribeDelayProxy) release() {
+	p.releaseOnce.Do(func() { close(p.gate) })
+}
+
+// waitParked blocks until the proxy has parked a SUBSCRIBE, and fails the
+// test if none arrives. A one-shot read of held is NOT a barrier (codex
+// round 4): the client's write returns once the bytes are in the kernel,
+// and under load the proxy's forward goroutine may not have read them yet
+// when the test looks — so a plain `held == 0` premise check fails
+// spuriously, which is the family of flake this instrument exists to end.
+//
+// What it proves is exactly that the proxy recognised and parked one
+// command; it does not say WHY none was, and the causes it cannot tell
+// apart (the marker split across two reads, a dial that never reached the
+// proxy) all end the same way for the test — no held acknowledgement, so no
+// discrimination — which is what its message says.
+func (p *subscribeDelayProxy) waitParked(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for p.held.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the SUBSCRIBE was never parked; this test could not have discriminated")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // forward copies client → server, parking the first chunk that carries a
 // SUBSCRIBE.
 func (p *subscribeDelayProxy) forward(client, server net.Conn) {
@@ -80,7 +169,22 @@ func (p *subscribeDelayProxy) forward(client, server net.Conn) {
 			if !parked && bytes.Contains(bytes.ToLower(chunk), []byte("\r\n$9\r\nsubscribe\r\n")) {
 				parked = true
 				p.held.Add(1)
-				time.Sleep(p.delay)
+				if p.gate != nil {
+					select {
+					case <-p.gate:
+					case <-time.After(subscribeGateFailsafe):
+						// OPENS THE GATE FOR EVERYONE, not just this chunk
+						// (codex round 1 P2): a later connection — a
+						// reconnect, a second workspace — would otherwise
+						// park for another failsafe interval, and forcedOpen
+						// would then be reporting a cause that belongs to
+						// the first connection alone.
+						p.forcedOpen.Store(true)
+						p.release()
+					}
+				} else {
+					time.Sleep(p.delay)
+				}
 			}
 			if _, werr := server.Write(chunk); werr != nil {
 				return
@@ -289,7 +393,10 @@ func TestSubscribeDoesNotHoldTheBusLockAcrossTheRedisDial(t *testing.T) {
 // current, so the acknowledgement carries the mid-stream signal BUG-2730 built.
 func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) {
 	mr := miniredis.RunT(t)
-	proxy := newSubscribeDelayProxy(t, mr.Addr(), 400*time.Millisecond)
+	// GATED, NOT DELAYED (BUG-2786): the acknowledgement is held until the
+	// wait has given up, so the timer arm is the only one that can win —
+	// a fixed delay only made that likely, by a margin CI load can eat.
+	proxy := newSubscribeGateProxy(t, mr.Addr())
 	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -297,7 +404,6 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 	t.Cleanup(b.Close)
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
-	// Shorter than the delay, so the wait gives up first.
 	b.confirmTimeout = 50 * time.Millisecond
 
 	ch, gaps, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
@@ -306,9 +412,20 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 	}
 	defer b.Unsubscribe(ch)
 
+	proxy.waitParked(t)
+	if proxy.forcedOpen.Load() {
+		t.Fatal("the failsafe opened the gate before the test released it; the acknowledgement was not held by construction, so this test could not have discriminated")
+	}
 	if got := obs.unconfirmedCount(); got != 1 {
 		t.Fatalf("SubscriptionUnconfirmed reported %d times, want 1", got)
 	}
+
+	// RELEASED ONLY NOW, after the mark has been observed above — not from
+	// the beforeUnconfirmedMark hook, which runs before the mark takes b.mu
+	// and would let the acknowledgement beat it (codex round 3 P1). With
+	// Subscribe returned and the count at 1, the acknowledgement is late by
+	// construction rather than by margin.
+	proxy.release()
 
 	// The acknowledgement lands late; the subscriber is told to reconcile.
 	select {
@@ -318,7 +435,10 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 	}
 
 	// Control: the same signal does not fire for a subscription that was
-	// confirmed before admission.
+	// confirmed before admission. The gate is open now, so ws-2 is an
+	// ordinary immediate confirmation — which is the property the control
+	// is about; the fixed-delay proxy this test used to run on made it a
+	// slow one as a side effect, and nothing here depended on that.
 	b.confirmTimeout = defaultSubscribeConfirmTimeout
 	before := obs.unconfirmedCount()
 	ch2, gaps2, _ := b.SubscribeIfAllowed(context.Background(), "ws-2", 0)
@@ -584,22 +704,39 @@ func TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement(t *testin
 // path and proves nothing. Measured against the mutation: 500 establishments per
 // run caught it in 0 of 10 runs. A one-in-ten detector reads as coverage and
 // is not.
+//
+// AND THE ACKNOWLEDGEMENT IS HELD AT THE WIRE UNTIL THE TIMER ARM IS TAKEN
+// (BUG-2786), because the seam alone was not enough. The hook runs only on the
+// timer arm, and a 1ns bound guarantees that arm is ready — not that the
+// acknowledgement is not. Under CI load the receive goroutine consumed the
+// SUBSCRIBE reply before the establisher reached its select, both arms were
+// ready, Go chose at random, and on the confirmed arm the hook never ran: the
+// guard below then reported the acknowledgement as never landing when it had
+// landed too EARLY for the interleave to exist. Measured before the gate: 10
+// of 1000 loaded runs (16 busy loops, GOMAXPROCS=2, -race), every one the hook
+// never having run; zero were a stalled acknowledgement. With the reply parked
+// until the hook releases it, only the timer arm can be ready at the select,
+// and the guard has exactly one cause left.
 func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	proxy := newSubscribeGateProxy(t, mr.Addr())
+	client := redis.NewClient(&redis.Options{Addr: proxy.addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
 	b := NewRedisBus(client)
 	t.Cleanup(b.Close)
 	obs := &recordingObserver{}
 	b.SetObserver(obs)
-	// Expires immediately, so the timer branch is the one taken.
+	// Expires immediately, so the timer branch is the one taken — and, with
+	// the acknowledgement parked at the proxy, the ONLY one that can be.
 	b.confirmTimeout = time.Nanosecond
 
-	// ...and then hold the mark until the acknowledgement has definitively
-	// landed, which is the interleave under test.
-	var raced atomic.Bool
+	// Now let the acknowledgement through, and hold the mark until it has
+	// definitively landed: that is the interleave under test.
+	var raced, hookRan atomic.Bool
 	b.beforeUnconfirmedMark = func() {
+		hookRan.Store(true)
+		proxy.release()
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
 			b.mu.Lock()
@@ -617,10 +754,22 @@ func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 	ch, gaps, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 
-	// PREMISE: the acknowledgement really did beat the mark, or the interleave
-	// under test never happened.
+	// PREMISES, IN AN ORDER WHERE EACH GUARD'S CAUSE IS WHAT REMAINS (codex
+	// round 7): the proxy parked the SUBSCRIBE at all; the failsafe did not
+	// open it before the test released it; given both, the only way the hook
+	// did not run is that the timer arm was not taken (this is the cause the
+	// old guard misreported); and given all three, the only way raced is
+	// false is that the released acknowledgement never landed within the
+	// wait.
+	proxy.waitParked(t)
+	if proxy.forcedOpen.Load() {
+		t.Fatal("the failsafe opened the gate before the test released it; the acknowledgement was not held by construction, so this test could not have discriminated")
+	}
+	if !hookRan.Load() {
+		t.Fatal("the timer arm was not taken, so the hook never ran and the interleave under test was never constructed")
+	}
 	if !raced.Load() {
-		t.Fatal("the acknowledgement never landed before the mark; this test could not have discriminated")
+		t.Fatal("the acknowledgement was released before the mark but never landed within the wait; this test could not have discriminated")
 	}
 
 	b.mu.Lock()
