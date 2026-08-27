@@ -11,6 +11,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/PerpetualSoftware/pad/internal/redisns"
 )
 
 // subscribeWriteFailer is a Dialer whose connections fail the WRITE of a
@@ -29,7 +31,7 @@ import (
 // frame carrying the SUBSCRIBE command is refused, so publishes and pings are
 // untouched.
 type subscribeWriteFailer struct {
-	failures int64 // how many SUBSCRIBE writes to fail; <0 means all of them
+	failures atomic.Int64 // how many SUBSCRIBE writes to fail; <0 means all of them; settable mid-test
 	failed   atomic.Int64
 }
 
@@ -50,7 +52,7 @@ type subscribeFailingConn struct {
 
 func (c *subscribeFailingConn) Write(p []byte) (int, error) {
 	if bytes.Contains(bytes.ToLower(p), []byte("\r\n$9\r\nsubscribe\r\n")) {
-		if c.f.failures < 0 || c.f.failed.Load() < c.f.failures {
+		if n := c.f.failures.Load(); n < 0 || c.f.failed.Load() < n {
 			c.f.failed.Add(1)
 			return 0, errInjectedSubscribeWrite
 		}
@@ -61,7 +63,8 @@ func (c *subscribeFailingConn) Write(p []byte) (int, error) {
 func newFailingSubscribeBus(t *testing.T, failures int64) (*RedisBus, *subscribeWriteFailer, *recordingObserver) {
 	t.Helper()
 	mr := miniredis.RunT(t)
-	f := &subscribeWriteFailer{failures: failures}
+	f := &subscribeWriteFailer{}
+	f.failures.Store(failures)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: f.dial})
 	t.Cleanup(func() { _ = client.Close() })
 	if err := client.Ping(context.Background()).Err(); err != nil {
@@ -256,5 +259,99 @@ func TestAJoinerOfAFailedEstablishmentIsRefusedToo(t *testing.T) {
 	}
 	if got := b.WorkspaceSubscriberCount("ws-1"); got != 0 {
 		t.Fatalf("workspace subscriber count = %d after both refusals, want 0", got)
+	}
+}
+
+// TestSubscribeAfterCloseIsRefused pins the closed-bus arm of the post-loop
+// check (codex round 1 on BUG-2764). Close drains the subscriber maps; a
+// caller registering afterwards used to be handed SubscribeOK and a channel
+// nothing would ever close, so an SSE handler holding it outlived the
+// shutdown. The wrong behaviour is a channel; the right one is a refusal and
+// no registration left behind.
+func TestSubscribeAfterCloseIsRefused(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	b := NewRedisBus(client)
+	b.Close()
+
+	ch, _, outcome := b.SubscribeIfAllowed(context.Background(), "ws-1", 0)
+	if outcome != SubscribeFailed {
+		t.Fatalf("outcome after Close = %v, want failed", outcome)
+	}
+	if ch != nil {
+		t.Fatal("a caller was handed a channel by a closed bus")
+	}
+	if got := b.WorkspaceSubscriberCount("ws-1"); got != 0 {
+		t.Fatalf("subscriber count after a refused post-Close subscribe = %d, want 0", got)
+	}
+}
+
+// TestAWorkspaceLeftUncoveredByAFailedReplacementIsReestablishedOnTheNextPass
+// pins codex round 1's P1 on BUG-2764. Before the fix, an idle cycle whose
+// replacement SUBSCRIBE failed INSTALLED the dead PubSub, so the detector saw
+// it as idle and cycled it again next pass. With the failure now abandoning
+// instead, the workspace has subscribers counted and nothing behind them, and
+// a scanner that walks only wsSubs would never look at it again: the
+// already-admitted subscribers sit on a live-looking stream until a new caller
+// happens to establish. The uncovered pass is that retry, and this test is
+// driven entirely through the public surface plus the cycle entry point.
+func TestAWorkspaceLeftUncoveredByAFailedReplacementIsReestablishedOnTheNextPass(t *testing.T) {
+	mr := miniredis.RunT(t)
+	f := &subscribeWriteFailer{}
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr(), Dialer: f.dial})
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	// PHASE 2: the detector, and therefore the retry, only run there.
+	b := NewRedisBusWithKeys(client, redisns.Default, false, true)
+	clock := &testClock{t: time.Now()}
+	b.nowFunc = clock.now
+	t.Cleanup(b.Close)
+
+	ch, _, outcome := b.Subscribe(context.Background(), "ws-1")
+	if outcome != SubscribeOK {
+		t.Fatalf("healthy subscribe outcome = %v, want ok", outcome)
+	}
+	defer b.Unsubscribe(ch)
+
+	// Redis starts refusing SUBSCRIBEs; the route then wedges and the cycle
+	// tears the subscription down and fails to replace it.
+	f.failures.Store(-1)
+	wedge(t, b, clock, b.idleTimeout+time.Second)
+	b.cycleIdleSubscriptions()
+
+	// PREMISE: the state under test exists — a counted subscriber, no
+	// subscription, no record in flight, and a refusal actually happened.
+	b.mu.Lock()
+	_, live := b.wsSubs["ws-1"]
+	_, inFlight := b.pendingSubs["ws-1"]
+	count := b.wsCounts["ws-1"]
+	b.mu.Unlock()
+	if live || inFlight || count != 1 || f.failed.Load() == 0 {
+		t.Fatalf("after the failed replacement: live=%v inFlight=%v count=%d refused=%d; the uncovered state was never reached, so this test could not have discriminated",
+			live, inFlight, count, f.failed.Load())
+	}
+
+	// Redis recovers. The next pass must find the workspace without a
+	// subscription behind its subscribers and re-establish — with NO new
+	// caller arriving to do it for them.
+	f.failures.Store(0)
+	b.cycleIdleSubscriptions()
+
+	b.mu.Lock()
+	_, live = b.wsSubs["ws-1"]
+	b.mu.Unlock()
+	if !live {
+		t.Fatal("the uncovered workspace was not re-established on the next pass: its subscribers stay deaf until a new caller happens to arrive")
+	}
+	// Served, not merely re-installed: the ORIGINAL subscriber's channel
+	// receives again.
+	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("an event published after re-establishment never reached the subscriber that was left uncovered")
 	}
 }

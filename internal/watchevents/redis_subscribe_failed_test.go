@@ -77,6 +77,12 @@ func TestAFailedSubscribeIsReportedAsItselfAndAtOnce(t *testing.T) {
 	if took := time.Since(started); took > 2*time.Second {
 		t.Fatalf("construction took %v with a refused SUBSCRIBE: the constructor waited for an acknowledgement that could not come", took)
 	}
+	// And nothing was installed: a retained dead PubSub would keep the
+	// retry gate (cycleIfIdle's `b.pubsub == nil`) closed for the life of
+	// the process (codex round 1 P1).
+	if b.currentPubSub() != nil {
+		t.Fatal("the constructor kept a PubSub whose SUBSCRIBE failed; the retry gate can never open")
+	}
 
 	// FABRICATES THE CYCLE'S TEARDOWN STATE ON PURPOSE: resubscribe installs
 	// only into an empty slot, and driving a full idle cycle here would test

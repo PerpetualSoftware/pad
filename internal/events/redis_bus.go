@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -1144,23 +1145,53 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 	}
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	// A CALLER WHOSE LOOP ENDED WITH NOTHING BEHIND ITS CHANNEL HAS FAILED
 	// (BUG-2764). The two abandon reasons that predate this check only fire
 	// when there is nobody to tell — the workspace emptied, or the bus is
 	// closing — so a channel wired to nothing was harmless. A failed
 	// SUBSCRIBE abandons with callers still registered, and this is the only
 	// place every one of them passes through, establisher and joiner alike,
-	// after the loop's built-in retry. An in-flight record is NOT a failure:
-	// an idle cycle re-establishing in its dial window owns one, and this
-	// caller's registration will be served when it installs.
-	if _, live := b.wsSubs[workspaceID]; !live && b.ctx.Err() == nil {
-		if _, inFlight := b.pendingSubs[workspaceID]; !inFlight {
+	// after the loop's built-in retry.
+	//
+	// AN IN-FLIGHT RECORD IS WAITED ON, NOT TAKEN AS SUCCESS (codex round 1
+	// P2): an idle cycle re-establishing in its dial window owns one, and
+	// this caller's registration is served only if that attempt installs —
+	// so the caller waits for it and looks again, and returns failed only
+	// when there is neither a live subscription nor anyone still trying.
+	//
+	// A CLOSED BUS IS A REFUSAL TOO (codex round 1 P2). Close drains the
+	// subscriber maps; a caller that registers after that holds a channel
+	// nothing will ever close, and a handler holding it would outlive the
+	// shutdown. Nothing this instance can promise is worth a 200 here.
+	for {
+		if b.ctx.Err() != nil {
 			b.unsubscribeLocked(sub.ch)
+			b.mu.Unlock()
 			resuming = false
 			return nil, nil, nil, SubscribeFailed
 		}
+		if _, live := b.wsSubs[workspaceID]; live {
+			break
+		}
+		p, inFlight := b.pendingSubs[workspaceID]
+		if !inFlight {
+			b.unsubscribeLocked(sub.ch)
+			b.mu.Unlock()
+			resuming = false
+			return nil, nil, nil, SubscribeFailed
+		}
+		b.mu.Unlock()
+		select {
+		case <-p.done:
+		case <-ctx.Done():
+			b.Unsubscribe(sub.ch)
+			resuming = false
+			return nil, nil, nil, SubscribeCancelled
+		case <-b.ctx.Done():
+		}
+		b.mu.Lock()
 	}
+	defer b.mu.Unlock()
 	if b.afterSubscribeRegister != nil {
 		b.afterSubscribeRegister()
 	}
@@ -1631,7 +1662,10 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 		// an emptied workspace and a closing bus are both quiet by design. A
 		// cancelled caller's dial ends in a context error here too — that is
 		// its departure, not Redis failing, and its own path reports it.
-		if subscribeErr != nil && ctx.Err() == nil && b.ctx.Err() == nil {
+		// CLASSIFIED BY THE ERROR, not by the contexts (codex round 1 P2): a
+		// genuine Redis failure that happens to race the caller leaving is
+		// still a Redis failure, and gating on ctx.Err() would swallow it.
+		if subscribeErr != nil && !errors.Is(subscribeErr, context.Canceled) && !errors.Is(subscribeErr, context.DeadlineExceeded) {
 			slog.Error("events: Redis refused or dropped the SUBSCRIBE; no subscription was installed and its callers are being refused rather than admitted into a stream that would carry nothing",
 				"workspace", workspaceID, "error", subscribeErr)
 		}

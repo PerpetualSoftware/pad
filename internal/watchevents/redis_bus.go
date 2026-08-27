@@ -460,11 +460,24 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 	// still constructed on failure — the same non-fatal contract as an
 	// unconfirmed subscription — but the cause is logged at once and the
 	// five-second wait for an acknowledgement that cannot come is skipped.
+	//
+	// THE FAILED PUBSUB IS NOT KEPT (codex round 1 P1). go-redis's own
+	// reconnect after a failed write leaves a fresh connection with no
+	// subscription on it, and this bus's only retry — cycleIfIdle's
+	// resubscribe — fires on `b.pubsub == nil`. Retaining the dead PubSub
+	// and starting a receive loop on it would satisfy every liveness stamp
+	// while receiving nothing, and would leave the retry gate closed for the
+	// life of the process. Closing it and leaving the slot empty is what
+	// makes the next maintenance pass re-establish (phase 2); on phase 1
+	// there is no maintenance pass, which is the pre-existing posture for
+	// every failure this bus cannot see, and now at least a logged one.
 	b.pubsub = client.Subscribe(ctx)
 	if err := b.pubsub.Subscribe(ctx, keys.Name(redisWatchChannelSuffix)); err != nil {
 		slog.Warn("watchevents: Redis refused or dropped the SUBSCRIBE at construction; "+
 			"this instance receives no notifications until the subscription is re-established",
 			"error", err, "channel", keys.Name(redisWatchChannelSuffix))
+		_ = b.pubsub.Close()
+		b.pubsub = nil
 	} else {
 		// WAIT FOR THE SUBSCRIBE TO BE CONFIRMED before returning. go-redis
 		// establishes the subscription asynchronously, so without this the
@@ -500,13 +513,18 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 		subCancel()
 	}
 
-	subLoopCtx, subLoopCancel := context.WithCancel(ctx)
-	b.subCancel = subLoopCancel
-	b.lastSeen = b.now()
-	b.lastProbeOK = b.now()
-	b.wg.Add(1)
-	b.subGen++
-	go b.receiveMessages(subLoopCtx, b.pubsub, b.subGen)
+	// No receive loop without a subscription to receive on: resubscribe
+	// starts one when it installs, and reads the current generation rather
+	// than minting its own, so nothing is owed here on the failed path.
+	if b.pubsub != nil {
+		subLoopCtx, subLoopCancel := context.WithCancel(ctx)
+		b.subCancel = subLoopCancel
+		b.lastSeen = b.now()
+		b.lastProbeOK = b.now()
+		b.wg.Add(1)
+		b.subGen++
+		go b.receiveMessages(subLoopCtx, b.pubsub, b.subGen)
+	}
 
 	// NOT STARTED AT ALL ON PHASE 1 (codex round 2). Both halves are gated on
 	// publishHeartbeat and would be guaranteed no-ops there, so the loop would
