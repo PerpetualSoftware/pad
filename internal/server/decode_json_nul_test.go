@@ -242,9 +242,16 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores it; the real decode still happens through decodeJSON downstream",
 		"middleware_mcp_audit.go":    "audit capture — records the body for the MCP audit log and restores it; decoding still happens in the MCP dispatcher",
 		"handlers_tokens.go":         "a nil/ContentLength check only — it never reads the body",
+		"handlers_oauth.go":          "KNOWN GAP, tracked as BUG-2811: the OAuth handlers read FORM-encoded bodies (r.Form/FormValue), which no rule in this family covers — the transport rules see the query half of r.Form and not the body half. Listed so this test states the gap instead of being blind to it; measuring it needs a fosite-backed fixture.",
 	}
 
-	pattern := regexp.MustCompile(`\b(r|req)\.Body\b`)
+	// FormValue/PostFormValue/ParseForm/ParseMultipartForm read the request
+	// BODY too, and the first version of this scan looked only for .Body — so
+	// it reported full coverage while the OAuth form-body handlers, which
+	// BUG-2811 tracks, were entirely invisible to it (codex round 13). A
+	// completeness test with a blind spot is worse than none, because it
+	// reads as coverage.
+	pattern := regexp.MustCompile(`\b(r|req)\.(Body|FormValue|PostFormValue|ParseForm|ParseMultipartForm|MultipartForm|PostForm)\b`)
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -562,6 +569,18 @@ func TestTruncateBindableText(t *testing.T) {
 			}
 			if !strings.HasPrefix(tc.s, got) {
 				t.Errorf("result %q is not a prefix of the input", got)
+			}
+			// And it must keep as much as the limit allows. Without this,
+			// an implementation returning "" for every input passes every
+			// assertion above — it is bindable, within the limit, and a
+			// prefix (codex round 13).
+			if len(tc.s) <= tc.limit {
+				if got != tc.s {
+					t.Errorf("input fits the limit and must be returned unchanged, got %q", got)
+				}
+			} else if lost := tc.limit - len(got); lost >= 4 {
+				t.Errorf("dropped %d bytes to respect a %d-byte limit; at most one rune (max 4 bytes) "+
+					"should be lost to the boundary", lost, tc.limit)
 			}
 		})
 	}
