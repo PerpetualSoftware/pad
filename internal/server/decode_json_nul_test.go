@@ -1024,3 +1024,29 @@ func TestOAuthRegisterRefusesNULBody(t *testing.T) {
 		t.Errorf("the refusal should name the cause, got %s", rr.Body.String())
 	}
 }
+
+// TestBodyDecodesNULMatchesKeysLikeTheDecoder is codex round 16: encoding/json
+// matches an incoming key to a struct field by an exact match first and a
+// CASE-INSENSITIVE one otherwise, so `{"Fields":...}` lands in
+// ItemCreate.Fields exactly as `{"fields":...}` does. A case-sensitive lookup
+// in the walk skipped the nested check for a body the handler then accepted,
+// and the database answered the original 500.
+//
+// Measured before the fix: `fields` refused, `Fields` and `FIELDS` accepted.
+func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
+	inner := `{"k":"a` + escNULLiteral + `b"}`
+	for _, key := range []string{"fields", "Fields", "FIELDS", "fIeLdS", "Schema", "TAGS"} {
+		body := `{"title":"x","` + key + `":` + jsonEncode(t, inner) + `}`
+		if !bodyDecodesNUL([]byte(body)) {
+			t.Errorf("key %q reaches the same struct field as its lower-case spelling and must be "+
+				"walked the same way", key)
+		}
+	}
+
+	// Control: a key that is not a wire key in ANY casing stays caller data,
+	// so this is case-insensitive matching rather than matching everything.
+	notAKey := `{"title":"x","Notes":` + jsonEncode(t, inner) + `}`
+	if bodyDecodesNUL([]byte(notAKey)) {
+		t.Error("an unlisted key must not be treated as JSON-encoded whatever its casing")
+	}
+}

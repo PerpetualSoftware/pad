@@ -478,6 +478,28 @@ var jsonEncodedFieldKeys = map[string]bool{
 	"traits":         true,
 }
 
+// isJSONEncodedFieldKey matches a wire key the way the DECODER that consumes
+// it does: case-insensitively.
+//
+// encoding/json matches an incoming key to a struct field by an exact match
+// first and a CASE-INSENSITIVE one otherwise, so `{"Fields":...}` and
+// `{"FIELDS":...}` both land in ItemCreate.Fields. A case-SENSITIVE lookup
+// here therefore skipped the nested walk for a body the handler went on to
+// accept, and the database answered the original 500 (codex round 16,
+// measured: `fields` refused, `Fields` and `FIELDS` accepted).
+//
+// This is the same defect shape as the rest of BUG-2803 — a check that agrees
+// with one layer's rules while the layer that actually consumes the value
+// uses different ones — and it is the reason this predicate is a function
+// rather than a bare map index: the map is the vocabulary, the MATCHING RULE
+// belongs to the consumer.
+func isJSONEncodedFieldKey(k string) bool {
+	if jsonEncodedFieldKeys[k] {
+		return true
+	}
+	return jsonEncodedFieldKeys[strings.ToLower(k)]
+}
+
 // valueDecodesNUL walks a decoded request body for a string that contains a
 // NUL, descending into a JSON document carried as a string exactly once.
 //
@@ -520,7 +542,7 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 			if strings.ContainsRune(k, 0) {
 				return true
 			}
-			if !inUserData && jsonEncodedFieldKeys[k] {
+			if !inUserData && isJSONEncodedFieldKey(k) {
 				if str, isString := sub.(string); isString {
 					// BOTH checks. The nested walk answers "is there an
 					// escape inside the document this string carries"; it
