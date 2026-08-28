@@ -64,7 +64,12 @@ func importRequest(t *testing.T, srv *Server, user *models.User, contentType str
 
 func exportBody(t *testing.T) []byte {
 	t.Helper()
+	// Version 1 is REQUIRED. Without it the import fails with a 500 before it
+	// reaches anything this file is about — and the success controls below,
+	// which assert only "not 403", passed on that 500 (codex round 1). A
+	// control that cannot tell success from a server error controls nothing.
 	b, err := json.Marshal(models.WorkspaceExport{
+		Version:   1,
 		Workspace: models.WorkspaceExportMeta{Name: "Imported", Slug: "imported"},
 	})
 	if err != nil {
@@ -124,8 +129,9 @@ func TestImportWorkspace_UnderTheLimitIsNotRefused(t *testing.T) {
 
 	rr := importRequest(t, srv, user, "application/json", exportBody(t))
 
-	if rr.Code == http.StatusForbidden {
-		t.Fatalf("import UNDER the plan limit was refused: %s", rr.Body.String())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("import UNDER the plan limit returned %d, want 201 — asserting merely "+
+			"\"not 403\" would pass on a 500 and prove nothing: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -139,8 +145,9 @@ func TestImportWorkspace_SelfHostedIsUnaffected(t *testing.T) {
 
 	rr := importRequest(t, srv, user, "application/json", exportBody(t))
 
-	if rr.Code == http.StatusForbidden {
-		t.Fatalf("self-hosted import was refused by a plan limit that should not apply: %s", rr.Body.String())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("self-hosted import returned %d, want 201 — a plan limit must not apply where "+
+			"there are no plans: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -153,7 +160,8 @@ func TestImportWorkspace_NoResolvedUserIsNotCharged(t *testing.T) {
 
 	rr := importRequest(t, srv, nil, "application/json", exportBody(t))
 
-	if rr.Code == http.StatusForbidden {
-		t.Fatalf("an import with no resolved user was charged against a plan: %s", rr.Body.String())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("import with no resolved user returned %d, want 201 — there is nobody to charge: %s",
+			rr.Code, rr.Body.String())
 	}
 }
