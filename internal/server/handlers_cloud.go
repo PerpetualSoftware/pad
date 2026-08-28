@@ -205,7 +205,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	// 4. Sanitize inputs
 	input.Name = strings.TrimSpace(input.Name)
 	if len(input.Name) > 200 {
-		input.Name = input.Name[:200]
+		input.Name = truncateBindableText(input.Name, 200)
 	}
 	if input.AvatarURL != "" {
 		if u, err := url.Parse(input.AvatarURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {

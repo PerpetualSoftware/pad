@@ -480,3 +480,97 @@ func TestDecodeJSONRefusesNestedNULThroughTheHandler(t *testing.T) {
 			bad.Code, bad.Body.String())
 	}
 }
+
+// TestTruncateBindableText covers codex round 5's second class on BUG-2803:
+// a value that PASSED the body check becomes unbindable on its way to the
+// store, because a plain s[:n] can split a rune and leave a partial sequence.
+//
+// The failure is invisible with ASCII fixtures, which is why four review
+// rounds aimed at the input side did not reach it — so these cases are built
+// from multi-byte runes deliberately, and each asserts the OUTPUT is valid
+// UTF-8 rather than merely short.
+func TestTruncateBindableText(t *testing.T) {
+	// é is 2 bytes, 中 is 3, 𝄞 is 4 — one case per continuation length, so a
+	// walk-back that is off by one cannot pass them all.
+	for _, tc := range []struct {
+		name  string
+		s     string
+		limit int
+	}{
+		{"two-byte rune straddling the cut", strings.Repeat("é", 80), 121},
+		{"three-byte rune straddling the cut", strings.Repeat("中", 80), 121},
+		{"four-byte rune straddling the cut", strings.Repeat("𝄞", 80), 121},
+		{"cut exactly on a boundary", strings.Repeat("é", 80), 120},
+		{"ascii", strings.Repeat("a", 300), 120},
+		{"shorter than the limit", "café", 120},
+		{"limit of zero", "café", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateBindableText(tc.s, tc.limit)
+			if len(got) > tc.limit {
+				t.Errorf("result is %d bytes, over the %d limit", len(got), tc.limit)
+			}
+			// The point of the whole helper: the RESULT must still be
+			// storable. A plain slice fails exactly here.
+			if !bindableText(got) {
+				t.Errorf("result is not bindable text: %q", got)
+			}
+			if !strings.HasPrefix(tc.s, got) {
+				t.Errorf("result %q is not a prefix of the input", got)
+			}
+		})
+	}
+
+	// The counterfactual, stated as a test rather than as a comment: the
+	// naive slice this replaces really does produce unbindable output for the
+	// same input. Without this leg the cases above would pass against an
+	// implementation that simply returned the input unchanged when short —
+	// they would never demonstrate that anything was wrong.
+	s := strings.Repeat("é", 80)
+	if bindableText(s[:121]) {
+		t.Fatal("the fixture cannot reproduce the defect: a plain byte slice of it is still valid UTF-8, " +
+			"so this test would pass against a broken implementation")
+	}
+}
+
+// TestRequestUserAgentIsBindableText covers codex round 5's third class on
+// BUG-2803: the User-Agent header reaches activities.user_agent and
+// sessions.user_agent as text, and no rule in this file sees a header.
+//
+// The disposition here is SANITISE, not refuse — a header is metadata this
+// server chose to record, not something the caller asked for, so a malformed
+// one must not turn a fine request into a 400. That difference from every
+// other check in this file is the thing worth pinning.
+func TestRequestUserAgentIsBindableText(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ua   string
+		want string
+	}{
+		{"ordinary", "pad-cli/1.0", "pad-cli/1.0"},
+		{"non-ascii is preserved", "café/1.0 中", "café/1.0 中"},
+		{"invalid UTF-8 is dropped", "pad\xffcli", "padcli"},
+		{"NUL is dropped", "pad\x00cli", "padcli"},
+		{"empty stays empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Header.Set("User-Agent", tc.ua)
+			got := requestUserAgent(req)
+			if got != tc.want {
+				t.Errorf("requestUserAgent = %q, want %q", got, tc.want)
+			}
+			if !bindableText(got) {
+				t.Errorf("result is not bindable text: %q", got)
+			}
+		})
+	}
+
+	// The counterfactual: the raw header really is unbindable, so these cases
+	// would not pass against a helper that simply returned it unchanged.
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("User-Agent", "pad\xffcli")
+	if bindableText(req.Header.Get("User-Agent")) {
+		t.Fatal("the fixture cannot reproduce the defect: the raw header is already bindable text")
+	}
+}

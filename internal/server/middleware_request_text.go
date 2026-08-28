@@ -593,3 +593,54 @@ func readBodyForDecode(r *http.Request, maxBytes int64) ([]byte, error) {
 	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
 	return io.ReadAll(r.Body)
 }
+
+// truncateBindableText cuts s to at most maxBytes bytes WITHOUT splitting a
+// rune, so the result is still valid UTF-8.
+//
+// A plain s[:n] slices bytes. If byte n lands inside a multi-byte rune the
+// result ends in a partial sequence, which is not valid UTF-8 — so a value
+// that PASSED the body check a few frames earlier becomes unbindable on its
+// way to the store, and Postgres answers 22021 for a request the server
+// already accepted. Found by the codex round 5 enumeration on BUG-2803, which
+// asked what could still reach a text parameter unvalidated and named
+// truncation rather than any input path.
+//
+// The failure is invisible in testing with ASCII, which is why it survived
+// four review rounds aimed at the input side: every fixture in this area uses
+// ASCII names, and ASCII cannot reproduce it.
+func truncateBindableText(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	// Walk back off any continuation bytes (10xxxxxx) to the start of the
+	// rune that straddles the boundary, then drop that rune entirely.
+	for cut > 0 && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut]
+}
+
+// requestUserAgent returns the User-Agent header as text the database can
+// store, replacing any invalid UTF-8 and dropping any NUL.
+//
+// A header is not a path, a query or a body, so none of the rules above see
+// it — and unlike those, it is not the caller ASKING for anything: it is
+// metadata this server chose to record. Refusing the whole request because a
+// header is malformed would answer 400 to a request whose actual subject is
+// fine, so this sanitizes rather than rejects, which is the opposite
+// disposition from the rest of this file and deliberately so.
+//
+// The sinks are text columns: activities.user_agent (documents and the
+// connected-apps revoke path) and sessions.user_agent (three login paths).
+// The two sites that HASH the header instead are left alone — sha256 over
+// arbitrary bytes is well defined, and changing what is hashed would
+// invalidate every stored UAHash.
+//
+// Found by the codex round 5 enumeration on BUG-2803. The filing's own
+// earlier probe had recorded User-Agent as NOT reproducing on the item-create
+// path, which was true and did not generalise: these are different sinks.
+func requestUserAgent(r *http.Request) string {
+	ua := strings.ToValidUTF8(r.Header.Get("User-Agent"), "")
+	return strings.ReplaceAll(ua, "\x00", "")
+}

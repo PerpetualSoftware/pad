@@ -987,7 +987,7 @@ func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequest
 	// prompts the user to name it on first visit.
 	name := strings.TrimSpace(r.FormValue("connection_name"))
 	if len(name) > 120 {
-		name = name[:120]
+		name = truncateBindableText(name, 120)
 	}
 
 	// may_create_workspaces is a checkbox — present (value="1") if
@@ -1784,7 +1784,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 	// cap in PG, but 120 keeps the connections-page card width sane).
 	suggested := strings.TrimSpace(r.URL.Query().Get("suggested_name"))
 	if len(suggested) > 120 {
-		suggested = suggested[:120]
+		suggested = truncateBindableText(suggested, 120)
 	}
 
 	data := consentData{
