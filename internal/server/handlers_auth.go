@@ -308,7 +308,7 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 			"user_id", user.ID, "error", err)
 	}
 
-	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), requestUserAgent(r), webSessionTTL)
+	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Credentials updated but failed to refresh session. Please sign in again.")
@@ -329,7 +329,7 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 }
 
 func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user *models.User, ttl time.Duration) (string, error) {
-	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), requestUserAgent(r), ttl)
+	token, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), ttl)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return "", err
@@ -1313,7 +1313,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a fresh session so the user is logged in
-	sessionToken, err := s.store.CreateSession(user.ID, "web", clientIP(r), requestUserAgent(r), webSessionTTL)
+	sessionToken, err := s.store.CreateSession(user.ID, "web", clientIP(r), r.UserAgent(), webSessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session")
 		return

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -348,6 +349,18 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 			`{"title":"x","fields":` + jsonEncode(t, innerPlain) + `}`, false},
 		{"nested document whose escape is a DOUBLED backslash",
 			`{"fields":` + jsonEncode(t, innerLiteral) + `}`, false},
+		// codex round 6: these fields also accept their NATURAL shape, in
+		// which the elements are ordinary strings the server marshals itself.
+		// Nothing re-parses them, so an element that merely LOOKS like a
+		// document must not be treated as one — this refused a free-form tag
+		// whose whole value happened to be JSON.
+		{"tags as a natural ARRAY whose element is a JSON document",
+			`{"title":"x","tags":["release",` + jsonEncode(t, innerWithNUL) + `]}`, false},
+		{"fields as a natural OBJECT whose value is a JSON document",
+			`{"title":"x","fields":{"k":` + jsonEncode(t, innerWithNUL) + `}}`, false},
+		// ...while the JSON-ENCODED spelling of the same field still is.
+		{"tags as a JSON-encoded STRING carrying the escape",
+			`{"title":"x","tags":` + jsonEncode(t, `["a`+esc+`b"]`) + `}`, true},
 		{"a string that starts like JSON but does not parse",
 			`{"content":` + jsonEncode(t, `{"k":"a`+esc+`b"`) + `}`, false},
 		{"prose mentioning the escape is not a JSON document",
@@ -572,5 +585,155 @@ func TestRequestUserAgentIsBindableText(t *testing.T) {
 	req.Header.Set("User-Agent", "pad\xffcli")
 	if bindableText(req.Header.Get("User-Agent")) {
 		t.Fatal("the fixture cannot reproduce the defect: the raw header is already bindable text")
+	}
+}
+
+// TestBodyDecodesNULGateAgreesWithAnUngatedWalk is the instrument that keeps
+// the fast path honest.
+//
+// The gate is an argument, not an observation: to manufacture the
+// six-character NUL escape inside a decoded string, every one of its
+// characters must arrive either literally from the raw bytes — in which case
+// the raw contains the escape, which begins with \u00 — or from a \u escape
+// of its own, and the three characters involved (backslash U+005C, 'u'
+// U+0075, '0' U+0030) all sit below U+0100, so every such escape also begins
+// with \u00. Hence: no \u00 in the raw bytes, no NUL at any depth, however
+// spelled.
+//
+// The FIRST version of that argument was wrong in exactly this way — it said
+// "the escape has only one spelling", which is true inside a decoded string
+// and false of the raw bytes, and codex round 4 turned that into a live
+// bypass. So the argument does not get to stand on its own reasoning: this
+// test runs the gated function against an UNGATED walk over a corpus built to
+// attack it, and any disagreement is a bypass.
+func TestBodyDecodesNULGateAgreesWithAnUngatedWalk(t *testing.T) {
+	ungated := func(raw []byte) bool {
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return false
+		}
+		return valueDecodesNUL(v, false, 0)
+	}
+
+	esc := escNULLiteral                                     // the six-character NUL escape
+	bs := string([]byte{'\\', 'u', '0', '0', '5', 'c'})      // escapes to a BACKSLASH
+	bsUpper := string([]byte{'\\', 'u', '0', '0', '5', 'C'}) // same, upper-case hex
+	uEsc := string([]byte{'\\', 'u', '0', '0', '7', '5'})    // escapes to the letter u
+	zero := string([]byte{'\\', 'u', '0', '0', '3', '0'})    // escapes to the digit 0
+	doubled := `\\` + "u0000"                                // literal text, no NUL
+
+	corpus := []string{
+		`{"title":"plain"}`,
+		`{"title":"quotes \" and a backslash \\ but no escape"}`,
+		`{"fields":"{\"k\":\"plain\"}"}`,
+		`{"fields":"{\"k\":\"a` + esc + `b\"}"}`,
+		`{"fields":"{\"k\":\"a` + bs + `u0000b\"}"}`,
+		`{"fields":"{\"k\":\"a` + bsUpper + `u0000b\"}"}`,
+		`{"fields":"{\"k\":\"a\\` + uEsc + `0000b\"}"}`,
+		`{"fields":"{\"k\":\"a\\u00` + zero + `0b\"}"}`,
+		`{"fields":"{\"k\":\"a` + doubled + `b\"}"}`,
+		`{"content":"{\"k\":\"a` + esc + `b\"}"}`,
+		`{"title":"a` + esc + `b"}`,
+		`{"a` + esc + `b":"key"}`,
+		`{"tags":["ok","a` + esc + `b"]}`,
+		`{"fields":"[1,2,\"a` + esc + `b\"]"}`,
+		`{"title":"unicode é 中"}`,
+		`{"title":"a control escape that is not a NUL: \\u0001"}`,
+		`{"fields":"{\"k\":\"ab\"}"}`,
+	}
+
+	for i, body := range corpus {
+		got, want := bodyDecodesNUL([]byte(body)), ungated([]byte(body))
+		if got != want {
+			t.Errorf("corpus[%d] %s\n  gated=%v ungated=%v — the fast path is a BYPASS for this input",
+				i, body, got, want)
+		}
+	}
+
+	// The corpus must contain both answers, or agreement proves nothing.
+	var trues, falses int
+	for _, body := range corpus {
+		if ungated([]byte(body)) {
+			trues++
+		} else {
+			falses++
+		}
+	}
+	if trues < 3 || falses < 3 {
+		t.Fatalf("corpus is one-sided (%d refuse, %d accept); agreement would be vacuous", trues, falses)
+	}
+}
+
+// TestDocumentActivityStoresBindableUserAgent is the WIRING leg for the
+// User-Agent sanitiser (CONVE-19, and codex round 6's second finding: a unit
+// test vouches for the helper, not for anything calling it).
+//
+// It drives a real request through the router with a malformed header and
+// reads the STORED value out of the activities row, so reverting the
+// production call site fails this even though the helper still works.
+//
+// It targets the ACTIVITY sink deliberately. The round-5 enumeration also
+// named "sessions.user_agent", and I wired the three login paths to the
+// sanitiser before reading store.CreateSession — which HASHES the header and
+// stores no text at all. That change was reverted: login would have stored
+// sha256(sanitised) while middleware_auth still compares sha256(RAW),
+// breaking session validation for any client with a non-UTF-8 User-Agent.
+// A sink named in a review is a pointer to verify, not a finding.
+func TestDocumentActivityStoresBindableUserAgent(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	post := func(t *testing.T, ua, title string) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"title": title})
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/"+ws+"/documents/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", ua)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+			t.Fatalf("create document = %d: %s", rr.Code, rr.Body.String())
+		}
+	}
+
+	// Control first: an ordinary header must be stored VERBATIM, so a
+	// sanitiser that mangled everything would fail here rather than pass.
+	post(t, "pad-cli/1.0 café", "control doc")
+	post(t, "pad-cli/1.0 bad\xffbyte\x00here", "probe doc")
+
+	rows, err := srv.store.DB().Query(`SELECT user_agent FROM activities WHERE user_agent IS NOT NULL`)
+	if err != nil {
+		t.Fatalf("read activities: %v", err)
+	}
+	defer rows.Close()
+
+	var seenControl, seenSanitised int
+	for rows.Next() {
+		var ua sql.NullString
+		if err := rows.Scan(&ua); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if !ua.Valid {
+			continue
+		}
+		if !bindableText(ua.String) {
+			t.Errorf("a stored activity user_agent is not bindable text: %q", ua.String)
+		}
+		switch ua.String {
+		case "pad-cli/1.0 café":
+			seenControl++
+		case "pad-cli/1.0 badbytehere":
+			seenSanitised++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if seenControl == 0 {
+		t.Error("the control header was not stored verbatim — the sanitiser is doing too much")
+	}
+	if seenSanitised == 0 {
+		t.Error("no activity carries the sanitised header; the call site is not wired to requestUserAgent")
 	}
 }

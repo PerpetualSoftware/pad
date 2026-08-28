@@ -347,6 +347,11 @@ func validQueryText(rawQuery string) bool {
 	return true
 }
 
+// unicodeEscapePrefix is the four bytes that begin any JSON \u escape for a
+// character below U+0100. Built from bytes rather than written as a literal,
+// for the reason the tests do the same.
+var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
+
 // bodyDecodesNUL reports whether any string a handler could read out of this
 // JSON body — an object key or a value, at any nesting depth, including
 // inside a JSON document carried as a string — decodes to a string containing
@@ -420,7 +425,7 @@ func validQueryText(rawQuery string) bool {
 // runs next and reports the JSON error itself, so there is exactly one place
 // that phrases "invalid JSON" and this function never has to agree with it.
 func bodyDecodesNUL(raw []byte) bool {
-	if !bytes.ContainsRune(raw, '\\') {
+	if !bytes.Contains(raw, unicodeEscapePrefix) {
 		return false
 	}
 	var v any
@@ -507,7 +512,7 @@ func valueDecodesNUL(v any, inJSONEncodedField bool, depth int) bool {
 		if strings.ContainsRune(t, 0) {
 			return true
 		}
-		if !inJSONEncodedField || !strings.ContainsRune(t, '\\') {
+		if !inJSONEncodedField || !strings.Contains(t, string(unicodeEscapePrefix)) {
 			return false
 		}
 		if depth >= maxJSONDocumentNesting {
@@ -529,7 +534,19 @@ func valueDecodesNUL(v any, inJSONEncodedField bool, depth int) bool {
 			if strings.ContainsRune(k, 0) {
 				return true
 			}
-			if valueDecodesNUL(sub, inJSONEncodedField || jsonEncodedFieldKeys[k], depth) {
+			// A listed key marks its value as a JSON document only when that
+			// value is a STRING. The same fields also accept their NATURAL
+			// shape — `"tags":["a","b"]`, `"fields":{"k":"v"}` — and in that
+			// shape the elements are ordinary strings the server marshals
+			// itself, so nothing re-parses them and an element that merely
+			// LOOKS like a document must not be treated as one. Propagating
+			// the flag into containers refused a free-form tag whose whole
+			// value happened to be a JSON document (codex round 6).
+			childEncoded := inJSONEncodedField
+			if _, isString := sub.(string); isString && jsonEncodedFieldKeys[k] {
+				childEncoded = true
+			}
+			if valueDecodesNUL(sub, childEncoded, depth) {
 				return true
 			}
 		}
@@ -631,11 +648,18 @@ func truncateBindableText(s string, maxBytes int) string {
 // fine, so this sanitizes rather than rejects, which is the opposite
 // disposition from the rest of this file and deliberately so.
 //
-// The sinks are text columns: activities.user_agent (documents and the
-// connected-apps revoke path) and sessions.user_agent (three login paths).
-// The two sites that HASH the header instead are left alone — sha256 over
-// arbitrary bytes is well defined, and changing what is hashed would
-// invalidate every stored UAHash.
+// The sink is one text column: activities.user_agent, reached from three
+// document paths and the connected-apps revoke.
+//
+// THE LOGIN PATHS ARE NOT SINKS, and I wired them before reading
+// store.CreateSession, which is the mistake this note exists to stop
+// recurring. It HASHES the header (sessions.ua_hash) and never stores the
+// text — the round-5 enumeration listed "sessions.user_agent" and I took the
+// name for a column. Sanitising there would have been actively harmful:
+// login would store sha256(sanitised) while middleware_auth still compares
+// sha256(RAW), so every session belonging to a client with a non-UTF-8
+// User-Agent would fail validation. Hashing arbitrary bytes is well defined
+// and needs no help; the hash sites are deliberately untouched.
 //
 // Found by the codex round 5 enumeration on BUG-2803. The filing's own
 // earlier probe had recorded User-Agent as NOT reproducing on the item-create
