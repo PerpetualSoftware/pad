@@ -826,6 +826,34 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Plan limit — the SECOND gate on workspace creation this door used to
+	// skip (BUG-2793). An import mints a workspace through the same
+	// store.CreateWorkspace, so a user at their plan's limit could exceed it
+	// by exporting any workspace and importing it back.
+	//
+	// Dave's day-63 ruling: an import IS a new workspace and counts, with no
+	// exemption for re-importing something you previously owned — export
+	// provenance is not trustworthy enough to gate billing on, and the
+	// at-limit case that deserves relief (undoing a delete) is served by the
+	// restore endpoint, which does not mint anything.
+	//
+	// Placed here for the same two reasons as the consent gate above it, and
+	// the placement is the load-bearing part rather than the call: ABOVE the
+	// Content-Type dispatch, so the tar.gz bundle path is covered by the same
+	// line rather than needing its own, and above either body read, so a
+	// refused caller never uploads. Self-hosted is unaffected —
+	// enforceUserPlanLimit returns true when cloudMode is off.
+	//
+	// The `userID != ""` guard mirrors the create side exactly. It is not
+	// defensive padding: a legacy workspace token resolves no user, and
+	// charging an unattributable import against nobody's plan is not a
+	// limit, it is a crash waiting for a nil.
+	if userID := currentUserID(r); userID != "" {
+		if !s.enforceUserPlanLimit(w, userID, "workspaces") {
+			return
+		}
+	}
+
 	// Content-Type dispatch:
 	//   application/gzip / application/x-gzip / application/x-tar
 	//     → tar.gz bundle path (TASK-885) — handles attachments.
