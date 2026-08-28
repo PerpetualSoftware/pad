@@ -2229,9 +2229,15 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 
 // errJSONBodyNUL is returned by decodeJSON when a string in the request body
 // decodes to a value containing a NUL. Every decodeJSON caller already turns
-// a decode error into a 400 carrying err.Error(), so this reaches the client
-// as a client error with a message naming the cause, at all 65 call sites,
-// without touching any of them.
+// a decode error into a 400, so the refusal reaches the client as a client
+// error at all 65 call sites without touching any of them.
+//
+// NOT every caller shows this message, and the earlier version of this
+// comment claimed otherwise: many substitute a generic string of their own
+// ("Invalid JSON body"). The status is uniform; the wording is not. Where a
+// caller's own message would actively mislead — the OAuth registration
+// endpoint's "Request body must be JSON", for a body that IS valid JSON —
+// that caller distinguishes the two cases explicitly (codex round 8).
 //
 // The wording avoids writing the escape sequence literally: the message is
 // rendered in terminals, logs and a browser, and a literal escape in an error

@@ -609,6 +609,18 @@ func TestImportArtifactUnbindableTextRejected(t *testing.T) {
 		// post-decode check existed: this imported 201 with a NUL in the
 		// title. Same shape as the JSON half, where a value only becomes
 		// dangerous after a SECOND parse.
+		// codex round 8: the first version of the post-decode check walked
+		// the artifact by TYPE and missed two reachable fields — arguments,
+		// whose declared type []map[string]any never matched the walk's
+		// []any case, and provenance, whose strings are rendered into a
+		// footer appended to the stored content. The check now marshals the
+		// artifact and searches the output, so every field is covered.
+		{"YAML-escaped NUL inside a playbook argument", []byte(
+			"---\npad_artifact: playbook\nformat_version: 1\ntitle: Args\narguments:\n  - name: \"a" +
+				string([]byte{'\\', '0'}) + "b\"\n    type: string\n---\n\nbody\n")},
+		{"YAML-escaped NUL in provenance", []byte(
+			"---\npad_artifact: convention\nformat_version: 1\ntitle: Prov\nprovenance:\n  workspace: \"a" +
+				string([]byte{'\\', '0'}) + "b\"\n  author: someone\n---\n\nbody\n")},
 		{"YAML-escaped NUL in the title", []byte("---\npad_artifact: convention\nformat_version: 1\ntitle: \"a" + string([]byte{'\\', '0'}) + "b\"\n---\n\nbody\n")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

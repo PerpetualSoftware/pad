@@ -350,8 +350,11 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 			`{"fields":` + jsonEncode(t, `{"inner":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, false},
 		// ...but a JSON-ENCODED key INSIDE the document still recurses, so
 		// this is a key rule applied at every level, not a depth limit.
-		{"twice-encoded under a JSON-encoded key still refuses",
-			`{"fields":` + jsonEncode(t, `{"schema":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, true},
+		// ...and a key that LOOKS like a wire key inside caller data is not
+		// one: a collection may declare a user field named `schema`, so the
+		// list is consulted only outside caller data (codex round 8).
+		{"a user field named like a wire key does not restart the descent",
+			`{"fields":` + jsonEncode(t, `{"schema":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, false},
 
 		// Controls. These must stay ACCEPTED: the recursion must not turn
 		// "contains the six characters somewhere" into a refusal.
@@ -453,21 +456,38 @@ func TestJSONEncodedFieldKeysCoversTheModels(t *testing.T) {
 	}
 }
 
-// TestBodyDecodesNULDepthBound pins the behaviour AT the recursion limit:
-// past it the escape is known to be present and the walk has stopped looking,
-// so the body is refused rather than passed uninspected.
-func TestBodyDecodesNULDepthBound(t *testing.T) {
-	// Wrap a NUL-bearing document deeper than the limit allows.
-	// Nested under a JSON-ENCODED key at every level, since that is the only
-	// path the walk descends: nesting under an ordinary key would never start
-	// the recursion and the test would pass for the wrong reason.
-	doc := `{"k":"a` + escNULLiteral + `b"}`
-	for i := 0; i < maxJSONDocumentNesting+2; i++ {
-		doc = `{"fields":` + jsonEncode(t, doc) + `}`
+// TestBodyDecodesNULDescendsExactlyOneLevel replaces an earlier depth-bound
+// test. The walk no longer carries a depth counter, because it no longer
+// needs one: the key list is consulted only outside caller data, so a
+// document reached through a listed key is walked with the list disabled and
+// nothing below it can start a second descent.
+//
+// This pins that property directly rather than pinning a bound, and it is the
+// test that fails if someone reintroduces flag inheritance: an escape one
+// level below the parsed document must be ACCEPTED (measured safe on Postgres
+// — the inner text is re-escaped when the blob is written), while the same
+// escape IN that document must be refused.
+func TestBodyDecodesNULDescendsExactlyOneLevel(t *testing.T) {
+	inner := `{"k":"a` + escNULLiteral + `b"}`
+
+	atTheParsedLayer := `{"fields":` + jsonEncode(t, inner) + `}`
+	if !bodyDecodesNUL([]byte(atTheParsedLayer)) {
+		t.Error("an escape in the document Postgres parses must be refused")
 	}
-	doc = `{"fields":` + jsonEncode(t, doc) + `}`
-	if !bodyDecodesNUL([]byte(doc)) {
-		t.Error("a body nested past maxJSONDocumentNesting must be refused, not passed uninspected")
+
+	oneDeeper := `{"fields":` + jsonEncode(t, `{"inner":`+jsonEncode(t, inner)+`}`) + `}`
+	if bodyDecodesNUL([]byte(oneDeeper)) {
+		t.Error("an escape BELOW the parsed document is safe and must be accepted")
+	}
+
+	// A user field named like a wire key must not restart the descent.
+	shadowed := `{"fields":` + jsonEncode(t, `{"schema":`+jsonEncode(t, inner)+`}`) + `}`
+	if bodyDecodesNUL([]byte(shadowed)) {
+		t.Error("a user field named `schema` inside a fields blob is caller data, not a wire key")
+	}
+	natural := `{"fields":{"schema":` + jsonEncode(t, inner) + `}}`
+	if bodyDecodesNUL([]byte(natural)) {
+		t.Error("a user field named `schema` in a NATURAL fields object is caller data too")
 	}
 }
 
@@ -622,7 +642,7 @@ func TestBodyDecodesNULGateAgreesWithAnUngatedWalk(t *testing.T) {
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return false
 		}
-		return valueDecodesNUL(v, false, 0)
+		return valueDecodesNUL(v, false)
 	}
 
 	esc := escNULLiteral                                     // the six-character NUL escape

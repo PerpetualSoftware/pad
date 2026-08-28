@@ -213,10 +213,18 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 	item := timelineItemWithStructured(t, srv, ws, notes, "")
 
 	// Swap the placeholder for the JSON NUL ESCAPE directly in the stored
-	// blob — the six characters, not a raw NUL byte. The blob is stored as
-	// JSON text and both backends hold a CHECK/type constraint that a raw NUL
-	// violates; the NUL only comes into existence when Go decodes the blob,
-	// which is precisely how the timeline ends up with one inside an entry id.
+	// blob — the six characters, not a raw NUL byte. The NUL only comes into
+	// existence when Go DECODES the blob, which is precisely how the timeline
+	// ends up with one inside an entry id.
+	//
+	// A raw NUL does not work here, and the reason is not the one this
+	// comment first gave: items.fields is a plain `TEXT NOT NULL DEFAULT
+	// '{}'` column with no CHECK constraint on SQLite. What was OBSERVED is
+	// that the update fails with "SQL logic error: malformed JSON"; the
+	// likely source is one of the expression indexes over json_extract(fields
+	// ...) rather than a column constraint, and that attribution is NOT
+	// verified. The claim corrected to what the run actually showed (codex
+	// round 8).
 	// The API refuses this body (BUG-2803); the store does not, which is the
 	// gap this test exists to cover.
 	if _, err := srv.store.DB().Exec(

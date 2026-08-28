@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -57,18 +59,26 @@ var ErrArtifactUnsafeYAML = errors.New("artifact import: frontmatter rejected by
 var ErrArtifactUnbindableText = errors.New("artifact import: body contains invalid UTF-8 or a NUL byte")
 
 // parseArtifactRequest is the guarded HTTP-boundary parse used by the import
-// handler. It applies three checks IN ORDER:
+// handler. It applies five steps IN ORDER:
 //
 //  1. Byte cap on the raw body (http.MaxBytesReader), so an oversized body is
 //     rejected before full materialization.
-//  2. YAML-bomb guard: the frontmatter region is parsed into a yaml.Node tree
+//  2. Raw text validity (bindableText), so invalid UTF-8 or a NUL BYTE is
+//     refused before anything parses it.
+//  3. YAML-bomb guard: the frontmatter region is parsed into a yaml.Node tree
 //     and walked, enforcing maxFrontmatterNodes / maxFrontmatterDepth /
 //     maxFrontmatterAliases. This runs BEFORE the struct decode so an alias-
 //     storm or deep-nesting document never reaches the expanding unmarshaler.
-//  3. artifact.Decode, which produces the typed Artifact.
+//  4. artifact.Decode, which produces the typed Artifact.
+//  5. Decoded text validity, because YAML manufactures a NUL from \0 that
+//     step 2 cannot see in the request bytes.
+//
+// Steps 2 and 5 arrived with BUG-2803; this list said "three checks" until
+// codex round 8 pointed out it was describing the version before them.
 //
 // Returns the decoded Artifact or a typed error: ErrArtifactTooLarge,
-// ErrArtifactUnsafeYAML, or an artifact.* sentinel (ErrMalformed /
+// ErrArtifactUnbindableText, ErrArtifactUnsafeYAML, or an artifact.*
+// sentinel (ErrMalformed /
 // ErrUnknownKind / ErrUnsupportedVersion) wrapped for context. The import
 // handler maps these to HTTP statuses.
 func parseArtifactRequest(w http.ResponseWriter, r *http.Request, maxBytes int64) (artifact.Artifact, error) {
@@ -90,7 +100,7 @@ func parseArtifactRequest(w http.ResponseWriter, r *http.Request, maxBytes int64
 		return artifact.Artifact{}, fmt.Errorf("artifact import: read body: %w", err)
 	}
 
-	// (2a) The artifact body is TEXT bound for text columns, and this
+	// (2) The artifact body is TEXT bound for text columns, and this
 	// handler reads it directly rather than through decodeJSON, so it
 	// inherits neither BUG-2803's refusal nor the path/query rule (a body is
 	// neither). A raw NUL or invalid UTF-8 here reaches the store and
@@ -101,19 +111,19 @@ func parseArtifactRequest(w http.ResponseWriter, r *http.Request, maxBytes int64
 		return artifact.Artifact{}, ErrArtifactUnbindableText
 	}
 
-	// (2) YAML-bomb guard on the frontmatter region only.
+	// (3) YAML-bomb guard on the frontmatter region only.
 	if err := guardArtifactFrontmatter(data); err != nil {
 		return artifact.Artifact{}, err
 	}
 
-	// (3) Typed decode.
+	// (4) Typed decode.
 	art, err := artifact.Decode(data)
 	if err != nil {
 		return artifact.Artifact{}, err
 	}
 
-	// (4) The DECODED artifact must be bindable text too — the raw check in
-	// (2a) is not sufficient on its own. YAML has its own escape vocabulary:
+	// (5) The DECODED artifact must be bindable text too — the raw check in
+	// (2) is not sufficient on its own. YAML has its own escape vocabulary:
 	// a double-quoted scalar `title: "a\0b"` carries no NUL in the request
 	// bytes, passes (2a), and manufactures one during the YAML decode.
 	// Measured before this check: such an artifact imported 201 with a NUL in
@@ -225,43 +235,40 @@ func extractFrontmatterRegion(s string) (string, bool) {
 	}
 }
 
-// artifactIsBindableText reports whether every string a decoded artifact would
-// carry into the store is text the database can be asked to hold. Title, body
-// and every frontmatter field value are checked; field values are walked
-// because a playbook's `arguments` is a nested structure, not a scalar.
+// artifactIsBindableText reports whether a decoded artifact carries a NUL in
+// any string it would take into the store.
 //
-// Keys are checked as well as values, on the same precautionary grounds
-// ValidateQuery states for query parameter names: no failure was observed
-// through a key, and why it would survive is unread, so it is checked rather
-// than assumed safe.
+// It works by MARSHALLING the artifact and searching the result, rather than
+// walking its fields by type. The hand-written walk this replaces missed two
+// things a reviewer found immediately (codex round 8): Provenance, whose
+// strings are rendered into a Markdown footer appended to the stored content,
+// and Arguments, whose declared type is []map[string]any — a concrete slice
+// type the walk's `[]any` case never matched. Both were reachable. A type
+// switch over a struct that grows is a list that goes stale in silence, which
+// is the same objection this file's jsonEncodedFieldKeys has to answer for
+// and can only answer with a derivation test. Marshalling has no such gap:
+// every exported field is covered, including ones added later.
+//
+// encoding/json escapes a NUL as the six-character sequence, so a decoded NUL
+// anywhere in the artifact appears in the output. The search is for that
+// sequence in bytes the MARSHALLER produced, not in caller-supplied text, so
+// the ambiguity bodyDecodesNUL has to resolve — a doubled backslash meaning
+// literal text — cannot arise here: a literal backslash in a value marshals
+// to a doubled one.
+//
+// SCOPE, stated because marshalling hides one thing: invalid UTF-8 in a Go
+// string marshals to U+FFFD rather than surviving, so this cannot detect it.
+// It does not need to. Step (2a) rejects invalid UTF-8 in the request bytes
+// before the decode, and YAML cannot manufacture it from valid input — its
+// escapes name code points (\xff is U+00FF, a valid rune), where \0 names a
+// NUL. NUL is the class that survives the decode, and it is the class this
+// checks.
 func artifactIsBindableText(art artifact.Artifact) bool {
-	if !bindableText(art.Title) || !bindableText(art.Body) {
+	encoded, err := json.Marshal(art)
+	if err != nil {
+		// An artifact that cannot be marshalled cannot be reasoned about;
+		// refuse rather than pass it on unexamined.
 		return false
 	}
-	for k, v := range art.Fields {
-		if !bindableText(k) || !anyValueIsBindableText(v) {
-			return false
-		}
-	}
-	return true
-}
-
-func anyValueIsBindableText(v any) bool {
-	switch t := v.(type) {
-	case string:
-		return bindableText(t)
-	case map[string]any:
-		for k, sub := range t {
-			if !bindableText(k) || !anyValueIsBindableText(sub) {
-				return false
-			}
-		}
-	case []any:
-		for _, sub := range t {
-			if !anyValueIsBindableText(sub) {
-				return false
-			}
-		}
-	}
-	return true
+	return !bytes.Contains(encoded, []byte{'\\', 'u', '0', '0', '0', '0'})
 }
