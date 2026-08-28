@@ -347,22 +347,6 @@ func validQueryText(rawQuery string) bool {
 	return true
 }
 
-// jsonNULEscape is the six-byte JSON escape that decodes to a NUL. It is
-// built from bytes rather than written as a literal so that no layer between
-// this source and the compiler can transform it into the character it
-// describes — the same reason the tests construct it this way.
-//
-// It is the only spelling OF THE ESCAPE ITSELF. JSON forbids an unescaped
-// control character inside a string, so a raw 0x00 byte never survives
-// decoding (encoding/json answers `invalid character '\x00' in string
-// literal`), and the uppercase \U form is not a JSON escape at all
-// (`invalid character 'U' in string escape code`). Both measured against
-// encoding/json, BUG-2803.
-//
-// THAT SENTENCE DOES NOT MAKE THE SUBSTRING A SOUND FILTER, which is the
-// mistake this comment used to encode — see bodyDecodesNUL's gate.
-var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
-
 // bodyDecodesNUL reports whether any string a handler could read out of this
 // JSON body — an object key or a value, at any nesting depth, including
 // inside a JSON document carried as a string — decodes to a string containing
@@ -373,7 +357,10 @@ var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 // query value is a substring of the raw request with ASCII substitutions: the
 // bad byte in the raw text IS the bad byte in the value, so a middleware can
 // find it without parsing. That property does not hold for a JSON body. The
-// reachable NUL arrives as jsonNULEscape — six ordinary ASCII characters — so
+// reachable NUL arrives as a six-character JSON escape (backslash, u, and
+// four zeros — spelled out rather than written, since a literal is one
+// transformation away from being the character it describes), all ordinary
+// ASCII, so
 // a transport-level scan for a NUL byte sees nothing, and no request
 // middleware can find it without decoding the body, which is the handler's
 // job. BUG-2784 recorded this as the reason its rule stops at the query
@@ -382,7 +369,7 @@ var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 // THE GATE IS A BACKSLASH, NOT THE ESCAPE SUBSTRING, and the difference is a
 // real bypass rather than a stylistic one.
 //
-// The obvious fast path — "does the raw body contain jsonNULEscape?" — is
+// The obvious fast path — "does the raw body contain that escape?" — is
 // UNSOUND, and codex round 4 on BUG-2803 demonstrated it. The escape may be
 // spelled obliquely: `\u005c` decodes to a BACKSLASH, so a body carrying
 // `\u005cu0000` contains no literal six-character escape anywhere in its raw
@@ -405,7 +392,7 @@ var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 // which is the cost of being correct here.
 //
 // WHY THE EXACT STEP IS NOT A SUBSTRING SEARCH EITHER. Containing
-// jsonNULEscape is not sufficient: `\\u0000` (an escaped backslash followed
+// the escape is not sufficient either: `\\u0000` (an escaped backslash followed
 // by literal text) contains the same six characters and decodes to no NUL at
 // all. Refusing on the substring alone would reject a legitimate value, and in
 // THIS product that is not hypothetical — items and documents store markdown,
