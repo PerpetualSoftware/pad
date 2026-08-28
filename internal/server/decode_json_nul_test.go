@@ -1035,7 +1035,11 @@ func TestOAuthRegisterRefusesNULBody(t *testing.T) {
 // Measured before the fix: `fields` refused, `Fields` and `FIELDS` accepted.
 func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
 	inner := `{"k":"a` + escNULLiteral + `b"}`
-	for _, key := range []string{"fields", "Fields", "FIELDS", "fIeLdS", "Schema", "TAGS"} {
+	// The last two are Unicode simple-fold spellings: encoding/json matches
+	// them to the same struct field, and lower-casing does NOT (codex round
+	// 17). U+017F LONG S folds to 's'; U+212A KELVIN SIGN folds to 'k'.
+	for _, key := range []string{"fields", "Fields", "FIELDS", "fIeLdS", "Schema", "TAGS",
+		"\u017Fchema", "\u017FCHEMA"} {
 		body := `{"title":"x","` + key + `":` + jsonEncode(t, inner) + `}`
 		if !bodyDecodesNUL([]byte(body)) {
 			t.Errorf("key %q reaches the same struct field as its lower-case spelling and must be "+

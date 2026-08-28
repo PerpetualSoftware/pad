@@ -497,7 +497,18 @@ func isJSONEncodedFieldKey(k string) bool {
 	if jsonEncodedFieldKeys[k] {
 		return true
 	}
-	return jsonEncodedFieldKeys[strings.ToLower(k)]
+	// EqualFold, not ToLower. encoding/json matches with Unicode SIMPLE
+	// FOLDING, which is wider than lower-casing: U+017F LATIN SMALL LETTER
+	// LONG S folds to 's', so "ſchema" reaches the `schema` field while
+	// strings.ToLower("ſchema") is still "ſchema" and missed the allowlist
+	// (codex round 17). Fixing the ASCII half and leaving the Unicode half
+	// would have been this bug's own pattern one more time.
+	for canonical := range jsonEncodedFieldKeys {
+		if strings.EqualFold(k, canonical) {
+			return true
+		}
+	}
+	return false
 }
 
 // valueDecodesNUL walks a decoded request body for a string that contains a
