@@ -203,3 +203,61 @@ func TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision(t *testing.T) {
 		t.Fatalf("got %d, want 413: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestLegacyTitleDocumentStaysEditable pins codex round 10, and it is a
+// regression this fix introduced rather than one it inherited.
+//
+// "Enforced at write time, existing titles valid until their next rename" was
+// the promise — Dave's ruling, repeated in the constant's doc comment and in
+// two commit messages. Validating every supplied title broke it for the most
+// ordinary shape of an edit there is: a client that PATCHes the whole object,
+// title included, to change the CONTENT. Documents with a legacy title became
+// uneditable, not merely un-renameable.
+//
+// The title used here cannot be created through the API any more, so it is
+// written straight to the store — which is exactly the population the
+// grandfathering clause is about.
+func TestLegacyTitleDocumentStaysEditable(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil {
+		t.Fatalf("resolve workspace: %v", err)
+	}
+	legacyTitle := strings.Repeat("L", models.MaxDocumentTitleRunes+50) + `|legacy\`
+	doc, err := srv.store.CreateDocument(ws.ID, models.DocumentCreate{
+		Title: legacyTitle, Content: "before", DocType: "notes", Status: "active",
+	})
+	if err != nil {
+		t.Fatalf("seed legacy document: %v", err)
+	}
+
+	// Content-only edit that echoes the existing title back — the shape a
+	// full-object client sends.
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/documents/"+doc.ID, map[string]interface{}{
+		"title":   legacyTitle,
+		"content": "after",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("editing a legacy-titled document returned %d, want 200 — grandfathering means the "+
+			"title stays valid until it CHANGES: %s", rr.Code, rr.Body.String())
+	}
+
+	// Content-only PATCH with no title at all must also work.
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/documents/"+doc.ID, map[string]interface{}{
+		"content": "after again",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("content-only PATCH returned %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	// But RENAMING it — the write that actually cascades — is still refused.
+	// Without this leg, dropping validation entirely would pass the test.
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/documents/"+doc.ID, map[string]interface{}{
+		"title": legacyTitle + "-renamed",
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("renaming to another invalid title returned %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+}

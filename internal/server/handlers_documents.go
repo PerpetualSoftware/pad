@@ -141,7 +141,18 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	// linking document — so it carries the same validation as create. Update
 	// had none at all before BUG-2798/BUG-2796: doc_type and status were
 	// checked and the field that drives the cascade was not.
-	if input.Title != nil {
+	//
+	// Only when the title actually CHANGES, though. Grandfathering existing
+	// over-limit titles is not a thing you get by validating at write time —
+	// it is a thing you get by not validating a write that is not a rename
+	// (codex round 10). A client PATCHing content with the full object, title
+	// included, is the ordinary shape of an edit; validating the echoed-back
+	// value would make every document with a legacy title uneditable rather
+	// than merely un-renameable, which is the opposite of the promise this
+	// fix's own comments make. The store applies the same test before
+	// cascading (documents.go, `*input.Title != existing.Title`), so this
+	// matches where the work actually happens.
+	if input.Title != nil && *input.Title != doc.Title {
 		if msg := models.ValidateDocumentTitle(*input.Title); msg != "" {
 			writeError(w, http.StatusBadRequest, "bad_request", msg)
 			return
