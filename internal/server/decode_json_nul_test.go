@@ -897,3 +897,130 @@ func TestTestEmailRefusesUnusableBody(t *testing.T) {
 			rr.Code, rr.Body.String())
 	}
 }
+
+// TestTextSafeHelpersAreUsedAtEveryCallSite closes the gap codex round 14
+// named: reverting a single call site back to the unsafe form leaves every
+// behavioural test green, because the surviving fixtures are ASCII and the
+// helpers' own unit tests do not care who calls them.
+//
+// Testing each site behaviourally would need a fixture per site (an OAuth
+// connection, a cloud login, four audit paths). This asserts the WIRING
+// statically instead — the same technique as
+// TestEveryRequestBodyReaderIsAccountedFor, and the same bargain: a reverted
+// call site fails here immediately, and a new one has to be decided on
+// deliberately rather than added invisibly.
+//
+// It asserts in both directions: an unsafe form anywhere fails, and finding
+// none of the safe form also fails, so a scan that silently matched nothing
+// cannot pass forever.
+func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
+	// A plain byte slice of a caller string can split a rune and produce
+	// invalid UTF-8; truncateBindableText is the only allowed form.
+	unsafeTruncate := regexp.MustCompile(`\b(name|suggested|input\.Name|Name)\s*=\s*\w+(\.\w+)*\[:\d+\]`)
+	// The raw header reaches a text column; requestUserAgent is the allowed
+	// form. The two HASH sites are exempt and named below.
+	unsafeUA := regexp.MustCompile(`(r|req)\.UserAgent\(\)|(r|req)\.Header\.Get\("User-Agent"\)`)
+	// Exempt sites, with counts, so a NEW raw read in one of these files
+	// still fails rather than hiding behind a blanket exemption.
+	uaHashExempt := map[string]int{
+		// All four reads here feed a HASH, not a text column: one
+		// session-fingerprint comparison plus three CreateSession calls,
+		// and store.CreateSession hashes the header (sessions.ua_hash) and
+		// stores no text. sha256 over arbitrary bytes is well defined, and
+		// sanitising before hashing would be actively harmful — login would
+		// store sha256(sanitised) while the comparison still hashes the RAW
+		// header, so every session from a client with a non-UTF-8
+		// User-Agent would fail validation.
+		"handlers_auth.go": 4,
+		// The same fingerprint comparison on the session-validation path.
+		"middleware_auth.go": 1,
+		// requestUserAgent itself: this is the one read that is allowed to
+		// be raw, because it is the thing doing the sanitising.
+		"middleware_request_text.go": 1,
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	var safeTruncateUses, safeUAUses int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(".", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(src)
+		safeTruncateUses += strings.Count(text, "truncateBindableText(")
+		safeUAUses += strings.Count(text, "requestUserAgent(")
+
+		for _, m := range unsafeTruncate.FindAllString(text, -1) {
+			t.Errorf("%s: %q slices a caller string by BYTES, which can split a rune and produce "+
+				"invalid UTF-8 downstream of validation — use truncateBindableText (BUG-2803)", name, m)
+		}
+		found := len(unsafeUA.FindAllString(text, -1))
+		if allowed := uaHashExempt[name]; found > allowed {
+			t.Errorf("%s: %d raw User-Agent read(s), %d exempt. A raw header reaching a text column "+
+				"must go through requestUserAgent; only the session-hash comparisons are exempt (BUG-2803)",
+				name, found, allowed)
+		}
+	}
+
+	if safeTruncateUses < 4 {
+		t.Errorf("found only %d truncateBindableText call sites; the scan or the wiring is broken", safeTruncateUses)
+	}
+	if safeUAUses < 4 {
+		t.Errorf("found only %d requestUserAgent call sites; the scan or the wiring is broken", safeUAUses)
+	}
+}
+
+// TestOAuthRegisterRefusesNULBody is the last of codex round 14's three
+// unwired-call-site findings. Reverting handlers_oauth.go to a bare
+// json.NewDecoder — losing both the refusal and the size cap — would
+// otherwise leave the suite green, and the static body-reader scan cannot
+// catch it because that file is already listed for its FORM-body reads.
+//
+// It also pins the message split: a body carrying a NUL is valid JSON, so
+// answering "Request body must be JSON" sends a client hunting a syntax error
+// it does not have.
+func TestOAuthRegisterRefusesNULBody(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode("cloud-secret-for-test")
+	o, err := newTestOAuthServer(t, srv)
+	if err != nil {
+		t.Fatalf("oauth.NewServer: %v", err)
+	}
+	srv.SetOAuthServer(o)
+
+	post := func(t *testing.T, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/oauth/register", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.7:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// Control: a well-formed registration must still be accepted, so a 400
+	// below cannot be the endpoint refusing everything.
+	control := post(t, `{"redirect_uris":["https://example.com/cb"],"client_name":"Probe"}`)
+	if control.Code >= 400 {
+		t.Fatalf("control registration must succeed, got %d: %s", control.Code, control.Body.String())
+	}
+
+	rr := post(t, `{"redirect_uris":["https://example.com/cb"],"client_name":"a`+escNULLiteral+`b"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("a NUL-bearing registration must answer 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "must be JSON") {
+		t.Errorf("the body IS valid JSON; the message must not send the client after a syntax error: %s",
+			rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "NUL") {
+		t.Errorf("the refusal should name the cause, got %s", rr.Body.String())
+	}
+}
