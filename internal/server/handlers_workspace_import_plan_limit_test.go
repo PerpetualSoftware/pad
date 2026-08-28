@@ -121,6 +121,30 @@ func TestImportWorkspace_EnforcesThePlanLimitOnTheBundlePathToo(t *testing.T) {
 	}
 }
 
+// TestImportWorkspace_EnforcesThePlanLimitBeforeReadingTheJSONBody is the
+// JSON-path half of the placement claim, and the refusal test above cannot
+// make it: that one sends VALID JSON, so a gate placed after the decode would
+// still return 403 and it would stay green (codex round 3).
+//
+// The code comment claims the gate sits above EITHER body read. The bundle
+// test proves it for gzip. This proves it for JSON, by sending a body that
+// cannot be decoded: reaching 403 rather than a decode error is only possible
+// if nothing read the body first.
+func TestImportWorkspace_EnforcesThePlanLimitBeforeReadingTheJSONBody(t *testing.T) {
+	atLimit := store.DefaultFreeLimits.Workspaces
+	srv, user := importLimitFixture(t, atLimit)
+
+	rr := importRequest(t, srv, user, "application/json", []byte("{this is not json"))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("at-limit import with an undecodable body returned %d, want 403 — the gate is "+
+			"running after the JSON decode: %s", rr.Code, rr.Body.String())
+	}
+	if b := rr.Body.String(); !strings.Contains(b, "plan_limit_exceeded") {
+		t.Errorf("refused for the wrong reason — want the plan-limit code, got: %s", b)
+	}
+}
+
 // TestImportWorkspace_UnderTheLimitIsNotRefused is the control. Without it, a
 // gate that refused every import — or one wired to the wrong feature key —
 // passes both tests above while breaking the feature outright.
@@ -163,12 +187,36 @@ func TestImportWorkspace_SelfHostedIsUnaffected(t *testing.T) {
 // here — only that the guard does what create's does when no user resolves.
 // Whether these doors should mint unowned workspaces at all is BUG-2809.
 func TestImportWorkspace_NoResolvedUserIsNotCharged(t *testing.T) {
-	srv, _ := importLimitFixture(t, store.DefaultFreeLimits.Workspaces)
+	srv, user := importLimitFixture(t, store.DefaultFreeLimits.Workspaces)
+
+	before, err := srv.store.CheckUserLimit(user.ID, "workspaces")
+	if err != nil {
+		t.Fatalf("read the user's limit: %v", err)
+	}
 
 	rr := importRequest(t, srv, nil, "application/json", exportBody(t))
 
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("import with no resolved user returned %d, want 201 — there is nobody to charge: %s",
 			rr.Code, rr.Body.String())
+	}
+
+	// "Not charged" asserted as a FACT about the data, not inferred from a
+	// status code (codex round 3). A regression that quietly attributed the
+	// import to the at-limit fixture user would return 201 too, and pass on
+	// the check above alone.
+	after, err := srv.store.CheckUserLimit(user.ID, "workspaces")
+	if err != nil {
+		t.Fatalf("re-check the user's limit: %v", err)
+	}
+	if after.Current != before.Current {
+		t.Errorf("the fixture user's workspace count moved %d -> %d; an import with no resolved "+
+			"user was attributed to them", before.Current, after.Current)
+	}
+
+	var created models.Workspace
+	parseJSON(t, rr, &created)
+	if created.OwnerID != "" {
+		t.Errorf("workspace created with owner %q by a caller with no resolved user", created.OwnerID)
 	}
 }
