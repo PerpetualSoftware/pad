@@ -160,6 +160,27 @@ pad workspace import < my-workspace.json
 pad workspace import --name "imported-workspace" < my-workspace.json
 ```
 
+### One case where an export is not importable
+
+A workspace whose stored data contains a **NUL character** exports fine and is
+refused on import, with a 400 naming the cause. This is not a corruption of
+your backup — it is the import applying a rule the write path now applies too
+(BUG-2803): a NUL cannot be stored in a text or JSON column, and PostgreSQL
+refuses it outright.
+
+It can only affect data written **before** that rule existed, and only on
+SQLite, which accepted it. A PostgreSQL instance never stored such a value.
+
+The same limitation applies to `pad db migrate-to-pg`, which copies rows
+directly and does not go through the import guard: a row carrying a NUL will
+fail against PostgreSQL's JSONB parser during the copy rather than being
+reported up front.
+
+If you hit either, the affected value has to be repaired at the source before
+the export or migration will go through. A preflight check and a repair path
+are tracked as BUG-2810; until then the failing row is named in the error.
+
+
 This format is database-agnostic and can be used to:
 - Transfer workspaces between Pad instances
 - Create workspace templates
