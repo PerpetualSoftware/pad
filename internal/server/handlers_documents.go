@@ -190,6 +190,15 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// would take). The precedent's quantity is output size and this
 		// guard's is retained content; what carries across is the shape —
 		// a small request refused for what it would cost, not for its size.
+		// The store re-checks the title under the rename lock, which is the
+		// authoritative point; this arm surfaces that check for the case the
+		// handler's pre-lock comparison could not see — a concurrent rename
+		// turning an echoed legacy title into a real one (codex round 11).
+		var badTitle *store.InvalidDocumentTitleError
+		if errors.As(err, &badTitle) {
+			writeError(w, http.StatusBadRequest, "bad_request", badTitle.Reason)
+			return
+		}
 		var tooLarge *store.RenameCascadeTooLargeError
 		if errors.As(err, &tooLarge) {
 			// Composed from TYPED fields, never by splicing err.Error(). The

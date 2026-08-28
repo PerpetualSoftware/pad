@@ -424,6 +424,20 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 	// the scan, so a NEW reference requires a title that literally contains a
 	// `pad-attachment:` token.
 	if input.Title != nil && *input.Title != existing.Title {
+		// Validated HERE, not only at the handler, because here is where the
+		// rename is decided — under the lock, against the title this
+		// transaction re-read (codex round 11).
+		//
+		// The handler's check compares against a document it read BEFORE the
+		// lock. That is fine for giving a caller a fast, friendly 400, but it
+		// is a time-of-check that a concurrent rename can invalidate: echo a
+		// legacy title back while another request renames the document, and
+		// the handler sees "unchanged, skip validation" while this branch sees
+		// a genuine rename and would write the legacy title through. Same
+		// grandfathering rule, applied where the decision actually happens.
+		if msg := models.ValidateDocumentTitle(*input.Title); msg != "" {
+			return nil, &InvalidDocumentTitleError{Reason: msg}
+		}
 		err = s.updateLinksInTx(tx, existing.WorkspaceID, existing.Title, *input.Title)
 		if err != nil {
 			return nil, fmt.Errorf("update links: %w", err)
@@ -790,6 +804,22 @@ func newRenameCascadeTooLargeError(newTitle string, retained int64) error {
 // a caller told the request will never succeed will not retry, which is the
 // opposite of the truth here (codex round 2 on BUG-2785).
 var ErrLinkCascadeContention = errors.New("store: link cascade lost the compare-and-set")
+
+// ErrInvalidDocumentTitle reports a rename to a title the wiki-link machinery
+// cannot carry. See InvalidDocumentTitleError for why the store enforces this
+// rather than trusting its callers to have done so.
+var ErrInvalidDocumentTitle = errors.New("store: invalid document title")
+
+// InvalidDocumentTitleError carries the human-readable reason a title was
+// refused, so the HTTP layer can return it without re-deriving the rule or
+// splicing an internal error's text into a response.
+type InvalidDocumentTitleError struct{ Reason string }
+
+func (e *InvalidDocumentTitleError) Error() string {
+	return ErrInvalidDocumentTitle.Error() + ": " + e.Reason
+}
+
+func (e *InvalidDocumentTitleError) Unwrap() error { return ErrInvalidDocumentTitle }
 
 // ErrRenameCascadeTooLarge reports that a rename was refused because the
 // linked-document content it would hold exceeds MaxRenameCascadeRetainedBytes.

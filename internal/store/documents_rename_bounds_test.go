@@ -728,3 +728,39 @@ func TestRenameCascade_DoesNotChargeCaseVariantsTheRewriterWillNotTouch(t *testi
 		}
 	}
 }
+
+// TestUpdateDocument_RefusesAnInvalidRenameEvenWhenTheHandlerDidNot pins codex
+// round 11: the store validates a rename under the lock, so the guarantee does
+// not depend on a caller having checked first.
+//
+// The handler's own check compares against a document read BEFORE the rename
+// lock, which is a time-of-check a concurrent rename can invalidate: echo a
+// legacy title back while another request renames the document, and the
+// handler sees "unchanged, skip validation" while the store sees a genuine
+// rename. Calling the store directly is the honest way to pin its half —
+// reproducing the race would test the scheduler, not the guarantee.
+//
+// The grandfathering leg is the control: without it, validating every title
+// here would pass while making legacy documents uneditable, which is the
+// regression round 10 fixed.
+func TestUpdateDocument_RefusesAnInvalidRenameEvenWhenTheHandlerDidNot(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "StoreSideTitleGuard")
+
+	legacy := strings.Repeat("L", models.MaxDocumentTitleRunes+50)
+	doc := createTestDoc(t, s, ws.ID, legacy, "body")
+
+	// A rename to an invalid title, reaching the store with no handler in
+	// front of it.
+	bad := legacy + "-renamed"
+	if _, err := s.UpdateDocument(doc.ID, models.DocumentUpdate{Title: &bad}); !errors.Is(err, ErrInvalidDocumentTitle) {
+		t.Fatalf("rename to an invalid title: got %v, want ErrInvalidDocumentTitle", err)
+	}
+
+	// Control: the SAME legacy title, unchanged, alongside a content edit.
+	// Grandfathered, so this must succeed.
+	content := "edited"
+	if _, err := s.UpdateDocument(doc.ID, models.DocumentUpdate{Title: &legacy, Content: &content}); err != nil {
+		t.Fatalf("content edit echoing the unchanged legacy title was refused: %v", err)
+	}
+}
