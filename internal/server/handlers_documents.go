@@ -66,8 +66,8 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Title == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "Title is required")
+	if msg := models.ValidateDocumentTitle(input.Title); msg != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
 	if input.DocType != "" && !models.IsValidDocType(input.DocType) {
@@ -137,6 +137,27 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A title write here is the RENAME door — the one that cascades into every
+	// linking document — so it carries the same validation as create. Update
+	// had none at all before BUG-2798/BUG-2796: doc_type and status were
+	// checked and the field that drives the cascade was not.
+	//
+	// Only when the title actually CHANGES, though. Grandfathering existing
+	// over-limit titles is not a thing you get by validating at write time —
+	// it is a thing you get by not validating a write that is not a rename
+	// (codex round 10). A client PATCHing content with the full object, title
+	// included, is the ordinary shape of an edit; validating the echoed-back
+	// value would make every document with a legacy title uneditable rather
+	// than merely un-renameable, which is the opposite of the promise this
+	// fix's own comments make. The store applies the same test before
+	// cascading (documents.go, `*input.Title != existing.Title`), so this
+	// matches where the work actually happens.
+	if input.Title != nil && *input.Title != doc.Title {
+		if msg := models.ValidateDocumentTitle(*input.Title); msg != "" {
+			writeError(w, http.StatusBadRequest, "bad_request", msg)
+			return
+		}
+	}
 	if input.DocType != nil && !models.IsValidDocType(*input.DocType) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid doc_type")
 		return
@@ -148,6 +169,49 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := s.store.UpdateDocument(doc.ID, input)
 	if err != nil {
+		// TYPED checks first, prose matching last. The UNIQUE-constraint arm
+		// below identifies its error by SUBSTRING, and the refusal error
+		// carries the caller's own title verbatim — so a document renamed to a
+		// title containing the words "UNIQUE constraint" came back as a 409
+		// title collision, telling the caller to pick a different name for a
+		// rename that was refused for size and would fail identically under
+		// any name (codex round 3 P2). Any sentinel this handler knows by
+		// identity is tested before an error is classified by what its text
+		// happens to contain.
+		//
+		// A size refusal is also PERMANENT-shaped, and must not join the
+		// retryable family below: retrying it unchanged fails identically
+		// until the workspace's content changes, so it gets a 4xx with no
+		// Retry-After, carrying the projection because that is the only
+		// actionable information. 413 follows this codebase's own precedent
+		// for refusing work whose COST is not in the request body
+		// (`image_too_large` in handlers_attachments_transform.go, where the
+		// request is likewise small and what is refused is what handling it
+		// would take). The precedent's quantity is output size and this
+		// guard's is retained content; what carries across is the shape —
+		// a small request refused for what it would cost, not for its size.
+		// The store re-checks the title under the rename lock, which is the
+		// authoritative point; this arm surfaces that check for the case the
+		// handler's pre-lock comparison could not see — a concurrent rename
+		// turning an echoed legacy title into a real one (codex round 11).
+		var badTitle *store.InvalidDocumentTitleError
+		if errors.As(err, &badTitle) {
+			writeError(w, http.StatusBadRequest, "bad_request", badTitle.Reason)
+			return
+		}
+		var tooLarge *store.RenameCascadeTooLargeError
+		if errors.As(err, &tooLarge) {
+			// Composed from TYPED fields, never by splicing err.Error(). The
+			// two figures are meant to reach the caller — the refusal has to
+			// be actionable — but the internal call path wrapped around them
+			// is not, and appending the error text published whatever any
+			// layer had prefixed (codex round 5).
+			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
+				fmt.Sprintf("This rename would rewrite more linked content than the server will process in one "+
+					"operation: at least %d bytes, and the limit is %d. Reduce the number of documents linking "+
+					"this title, or shorten the new title, and try again.", tooLarge.Retained, tooLarge.Max))
+			return
+		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			writeError(w, http.StatusConflict, "conflict", "A document with this title already exists in this workspace")
 			return
