@@ -340,8 +340,18 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 		// check.
 		{"escape spelled obliquely, via an escaped backslash",
 			`{"fields":"{\"k\":\"a` + string([]byte{'\\', 'u', '0', '0', '5', 'c'}) + `u0000b\"}"}`, true},
-		{"twice-encoded — a document inside a document",
-			`{"fields":` + jsonEncode(t, `{"inner":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, true},
+		// Depth 2 under an ORDINARY key is ACCEPTED, and that is a measured
+		// decision rather than a gap: the handler parses `fields` once, so
+		// the inner text is re-escaped when the blob is written and Postgres
+		// never sees an escape. Probed on Postgres 17 with the check
+		// disabled — the same body imports 201. Only the document Postgres
+		// itself parses can carry a fatal one (codex round 7).
+		{"twice-encoded under an ordinary key is safe",
+			`{"fields":` + jsonEncode(t, `{"inner":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, false},
+		// ...but a JSON-ENCODED key INSIDE the document still recurses, so
+		// this is a key rule applied at every level, not a depth limit.
+		{"twice-encoded under a JSON-encoded key still refuses",
+			`{"fields":` + jsonEncode(t, `{"schema":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, true},
 
 		// Controls. These must stay ACCEPTED: the recursion must not turn
 		// "contains the six characters somewhere" into a refusal.

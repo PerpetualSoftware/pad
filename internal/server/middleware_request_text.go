@@ -528,7 +528,14 @@ func valueDecodesNUL(v any, inJSONEncodedField bool, depth int) bool {
 		if err := json.Unmarshal([]byte(strings.TrimSpace(t)), &inner); err != nil {
 			return false
 		}
-		return valueDecodesNUL(inner, true, depth+1)
+		// false, not true: inside a re-parsed document the SAME key rule
+		// applies again. Inheriting it blanket-wise refused a value that is
+		// demonstrably safe — measured on Postgres, a NUL escape two levels
+		// deep imports 201, because the handler parses `fields` ONCE and the
+		// inner text is re-escaped when the blob is written, so Postgres
+		// never sees it as an escape. Only the document Postgres itself
+		// parses can carry a fatal one (codex round 7).
+		return valueDecodesNUL(inner, false, depth+1)
 	case map[string]any:
 		for k, sub := range t {
 			if strings.ContainsRune(k, 0) {

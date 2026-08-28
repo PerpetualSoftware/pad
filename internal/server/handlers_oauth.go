@@ -228,8 +228,16 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 
 	var input dcrRequest
 	if err := decodeJSON(r, &input); err != nil {
-		writeDCRError(w, http.StatusBadRequest, "invalid_client_metadata",
-			"Request body must be JSON: "+err.Error())
+		// Two different failures reach here and the message must not
+		// conflate them: a body that is not JSON, and a body that IS valid
+		// JSON but carries text the database cannot store (BUG-2803). The
+		// second one was being reported as "must be JSON", which sends a
+		// client looking for a syntax error it does not have (codex round 7).
+		msg := "Request body must be JSON: " + err.Error()
+		if errors.Is(err, errJSONBodyNUL) {
+			msg = err.Error()
+		}
+		writeDCRError(w, http.StatusBadRequest, "invalid_client_metadata", msg)
 		return
 	}
 
