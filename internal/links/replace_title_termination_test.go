@@ -71,3 +71,38 @@ func TestReplaceTitle_StillRewritesEveryOccurrence(t *testing.T) {
 		t.Errorf("an occurrence survived: %q", got)
 	}
 }
+
+// TestReplaceTitleN_MatchesReplaceTitleWhenGivenTheTrueCount pins the
+// obligation ReplaceTitleN puts on its caller: given the real occurrence
+// count, it must produce exactly what ReplaceTitle produces.
+//
+// The under-count leg is the counterfactual, and it is why the two are
+// separate functions rather than one with an optional parameter — passing a
+// number that is too small does not error, it silently leaves later
+// occurrences unrewritten, which on the rename path means links left pointing
+// at a title that no longer exists.
+func TestReplaceTitleN_MatchesReplaceTitleWhenGivenTheTrueCount(t *testing.T) {
+	for _, tc := range []struct{ name, content, old, new string }{
+		{"several occurrences", "a [[Old]] b [[Old]] c [[Old]] d", "Old", "New"},
+		{"none", "nothing to see here", "Old", "New"},
+		{"new embeds old", "x [[A]] y", "A", "A]] [[A"},
+		{"shrinking", "[[LongOldTitle]] and [[LongOldTitle]]", "LongOldTitle", "n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := ReplaceTitle(tc.content, tc.old, tc.new)
+			n := strings.Count(tc.content, "[["+tc.old+"]]")
+			if got := ReplaceTitleN(tc.content, tc.old, tc.new, n); got != want {
+				t.Errorf("ReplaceTitleN with the true count %d:\n got: %q\nwant: %q", n, got, want)
+			}
+
+			// Under-counting must visibly diverge, or the count is not
+			// load-bearing and this function has no contract worth stating.
+			if n > 1 {
+				if got := ReplaceTitleN(tc.content, tc.old, tc.new, n-1); got == want {
+					t.Errorf("ReplaceTitleN with a count one too low produced the correct result; " +
+						"the caller's obligation is not real, so the API is misleading")
+				}
+			}
+		})
+	}
+}

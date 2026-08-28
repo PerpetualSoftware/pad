@@ -687,7 +687,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 			return newRenameCascadeTooLargeError(newTitle, retained)
 		}
 
-		du.rewritten = links.ReplaceTitle(du.read, oldTitle, newTitle)
+		du.rewritten = links.ReplaceTitleN(du.read, oldTitle, newTitle, int(occurrences))
 		updates = append(updates, du)
 	}
 	if err := rows.Err(); err != nil {
