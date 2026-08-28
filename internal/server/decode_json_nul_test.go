@@ -328,21 +328,70 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 	}
 }
 
-// TestBodyDecodesNULOverRefusesWholeJSONValues pins a DECISION, not an
-// accident. The nesting test is structural rather than destination-typed, so
-// a plain-text field whose ENTIRE value is a valid JSON document carrying the
-// escape is refused even though its column would have stored it happily.
+// TestBodyDecodesNULLeavesTextFieldsAlone is codex round 2's finding on
+// BUG-2803, pinned so it cannot come back.
 //
-// It is here so that the trade is visible and a future change to it is a
-// deliberate act: if someone makes the check destination-typed, this test
-// should be updated, not deleted in passing. See stringIsJSONDocument for why
-// the allow-list alternative was declined.
-func TestBodyDecodesNULOverRefusesWholeJSONValues(t *testing.T) {
-	body := `{"content":` + jsonEncode(t, `{"k":"a`+escNULLiteral+`b"}`) + `}`
-	if !bodyDecodesNUL([]byte(body)) {
-		t.Error("a text field whose whole value is a JSON document carrying the escape " +
-			"is refused by design; if this changed deliberately, update the reasoning at " +
-			"stringIsJSONDocument rather than only this test")
+// The first version of the nesting check recursed into ANY string that parsed
+// as a JSON document. That refused a plain-text `content` value holding a
+// JSON snippet which merely MENTIONS the escape — a value this server
+// accepted before the fix, stores in a text column that has no problem with
+// it, and emits again in an export. Refusing input the server itself produced
+// is a worse failure than the narrow door the unscoped recursion closed, so
+// the recursion is now scoped to the keys that actually carry JSON documents.
+func TestBodyDecodesNULLeavesTextFieldsAlone(t *testing.T) {
+	doc := `{"k":"a` + escNULLiteral + `b"}`
+	for _, key := range []string{"content", "title", "summary", "body", "description"} {
+		body := `{"` + key + `":` + jsonEncode(t, doc) + `}`
+		if bodyDecodesNUL([]byte(body)) {
+			t.Errorf("%s is a text field: a JSON document in its value must not be re-parsed "+
+				"(codex round 2 — the server emits such values in exports and must accept them back)", key)
+		}
+	}
+	// The same document under a JSON-ENCODED key is still refused, so the
+	// legs differ only in the key and this is not just "recursion removed".
+	if !bodyDecodesNUL([]byte(`{"fields":` + jsonEncode(t, doc) + `}`)) {
+		t.Error("under a JSON-encoded key the same document must still be refused")
+	}
+}
+
+// TestJSONEncodedFieldKeysCoversTheModels keeps jsonEncodedFieldKeys from
+// going stale in silence, which is the whole objection to a list-based rule.
+// It derives the set from the wire model — a Go string field with a json tag
+// whose comment says it holds JSON — and fails when one is not covered. A key
+// missing from the list reopens a door; an extra key is harmless (see the
+// over-inclusion note at jsonEncodedFieldKeys), so this asserts one direction
+// only, deliberately.
+func TestJSONEncodedFieldKeysCoversTheModels(t *testing.T) {
+	entries, err := os.ReadDir("../models")
+	if err != nil {
+		t.Fatalf("read models dir: %v", err)
+	}
+	// A string field, a json tag, and a trailing comment mentioning JSON.
+	decl := regexp.MustCompile("string\\s+`json:\"([a-z_]+)[\",][^`]*`\\s*//[^\\n]*JSON")
+	found := map[string]string{}
+	scanned := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		scanned++
+		src, err := os.ReadFile(filepath.Join("../models", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, m := range decl.FindAllStringSubmatch(string(src), -1) {
+			found[m[1]] = name
+		}
+	}
+	if scanned < 10 || len(found) < 5 {
+		t.Fatalf("derivation looks broken: scanned %d files, found %d JSON-encoded fields", scanned, len(found))
+	}
+	for key, file := range found {
+		if !jsonEncodedFieldKeys[key] {
+			t.Errorf("%s declares %q as a JSON-encoded string, but it is not in jsonEncodedFieldKeys — "+
+				"a NUL escape nested inside it would reach the database unchecked (BUG-2803)", file, key)
+		}
 	}
 }
 
@@ -351,10 +400,14 @@ func TestBodyDecodesNULOverRefusesWholeJSONValues(t *testing.T) {
 // so the body is refused rather than passed uninspected.
 func TestBodyDecodesNULDepthBound(t *testing.T) {
 	// Wrap a NUL-bearing document deeper than the limit allows.
+	// Nested under a JSON-ENCODED key at every level, since that is the only
+	// path the walk descends: nesting under an ordinary key would never start
+	// the recursion and the test would pass for the wrong reason.
 	doc := `{"k":"a` + escNULLiteral + `b"}`
 	for i := 0; i < maxJSONDocumentNesting+2; i++ {
-		doc = `{"n":` + jsonEncode(t, doc) + `}`
+		doc = `{"fields":` + jsonEncode(t, doc) + `}`
 	}
+	doc = `{"fields":` + jsonEncode(t, doc) + `}`
 	if !bodyDecodesNUL([]byte(doc)) {
 		t.Error("a body nested past maxJSONDocumentNesting must be refused, not passed uninspected")
 	}

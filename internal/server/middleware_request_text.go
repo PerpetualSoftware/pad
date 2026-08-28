@@ -408,60 +408,139 @@ var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 // runs next and reports the JSON error itself, so there is exactly one place
 // that phrases "invalid JSON" and this function never has to agree with it.
 func bodyDecodesNUL(raw []byte) bool {
-	return bodyDecodesNULAtDepth(raw, 0)
-}
-
-// maxJSONDocumentNesting bounds how many times bodyDecodesNULAtDepth will
-// descend into a string that is itself a JSON document. Each level must be a
-// strict substring of the one above, so recursion terminates on its own; the
-// bound exists to keep a hostile body from buying many full re-parses of a
-// large payload. Eight is far past any shape this API produces — the deepest
-// real case is one level (a `fields` blob inside a request body) — and a body
-// nested deeper than this is refused, since bodyDecodesNULAtDepth answers
-// "assume the worst" rather than "give up" at the limit.
-const maxJSONDocumentNesting = 8
-
-func bodyDecodesNULAtDepth(raw []byte, depth int) bool {
 	if !bytes.Contains(raw, jsonNULEscape) {
 		return false
 	}
-	if depth >= maxJSONDocumentNesting {
-		// The escape IS present and we have stopped looking. Refusing is the
-		// safe direction: the alternative is to pass a body we declined to
-		// inspect.
-		return true
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		// Malformed: the caller's own decode reports the JSON error, so this
+		// function never has to phrase one.
+		return false
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			// io.EOF, or malformed input the caller's decode will report.
-			return false
-		}
-		s, ok := tok.(string)
-		if !ok {
-			continue
-		}
-		if strings.ContainsRune(s, 0) {
-			return true
-		}
-		if stringIsJSONDocument(s) && bodyDecodesNULAtDepth([]byte(s), depth+1) {
-			return true
-		}
-	}
+	return valueDecodesNUL(v, false, 0)
 }
 
-// stringIsJSONDocument reports whether a decoded string is itself a complete
-// JSON object or array — the class of value this API re-parses downstream.
+// maxJSONDocumentNesting bounds how many times valueDecodesNUL will descend
+// into a string that is itself a JSON document. Each level must be a strict
+// substring of the one above, so recursion terminates on its own; the bound
+// keeps a hostile body from buying many full re-parses of a large payload.
+// Eight is far past any shape this API produces — the deepest real case is
+// one level, a `fields` blob inside a request body.
+const maxJSONDocumentNesting = 8
+
+// jsonEncodedFieldKeys are the wire keys whose STRING value is itself a JSON
+// document that something downstream re-parses. They are the only keys under
+// which valueDecodesNUL descends.
 //
-// WHY THE RECURSION EXISTS AT ALL. Several fields cross the wire as
-// JSON-ENCODED STRINGS rather than as nested objects: an item's `fields`, a
-// collection's `schema`, a workspace's `settings`. In
-// `{"fields":"{\"k\":\"a<escape>b\"}"}` the OUTER decode yields the
-// literal text of the inner document, in which the escape is still six
-// ordinary characters and no NUL exists. The single-layer walk therefore
-// passed it, and Postgres refused it later with a DIFFERENT error from the
-// rest of this family:
+// WHY THE SCOPING EXISTS. The first version of this check recursed into ANY
+// string that parsed as a JSON document, on the argument that the test should
+// be structural rather than destination-typed. Codex round 2 on BUG-2803
+// showed what that costs: a plain-text `content` value holding a JSON snippet
+// that mentions the escape was ACCEPTED before this fix, is stored in a text
+// column that has no problem with it, and was newly refused — including on
+// re-import of an export carrying it. Refusing a value the server itself
+// emitted, and that nothing downstream would choke on, is a worse failure
+// than the narrow door the recursion was closing.
+//
+// WHY A LIST IS SAFE HERE, when ValidateQuery's comment rejects exactly this
+// shape for query parameters. There the set of names is UNBOUNDED BY DESIGN —
+// parseItemListParams turns any unrecognised parameter into a field filter, so
+// no list could be complete. Here the set is a closed property of the wire
+// model: a field is JSON-encoded because a Go struct declares it as a string
+// holding JSON. That is enumerable, and
+// TestJSONEncodedFieldKeysCoversTheModels derives the set from
+// internal/models and fails when a new one appears, so the list cannot go
+// stale in silence.
+//
+// OVER-INCLUSION IS THE SAFE DIRECTION and this list deliberately takes it: a
+// key listed here that is NOT actually JSON-encoded costs one parse attempt
+// and can only refuse a value that IS a complete JSON document carrying the
+// escape. A key MISSING from it reopens a door. `traits` is here for that
+// reason — it carries JSON but its field declaration has no comment saying
+// so, which is exactly how the derivation test would have missed it.
+var jsonEncodedFieldKeys = map[string]bool{
+	"config":         true,
+	"events":         true,
+	"fields":         true,
+	"metadata":       true,
+	"phase_data":     true,
+	"plan_overrides": true,
+	"schema":         true,
+	"settings":       true,
+	"tags":           true,
+	"traits":         true,
+}
+
+// valueDecodesNUL walks a decoded request body for a string that either
+// CONTAINS a NUL or, under a JSON-encoded key, is a document whose own
+// strings do.
+//
+// WHY A DECODED WALK RATHER THAN reflection over the destination struct. A
+// reflective walk sees []byte fields AFTER base64 decoding, so a body
+// carrying legitimate binary — `{"b":"AQAC"}` decodes to the bytes 01 00 02 —
+// would be refused for a NUL that is not text and never reaches a text
+// column. Decoding into `any` never produces a []byte, so the value seen here
+// is the base64 TEXT, which is ASCII. No request struct has such a field
+// today (searched: []byte with a json tag in internal/server and
+// internal/models, non-test — only models.YjsUpdate.UpdateData, which no
+// handler decodes from a body); this shape is chosen so that adding one later
+// cannot silently start rejecting valid requests.
+//
+// inJSONEncodedField is inherited by the whole subtree below a listed key: a
+// document nested inside a JSON-encoded document is re-parsed just as its
+// parent is.
+func valueDecodesNUL(v any, inJSONEncodedField bool, depth int) bool {
+	switch t := v.(type) {
+	case string:
+		if strings.ContainsRune(t, 0) {
+			return true
+		}
+		if !inJSONEncodedField || !strings.Contains(t, string(jsonNULEscape)) {
+			return false
+		}
+		if depth >= maxJSONDocumentNesting {
+			// The escape IS present and we have stopped looking. Refusing is
+			// the safe direction: the alternative is to pass a document we
+			// declined to inspect.
+			return true
+		}
+		if !stringIsJSONDocument(t) {
+			return false
+		}
+		var inner any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(t)), &inner); err != nil {
+			return false
+		}
+		return valueDecodesNUL(inner, true, depth+1)
+	case map[string]any:
+		for k, sub := range t {
+			if strings.ContainsRune(k, 0) {
+				return true
+			}
+			if valueDecodesNUL(sub, inJSONEncodedField || jsonEncodedFieldKeys[k], depth) {
+				return true
+			}
+		}
+	case []any:
+		for _, sub := range t {
+			if valueDecodesNUL(sub, inJSONEncodedField, depth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stringIsJSONDocument reports whether a string is a complete JSON object or
+// array — the shape a downstream consumer will re-parse.
+//
+// WHY THE RECURSION IT GATES EXISTS. Several fields cross the wire as
+// JSON-ENCODED STRINGS rather than nested objects: an item's `fields`, a
+// collection's `schema`, a workspace's `settings`. In such a body the OUTER
+// decode yields the inner document as literal text, in which the escape is
+// still six ordinary characters and no NUL exists. A single-layer walk
+// therefore passed it, and Postgres refused it later with a DIFFERENT error
+// from the rest of this family:
 //
 //	insert collection: ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)
 //
@@ -473,18 +552,6 @@ func bodyDecodesNULAtDepth(raw []byte, depth int) bool {
 // after the single-layer check was in place. Found by codex round 1 on
 // BUG-2803, by asking what the destination TYPE does with the value — the
 // angle the endpoint-and-field sweep never rotated to.
-//
-// WHAT THIS DELIBERATELY OVER-REFUSES, stated rather than left to be
-// discovered. The test is structural, not destination-typed: a plain TEXT
-// field whose ENTIRE value happens to be a valid JSON document carrying the
-// escape is refused too, even though its column would have stored it. Prose
-// ABOUT a JSON escape does not parse as a bare document, so the case is
-// narrow, and a value of that exact shape breaks any consumer that parses it.
-//
-// The destination-typed alternative — an allow-list of the fields that arrive
-// JSON-encoded — is exactly correct and goes stale in silence, which is the
-// failure mode ValidateQuery's comment rejects when it explains why per-site
-// query validators could not be written.
 func stringIsJSONDocument(s string) bool {
 	t := strings.TrimSpace(s)
 	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
