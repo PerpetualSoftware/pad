@@ -111,6 +111,18 @@ func parseArtifactRequest(w http.ResponseWriter, r *http.Request, maxBytes int64
 	if err != nil {
 		return artifact.Artifact{}, err
 	}
+
+	// (4) The DECODED artifact must be bindable text too — the raw check in
+	// (2a) is not sufficient on its own. YAML has its own escape vocabulary:
+	// a double-quoted scalar `title: "a\0b"` carries no NUL in the request
+	// bytes, passes (2a), and manufactures one during the YAML decode.
+	// Measured before this check: such an artifact imported 201 with a NUL in
+	// the item title (codex round 4, BUG-2803). Same shape as the JSON half —
+	// a value that only becomes dangerous after a SECOND parse — so it gets
+	// the same answer, at the layer that can see it.
+	if !artifactIsBindableText(art) {
+		return artifact.Artifact{}, ErrArtifactUnbindableText
+	}
 	return art, nil
 }
 
@@ -211,4 +223,45 @@ func extractFrontmatterRegion(s string) (string, bool) {
 		}
 		offset += nl + 1
 	}
+}
+
+// artifactIsBindableText reports whether every string a decoded artifact would
+// carry into the store is text the database can be asked to hold. Title, body
+// and every frontmatter field value are checked; field values are walked
+// because a playbook's `arguments` is a nested structure, not a scalar.
+//
+// Keys are checked as well as values, on the same precautionary grounds
+// ValidateQuery states for query parameter names: no failure was observed
+// through a key, and why it would survive is unread, so it is checked rather
+// than assumed safe.
+func artifactIsBindableText(art artifact.Artifact) bool {
+	if !bindableText(art.Title) || !bindableText(art.Body) {
+		return false
+	}
+	for k, v := range art.Fields {
+		if !bindableText(k) || !anyValueIsBindableText(v) {
+			return false
+		}
+	}
+	return true
+}
+
+func anyValueIsBindableText(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return bindableText(t)
+	case map[string]any:
+		for k, sub := range t {
+			if !bindableText(k) || !anyValueIsBindableText(sub) {
+				return false
+			}
+		}
+	case []any:
+		for _, sub := range t {
+			if !anyValueIsBindableText(sub) {
+				return false
+			}
+		}
+	}
+	return true
 }

@@ -603,6 +603,13 @@ func TestImportArtifactUnbindableTextRejected(t *testing.T) {
 	}{
 		{"NUL byte in the body", []byte(strings.Replace(good, "body", "bo\x00dy", 1))},
 		{"invalid UTF-8 in the body", append([]byte(strings.Replace(good, "body", "bo", 1)), 0xff, '\n')},
+		// codex round 4: YAML has its own escape vocabulary. A double-quoted
+		// scalar carries no NUL in the request bytes — the raw check passes —
+		// and manufactures one during the YAML decode. Measured before the
+		// post-decode check existed: this imported 201 with a NUL in the
+		// title. Same shape as the JSON half, where a value only becomes
+		// dangerous after a SECOND parse.
+		{"YAML-escaped NUL in the title", []byte("---\npad_artifact: convention\nformat_version: 1\ntitle: \"a" + string([]byte{'\\', '0'}) + "b\"\n---\n\nbody\n")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", tc.body)

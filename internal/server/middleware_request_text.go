@@ -352,16 +352,21 @@ func validQueryText(rawQuery string) bool {
 // this source and the compiler can transform it into the character it
 // describes — the same reason the tests construct it this way.
 //
-// It is the ONLY spelling. JSON forbids an unescaped control character inside
-// a string, so a raw 0x00 byte never survives decoding (encoding/json answers
-// `invalid character '\x00' in string literal`), and the uppercase \U form is
-// not a JSON escape at all (`invalid character 'U' in string escape code`).
-// Both measured against encoding/json, BUG-2803.
+// It is the only spelling OF THE ESCAPE ITSELF. JSON forbids an unescaped
+// control character inside a string, so a raw 0x00 byte never survives
+// decoding (encoding/json answers `invalid character '\x00' in string
+// literal`), and the uppercase \U form is not a JSON escape at all
+// (`invalid character 'U' in string escape code`). Both measured against
+// encoding/json, BUG-2803.
+//
+// THAT SENTENCE DOES NOT MAKE THE SUBSTRING A SOUND FILTER, which is the
+// mistake this comment used to encode — see bodyDecodesNUL's gate.
 var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 
 // bodyDecodesNUL reports whether any string a handler could read out of this
-// JSON body — an object key or a value, at any nesting depth — decodes to a
-// string containing a NUL.
+// JSON body — an object key or a value, at any nesting depth, including
+// inside a JSON document carried as a string — decodes to a string containing
+// a NUL.
 //
 // WHY THE BODY NEEDS ITS OWN RULE, when ValidatePath and ValidateQuery already
 // apply bindableText at the transport. Those work because a decoded path or
@@ -374,23 +379,43 @@ var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 // job. BUG-2784 recorded this as the reason its rule stops at the query
 // string; this is the missing half.
 //
-// WHY IT IS NOT A SUBSTRING SEARCH. Containing jsonNULEscape is necessary but
-// NOT sufficient: `\\u0000` (an escaped backslash followed by literal text)
-// contains the same six characters and decodes to no NUL at all. Refusing on
-// the substring alone would reject a legitimate value, and in THIS product
-// that is not hypothetical — items and documents store markdown, and writing
-// about a JSON escape sequence is an ordinary thing for a document to do.
+// THE GATE IS A BACKSLASH, NOT THE ESCAPE SUBSTRING, and the difference is a
+// real bypass rather than a stylistic one.
 //
-// So the substring is used as a FAST PATH only, and it is sound in that
-// direction: a body that does not contain it cannot decode to a NUL anywhere,
-// because the escape is the only spelling (see jsonNULEscape). Bodies
-// containing it — rare, and already unusual — pay for an exact answer.
+// The obvious fast path — "does the raw body contain jsonNULEscape?" — is
+// UNSOUND, and codex round 4 on BUG-2803 demonstrated it. The escape may be
+// spelled obliquely: `\u005c` decodes to a BACKSLASH, so a body carrying
+// `\u005cu0000` contains no literal six-character escape anywhere in its raw
+// bytes, yet the OUTER decode manufactures one inside the string, and if that
+// string is re-parsed as a JSON document (see jsonEncodedFieldKeys) the
+// second parse turns it into a real NUL. Measured before the fix: that body
+// answered 201 through the real router while the direct spelling answered
+// 400.
 //
-// THE EXACT STEP IS json.Decoder.Token(), which hands back the DECODED string
-// for every key and value in the document. It distinguishes the two cases
-// above by construction rather than by pattern, it needs no knowledge of the
-// destination type, and it reaches nested maps such as an item's `fields`
-// blob, which a struct-shaped check would miss.
+// The mistake was applying a fact about how a NUL is spelled INSIDE a decoded
+// string to the RAW BYTES, where the backslash itself can be written as an
+// escape. It is the same layer-confusion this whole bug is made of, three
+// rounds in a row.
+//
+// A backslash is the sound gate: every JSON escape mechanism requires one, so
+// a body with no backslash anywhere has decoded strings byte-identical to its
+// raw bytes, and a raw NUL cannot survive the decoder. No backslash therefore
+// means no NUL, at any depth, however spelled. Bodies WITH a backslash pay for
+// an exact answer — a larger set than before (any nested JSON carries `\"`),
+// which is the cost of being correct here.
+//
+// WHY THE EXACT STEP IS NOT A SUBSTRING SEARCH EITHER. Containing
+// jsonNULEscape is not sufficient: `\\u0000` (an escaped backslash followed
+// by literal text) contains the same six characters and decodes to no NUL at
+// all. Refusing on the substring alone would reject a legitimate value, and in
+// THIS product that is not hypothetical — items and documents store markdown,
+// and writing about a JSON escape sequence is an ordinary thing for a document
+// to do.
+//
+// So the exact step is a walk over the DECODED body (valueDecodesNUL), which
+// distinguishes those cases by construction rather than by pattern, needs no
+// knowledge of the destination type, and reaches nested maps such as an item's
+// `fields` blob that a struct-shaped check would miss.
 //
 // WHY NOT REFLECT OVER THE DECODED VALUE, which is the other obvious design.
 // A reflective walk sees a []byte field AFTER base64 decoding, so a body
@@ -408,7 +433,7 @@ var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 // runs next and reports the JSON error itself, so there is exactly one place
 // that phrases "invalid JSON" and this function never has to agree with it.
 func bodyDecodesNUL(raw []byte) bool {
-	if !bytes.Contains(raw, jsonNULEscape) {
+	if !bytes.ContainsRune(raw, '\\') {
 		return false
 	}
 	var v any
@@ -495,11 +520,11 @@ func valueDecodesNUL(v any, inJSONEncodedField bool, depth int) bool {
 		if strings.ContainsRune(t, 0) {
 			return true
 		}
-		if !inJSONEncodedField || !strings.Contains(t, string(jsonNULEscape)) {
+		if !inJSONEncodedField || !strings.ContainsRune(t, '\\') {
 			return false
 		}
 		if depth >= maxJSONDocumentNesting {
-			// The escape IS present and we have stopped looking. Refusing is
+			// Escapes ARE present and we have stopped looking. Refusing is
 			// the safe direction: the alternative is to pass a document we
 			// declined to inspect.
 			return true

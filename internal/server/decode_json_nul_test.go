@@ -331,6 +331,14 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 			`{"name":"w","settings":` + jsonEncode(t, innerWithNUL) + `}`, true},
 		{"a JSON-encoded ARRAY carrying the escape",
 			`{"tags":` + jsonEncode(t, `["ok","a`+esc+`b"]`) + `}`, true},
+		// codex round 4: the BACKSLASH itself can be written as an escape, so
+		// the raw body carries no literal six-character sequence anywhere
+		// while the outer decode manufactures one inside the nested document.
+		// This is the case the old substring fast path let through — measured
+		// as a 201 through the real router before the gate became a backslash
+		// check.
+		{"escape spelled obliquely, via an escaped backslash",
+			`{"fields":"{\"k\":\"a` + string([]byte{'\\', 'u', '0', '0', '5', 'c'}) + `u0000b\"}"}`, true},
 		{"twice-encoded — a document inside a document",
 			`{"fields":` + jsonEncode(t, `{"inner":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, true},
 
