@@ -876,6 +876,20 @@ var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the ret
 // that nobody meets it by accident, and far enough below the hazard that
 // meeting it costs nothing.
 //
+// The consequence a cap necessarily has, stated because it is user-visible
+// and was chosen rather than overlooked: once a workspace's documents linking
+// one title exceed this, that title can no longer be renamed, and any EDITOR
+// can put it in that state by creating enough linking content. That is a
+// denial of one operation by a trusted role — an editor can already delete
+// every document in the workspace — and it replaces the previous behaviour,
+// where the same input took the server down for everybody. Trading an
+// unbounded OOM for a bounded, legible refusal is the whole point of the
+// guard, not a gap in it.
+//
+// Bounding the WORKSPACE's linking content, so the state cannot be reached at
+// all, is a quota question rather than a cascade question and is filed
+// separately.
+//
 // What it does NOT cover, stated so the next reader does not over-read it:
 // this bounds ONE rename's linked-document content, not concurrent renames (N
 // of them may each hold up to this), and not the base cost of a workspace
