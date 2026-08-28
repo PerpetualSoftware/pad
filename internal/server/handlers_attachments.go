@@ -46,11 +46,35 @@ const multipartParseMemory = 1 << 20 // 1 MiB
 // ONLY. Unlike (*http.Request).FormValue it does not fall back to the
 // URL query string, which keeps the two item_id input channels distinct
 // so they can be resolved and cross-checked independently.
+// multipartValues returns a multipart form field's TEXT values, dropping any
+// that are not bindable text.
+//
+// The multipart body is exempt from BUG-2803's JSON rule for a good reason —
+// its payload is binary blob content and must not be scanned for text
+// validity — but its TEXT fields are a different thing: item_id goes to
+// ResolveItem and into a database comparison exactly as the query-string
+// channel does, and that channel has been validated at the transport since
+// BUG-2784. A raw NUL arriving through the form instead of the query reached
+// the store unchecked (codex round 4, BUG-2803).
+//
+// Dropping rather than erroring keeps this helper's signature and matches
+// what callers already do with absent values: resolveUploadItemID treats
+// absent and explicitly-empty alike, so an unusable value becomes "no value"
+// and the request is answered by the same path that handles a missing one. A
+// value that cannot name anything and one that was never sent are the same
+// thing to the caller.
 func multipartValues(r *http.Request, key string) []string {
 	if r.MultipartForm == nil {
 		return nil
 	}
-	return r.MultipartForm.Value[key]
+	raw := r.MultipartForm.Value[key]
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if bindableText(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // maxUploadItemIDValues bounds how many item_id values one input channel
@@ -301,7 +325,16 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// Sanitize the filename: strip path components so a client can't
 	// sneak directory traversal through the display name. We don't
 	// store this in the storage backend — only in the DB row for UI.
+	// The uploaded filename is caller-supplied text bound for a text column,
+	// and a multipart header can carry a NUL through the RFC 5987 encoded
+	// form (filename*=UTF-8\'\'a%00.png). Same predicate as the path and
+	// query rules; falling back to a generic name rather than refusing the
+	// upload, because the bytes are fine and only the label is unusable
+	// (codex round 4, BUG-2803).
 	filename := filepath.Base(header.Filename)
+	if !bindableText(filename) {
+		filename = "upload"
+	}
 	if filename == "" || filename == "." || filename == "/" {
 		filename = "upload.bin"
 	}

@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strings"
@@ -876,3 +877,126 @@ func TestUpload_QuotaCheckResolves(t *testing.T) {
 var _ = io.Discard
 var _ = models.Attachment{}
 var _ = strings.Contains
+
+// TestUpload_MultipartTextFieldsAreBindableText covers codex round 4's P2 on
+// BUG-2803. The multipart body is deliberately exempt from the JSON NUL rule
+// — its payload is binary blob content and must not be scanned for text
+// validity — but its TEXT fields are a different thing. `item_id` goes to
+// ResolveItem and into a database comparison exactly as the query-string
+// channel does, and that channel has been validated at the transport since
+// BUG-2784; the form channel was not. The FILENAME is the same shape: a
+// multipart header can carry a NUL through the RFC 5987 encoded form.
+//
+// Both legs have a control that differs only in the bad byte, so a pass
+// cannot come from the upload failing for an unrelated reason.
+func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	upload := func(t *testing.T, filename string, itemID *string) *httptest.ResponseRecorder {
+		t.Helper()
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		if itemID != nil {
+			// WriteField would reject nothing, which is the point: the raw
+			// bytes reach r.MultipartForm.Value verbatim.
+			_ = mw.WriteField("item_id", *itemID)
+		}
+		part, _ := mw.CreateFormFile("file", filename)
+		part.Write(realPNG())
+		mw.Close()
+
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/"+slug+"/attachments", &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.RemoteAddr = "127.0.0.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// uploadWithRawDisposition writes the part header by hand so the test can
+	// use the RFC 5987 encoded filename form. A RAW NUL in the header is not
+	// the vector: Go's multipart reader refuses it as a malformed MIME header
+	// line before any handler sees it (measured — the request answers 400
+	// with "malformed MIME header line"). The percent-encoded form is
+	// accepted by the header parser and decodes to the byte afterwards, which
+	// is what makes it the reachable spelling.
+	uploadWithRawDisposition := func(t *testing.T, disposition string) *httptest.ResponseRecorder {
+		t.Helper()
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", disposition)
+		h.Set("Content-Type", "image/png")
+		part, err := mw.CreatePart(h)
+		if err != nil {
+			t.Fatalf("create part: %v", err)
+		}
+		part.Write(realPNG())
+		mw.Close()
+
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/"+slug+"/attachments", &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.RemoteAddr = "127.0.0.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+
+	t.Run("filename carrying a NUL does not reach the attachment row", func(t *testing.T) {
+		control := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''clean.png`)
+		if control.Code != http.StatusCreated && control.Code != http.StatusOK {
+			t.Fatalf("control upload must succeed, got %d: %s", control.Code, control.Body.String())
+		}
+		if !strings.Contains(control.Body.String(), "clean.png") {
+			t.Fatalf("control should keep its encoded filename, got %s", control.Body.String())
+		}
+
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''sh%00ot.png`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload with an unusable filename should still succeed (the BYTES are fine), got %d: %s",
+				rr.Code, rr.Body.String())
+		}
+		// Assert the REPLACEMENT, not the absence of a raw NUL byte. The
+		// response is JSON, so a NUL in the filename comes back as the
+		// six-character escape rather than as a 0x00 — a ContainsRune(body,
+		// 0) check passes whether or not the fix is present, and it did:
+		// disabling the fallback left this leg green until the assertion was
+		// changed. CONVE-12, caught by the mutation rather than by review.
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if strings.ContainsRune(got.Filename, 0) {
+			t.Errorf("the stored filename still carries a NUL: %q", got.Filename)
+		}
+		if got.Filename != "upload" {
+			t.Errorf("expected the generic fallback name, got %q", got.Filename)
+		}
+	})
+
+	t.Run("item_id carrying a NUL is not resolved", func(t *testing.T) {
+		// A NUL-bearing item_id cannot name anything, so it must be treated
+		// as no value rather than handed to the store. The control is a
+		// syntactically fine but non-existent ref, which the handler answers
+		// with a 4xx — if the NUL leg produced a 500 instead, the value
+		// reached the database.
+		// Assert it behaves like NO value, not merely "not a 500". A 500 is
+		// the Postgres-only symptom; on SQLite an unfiltered value would
+		// instead resolve to nothing and answer 4xx, so a >=500 check would
+		// pass on this backend whether or not the filter exists.
+		control := upload(t, "clean.png", nil)
+		if control.Code != http.StatusCreated && control.Code != http.StatusOK {
+			t.Fatalf("control (no item_id) must succeed, got %d: %s", control.Code, control.Body.String())
+		}
+		bad := "TASK-1\x00"
+		rr := upload(t, "clean.png", &bad)
+		if rr.Code != control.Code {
+			t.Errorf("an unusable item_id must be treated as no value (like the control, %d), got %d: %s",
+				control.Code, rr.Code, rr.Body.String())
+		}
+	})
+}

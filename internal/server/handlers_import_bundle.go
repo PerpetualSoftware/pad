@@ -336,6 +336,18 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			if err != nil {
 				return ws, fmt.Errorf("read manifest.json: %w", err)
 			}
+			// The manifest is a second JSON document inside the bundle,
+			// parsed here rather than through decodeJSON, so it needs the
+			// same check pad-export.json gets a few lines up. Without it a
+			// NUL in a manifest string reached rehydrateAttachment, whose
+			// failure is logged and SKIPPED below — so the import reported
+			// success while silently dropping the attachment (codex round 4,
+			// BUG-2803). The skip-on-failure behaviour is pre-existing and
+			// deliberate (a partial restore beats none); refusing the bad
+			// INPUT is what stops it from being reached this way.
+			if bodyDecodesNUL(buf) {
+				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)", errJSONBodyNUL)
+			}
 			var manifest models.AttachmentManifest
 			if err := json.Unmarshal(buf, &manifest); err != nil {
 				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)", err)
