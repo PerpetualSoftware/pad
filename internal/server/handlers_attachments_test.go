@@ -992,6 +992,17 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		if control.Code != http.StatusCreated && control.Code != http.StatusOK {
 			t.Fatalf("control (no item_id) must succeed, got %d: %s", control.Code, control.Body.String())
 		}
+		// Both byte classes, not just the NUL: a filter that rejected NULs
+		// while letting malformed UTF-8 through would have passed the
+		// earlier version of this leg (codex round 13). Invalid UTF-8 is the
+		// class that reaches Postgres as 22021 on a UTF8 database.
+		for _, bad := range []string{"TASK-1\x00", "TASK-1\xff"} {
+			rr := upload(t, "clean.png", &bad)
+			if rr.Code != control.Code {
+				t.Errorf("an unusable item_id %q must be treated as no value (like the control, %d), got %d: %s",
+					bad, control.Code, rr.Code, rr.Body.String())
+			}
+		}
 		bad := "TASK-1\x00"
 		rr := upload(t, "clean.png", &bad)
 		if rr.Code != control.Code {

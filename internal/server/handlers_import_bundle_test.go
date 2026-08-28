@@ -697,3 +697,71 @@ func TestImportBundle_RefusesNULInExport(t *testing.T) {
 		t.Errorf("the 400 should name the cause, got body=%s", got.Body.String())
 	}
 }
+
+// TestImportBundle_RefusesNULInManifest is the leg codex round 13 found
+// missing: TestImportBundle_RefusesNULInExport builds bundles containing only
+// pad-export.json, so removing the INDEPENDENT manifest check left the suite
+// green. The manifest is a second JSON document parsed the same way and needs
+// its own coverage.
+//
+// Both bundles carry a valid export; they differ only in the manifest, so a
+// refusal cannot come from the export half.
+func TestImportBundle_RefusesNULInManifest(t *testing.T) {
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	esc := string([]byte{'\\', 'u', '0', '0', '0', '0'})
+	cleanManifest := `{"version":1,"entries":[]}`
+	nulManifest := `{"version":1,"entries":[{"id":"00000000-0000-0000-0000-000000000001",` +
+		`"filename":"a` + esc + `b.png","mime":"image/png","size_bytes":1,"content_hash":"deadbeef"}]}`
+
+	bundle := func(t *testing.T, manifest string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gzw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gzw)
+		for _, e := range []struct {
+			name string
+			body []byte
+		}{
+			{"pad-export.json", exportJSON},
+			{"attachments/manifest.json", []byte(manifest)},
+		} {
+			if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body))}); err != nil {
+				t.Fatalf("write header %s: %v", e.name, err)
+			}
+			if _, err := tw.Write(e.body); err != nil {
+				t.Fatalf("write %s: %v", e.name, err)
+			}
+		}
+		tw.Close()
+		gzw.Close()
+		return buf.Bytes()
+	}
+
+	post := func(t *testing.T, name string, body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		dest, _ := testServerWithAttachments(t)
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name="+name, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/gzip")
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		dest.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if got := post(t, "CleanManifest", bundle(t, cleanManifest)); got.Code != http.StatusOK && got.Code != http.StatusCreated {
+		t.Fatalf("control bundle must import, got %d: %s", got.Code, got.Body.String())
+	}
+	got := post(t, "NULManifest", bundle(t, nulManifest))
+	if got.Code < 400 {
+		t.Errorf("a manifest carrying a NUL escape must be refused, got %d: %s", got.Code, got.Body.String())
+	}
+	if !strings.Contains(got.Body.String(), "NUL") {
+		t.Errorf("the refusal should name the cause, got body=%s", got.Body.String())
+	}
+}

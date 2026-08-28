@@ -850,3 +850,50 @@ func TestArtifactBindableTextAcceptsLiteralEscapeText(t *testing.T) {
 		}
 	}
 }
+
+// TestTestEmailRefusesUnusableBody is the handler-level leg codex round 13
+// found missing. Reverting handlers_admin.go to `err != nil || input.To == ""`
+// — which defaulted EVERY decode failure to the admin's own address — passed
+// every other test in this file, because they only exercise decodeJSON.
+//
+// The distinction being pinned is between two things that used to collapse
+// into one: an ABSENT body legitimately means "send it to me", while a body
+// that is present and REFUSED must not be reinterpreted as that default.
+func TestTestEmailRefusesUnusableBody(t *testing.T) {
+	srv := testServer(t)
+	token := bootstrapFirstUser(t, srv, "admin-mail@example.com", "Admin")
+	mock := mockMailerooEndpoint(t, http.StatusOK, true)
+	configureEmailForTest(srv, mock.URL, "http://localhost:7777")
+
+	post := func(t *testing.T, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		var r io.Reader
+		if body != "" {
+			r = strings.NewReader(body)
+		}
+		req := httptest.NewRequest("POST", "/api/v1/admin/test-email", r)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.RemoteAddr = "127.0.0.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// Control 1: no body at all still means "send it to me".
+	if rr := post(t, ""); rr.Code != http.StatusOK {
+		t.Fatalf("absent body must still send, got %d: %s", rr.Code, rr.Body.String())
+	}
+	// Control 2: an ordinary body still works.
+	if rr := post(t, `{"to":"someone@example.com"}`); rr.Code != http.StatusOK {
+		t.Fatalf("ordinary body must send, got %d: %s", rr.Code, rr.Body.String())
+	}
+	// The case: a body that is valid JSON but carries an unusable value.
+	rr := post(t, `{"to":"a`+escNULLiteral+`b@example.com"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("a refused body must answer 400, not be reinterpreted as the default recipient; got %d: %s",
+			rr.Code, rr.Body.String())
+	}
+}
