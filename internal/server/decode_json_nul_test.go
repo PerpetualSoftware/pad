@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -209,26 +208,46 @@ func TestDecodeJSONKeepsEmptyBodyEOF(t *testing.T) {
 	}
 }
 
-// TestNoJSONBodyDecoderOutsideTheChokepoint is the completeness claim, made
-// ENFORCEABLE rather than asserted.
+// TestEveryRequestBodyReaderIsAccountedFor is the completeness claim, made
+// ENFORCEABLE rather than asserted — and made honest after codex round 3
+// showed the first version could not see past two exact call shapes.
 //
-// The fix works because every JSON request body in this package reaches the
-// store through decodeJSON/decodeJSONWithLimit. That was true of 65 call
-// sites and false of six, which decoded straight off r.Body and inherited
-// neither the NUL check nor the size cap decodeJSON has always applied. A
-// seventh added later would silently reopen both, and nothing in a diff would
-// point at it — so the invariant is checked here instead of remembered.
-func TestNoJSONBodyDecoderOutsideTheChokepoint(t *testing.T) {
-	// The chokepoint itself reads the body; nothing else in the package may.
-	allowed := map[string]bool{"middleware_request_text.go": true}
+// The fix works because a JSON request body reaches the store through
+// decodeJSON/decodeJSONWithLimit, which refuse a decoded NUL and apply a size
+// cap. The first version of this test scanned for `json.NewDecoder(r.Body)`
+// and `io.ReadAll(r.Body)` only, so it was blind to
+// `io.ReadAll(io.LimitReader(r.Body, n))` — a shape ALREADY PRESENT in the
+// package — and to any alias, helper or future spelling. A completeness test
+// that misses a live example is worse than none: it reads as coverage.
+//
+// So it now scans for the thing that cannot be spelled around — a reference to
+// the request body at all — and requires every FILE that touches one to be
+// accounted for here with a reason. A new body reader fails this test until
+// someone writes down what it does, which is the point: the decision becomes
+// deliberate instead of invisible.
+//
+// It asserts BOTH directions. An unaccounted file fails, because a door may
+// have opened. An accounted file that no longer touches a body ALSO fails, so
+// the list cannot rot into a set of stale excuses that quietly permits a
+// future reader added to the same file.
+func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
+	accounted := map[string]string{
+		"middleware_request_text.go": "the chokepoint itself: readBodyForDecode reads the body under the caller's cap so bodyDecodesNUL can scan it",
+		"handlers_import_bundle.go":  "tar.gz bundle import — streams the body through gzip, and its pad-export.json is checked with bodyDecodesNUL before ImportWorkspace",
+		"handlers_attachments.go":    "multipart upload — the body is binary blob content, not text, and must NOT be scanned for text validity",
+		"artifact_import.go":         "raw artifact TEXT (not JSON) — checked with bindableText, the same predicate ValidatePath and ValidateQuery apply",
+		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores it; the real decode still happens through decodeJSON downstream",
+		"middleware_mcp_audit.go":    "audit capture — records the body for the MCP audit log and restores it; decoding still happens in the MCP dispatcher",
+		"handlers_tokens.go":         "a nil/ContentLength check only — it never reads the body",
+	}
 
-	pattern := regexp.MustCompile(`json\.NewDecoder\((r|req)\.Body\)|io\.ReadAll\((r|req)\.Body\)`)
+	pattern := regexp.MustCompile(`\b(r|req)\.Body\b`)
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
-	var offenders []string
+	touches := map[string]bool{}
 	scanned := 0
 	for _, e := range entries {
 		name := e.Name()
@@ -236,29 +255,37 @@ func TestNoJSONBodyDecoderOutsideTheChokepoint(t *testing.T) {
 			continue
 		}
 		scanned++
-		if allowed[name] {
-			continue
-		}
 		src, err := os.ReadFile(filepath.Join(".", name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		for i, line := range strings.Split(string(src), "\n") {
-			if pattern.MatchString(line) {
-				offenders = append(offenders, name+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
-			}
+		if pattern.Match(src) {
+			touches[name] = true
 		}
 	}
 
-	// Assert the scan actually looked at something. A test whose search
-	// silently matched no files would pass forever.
+	// The scan must have looked at something, and must have FOUND something.
+	// A pattern that silently matched nothing would pass forever.
 	if scanned < 20 {
 		t.Fatalf("scan looked at only %d non-test .go files; the package is much larger, so the scan is broken", scanned)
 	}
-	if len(offenders) > 0 {
-		t.Errorf("request bodies must be decoded through decodeJSON/decodeJSONWithLimit "+
-			"(BUG-2803: they apply the NUL refusal and the size cap). Found %d direct decoder(s):\n  %s",
-			len(offenders), strings.Join(offenders, "\n  "))
+	if len(touches) < 3 {
+		t.Fatalf("scan found only %d files touching a request body; the pattern is broken", len(touches))
+	}
+
+	for name := range touches {
+		if _, ok := accounted[name]; !ok {
+			t.Errorf("%s reads the request body but is not accounted for in this test. "+
+				"A body carrying JSON must go through decodeJSON/decodeJSONWithLimit, which apply "+
+				"BUG-2803's NUL refusal and the size cap. If this reader is legitimate, add it here WITH "+
+				"the reason it is safe.", name)
+		}
+	}
+	for name, why := range accounted {
+		if !touches[name] {
+			t.Errorf("%s is accounted for here (%q) but no longer reads a request body — remove the entry "+
+				"so it cannot silently cover a future reader added to that file", name, why)
+		}
 	}
 }
 

@@ -573,3 +573,45 @@ func fieldString(t *testing.T, fieldsJSON, key string) string {
 	s, _ := m[key].(string)
 	return s
 }
+
+// TestImportArtifactUnbindableTextRejected covers the last body reader the
+// BUG-2803 sweep turned up (codex round 3). The artifact endpoint takes RAW
+// TEXT, not JSON, so it never went through decodeJSON and inherited neither
+// the NUL refusal nor the path/query rule — a body is neither a path nor a
+// query. A raw NUL or invalid UTF-8 reached the store, and Postgres answered
+// SQLSTATE 22021, which the handler turned into a 500 for what is a client
+// error.
+//
+// Note the shape difference from the JSON half: here a RAW byte is the vector,
+// because there is no JSON decoder in the way to reject it. The predicate is
+// the same bindableText the path and query middlewares apply.
+func TestImportArtifactUnbindableTextRejected(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	good := "---\npad_artifact: convention\nformat_version: 1\ntitle: Fine\n---\n\nbody\n"
+
+	// Control: the identical artifact, no bad bytes. Without it a 400 says
+	// nothing — this endpoint answers 400 for malformed frontmatter too.
+	if rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", []byte(good)); rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+		t.Fatalf("control artifact must import, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"NUL byte in the body", []byte(strings.Replace(good, "body", "bo\x00dy", 1))},
+		{"invalid UTF-8 in the body", append([]byte(strings.Replace(good, "body", "bo", 1)), 0xff, '\n')},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", tc.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "invalid_body") {
+				t.Errorf("expected the invalid_body code, got %s", rr.Body.String())
+			}
+		})
+	}
+}

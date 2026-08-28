@@ -340,6 +340,9 @@ func writeArtifactParseError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrArtifactTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large",
 			"Artifact body exceeds the size limit")
+	case errors.Is(err, ErrArtifactUnbindableText):
+		writeError(w, http.StatusBadRequest, "invalid_body",
+			"Artifact body contains invalid UTF-8 or a NUL byte")
 	case errors.Is(err, ErrArtifactUnsafeYAML):
 		writeError(w, http.StatusBadRequest, "unsafe_yaml",
 			"Artifact frontmatter was rejected by the import safety limits")

@@ -632,3 +632,68 @@ func TestIsSafeBundleEntryName(t *testing.T) {
 		})
 	}
 }
+
+// TestImportBundle_RefusesNULInExport is codex round 3's P1 on BUG-2803. The
+// tar.gz bundle path parses pad-export.json itself rather than through
+// decodeJSON, so it inherited none of that helper's checks: the SAME workspace
+// import, reached with Content-Type application/gzip instead of
+// application/json, walked straight past the NUL refusal and into Postgres.
+//
+// The control leg is the identical bundle with an ordinary value. Without it a
+// 400 proves nothing here — this path answers 400 for a dozen unrelated
+// reasons (bad gzip, out-of-order tar, duplicate entries).
+func TestImportBundle_RefusesNULInExport(t *testing.T) {
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	clean := rr.Body.String()
+
+	// Put the escape inside the exported workspace NAME. Editing the JSON
+	// text directly is the point: the bundle is bytes on the wire, and this
+	// is the shape a hand-built bundle would carry.
+	esc := string([]byte{'\\', 'u', '0', '0', '0', '0'})
+	withNUL := strings.Replace(clean, `"name":"`, `"name":"a`+esc+`b `, 1)
+	if withNUL == clean {
+		t.Fatal("fixture did not modify the export; the probe would be vacuous")
+	}
+
+	bundle := func(t *testing.T, exportJSON string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gzw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gzw)
+		if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := tw.Write([]byte(exportJSON)); err != nil {
+			t.Fatalf("write export: %v", err)
+		}
+		tw.Close()
+		gzw.Close()
+		return buf.Bytes()
+	}
+
+	post := func(t *testing.T, name string, body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		dest, _ := testServerWithAttachments(t)
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name="+name, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/gzip")
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		dest.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if got := post(t, "CleanBundle", bundle(t, clean)); got.Code != http.StatusOK && got.Code != http.StatusCreated {
+		t.Fatalf("control bundle must import, got %d: %s", got.Code, got.Body.String())
+	}
+	got := post(t, "NULBundle", bundle(t, withNUL))
+	if got.Code != http.StatusBadRequest {
+		t.Errorf("bundle carrying a NUL escape: status=%d, want 400; body=%s", got.Code, got.Body.String())
+	}
+	if !strings.Contains(got.Body.String(), "NUL") {
+		t.Errorf("the 400 should name the cause, got body=%s", got.Body.String())
+	}
+}

@@ -274,6 +274,18 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			if err != nil {
 				return nil, fmt.Errorf("read pad-export.json: %w", err)
 			}
+			// The bundle path parses pad-export.json HERE rather than
+			// through decodeJSON, so it inherits none of that helper's
+			// checks — including BUG-2803's NUL refusal. A gzip import is
+			// the same door as the JSON one, reached by a different
+			// Content-Type, so it gets the same answer rather than a 500
+			// from Postgres further down (codex round 3).
+			if bodyDecodesNUL(buf) {
+				return nil, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle pad-export.json could not be decoded: " + errJSONBodyNUL.Error(),
+				}
+			}
 			var export models.WorkspaceExport
 			if err := json.Unmarshal(buf, &export); err != nil {
 				return nil, &importStatusError{

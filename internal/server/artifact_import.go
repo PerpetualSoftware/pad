@@ -49,6 +49,13 @@ var ErrArtifactTooLarge = errors.New("artifact import: body exceeds size limit")
 // the YAML-bomb guard limits (node count, nesting depth, or anchors/aliases).
 var ErrArtifactUnsafeYAML = errors.New("artifact import: frontmatter rejected by safety limits")
 
+// ErrArtifactUnbindableText is returned when the artifact body is not text the
+// database can be asked to store — invalid UTF-8, or carrying a NUL. It is a
+// client error (400), not a 500, for the reason BUG-2782 gives: the value
+// cannot be stored under any encoding this product supports, so the caller
+// sent something that cannot mean anything here.
+var ErrArtifactUnbindableText = errors.New("artifact import: body contains invalid UTF-8 or a NUL byte")
+
 // parseArtifactRequest is the guarded HTTP-boundary parse used by the import
 // handler. It applies three checks IN ORDER:
 //
@@ -81,6 +88,17 @@ func parseArtifactRequest(w http.ResponseWriter, r *http.Request, maxBytes int64
 			return artifact.Artifact{}, ErrArtifactTooLarge
 		}
 		return artifact.Artifact{}, fmt.Errorf("artifact import: read body: %w", err)
+	}
+
+	// (2a) The artifact body is TEXT bound for text columns, and this
+	// handler reads it directly rather than through decodeJSON, so it
+	// inherits neither BUG-2803's refusal nor the path/query rule (a body is
+	// neither). A raw NUL or invalid UTF-8 here reaches the store and
+	// Postgres answers 22021, which the handler turns into a 500 for what is
+	// a client error. Same predicate as ValidatePath and ValidateQuery.
+	// Found by the codex round 3 sweep over body readers (BUG-2803).
+	if !bindableText(string(data)) {
+		return artifact.Artifact{}, ErrArtifactUnbindableText
 	}
 
 	// (2) YAML-bomb guard on the frontmatter region only.
