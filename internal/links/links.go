@@ -17,30 +17,6 @@ func ReplaceTitle(content, oldTitle, newTitle string) string {
 	return replaceAll(content, old, new)
 }
 
-// ReplaceTitleN is ReplaceTitle for a caller that has ALREADY counted the
-// occurrences, and it exists to stop that work being done twice.
-//
-// strings.Replace with n < 0 counts the string itself before building the
-// result. The document rename cascade counts first anyway — its size guard
-// needs the number before it is willing to build anything — so letting
-// Replace re-count adds a full pass over every linking document on the
-// success path (codex round 13).
-//
-// n MUST be the count of `[[oldTitle]]` in this exact content. Passing a
-// smaller number silently leaves later occurrences unrewritten, which is why
-// this is a separate function rather than an optional parameter on the one
-// above: the obligation is visible at the call site.
-//
-// No measured speedup is claimed. This removes one linear pass from a path
-// that also allocates a full copy of the same content and issues a write per
-// linker, so the saving is real but not obviously significant; it is here
-// because doing the same work twice needs a reason and there was not one.
-func ReplaceTitleN(content, oldTitle, newTitle string, n int) string {
-	old := "[[" + oldTitle + "]]"
-	new := "[[" + newTitle + "]]"
-	return strings.Replace(content, old, new, n)
-}
-
 // RewriteWikiTitle rewrites the four title-form wiki-link shapes that
 // resolve to an item titled `oldTitle` in collection `collSlug`,
 // substituting `newTitle` for the title portion and preserving any
