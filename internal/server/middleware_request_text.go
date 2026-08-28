@@ -522,7 +522,15 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 			}
 			if !inUserData && jsonEncodedFieldKeys[k] {
 				if str, isString := sub.(string); isString {
-					if nestedDocumentDecodesNUL(str) {
+					// BOTH checks. The nested walk answers "is there an
+					// escape inside the document this string carries"; it
+					// does NOT answer "does this string itself contain a
+					// NUL", and taking the JSON-encoded branch used to skip
+					// the plain check entirely — so a direct NUL in a
+					// `fields` value was accepted, reopening the door this
+					// whole change exists to close (codex round 9, a
+					// regression introduced by the round-8 restructure).
+					if strings.ContainsRune(str, 0) || nestedDocumentDecodesNUL(str) {
 						return true
 					}
 					continue

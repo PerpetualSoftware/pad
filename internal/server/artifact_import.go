@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -270,5 +269,21 @@ func artifactIsBindableText(art artifact.Artifact) bool {
 		// refuse rather than pass it on unexamined.
 		return false
 	}
-	return !bytes.Contains(encoded, []byte{'\\', 'u', '0', '0', '0', '0'})
+	// Searching the marshalled BYTES for the escape is wrong, and this
+	// function did it until codex round 9: a value holding the six LITERAL
+	// characters marshals to a doubled backslash, which still contains the
+	// six-character sequence as a substring, so valid content was refused.
+	// That is the same doubled-backslash trap bodyDecodesNUL exists to
+	// resolve — and an earlier version of this comment asserted it "cannot
+	// arise here", which was simply wrong.
+	//
+	// So the marshalled form is decoded again and walked with the same
+	// machinery, as caller data (no wire-key list applies to an artifact).
+	// The round trip is what makes every field reachable without a type
+	// switch; the walk is what makes the answer exact.
+	var v any
+	if err := json.Unmarshal(encoded, &v); err != nil {
+		return false
+	}
+	return !valueDecodesNUL(v, true)
 }

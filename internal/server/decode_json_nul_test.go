@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/artifact"
 )
 
 // rawJSONRequest sends a RAW body string. A test cannot marshal a Go map
@@ -765,5 +767,67 @@ func TestDocumentActivityStoresBindableUserAgent(t *testing.T) {
 	}
 	if seenSanitised == 0 {
 		t.Error("no activity carries the sanitised header; the call site is not wired to requestUserAgent")
+	}
+}
+
+// TestBodyDecodesNULUnderAJSONEncodedKeyChecksBothWays is codex round 9's P1,
+// which was a REGRESSION this branch introduced in its round-8 restructure.
+//
+// Taking the JSON-encoded branch for a listed key used to skip the plain
+// "does this string contain a NUL" check, so a direct NUL in a `fields` value
+// — the very first door this change closed — was accepted again. The two
+// questions are different and both must be asked: does the string ITSELF
+// carry a NUL, and does the document it carries contain an escape.
+func TestBodyDecodesNULUnderAJSONEncodedKeyChecksBothWays(t *testing.T) {
+	esc := escNULLiteral
+
+	// A direct escape in the fields STRING (not inside a nested document):
+	// the outer decode turns it into a real NUL in that string.
+	direct := `{"title":"x","fields":"a` + esc + `b"}`
+	if !bodyDecodesNUL([]byte(direct)) {
+		t.Error("a NUL in the fields string itself must be refused")
+	}
+
+	// And the nested form still is, so this is not just the plain check.
+	nested := `{"title":"x","fields":` + jsonEncode(t, `{"k":"a`+esc+`b"}`) + `}`
+	if !bodyDecodesNUL([]byte(nested)) {
+		t.Error("an escape inside the fields document must be refused")
+	}
+
+	// Control: an ordinary fields string is accepted, so the legs above are
+	// not passing because everything under a listed key is refused.
+	if bodyDecodesNUL([]byte(`{"title":"x","fields":"plain"}`)) {
+		t.Error("an ordinary fields string must be accepted")
+	}
+}
+
+// TestArtifactBindableTextAcceptsLiteralEscapeText is codex round 9's P2: the
+// artifact check searched the MARSHALLED bytes for the escape, and a value
+// holding the six LITERAL characters marshals to a doubled backslash which
+// still contains that sequence — so valid content was refused. Artifacts are
+// documentation; text about a JSON escape is exactly what one carries.
+func TestArtifactBindableTextAcceptsLiteralEscapeText(t *testing.T) {
+	esc := escNULLiteral
+	ok := artifact.Artifact{
+		Title: "Escapes",
+		Body:  "write a NUL as " + esc + " in JSON",
+		Fields: map[string]any{
+			"note": "also " + esc + " here",
+		},
+	}
+	if !artifactIsBindableText(ok) {
+		t.Error("literal escape TEXT in an artifact is valid content and must be accepted")
+	}
+
+	// The counterfactual: a real NUL in the same places is still refused, so
+	// the leg above is not passing because the check does nothing.
+	for name, bad := range map[string]artifact.Artifact{
+		"title":  {Title: "a\x00b"},
+		"body":   {Title: "t", Body: "a\x00b"},
+		"fields": {Title: "t", Fields: map[string]any{"k": "a\x00b"}},
+	} {
+		if artifactIsBindableText(bad) {
+			t.Errorf("a real NUL in %s must be refused", name)
+		}
 	}
 }
