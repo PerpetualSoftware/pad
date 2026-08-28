@@ -2,7 +2,6 @@ package server
 
 import (
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -320,8 +319,8 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input models.CommentCreate
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON body")
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
 	if strings.TrimSpace(input.Body) == "" {
@@ -428,8 +427,8 @@ func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Emoji string `json:"emoji"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON body")
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
 	if strings.TrimSpace(input.Emoji) == "" {

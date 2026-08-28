@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -342,4 +345,103 @@ func validQueryText(rawQuery string) bool {
 		}
 	}
 	return true
+}
+
+// jsonNULEscape is the six-byte JSON escape that decodes to a NUL. It is
+// built from bytes rather than written as a literal so that no layer between
+// this source and the compiler can transform it into the character it
+// describes — the same reason the tests construct it this way.
+//
+// It is the ONLY spelling. JSON forbids an unescaped control character inside
+// a string, so a raw 0x00 byte never survives decoding (encoding/json answers
+// `invalid character '\x00' in string literal`), and the uppercase \U form is
+// not a JSON escape at all (`invalid character 'U' in string escape code`).
+// Both measured against encoding/json, BUG-2803.
+var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
+
+// bodyDecodesNUL reports whether any string a handler could read out of this
+// JSON body — an object key or a value, at any nesting depth — decodes to a
+// string containing a NUL.
+//
+// WHY THE BODY NEEDS ITS OWN RULE, when ValidatePath and ValidateQuery already
+// apply bindableText at the transport. Those work because a decoded path or
+// query value is a substring of the raw request with ASCII substitutions: the
+// bad byte in the raw text IS the bad byte in the value, so a middleware can
+// find it without parsing. That property does not hold for a JSON body. The
+// reachable NUL arrives as jsonNULEscape — six ordinary ASCII characters — so
+// a transport-level scan for a NUL byte sees nothing, and no request
+// middleware can find it without decoding the body, which is the handler's
+// job. BUG-2784 recorded this as the reason its rule stops at the query
+// string; this is the missing half.
+//
+// WHY IT IS NOT A SUBSTRING SEARCH. Containing jsonNULEscape is necessary but
+// NOT sufficient: `\\u0000` (an escaped backslash followed by literal text)
+// contains the same six characters and decodes to no NUL at all. Refusing on
+// the substring alone would reject a legitimate value, and in THIS product
+// that is not hypothetical — items and documents store markdown, and writing
+// about a JSON escape sequence is an ordinary thing for a document to do.
+//
+// So the substring is used as a FAST PATH only, and it is sound in that
+// direction: a body that does not contain it cannot decode to a NUL anywhere,
+// because the escape is the only spelling (see jsonNULEscape). Bodies
+// containing it — rare, and already unusual — pay for an exact answer.
+//
+// THE EXACT STEP IS json.Decoder.Token(), which hands back the DECODED string
+// for every key and value in the document. It distinguishes the two cases
+// above by construction rather than by pattern, it needs no knowledge of the
+// destination type, and it reaches nested maps such as an item's `fields`
+// blob, which a struct-shaped check would miss.
+//
+// WHY NOT REFLECT OVER THE DECODED VALUE, which is the other obvious design.
+// A reflective walk sees a []byte field AFTER base64 decoding, so a body
+// carrying legitimate binary — `{"b":"AQAC"}` decodes to the bytes 01 00 02 —
+// would be refused for a NUL that is not text and never reaches a text
+// column. A token walk sees the base64 characters instead. No request struct
+// has such a field today (searched: []byte fields with a json tag in
+// internal/server and internal/models, non-test — the only hit is
+// models.YjsUpdate.UpdateData, which no handler decodes from a body, since
+// collab moves Yjs data over the WebSocket as binary). The token walk is
+// chosen so that adding one later cannot silently start rejecting valid
+// requests.
+//
+// A malformed body returns false rather than an error: the caller's decode
+// runs next and reports the JSON error itself, so there is exactly one place
+// that phrases "invalid JSON" and this function never has to agree with it.
+func bodyDecodesNUL(raw []byte) bool {
+	if !bytes.Contains(raw, jsonNULEscape) {
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			// io.EOF, or malformed input the caller's decode will report.
+			return false
+		}
+		if s, ok := tok.(string); ok && strings.ContainsRune(s, 0) {
+			return true
+		}
+	}
+}
+
+// readBodyForDecode reads the whole request body so it can be scanned before
+// it is decoded, with the caller's size cap applied.
+//
+// Buffering is not a cost paid for the scan. json.Decoder.Decode already
+// holds the entire top-level value in memory before it finishes — refill
+// accumulates into dec.buf and grows it by DOUBLING (encoding/json/stream.go,
+// `newBuf := make([]byte, len(dec.buf), 2*cap(dec.buf)+minRead)` plus a copy)
+// — so streaming never avoided the copy, it just reallocated its way there.
+// Measured on the 64 MiB workspace-import shape, total allocation: stream and
+// decode 354.7 MiB, read-all and Unmarshal 256.5 MiB, read-all and Decode
+// 512.5 MiB. Peak heap is indistinguishable between the first two and is
+// order-dependent, so it does not discriminate. BUG-2803.
+func readBodyForDecode(r *http.Request, maxBytes int64) ([]byte, error) {
+	if r.Body == nil {
+		return nil, io.EOF
+	}
+	// MaxBytesReader.Close() is a no-op; setting this also lets the server
+	// return 413 automatically via the error the caller wraps.
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
+	return io.ReadAll(r.Body)
 }

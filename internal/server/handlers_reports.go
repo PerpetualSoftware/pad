@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -144,8 +143,8 @@ func (s *Server) handleSaveReportLayout(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var layout models.ReportLayout
-	if err := json.NewDecoder(r.Body).Decode(&layout); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "Invalid layout JSON")
+	if err := decodeJSON(r, &layout); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 

@@ -227,7 +227,7 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input dcrRequest
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSON(r, &input); err != nil {
 		writeDCRError(w, http.StatusBadRequest, "invalid_client_metadata",
 			"Request body must be JSON: "+err.Error())
 		return

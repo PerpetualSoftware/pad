@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -226,8 +225,8 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req transformRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 
