@@ -155,6 +155,13 @@ func TestImportWorkspace_SelfHostedIsUnaffected(t *testing.T) {
 // `userID != ""` guard. A legacy workspace token resolves no user, and there
 // is nobody to charge — the guard is not defensive padding, it is the
 // difference between "no limit applies" and a nil lookup.
+//
+// SCOPE, stated because this test locks in a 201 and someone will read that as
+// approval: it pins the GUARD's behaviour, not a judgement that userless
+// workspace creation is fine. It also drives the handler directly rather than
+// through a real legacy token, so it does not prove that token shape reaches
+// here — only that the guard does what create's does when no user resolves.
+// Whether these doors should mint unowned workspaces at all is BUG-2809.
 func TestImportWorkspace_NoResolvedUserIsNotCharged(t *testing.T) {
 	srv, _ := importLimitFixture(t, store.DefaultFreeLimits.Workspaces)
 
