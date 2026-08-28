@@ -408,8 +408,28 @@ var jsonNULEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 // runs next and reports the JSON error itself, so there is exactly one place
 // that phrases "invalid JSON" and this function never has to agree with it.
 func bodyDecodesNUL(raw []byte) bool {
+	return bodyDecodesNULAtDepth(raw, 0)
+}
+
+// maxJSONDocumentNesting bounds how many times bodyDecodesNULAtDepth will
+// descend into a string that is itself a JSON document. Each level must be a
+// strict substring of the one above, so recursion terminates on its own; the
+// bound exists to keep a hostile body from buying many full re-parses of a
+// large payload. Eight is far past any shape this API produces — the deepest
+// real case is one level (a `fields` blob inside a request body) — and a body
+// nested deeper than this is refused, since bodyDecodesNULAtDepth answers
+// "assume the worst" rather than "give up" at the limit.
+const maxJSONDocumentNesting = 8
+
+func bodyDecodesNULAtDepth(raw []byte, depth int) bool {
 	if !bytes.Contains(raw, jsonNULEscape) {
 		return false
+	}
+	if depth >= maxJSONDocumentNesting {
+		// The escape IS present and we have stopped looking. Refusing is the
+		// safe direction: the alternative is to pass a body we declined to
+		// inspect.
+		return true
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	for {
@@ -418,10 +438,59 @@ func bodyDecodesNUL(raw []byte) bool {
 			// io.EOF, or malformed input the caller's decode will report.
 			return false
 		}
-		if s, ok := tok.(string); ok && strings.ContainsRune(s, 0) {
+		s, ok := tok.(string)
+		if !ok {
+			continue
+		}
+		if strings.ContainsRune(s, 0) {
+			return true
+		}
+		if stringIsJSONDocument(s) && bodyDecodesNULAtDepth([]byte(s), depth+1) {
 			return true
 		}
 	}
+}
+
+// stringIsJSONDocument reports whether a decoded string is itself a complete
+// JSON object or array — the class of value this API re-parses downstream.
+//
+// WHY THE RECURSION EXISTS AT ALL. Several fields cross the wire as
+// JSON-ENCODED STRINGS rather than as nested objects: an item's `fields`, a
+// collection's `schema`, a workspace's `settings`. In
+// `{"fields":"{\"k\":\"a<escape>b\"}"}` the OUTER decode yields the
+// literal text of the inner document, in which the escape is still six
+// ordinary characters and no NUL exists. The single-layer walk therefore
+// passed it, and Postgres refused it later with a DIFFERENT error from the
+// rest of this family:
+//
+//	insert collection: ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)
+//
+// 22P05, not the 22021 the path and query halves produce. The outer string is
+// pure ASCII so it never trips the text-encoding check; this is Postgres's own
+// JSON parser refusing the escape inside a document bound for jsonb, which
+// cannot represent a NUL. Measured on Postgres 17: item `fields`, collection
+// `schema` and workspace `settings` each answered 500 with a 201 control leg,
+// after the single-layer check was in place. Found by codex round 1 on
+// BUG-2803, by asking what the destination TYPE does with the value — the
+// angle the endpoint-and-field sweep never rotated to.
+//
+// WHAT THIS DELIBERATELY OVER-REFUSES, stated rather than left to be
+// discovered. The test is structural, not destination-typed: a plain TEXT
+// field whose ENTIRE value happens to be a valid JSON document carrying the
+// escape is refused too, even though its column would have stored it. Prose
+// ABOUT a JSON escape does not parse as a bare document, so the case is
+// narrow, and a value of that exact shape breaks any consumer that parses it.
+//
+// The destination-typed alternative — an allow-list of the fields that arrive
+// JSON-encoded — is exactly correct and goes stale in silence, which is the
+// failure mode ValidateQuery's comment rejects when it explains why per-site
+// query validators could not be written.
+func stringIsJSONDocument(s string) bool {
+	t := strings.TrimSpace(s)
+	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
+		return false
+	}
+	return json.Valid([]byte(t))
 }
 
 // readBodyForDecode reads the whole request body so it can be scanned before

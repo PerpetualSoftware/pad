@@ -261,3 +261,134 @@ func TestNoJSONBodyDecoderOutsideTheChokepoint(t *testing.T) {
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
 }
+
+// jsonEncode returns s as a JSON string literal — the wire form of a field
+// that crosses as a JSON-ENCODED STRING (an item's fields, a collection's
+// schema, a workspace's settings). Using encoding/json to build it, rather
+// than hand-writing the backslashes, is deliberate: the escaping rules are
+// the subject under test and hand-written fixtures would pin my reading of
+// them instead of the real ones.
+func jsonEncode(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("encode %q: %v", s, err)
+	}
+	return string(b)
+}
+
+// TestBodyDecodesNULNestedDocuments covers codex round 1's P1 on BUG-2803:
+// several fields arrive as JSON-ENCODED STRINGS, so the escape survives the
+// OUTER decode as literal text and reappears when the destination re-parses
+// the string as JSON. Postgres refuses that with SQLSTATE 22P05 (unsupported
+// Unicode escape sequence) rather than the 22021 the rest of this family
+// produces — a different error precisely because the outer string is pure
+// ASCII and never trips the text-encoding check.
+func TestBodyDecodesNULNestedDocuments(t *testing.T) {
+	esc := escNULLiteral
+
+	innerWithNUL := `{"k":"a` + esc + `b"}`       // decodes to a NUL when parsed
+	innerLiteral := `{"k":"a\\` + "u0000" + `b"}` // a doubled backslash: literal text
+	innerPlain := `{"k":"plain"}`
+
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"fields as a JSON-encoded string carrying the escape",
+			`{"title":"x","fields":` + jsonEncode(t, innerWithNUL) + `}`, true},
+		{"schema as a JSON-encoded string carrying the escape",
+			`{"name":"c","schema":` + jsonEncode(t, innerWithNUL) + `}`, true},
+		{"settings as a JSON-encoded string carrying the escape",
+			`{"name":"w","settings":` + jsonEncode(t, innerWithNUL) + `}`, true},
+		{"a JSON-encoded ARRAY carrying the escape",
+			`{"tags":` + jsonEncode(t, `["ok","a`+esc+`b"]`) + `}`, true},
+		{"twice-encoded — a document inside a document",
+			`{"fields":` + jsonEncode(t, `{"inner":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, true},
+
+		// Controls. These must stay ACCEPTED: the recursion must not turn
+		// "contains the six characters somewhere" into a refusal.
+		{"fields as a JSON-encoded string, ordinary content",
+			`{"title":"x","fields":` + jsonEncode(t, innerPlain) + `}`, false},
+		{"nested document whose escape is a DOUBLED backslash",
+			`{"fields":` + jsonEncode(t, innerLiteral) + `}`, false},
+		{"a string that starts like JSON but does not parse",
+			`{"content":` + jsonEncode(t, `{"k":"a`+esc+`b"`) + `}`, false},
+		{"prose mentioning the escape is not a JSON document",
+			`{"content":` + jsonEncode(t, `write a NUL as `+esc+` in JSON`) + `}`, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bodyDecodesNUL([]byte(tc.body)); got != tc.want {
+				t.Errorf("bodyDecodesNUL(%s) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBodyDecodesNULOverRefusesWholeJSONValues pins a DECISION, not an
+// accident. The nesting test is structural rather than destination-typed, so
+// a plain-text field whose ENTIRE value is a valid JSON document carrying the
+// escape is refused even though its column would have stored it happily.
+//
+// It is here so that the trade is visible and a future change to it is a
+// deliberate act: if someone makes the check destination-typed, this test
+// should be updated, not deleted in passing. See stringIsJSONDocument for why
+// the allow-list alternative was declined.
+func TestBodyDecodesNULOverRefusesWholeJSONValues(t *testing.T) {
+	body := `{"content":` + jsonEncode(t, `{"k":"a`+escNULLiteral+`b"}`) + `}`
+	if !bodyDecodesNUL([]byte(body)) {
+		t.Error("a text field whose whole value is a JSON document carrying the escape " +
+			"is refused by design; if this changed deliberately, update the reasoning at " +
+			"stringIsJSONDocument rather than only this test")
+	}
+}
+
+// TestBodyDecodesNULDepthBound pins the behaviour AT the recursion limit:
+// past it the escape is known to be present and the walk has stopped looking,
+// so the body is refused rather than passed uninspected.
+func TestBodyDecodesNULDepthBound(t *testing.T) {
+	// Wrap a NUL-bearing document deeper than the limit allows.
+	doc := `{"k":"a` + escNULLiteral + `b"}`
+	for i := 0; i < maxJSONDocumentNesting+2; i++ {
+		doc = `{"n":` + jsonEncode(t, doc) + `}`
+	}
+	if !bodyDecodesNUL([]byte(doc)) {
+		t.Error("a body nested past maxJSONDocumentNesting must be refused, not passed uninspected")
+	}
+}
+
+// TestDecodeJSONRefusesNestedNULThroughTheHandler is the wiring leg for the
+// nested case, on SQLite for the same reason as the single-layer one: there
+// the write would SUCCEED, so a green cannot be the database doing the work.
+func TestDecodeJSONRefusesNestedNULThroughTheHandler(t *testing.T) {
+	srv := testServer(t)
+
+	rr := rawJSONRequest(srv, "POST", "/api/v1/workspaces/",
+		`{"name":"Nested","slug":"nested","template":"startup"}`)
+	if rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+		t.Fatalf("fixture workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = rawJSONRequest(srv, "POST", "/api/v1/workspaces/nested/collections/",
+		`{"name":"Probes","slug":"probes"}`)
+	if rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+		t.Fatalf("fixture collection: %d %s", rr.Code, rr.Body.String())
+	}
+
+	const itemsPath = "/api/v1/workspaces/nested/collections/probes/items"
+
+	control := rawJSONRequest(srv, "POST", itemsPath,
+		`{"title":"nested control","fields":`+jsonEncode(t, `{"k":"plain"}`)+`}`)
+	if control.Code != http.StatusCreated && control.Code != http.StatusOK {
+		t.Fatalf("control leg must succeed, got %d: %s", control.Code, control.Body.String())
+	}
+
+	bad := rawJSONRequest(srv, "POST", itemsPath,
+		`{"title":"nested probe","fields":`+jsonEncode(t, `{"k":"a`+escNULLiteral+`b"}`)+`}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a JSON-encoded fields string carrying the escape, got %d: %s",
+			bad.Code, bad.Body.String())
+	}
+}
