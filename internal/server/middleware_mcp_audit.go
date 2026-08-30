@@ -369,6 +369,26 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 // Returns ("(unknown)", "") on parse failure or empty body — gives
 // the audit reader a visible signal rather than silently dropping
 // the row.
+//
+// Both values that come from the CALLER's body are run through
+// sanitiseStoredText before they leave this function, because they
+// are bound to mcp_audit_log.tool_name (TEXT NOT NULL). This
+// middleware runs its own json.Unmarshal, so a `\u0000` escape in
+// `method` or `params.name` arrives here as a real NUL: PostgreSQL
+// then refuses the audit INSERT with 22021 and SQLite stores an
+// unprintable tool name. Nothing upstream catches it — the /mcp
+// transport decodes the JSON-RPC envelope itself rather than through
+// decodeJSON, so the body rule never sees this request (BUG-2803,
+// codex round 20; that unit's completeness map had wrongly certified
+// this reader as safe on the grounds that the dispatcher decodes the
+// body again, which is true and does not bear on what is persisted
+// here).
+//
+// Sanitising rather than refusing is deliberate: see sanitiseStoredText.
+// The request carrying a malformed name is the one most worth having
+// an audit row for. Both callers of this function — the ok path and
+// the denied path — are covered because the cleaning happens here
+// rather than at either call site.
 func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	if len(body) == 0 {
 		return "(unknown)", ""
@@ -381,7 +401,7 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 		return "(unknown)", ""
 	}
 	if env.Method != "tools/call" {
-		return env.Method, ""
+		return sanitiseStoredText(env.Method), ""
 	}
 	var p struct {
 		Name      string          `json:"name"`
@@ -390,7 +410,7 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	if err := json.Unmarshal(env.Params, &p); err != nil || p.Name == "" {
 		return "tools/call", ""
 	}
-	return p.Name, hashCanonicalJSON(p.Arguments)
+	return sanitiseStoredText(p.Name), hashCanonicalJSON(p.Arguments)
 }
 
 // hashCanonicalJSON returns a SHA-256 hex of a canonicalized form of

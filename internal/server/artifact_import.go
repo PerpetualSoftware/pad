@@ -52,9 +52,16 @@ var ErrArtifactUnsafeYAML = errors.New("artifact import: frontmatter rejected by
 
 // ErrArtifactUnbindableText is returned when the artifact body is not text the
 // database can be asked to store — invalid UTF-8, or carrying a NUL. It is a
-// client error (400), not a 500, for the reason BUG-2782 gives: the value
-// cannot be stored under any encoding this product supports, so the caller
-// sent something that cannot mean anything here.
+// client error (400), not a 500, for the reason BUG-2782 gives: this is a
+// value Pad refuses to store, so the caller sent something that cannot mean
+// anything here.
+//
+// "Refuses", not "cannot" — the distinction matters and the earlier wording
+// blurred it (codex round 20). PostgreSQL rejects a NUL in a text or JSON
+// column outright; SQLite would accept one in TEXT. So this is an application
+// rule Pad applies on both dialects, not a storage limit it inherits from
+// either. Stating it as a capability would tell the next reader that SQLite
+// enforces something it does not.
 var ErrArtifactUnbindableText = errors.New("artifact import: body contains invalid UTF-8 or a NUL byte")
 
 // parseArtifactRequest is the guarded HTTP-boundary parse used by the import

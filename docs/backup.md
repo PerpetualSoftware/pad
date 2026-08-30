@@ -165,8 +165,10 @@ pad workspace import --name "imported-workspace" < my-workspace.json
 A workspace whose stored data contains a **NUL character** exports fine and is
 refused on import, with a 400 naming the cause. This is not a corruption of
 your backup — it is the import applying a rule the write path now applies too
-(BUG-2803): a NUL cannot be stored in a text or JSON column, and PostgreSQL
-refuses it outright.
+(BUG-2803): Pad does not accept a NUL in a text or JSON value. That is an
+application rule, not a universal storage fact — PostgreSQL does refuse a NUL
+outright, but SQLite accepts one in a TEXT column, which is why the rule has to
+be enforced rather than assumed, and why the paragraphs below matter.
 
 **The rule lives in the binary, not in the database**, so "before the rule
 existed" is a statement about which build served the write, not about a date.

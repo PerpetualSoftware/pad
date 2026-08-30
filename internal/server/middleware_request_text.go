@@ -774,6 +774,26 @@ func truncateBindableText(s string, maxBytes int) string {
 // earlier probe had recorded User-Agent as NOT reproducing on the item-create
 // path, which was true and did not generalise: these are different sinks.
 func requestUserAgent(r *http.Request) string {
-	ua := strings.ToValidUTF8(r.Header.Get("User-Agent"), "")
-	return strings.ReplaceAll(ua, "\x00", "")
+	return sanitiseStoredText(r.Header.Get("User-Agent"))
+}
+
+// sanitiseStoredText makes a caller-influenced string safe to bind to a text
+// column, by removing what a text column cannot hold rather than by refusing
+// the request.
+//
+// SANITISE VERSUS REFUSE is the whole decision here, and it turns on WHO ASKED
+// FOR THE VALUE TO EXIST. The body rule refuses, because there the bad value
+// is the thing the caller asked to store. This helper serves metadata the
+// SERVER chose to record about a request — a User-Agent header, an MCP audit
+// row — where the caller never asked for a write at all. Turning an otherwise
+// fine request into a 400, or losing the audit row entirely, because of a
+// field the server elected to keep would be the wrong trade: the request
+// carrying a malformed value is precisely the one most worth recording.
+//
+// Extracted so the two callers share one rule rather than two copies that
+// drift. Do NOT reach for this on a value the caller asked to persist — that
+// is the body rule's job, and silently cleaning such a value would store
+// something the caller did not send.
+func sanitiseStoredText(s string) string {
+	return strings.ReplaceAll(strings.ToValidUTF8(s, ""), "\x00", "")
 }

@@ -2230,7 +2230,7 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 // errJSONBodyNUL is returned by decodeJSON when a string in the request body
 // decodes to a value containing a NUL. Every decodeJSON caller already turns
 // a decode error into a 400, so the refusal reaches the client as a client
-// error at all 65 call sites without touching any of them.
+// error at every call site without touching any of them.
 //
 // NOT every caller shows this message, and the earlier version of this
 // comment claimed otherwise: many substitute a generic string of their own

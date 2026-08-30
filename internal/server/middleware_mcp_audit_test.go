@@ -377,3 +377,83 @@ func TestMCPAudit_ClassifyResult(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPAudit_ToolNameCannotCarryANUL closes a door BUG-2803's own
+// completeness map wrongly certified as safe (codex round 20).
+//
+// That map listed middleware_mcp_audit.go as "audit capture — records the body
+// and restores it; decoding still happens in the MCP dispatcher". The first
+// half is true and the second is irrelevant: parseMCPRequestBody runs its OWN
+// json.Unmarshal and hands the DECODED params.name straight to
+// mcp_audit_log.tool_name, a TEXT NOT NULL column. Whether the dispatcher
+// decodes the body again has no bearing on what this middleware persists.
+//
+// The /mcp transport decodes the JSON-RPC envelope itself rather than through
+// decodeJSON, so nothing upstream refuses the escape either. On PostgreSQL the
+// insert fails with 22021 — the exact symptom this whole unit exists to
+// remove; on SQLite it is stored and the audit log carries an unprintable
+// tool name.
+//
+// The disposition is SANITISE, not refuse, following the User-Agent precedent
+// established earlier in this unit: the audit row is metadata the SERVER chose
+// to record about a request, and the request that carries a malformed value is
+// precisely the one you most want a row for. Failing the audit write would
+// lose that row, which is worse than recording a cleaned name.
+func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
+	srv, user, bearer := auditedMCPServer(t)
+
+	post := func(t *testing.T, body string) {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.1:1234"
+		srv.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	// Control FIRST, so the test asserts its own premise: an ordinary name is
+	// stored verbatim. Without this leg the assertion below would pass against
+	// a middleware that mangled or dropped every tool name.
+	post(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pad_item","arguments":{}}}`)
+	rows := waitForAuditRows(t, srv, user.ID, 1)
+	if rows[0].ToolName != "pad_item" {
+		t.Fatalf("premise failed: an ordinary tool name must round-trip verbatim, got %q", rows[0].ToolName)
+	}
+
+	post(t, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pad_item`+escNULLiteral+`evil","arguments":{}}}`)
+	rows = waitForAuditRows(t, srv, user.ID, 2)
+
+	for _, row := range rows {
+		if strings.ContainsRune(row.ToolName, 0) {
+			t.Errorf("a decoded NUL reached mcp_audit_log.tool_name (%q). On PostgreSQL this insert "+
+				"fails with 22021; the value must be sanitised before it is persisted", row.ToolName)
+		}
+	}
+
+	// And the sanitised name must still IDENTIFY the tool — dropping the row
+	// or storing "(unknown)" would make the audit log useless for exactly the
+	// requests worth auditing.
+	var sanitised string
+	for _, row := range rows {
+		if row.ToolName != "pad_item" {
+			sanitised = row.ToolName
+		}
+	}
+	if want := "pad_itemevil"; sanitised != want {
+		t.Errorf("the NUL-bearing call should be recorded under a cleaned name %q, got %q", want, sanitised)
+	}
+
+	// The OTHER path into tool_name. parseMCPRequestBody has two returns that
+	// carry caller text - params.name for tools/call, and the METHOD itself
+	// for everything else - and both are bound to the same column. Testing
+	// only the first would leave the second's sanitise call unkilled by any
+	// mutation, which is how a fixed surface count turns back into a defect.
+	post(t, `{"jsonrpc":"2.0","id":3,"method":"tools/li`+escNULLiteral+`st"}`)
+	rows = waitForAuditRows(t, srv, user.ID, 3)
+	for _, row := range rows {
+		if strings.ContainsRune(row.ToolName, 0) {
+			t.Errorf("a decoded NUL reached tool_name via the METHOD path (%q); params.name is not "+
+				"the only return that carries caller text", row.ToolName)
+		}
+	}
+}
