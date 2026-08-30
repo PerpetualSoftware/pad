@@ -389,6 +389,25 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 // an audit row for. Both callers of this function — the ok path and
 // the denied path — are covered because the cleaning happens here
 // rather than at either call site.
+// auditLabel marks a value that only became well-formed by being cleaned.
+//
+// Cleaning is lossy, so without a marker "pad_<NUL>item" is stored as
+// "pad_item" — an audit row and a Prometheus label indistinguishable from a
+// genuine pad_item call, and mintable by anyone who can send a request
+// (codex round 23). Marking keeps the diagnostic value of the cleaned text
+// while making the row honest about what arrived.
+//
+// The parenthesised form is the one this file already uses for a synthesised
+// value ("(unknown)"), and a real JSON-RPC method or MCP tool name does not
+// begin with "(" — so the marker cannot itself be forged by a caller choosing
+// a clever name.
+func auditLabel(clean string, changed bool) string {
+	if !changed {
+		return clean
+	}
+	return "(sanitised) " + clean
+}
+
 func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	if len(body) == 0 {
 		return "(unknown)", ""
@@ -418,8 +437,8 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	// Cleaning is for the value that gets STORED. Dispatch decisions read
 	// what the client actually sent.
 	if env.Method != "tools/call" {
-		if method := sanitiseStoredText(env.Method); method != "" {
-			return method, ""
+		if method, changed := sanitiseStoredTextChanged(env.Method); method != "" {
+			return auditLabel(method, changed), ""
 		}
 		// Empty only after cleaning — keep the visible signal rather than
 		// storing "". This is the round-21 boundary, preserved.
@@ -432,8 +451,10 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	if err := json.Unmarshal(env.Params, &p); err != nil {
 		return "tools/call", ""
 	}
-	if name := sanitiseStoredText(p.Name); name != "" {
-		return name, hashCanonicalJSON(p.Arguments)
+	if name, changed := sanitiseStoredTextChanged(p.Name); name != "" {
+		// The hash still describes the real arguments, so it is kept; it is
+		// the NAME that has to stay distinguishable.
+		return auditLabel(name, changed), hashCanonicalJSON(p.Arguments)
 	}
 	return "tools/call", ""
 }

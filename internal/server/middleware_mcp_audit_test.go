@@ -439,8 +439,17 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 			sanitised = row.ToolName
 		}
 	}
-	if want := "pad_itemevil"; sanitised != want {
-		t.Errorf("the NUL-bearing call should be recorded under a cleaned name %q, got %q", want, sanitised)
+	// The cleaned text is kept for diagnosis, but MARKED — round 23 showed
+	// that storing the bare cleaned name makes the row indistinguishable from
+	// a genuine call with that name. Asserted as "contains the cleaned text
+	// and is not equal to it", so this pins the two properties that matter
+	// (diagnosable, and distinguishable) without pinning the marker's wording.
+	if !strings.Contains(sanitised, "pad_itemevil") {
+		t.Errorf("the NUL-bearing call should still be diagnosable from its cleaned name, got %q", sanitised)
+	}
+	if sanitised == "pad_itemevil" {
+		t.Errorf("the cleaned name is stored bare, so it is indistinguishable from a genuine call " +
+			"named pad_itemevil; it must be marked as cleaned")
 	}
 
 	// The OTHER path into tool_name. parseMCPRequestBody has two returns that
@@ -512,7 +521,7 @@ func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 // full 64-character args_hash — an audit row indistinguishable from a genuine
 // pad_item call, forgeable by anyone who can send a request.
 func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
-	nul := "\u0000" // the escape, not the character
+	nul := "\\u0000" // the escape, not the character
 
 	name, hash := parseMCPRequestBody([]byte(
 		`{"method":"tools/` + nul + `call","params":{"name":"pad_item","arguments":{}}}`))
@@ -532,5 +541,63 @@ func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
 	if name != "pad_item" || hash == "" {
 		t.Fatalf("premise failed: a genuine tools/call must still yield its name and a hash, got %q / %d chars",
 			name, len(hash))
+	}
+}
+
+// TestMCPAudit_CleanedIdentityIsNotForgeable pins that a value which only
+// became well-formed by cleaning cannot imitate a genuine one (codex round 23).
+//
+// Round 22 closed the coarse version: sanitising before classifying let
+// "tools/<NUL>call" become a real tools/call and lift params.name. Classifying
+// on the raw method fixed that, but cleaning is LOSSY, so the stored pair
+// still collapsed onto a genuine identity — "pad_<NUL>item" stored exactly
+// what "pad_item" stores, hash included. An audit row anyone can mint to look
+// like someone else's call is not an audit row.
+//
+// Each case asserts the forged value DIFFERS from the genuine one. That is the
+// property; the specific marker text is incidental and deliberately not
+// asserted beyond being distinguishable.
+func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
+	nul := "\\u0000" // the escape, not the character
+
+	for _, tc := range []struct {
+		name          string
+		forged, real_ string
+	}{
+		{
+			"tool name",
+			`{"method":"tools/call","params":{"name":"pad_` + nul + `item","arguments":{"a":1}}}`,
+			`{"method":"tools/call","params":{"name":"pad_item","arguments":{"a":1}}}`,
+		},
+		{
+			"method name",
+			`{"method":"initialize` + nul + `"}`,
+			`{"method":"initialize"}`,
+		},
+		{
+			"method that cleans into tools/call",
+			`{"method":"tools/` + nul + `call","params":{"name":"pad_item","arguments":{}}}`,
+			`{"method":"tools/call","params":{"name":"pad_item","arguments":{}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fName, fHash := parseMCPRequestBody([]byte(tc.forged))
+			rName, rHash := parseMCPRequestBody([]byte(tc.real_))
+
+			if fName == rName && fHash == rHash {
+				t.Errorf("a NUL-bearing request stores the SAME audit identity as a genuine one "+
+					"(tool_name=%q args_hash=%q) — anyone who can send a request can mint a row "+
+					"attributed to a real call", fName, fHash)
+			}
+			if fName == "" {
+				t.Errorf("the forged case must still record something diagnosable, got an empty tool_name")
+			}
+			// Premise: the genuine leg is the ordinary value, so the
+			// assertion above is about the forged one differing rather than
+			// about the parser having stopped working.
+			if rName == "" {
+				t.Fatalf("premise failed: the genuine request must record a name, got empty")
+			}
+		})
 	}
 }

@@ -795,5 +795,25 @@ func requestUserAgent(r *http.Request) string {
 // is the body rule's job, and silently cleaning such a value would store
 // something the caller did not send.
 func sanitiseStoredText(s string) string {
-	return strings.ReplaceAll(strings.ToValidUTF8(s, ""), "\x00", "")
+	clean, _ := sanitiseStoredTextChanged(s)
+	return clean
+}
+
+// sanitiseStoredTextChanged is sanitiseStoredText plus the fact a caller needs
+// when the value is an IDENTITY rather than free text: whether anything was
+// removed.
+//
+// Cleaning is LOSSY, so distinct inputs collapse onto the same output —
+// "pad_<NUL>item" and "pad_item" both become "pad_item". For a User-Agent
+// that is fine; nothing decides anything on it. For a value that NAMES what a
+// request did, it is a forgery: an audit row or a metric label that cannot be
+// told apart from the genuine one it imitates (codex round 23, after round 22
+// closed the coarser version of the same hole).
+//
+// Callers that store an identity must use this and mark a changed value, so
+// "was cleaned" stays visible instead of being silently absorbed. Callers that
+// store descriptive text can keep using sanitiseStoredText.
+func sanitiseStoredTextChanged(s string) (string, bool) {
+	clean := strings.ReplaceAll(strings.ToValidUTF8(s, ""), "\x00", "")
+	return clean, clean != s
 }
