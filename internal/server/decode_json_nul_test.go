@@ -1057,7 +1057,7 @@ func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
 
 // TestBodyDecodesNULKnownMapModelDisagreements pins the four measured
 // disagreements between this scan's map[string]any model and encoding/json's
-// typed decode (BUG-2803 rounds 16-17, lead ruling day-68: land-and-follow).
+// typed decode (BUG-2803 rounds 16-17; lead ruling: land-and-follow).
 // They are documented on bodyDecodesNUL; this is the instrument that keeps
 // that documentation and the release note from going stale.
 //

@@ -429,7 +429,7 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 //
 // WHAT THIS CHECK DOES NOT COVER — four measured disagreements between what
 // this scan sees and what the typed decode does, left OPEN deliberately
-// (BUG-2803 rounds 16-17, lead ruling day-68: land-and-follow). They are
+// (BUG-2803 rounds 16-17; lead ruling: land-and-follow). They are
 // recorded here because this is the function a reader consults before
 // trusting the check, and an unqualified doc comment above an incomplete
 // guard is how the next person inherits a false belief.
