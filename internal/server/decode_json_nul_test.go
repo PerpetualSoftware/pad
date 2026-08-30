@@ -288,6 +288,78 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		pkg, ok := sel.X.(*ast.Ident)
 		return ok && pkg.Name == "http"
 	}
+	// The scan walks a SCOPE at a time rather than a whole function, because
+	// a single flat name-set is wrong in both directions (codex round 26):
+	//
+	//   - a function literal inside a handler was scanned with the OUTER
+	//     function's request names, so an unrelated inner variable that
+	//     happened to be called `r` was falsely flagged;
+	//   - a request that arrives only as a function literal's own parameter
+	//     was invisible, because literals were never given their own names.
+	//
+	// So each scope inherits its parent's request names, drops any the scope
+	// shadows with a parameter of a different type, and adds its own. Local
+	// aliases (`req := r`) are picked up too, since that is an ordinary thing
+	// for a handler to do and the alias reads the same body.
+	var scanScope func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool
+	scanScope = func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool {
+		if body == nil {
+			return false
+		}
+		reqNames := make(map[string]bool, len(inherited))
+		for k := range inherited {
+			reqNames[k] = true
+		}
+		// A parameter SHADOWS an inherited name whatever its type: if it is a
+		// request the name stays, otherwise the outer meaning is gone.
+		if params != nil {
+			for _, fld := range params.List {
+				isReq := isRequestPtr(fld.Type)
+				for _, nm := range fld.Names {
+					if isReq {
+						reqNames[nm.Name] = true
+					} else {
+						delete(reqNames, nm.Name)
+					}
+				}
+			}
+		}
+
+		found := false
+		var walk func(n ast.Node) bool
+		walk = func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.FuncLit:
+				// Its own scope; do not let the outer names leak in as-is.
+				if scanScope(node.Body, node.Type.Params, reqNames) {
+					found = true
+				}
+				return false
+			case *ast.AssignStmt:
+				// `req := r` and `req = r` alias the same request.
+				for i, rhs := range node.Rhs {
+					id, ok := rhs.(*ast.Ident)
+					if !ok || !reqNames[id.Name] || i >= len(node.Lhs) {
+						continue
+					}
+					if lhs, ok := node.Lhs[i].(*ast.Ident); ok {
+						reqNames[lhs.Name] = true
+					}
+				}
+			case *ast.SelectorExpr:
+				if !readerSelectors[node.Sel.Name] {
+					return true
+				}
+				if id, ok := node.X.(*ast.Ident); ok && reqNames[id.Name] {
+					found = true
+				}
+			}
+			return true
+		}
+		ast.Inspect(body, walk)
+		return found
+	}
+
 	fileReadsRequestBody := func(path string) bool {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, path, nil, 0)
@@ -295,42 +367,26 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 			t.Fatalf("parse %s: %v", path, err)
 		}
 		found := false
-		ast.Inspect(f, func(n ast.Node) bool {
-			fn, ok := n.(*ast.FuncDecl)
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
-				return true
+				continue
 			}
-			reqNames := map[string]bool{}
-			collect := func(fl *ast.FieldList) {
-				if fl == nil {
-					return
-				}
-				for _, fld := range fl.List {
+			seed := map[string]bool{}
+			if fn.Recv != nil {
+				for _, fld := range fn.Recv.List {
 					if !isRequestPtr(fld.Type) {
 						continue
 					}
 					for _, nm := range fld.Names {
-						reqNames[nm.Name] = true
+						seed[nm.Name] = true
 					}
 				}
 			}
-			collect(fn.Type.Params)
-			collect(fn.Recv)
-			if len(reqNames) == 0 {
-				return true
+			if scanScope(fn.Body, fn.Type.Params, seed) {
+				found = true
 			}
-			ast.Inspect(fn.Body, func(m ast.Node) bool {
-				sel, ok := m.(*ast.SelectorExpr)
-				if !ok || !readerSelectors[sel.Sel.Name] {
-					return true
-				}
-				if id, ok := sel.X.(*ast.Ident); ok && reqNames[id.Name] {
-					found = true
-				}
-				return true
-			})
-			return true
-		})
+		}
 		return found
 	}
 
@@ -383,9 +439,15 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	//     NEW reader added to it is covered by the existing entry and this
 	//     test stays green. The reason strings are what a reviewer checks
 	//     against; they are not permanent exemptions.
-	//  2. Only signature-declared requests are seen. A request stashed in a
-	//     struct field or captured by a closure is not a parameter, so this
-	//     scan does not find it.
+	//  2. Only requests reachable by NAME are seen. Closure parameters and
+	//     local aliases (`req := r`) are now covered, and a variable that
+	//     shadows a request name is correctly ignored — all three are pinned
+	//     by controls run against this scanner. Still invisible: a request
+	//     stored in a STRUCT FIELD, one obtained from a context, and one whose
+	//     type reaches http.Request through an alias or an embedded field,
+	//     since this matches the literal `*http.Request` spelling rather than
+	//     resolving types (codex round 26). Closing those means running the
+	//     type checker, not the parser.
 	//
 	// Both want per-call-site accounting, which is a different instrument.
 }
