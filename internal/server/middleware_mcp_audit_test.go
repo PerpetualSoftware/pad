@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -649,4 +650,63 @@ func TestMetricsToolLabelIsBounded(t *testing.T) {
 			t.Errorf("the marked label collides with the genuine one (%q)", label)
 		}
 	}
+}
+
+// TestMCPAudit_SynthesisedNamespaceIsReserved pins that a caller cannot name a
+// tool so that its UNMODIFIED value collides with a value this server
+// synthesises (codex round 25).
+//
+// Marking only what cleaning changed was not enough: "(unknown)" is what the
+// parser returns for a malformed body, and "(sanitised) pad_item" is what it
+// returns for a NUL-bearing pad_item — both are strings a caller may simply
+// choose. The leading "(" is now reserved, so any caller value entering that
+// namespace is marked and therefore differs from the synthesised one.
+func TestMCPAudit_SynthesisedNamespaceIsReserved(t *testing.T) {
+	nul := escNULLiteral
+
+	// What the server synthesises, obtained from the server rather than
+	// hardcoded, so this test cannot drift away from the real values.
+	synthUnknown, _ := parseMCPRequestBody([]byte(`not json at all`))
+	synthMarked, _ := parseMCPRequestBody([]byte(
+		`{"method":"tools/call","params":{"name":"pad_` + nul + `item","arguments":{}}}`))
+	if synthUnknown == "" || synthMarked == "" {
+		t.Fatalf("premise failed: expected synthesised values, got %q and %q", synthUnknown, synthMarked)
+	}
+
+	for _, tc := range []struct {
+		name, chosen, collidesWith string
+	}{
+		{"a tool named like the unknown fallback", synthUnknown, synthUnknown},
+		{"a tool named like a marked identity", synthMarked, synthMarked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := parseMCPRequestBody([]byte(
+				`{"method":"tools/call","params":{"name":` + mustJSONString(t, tc.chosen) + `,"arguments":{}}}`))
+			if got == tc.collidesWith {
+				t.Errorf("a caller choosing the name %q produces the same audit identity as the value "+
+					"the server synthesises; a genuine request is then indistinguishable from a "+
+					"substituted one", tc.chosen)
+			}
+			if got == "" {
+				t.Errorf("the call must still record something diagnosable, got an empty tool_name")
+			}
+		})
+	}
+
+	// Premise: an ordinary name outside the reserved namespace is untouched,
+	// so the assertions above pin the namespace rather than a parser that
+	// marks everything.
+	if got, _ := parseMCPRequestBody([]byte(
+		`{"method":"tools/call","params":{"name":"pad_item","arguments":{}}}`)); got != "pad_item" {
+		t.Fatalf("premise failed: an ordinary name must be recorded verbatim, got %q", got)
+	}
+}
+
+func mustJSONString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal %q: %v", s, err)
+	}
+	return string(b)
 }

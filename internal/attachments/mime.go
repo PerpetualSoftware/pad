@@ -294,6 +294,48 @@ func (e *uploadError) Error() string { return e.msg }
 // extension-vs-sniff sanity check. Keeping it small and deliberate means
 // unrecognized extensions just skip the cross-check (instead of forcing
 // us to enumerate every extension on the planet).
+// SafeFallbackExtension reports whether ext (with its leading dot, any case)
+// may be carried into a generic fallback filename when the original name was
+// unstorable.
+//
+// The bar is deliberately higher than "storable text". A fallback name is
+// SYNTHESISED by the server, so anything kept from the caller's input has to
+// earn its place:
+//
+//   - it must be a known extension, so an arbitrary suffix cannot ride along
+//     and later drive MIME or viewer behaviour that the bytes do not support;
+//   - it must map to an ALLOWED type, so the blocklist cannot be sidestepped
+//     by arriving through the fallback path instead of the ordinary one;
+//
+// A control-obfuscated suffix is excluded by the SAME map lookup rather than
+// by a separate charset test, and that is a deliberate choice recorded here
+// because a mutation exposed it. ".s<VT>vg" is storable (a vertical tab is
+// valid UTF-8 and not a NUL) but matches no key, so it is already refused.
+// I first wrote an explicit alphanumeric loop as well; removing it changed
+// nothing, because no key in extMIMEMap contains a non-alphanumeric character.
+// Keeping a guard that cannot fire, with a comment claiming it stops control
+// characters, would have misdescribed which line does the work — so the loop
+// is gone and TestExtMIMEMapKeysArePlain enforces the property it relied on.
+//
+// That divergence — storable here, stripped by Content-Disposition sanitising,
+// so ".s<VT>vg" reaches the client as ".svg" past a blocklist that never
+// evaluated it — is a pre-existing hazard on the ORDINARY upload path, where
+// the name is not synthesised at all. Tracked as BUG-2818; this predicate only
+// refuses to add a second door to it.
+//
+// Anything else is dropped and the fallback stays extensionless.
+func SafeFallbackExtension(ext string) bool {
+	if len(ext) < 2 || len(ext) > 16 || ext[0] != '.' {
+		return false
+	}
+	mimeStr, ok := extMIMEMap[strings.ToLower(ext)]
+	if !ok {
+		return false
+	}
+	_, allowed := LookupMIME(NormalizeMIME(mimeStr))
+	return allowed
+}
+
 var extMIMEMap = map[string]string{
 	".png":  "image/png",
 	".jpg":  "image/jpeg",

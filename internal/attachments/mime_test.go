@@ -306,3 +306,35 @@ func TestValidateUpload_RejectsExeByExtensionAlone(t *testing.T) {
 		t.Errorf("code = %q, want extension_blocked", code)
 	}
 }
+
+// TestExtMIMEMapKeysArePlain enforces the property SafeFallbackExtension
+// relies on instead of restating it as a comment.
+//
+// That predicate has no charset test of its own: a control-obfuscated suffix
+// like ".s<VT>vg" is refused because it matches no key here, not because
+// anything inspects its bytes. I originally wrote an explicit alphanumeric
+// loop too, and removing it changed no behaviour — a guard that cannot fire,
+// carrying a comment about what it protects against, misdescribes which line
+// does the work.
+//
+// So the loop is gone and this test holds the invariant up. If a key with a
+// dash, a space, or a control byte is ever added, this fails and whoever adds
+// it has to decide whether SafeFallbackExtension needs its own charset test
+// back.
+func TestExtMIMEMapKeysArePlain(t *testing.T) {
+	if len(extMIMEMap) == 0 {
+		t.Fatal("premise failed: the extension map is empty, so this test asserts nothing")
+	}
+	for ext := range extMIMEMap {
+		if len(ext) < 2 || ext[0] != '.' {
+			t.Errorf("extension key %q must start with a dot and have a body", ext)
+			continue
+		}
+		for _, r := range ext[1:] {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'z') {
+				t.Errorf("extension key %q contains %q, which is not lowercase alphanumeric; "+
+					"SafeFallbackExtension has no charset test of its own and relies on this", ext, r)
+			}
+		}
+	}
+}

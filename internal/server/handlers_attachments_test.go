@@ -986,6 +986,56 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		}
 	})
 
+	t.Run("a control-obfuscated extension does not survive the fallback", func(t *testing.T) {
+		// The one with teeth (codex round 25). A vertical tab is valid UTF-8
+		// and not a NUL, so bindableText calls ".s<VT>vg" storable. The
+		// extension blocklist then sees no KNOWN extension and passes it,
+		// and Content-Disposition sanitising strips the control byte — so the
+		// client is handed ".svg" for a name the blocklist never evaluated as
+		// SVG. Carrying it into a synthesised fallback name would be adding a
+		// door to that; the fallback now requires a known, allowed,
+		// alphanumeric extension.
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''bad%00.s%0Bvg`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload should still succeed, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if strings.Contains(strings.ToLower(got.Filename), "svg") {
+			t.Errorf("a control-obfuscated .svg reached the stored name as %q; sanitising the header "+
+				"later turns that into .svg for the client, past a blocklist that never saw it", got.Filename)
+		}
+		if got.Filename != "upload" {
+			t.Errorf("expected the extension to be dropped entirely, got %q", got.Filename)
+		}
+	})
+
+	t.Run("an unknown extension does not survive the fallback", func(t *testing.T) {
+		// ".foo" is plain text and plain alphanumeric, but it is not a known
+		// extension, so it cannot be carried into a name the SERVER
+		// synthesised — otherwise an arbitrary suffix rides along on content
+		// that does not support it.
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''bad%00.foo`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload should still succeed, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if got.Filename != "upload" {
+			t.Errorf("an unknown extension must be dropped from a synthesised name, got %q", got.Filename)
+		}
+	})
+
 	t.Run("an unusable extension does not survive the fallback", func(t *testing.T) {
 		// The counterpart leg. Keeping a storable extension must not become
 		// "keep whatever trails the last dot" — an extension that is itself

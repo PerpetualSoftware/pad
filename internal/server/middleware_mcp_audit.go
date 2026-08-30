@@ -431,7 +431,28 @@ func metricsToolLabel(tool string) string {
 const sanitisedLabelPrefix = "(sanitised) "
 
 func auditLabel(clean string, changed bool) string {
-	if !changed {
+	// A caller can legitimately name a tool "(unknown)", or "(sanitised)
+	// pad_item", and then a genuine request is indistinguishable from a
+	// substituted one — the marker was forgeable and the older "(unknown)" /
+	// "tools/call" sentinels always were (codex round 25).
+	//
+	// So the leading "(" is RESERVED for values this server synthesises. Any
+	// caller-supplied name that enters that namespace is marked too, whether
+	// or not cleaning touched it. A marked "pad_item" is "(sanitised)
+	// pad_item"; a caller who sends that literal string gets "(sanitised)
+	// (sanitised) pad_item", which is a different value, so the two never
+	// collide. Same for a tool called "(unknown)".
+	//
+	// This is cheaper and more complete than marking only what cleaning
+	// changed, and it needs no schema change. The principled fix for the
+	// whole class is a separate provenance FIELD rather than sentinel strings
+	// in a caller-controlled namespace — BUG-2819, filed rather than folded
+	// in because it is a migration on two tables and this is not.
+	//
+	// Cost, stated: an MCP tool genuinely named with a leading "(" is
+	// recorded marked. Tool names are identifiers in every catalog this
+	// server knows, so nothing legitimate lands here today.
+	if !changed && !strings.HasPrefix(clean, "(") {
 		return clean
 	}
 	return sanitisedLabelPrefix + clean

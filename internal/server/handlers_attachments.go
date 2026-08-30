@@ -344,9 +344,17 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		// lines below, which has always produced "upload.bin" (codex round
 		// 24). Bounded to a short extension so a hostile name cannot smuggle
 		// a long tail through the fallback.
-		ext := filepath.Ext(filename)
-		if len(ext) > 1 && len(ext) <= 16 && bindableText(ext) {
-			filename = "upload" + ext
+		// bindableText is NOT the bar here (codex round 25). It permits
+		// control characters — they are valid UTF-8 and not NUL — and a
+		// control character survives storage but is STRIPPED when the name
+		// is written into Content-Disposition. So ".s<VT>vg" passes the
+		// extension blocklist, which sees no known extension, and reappears
+		// as ".svg" at the client. attachments.SafeFallbackExtension requires
+		// a KNOWN, ALLOWED, plain-alphanumeric extension instead, so a
+		// synthesised name can only carry a suffix the product already
+		// accepts on the ordinary path.
+		if ext := filepath.Ext(filename); attachments.SafeFallbackExtension(ext) {
+			filename = "upload" + strings.ToLower(ext)
 		} else {
 			filename = "upload"
 		}
