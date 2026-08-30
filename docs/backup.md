@@ -193,7 +193,8 @@ fail against PostgreSQL's JSONB parser during the copy rather than being
 reported up front.
 
 If you hit either, the affected value has to be repaired at the source before
-the export or migration will go through. A preflight check and a repair path
+the import or migration will go through — the export itself succeeds either
+way, as described above. A preflight check and a repair path
 are tracked as BUG-2810; until then the failing row is named in the error.
 
 

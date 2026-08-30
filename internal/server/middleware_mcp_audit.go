@@ -412,24 +412,23 @@ func metricsToolLabel(tool string) string {
 	return tool
 }
 
-// auditLabel marks a value that only became well-formed by being cleaned.
-//
-// Cleaning is lossy, so without a marker "pad_<NUL>item" is stored as
-// "pad_item" — an audit row and a Prometheus label indistinguishable from a
-// genuine pad_item call, and mintable by anyone who can send a request
+// sanitisedLabelPrefix marks an identity that only became well-formed after
+// cleaning. Cleaning is lossy, so without a marker "pad_<NUL>item" is stored
+// as "pad_item" — an audit row and a Prometheus label indistinguishable from
+// a genuine pad_item call, and mintable by anyone who can send a request
 // (codex round 23). Marking keeps the diagnostic value of the cleaned text
 // while making the row honest about what arrived.
 //
-// The parenthesised form is the one this file already uses for a synthesised
-// value ("(unknown)"), and a real JSON-RPC method or MCP tool name does not
-// begin with "(" — so the marker cannot itself be forged by a caller choosing
-// a clever name.
-// sanitisedLabelPrefix marks an identity that only became well-formed after
-// cleaning. Parenthesised like this file's other synthesised value,
-// "(unknown)", and a real JSON-RPC method or MCP tool name does not begin with
-// "(" — so a caller cannot forge the marker by choosing a clever name.
+// The parenthesised spelling alone does NOT make the marker unforgeable — a
+// caller can name a tool "(sanitised) x" — which is why auditLabel below
+// reserves the whole leading-"(" namespace and re-marks anything
+// caller-supplied that enters it. Two earlier copies of this comment rested
+// the non-forgeability claim on "real names do not begin with (", the exact
+// reasoning round 25 retired (codex closing round 3).
 const sanitisedLabelPrefix = "(sanitised) "
 
+// auditLabel applies the marker; see the body for the namespace-reservation
+// rule that makes it non-forgeable.
 func auditLabel(clean string, changed bool) string {
 	// A caller can legitimately name a tool "(unknown)", or "(sanitised)
 	// pad_item", and then a genuine request is indistinguishable from a

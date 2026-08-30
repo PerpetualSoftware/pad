@@ -359,11 +359,14 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	//     opposite while the controls asserted the flagging (codex closing
 	//     round 2). All are pinned by controls run against this scanner.
 	//     Still invisible: a request stored in a STRUCT FIELD, one obtained
-	//     from a context, and one whose type reaches http.Request through an
-	//     alias or an embedded field, since this matches the literal
-	//     `*http.Request` spelling rather than resolving types (codex round
-	//     26). Closing those means running the type checker, not the parser —
-	//     tracked as BUG-2820.
+	//     from a context, one whose type reaches http.Request through an
+	//     alias or an embedded field, and the ordinary alias forms the
+	//     fixed-point does not walk — a `var req = r` declaration, a
+	//     call-derived alias (`req := r.WithContext(ctx)`), named results,
+	//     and range bindings — since this matches literal spellings rather
+	//     than resolving types (codex rounds 26/29, closing round 3).
+	//     Closing the class means running the type checker, not another
+	//     parser patch — tracked as BUG-2820, which enumerates these forms.
 	//
 	// Both want per-call-site accounting, which is a different instrument.
 }
@@ -1038,11 +1041,20 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 		}
 	}
 
-	if safeTruncateUses < 4 {
-		t.Errorf("found only %d truncateBindableText call sites; the scan or the wiring is broken", safeTruncateUses)
+	// Exact counts, not lower bounds — a floor let a real call site vanish
+	// while the threshold stayed satisfied (codex closing round 3). Each
+	// total includes the helper's own declaration (the scan counts raw
+	// occurrences), so today that is 1 declaration + 4 call sites for each.
+	// MEASURED against this package, same discipline as the reader counts
+	// above: a changed number is the signal to re-justify, in either
+	// direction.
+	if safeTruncateUses != 5 {
+		t.Errorf("truncateBindableText occurrences = %d, want 5 (1 declaration + 4 call sites); "+
+			"a site was added or removed — re-justify and re-pin", safeTruncateUses)
 	}
-	if safeUAUses < 4 {
-		t.Errorf("found only %d requestUserAgent call sites; the scan or the wiring is broken", safeUAUses)
+	if safeUAUses != 5 {
+		t.Errorf("requestUserAgent occurrences = %d, want 5 (1 declaration + 4 call sites); "+
+			"a site was added or removed — re-justify and re-pin", safeUAUses)
 	}
 }
 

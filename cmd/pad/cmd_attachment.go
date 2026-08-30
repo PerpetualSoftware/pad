@@ -305,9 +305,14 @@ and save it to disk. Prints the absolute path of the saved file on
 stdout — designed for agents to use as $(pad attachment view <id>).
 
 With no -o flag, the file lands in a fresh OS temp directory. The
-filename comes from the attachment's Content-Disposition header so
-agents can hand the path to image-viewing tools without rewriting
-the extension.
+filename starts from the attachment's Content-Disposition header,
+reduced to a safe local path component (whitespace trimmed, path
+separators and dot-only or trailing-dot forms removed — stricter
+than what the server stores, because this name is written to YOUR
+filesystem); when the result has no extension, the canonical
+extension for the attachment's MIME type is appended so viewers
+that dispatch on extension still open it. An unusable name falls
+back to the attachment id, reduced the same way.
 
 With -o <path>, the file is written to that path using the same
 atomic temp-then-rename strategy as 'pad attachment download'.
@@ -341,7 +346,18 @@ Examples:
 				}
 				name := safeLocalFilename(parseAttachmentFilename(meta.ContentDisposition))
 				if name == "" {
-					name = id + extensionForMIME(meta.MIME)
+					// The id is a CLI argument, but in the documented agent
+					// flow it is harvested from item CONTENT (a
+					// "pad-attachment:" ref another workspace member wrote),
+					// so it gets the same reduction as the server-supplied
+					// name before becoming a path component — a raw
+					// traversal-shaped id joined onto the temp dir escapes
+					// it (codex closing round 3).
+					base := safeLocalFilename(id)
+					if base == "" {
+						base = "attachment"
+					}
+					name = base + extensionForMIME(meta.MIME)
 				} else if filepath.Ext(name) == "" {
 					// A stored name can be extensionless — most often the
 					// server's generic "upload" fallback, used when the

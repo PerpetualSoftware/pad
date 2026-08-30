@@ -1727,7 +1727,12 @@ func (c *Client) UploadAttachment(wsSlug, itemRef, filename string, body io.Read
 // silently falls back to the original if the derived row doesn't exist
 // (TASK-872 / TASK-878 contract).
 func (c *Client) DownloadAttachment(wsSlug, attachmentID, variant string, w io.Writer) (mime string, size int64, err error) {
-	path := "/workspaces/" + wsSlug + "/attachments/" + attachmentID
+	// PathEscape: the id reaches this URL from item content ("pad-attachment:"
+	// refs other workspace members wrote). Raw concatenation let a
+	// traversal-shaped id ("../items/x") re-route the request to a DIFFERENT
+	// endpoint whose 200 then vouched for the id downstream — the view
+	// command builds a local filename from it (codex closing round 3).
+	path := "/workspaces/" + wsSlug + "/attachments/" + url.PathEscape(attachmentID)
 	if variant != "" {
 		path += "?variant=" + url.QueryEscape(variant)
 	}
@@ -1772,7 +1777,12 @@ type AttachmentMetadata struct {
 // structured metadata. Variant is forwarded the same way as
 // DownloadAttachment — empty string for the original blob.
 func (c *Client) HeadAttachment(wsSlug, attachmentID, variant string) (*AttachmentMetadata, error) {
-	path := "/workspaces/" + wsSlug + "/attachments/" + attachmentID
+	// PathEscape: the id reaches this URL from item content ("pad-attachment:"
+	// refs other workspace members wrote). Raw concatenation let a
+	// traversal-shaped id ("../items/x") re-route the request to a DIFFERENT
+	// endpoint whose 200 then vouched for the id downstream — the view
+	// command builds a local filename from it (codex closing round 3).
+	path := "/workspaces/" + wsSlug + "/attachments/" + url.PathEscape(attachmentID)
 	if variant != "" {
 		path += "?variant=" + url.QueryEscape(variant)
 	}
