@@ -1054,3 +1054,76 @@ func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
 		t.Error("an unlisted key must not be treated as JSON-encoded whatever its casing")
 	}
 }
+
+// TestBodyDecodesNULKnownMapModelDisagreements pins the four measured
+// disagreements between this scan's map[string]any model and encoding/json's
+// typed decode (BUG-2803 rounds 16-17, lead ruling day-68: land-and-follow).
+// They are documented on bodyDecodesNUL; this is the instrument that keeps
+// that documentation and the release note from going stale.
+//
+// Two of the four are ACCEPTED over-refusals. The other two are KNOWN GAPS
+// whose fix is the BUG-2812 token-walk unit — so those legs assert the WRONG
+// answer on purpose. That is deliberate and it is the point: when BUG-2812
+// lands, this test FAILS, which is the signal to update the doc comment, the
+// release note and this test together rather than discovering months later
+// that the note describes a version of the check that no longer exists.
+func TestBodyDecodesNULKnownMapModelDisagreements(t *testing.T) {
+	t.Run("accepted over-refusals", func(t *testing.T) {
+		// (3) An unknown field is scanned though no handler reads it. The
+		// scan has no destination type by design, so it cannot tell a
+		// forward-compatible field from a real one. Observable compatibility
+		// change; stated in the release note.
+		unknown := `{"title":"valid","future_field":"a` + escNULLiteral + `b"}`
+		if !bodyDecodesNUL([]byte(unknown)) {
+			t.Error("(3) an unknown field carrying a NUL escape is refused today; if that changed, " +
+				"update the disposition on bodyDecodesNUL and the release note's compatibility line")
+		}
+
+		// (4) Case-variant duplicates: the typed decode keeps the LAST
+		// spelling and discards the NUL, the map scan sees both and refuses.
+		// Same root as (1), opposite direction.
+		caseDup := `{"title":"a` + escNULLiteral + `b","TITLE":"safe"}`
+		if !bodyDecodesNUL([]byte(caseDup)) {
+			t.Error("(4) a case-variant duplicate is refused today even though the decode drops the " +
+				"NUL spelling; if that changed, update the disposition on bodyDecodesNUL")
+		}
+	})
+
+	t.Run("known gaps owned by BUG-2812", func(t *testing.T) {
+		// (1) Duplicate keys: map[string]any REPLACES, encoding/json MERGES
+		// into an already-populated map field. The scan structurally cannot
+		// see the shadowed first occurrence.
+		dupKey := `{"fields_patch":{"orphan":"a` + escNULLiteral + `b"},"fields_patch":{"status":"open"}}`
+		if bodyDecodesNUL([]byte(dupKey)) {
+			t.Error("(1) now DETECTED — the map-model duplicate-key gap is closed. That is the " +
+				"BUG-2812 token walk landing: update bodyDecodesNUL's disposition block, the " +
+				"release note's filed-residuals line, and delete this leg")
+		}
+
+		// (2) A scan failure lets a known-bad value through: the overflowing
+		// number fails the `any` unmarshal, this function returns false so the
+		// caller's decode owns the "invalid JSON" message, and the typed
+		// decode then SKIPS the unknown field and accepts the NUL title.
+		scanFail := `{"title":"a` + escNULLiteral + `b","ignored":1e999}`
+		if bodyDecodesNUL([]byte(scanFail)) {
+			t.Error("(2) now DETECTED — the scan-failure passthrough is closed. That is the " +
+				"BUG-2812 token walk landing: update bodyDecodesNUL's disposition block, the " +
+				"release note's filed-residuals line, and delete this leg")
+		}
+
+		// Premise for both legs above: the SAME bodies with their
+		// disagreement mechanism removed ARE detected. Without this, the two
+		// assertions would pass against a bodyDecodesNUL that detected
+		// nothing at all, and would prove nothing about the gaps they name.
+		singleKey := `{"fields_patch":{"orphan":"a` + escNULLiteral + `b"}}`
+		if !bodyDecodesNUL([]byte(singleKey)) {
+			t.Fatal("premise failed: the duplicate-key body's payload is not detectable even when " +
+				"spelled once, so the (1) leg above is vacuous")
+		}
+		parseable := `{"title":"a` + escNULLiteral + `b","ignored":1}`
+		if !bodyDecodesNUL([]byte(parseable)) {
+			t.Fatal("premise failed: the scan-failure body's payload is not detectable even when " +
+				"the body parses, so the (2) leg above is vacuous")
+		}
+	})
+}

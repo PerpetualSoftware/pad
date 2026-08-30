@@ -424,6 +424,64 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 // A malformed body returns false rather than an error: the caller's decode
 // runs next and reports the JSON error itself, so there is exactly one place
 // that phrases "invalid JSON" and this function never has to agree with it.
+// That choice has a consequence, and it is finding (2) below rather than a
+// clean separation of concerns.
+//
+// WHAT THIS CHECK DOES NOT COVER — four measured disagreements between what
+// this scan sees and what the typed decode does, left OPEN deliberately
+// (BUG-2803 rounds 16-17, lead ruling day-68: land-and-follow). They are
+// recorded here because this is the function a reader consults before
+// trusting the check, and an unqualified doc comment above an incomplete
+// guard is how the next person inherits a false belief.
+//
+// The root cause of all four is one thing: this scan decodes into
+// map[string]any, and encoding/json's typed decode does NOT agree with that
+// model about keys. TWO UNDER-REFUSE (a NUL gets through) and TWO
+// OVER-REFUSE (a legitimate body is rejected).
+//
+// UNDER-REFUSALS — these are the BUG-2812 unit's spec, not a TODO here. Both
+// dissolve under a token-stream walk that never builds values, which is that
+// unit's design; patching them into the map model would be re-plumbing an
+// 18-commit branch late under review pressure, and this branch's one
+// regression came from exactly that.
+//
+//  1. DUPLICATE KEYS MERGE DIFFERENTLY (P1). For
+//     {"fields_patch":{"orphan":"<NUL>"},"fields_patch":{"status":"open"}},
+//     decoding into map[string]any REPLACES the first value, so this scan
+//     sees only `status`; encoding/json MERGES into an already-populated map
+//     field, so the handler keeps both and persists the NUL. The `any` scan
+//     structurally cannot see the shadowed occurrence — no amount of care
+//     inside this model reaches it.
+//  2. A SCAN FAILURE LETS A KNOWN-BAD VALUE THROUGH (P1). For
+//     {"title":"a<NUL>b","ignored":1e999}, the overflowing number makes the
+//     `any` unmarshal fail, this function returns false (see the paragraph
+//     above), and the typed decode then SKIPS the unknown field and accepts
+//     the body with its NUL title. Returning an error instead would reject
+//     bodies the handlers accept today, so the fix is not "refuse on scan
+//     failure" — it is not building values in the first place.
+//
+// OVER-REFUSALS — dispositions, ACCEPTED as-is, and the reason each is
+// tolerable is that it refuses rather than admits:
+//
+//  3. UNKNOWN FIELDS ARE SCANNED THOUGH HANDLERS IGNORE THEM (P2).
+//     {"title":"valid","future_field":"<NUL>"} is refused although the value
+//     reaches nothing. Scoping the scan to known fields would need the
+//     destination type, which this function deliberately does not have (see
+//     WHY NOT REFLECT above) — so the alternative is not a smaller change,
+//     it is a different design. ACCEPTED, and it is an OBSERVABLE
+//     COMPATIBILITY CHANGE: a client sending a forward-compatible field with
+//     a NUL escape in it now gets a 400 where it got a 200. Stated in the
+//     release note for that reason, not only here.
+//  4. CASE-VARIANT DUPLICATES OVER-REJECT (P2). For
+//     {"title":"<NUL>","TITLE":"safe"} the typed decode keeps `safe` and
+//     discards the NUL, while this scan sees both keys and refuses. Same
+//     root as (1), opposite direction: there the map model hides an
+//     occurrence, here it retains one the decode drops. ACCEPTED — refusing
+//     a body that deliberately spells one field twice in two cases costs a
+//     caller nothing real.
+//
+// The asymmetry is the honest summary: within the map model, (1) and (4) are
+// the same defect seen from two sides, and only one of them fails safe.
 func bodyDecodesNUL(raw []byte) bool {
 	if !bytes.Contains(raw, unicodeEscapePrefix) {
 		return false
