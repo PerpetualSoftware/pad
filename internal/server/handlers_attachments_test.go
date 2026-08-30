@@ -973,8 +973,41 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		if strings.ContainsRune(got.Filename, 0) {
 			t.Errorf("the stored filename still carries a NUL: %q", got.Filename)
 		}
+		// The EXTENSION survives the fallback. The unusable part of
+		// "sh<NUL>ot.png" is the stem; ".png" is ordinary text and is what
+		// every consumer dispatches on — Content-Disposition, the web
+		// download anchor, bundle export naming, and `pad attachment view`,
+		// whose contract is handing a path to something that opens files by
+		// extension. Dropping it made this fallback lossier than the
+		// empty-name one, which has always produced "upload.bin" (codex
+		// round 24).
+		if got.Filename != "upload.png" {
+			t.Errorf("expected the generic fallback to keep the storable extension, got %q", got.Filename)
+		}
+	})
+
+	t.Run("an unusable extension does not survive the fallback", func(t *testing.T) {
+		// The counterpart leg. Keeping a storable extension must not become
+		// "keep whatever trails the last dot" — an extension that is itself
+		// unstorable has to be dropped, or the fallback reintroduces exactly
+		// the value it exists to remove.
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''shot.p%00ng`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload should still succeed, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if strings.ContainsRune(got.Filename, 0) {
+			t.Errorf("the stored filename still carries a NUL: %q", got.Filename)
+		}
 		if got.Filename != "upload" {
-			t.Errorf("expected the generic fallback name, got %q", got.Filename)
+			t.Errorf("an unstorable extension must be dropped, not carried into the fallback; got %q",
+				got.Filename)
 		}
 	})
 

@@ -333,7 +333,23 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// (codex round 4, BUG-2803).
 	filename := filepath.Base(header.Filename)
 	if !bindableText(filename) {
-		filename = "upload"
+		// Keep the EXTENSION when it is itself storable. The unusable part
+		// of a name like "sh<NUL>ot.png" is the stem; ".png" is ordinary
+		// text, and it is what every downstream consumer dispatches on —
+		// Content-Disposition, the web download anchor, bundle export naming,
+		// and `pad attachment view`, whose whole contract is handing a path to
+		// something that opens files by extension.
+		//
+		// Dropping it made this fallback lossier than the empty-name one two
+		// lines below, which has always produced "upload.bin" (codex round
+		// 24). Bounded to a short extension so a hostile name cannot smuggle
+		// a long tail through the fallback.
+		ext := filepath.Ext(filename)
+		if len(ext) > 1 && len(ext) <= 16 && bindableText(ext) {
+			filename = "upload" + ext
+		} else {
+			filename = "upload"
+		}
 	}
 	if filename == "" || filename == "." || filename == "/" {
 		filename = "upload.bin"

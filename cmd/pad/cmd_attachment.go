@@ -350,6 +350,20 @@ Examples:
 				name := parseAttachmentFilename(meta.ContentDisposition)
 				if name == "" {
 					name = id + extensionForMIME(meta.MIME)
+				} else if filepath.Ext(name) == "" {
+					// A stored name can be extensionless — most often the
+					// server's generic "upload" fallback, used when the
+					// uploaded filename could not be stored as text
+					// (BUG-2803). The old check only covered an ABSENT name,
+					// so any non-empty one was taken as authoritative and the
+					// MIME fallback never ran.
+					//
+					// That matters because this command's contract is to hand
+					// the path to whatever opens files — `open "$IMG"`,
+					// `xdg-open`, an image viewer — and those dispatch on the
+					// extension. An extensionless temp file silently stops
+					// opening as an image (codex round 24).
+					name += extensionForMIME(meta.MIME)
 				}
 				dir, err := os.MkdirTemp("", "pad-attachment-")
 				if err != nil {
