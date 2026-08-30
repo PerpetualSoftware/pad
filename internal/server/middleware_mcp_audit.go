@@ -408,12 +408,22 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	// the round-20 sanitise created and did not test). Cleaning before the
 	// test makes the invariant structural instead of something every return
 	// has to remember.
-	method := sanitiseStoredText(env.Method)
-	if method == "" {
+	// CLASSIFY ON THE RAW METHOD, store the sanitised one. Sanitising first
+	// and then comparing let "tools/<NUL>call" clean up INTO "tools/call",
+	// so the parser extracted params.name and hashed the arguments for a
+	// method that was never tools/call — producing an audit row identical to
+	// a genuine call (measured: tool_name="pad_item" with a full args_hash).
+	// That was a regression introduced by the round-21 fix, which reordered
+	// these two steps to keep the fallback alive; codex round 22 caught it.
+	// Cleaning is for the value that gets STORED. Dispatch decisions read
+	// what the client actually sent.
+	if env.Method != "tools/call" {
+		if method := sanitiseStoredText(env.Method); method != "" {
+			return method, ""
+		}
+		// Empty only after cleaning — keep the visible signal rather than
+		// storing "". This is the round-21 boundary, preserved.
 		return "(unknown)", ""
-	}
-	if method != "tools/call" {
-		return method, ""
 	}
 	var p struct {
 		Name      string          `json:"name"`

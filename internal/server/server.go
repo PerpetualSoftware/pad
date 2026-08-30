@@ -2203,7 +2203,15 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 	// while json.Unmarshal answers a SyntaxError instead, which that check
 	// cannot see. Found by TestPlaybookRunAcceptsEmptyBody, which is exactly
 	// the wiring a helper-level change is blind to.
-	if len(bytes.TrimSpace(raw)) == 0 {
+	// Trim only the four bytes JSON itself calls whitespace. bytes.TrimSpace
+	// uses unicode.IsSpace, which also strips \v, \f, U+00A0 and friends —
+	// none of which encoding/json accepts. With TrimSpace a body of just
+	// "\v" looked EMPTY here and returned io.EOF, so an EOF-tolerant caller
+	// (playbook run, share links) treated a syntactically invalid body as an
+	// ABSENT one and proceeded. Same Go-versus-spec whitespace divergence
+	// that bites when a Go trim stands in for another grammar's definition
+	// (codex round 22).
+	if len(bytes.Trim(raw, " \t\r\n")) == 0 {
 		return fmt.Errorf("invalid JSON: %w", io.EOF)
 	}
 	// Refuse a decoded NUL BEFORE unmarshalling, so the value never exists

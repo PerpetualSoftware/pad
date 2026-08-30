@@ -502,3 +502,35 @@ func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 		t.Fatalf("premise failed: an ordinary method must round-trip, got %q", got)
 	}
 }
+
+// TestMCPAudit_RawMethodDecidesClassification pins that dispatch reads what the
+// client SENT while only the stored value is cleaned (codex round 22).
+//
+// The round-21 fix sanitised before comparing, so "tools/<NUL>call" cleaned up
+// INTO the literal "tools/call" and the parser then extracted params.name and
+// hashed the arguments. Measured before the fix: tool_name="pad_item" with a
+// full 64-character args_hash — an audit row indistinguishable from a genuine
+// pad_item call, forgeable by anyone who can send a request.
+func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
+	nul := "\u0000" // the escape, not the character
+
+	name, hash := parseMCPRequestBody([]byte(
+		`{"method":"tools/` + nul + `call","params":{"name":"pad_item","arguments":{}}}`))
+	if name == "pad_item" {
+		t.Errorf("a method that is not tools/call must NOT have params.name lifted out of it; " +
+			"tool_name came back as the inner tool name, which forges a genuine call")
+	}
+	if hash != "" {
+		t.Errorf("args_hash must be empty for a non-tools/call method, got %d chars", len(hash))
+	}
+
+	// Control: a genuine tools/call still classifies and still hashes, so the
+	// assertions above pin the classification rather than a parser that
+	// stopped working.
+	name, hash = parseMCPRequestBody([]byte(
+		`{"method":"tools/call","params":{"name":"pad_item","arguments":{}}}`))
+	if name != "pad_item" || hash == "" {
+		t.Fatalf("premise failed: a genuine tools/call must still yield its name and a hash, got %q / %d chars",
+			name, len(hash))
+	}
+}

@@ -1181,3 +1181,52 @@ func TestUnknownFieldRefusalThroughTheHandler(t *testing.T) {
 		t.Errorf("the 400 should name the cause, got: %s", got.Body.String())
 	}
 }
+
+// TestDecodeJSONTrimsOnlyJSONWhitespace pins that the empty-body shortcut uses
+// JSON's whitespace set, not Go's (codex round 22).
+//
+// bytes.TrimSpace uses unicode.IsSpace, which strips \v, \f, U+00A0 and more.
+// encoding/json accepts none of those. So a body of just "\v" trimmed to
+// EMPTY here and returned io.EOF, and an EOF-tolerant caller — playbook run
+// treats errors.Is(err, io.EOF) as "no arguments supplied" and runs anyway —
+// took a syntactically invalid body for an ABSENT one.
+//
+// The four legs matter in pairs: real JSON whitespace must still shortcut to
+// EOF (or the playbook contract breaks), and non-JSON whitespace must NOT (or
+// the divergence is still there).
+func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
+	srv := testServer(t)
+
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantEOF bool
+	}{
+		{"space and tab and newline", " \t\r\n", true},
+		{"empty", "", true},
+		{"vertical tab", "\v", false},
+		{"form feed", "\f", false},
+		{"non-breaking space", "\u00a0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var v map[string]any
+			req := httptest.NewRequest("POST", "/x", strings.NewReader(tc.body))
+			err := decodeJSON(req, &v)
+			if err == nil {
+				t.Fatalf("expected an error for body %q", tc.body)
+			}
+			gotEOF := errors.Is(err, io.EOF)
+			if gotEOF != tc.wantEOF {
+				if tc.wantEOF {
+					t.Errorf("body %q is JSON whitespace and must read as an ABSENT body (io.EOF), "+
+						"or the playbook-run empty-body contract breaks; got %v", tc.body, err)
+				} else {
+					t.Errorf("body %q is NOT JSON whitespace — encoding/json would reject it — so it "+
+						"must NOT be reported as an absent body; an EOF-tolerant caller would proceed "+
+						"on invalid input. got io.EOF", tc.body)
+				}
+			}
+		})
+	}
+	_ = srv
+}
