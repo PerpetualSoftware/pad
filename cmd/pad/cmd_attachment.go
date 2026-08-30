@@ -264,7 +264,7 @@ func parseAttachmentFilename(disposition string) string {
 //
 // Returns "" when nothing usable survives, which the caller already handles by
 // falling back to the attachment id.
-func safeLocalFilename(name, id string) string {
+func safeLocalFilename(name string) string {
 	name = filepath.Base(strings.TrimSpace(name))
 	switch name {
 	case "", ".", "..", string(filepath.Separator):
@@ -343,7 +343,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				name := safeLocalFilename(parseAttachmentFilename(meta.ContentDisposition), id)
+				name := safeLocalFilename(parseAttachmentFilename(meta.ContentDisposition))
 				if name == "" {
 					name = id + extensionForMIME(meta.MIME)
 				} else if filepath.Ext(name) == "" {

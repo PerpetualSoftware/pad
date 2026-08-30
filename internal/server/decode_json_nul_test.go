@@ -254,142 +254,6 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	// BUG-2811 tracks, were entirely invisible to it (codex round 13). A
 	// completeness test with a blind spot is worse than none, because it
 	// reads as coverage.
-	// AST, not a regex. Three defects in the lexical version, all found by
-	// codex round 22, all in the direction that matters for a test whose job
-	// is to say nothing is invisible:
-	//
-	//   - it recognised only the names `r` and `req`, so a handler holding
-	//     its request as `httpReq` or `orig` was INVISIBLE;
-	//   - it matched inside COMMENTS, so prose could make a file look scanned;
-	//   - broadening it to any identifier (my first attempt at this fix)
-	//     matched every unrelated `.Body` field — input.Body, comment.Body,
-	//     fetched.Body — and the only route to green was listing five files
-	//     that read no request body at all, which would then have HIDDEN real
-	//     readers later added to them. A false accounting entry is worse than
-	//     a missing one, so that attempt was abandoned rather than tuned.
-	//
-	// Keying on the TYPE fixes all three: find every identifier declared as
-	// *http.Request in a function signature, then look for reader selectors on
-	// exactly those identifiers. Names are irrelevant, comments are not part
-	// of the AST, and `.Body` on anything else is not a match.
-	readerSelectors := map[string]bool{
-		"Body": true, "FormValue": true, "PostFormValue": true, "ParseForm": true,
-		"ParseMultipartForm": true, "MultipartForm": true, "PostForm": true,
-	}
-	isRequestPtr := func(e ast.Expr) bool {
-		star, ok := e.(*ast.StarExpr)
-		if !ok {
-			return false
-		}
-		sel, ok := star.X.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Request" {
-			return false
-		}
-		pkg, ok := sel.X.(*ast.Ident)
-		return ok && pkg.Name == "http"
-	}
-	// The scan walks a SCOPE at a time rather than a whole function, because
-	// a single flat name-set is wrong in both directions (codex round 26):
-	//
-	//   - a function literal inside a handler was scanned with the OUTER
-	//     function's request names, so an unrelated inner variable that
-	//     happened to be called `r` was falsely flagged;
-	//   - a request that arrives only as a function literal's own parameter
-	//     was invisible, because literals were never given their own names.
-	//
-	// So each scope inherits its parent's request names, drops any the scope
-	// shadows with a parameter of a different type, and adds its own. Local
-	// aliases (`req := r`) are picked up too, since that is an ordinary thing
-	// for a handler to do and the alias reads the same body.
-	var scanScope func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool
-	scanScope = func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool {
-		if body == nil {
-			return false
-		}
-		reqNames := make(map[string]bool, len(inherited))
-		for k := range inherited {
-			reqNames[k] = true
-		}
-		// A parameter SHADOWS an inherited name whatever its type: if it is a
-		// request the name stays, otherwise the outer meaning is gone.
-		if params != nil {
-			for _, fld := range params.List {
-				isReq := isRequestPtr(fld.Type)
-				for _, nm := range fld.Names {
-					if isReq {
-						reqNames[nm.Name] = true
-					} else {
-						delete(reqNames, nm.Name)
-					}
-				}
-			}
-		}
-
-		found := false
-		var walk func(n ast.Node) bool
-		walk = func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.FuncLit:
-				// Its own scope; do not let the outer names leak in as-is.
-				if scanScope(node.Body, node.Type.Params, reqNames) {
-					found = true
-				}
-				return false
-			case *ast.AssignStmt:
-				// `req := r` and `req = r` alias the same request.
-				for i, rhs := range node.Rhs {
-					id, ok := rhs.(*ast.Ident)
-					if !ok || !reqNames[id.Name] || i >= len(node.Lhs) {
-						continue
-					}
-					if lhs, ok := node.Lhs[i].(*ast.Ident); ok {
-						reqNames[lhs.Name] = true
-					}
-				}
-			case *ast.SelectorExpr:
-				if !readerSelectors[node.Sel.Name] {
-					return true
-				}
-				if id, ok := node.X.(*ast.Ident); ok && reqNames[id.Name] {
-					found = true
-				}
-			}
-			return true
-		}
-		ast.Inspect(body, walk)
-		return found
-	}
-
-	fileReadsRequestBody := func(path string) bool {
-		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, path, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		found := false
-		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			seed := map[string]bool{}
-			if fn.Recv != nil {
-				for _, fld := range fn.Recv.List {
-					if !isRequestPtr(fld.Type) {
-						continue
-					}
-					for _, nm := range fld.Names {
-						seed[nm.Name] = true
-					}
-				}
-			}
-			if scanScope(fn.Body, fn.Type.Params, seed) {
-				found = true
-			}
-		}
-		return found
-	}
-
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
@@ -402,7 +266,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 			continue
 		}
 		scanned++
-		if fileReadsRequestBody(filepath.Join(".", name)) {
+		if scanFileForRequestBodyReads(t, filepath.Join(".", name)) {
 			touches[name] = true
 		}
 	}
@@ -1442,8 +1306,22 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 							if !strings.EqualFold(k, listed) {
 								continue
 							}
+							// Production only descends into a DOCUMENT — a
+							// string whose trimmed form starts with "{" or
+							// "[" (stringIsJSONDocument). A JSON scalar such
+							// as "\"a<escape>b\"" is valid JSON and is NOT a
+							// document, so production leaves it alone. The
+							// oracle unmarshalled anything valid and so said
+							// true where production said false (codex round
+							// 27) — closer to production is not the same as
+							// identical, and only identical is a usable
+							// oracle.
+							trimmed := strings.TrimSpace(sv)
+							if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+								break
+							}
 							var inner any
-							if json.Unmarshal([]byte(sv), &inner) == nil {
+							if json.Unmarshal([]byte(trimmed), &inner) == nil {
 								stack = append(stack, frame{inner, true})
 							}
 							break
@@ -1512,6 +1390,10 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 		// And its counterpart, where the listed key's value IS a string and
 		// the descent is correct. Both sides must answer TRUE.
 		`{"fields":"{\"k\":\"a` + esc + `b\"}"}`,
+		// A JSON SCALAR under a listed key. Valid JSON, but not a document,
+		// so production does not descend and the escape stays literal text.
+		// Both sides must answer FALSE. The oracle used to say true here.
+		`{"fields":"\"a` + doubled + `b\""}`,
 		`{"title":"a control escape that is not a NUL: \\u0001"}`,
 	}
 
@@ -1536,4 +1418,220 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 		t.Fatalf("corpus is one-sided (sawTrue=%v sawFalse=%v); agreement over it is vacuous",
 			sawTrue, sawFalse)
 	}
+}
+
+// probeFileHeader is the preamble every synthetic probe file shares.
+var probeFileHeader = "package probe\n\nimport (\n\t\"io\"\n\t\"net/http\"\n)\n\nvar _ = io.ReadAll\n\n"
+
+// TestBodyReaderScanDiscriminates feeds the accounting scan SYNTHETIC source
+// covering the cases that have broken it, instead of only pointing it at the
+// package and trusting the result.
+//
+// Round 27 was right to flag this: the earlier controls were run as throwaway
+// probes and deleted, so nothing in the suite held the scanner to them. A scan
+// whose whole value is a completeness claim needs its own discrimination
+// pinned, or the next rewrite silently loses a case.
+//
+// Both directions matter, and for a reason specific to this instrument. A
+// false NEGATIVE hides a reader. A false POSITIVE is arguably worse: the only
+// way to green a false flag is to add the file to the accounted list, and an
+// accounting entry then hides every FUTURE reader in that file.
+func TestBodyReaderScanDiscriminates(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+		src  string
+	}{
+		{"plain handler", true, `
+func h(w http.ResponseWriter, r *http.Request) { io.ReadAll(r.Body) }`},
+		{"unconventional parameter name", true, `
+func h(w http.ResponseWriter, httpReq *http.Request) { io.ReadAll(httpReq.Body) }`},
+		{"closure parameter", true, `
+func h() func(*http.Request) { return func(hr *http.Request) { io.ReadAll(hr.Body) } }`},
+		{"local alias", true, `
+func h(orig *http.Request) { req := orig; io.ReadAll(req.Body) }`},
+		{"value copy still shares the body", true, `
+func h(r *http.Request) { f := func(c http.Request) { io.ReadAll(c.Body) }; f(*r) }`},
+		{"form reader", true, `
+func h(r *http.Request) { _ = r.FormValue("x") }`},
+
+		{"no request at all", false, `
+type payload struct{ Body string }
+
+func h(p payload) int { return len(p.Body) }`},
+		{"shadowed by a closure parameter", false, `
+type other struct{ Body string }
+
+func h(r *http.Request) int { f := func(r other) int { return len(r.Body) }; return f(other{}) }`},
+		{"redefined inside a nested block", false, `
+type resp struct{ Body string }
+
+func h(r *http.Request) int {
+	n := 0
+	{
+		r := resp{}
+		n = len(r.Body)
+	}
+	return n
+}`},
+		{"mentioned only in a comment", false, `
+// This function does not read r.Body, it only talks about it.
+func h(r *http.Request) int { return 1 }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "probe.go")
+			src := probeFileHeader + tc.src + "\n"
+			if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+				t.Fatalf("write probe: %v", err)
+			}
+			if got := scanFileForRequestBodyReads(t, path); got != tc.want {
+				t.Errorf("scan = %v, want %v\n--- source ---\n%s", got, tc.want, src)
+			}
+		})
+	}
+}
+
+// scanFileForRequestBodyReads reports whether path contains a function that
+// reads the HTTP request body.
+//
+// Package-level so the accounting test and TestBodyReaderScanDiscriminates
+// drive the SAME scanner. The controls were previously throwaway probes, so
+// nothing in the suite held this to them (codex round 27).
+//
+// AST, not a regex. The lexical version was wrong three ways, all in the
+// direction that matters for a test whose job is to say nothing is invisible:
+// it recognised only the names r and req; it matched inside COMMENTS; and
+// broadening it to any identifier matched every unrelated .Body field, whose
+// only route to green would have been accounting entries for files that read
+// no request body — and an accounting entry HIDES future readers in its file.
+//
+// Scope-aware, because one flat name-set per function is wrong in both
+// directions: a nested scope that rebinds the name was falsely flagged, and a
+// request arriving as a function literal's own parameter was invisible.
+func scanFileForRequestBodyReads(t *testing.T, path string) bool {
+	t.Helper()
+
+	readerSelectors := map[string]bool{
+		"Body": true, "FormValue": true, "PostFormValue": true, "ParseForm": true,
+		"ParseMultipartForm": true, "MultipartForm": true, "PostForm": true,
+	}
+
+	// Both *http.Request and http.Request count. A VALUE copy still shares the
+	// Body — it is an interface holding the same reader — so a literal taking
+	// http.Request reads the same body, and the shadowing rule would otherwise
+	// delete the name and MISS it.
+	isRequestType := func(e ast.Expr) bool {
+		if star, ok := e.(*ast.StarExpr); ok {
+			e = star.X
+		}
+		sel, ok := e.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Request" {
+			return false
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && pkg.Name == "http"
+	}
+
+	var scanScope func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool
+	scanScope = func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool {
+		if body == nil {
+			return false
+		}
+		reqNames := make(map[string]bool, len(inherited))
+		for k := range inherited {
+			reqNames[k] = true
+		}
+		// A parameter SHADOWS an inherited name whatever its type: if it is a
+		// request the name stays, otherwise the outer meaning is gone.
+		if params != nil {
+			for _, fld := range params.List {
+				isReq := isRequestType(fld.Type)
+				for _, nm := range fld.Names {
+					if isReq {
+						reqNames[nm.Name] = true
+					} else {
+						delete(reqNames, nm.Name)
+					}
+				}
+			}
+		}
+
+		found := false
+		ast.Inspect(body, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.FuncLit:
+				if scanScope(node.Body, node.Type.Params, reqNames) {
+					found = true
+				}
+				return false
+			case *ast.BlockStmt:
+				// A nested block is its own scope. Without this a := inside it
+				// leaked outward, and an inner rebinding such as
+				// { r := &http.Response{}; r.Body.Read(nil) } was FALSELY
+				// flagged as a request read.
+				if node != body {
+					if scanScope(node, nil, reqNames) {
+						found = true
+					}
+					return false
+				}
+			case *ast.AssignStmt:
+				for i, rhs := range node.Rhs {
+					if i >= len(node.Lhs) {
+						break
+					}
+					lhs, ok := node.Lhs[i].(*ast.Ident)
+					if !ok {
+						continue
+					}
+					if id, isIdent := rhs.(*ast.Ident); isIdent && reqNames[id.Name] {
+						// req := r / req = r alias the same request.
+						reqNames[lhs.Name] = true
+						continue
+					}
+					// Binding the name to anything else takes it over for the
+					// rest of this scope.
+					delete(reqNames, lhs.Name)
+				}
+			case *ast.SelectorExpr:
+				if !readerSelectors[node.Sel.Name] {
+					return true
+				}
+				if id, ok := node.X.(*ast.Ident); ok && reqNames[id.Name] {
+					found = true
+				}
+			}
+			return true
+		})
+		return found
+	}
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	found := false
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		seed := map[string]bool{}
+		if fn.Recv != nil {
+			for _, fld := range fn.Recv.List {
+				if !isRequestType(fld.Type) {
+					continue
+				}
+				for _, nm := range fld.Names {
+					seed[nm.Name] = true
+				}
+			}
+		}
+		if scanScope(fn.Body, fn.Type.Params, seed) {
+			found = true
+		}
+	}
+	return found
 }

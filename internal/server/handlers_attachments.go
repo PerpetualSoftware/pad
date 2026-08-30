@@ -367,8 +367,17 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	//
 	// Checking the trimmed form rather than listing spellings, so "...",
 	// "./", and friends cannot each need their own case.
-	if filename == "" || filename == "/" || strings.Trim(filename, ".") == "" ||
-		strings.ContainsAny(filename, `/\`) {
+	// Only "." and ".." are path components; "..." and longer runs are
+	// ordinary POSIX filenames and are kept (codex round 27 — the trimmed-form
+	// check I used first refused those too, which is over-refusal for no
+	// gain). A backslash is likewise a legal character in a Unix filename, and
+	// filepath.Base above has already reduced any "a/b" to "b", so a separator
+	// test here is dead on this platform and was removed rather than left to
+	// look load-bearing.
+	//
+	// What remains is the real hazard: a name a consumer joins onto a
+	// directory and lands somewhere else.
+	if filename == "" || filename == "." || filename == ".." || filename == "/" {
 		filename = "upload.bin"
 	}
 

@@ -336,6 +336,21 @@ func buildCanonicalExtForMIME() map[string]string {
 	out := make(map[string]string, len(extMIMEMap))
 	for ext, mimeStr := range extMIMEMap {
 		m := NormalizeMIME(mimeStr)
+		// BLOCKED types get no reverse mapping. extMIMEMap is the forward
+		// table used to REFUSE uploads — it deliberately lists .svg, .exe and
+		// friends so their extensions can be recognised and rejected.
+		// Reversing it wholesale turned that refusal list into a SOURCE of
+		// extensions: ExtensionForMIME("image/svg+xml") answered ".svg", and
+		// `pad attachment view` names a local file with it. The old CLI table
+		// answered nothing for those, so this was a regression, and it
+		// reopened the same hazard BUG-2818 describes through a different
+		// door (codex round 27).
+		//
+		// A caller asking "what should I call a file of this type" must only
+		// ever be told about types this product actually accepts.
+		if _, ok := LookupMIME(m); !ok {
+			continue
+		}
 		if want, ok := preferred[m]; ok {
 			out[m] = want
 			continue

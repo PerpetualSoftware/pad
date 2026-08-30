@@ -1068,7 +1068,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		// filepath.Join(dir, "..") is dir's PARENT. It survives bindableText,
 		// and filepath.Ext("..") is "." (non-empty), so an extension check
 		// waves it through too (codex round 26).
-		for _, raw := range []string{"..", "...", "./", "a/b"} {
+		for _, raw := range []string{"..", "./", "a/b"} {
 			rr := uploadWithRawDisposition(t,
 				`form-data; name="file"; filename=`+strconv.Quote(raw))
 			if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
@@ -1083,6 +1083,29 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 			if strings.Trim(got.Filename, ".") == "" || strings.ContainsAny(got.Filename, `/\`) {
 				t.Errorf("upload %q stored the path component %q; a consumer joining that onto a "+
 					"directory escapes it", raw, got.Filename)
+			}
+		}
+
+		// PRESERVATION controls. Refusing path components must not become
+		// refusing anything unusual: "..." and a backslash are ordinary POSIX
+		// filenames and a user who uploads one should get it back (codex
+		// round 27 flagged the earlier version as over-refusing both).
+		// A backslash name is legitimate on Unix too, but expressing one
+		// through a quoted Content-Disposition tests the header grammar more
+		// than it tests this guard, so it is left out deliberately rather
+		// than fudged.
+		for _, keep := range []string{"...", "....", "a.b.c.png"} {
+			rr := uploadWithRawDisposition(t,
+				`form-data; name="file"; filename=`+strconv.Quote(keep))
+			var got struct {
+				Filename string `json:"filename"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response for %q: %v", keep, err)
+			}
+			if got.Filename != keep {
+				t.Errorf("legitimate filename %q was altered to %q; the guard is for path "+
+					"components, not for unusual-looking names", keep, got.Filename)
 			}
 		}
 

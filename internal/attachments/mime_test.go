@@ -352,9 +352,25 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 	if len(extMIMEMap) == 0 {
 		t.Fatal("premise failed: the forward map is empty, so this asserts nothing")
 	}
+	var sawBlocked bool
 	for ext, mimeStr := range extMIMEMap {
 		m := NormalizeMIME(mimeStr)
 		got := ExtensionForMIME(m)
+
+		// A BLOCKED type must have no reverse mapping. extMIMEMap is the
+		// refusal table — it lists .svg and .exe so uploads carrying them can
+		// be rejected — and reversing it wholesale turned a refusal list into
+		// a source of extensions that `pad attachment view` then names local
+		// files with (codex round 27).
+		if _, allowed := LookupMIME(m); !allowed {
+			sawBlocked = true
+			if got != "" {
+				t.Errorf("%s is BLOCKED but ExtensionForMIME returns %q; a client would name a local "+
+					"file with an extension this product refuses to accept", m, got)
+			}
+			continue
+		}
+
 		if got == "" {
 			t.Errorf("%s (from %q) has no reverse mapping; a client asking for its extension gets "+
 				"nothing and writes an extensionless file", m, ext)
@@ -363,6 +379,18 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 		if back, ok := extMIMEMap[got]; !ok || NormalizeMIME(back) != m {
 			t.Errorf("ExtensionForMIME(%q) = %q, which does not map back to it", m, got)
 		}
+	}
+
+	// Premise: the map must actually CONTAIN a blocked type, or the blocked
+	// branch above asserts nothing and would pass against a reverse map that
+	// happily emitted .svg.
+	if !sawBlocked {
+		t.Fatal("premise failed: no blocked MIME type found in extMIMEMap, so the blocked-type " +
+			"assertion never ran")
+	}
+	if got := ExtensionForMIME("image/svg+xml"); got != "" {
+		t.Errorf("image/svg+xml is the named reason the extension blocklist exists; "+
+			"ExtensionForMIME returned %q", got)
 	}
 
 	// Every preferred spelling must name a MIME type this map actually uses.
@@ -385,9 +413,15 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 	// Stability: the reverse map is built by iterating a Go map, whose order
 	// is randomised. A helper that answered differently per process would be
 	// worse than none, so the choice must be deterministic.
+	// Every preference is pinned, not just JPEG — the point of the list is
+	// that each of these types has several spellings and one was chosen.
 	for i := 0; i < 20; i++ {
-		if got := buildCanonicalExtForMIME()["image/jpeg"]; got != ".jpg" {
-			t.Fatalf("unstable reverse mapping for image/jpeg: %q on iteration %d", got, i)
+		built := buildCanonicalExtForMIME()
+		for m, want := range preferredExtensions() {
+			if got := built[m]; got != want {
+				t.Fatalf("unstable or wrong reverse mapping for %s: got %q want %q on iteration %d",
+					m, got, want, i)
+			}
 		}
 	}
 }
