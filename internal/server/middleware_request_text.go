@@ -441,9 +441,10 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 //
 // UNDER-REFUSALS — these are the BUG-2812 unit's spec, not a TODO here. Both
 // dissolve under a token-stream walk that never builds values, which is that
-// unit's design; patching them into the map model would be re-plumbing an
-// 18-commit branch late under review pressure, and this branch's one
-// regression came from exactly that.
+// unit's design. The ruling's reasoning for not folding that rewrite in: a
+// review loop finding something in nearly every round says the pre-scan
+// machinery has a DESIGN problem, and the answer to that is a unit of its
+// own rather than a late restructure of a branch already deep in review.
 //
 //  1. DUPLICATE KEYS MERGE DIFFERENTLY (P1). For
 //     {"fields_patch":{"orphan":"<NUL>"},"fields_patch":{"status":"open"}},
