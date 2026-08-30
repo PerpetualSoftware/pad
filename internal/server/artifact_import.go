@@ -62,7 +62,7 @@ var ErrArtifactUnsafeYAML = errors.New("artifact import: frontmatter rejected by
 // rule Pad applies on both dialects, not a storage limit it inherits from
 // either. Stating it as a capability would tell the next reader that SQLite
 // enforces something it does not.
-var ErrArtifactUnbindableText = errors.New("artifact import: body contains invalid UTF-8 or a NUL byte")
+var ErrArtifactUnbindableText = errors.New("artifact import: body contains invalid UTF-8 or a NUL character")
 
 // parseArtifactRequest is the guarded HTTP-boundary parse used by the import
 // handler. It applies five steps IN ORDER:

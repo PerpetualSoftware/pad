@@ -144,6 +144,35 @@ func TestAttachmentViewNamesTheFileThroughTheCommand(t *testing.T) {
 		}
 	})
 
+	// PathEscape leaves exact "." and ".." UNCHANGED, so they would reach
+	// the wire as live dot segments for a proxy or server to normalize
+	// away — the client refuses them before any request (codex closing
+	// round 4). A real id is a UUID; the refusal cannot fire on one.
+	t.Run("exact dot-segment id is refused before any request", func(t *testing.T) {
+		var requests int
+		record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			attachmentViewTestHandler("", "image/png", body).ServeHTTP(w, r)
+		})
+		server := httptest.NewServer(record)
+		t.Cleanup(server.Close)
+		t.Setenv("HOME", t.TempDir())
+		previousWorkspace, previousURL := workspaceFlag, urlFlag
+		workspaceFlag, urlFlag = "demo", server.URL+"/"
+		t.Cleanup(func() { workspaceFlag, urlFlag = previousWorkspace, previousURL })
+
+		for _, id := range []string{"..", "."} {
+			cmd := attachmentViewCmd()
+			cmd.SetArgs([]string{id})
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "invalid attachment id") {
+				t.Fatalf("id %q: expected an invalid-attachment-id error, got %v", id, err)
+			}
+		}
+		if requests != 0 {
+			t.Fatalf("dot-segment ids reached the wire: %d request(s) sent", requests)
+		}
+	})
+
 	t.Run("unusable id falls back to the generic name", func(t *testing.T) {
 		got := runAttachmentView(t,
 			attachmentViewTestHandler("", "image/png", body),

@@ -2,6 +2,8 @@ package server
 
 import (
 	"database/sql"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -52,8 +54,15 @@ func (s *Server) handleCreateWatch(w http.ResponseWriter, r *http.Request) {
 	// A watch with no body is valid (unconditional watch) — only reject
 	// a body that's present but malformed JSON, mirroring the tolerant-
 	// empty-body pattern other optional-body endpoints use.
-	if r.ContentLength > 0 {
-		if err := decodeJSON(r, &input); err != nil {
+	//
+	// != 0, not > 0: a CHUNKED body arrives with ContentLength == -1, and
+	// the old guard silently DROPPED it — the caller's predicate was
+	// ignored and an unconditional watch created with a 200 (codex closing
+	// round 4; handlers_tokens.go already used the != 0 form). decodeJSON
+	// answers a genuinely empty body with io.EOF, which keeps the
+	// no-body-is-valid contract for an empty chunked body too.
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}

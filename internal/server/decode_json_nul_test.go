@@ -267,6 +267,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"middleware_mcp_audit.go":    "audit capture — parses the body ITSELF and binds the decoded method / params.name to mcp_audit_log.tool_name, so it is a second READER, not a pass-through. That the MCP dispatcher decodes the body again is true and says nothing about what this middleware persists — the earlier rationale here made exactly that mistake and certified it safe (codex round 20). parseMCPRequestBody now runs both caller-derived returns through sanitiseStoredText",
 		"handlers_tokens.go":         "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — so the body is read by the chokepoint, which applies the cap and the NUL rule. The earlier reason here said it never reads the body, which was simply false (codex round 29): a wrong reason in this list is the same defect as a missing entry, since both let a reader pass as reviewed",
 		"handlers_oauth.go":          "KNOWN GAP, tracked as BUG-2811: the OAuth handlers read FORM-encoded bodies (r.Form/FormValue), which no rule in this family covers — the transport rules see the query half of r.Form and not the body half. Listed so this test states the gap instead of being blind to it; measuring it needs a fosite-backed fixture.",
+		"handlers_watches.go":        "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — the closing-round-4 fix for the chunked-body drop; the one reader expression is the nil check itself, and the body bytes flow through the chokepoint",
 	}
 
 	// Reader counts as reviewed. A mismatch means this file gained or lost a
@@ -285,6 +286,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"middleware_mcp_audit.go":    7,
 		"handlers_tokens.go":         1,
 		"handlers_oauth.go":          13,
+		"handlers_watches.go":        1,
 	}
 	accounted := map[string]entry{}
 	for name, why := range accountedWhy {
@@ -670,8 +672,11 @@ func TestTruncateBindableText(t *testing.T) {
 }
 
 // TestRequestUserAgentIsBindableText covers codex round 5's third class on
-// BUG-2803: the User-Agent header reaches activities.user_agent and
-// sessions.user_agent as text, and no rule in this file sees a header.
+// BUG-2803: the User-Agent header reaches activities.user_agent as text, and
+// no rule in this file sees a header. (Sessions are NOT a text sink — they
+// store only ua_hash, which is why the accounting list above exempts those
+// reads; an earlier version of this sentence claimed sessions.user_agent
+// stored text, contradicting that exemption — codex closing round 4.)
 //
 // The disposition here is SANITISE, not refuse — a header is metadata this
 // server chose to record, not something the caller asked for, so a malformed

@@ -341,8 +341,11 @@ func writeArtifactParseError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large",
 			"Artifact body exceeds the size limit")
 	case errors.Is(err, ErrArtifactUnbindableText):
+		// "character", not "byte": the same refusal fires for a NUL
+		// manufactured by a YAML escape during parsing, where no raw NUL
+		// byte exists in the body (codex closing round 4).
 		writeError(w, http.StatusBadRequest, "invalid_body",
-			"Artifact body contains invalid UTF-8 or a NUL byte")
+			"Artifact body contains invalid UTF-8 or a NUL character")
 	case errors.Is(err, ErrArtifactUnsafeYAML):
 		writeError(w, http.StatusBadRequest, "unsafe_yaml",
 			"Artifact frontmatter was rejected by the import safety limits")
