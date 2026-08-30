@@ -237,15 +237,54 @@ func TestDecodeJSONKeepsEmptyBodyEOF(t *testing.T) {
 // the list cannot rot into a set of stale excuses that quietly permits a
 // future reader added to the same file.
 func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
-	accounted := map[string]string{
+	// Each entry records HOW MANY reader expressions the file had when it was
+	// reviewed, not just that it was reviewed.
+	//
+	// Per-FILE accounting alone is not a safety property: once a file is
+	// listed, a NEW reader added to it is covered by the existing entry and
+	// this test stays green (codex round 29 made the point that this is what
+	// makes over-flagging expensive rather than cheap — a false positive does
+	// not cost one review, it permanently blinds the list for that file).
+	//
+	// The count closes that. Adding a reader to an accounted file changes the
+	// number and fails here, so the entry has to be re-read and its reason
+	// re-justified. It churns exactly when a body reader is added or removed,
+	// which is precisely when a human should look.
+	type entry struct {
+		readers int
+		why     string
+	}
+	accountedWhy := map[string]string{
 		"middleware_request_text.go": "the chokepoint itself: readBodyForDecode reads the body under the caller's cap so bodyDecodesNUL can scan it",
 		"handlers_import_bundle.go":  "tar.gz bundle import — streams the body through gzip, and its pad-export.json is checked with bodyDecodesNUL before ImportWorkspace",
 		"handlers_attachments.go":    "multipart upload — the body is binary blob content, not text, and must NOT be scanned for text validity",
 		"artifact_import.go":         "raw artifact TEXT (not JSON) — checked with bindableText, the same predicate ValidatePath and ValidateQuery apply",
 		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores it; the real decode still happens through decodeJSON downstream",
 		"middleware_mcp_audit.go":    "audit capture — parses the body ITSELF and binds the decoded method / params.name to mcp_audit_log.tool_name, so it is a second READER, not a pass-through. That the MCP dispatcher decodes the body again is true and says nothing about what this middleware persists — the earlier rationale here made exactly that mistake and certified it safe (codex round 20). parseMCPRequestBody now runs both caller-derived returns through sanitiseStoredText",
-		"handlers_tokens.go":         "a nil/ContentLength check only — it never reads the body",
+		"handlers_tokens.go":         "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — so the body is read by the chokepoint, which applies the cap and the NUL rule. The earlier reason here said it never reads the body, which was simply false (codex round 29): a wrong reason in this list is the same defect as a missing entry, since both let a reader pass as reviewed",
 		"handlers_oauth.go":          "KNOWN GAP, tracked as BUG-2811: the OAuth handlers read FORM-encoded bodies (r.Form/FormValue), which no rule in this family covers — the transport rules see the query half of r.Form and not the body half. Listed so this test states the gap instead of being blind to it; measuring it needs a fosite-backed fixture.",
+	}
+
+	// Reader counts as reviewed. A mismatch means this file gained or lost a
+	// body reader since someone last justified it.
+	// MEASURED, not estimated. I first wrote plausible-looking numbers here
+	// and every one of them was wrong; the test reported the real counts on
+	// the first run. Recording that because it is the same habit this branch
+	// keeps catching — a figure written from expectation reads exactly like a
+	// figure that was counted.
+	accountedCount := map[string]int{
+		"middleware_request_text.go": 4,
+		"handlers_import_bundle.go":  3,
+		"handlers_attachments.go":    8,
+		"artifact_import.go":         1,
+		"handlers_cloud.go":          3,
+		"middleware_mcp_audit.go":    7,
+		"handlers_tokens.go":         1,
+		"handlers_oauth.go":          13,
+	}
+	accounted := map[string]entry{}
+	for name, why := range accountedWhy {
+		accounted[name] = entry{readers: accountedCount[name], why: why}
 	}
 
 	// FormValue/PostFormValue/ParseForm/ParseMultipartForm read the request
@@ -258,7 +297,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
-	touches := map[string]bool{}
+	touches := map[string]int{}
 	scanned := 0
 	for _, e := range entries {
 		name := e.Name()
@@ -266,8 +305,8 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 			continue
 		}
 		scanned++
-		if scanFileForRequestBodyReads(t, filepath.Join(".", name)) {
-			touches[name] = true
+		if n := scanFileForRequestBodyReads(t, filepath.Join(".", name)); n > 0 {
+			touches[name] = n
 		}
 	}
 
@@ -288,8 +327,14 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 				"the reason it is safe.", name)
 		}
 	}
-	for name, why := range accounted {
-		if !touches[name] {
+	for name, ent := range accounted {
+		if got := touches[name]; got != 0 && got != ent.readers {
+			t.Errorf("%s has %d request-body readers but was reviewed with %d (%q). A reader was "+
+				"added or removed since someone justified this entry — re-read it and update the "+
+				"count, or the entry silently covers code nobody reviewed.", name, got, ent.readers, ent.why)
+		}
+		why := ent.why
+		if touches[name] == 0 {
 			t.Errorf("%s is accounted for here (%q) but no longer reads a request body — remove the entry "+
 				"so it cannot silently cover a future reader added to that file", name, why)
 		}
@@ -1529,8 +1574,8 @@ func h(r *http.Request) int { return 1 }`},
 			if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 				t.Fatalf("write probe: %v", err)
 			}
-			if got := scanFileForRequestBodyReads(t, path); got != tc.want {
-				t.Errorf("scan = %v, want %v\n--- source ---\n%s", got, tc.want, src)
+			if got := scanFileForRequestBodyReads(t, path) > 0; got != tc.want {
+				t.Errorf("scan detected a reader = %v, want %v\n--- source ---\n%s", got, tc.want, src)
 			}
 		})
 	}
@@ -1566,12 +1611,17 @@ func h(r *http.Request) int { return 1 }`},
 // for the whole file. Still invisible, and NOT in the safe direction: a request
 // reached only through a struct field, a context value, or a type alias, since
 // this matches the literal http.Request spelling.
-func scanFileForRequestBodyReads(t *testing.T, path string) bool {
+func scanFileForRequestBodyReads(t *testing.T, path string) int {
 	t.Helper()
 
 	readerSelectors := map[string]bool{
 		"Body": true, "FormValue": true, "PostFormValue": true, "ParseForm": true,
 		"ParseMultipartForm": true, "MultipartForm": true, "PostForm": true,
+		// MultipartReader STREAMS the body, and FormFile triggers multipart
+		// parsing of it. Both were missing (codex round 29) — and FormFile is
+		// used in production, in handlers_attachments.go, so the list was
+		// incomplete against code that exists rather than hypothetically.
+		"MultipartReader": true, "FormFile": true,
 	}
 
 	// Both *http.Request and http.Request count. A VALUE copy still shares the
@@ -1644,20 +1694,22 @@ func scanFileForRequestBodyReads(t *testing.T, path string) bool {
 		})
 	}
 	if len(reqNames) == 0 {
-		return false
+		return 0
 	}
 
-	// Pass 2: any reader selector on any of those names, anywhere in the file.
-	found := false
+	// Pass 2: COUNT reader selectors on those names. A count rather than a
+	// yes/no, so an accounting entry cannot silently absorb a reader added to
+	// a file that was already reviewed.
+	readers := 0
 	ast.Inspect(f, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok || !readerSelectors[sel.Sel.Name] {
 			return true
 		}
 		if id, ok := sel.X.(*ast.Ident); ok && reqNames[id.Name] {
-			found = true
+			readers++
 		}
 		return true
 	})
-	return found
+	return readers
 }
