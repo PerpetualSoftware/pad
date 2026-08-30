@@ -397,20 +397,35 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	if err := json.Unmarshal(body, &env); err != nil || env.Method == "" {
+	if err := json.Unmarshal(body, &env); err != nil {
 		return "(unknown)", ""
 	}
-	if env.Method != "tools/call" {
-		return sanitiseStoredText(env.Method), ""
+	// SANITISE FIRST, THEN test for emptiness — not the other way round. A
+	// value made entirely of NUL escapes is non-empty as decoded and empty
+	// once cleaned, so checking first passed it over the fallback and then
+	// blanked it, storing an empty tool_name. That is precisely the silent
+	// drop these fallbacks exist to prevent (codex round 21 — the boundary
+	// the round-20 sanitise created and did not test). Cleaning before the
+	// test makes the invariant structural instead of something every return
+	// has to remember.
+	method := sanitiseStoredText(env.Method)
+	if method == "" {
+		return "(unknown)", ""
+	}
+	if method != "tools/call" {
+		return method, ""
 	}
 	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
-	if err := json.Unmarshal(env.Params, &p); err != nil || p.Name == "" {
+	if err := json.Unmarshal(env.Params, &p); err != nil {
 		return "tools/call", ""
 	}
-	return sanitiseStoredText(p.Name), hashCanonicalJSON(p.Arguments)
+	if name := sanitiseStoredText(p.Name); name != "" {
+		return name, hashCanonicalJSON(p.Arguments)
+	}
+	return "tools/call", ""
 }
 
 // hashCanonicalJSON returns a SHA-256 hex of a canonicalized form of

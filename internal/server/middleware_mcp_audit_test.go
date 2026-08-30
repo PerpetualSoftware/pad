@@ -457,3 +457,48 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPAudit_SanitiseNeverEmptiesToolName covers the boundary the round-20
+// fix created and did not test (codex round 21, top-ranked un-probed lens).
+//
+// parseMCPRequestBody checks env.Method == "" and p.Name == "" BEFORE
+// sanitising, so a value made ENTIRELY of NULs is non-empty at the fallback
+// and empty by the time it is returned. tool_name is TEXT NOT NULL, so the
+// row still inserts — with an empty identifier, which defeats the whole point
+// of the "(unknown)" / "tools/call" fallbacks. That function's own doc comment
+// says they exist to give the audit reader a visible signal rather than
+// silently dropping the row; an empty string is the silent drop wearing a
+// different shape.
+//
+// This is the round-20 fix's own boundary: I closed the NUL door and did not
+// ask what the close does when it consumes the entire value.
+func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
+	nul := "\\u0000" // the escape, not the character
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"method is all NULs", `{"jsonrpc":"2.0","id":1,"method":"` + nul + `"}`, "(unknown)"},
+		{"tools/call name is all NULs",
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + nul + `"}}`, "tools/call"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := parseMCPRequestBody([]byte(tc.body))
+			if got == "" {
+				t.Fatalf("tool_name came back EMPTY; the fallback must survive sanitisation, want %q", tc.want)
+			}
+			if got != tc.want {
+				t.Errorf("tool_name = %q, want the fallback %q", got, tc.want)
+			}
+		})
+	}
+
+	// Premise: the same shapes with ordinary values still return the value
+	// itself, so the assertions above are about emptiness rather than about
+	// the fallback swallowing everything.
+	if got, _ := parseMCPRequestBody([]byte(`{"method":"tools/list"}`)); got != "tools/list" {
+		t.Fatalf("premise failed: an ordinary method must round-trip, got %q", got)
+	}
+}
