@@ -290,10 +290,6 @@ type uploadError struct{ msg string }
 
 func (e *uploadError) Error() string { return e.msg }
 
-// mimeForExt is a minimal extension → entry mapping used only for the
-// extension-vs-sniff sanity check. Keeping it small and deliberate means
-// unrecognized extensions just skip the cross-check (instead of forcing
-// us to enumerate every extension on the planet).
 // ExtensionForMIME returns the canonical file extension for a MIME type, or ""
 // when there is no mapping.
 //

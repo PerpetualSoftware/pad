@@ -1787,9 +1787,11 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 	// edit before submit; nothing client-side is binding.
 	//
 	// Trim + cap defensively. Long suggested names would just truncate
-	// in the connections-page UI; capping at 120 chars matches the
-	// schema column's effective-text limit (TEXT in SQLite, no hard
-	// cap in PG, but 120 keeps the connections-page card width sane).
+	// in the connections-page UI; capping at 120 BYTES (rune-safe cut —
+	// the form's maxlength=120 counts characters, so a multibyte name
+	// can pass the client and still be truncated here) keeps the
+	// connections-page card width sane (TEXT in SQLite, no hard cap
+	// in PG).
 	suggested := strings.TrimSpace(r.URL.Query().Get("suggested_name"))
 	if len(suggested) > 120 {
 		suggested = truncateBindableText(suggested, 120)

@@ -342,9 +342,9 @@ func (s *Server) respondWithConnection(w http.ResponseWriter, userID, requestID 
 }
 
 // handleRenameConnectedApp: PATCH /api/v1/connected-apps/{id}/name
-// Body: {"name": "..."} — trimmed + capped at 120 chars (matches the
-// consent-screen suggested-name cap). Empty string is valid (clears
-// the name, the connections-page UI prompts again).
+// Body: {"name": "..."} — trimmed + capped at 120 BYTES, rune-safe
+// (matches the consent-screen suggested-name cap). Empty string is
+// valid (clears the name, the connections-page UI prompts again).
 func (s *Server) handleRenameConnectedApp(w http.ResponseWriter, r *http.Request) {
 	user, id, ok := s.requireConnectionOwner(w, r)
 	if !ok {

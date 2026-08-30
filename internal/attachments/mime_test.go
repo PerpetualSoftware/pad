@@ -412,14 +412,27 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 
 	// Stability: the reverse map is built by iterating a Go map, whose order
 	// is randomised. A helper that answered differently per process would be
-	// worse than none, so the choice must be deterministic.
-	// Every preference is pinned, not just JPEG — the point of the list is
-	// that each of these types has several spellings and one was chosen.
+	// worse than none, so the choice must be deterministic — for EVERY entry,
+	// not only the preferred ones. The first version of this loop compared
+	// just the preference list, so a non-preferred mapping could have
+	// regressed to map-order selection while it stayed green (codex closing
+	// round 2). Now every rebuild must equal the first, and the preferences
+	// are additionally pinned to their declared spellings.
+	first := buildCanonicalExtForMIME()
+	for m, want := range preferredExtensions() {
+		if got := first[m]; got != want {
+			t.Fatalf("wrong reverse mapping for %s: got %q want %q", m, got, want)
+		}
+	}
 	for i := 0; i < 20; i++ {
 		built := buildCanonicalExtForMIME()
-		for m, want := range preferredExtensions() {
+		if len(built) != len(first) {
+			t.Fatalf("reverse map size changed across rebuilds: %d vs %d on iteration %d",
+				len(built), len(first), i)
+		}
+		for m, want := range first {
 			if got := built[m]; got != want {
-				t.Fatalf("unstable or wrong reverse mapping for %s: got %q want %q on iteration %d",
+				t.Fatalf("unstable reverse mapping for %s: got %q want %q on iteration %d",
 					m, got, want, i)
 			}
 		}

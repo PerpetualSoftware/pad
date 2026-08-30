@@ -352,15 +352,18 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	//     NEW reader added to it is covered by the existing entry and this
 	//     test stays green. The reason strings are what a reviewer checks
 	//     against; they are not permanent exemptions.
-	//  2. Only requests reachable by NAME are seen. Closure parameters and
-	//     local aliases (`req := r`) are now covered, and a variable that
-	//     shadows a request name is correctly ignored — all three are pinned
-	//     by controls run against this scanner. Still invisible: a request
-	//     stored in a STRUCT FIELD, one obtained from a context, and one whose
-	//     type reaches http.Request through an alias or an embedded field,
-	//     since this matches the literal `*http.Request` spelling rather than
-	//     resolving types (codex round 26). Closing those means running the
-	//     type checker, not the parser.
+	//  2. Only requests reachable by NAME are seen. Closure parameters, local
+	//     aliases (`req := r`), and dereferenced copies (`c := *r`) are
+	//     covered; a variable that SHADOWS a request name is conservatively
+	//     over-flagged, not ignored — an earlier sentence here claimed the
+	//     opposite while the controls asserted the flagging (codex closing
+	//     round 2). All are pinned by controls run against this scanner.
+	//     Still invisible: a request stored in a STRUCT FIELD, one obtained
+	//     from a context, and one whose type reaches http.Request through an
+	//     alias or an embedded field, since this matches the literal
+	//     `*http.Request` spelling rather than resolving types (codex round
+	//     26). Closing those means running the type checker, not the parser —
+	//     tracked as BUG-2820.
 	//
 	// Both want per-call-site accounting, which is a different instrument.
 }
@@ -1499,6 +1502,8 @@ func h(w http.ResponseWriter, httpReq *http.Request) { io.ReadAll(httpReq.Body) 
 func h() func(*http.Request) { return func(hr *http.Request) { io.ReadAll(hr.Body) } }`},
 		{"local alias", true, `
 func h(orig *http.Request) { req := orig; io.ReadAll(req.Body) }`},
+		{"dereferenced local copy still shares the body", true, `
+func h(r *http.Request) { c := *r; io.ReadAll(c.Body) }`},
 		{"value copy still shares the body", true, `
 func h(r *http.Request) { f := func(c http.Request) { io.ReadAll(c.Body) }; f(*r) }`},
 		{"form reader", true, `
@@ -1686,7 +1691,15 @@ func scanFileForRequestBodyReads(t *testing.T, path string) int {
 				if i >= len(as.Lhs) {
 					break
 				}
-				id, isIdent := rhs.(*ast.Ident)
+				// `req := r` aliases the pointer; `c := *r` copies the VALUE,
+				// and the copy still shares the Body (an interface holding the
+				// same reader) — the second form was invisible until the
+				// closing rounds caught it (codex closing round 2).
+				src := rhs
+				if star, ok := rhs.(*ast.StarExpr); ok {
+					src = star.X
+				}
+				id, isIdent := src.(*ast.Ident)
 				lhs, isLhsIdent := as.Lhs[i].(*ast.Ident)
 				if !isIdent || !isLhsIdent || !reqNames[id.Name] || reqNames[lhs.Name] {
 					continue

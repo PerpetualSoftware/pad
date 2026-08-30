@@ -238,16 +238,6 @@ func parseAttachmentFilename(disposition string) string {
 	return filepath.Base(name)
 }
 
-// extensionForMIME returns a leading-dot extension for a MIME type,
-// or "" if the MIME isn't on our known list. Used as a last-resort
-// fallback when the Content-Disposition header is missing a filename
-// — we'd rather give the agent `<id>.png` than `<id>` with no hint
-// for downstream tooling.
-//
-// We can't use mime.ExtensionsByType here because its results depend
-// on the host's /etc/mime.types and aren't deterministic across
-// platforms (Linux/macOS/Windows all differ). The hardcoded map
-// mirrors the canonical entries in internal/attachments/mime.go.
 // safeLocalFilename reduces a SERVER-SUPPLIED filename to something safe to
 // join onto a local directory.
 //
