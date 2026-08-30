@@ -1389,7 +1389,30 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 					}
 					continue
 				}
-				stack = append(stack, frame{v, f.nested})
+				// A NATURAL object or array under a listed key is USER DATA:
+				// the server marshals it itself and nothing re-parses it, so
+				// a listed key appearing INSIDE it is an ordinary field name,
+				// not a document marker. Production expresses this by passing
+				// inUserData=true; this oracle must too, or the two disagree
+				// on {"fields":{"schema":"...escape text..."}} — production
+				// correctly says no, and an oracle that says yes would fail
+				// the comparison and blame the production walker.
+				//
+				// Measured: before this, production=false / oracle=true on
+				// exactly that body. My corpus omitted it, so the oracle
+				// passed while being wrong (codex round 26). A one-sidedness
+				// check that only asks whether BOTH answers appear does not
+				// catch a corpus that misses a whole branch of the contract.
+				nested := f.nested
+				if !f.nested {
+					for listed := range jsonEncodedFieldKeys {
+						if strings.EqualFold(k, listed) {
+							nested = true
+							break
+						}
+					}
+				}
+				stack = append(stack, frame{v, nested})
 			}
 		}
 	}
@@ -1420,6 +1443,13 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 		`{"content":"{\"k\":\"a` + esc + `b\"}"}`,
 		`{"title":"unicode é 中"}`,
 		`{"nested":{"deep":{"deeper":"a` + esc + `b"}}}`,
+		// The branch the corpus used to miss entirely: a NATURAL object under
+		// a listed key, carrying escape TEXT that never becomes a NUL because
+		// nothing re-parses it. Both sides must answer FALSE here.
+		`{"fields":{"schema":"{\"k\":\"a` + doubled + `b\"}"}}`,
+		// And its counterpart, where the listed key's value IS a string and
+		// the descent is correct. Both sides must answer TRUE.
+		`{"fields":"{\"k\":\"a` + esc + `b\"}"}`,
 		`{"title":"a control escape that is not a NUL: \\u0001"}`,
 	}
 
