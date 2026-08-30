@@ -14,6 +14,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1058,6 +1059,44 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		if got.Filename != "upload" {
 			t.Errorf("an unstorable extension must be dropped, not carried into the fallback; got %q",
 				got.Filename)
+		}
+	})
+
+	t.Run("a path-component filename never reaches the row", func(t *testing.T) {
+		// ".." is not a filename, it is a path component, and consumers join
+		// it onto a directory — the CLI builds its temp path this way, where
+		// filepath.Join(dir, "..") is dir's PARENT. It survives bindableText,
+		// and filepath.Ext("..") is "." (non-empty), so an extension check
+		// waves it through too (codex round 26).
+		for _, raw := range []string{"..", "...", "./", "a/b"} {
+			rr := uploadWithRawDisposition(t,
+				`form-data; name="file"; filename=`+strconv.Quote(raw))
+			if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+				t.Fatalf("upload %q should still succeed, got %d: %s", raw, rr.Code, rr.Body.String())
+			}
+			var got struct {
+				Filename string `json:"filename"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode upload response for %q: %v (body %s)", raw, err, rr.Body.String())
+			}
+			if strings.Trim(got.Filename, ".") == "" || strings.ContainsAny(got.Filename, `/\`) {
+				t.Errorf("upload %q stored the path component %q; a consumer joining that onto a "+
+					"directory escapes it", raw, got.Filename)
+			}
+		}
+
+		// Premise: an ordinary name is still kept verbatim, so the loop above
+		// pins path components rather than a handler that renames everything.
+		rr := uploadWithRawDisposition(t, `form-data; name="file"; filename="ordinary.png"`)
+		var ok struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &ok); err != nil {
+			t.Fatalf("decode control response: %v", err)
+		}
+		if ok.Filename != "ordinary.png" {
+			t.Fatalf("premise failed: an ordinary filename must be kept, got %q", ok.Filename)
 		}
 	})
 

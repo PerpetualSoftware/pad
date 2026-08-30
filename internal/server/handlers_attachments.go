@@ -359,7 +359,16 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 			filename = "upload"
 		}
 	}
-	if filename == "" || filename == "." || filename == "/" {
+	// A name that is only dots or separators is not a filename, it is a PATH
+	// COMPONENT, and consumers join it onto a directory. ".." was missing
+	// here: it survives bindableText, and filepath.Ext("..") is "." — non-empty
+	// — so even an extension check passes it through, while filepath.Join on
+	// the client side resolves it to the PARENT directory (codex round 26).
+	//
+	// Checking the trimmed form rather than listing spellings, so "...",
+	// "./", and friends cannot each need their own case.
+	if filename == "" || filename == "/" || strings.Trim(filename, ".") == "" ||
+		strings.ContainsAny(filename, `/\`) {
 		filename = "upload.bin"
 	}
 

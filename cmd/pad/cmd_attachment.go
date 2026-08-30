@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	goMime "mime"
 	"os"
 	"path/filepath"
@@ -247,58 +248,53 @@ func parseAttachmentFilename(disposition string) string {
 // on the host's /etc/mime.types and aren't deterministic across
 // platforms (Linux/macOS/Windows all differ). The hardcoded map
 // mirrors the canonical entries in internal/attachments/mime.go.
+// safeLocalFilename reduces a SERVER-SUPPLIED filename to something safe to
+// join onto a local directory.
+//
+// The name in Content-Disposition originates with whoever uploaded the file.
+// Treating it as a path component is how `..` turns into a write outside the
+// temp directory this command just created: filepath.Ext("..") is ".", which
+// is non-empty, so even an extension check waves it through, and
+// filepath.Join(dir, "..") is dir's PARENT (codex round 26).
+//
+// The server has its own guard, and it is being tightened for this case. This
+// one is independent on purpose: a client that builds a local path out of a
+// remote string should not be relying on the remote end to have sanitised it,
+// and this CLI talks to whatever instance it is pointed at.
+//
+// Returns "" when nothing usable survives, which the caller already handles by
+// falling back to the attachment id.
+func safeLocalFilename(name, id string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	switch name {
+	case "", ".", "..", string(filepath.Separator):
+		return ""
+	}
+	// Base() has already stripped directories; anything still carrying a
+	// separator is a name the local filesystem would read as a path.
+	if strings.ContainsAny(name, `/\`) {
+		return ""
+	}
+	// A name that is only dots ("...", "....") is not a path component worth
+	// keeping and confuses extension handling.
+	if strings.Trim(name, ".") == "" {
+		return ""
+	}
+	return name
+}
+
+// extensionForMIME delegates to the server package's mapping instead of
+// keeping a second table here.
+//
+// It used to keep its own, and the copy had drifted: it knew images and video
+// but not gzip, tar, XML, YAML, TOML, HTML, JavaScript or several document
+// types the server has always allowed. So `pad attachment view` produced an
+// extensionless temp file for those, defeating its own contract of handing a
+// path to something that opens files by extension (codex round 26).
+//
+// Two tables for one relationship is the defect; the delegation is the fix.
 func extensionForMIME(mimeType string) string {
-	if i := strings.IndexByte(mimeType, ';'); i >= 0 {
-		mimeType = mimeType[:i]
-	}
-	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
-	switch mimeType {
-	case "image/png":
-		return ".png"
-	case "image/jpeg":
-		return ".jpg"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	case "image/avif":
-		return ".avif"
-	case "image/heic":
-		return ".heic"
-	case "image/heif":
-		return ".heif"
-	case "video/mp4":
-		return ".mp4"
-	case "video/webm":
-		return ".webm"
-	case "video/quicktime":
-		return ".mov"
-	case "audio/mpeg":
-		return ".mp3"
-	case "audio/wav":
-		return ".wav"
-	case "audio/ogg":
-		return ".ogg"
-	case "audio/flac":
-		return ".flac"
-	case "audio/aac":
-		return ".aac"
-	case "audio/mp4":
-		return ".m4a"
-	case "application/pdf":
-		return ".pdf"
-	case "application/zip":
-		return ".zip"
-	case "application/json":
-		return ".json"
-	case "text/plain":
-		return ".txt"
-	case "text/markdown":
-		return ".md"
-	case "text/csv":
-		return ".csv"
-	}
-	return ""
+	return attachments.ExtensionForMIME(mimeType)
 }
 
 func attachmentViewCmd() *cobra.Command {
@@ -347,7 +343,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				name := parseAttachmentFilename(meta.ContentDisposition)
+				name := safeLocalFilename(parseAttachmentFilename(meta.ContentDisposition), id)
 				if name == "" {
 					name = id + extensionForMIME(meta.MIME)
 				} else if filepath.Ext(name) == "" {

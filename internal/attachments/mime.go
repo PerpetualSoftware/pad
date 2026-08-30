@@ -294,6 +294,63 @@ func (e *uploadError) Error() string { return e.msg }
 // extension-vs-sniff sanity check. Keeping it small and deliberate means
 // unrecognized extensions just skip the cross-check (instead of forcing
 // us to enumerate every extension on the planet).
+// ExtensionForMIME returns the canonical file extension for a MIME type, or ""
+// when there is no mapping.
+//
+// Exported so a client need not keep its OWN table. The CLI did, and it had
+// drifted: it knew images and video but not gzip, tar, XML, YAML, TOML, HTML,
+// JavaScript or several document types this map has always allowed — so
+// `pad attachment view` silently produced an extensionless file for them,
+// defeating its contract of handing a path to something that opens files by
+// extension (codex round 26). Two tables for one relationship was the defect.
+func ExtensionForMIME(mimeType string) string {
+	if ext, ok := canonicalExtForMIME[NormalizeMIME(mimeType)]; ok {
+		return ext
+	}
+	return ""
+}
+
+// canonicalExtForMIME reverses extMIMEMap with one deliberate choice per MIME
+// type, since several extensions map to the same type. Held to the forward map
+// by TestCanonicalExtForMIMECoversTheMap.
+var canonicalExtForMIME = buildCanonicalExtForMIME()
+
+// preferredExtensions names the spelling to use where a type has several.
+//
+// Every key MUST be a value that extMIMEMap actually uses, or the entry is a
+// line that cannot fire. One of them was exactly that on first writing —
+// "text/yaml", where this map says application/yaml — so the preference never
+// applied and .yaml won on length. The test asserts the property rather than
+// trusting the next reader to notice.
+func preferredExtensions() map[string]string {
+	return map[string]string{
+		"image/jpeg":       ".jpg",  // over .jpeg
+		"text/markdown":    ".md",   // over .markdown
+		"application/yaml": ".yml",  // over .yaml
+		"text/html":        ".html", // over .htm, which shortest-wins would pick
+	}
+}
+
+func buildCanonicalExtForMIME() map[string]string {
+	preferred := preferredExtensions()
+	out := make(map[string]string, len(extMIMEMap))
+	for ext, mimeStr := range extMIMEMap {
+		m := NormalizeMIME(mimeStr)
+		if want, ok := preferred[m]; ok {
+			out[m] = want
+			continue
+		}
+		// Anything unlisted takes the shortest extension, then alphabetical,
+		// so the result does not depend on Go's randomised map order. A helper
+		// that answered differently per process would be worse than none.
+		cur, seen := out[m]
+		if !seen || len(ext) < len(cur) || (len(ext) == len(cur) && ext < cur) {
+			out[m] = ext
+		}
+	}
+	return out
+}
+
 // SafeFallbackExtension reports whether ext (with its leading dot, any case)
 // may be carried into a generic fallback filename when the original name was
 // unstorable.

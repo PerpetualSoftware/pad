@@ -338,3 +338,56 @@ func TestExtMIMEMapKeysArePlain(t *testing.T) {
 		}
 	}
 }
+
+// TestCanonicalExtForMIMECoversTheMap holds the reverse map to the forward one
+// so the two cannot drift.
+//
+// The CLI used to keep its own MIME-to-extension table, which had fallen
+// behind this package's — it knew images and video but not gzip, tar, XML,
+// YAML, TOML, HTML, JavaScript or several documents, so `pad attachment view`
+// silently produced extensionless files for them. The CLI now delegates here,
+// which removes the second table; this test stops the reverse map growing the
+// same gap against the forward one.
+func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
+	if len(extMIMEMap) == 0 {
+		t.Fatal("premise failed: the forward map is empty, so this asserts nothing")
+	}
+	for ext, mimeStr := range extMIMEMap {
+		m := NormalizeMIME(mimeStr)
+		got := ExtensionForMIME(m)
+		if got == "" {
+			t.Errorf("%s (from %q) has no reverse mapping; a client asking for its extension gets "+
+				"nothing and writes an extensionless file", m, ext)
+			continue
+		}
+		if back, ok := extMIMEMap[got]; !ok || NormalizeMIME(back) != m {
+			t.Errorf("ExtensionForMIME(%q) = %q, which does not map back to it", m, got)
+		}
+	}
+
+	// Every preferred spelling must name a MIME type this map actually uses.
+	// A preference for a type that is not here is a line that cannot fire,
+	// and one of them was: "text/yaml", where the map says application/yaml.
+	values := map[string]bool{}
+	for _, m := range extMIMEMap {
+		values[NormalizeMIME(m)] = true
+	}
+	for m, ext := range preferredExtensions() {
+		if !values[m] {
+			t.Errorf("preferred extension %q is declared for %q, which no entry in extMIMEMap uses; "+
+				"the preference can never apply", ext, m)
+		}
+		if back, ok := extMIMEMap[ext]; !ok || NormalizeMIME(back) != m {
+			t.Errorf("preferred extension %q for %q does not map back to it", ext, m)
+		}
+	}
+
+	// Stability: the reverse map is built by iterating a Go map, whose order
+	// is randomised. A helper that answered differently per process would be
+	// worse than none, so the choice must be deterministic.
+	for i := 0; i < 20; i++ {
+		if got := buildCanonicalExtForMIME()["image/jpeg"]; got != ".jpg" {
+			t.Fatalf("unstable reverse mapping for image/jpeg: %q on iteration %d", got, i)
+		}
+	}
+}
