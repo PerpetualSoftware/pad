@@ -1476,11 +1476,16 @@ func h(r *http.Request) {
 type payload struct{ Body string }
 
 func h(p payload) int { return len(p.Body) }`},
-		{"shadowed by a closure parameter", false, `
+		// These two are OVER-FLAGGED on purpose, and asserted as such so the
+		// bias is a decision on the record rather than a surprise. The file
+		// binds `r` to a request, and the scanner does not model the scope
+		// that rebinds it. Erring this way is what makes the false-negative
+		// classes from rounds 24-28 structurally impossible.
+		{"shadowed by a closure parameter (conservatively flagged)", true, `
 type other struct{ Body string }
 
 func h(r *http.Request) int { f := func(r other) int { return len(r.Body) }; return f(other{}) }`},
-		{"redefined inside a nested block", false, `
+		{"rebound in a nested block (conservatively flagged)", true, `
 type resp struct{ Body string }
 
 func h(r *http.Request) int {
@@ -1490,6 +1495,28 @@ func h(r *http.Request) int {
 		n = len(r.Body)
 	}
 	return n
+}`},
+		{"mixed short declaration reusing the request", true, `
+func getReq() (*http.Request, bool) { return nil, false }
+
+func h(r *http.Request) {
+	r, ok := getReq()
+	_ = ok
+	io.ReadAll(r.Body)
+}`},
+		{"reader in a switch case", true, `
+func h(r *http.Request) {
+	switch r.Method {
+	case "POST":
+		io.ReadAll(r.Body)
+	}
+}`},
+		{"reader after an if-initialiser shadow", true, `
+func h(r *http.Request) {
+	if r := 1; r > 0 {
+		_ = r
+	}
+	io.ReadAll(r.Body)
 }`},
 		{"mentioned only in a comment", false, `
 // This function does not read r.Body, it only talks about it.
@@ -1509,23 +1536,36 @@ func h(r *http.Request) int { return 1 }`},
 	}
 }
 
-// scanFileForRequestBodyReads reports whether path contains a function that
-// reads the HTTP request body.
+// scanFileForRequestBodyReads reports whether path contains code that reads the
+// HTTP request body.
 //
-// Package-level so the accounting test and TestBodyReaderScanDiscriminates
-// drive the SAME scanner. The controls were previously throwaway probes, so
-// nothing in the suite held this to them (codex round 27).
+// DELIBERATELY CONSERVATIVE: it over-approximates. Any identifier bound to an
+// http.Request anywhere in the file is treated as a request for the whole file,
+// and a reader selector on such a name counts. Names are never un-bound.
 //
-// AST, not a regex. The lexical version was wrong three ways, all in the
-// direction that matters for a test whose job is to say nothing is invisible:
-// it recognised only the names r and req; it matched inside COMMENTS; and
-// broadening it to any identifier matched every unrelated .Body field, whose
-// only route to green would have been accounting entries for files that read
-// no request body — and an accounting entry HIDES future readers in its file.
+// That is a decision, not an oversight, and it was made after five review
+// rounds found successive FALSE NEGATIVES in a scope-modelling version of this
+// scanner: a value-copied request, a plain `r = r.WithContext(ctx)`
+// reassignment, a mixed `r, ok := ...` short declaration that reuses an
+// existing variable, and if/for/switch initialisers and case clauses whose
+// scopes it did not model. Each fix closed one case and left another.
 //
-// Scope-aware, because one flat name-set per function is wrong in both
-// directions: a nested scope that rebinds the name was falsely flagged, and a
-// request arriving as a function literal's own parameter was invisible.
+// The two error directions are not symmetric for this test. A false NEGATIVE
+// hides a body reader, which is the entire thing this test exists to prevent.
+// A false POSITIVE costs one human review and an accounting entry with a
+// reason attached. So the scanner is biased to over-flag, and the residual
+// imprecision is stated below rather than chased.
+//
+// Getting this EXACT means resolving types, not parsing them — go/types with
+// a real package load. That is a bigger instrument than this test warrants
+// today; if the accounted list ever grows entries whose reason is "the scan
+// over-flagged", that is the signal to build it.
+//
+// Known imprecision, all in the safe direction: a name shadowed by a
+// non-request of the same spelling, or rebound in a nested scope, still counts
+// for the whole file. Still invisible, and NOT in the safe direction: a request
+// reached only through a struct field, a context value, or a type alias, since
+// this matches the literal http.Request spelling.
 func scanFileForRequestBodyReads(t *testing.T, path string) bool {
 	t.Helper()
 
@@ -1535,9 +1575,7 @@ func scanFileForRequestBodyReads(t *testing.T, path string) bool {
 	}
 
 	// Both *http.Request and http.Request count. A VALUE copy still shares the
-	// Body — it is an interface holding the same reader — so a literal taking
-	// http.Request reads the same body, and the shadowing rule would otherwise
-	// delete the name and MISS it.
+	// Body — it is an interface holding the same reader.
 	isRequestType := func(e ast.Expr) bool {
 		if star, ok := e.(*ast.StarExpr); ok {
 			e = star.X
@@ -1550,115 +1588,76 @@ func scanFileForRequestBodyReads(t *testing.T, path string) bool {
 		return ok && pkg.Name == "http"
 	}
 
-	var scanScope func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool
-	scanScope = func(body *ast.BlockStmt, params *ast.FieldList, inherited map[string]bool) bool {
-		if body == nil {
-			return false
-		}
-		reqNames := make(map[string]bool, len(inherited))
-		for k := range inherited {
-			reqNames[k] = true
-		}
-		// A parameter SHADOWS an inherited name whatever its type: if it is a
-		// request the name stays, otherwise the outer meaning is gone.
-		if params != nil {
-			for _, fld := range params.List {
-				isReq := isRequestType(fld.Type)
-				for _, nm := range fld.Names {
-					if isReq {
-						reqNames[nm.Name] = true
-					} else {
-						delete(reqNames, nm.Name)
-					}
-				}
-			}
-		}
-
-		found := false
-		ast.Inspect(body, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.FuncLit:
-				if scanScope(node.Body, node.Type.Params, reqNames) {
-					found = true
-				}
-				return false
-			case *ast.BlockStmt:
-				// A nested block is its own scope. Without this a := inside it
-				// leaked outward, and an inner rebinding such as
-				// { r := &http.Response{}; r.Body.Read(nil) } was FALSELY
-				// flagged as a request read.
-				if node != body {
-					if scanScope(node, nil, reqNames) {
-						found = true
-					}
-					return false
-				}
-			case *ast.AssignStmt:
-				for i, rhs := range node.Rhs {
-					if i >= len(node.Lhs) {
-						break
-					}
-					lhs, ok := node.Lhs[i].(*ast.Ident)
-					if !ok {
-						continue
-					}
-					if id, isIdent := rhs.(*ast.Ident); isIdent && reqNames[id.Name] {
-						// req := r / req = r alias the same request.
-						reqNames[lhs.Name] = true
-						continue
-					}
-					// Only a DEFINE can take the name over. Go is statically
-					// typed, so a plain `=` cannot change a variable's type:
-					// if it held a request before, it holds one after.
-					//
-					// Deleting on `=` as well was a FALSE NEGATIVE, and on the
-					// most idiomatic line in Go HTTP code — `r = r.WithContext(ctx)`
-					// has a call on the right, so the name was dropped and
-					// every later r.Body read went unseen. Measured before the
-					// fix: MISSED. That is the dangerous direction for a test
-					// whose job is to say nothing is invisible.
-					if node.Tok == token.DEFINE {
-						delete(reqNames, lhs.Name)
-					}
-				}
-			case *ast.SelectorExpr:
-				if !readerSelectors[node.Sel.Name] {
-					return true
-				}
-				if id, ok := node.X.(*ast.Ident); ok && reqNames[id.Name] {
-					found = true
-				}
-			}
-			return true
-		})
-		return found
-	}
-
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
-	found := false
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+
+	// Pass 1: every name ever bound to a request, from any signature in the
+	// file — declarations, literals, receivers — plus aliases of those.
+	reqNames := map[string]bool{}
+	collectParams := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
 		}
-		seed := map[string]bool{}
-		if fn.Recv != nil {
-			for _, fld := range fn.Recv.List {
-				if !isRequestType(fld.Type) {
-					continue
-				}
-				for _, nm := range fld.Names {
-					seed[nm.Name] = true
-				}
+		for _, fld := range fl.List {
+			if !isRequestType(fld.Type) {
+				continue
+			}
+			for _, nm := range fld.Names {
+				reqNames[nm.Name] = true
 			}
 		}
-		if scanScope(fn.Body, fn.Type.Params, seed) {
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.FuncDecl:
+			collectParams(node.Type.Params)
+			collectParams(node.Recv)
+		case *ast.FuncLit:
+			collectParams(node.Type.Params)
+		}
+		return true
+	})
+	// Aliases, to a fixed point: `req := r`, `r2 = req`, and chains of them.
+	for changed := true; changed; {
+		changed = false
+		ast.Inspect(f, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for i, rhs := range as.Rhs {
+				if i >= len(as.Lhs) {
+					break
+				}
+				id, isIdent := rhs.(*ast.Ident)
+				lhs, isLhsIdent := as.Lhs[i].(*ast.Ident)
+				if !isIdent || !isLhsIdent || !reqNames[id.Name] || reqNames[lhs.Name] {
+					continue
+				}
+				reqNames[lhs.Name] = true
+				changed = true
+			}
+			return true
+		})
+	}
+	if len(reqNames) == 0 {
+		return false
+	}
+
+	// Pass 2: any reader selector on any of those names, anywhere in the file.
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok || !readerSelectors[sel.Sel.Name] {
+			return true
+		}
+		if id, ok := sel.X.(*ast.Ident); ok && reqNames[id.Name] {
 			found = true
 		}
-	}
+		return true
+	})
 	return found
 }

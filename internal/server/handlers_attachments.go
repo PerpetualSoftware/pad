@@ -331,7 +331,20 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// query rules; falling back to a generic name rather than refusing the
 	// upload, because the bytes are fine and only the label is unusable
 	// (codex round 4, BUG-2803).
+	// Reduce to a leaf under BOTH separator conventions before anything else.
+	// filepath.Base is platform-specific, so on Unix it leaves a backslash
+	// alone — and the stored name is consumed cross-platform (a Windows client
+	// joining it onto a directory reads "..\\evil" as a traversal). Splitting
+	// on the backslash too makes the stored value a safe path component
+	// everywhere rather than only on the server's own OS (codex round 28).
+	//
+	// This NORMALISES rather than refuses: a legitimate Unix name containing a
+	// backslash keeps its last segment instead of being replaced wholesale,
+	// which is less lossy than the alternative and still portable.
 	filename := filepath.Base(header.Filename)
+	if i := strings.LastIndexByte(filename, '\\'); i >= 0 {
+		filename = filename[i+1:]
+	}
 	if !bindableText(filename) {
 		// Keep the EXTENSION when it is itself storable. The unusable part
 		// of a name like "sh<NUL>ot.png" is the stem; ".png" is ordinary

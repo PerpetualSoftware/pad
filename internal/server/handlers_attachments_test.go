@@ -1094,6 +1094,22 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		// through a quoted Content-Disposition tests the header grammar more
 		// than it tests this guard, so it is left out deliberately rather
 		// than fudged.
+		// A Windows-style path must be reduced to its leaf, not stored whole:
+		// the stored name is consumed cross-platform, and a client joining
+		// "..\\evil" onto a directory traverses upward (codex round 28).
+		winPath := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename=`+strconv.Quote(`..\evil.png`))
+		var win struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(winPath.Body.Bytes(), &win); err != nil {
+			t.Fatalf("decode windows-path response: %v", err)
+		}
+		if win.Filename != "evil.png" {
+			t.Errorf("a backslash path must be reduced to its leaf; got %q, which a Windows consumer "+
+				"joining onto a directory would read as a traversal", win.Filename)
+		}
+
 		for _, keep := range []string{"...", "....", "a.b.c.png"} {
 			rr := uploadWithRawDisposition(t,
 				`form-data; name="file"; filename=`+strconv.Quote(keep))
