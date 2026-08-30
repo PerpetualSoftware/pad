@@ -1230,3 +1230,127 @@ func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
 	}
 	_ = srv
 }
+
+// independentDecodesNUL is a SECOND implementation of the walker's contract,
+// written for the test and deliberately not calling valueDecodesNUL.
+//
+// It exists because TestBodyDecodesNULGateAgreesWithAnUngatedWalk compares the
+// gated function against an "ungated" reference that calls the SAME production
+// walker (codex round 22). That comparison is valid for what it claims - it
+// pins the raw-prefix GATE - but it cannot see a defect in the walker itself,
+// because a walker bug is present identically on both sides and cancels.
+//
+// The two share encoding/json and jsonEncodedFieldKeys. They deliberately do
+// not share traversal, descent, or key-matching code, which is where every
+// walker defect in this unit actually lived (rounds 1, 2, 4, 16, 17).
+func independentDecodesNUL(t *testing.T, raw []byte) bool {
+	t.Helper()
+	var root any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return false
+	}
+
+	hasNUL := func(s string) bool { return strings.ContainsRune(s, 0) }
+
+	// Iterative, explicit stack - a different shape from the production
+	// recursion, so a recursion-shaped bug cannot reproduce here by accident.
+	type frame struct {
+		v      any
+		nested bool // already inside a re-parsed document; do not descend again
+	}
+	stack := []frame{{root, false}}
+	for len(stack) > 0 {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		switch cur := f.v.(type) {
+		case string:
+			if hasNUL(cur) {
+				return true
+			}
+		case []any:
+			for _, e := range cur {
+				stack = append(stack, frame{e, f.nested})
+			}
+		case map[string]any:
+			for k, v := range cur {
+				if hasNUL(k) {
+					return true
+				}
+				if sv, ok := v.(string); ok {
+					if hasNUL(sv) {
+						return true
+					}
+					// One level of descent into a listed key's JSON document,
+					// and only when not already nested. Matched case-folded,
+					// the way encoding/json matches a wire key to a field.
+					if !f.nested {
+						for listed := range jsonEncodedFieldKeys {
+							if !strings.EqualFold(k, listed) {
+								continue
+							}
+							var inner any
+							if json.Unmarshal([]byte(sv), &inner) == nil {
+								stack = append(stack, frame{inner, true})
+							}
+							break
+						}
+					}
+					continue
+				}
+				stack = append(stack, frame{v, f.nested})
+			}
+		}
+	}
+	return false
+}
+
+// TestBodyDecodesNULAgainstAnIndependentOracle checks the WALKER, which the
+// gate differential structurally cannot (codex round 22: shared-oracle blind
+// spot). Disagreement means one of the two is wrong and both get read - the
+// point is that a single shared bug can no longer hide.
+func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
+	esc := escNULLiteral
+	bs := string([]byte{'\\', 'u', '0', '0', '5', 'c'})
+	doubled := `\\` + "u0000"
+
+	corpus := []string{
+		`{"title":"plain"}`,
+		`{"title":"quotes \" and a backslash \\ but no escape"}`,
+		`{"fields":"{\"k\":\"plain\"}"}`,
+		`{"fields":"{\"k\":\"a` + esc + `b\"}"}`,
+		`{"fields":"{\"k\":\"a` + bs + `u0000b\"}"}`,
+		`{"fields":"{\"k\":\"a` + doubled + `b\"}"}`,
+		`{"title":"a` + esc + `b"}`,
+		`{"a` + esc + `b":"key"}`,
+		`{"tags":["ok","a` + esc + `b"]}`,
+		`{"fields":"[1,2,\"a` + esc + `b\"]"}`,
+		`{"Fields":"{\"k\":\"a` + esc + `b\"}"}`,
+		`{"content":"{\"k\":\"a` + esc + `b\"}"}`,
+		`{"title":"unicode é 中"}`,
+		`{"nested":{"deep":{"deeper":"a` + esc + `b"}}}`,
+		`{"title":"a control escape that is not a NUL: \\u0001"}`,
+	}
+
+	var sawTrue, sawFalse bool
+	for i, body := range corpus {
+		got := bodyDecodesNUL([]byte(body))
+		want := independentDecodesNUL(t, []byte(body))
+		if got != want {
+			t.Errorf("corpus[%d] %s\n  production=%v independent=%v — one of the two walkers is "+
+				"wrong; read both before assuming it is the oracle", i, body, got, want)
+		}
+		if want {
+			sawTrue = true
+		} else {
+			sawFalse = true
+		}
+	}
+
+	// The corpus must contain BOTH answers, or agreement proves nothing: two
+	// walkers that always say false agree perfectly.
+	if !sawTrue || !sawFalse {
+		t.Fatalf("corpus is one-sided (sawTrue=%v sawFalse=%v); agreement over it is vacuous",
+			sawTrue, sawFalse)
+	}
+}
