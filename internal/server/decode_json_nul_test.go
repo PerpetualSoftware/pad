@@ -1421,7 +1421,7 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 }
 
 // probeFileHeader is the preamble every synthetic probe file shares.
-var probeFileHeader = "package probe\n\nimport (\n\t\"io\"\n\t\"net/http\"\n)\n\nvar _ = io.ReadAll\n\n"
+var probeFileHeader = "package probe\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"net/http\"\n)\n\nvar _ = io.ReadAll\nvar _ = context.Background\n\n"
 
 // TestBodyReaderScanDiscriminates feeds the accounting scan SYNTHETIC source
 // covering the cases that have broken it, instead of only pointing it at the
@@ -1454,6 +1454,23 @@ func h(orig *http.Request) { req := orig; io.ReadAll(req.Body) }`},
 func h(r *http.Request) { f := func(c http.Request) { io.ReadAll(c.Body) }; f(*r) }`},
 		{"form reader", true, `
 func h(r *http.Request) { _ = r.FormValue("x") }`},
+		{"reassigned through WithContext", true, `
+func h(r *http.Request) {
+	r = r.WithContext(context.Background())
+	io.ReadAll(r.Body)
+}`},
+		{"reader inside an if body", true, `
+func h(r *http.Request) {
+	if r.Method == "POST" {
+		io.ReadAll(r.Body)
+	}
+}`},
+		{"reader inside a for body", true, `
+func h(r *http.Request) {
+	for i := 0; i < 1; i++ {
+		io.ReadAll(r.Body)
+	}
+}`},
 
 		{"no request at all", false, `
 type payload struct{ Body string }
@@ -1590,9 +1607,19 @@ func scanFileForRequestBodyReads(t *testing.T, path string) bool {
 						reqNames[lhs.Name] = true
 						continue
 					}
-					// Binding the name to anything else takes it over for the
-					// rest of this scope.
-					delete(reqNames, lhs.Name)
+					// Only a DEFINE can take the name over. Go is statically
+					// typed, so a plain `=` cannot change a variable's type:
+					// if it held a request before, it holds one after.
+					//
+					// Deleting on `=` as well was a FALSE NEGATIVE, and on the
+					// most idiomatic line in Go HTTP code — `r = r.WithContext(ctx)`
+					// has a call on the right, so the name was dropped and
+					// every later r.Body read went unseen. Measured before the
+					// fix: MISSED. That is the dangerous direction for a test
+					// whose job is to say nothing is invisible.
+					if node.Tok == token.DEFINE {
+						delete(reqNames, lhs.Name)
+					}
 				}
 			case *ast.SelectorExpr:
 				if !readerSelectors[node.Sel.Name] {
