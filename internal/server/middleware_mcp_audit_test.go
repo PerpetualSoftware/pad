@@ -482,7 +482,11 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 // This is the round-20 fix's own boundary: I closed the NUL door and did not
 // ask what the close does when it consumes the entire value.
 func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
-	nul := "\\u0000" // the escape, not the character
+	// escNULLiteral, not a local literal. Rolling my own here is exactly how
+	// two of these tests became vacuous: written inline, the escape is one
+	// backslash away from being the NUL itself, which is what that helper
+	// exists to prevent and what its comment already warned about.
+	nul := escNULLiteral
 
 	for _, tc := range []struct {
 		name string
@@ -521,7 +525,11 @@ func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 // full 64-character args_hash — an audit row indistinguishable from a genuine
 // pad_item call, forgeable by anyone who can send a request.
 func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
-	nul := "\\u0000" // the escape, not the character
+	// escNULLiteral, not a local literal. Rolling my own here is exactly how
+	// two of these tests became vacuous: written inline, the escape is one
+	// backslash away from being the NUL itself, which is what that helper
+	// exists to prevent and what its comment already warned about.
+	nul := escNULLiteral
 
 	name, hash := parseMCPRequestBody([]byte(
 		`{"method":"tools/` + nul + `call","params":{"name":"pad_item","arguments":{}}}`))
@@ -558,7 +566,11 @@ func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
 // property; the specific marker text is incidental and deliberately not
 // asserted beyond being distinguishable.
 func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
-	nul := "\\u0000" // the escape, not the character
+	// escNULLiteral, not a local literal. Rolling my own here is exactly how
+	// two of these tests became vacuous: written inline, the escape is one
+	// backslash away from being the NUL itself, which is what that helper
+	// exists to prevent and what its comment already warned about.
+	nul := escNULLiteral
 
 	for _, tc := range []struct {
 		name          string
