@@ -376,10 +376,17 @@ type Metrics struct {
 	//
 	// Cardinality note for MCPToolCallsTotal: the user_id label is
 	// bounded by the cloud-deployment user count (target hundreds-to-
-	// low-thousands during alpha) and the tool label is bounded by the
-	// catalog (~7 tools today). 1000 users × 7 tools × 4 statuses =
-	// 28k series, well within Prometheus' comfort zone. If we ever
-	// open the surface to a much larger user set, drop the user_id
+	// low-thousands during alpha).
+	//
+	// THE TOOL LABEL IS NOT BOUNDED BY THE CATALOG, and this comment
+	// used to say it was. The value is whatever the caller put in
+	// params.name (or the JSON-RPC method), recorded even when dispatch
+	// later rejects it, so an authenticated caller can mint a new
+	// series per request. The "~7 tools today" arithmetic below
+	// describes well-behaved traffic, not a bound. Tracked as BUG-2817;
+	// the fix is to map anything outside the catalog to a single
+	// bucket. If we ever open the surface to a much larger user set,
+	// drop the user_id
 	// label and lean on the audit log for per-user forensics — the
 	// audit row already carries that data without a series-explosion
 	// risk.

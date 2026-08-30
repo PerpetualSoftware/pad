@@ -225,3 +225,46 @@ func gaugeValueOrZero(t *testing.T, g interface {
 	}
 	return m.GetGauge().GetValue()
 }
+
+// TestRecordMCPCallMetrics_CollapsesSanitisedLabel is the WIRING leg for the
+// cleaned-identity marker (codex round 24; CONVE-19 — a direct-call test
+// vouches for the component, not its binding).
+//
+// TestMetricsToolLabelIsBounded proves metricsToolLabel collapses a marked
+// name. It does NOT prove recordMCPCallMetrics calls it, and removing that
+// call from the emit path leaves that test green — measured, which is why this
+// one exists.
+//
+// The audit ROW keeps the cleaned name; the metric SERIES must not, or every
+// tool gains a second series per user and status for a distinction no
+// aggregate query asks.
+func TestRecordMCPCallMetrics_CollapsesSanitisedLabel(t *testing.T) {
+	s := &Server{metrics: metrics.New()}
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+
+	marked := auditLabel("pad_item", true)
+	s.recordMCPCallMetrics(marked, "ok", "user-1", 10*time.Millisecond, r, http.StatusOK)
+
+	// The marked name must NOT appear as a label value.
+	if got := counterValue(t, s.metrics.MCPToolCallsTotal.WithLabelValues("user-1", marked, "ok")); got != 0 {
+		t.Errorf("the marked name %q reached Prometheus as a label value (count %v); it must be "+
+			"collapsed, or each tool gains a second series per user and status", marked, got)
+	}
+	// It must land under the collapsed marker instead.
+	collapsed := metricsToolLabel(marked)
+	if got := counterValue(t, s.metrics.MCPToolCallsTotal.WithLabelValues("user-1", collapsed, "ok")); got != 1 {
+		t.Errorf("expected the call to be counted under the collapsed label %q, got %v", collapsed, got)
+	}
+	// And it must not be silently folded into the genuine tool's series.
+	if got := counterValue(t, s.metrics.MCPToolCallsTotal.WithLabelValues("user-1", "pad_item", "ok")); got != 0 {
+		t.Errorf("a cleaned identity was counted as the genuine tool pad_item (count %v); the "+
+			"marker exists precisely so the two stay apart", got)
+	}
+
+	// Premise: an ordinary name still counts under itself, so the assertions
+	// above are about the marked case rather than about counting being broken.
+	s.recordMCPCallMetrics("pad_item", "ok", "user-2", 10*time.Millisecond, r, http.StatusOK)
+	if got := counterValue(t, s.metrics.MCPToolCallsTotal.WithLabelValues("user-2", "pad_item", "ok")); got != 1 {
+		t.Fatalf("premise failed: an unmarked name must count under itself, got %v", got)
+	}
+}

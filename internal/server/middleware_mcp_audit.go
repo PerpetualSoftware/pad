@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -350,6 +351,7 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 	if s.metrics == nil {
 		return
 	}
+	tool = metricsToolLabel(tool)
 	s.metrics.MCPToolCallsTotal.WithLabelValues(userID, tool, status).Inc()
 	// Histogram is per-tool only — duration distributions per user
 	// would explode the series count without a clear analytical
@@ -389,6 +391,27 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 // an audit row for. Both callers of this function — the ok path and
 // the denied path — are covered because the cleaning happens here
 // rather than at either call site.
+// metricsToolLabel collapses a marked audit label to the marker alone before it
+// becomes a Prometheus label value.
+//
+// The audit ROW wants the cleaned name — an operator reading one row needs to
+// know which tool it resembles. A metric SERIES does not: keeping the name
+// there would split "(sanitised) pad_item" from "pad_item" into two series per
+// user and status, for a distinction no aggregate query asks. Collapsing keeps
+// exactly one extra label value in total, and it is a constant rather than
+// anything a caller supplies.
+//
+// This bounds only the marker's contribution. The tool label as a whole is
+// still caller-driven and unbounded — see BUG-2817 — because it comes from
+// params.name. That is pre-existing and not this unit's to fix, but it is the
+// reason this function collapses rather than passing the marked name through.
+func metricsToolLabel(tool string) string {
+	if strings.HasPrefix(tool, sanitisedLabelPrefix) {
+		return strings.TrimSuffix(sanitisedLabelPrefix, " ")
+	}
+	return tool
+}
+
 // auditLabel marks a value that only became well-formed by being cleaned.
 //
 // Cleaning is lossy, so without a marker "pad_<NUL>item" is stored as
@@ -401,11 +424,17 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 // value ("(unknown)"), and a real JSON-RPC method or MCP tool name does not
 // begin with "(" — so the marker cannot itself be forged by a caller choosing
 // a clever name.
+// sanitisedLabelPrefix marks an identity that only became well-formed after
+// cleaning. Parenthesised like this file's other synthesised value,
+// "(unknown)", and a real JSON-RPC method or MCP tool name does not begin with
+// "(" — so a caller cannot forge the marker by choosing a clever name.
+const sanitisedLabelPrefix = "(sanitised) "
+
 func auditLabel(clean string, changed bool) string {
 	if !changed {
 		return clean
 	}
-	return "(sanitised) " + clean
+	return sanitisedLabelPrefix + clean
 }
 
 func parseMCPRequestBody(body []byte) (toolName, argsHash string) {

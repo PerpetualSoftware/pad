@@ -613,3 +613,40 @@ func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
 		})
 	}
 }
+
+// TestMetricsToolLabelIsBounded pins that the cleaned-identity marker costs
+// exactly ONE extra Prometheus label value, not one per tool (codex round 24).
+//
+// The audit ROW keeps the cleaned name; an operator reading a single row needs
+// to know which tool it resembles. A metric SERIES does not, and keeping the
+// name there would split "(sanitised) pad_item" from "pad_item" per user and
+// per status for a distinction no aggregate query asks.
+//
+// This bounds the MARKER only. The tool label as a whole is still caller-driven
+// and unbounded (BUG-2817, pre-existing); that is why this collapses rather
+// than passing the marked name through.
+func TestMetricsToolLabelIsBounded(t *testing.T) {
+	genuine := metricsToolLabel("pad_item")
+	if genuine != "pad_item" {
+		t.Fatalf("premise failed: an unmarked name must reach metrics unchanged, got %q", genuine)
+	}
+
+	// Every marked name collapses to the SAME label value, so the marker adds
+	// one series family rather than doubling every tool's.
+	seen := map[string]bool{}
+	for _, name := range []string{"pad_item", "pad_workspace", "pad_search", "initialize"} {
+		seen[metricsToolLabel(auditLabel(name, true))] = true
+	}
+	if len(seen) != 1 {
+		t.Errorf("marked names must collapse to one metrics label; got %d distinct values: %v",
+			len(seen), seen)
+	}
+	for label := range seen {
+		if strings.ContainsAny(label, "abcdefghijklmnopqrstuvwxyz_") && label != "(sanitised)" {
+			t.Errorf("the collapsed label still carries caller-derived text: %q", label)
+		}
+		if label == genuine {
+			t.Errorf("the marked label collides with the genuine one (%q)", label)
+		}
+	}
+}
