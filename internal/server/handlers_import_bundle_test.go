@@ -757,11 +757,37 @@ func TestImportBundle_RefusesNULInManifest(t *testing.T) {
 	if got := post(t, "CleanManifest", bundle(t, cleanManifest)); got.Code != http.StatusOK && got.Code != http.StatusCreated {
 		t.Fatalf("control bundle must import, got %d: %s", got.Code, got.Body.String())
 	}
-	got := post(t, "NULManifest", bundle(t, nulManifest))
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=NULManifest",
+		bytes.NewReader(bundle(t, nulManifest)))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	got := httptest.NewRecorder()
+	dest.ServeHTTP(got, req)
+
 	if got.Code < 400 {
 		t.Errorf("a manifest carrying a NUL escape must be refused, got %d: %s", got.Code, got.Body.String())
 	}
 	if !strings.Contains(got.Body.String(), "NUL") {
 		t.Errorf("the refusal should name the cause, got body=%s", got.Body.String())
+	}
+
+	// And the PERSISTED state, which the HTTP answer alone does not tell you
+	// (codex round 18). A manifest refusal is NOT a rollback: it keeps the
+	// partial workspace, exactly as every other manifest failure does — the
+	// rollback branch fires only for *importStatusError, and mid-stream
+	// manifest failures intentionally keep what was imported (TASK-896).
+	//
+	// Asserting it here makes that contract deliberate rather than
+	// incidental: if someone later routes this rejection through the
+	// rollback branch, this test says so instead of staying green while the
+	// release note goes stale.
+	list := doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d %s", list.Code, list.Body.String())
+	}
+	if !strings.Contains(list.Body.String(), "NULManifest") {
+		t.Errorf("a manifest refusal keeps the partial workspace (TASK-896); it is absent, so the "+
+			"behaviour changed and the release note now says something false: %s", list.Body.String())
 	}
 }

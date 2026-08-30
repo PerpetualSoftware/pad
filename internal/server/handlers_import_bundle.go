@@ -344,7 +344,20 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			// success while silently dropping the attachment (codex round 4,
 			// BUG-2803). The skip-on-failure behaviour is pre-existing and
 			// deliberate (a partial restore beats none); refusing the bad
-			// INPUT is what stops it from being reached this way.
+			// INPUT is what stops it from being reached that way.
+			//
+			// IT DOES NOT ROLL BACK, and the earlier wording implied more
+			// than it delivers (codex round 18). A plain error with a
+			// non-nil workspace keeps the partial workspace, exactly as
+			// every other manifest failure below does — the rollback branch
+			// fires only for *importStatusError, and the comment there
+			// records that mid-stream manifest failures intentionally keep
+			// what was imported, tracked under TASK-896. Returning a
+			// rollback-shaped error HERE would give NUL-bearing manifests
+			// different semantics from malformed ones, which is a change to
+			// the bundle-import contract rather than a fix to this bug. The
+			// resulting state is pinned by a test and stated in the release
+			// note instead of being left incidental.
 			if bodyDecodesNUL(buf) {
 				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)", errJSONBodyNUL)
 			}
