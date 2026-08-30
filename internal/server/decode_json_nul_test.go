@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -251,7 +254,85 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	// BUG-2811 tracks, were entirely invisible to it (codex round 13). A
 	// completeness test with a blind spot is worse than none, because it
 	// reads as coverage.
-	pattern := regexp.MustCompile(`\b(r|req)\.(Body|FormValue|PostFormValue|ParseForm|ParseMultipartForm|MultipartForm|PostForm)\b`)
+	// AST, not a regex. Three defects in the lexical version, all found by
+	// codex round 22, all in the direction that matters for a test whose job
+	// is to say nothing is invisible:
+	//
+	//   - it recognised only the names `r` and `req`, so a handler holding
+	//     its request as `httpReq` or `orig` was INVISIBLE;
+	//   - it matched inside COMMENTS, so prose could make a file look scanned;
+	//   - broadening it to any identifier (my first attempt at this fix)
+	//     matched every unrelated `.Body` field — input.Body, comment.Body,
+	//     fetched.Body — and the only route to green was listing five files
+	//     that read no request body at all, which would then have HIDDEN real
+	//     readers later added to them. A false accounting entry is worse than
+	//     a missing one, so that attempt was abandoned rather than tuned.
+	//
+	// Keying on the TYPE fixes all three: find every identifier declared as
+	// *http.Request in a function signature, then look for reader selectors on
+	// exactly those identifiers. Names are irrelevant, comments are not part
+	// of the AST, and `.Body` on anything else is not a match.
+	readerSelectors := map[string]bool{
+		"Body": true, "FormValue": true, "PostFormValue": true, "ParseForm": true,
+		"ParseMultipartForm": true, "MultipartForm": true, "PostForm": true,
+	}
+	isRequestPtr := func(e ast.Expr) bool {
+		star, ok := e.(*ast.StarExpr)
+		if !ok {
+			return false
+		}
+		sel, ok := star.X.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Request" {
+			return false
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && pkg.Name == "http"
+	}
+	fileReadsRequestBody := func(path string) bool {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		found := false
+		ast.Inspect(f, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				return true
+			}
+			reqNames := map[string]bool{}
+			collect := func(fl *ast.FieldList) {
+				if fl == nil {
+					return
+				}
+				for _, fld := range fl.List {
+					if !isRequestPtr(fld.Type) {
+						continue
+					}
+					for _, nm := range fld.Names {
+						reqNames[nm.Name] = true
+					}
+				}
+			}
+			collect(fn.Type.Params)
+			collect(fn.Recv)
+			if len(reqNames) == 0 {
+				return true
+			}
+			ast.Inspect(fn.Body, func(m ast.Node) bool {
+				sel, ok := m.(*ast.SelectorExpr)
+				if !ok || !readerSelectors[sel.Sel.Name] {
+					return true
+				}
+				if id, ok := sel.X.(*ast.Ident); ok && reqNames[id.Name] {
+					found = true
+				}
+				return true
+			})
+			return true
+		})
+		return found
+	}
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -265,11 +346,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 			continue
 		}
 		scanned++
-		src, err := os.ReadFile(filepath.Join(".", name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if pattern.Match(src) {
+		if fileReadsRequestBody(filepath.Join(".", name)) {
 			touches[name] = true
 		}
 	}
@@ -297,6 +374,20 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 				"so it cannot silently cover a future reader added to that file", name, why)
 		}
 	}
+
+	// KNOWN LIMITS, stated because this test's whole value is a completeness
+	// claim, and an unqualified one is how the MCP audit reader came to be
+	// certified safe while persisting a decoded NUL (codex round 20).
+	//
+	//  1. Accounting is per FILE, not per call site. Once a file is listed, a
+	//     NEW reader added to it is covered by the existing entry and this
+	//     test stays green. The reason strings are what a reviewer checks
+	//     against; they are not permanent exemptions.
+	//  2. Only signature-declared requests are seen. A request stashed in a
+	//     struct field or captured by a closure is not a parameter, so this
+	//     scan does not find it.
+	//
+	// Both want per-call-site accounting, which is a different instrument.
 }
 
 // jsonEncode returns s as a JSON string literal — the wire form of a field
