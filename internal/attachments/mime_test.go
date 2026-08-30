@@ -425,3 +425,65 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryAllowedMIMEHasAnExtension is the closing property the alias table
+// exists for: reversing extMIMEMap alone left four ALLOWED spellings
+// (text/xml, text/yaml, application/javascript, audio/webm) with no reverse
+// extension, because the forward map picks one spelling per extension and the
+// allowlist accepts more spellings than the forward map uses. The population
+// is asserted over the allowlist itself, not the four known cases, so a
+// future allowlist entry without a reverse extension fails here instead of
+// shipping another extensionless `pad attachment view` file (codex closing
+// round, BUG-2803).
+func TestEveryAllowedMIMEHasAnExtension(t *testing.T) {
+	if len(allowed) == 0 {
+		t.Fatal("premise failed: the allowlist is empty, so this asserts nothing")
+	}
+	for m := range allowed {
+		got := ExtensionForMIME(m)
+		if got == "" {
+			t.Errorf("%s is ALLOWED but has no reverse extension; `pad attachment view` writes an "+
+				"extensionless file for it", m)
+			continue
+		}
+		// Whatever extension is handed out, the forward map must know it and
+		// send it to an ALLOWED type — the reverse map must never mint an
+		// extension the product refuses (the BUG-2818 door).
+		back, ok := extMIMEMap[got]
+		if !ok {
+			t.Errorf("ExtensionForMIME(%q) = %q, an extension extMIMEMap does not know", m, got)
+			continue
+		}
+		if _, backAllowed := LookupMIME(back); !backAllowed {
+			t.Errorf("ExtensionForMIME(%q) = %q, which the forward map sends to BLOCKED type %q", m, got, back)
+		}
+	}
+
+	// Alias-table hygiene: each key must be an allowed type the forward loop
+	// produces NO mapping for (the alias application is unconditional, so a
+	// forward-derived key here would be silently overridden — this assertion
+	// is what makes that loud instead).
+	values := map[string]bool{}
+	for _, mv := range extMIMEMap {
+		values[NormalizeMIME(mv)] = true
+	}
+	for m, ext := range aliasExtensions() {
+		nm := NormalizeMIME(m)
+		if nm != m {
+			t.Errorf("alias key %q is not in normalized form (want %q)", m, nm)
+		}
+		if _, ok := LookupMIME(nm); !ok {
+			t.Errorf("alias %q is not on the allowlist; an alias for a refused type is a line that "+
+				"cannot legitimately fire", m)
+		}
+		if values[nm] {
+			t.Errorf("alias %q is a value extMIMEMap already uses — the forward loop derives its "+
+				"mapping and the alias would override it", m)
+		}
+		if back, ok := extMIMEMap[ext]; !ok {
+			t.Errorf("alias extension %q for %q is unknown to extMIMEMap", ext, m)
+		} else if _, backAllowed := LookupMIME(back); !backAllowed {
+			t.Errorf("alias extension %q for %q maps to BLOCKED type %q", ext, m, back)
+		}
+	}
+}

@@ -226,9 +226,13 @@ func TestDecodeJSONKeepsEmptyBodyEOF(t *testing.T) {
 // package — and to any alias, helper or future spelling. A completeness test
 // that misses a live example is worse than none: it reads as coverage.
 //
-// So it now scans for the thing that cannot be spelled around — a reference to
-// the request body at all — and requires every FILE that touches one to be
-// accounted for here with a reason. A new body reader fails this test until
+// So it now scans for something much harder to spell around — a NAME-visible
+// reference to the request body — and requires every FILE that touches one to
+// be accounted for here with a reason. Not impossible to spell around: a
+// request reached through a struct field, a context value, or a type alias is
+// invisible to it, exactly as the KNOWN LIMITS block at the bottom states —
+// an earlier version of this sentence claimed more than the scanner delivers
+// (codex closing round). A new body reader fails this test until
 // someone writes down what it does, which is the point: the decision becomes
 // deliberate instead of invisible.
 //
@@ -259,7 +263,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_import_bundle.go":  "tar.gz bundle import — streams the body through gzip, and its pad-export.json is checked with bodyDecodesNUL before ImportWorkspace",
 		"handlers_attachments.go":    "multipart upload — the body is binary blob content, not text, and must NOT be scanned for text validity",
 		"artifact_import.go":         "raw artifact TEXT (not JSON) — checked with bindableText, the same predicate ValidatePath and ValidateQuery apply",
-		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores it; the real decode still happens through decodeJSON downstream",
+		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores the first 64 KiB of it — a larger body loses its tail, a bound that file documents and accepts; the real decode still happens through decodeJSON downstream",
 		"middleware_mcp_audit.go":    "audit capture — parses the body ITSELF and binds the decoded method / params.name to mcp_audit_log.tool_name, so it is a second READER, not a pass-through. That the MCP dispatcher decodes the body again is true and says nothing about what this middleware persists — the earlier rationale here made exactly that mistake and certified it safe (codex round 20). parseMCPRequestBody now runs both caller-derived returns through sanitiseStoredText",
 		"handlers_tokens.go":         "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — so the body is read by the chokepoint, which applies the cap and the NUL rule. The earlier reason here said it never reads the body, which was simply false (codex round 29): a wrong reason in this list is the same defect as a missing entry, since both let a reader pass as reviewed",
 		"handlers_oauth.go":          "KNOWN GAP, tracked as BUG-2811: the OAuth handlers read FORM-encoded bodies (r.Form/FormValue), which no rule in this family covers — the transport rules see the query half of r.Form and not the body half. Listed so this test states the gap instead of being blind to it; measuring it needs a fosite-backed fixture.",

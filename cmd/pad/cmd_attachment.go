@@ -280,7 +280,13 @@ func safeLocalFilename(name string) string {
 	if strings.Trim(name, ".") == "" {
 		return ""
 	}
-	return name
+	// A TRAILING dot survives every check above, and filepath.Ext("photo.")
+	// is "." — non-empty — so the caller's MIME-extension fallback never
+	// fires and the temp file dispatches on no extension; Windows cannot
+	// store the name at all. Strip the dots instead of refusing: "photo." is
+	// an ordinary name wearing one (codex closing round). Cannot empty the
+	// name — the dots-only case returned above.
+	return strings.TrimRight(name, ".")
 }
 
 // extensionForMIME delegates to the server package's mapping instead of

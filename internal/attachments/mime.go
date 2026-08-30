@@ -331,6 +331,30 @@ func preferredExtensions() map[string]string {
 	}
 }
 
+// aliasExtensions covers allowed MIME spellings that NO extension in
+// extMIMEMap maps to, so reversing the forward table alone leaves them
+// without an extension: the forward table picks one spelling per extension
+// (.xml says application/xml, .js says text/javascript, .webm says
+// video/webm), while the allowlist accepts the alias spellings too. An
+// attachment stored under an alias type with an unstorable filename came out
+// of `pad attachment view` extensionless — the exact failure the delegation
+// to this package was built to end (codex closing round).
+//
+// Every key MUST be an allowed type with no forward-derived reverse mapping,
+// and every value MUST be an extension the forward map sends to an ALLOWED
+// type — an alias must never mint an extension the product refuses (the
+// BUG-2818 door the blocked-type filter above closes). Both properties are
+// asserted by test, alongside the closing property this table exists for:
+// every allowed MIME type has a reverse extension.
+func aliasExtensions() map[string]string {
+	return map[string]string{
+		"text/xml":               ".xml",  // forward map spells it application/xml
+		"text/yaml":              ".yml",  // forward map spells it application/yaml; .yml matches its preference
+		"application/javascript": ".js",   // forward map spells it text/javascript
+		"audio/webm":             ".webm", // forward map spells it video/webm; the container is the same
+	}
+}
+
 func buildCanonicalExtForMIME() map[string]string {
 	preferred := preferredExtensions()
 	out := make(map[string]string, len(extMIMEMap))
@@ -362,6 +386,13 @@ func buildCanonicalExtForMIME() map[string]string {
 		if !seen || len(ext) < len(cur) || (len(ext) == len(cur) && ext < cur) {
 			out[m] = ext
 		}
+	}
+	// Alias spellings last. Unconditional on purpose: an alias key that the
+	// forward loop ALSO produced would mean two sources disagree about one
+	// type, and the test asserting alias keys have no forward-derived mapping
+	// fails loudly rather than letting this line silently pick a winner.
+	for m, ext := range aliasExtensions() {
+		out[NormalizeMIME(m)] = ext
 	}
 	return out
 }
