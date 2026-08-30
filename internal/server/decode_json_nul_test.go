@@ -1127,3 +1127,57 @@ func TestBodyDecodesNULKnownMapModelDisagreements(t *testing.T) {
 		}
 	})
 }
+
+// TestUnknownFieldRefusalThroughTheHandler is the WIRING leg for release-note
+// item 10 (CONVE-19: a direct-call test vouches for the component, not its
+// binding). TestBodyDecodesNULKnownMapModelDisagreements proves the scan
+// RETURNS true for an unknown field carrying a NUL escape; the release note
+// claims the API answers 400. Those are different claims, and only this one
+// is the one an operator or client author reads.
+//
+// The control leg is what makes the 400 mean something: the SAME unknown
+// field with an ordinary value must still be ACCEPTED, so this pins "refused
+// for the NUL" rather than "refused for being unknown" — the handler does not
+// reject unknown fields, and if it ever started to, the release note's
+// explanation of the change would be wrong even though its status code
+// stayed right.
+func TestUnknownFieldRefusalThroughTheHandler(t *testing.T) {
+	srv := testServer(t)
+
+	rr := rawJSONRequest(srv, "POST", "/api/v1/workspaces/",
+		`{"name":"Unknown field probe","slug":"unkprobe","template":"startup"}`)
+	if rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+		t.Fatalf("fixture workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = rawJSONRequest(srv, "POST", "/api/v1/workspaces/unkprobe/collections/",
+		`{"name":"Probes","slug":"probes"}`)
+	if rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+		t.Fatalf("fixture collection: %d %s", rr.Code, rr.Body.String())
+	}
+
+	const itemsPath = "/api/v1/workspaces/unkprobe/collections/probes/items"
+
+	// Control: an unknown field is ordinarily IGNORED, not refused. On main
+	// this is the only behaviour there is — decodeJSONWithLimit unmarshals
+	// straight into the typed value, which drops the key.
+	control := rawJSONRequest(srv, "POST", itemsPath,
+		`{"title":"ok","future_field":"harmless"}`)
+	if control.Code != http.StatusCreated && control.Code != http.StatusOK {
+		t.Fatalf("an unknown field with an ordinary value must still be accepted, got %d: %s",
+			control.Code, control.Body.String())
+	}
+
+	// Release-note item 10: the same unknown field carrying a NUL escape is
+	// now refused, though the value reaches nothing. The scan has no
+	// destination type by design and cannot tell a forward-compatible field
+	// from a real one.
+	got := rawJSONRequest(srv, "POST", itemsPath,
+		`{"title":"ok","future_field":"a`+escNULLiteral+`b"}`)
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("release note item 10 says an unknown field carrying a NUL escape answers 400; "+
+			"got %d: %s — update the note or the check", got.Code, got.Body.String())
+	}
+	if !strings.Contains(got.Body.String(), "NUL") {
+		t.Errorf("the 400 should name the cause, got: %s", got.Body.String())
+	}
+}
