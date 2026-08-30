@@ -321,9 +321,12 @@ var canonicalExtForMIME = buildCanonicalExtForMIME()
 func preferredExtensions() map[string]string {
 	return map[string]string{
 		"image/jpeg":       ".jpg",  // over .jpeg
-		"text/markdown":    ".md",   // over .markdown
 		"application/yaml": ".yml",  // over .yaml
 		"text/html":        ".html", // over .htm, which shortest-wins would pick
+		// text/markdown is NOT here: .md is its only extMIMEMap spelling, so
+		// a preference had nothing to choose against — a line that cannot
+		// fire, the same class this map's doc warns about (codex closing
+		// round 5). The test now asserts every entry has a real competitor.
 	}
 }
 

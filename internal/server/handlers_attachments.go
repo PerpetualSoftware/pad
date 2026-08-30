@@ -378,8 +378,6 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// — so even an extension check passes it through, while filepath.Join on
 	// the client side resolves it to the PARENT directory (codex round 26).
 	//
-	// Checking the trimmed form rather than listing spellings, so "...",
-	// "./", and friends cannot each need their own case.
 	// Only "." and ".." are path components; "..." and longer runs are
 	// ordinary POSIX filenames and are kept (codex round 27 — the trimmed-form
 	// check I used first refused those too, which is over-refusal for no

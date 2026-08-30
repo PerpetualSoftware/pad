@@ -408,6 +408,20 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 		if back, ok := extMIMEMap[ext]; !ok || NormalizeMIME(back) != m {
 			t.Errorf("preferred extension %q for %q does not map back to it", ext, m)
 		}
+		// A preference must have something to choose AGAINST: with a single
+		// forward-map spelling the entry cannot fire — text/markdown sat
+		// here that way, "preferring" .md over a .markdown that was never in
+		// the map (codex closing round 5).
+		var spellings int
+		for _, mv := range extMIMEMap {
+			if NormalizeMIME(mv) == m {
+				spellings++
+			}
+		}
+		if spellings < 2 {
+			t.Errorf("preferred extension %q for %q has no competitor (%d spelling in extMIMEMap); "+
+				"the preference cannot fire", ext, m, spellings)
+		}
 	}
 
 	// Stability: the reverse map is built by iterating a Go map, whose order
