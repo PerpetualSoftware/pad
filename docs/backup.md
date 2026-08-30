@@ -168,8 +168,22 @@ your backup — it is the import applying a rule the write path now applies too
 (BUG-2803): a NUL cannot be stored in a text or JSON column, and PostgreSQL
 refuses it outright.
 
-It can only affect data written **before** that rule existed, and only on
-SQLite, which accepted it. A PostgreSQL instance never stored such a value.
+**The rule lives in the binary, not in the database**, so "before the rule
+existed" is a statement about which build served the write, not about a date.
+On SQLite, any window in which an older binary serves the same database can
+still create such rows: a rollback to the previous version, a staged rollout
+where an old and a new instance share a database, or a second older instance
+pointed at the same file. Once that window closes the guard is back, but the
+rows are already stored, and they behave exactly like genuinely old ones.
+
+Only SQLite is affected. PostgreSQL refuses a NUL in a text or JSON column
+itself, at every binary version, so a PostgreSQL instance never stored such a
+value regardless of which build wrote it.
+
+If you want the guarantee rather than the guard, drain writes from older
+binaries before the new one starts serving, or roll forward rather than back.
+Enforcing the invariant below the HTTP layer, so the running build stops
+mattering, is tracked as BUG-2813.
 
 The same limitation applies to `pad db migrate-to-pg`, which copies rows
 directly and does not go through the import guard: a row carrying a NUL will
