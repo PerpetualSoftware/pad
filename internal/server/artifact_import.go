@@ -255,12 +255,13 @@ func extractFrontmatterRegion(s string) (string, bool) {
 // and can only answer with a derivation test. Marshalling has no such gap:
 // every exported field is covered, including ones added later.
 //
-// encoding/json escapes a NUL as the six-character sequence, so a decoded NUL
-// anywhere in the artifact appears in the output. The search is for that
-// sequence in bytes the MARSHALLER produced, not in caller-supplied text, so
-// the ambiguity bodyDecodesNUL has to resolve — a doubled backslash meaning
-// literal text — cannot arise here: a literal backslash in a value marshals
-// to a doubled one.
+// The marshalled form is then DECODED AGAIN and walked with the same
+// machinery as caller data — not byte-searched for the escape sequence. An
+// earlier version of this paragraph claimed a byte search was safe because
+// "the ambiguity cannot arise here"; the body comment below records why that
+// was simply wrong (codex round 9, re-caught contradicting itself in the
+// closing rounds): a value holding the six LITERAL characters marshals to a
+// doubled backslash that still contains the sequence as a substring.
 //
 // SCOPE, stated because marshalling hides one thing: invalid UTF-8 in a Go
 // string marshals to U+FFFD rather than surviving, so this cannot detect it.

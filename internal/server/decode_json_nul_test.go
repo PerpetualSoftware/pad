@@ -370,7 +370,10 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	//     Closing the class means running the type checker, not another
 	//     parser patch — tracked as BUG-2820, which enumerates these forms.
 	//
-	// Both want per-call-site accounting, which is a different instrument.
+	// Both want per-call-site accounting, which is a different instrument —
+	// BUG-2820's go/types rewrite is filed to provide exactly that (each
+	// reader expression individually justified), retiring the per-file
+	// count workaround along with the name-resolution blind spots.
 }
 
 // jsonEncode returns s as a JSON string literal — the wire form of a field
@@ -1523,6 +1526,13 @@ func h(r *http.Request) { c := *r; io.ReadAll(c.Body) }`},
 func h(r *http.Request) { f := func(c http.Request) { io.ReadAll(c.Body) }; f(*r) }`},
 		{"form reader", true, `
 func h(r *http.Request) { _ = r.FormValue("x") }`},
+		// MultipartReader and FormFile are in the selector list but had no
+		// control here, so their removal from that list would have gone
+		// undetected (codex closing round 7).
+		{"multipart streaming reader", true, `
+func h(r *http.Request) { _, _ = r.MultipartReader() }`},
+		{"form file reader", true, `
+func h(r *http.Request) { _, _, _ = r.FormFile("f") }`},
 		{"reassigned through WithContext", true, `
 func h(r *http.Request) {
 	r = r.WithContext(context.Background())

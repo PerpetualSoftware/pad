@@ -105,6 +105,33 @@ func TestAttachmentViewNamesTheFileThroughTheCommand(t *testing.T) {
 		assertWrittenInsideTemp(t, got, body)
 	})
 
+	// image/png was in the OLD hand-rolled CLI table too, so png-only cases
+	// cannot discriminate the delegation to the shared MIME map — a stale
+	// local table would pass them (codex closing round 7). gzip is one of
+	// the types round 26 found MISSING from that table, and SVG is blocked:
+	// the shared map must answer for the first and refuse an extension for
+	// the second.
+	t.Run("delegated type the old table lacked gains its extension", func(t *testing.T) {
+		got := runAttachmentView(t,
+			attachmentViewTestHandler(`attachment; filename="dump"`, "application/gzip", body),
+			"44444444-4444-4444-4444-444444444444")
+		if filepath.Base(got) != "dump.gz" {
+			t.Fatalf("printed path %q, want basename dump.gz — the shared MIME map is not being consulted", got)
+		}
+		assertWrittenInsideTemp(t, got, body)
+	})
+
+	t.Run("blocked MIME type never gains an extension", func(t *testing.T) {
+		id := "55555555-5555-5555-5555-555555555555"
+		got := runAttachmentView(t,
+			attachmentViewTestHandler("", "image/svg+xml", body),
+			id)
+		if filepath.Base(got) != id {
+			t.Fatalf("printed path %q, want the bare id %q — a blocked type must not mint an extension", got, id)
+		}
+		assertWrittenInsideTemp(t, got, body)
+	})
+
 	t.Run("absent name falls back to the id plus extension", func(t *testing.T) {
 		got := runAttachmentView(t,
 			attachmentViewTestHandler("", "image/png", body),
