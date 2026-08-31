@@ -646,6 +646,27 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	}
 	var works []sourceWork
 	cursor := -1
+	// The SCAN is charged against the same budget as the rewrite loop below,
+	// and refuses DURING the scan (BUG-2804 / codex R4).
+	//
+	// `works` holds one entry per matching LINK ROW, not per source, and each
+	// entry carries that row's target_title — which is unbounded, because
+	// nothing validates item title length (there is a MaxDocumentTitleRunes,
+	// but no item equivalent). So a renamed item with a ~2 MiB title (one JSON
+	// request delivers that) linked from many rows makes this loop retain
+	// rows x title bytes BEFORE a single body is read, and the content-bytes
+	// cap in the loop below never fires because the content can be tiny.
+	//
+	// Charging it here rather than after the scan is what makes the bound real:
+	// at the moment of refusal the process holds only the rows already counted,
+	// which are under the cap by construction.
+	//
+	// ONE budget covers both phases deliberately. The two quantities differ —
+	// index rows here, content bytes below — but they are both "memory this one
+	// rename makes the server hold", and a second constant would be a second
+	// thing to tune with no separate meaning. The refusal figure is therefore
+	// the sum of both, which is what the caller actually needs to act on.
+	var processed int64
 	for rows.Next() {
 		var (
 			id, workspaceID string
@@ -655,6 +676,14 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 		if err := rows.Scan(&id, &workspaceID, &position, &targetTitle); err != nil {
 			rows.Close()
 			return fmt.Errorf("cascade rename: scan source row: %w", err)
+		}
+		processed += int64(len(targetTitle)) + cascadeRowOverheadBytes
+		if cursor < 0 || works[cursor].id != id {
+			processed += int64(len(id)+len(workspaceID)) + cascadeSourceOverheadBytes
+		}
+		if processed > MaxItemRenameCascadeBytes {
+			rows.Close()
+			return newItemRenameCascadeTooLargeError(newTitle, processed)
 		}
 		if cursor < 0 || works[cursor].id != id {
 			works = append(works, sourceWork{id: id, workspaceID: workspaceID})
@@ -677,7 +706,6 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// whose content this cascade actually rewrote, not every candidate it
 	// examined.
 	var cascaded []string
-	var processed int64
 	for _, work := range works {
 		// One read per SOURCE, not per link (BUG-2804 M1).
 		var content string
@@ -1696,8 +1724,40 @@ func newItemRenameCascadeTooLargeError(newTitle string, processed int64) error {
 // transaction that rolls back. Given a real workload three orders of magnitude
 // under the cap, the generous side is the correct side.
 //
-// This bounds WORK, not peak residency, and after M1/M2 those are different
-// quantities: the cascade now reads one body at a time and holds at most two,
-// so its own retention is O(1) in the linker count. The k-linear retention that
-// remains lives in the outbox member snapshots, filed separately as BUG-2827.
+// WHAT IT BOUNDS, corrected after codex R4 caught this comment overstating it.
+// An earlier version claimed the cascade's own retention was "O(1) in the
+// linker count", with the remaining k-linear retention attributed to the outbox
+// snapshots (BUG-2827). That was wrong, and wrong in the direction that matters:
+// the outbox is a DIFFERENT vector, and this cascade has k-linear retention of
+// its own in the `works` slice, which holds one entry per matching link row
+// with that row's unbounded target_title attached — reachable with tiny content,
+// so the content-bytes half of this budget never fires on it.
+//
+// The budget now covers BOTH phases, charged as it goes: the index rows during
+// the scan, and each body read plus the body built during the rewrite loop.
+// Peak residency is bounded by it in both, since each phase refuses before
+// allocating past it.
+//
+// Still NOT bounded here, and genuinely a separate vector: the outbox member
+// snapshots re-read every cascaded body after this function's work is done
+// (BUG-2827).
+// cascadeRowOverheadBytes and cascadeSourceOverheadBytes are the per-entry
+// costs the scan charges on top of the strings it retains.
+//
+// Derived from the struct layouts on 64-bit, not guessed: a
+// links.BracketRewrite is an int plus a string header (8 + 16 = 24), and a
+// sourceWork is two string headers plus a slice header (16 + 16 + 24 = 56).
+// Both are deliberately charged as the STRUCT size only — the string bytes are
+// charged separately and exactly at the call site, so nothing is double-counted.
+//
+// They are small relative to the strings they accompany and exist so that a
+// pathological row count with EMPTY titles still consumes budget rather than
+// being free. Approximate by nature: Go makes no layout guarantee, and slice
+// growth over-allocates. The error direction is under-charging, which the
+// content-bytes half of the same budget then catches downstream.
+const (
+	cascadeRowOverheadBytes    = 24
+	cascadeSourceOverheadBytes = 56
+)
+
 const MaxItemRenameCascadeBytes = 64 << 20

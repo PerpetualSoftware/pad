@@ -230,10 +230,15 @@ func TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice(t *te
 	var target models.Item
 	parseJSON(t, rr, &target)
 
-	const body = 1 << 20
+	// Body size chosen so perLinker does NOT divide the cap evenly, and the
+	// assertion below is a TOTAL rather than an exact count: the scan charges
+	// the same budget before the rewrite loop runs (BUG-2804 / codex R4), so
+	// the admitted count is a fixture detail that shifts when that charge
+	// changes. Pinning it exactly made this test fail for a reason unrelated to
+	// the property it exists for.
+	const body = 768 << 10 // 0.75 MiB
 	perLinker := int64(body) * 2
-	admits := int(store.MaxItemRenameCascadeBytes / perLinker)
-	linkers := admits + 2
+	linkers := int(store.MaxItemRenameCascadeBytes/perLinker) + 3
 	linkerBody := "[[Old]]" + strings.Repeat("x", body-len("[[Old]]"))
 	for i := 0; i < linkers; i++ {
 		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
@@ -259,10 +264,19 @@ func TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice(t *te
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("collab-edit path: got %d, want 413: %s", rr.Code, rr.Body.String())
 	}
-	if built != admits {
-		t.Errorf("cascade built %d bodies for ONE request, want %d — a second full cascade ran, "+
-			"which means the deterministic refusal fell through to the direct write and was "+
-			"re-derived from scratch", built, admits)
+	if built == 0 {
+		t.Fatalf("cascade built nothing — the fixture refused before the rewrite loop ran, so this " +
+			"test is not exercising the fall-through at all")
 	}
-	t.Logf("built %d bodies for one refused request (cap admits %d sources)", built, admits)
+	// ONE cascade's worth of work fits inside the budget by construction. TWO
+	// cascades — the fall-through re-deriving the same refusal — is about twice
+	// the cap, so the total is what discriminates without pinning a count.
+	if total := int64(built) * perLinker; total > store.MaxItemRenameCascadeBytes {
+		t.Errorf("cascade built %d bodies totalling %d charged bytes for ONE request, over the %d "+
+			"cap — a second full cascade ran, which means the deterministic refusal fell through "+
+			"to the direct write and was re-derived from scratch",
+			built, total, int64(store.MaxItemRenameCascadeBytes))
+	}
+	t.Logf("built %d bodies (%d charged bytes) for one refused request; cap %d",
+		built, int64(built)*perLinker, int64(store.MaxItemRenameCascadeBytes))
 }
