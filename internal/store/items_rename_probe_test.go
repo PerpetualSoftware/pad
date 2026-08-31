@@ -365,3 +365,119 @@ func TestProbeBUG2804_OutboxPayloadCarriesEveryBody(t *testing.T) {
 			float64(afterBytes-beforeBytes)/float64(bodySet))
 	}
 }
+
+// TestProbeBUG2804_ConstantDependsOnTitleLengthParity checks whether the
+// measured 2.01x-body-per-bracket constant is really TWO O(C) operations per
+// bracket, as the code suggests: the concatenation in RewriteBracketAt, plus
+// the `rewritten != newContent` full-body string comparison the cascade uses
+// to set `mutated` (wiki_links.go:679).
+//
+// Go compares string LENGTHS first, so that comparison is O(1) when the
+// rewrite changed the body's length and O(C) when it did not. Both earlier
+// sweeps used same-length titles ("A"->"B", "Old Probe Title"->"New Probe
+// Title"), which is the O(C) case — so the 2.01x constant may be an artifact
+// of that choice rather than a property of the path.
+//
+// This runs the SAME shape with a different-length new title. If the constant
+// falls to ~1x, the two-operations reading is confirmed and the honest
+// statement of the constant is "1x or 2x depending on title-length parity".
+// If it stays at 2x, that reading is wrong and something else is allocating.
+//
+// Either way the QUADRATIC is unaffected: the concatenation alone is O(C) per
+// bracket. This measures the constant, not the exponent.
+func TestProbeBUG2804_ConstantDependsOnTitleLengthParity(t *testing.T) {
+	const body = 256 << 10
+	const brackets = 512
+
+	for _, tc := range []struct {
+		name     string
+		newTitle string
+	}{
+		{"same-length (comparison is O(C))", "B"},
+		{"longer     (comparison is O(1))", "BBBBBBBBBBBBBBBB"},
+	} {
+		s := testStore(t)
+		ws := createTestWorkspace(t, s, "RenameProbeParity")
+		col := createTestCollection(t, s, ws.ID, "Tasks")
+		target := createTestItem(t, s, ws.ID, col.ID, "A", "the item being renamed")
+		createTestItem(t, s, ws.ID, col.ID, "Linker", probeBody(t, "A", brackets, body))
+
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &tc.newTitle}); err != nil {
+			t.Fatalf("rename %s: %v", tc.name, err)
+		}
+		runtime.ReadMemStats(&after)
+		a := after.TotalAlloc - before.TotalAlloc
+		t.Logf("%-34s TotalAlloc=%-12d per bracket=%-9d (=%.2fx body)",
+			tc.name, a, a/brackets, float64(a)/float64(brackets)/float64(body))
+	}
+}
+
+// TestProbeBUG2804_SelectMaterialisesContentPerLinkRow isolates the SECOND
+// O(C)-per-bracket cost, which is not in the rewriter at all.
+//
+// links.RewriteBracketAt allocates 1.00x the body per call, measured in
+// isolation (internal/links/probe_alloc_test.go). The cascade's marginal cost
+// is 2.01x per bracket. This measures where the other 1.00x lives.
+//
+// cascadeTitleRename's SELECT (wiki_links.go:616) joins item_wiki_links to
+// items and projects s.content, so it returns ONE ROW PER LINK, each carrying
+// a full copy of the source body. The scan loop de-duplicates into `works` by
+// source id — but the de-duplication happens AFTER rows.Scan has already
+// allocated a fresh string for every row.
+//
+// So a single source with N brackets makes the driver materialise N full
+// bodies to build one `works` entry. That is a second quadratic, independent
+// of the rewriter: making the rewrite single-pass would leave it untouched.
+//
+// The probe runs the cascade's own SELECT verbatim at increasing bracket
+// counts against ONE source, so any growth is per-ROW cost and not per-source.
+func TestProbeBUG2804_SelectMaterialisesContentPerLinkRow(t *testing.T) {
+	const body = 256 << 10
+
+	for _, brackets := range []int{8, 64, 512, 4096} {
+		s := testStore(t)
+		ws := createTestWorkspace(t, s, "RenameProbeSelect")
+		col := createTestCollection(t, s, ws.ID, "Tasks")
+		target := createTestItem(t, s, ws.ID, col.ID, "A", "the item being renamed")
+		createTestItem(t, s, ws.ID, col.ID, "Linker", probeBody(t, "A", brackets, body))
+
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+
+		rows, err := s.db.Query(s.q(`
+			SELECT s.id, s.content, s.workspace_id, wl.position, wl.target_title
+			FROM item_wiki_links wl
+			JOIN items s ON s.id = wl.source_item_id
+			WHERE wl.target_kind = 'title'
+			  AND wl.target_workspace_id IS NULL
+			  AND wl.target_item_id = ?
+			  AND s.deleted_at IS NULL
+			ORDER BY s.id, wl.position DESC
+		`), target.ID)
+		if err != nil {
+			t.Fatalf("select: %v", err)
+		}
+		n := 0
+		distinct := map[string]bool{}
+		for rows.Next() {
+			var id, content, wsID, targetTitle string
+			var position int
+			if err := rows.Scan(&id, &content, &wsID, &position, &targetTitle); err != nil {
+				rows.Close()
+				t.Fatalf("scan: %v", err)
+			}
+			distinct[id] = true
+			n++
+		}
+		rows.Close()
+		runtime.ReadMemStats(&after)
+
+		a := after.TotalAlloc - before.TotalAlloc
+		t.Logf("brackets=%-6d rows=%-6d distinctSources=%-3d SELECT+scan alloc=%-12d per row=%-9d (=%.2fx body)",
+			brackets, n, len(distinct), a, a/uint64(n), float64(a)/float64(n)/float64(body))
+	}
+}
