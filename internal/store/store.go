@@ -112,6 +112,25 @@ type Store struct {
 	// inside it there.
 	afterLinkCascadeRead func(workspaceID string)
 
+	// onItemCascadeBodyBuilt is a TEST-ONLY seam, nil in production. When set,
+	// cascadeTitleRename calls it once per rewritten body it BUILDS, with that
+	// body's byte length.
+	//
+	// It exists because the property "the cap refuses BEFORE building the body
+	// it refuses" cannot be pinned by an allocation ceiling on this path. After
+	// BUG-2804's single-pass rewrite, building one extra body costs ~1x the body
+	// — a signal small enough that a ceiling wide enough to be portable is also
+	// wide enough to miss it. Worse, the ceiling is DIALECT-DEPENDENT: the same
+	// refusal allocated ~69 MB on SQLite and ~242 MB on Postgres, whose driver
+	// copies each row's bytes differently, so any absolute number is green on
+	// one backend and red on the other for reasons that have nothing to do with
+	// the guard.
+	//
+	// A count of bodies built is exact, dialect-independent, and discriminates
+	// by one whole unit: refusing before the build yields N, refusing after
+	// yields N+1.
+	onItemCascadeBodyBuilt func(bytes int)
+
 	// afterDebounceRefusal is a TEST-ONLY seam, nil in production. When set,
 	// CreateActivityDebounced calls it after its merge UPDATE has affected
 	// ZERO rows and before the probe that decides which of the UPDATE's two
