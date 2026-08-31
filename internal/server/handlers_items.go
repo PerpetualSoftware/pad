@@ -892,6 +892,37 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUpdateItem updates an existing item (fields, content, or both).
+
+// writeItemRenameCascadeTooLarge answers a BUG-2804 cascade refusal as 413 and
+// reports whether it handled the error.
+//
+// SHARED because handleUpdateItem reaches store.UpdateItemWithParentLink from
+// THREE places — the plain path, the collab-snapshot callback, and the
+// collab-edit callback — each with its own error block. The plain path was
+// mapped first and the other two were missed, which is a population error, not
+// a typo: the sweep that established "bulk and restore never set Title"
+// checked other HANDLERS and never asked whether this handler had more than
+// one error block (codex R2).
+//
+// The refusal is DETERMINISTIC and permanent, which is why the collab-edit
+// path must treat it as final rather than letting it fall through to the
+// direct write: falling through re-runs the whole cascade, re-reads every
+// linking body and re-charges the projection, only to refuse identically. The
+// caller waits twice for one answer.
+func writeItemRenameCascadeTooLarge(w http.ResponseWriter, err error) bool {
+	var tooLarge *store.ItemRenameCascadeTooLargeError
+	if !errors.As(err, &tooLarge) {
+		return false
+	}
+	// Composed from TYPED fields, never by splicing err.Error() — every wrapper
+	// the call path added would otherwise be published to the client.
+	writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
+		fmt.Sprintf("This rename would rewrite more linked content than the server will process in one "+
+			"operation: at least %d bytes, and the limit is %d. Reduce the number of items linking "+
+			"this title, or split the rename, and try again.", tooLarge.Processed, tooLarge.Max))
+	return true
+}
+
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -1542,6 +1573,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 				return
 			}
+			// BUG-2804 / codex R2: without this the cascade refusal reaches the
+			// client as a 500 from this path only, while the plain path answers
+			// 413 for the identical store error.
+			if writeItemRenameCascadeTooLarge(w, err) {
+				return
+			}
 			// Mirror the main UpdateItem path: map UNIQUE constraint /
 			// duplicate key races (e.g. concurrent edits both racing the
 			// invocation_slug partial unique index) to 409 conflict so
@@ -1619,6 +1656,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// the same race again.
 			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 			return
+		} else if writeItemRenameCascadeTooLarge(w, err) {
+			// FINAL, like the guard and conflict arms above. The refusal is
+			// deterministic, so the fall-through to the direct write below would
+			// re-run the entire cascade — every linking body read and projected a
+			// second time — and refuse identically (codex R2).
+			return
 		} else if errors.Is(err, collab.ErrApplierAmbiguous) {
 			// BUG-2276 residual 2 (P1, mixed-deploy window): a legacy (non-bracket-
 			// capable) applier was caught by a concurrent version restore and its
@@ -1668,12 +1711,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// fields and never by splicing err.Error(), because every wrapper the
 		// call path added on the way up would otherwise be published to the
 		// client.
-		var cascadeTooLarge *store.ItemRenameCascadeTooLargeError
-		if errors.As(err, &cascadeTooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
-				fmt.Sprintf("This rename would rewrite more linked content than the server will process in one "+
-					"operation: at least %d bytes, and the limit is %d. Reduce the number of items linking "+
-					"this title, or split the rename, and try again.", cascadeTooLarge.Processed, cascadeTooLarge.Max))
+		if writeItemRenameCascadeTooLarge(w, err) {
 			return
 		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both

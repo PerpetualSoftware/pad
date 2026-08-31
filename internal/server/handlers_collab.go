@@ -10,6 +10,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 )
@@ -456,6 +457,28 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string,
 	return collab.ErrRoomActiveDuringPrune
 }
 
+// isDeterministicWriteFailure reports whether an error from a direct-write
+// callback is a settled answer rather than a transient condition.
+//
+// These three are the errors handleUpdateItem already treats as FINAL at every
+// call site: a rejection, a conflict, and a refusal. None can come out
+// differently on a retry, so a fallback path that swallows one and retries is
+// doing the work twice to reach the same answer — and, worse, may reach it by
+// a route that reports it differently.
+func isDeterministicWriteFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if _, ok := asOpenChildrenGuardError(err); ok {
+		return true
+	}
+	if _, ok := asUpdateConflictError(err); ok {
+		return true
+	}
+	var tooLarge *store.ItemRenameCascadeTooLargeError
+	return errors.As(err, &tooLarge)
+}
+
 func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown string, directWrite directWriteFn) error {
 	err := s.collab.ApplyExternalContent(itemID, markdown)
 	switch {
@@ -518,6 +541,22 @@ func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown str
 			// review round 6.
 			return paErr
 		default:
+			// A DETERMINISTIC failure from directWrite is the caller's answer,
+			// not a collab routing problem, so it must survive this branch
+			// (BUG-2804 / codex R2). Returning `err` here discards it and hands
+			// the caller the original collab error instead, which reads as
+			// "couldn't route through an applier" — recoverable — so the caller
+			// falls through to its own direct write and re-derives the identical
+			// refusal from scratch. Measured: a refused rename ran the whole
+			// cascade TWICE, 64 rewritten bodies built for one request.
+			//
+			// Scoped to errors that cannot come out differently on a second
+			// attempt. Everything else keeps returning `err`, preserving the
+			// graceful-degradation contract this branch exists for: a prune
+			// failure or a transient write fault should still fall through.
+			if isDeterministicWriteFailure(paErr) {
+				return paErr
+			}
 			slog.Warn("collab: failed to prune op-log on direct-write fallback",
 				"item_id", itemID,
 				"error", paErr,

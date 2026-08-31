@@ -144,3 +144,125 @@ func TestItemRename_OrdinaryCascadeStillSucceeds(t *testing.T) {
 		t.Errorf("found %d rewritten linkers, want 3: the cascade did not run", n)
 	}
 }
+
+// TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath closes codex R2's
+// second finding.
+//
+// handleUpdateItem reaches store.UpdateItemWithParentLink from THREE places,
+// each with its own error block: the plain path, the collab-snapshot callback,
+// and the collab-edit callback. R1 mapped the first. This pins the second, on
+// which the identical store refusal was still answering 500.
+//
+// Why the miss is worth naming: the CONVE-18 sweep I ran after R1 asked "do
+// other HANDLERS reach this?" and correctly answered no. It never asked
+// "does THIS handler reach it more than once?" — so the population was scoped
+// to the wrong axis, and a grep for the store call inside one function would
+// have found all three immediately.
+func TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath(t *testing.T) {
+	srv := testServerWithCollab(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title": "Old",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create target: %d: %s", rr.Code, rr.Body.String())
+	}
+	var target models.Item
+	parseJSON(t, rr, &target)
+
+	const body = 1 << 20
+	perLinker := int64(body) * 2
+	linkers := int(store.MaxItemRenameCascadeBytes/perLinker) + 2
+	linkerBody := "[[Old]]" + strings.Repeat("x", body-len("[[Old]]"))
+	for i := 0; i < linkers; i++ {
+		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+			"title":   fmt.Sprintf("Linker %d", i),
+			"content": linkerBody,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create linker %d: %d: %s", i, rr.Code, rr.Body.String())
+		}
+	}
+
+	// ?source=collab-snapshot with content routes through the collab-snapshot
+	// callback rather than the plain path.
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+target.Slug+"?source=collab-snapshot",
+		map[string]interface{}{
+			"title":         "New",
+			"content":       "rewritten by the editor",
+			"op_log_cursor": 0,
+		})
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("collab-snapshot path: got %d, want 413 — the same store refusal the plain path "+
+			"answers 413 for: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "rename_cascade_too_large") {
+		t.Errorf("response lacks the error code: %s", rr.Body.String())
+	}
+}
+
+// TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice closes
+// the other half of codex R2's second finding.
+//
+// The collab-edit path treats most callback errors as recoverable and falls
+// through to a direct write — graceful degradation for applier timeouts. A
+// cascade refusal is NOT recoverable: it is deterministic, so the fall-through
+// re-reads every linking body, re-charges the projection, and refuses
+// identically. The caller waits twice for one answer.
+//
+// STATUS CANNOT PIN THIS. Both behaviours end in 413 — the fall-through reaches
+// the plain path's arm — so a status assertion passes either way. The
+// observable that discriminates is how much WORK the cascade did, counted via
+// the store's build observer.
+func TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice(t *testing.T) {
+	srv := testServerWithCollab(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title": "Old",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create target: %d: %s", rr.Code, rr.Body.String())
+	}
+	var target models.Item
+	parseJSON(t, rr, &target)
+
+	const body = 1 << 20
+	perLinker := int64(body) * 2
+	admits := int(store.MaxItemRenameCascadeBytes / perLinker)
+	linkers := admits + 2
+	linkerBody := "[[Old]]" + strings.Repeat("x", body-len("[[Old]]"))
+	for i := 0; i < linkers; i++ {
+		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+			"title":   fmt.Sprintf("Linker %d", i),
+			"content": linkerBody,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create linker %d: %d: %s", i, rr.Code, rr.Body.String())
+		}
+	}
+
+	var built int
+	srv.store.SetCascadeBuildObserver(func(int) { built++ })
+	defer srv.store.SetCascadeBuildObserver(nil)
+
+	// Title + content with collab enabled and no collab-snapshot marker routes
+	// through the collab-edit callback.
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+target.Slug, map[string]interface{}{
+		"title":   "New",
+		"content": "rewritten by the editor",
+	})
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("collab-edit path: got %d, want 413: %s", rr.Code, rr.Body.String())
+	}
+	if built != admits {
+		t.Errorf("cascade built %d bodies for ONE request, want %d — a second full cascade ran, "+
+			"which means the deterministic refusal fell through to the direct write and was "+
+			"re-derived from scratch", built, admits)
+	}
+	t.Logf("built %d bodies for one refused request (cap admits %d sources)", built, admits)
+}

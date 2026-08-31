@@ -383,3 +383,105 @@ func TestRewriteBracketsAt_MixedChangedAndUnchangedCountsOnlyTheChanged(t *testi
 		t.Errorf("applied = %d, want 2 — the middle bracket was already [[New]]", applied)
 	}
 }
+
+// TestProjectRewrittenLen_IsLockstepWithTheRealPass pins the invariant the cap
+// depends on: what the projection PREDICTS must be exactly what the rewrite
+// DOES, for every input including the defensive ones.
+//
+// This is the property codex R2 found broken. The projection advanced its
+// cursor past a no-op bracket while the real pass did not, so on corrupt,
+// duplicated or overlapping offsets the two disagreed about which rewrites the
+// overlap guard skips — projection reporting (unchanged, 0 applied) where the
+// pass actually applied one and grew the body. The cascade charges from the
+// projection, so the bound's guarantee leaked on precisely the inputs the
+// defensive paths exist for.
+//
+// The corpus deliberately includes NESTED-LOOKING brackets like `[[A[[B]]]]`,
+// where two valid `[[` offsets share a closing `]]` and therefore genuinely
+// overlap. Random offsets alone rarely produce that shape, which is why it is
+// constructed rather than left to chance.
+func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
+	rng := rand.New(rand.NewSource(20260902))
+	titles := []string{"Old", "old", "A|B", "Other", "A[[B", "B"}
+	news := []string{"New", "N", "A[[B", strings.Repeat("N", 20), ""}
+
+	overlapping := []string{
+		"[[A[[B]]]]",
+		"[[Old[[Old]]]]",
+		"x [[A[[B]]]] y",
+		"[[A[[B]]]] [[Old]]",
+	}
+
+	check := func(t *testing.T, content string, rewrites []BracketRewrite, newTitle, collSlug string) {
+		t.Helper()
+		wantLen, wantApplied := ProjectRewrittenLen(content, rewrites, newTitle, collSlug)
+		got, gotApplied := RewriteBracketsAt(content, rewrites, newTitle, collSlug)
+		if len(got) != wantLen || gotApplied != wantApplied {
+			t.Fatalf("projection and the real pass disagree\n content=%q rewrites=%+v new=%q slug=%q\n"+
+				" projected len=%d applied=%d\n actual    len=%d applied=%d (result %q)",
+				content, rewrites, newTitle, collSlug, wantLen, wantApplied, len(got), gotApplied, got)
+		}
+	}
+
+	// MIXED target titles per position, not one title for the whole call.
+	// Cascade rows carry their own target_title (one row may have stored
+	// "Old" and another "tasks/Old"), and a single shared title is exactly
+	// what hid this divergence from the first version of this test: the
+	// reproducing case needs one bracket to be a NO-OP while an overlapping
+	// one CHANGES, which a single title cannot express.
+	for _, content := range overlapping {
+		offs := bracketOffsets(content)
+		for _, newTitle := range news {
+			for ti := range titles {
+				rewrites := make([]BracketRewrite, 0, len(offs))
+				for j, p := range offs {
+					rewrites = append(rewrites, BracketRewrite{
+						Position:    p,
+						TargetTitle: titles[(ti+j)%len(titles)],
+					})
+				}
+				check(t, content, rewrites, newTitle, "")
+			}
+		}
+	}
+
+	// The exact shape codex R2 named, asserted directly so the regression has
+	// a named home rather than depending on the random search rediscovering it:
+	// bracket [0,8) is a no-op, bracket [3,8) overlaps it and changes.
+	check(t, "[[A[[B]]]]", []BracketRewrite{
+		{Position: 0, TargetTitle: "A[[B"},
+		{Position: 3, TargetTitle: "B"},
+	}, "A[[B", "")
+
+	const iterations = 20000
+	for i := 0; i < iterations; i++ {
+		content := randomBracketContent(rng)
+		if rng.Intn(4) == 0 {
+			content += overlapping[rng.Intn(len(overlapping))]
+		}
+		target := titles[rng.Intn(len(titles))]
+		newTitle := news[rng.Intn(len(news))]
+
+		positions := bracketOffsets(content)
+		if rng.Intn(3) == 0 && len(content) > 0 {
+			positions = append(positions, rng.Intn(len(content)))
+		}
+		if rng.Intn(4) == 0 && len(positions) > 0 {
+			positions = append(positions, positions[rng.Intn(len(positions))])
+		}
+		if len(positions) == 0 {
+			continue
+		}
+		rng.Shuffle(len(positions), func(a, b int) { positions[a], positions[b] = positions[b], positions[a] })
+
+		rewrites := make([]BracketRewrite, 0, len(positions))
+		for j, p := range positions {
+			tt := target
+			if rng.Intn(2) == 0 {
+				tt = titles[(i+j)%len(titles)]
+			}
+			rewrites = append(rewrites, BracketRewrite{Position: p, TargetTitle: tt})
+		}
+		check(t, content, rewrites, newTitle, "")
+	}
+}

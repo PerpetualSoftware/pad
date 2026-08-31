@@ -1575,6 +1575,23 @@ func snippetAround(content string, position int) string {
 	return snippet
 }
 
+// SetCascadeBuildObserver installs a TEST-SUPPORT observer called once per
+// rewritten body the item rename cascade BUILDS, with that body's length. Pass
+// nil to clear.
+//
+// Exported for the same reason SetCollabRoomManager is: the property it makes
+// observable — how much work a single request causes the cascade to do — is
+// only reachable from the SERVER package, whose tests cannot touch this
+// package's unexported fields. It is the instrument behind the collab-edit
+// double-work test (codex R2), which asserts that a refused rename runs the
+// cascade ONCE rather than falling through and running it again.
+//
+// Not safe for concurrent use with in-flight renames; tests set it before
+// issuing requests and clear it after.
+func (s *Store) SetCascadeBuildObserver(fn func(bytes int)) {
+	s.onItemCascadeBodyBuilt = fn
+}
+
 // buildCascadeBody builds one rewritten body and reports the build through the
 // test seam, as ONE operation.
 //

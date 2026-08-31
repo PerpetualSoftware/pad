@@ -244,7 +244,19 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, newTitle, co
 			continue
 		}
 		if bracketUnchanged(content, rw.Position, bracketEnd, newSegment, displaySuffix) {
-			cursor = bracketEnd
+			// Deliberately does NOT advance the cursor, mirroring the real pass
+			// exactly. An earlier version advanced it here, which made the two
+			// loops disagree about which overlapping rewrites the guard skips:
+			// on `[[A[[B]]]]` with a no-op at 0 and a change at 3, projection
+			// reported (10 bytes, 0 applied) while the pass produced 13 bytes
+			// and applied 1 — so the cascade charged a read it never charged
+			// the rewrite for, and the bound leaked on exactly the corrupt or
+			// duplicated offsets the defensive paths exist to handle
+			// (codex R2).
+			//
+			// The pass is the side that must not move: its behaviour is pinned
+			// to the descending fold the cascade used to perform. So the
+			// projection follows it, never the reverse.
 			continue
 		}
 		// Length arithmetic only — NOTHING is built here. Concatenating a
