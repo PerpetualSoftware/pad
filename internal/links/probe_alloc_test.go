@@ -58,7 +58,7 @@ func TestProjectRewrittenLenDoesNotAllocatePerBracket(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	length, applied := ProjectRewrittenLen(content, rewrites, newTitle, "tasks")
+	length, applied := ProjectRewrittenLen(content, rewrites, NewTitleEscaper(newTitle, "tasks"))
 	runtime.ReadMemStats(&after)
 
 	if applied != brackets {

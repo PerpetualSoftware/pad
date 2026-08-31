@@ -120,7 +120,8 @@ func RewriteWikiTitle(content, oldTitle, newTitle, collSlug string) string {
 // comparing this function to RewriteBracketsAt-of-one would be vacuous, since
 // that is now its definition. BUG-2804.
 func RewriteBracketAt(content string, position int, targetTitle, newTitle, collSlug string) string {
-	out, _ := RewriteBracketsAt(content, []BracketRewrite{{Position: position, TargetTitle: targetTitle}}, newTitle, collSlug)
+	out, _ := RewriteBracketsAt(content, []BracketRewrite{{Position: position, TargetTitle: targetTitle}},
+		NewTitleEscaper(newTitle, collSlug))
 	return out
 }
 
@@ -160,7 +161,7 @@ type BracketRewrite struct {
 //   - Applying nothing returns the input string unchanged, allocating nothing.
 //     Callers use the count to decide whether a write is owed, which also spares
 //     them a full-body string comparison to detect it.
-func RewriteBracketsAt(content string, rewrites []BracketRewrite, newTitle, collSlug string) (string, int) {
+func RewriteBracketsAt(content string, rewrites []BracketRewrite, esc TitleEscaper) (string, int) {
 	if len(rewrites) == 0 {
 		return content, 0
 	}
@@ -177,7 +178,7 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, newTitle, coll
 			// Overlaps a rewrite already applied (or a duplicate offset).
 			continue
 		}
-		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, newTitle, collSlug)
+		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, esc.collSlugForMatch())
 		if !ok {
 			continue
 		}
@@ -189,7 +190,7 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, newTitle, coll
 		// rename rewrite content, bump seq, and emit events for every linker
 		// (codex R1 P2). The old code compared whole bodies to decide this;
 		// comparing the bracket is the same question asked locally.
-		if bracketUnchanged(content, rw.Position, bracketEnd, qualified, newTitle, collSlug, displaySuffix) {
+		if bracketUnchanged(content, rw.Position, bracketEnd, qualified, esc, displaySuffix) {
 			continue
 		}
 		if applied == 0 {
@@ -201,10 +202,10 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, newTitle, coll
 		b.WriteString(content[cursor:rw.Position])
 		b.WriteString("[[")
 		if qualified {
-			b.WriteString(collSlug)
+			b.WriteString(esc.escSlug)
 			b.WriteString("/")
 		}
-		b.WriteString(newTitle)
+		b.WriteString(esc.escTitle)
 		b.WriteString(displaySuffix)
 		b.WriteString("]]")
 		cursor = bracketEnd
@@ -229,7 +230,7 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, newTitle, coll
 //
 // Cost is O(total bracket text), not O(len(content) * len(rewrites)) — each
 // bracket is inspected once and the untouched spans are only measured.
-func ProjectRewrittenLen(content string, rewrites []BracketRewrite, newTitle, collSlug string) (length, applied int) {
+func ProjectRewrittenLen(content string, rewrites []BracketRewrite, esc TitleEscaper) (length, applied int) {
 	if len(rewrites) == 0 {
 		return len(content), 0
 	}
@@ -243,11 +244,11 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, newTitle, co
 		if rw.Position < cursor {
 			continue
 		}
-		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, newTitle, collSlug)
+		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, esc.collSlugForMatch())
 		if !ok {
 			continue
 		}
-		if bracketUnchanged(content, rw.Position, bracketEnd, qualified, newTitle, collSlug, displaySuffix) {
+		if bracketUnchanged(content, rw.Position, bracketEnd, qualified, esc, displaySuffix) {
 			// Deliberately does NOT advance the cursor, mirroring the real pass
 			// exactly. An earlier version advanced it here, which made the two
 			// loops disagree about which overlapping rewrites the guard skips:
@@ -267,7 +268,7 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, newTitle, co
 		// replacement per bracket to measure it would reintroduce, one layer
 		// down, exactly the allocate-then-refuse shape the cap exists to
 		// prevent (codex R1 P1).
-		length += (2 + bracketSegmentLen(qualified, newTitle, collSlug) + len(displaySuffix) + 2) - (bracketEnd - rw.Position)
+		length += (2 + esc.segmentLen(qualified) + len(displaySuffix) + 2) - (bracketEnd - rw.Position)
 		cursor = bracketEnd
 		applied++
 	}
@@ -277,43 +278,162 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, newTitle, co
 	return length, applied
 }
 
-// bracketSegmentLen is the byte length of the title segment a matched bracket
-// will carry: the optional `<collSlug>/` prefix plus newTitle. Computed, never
-// built.
-func bracketSegmentLen(qualified bool, newTitle, collSlug string) int {
-	if qualified {
-		return len(collSlug) + 1 + len(newTitle)
+// escapeWikiBody escapes a title for emission INSIDE a `[[...]]` body, so the
+// parser reads back exactly the title that went in.
+//
+// Byte-for-byte the same rule as the editor's escapeWikiBody
+// (web/src/lib/utils/markdown.ts:748): backslash first, then `]` and `|`.
+// Doing backslash first is what keeps it the exact inverse of
+// unescapeWikiBody — escaping `]` first would leave the introduced backslashes
+// to be escaped again.
+//
+// BUG-2805: the rewriter previously emitted newTitle by plain concatenation.
+// A title containing `]` produced a bracket the grammar cannot parse at all
+// (`\[\[((?:\\.|[^\]\\])+)\]\]`), so the reparse found no link and DELETED the
+// index row — permanent, unrecoverable damage from an ordinary rename, since a
+// later rename has no row left to cascade. A title containing `\]` produced
+// valid syntax for a DIFFERENT title.
+func escapeWikiBody(s string) string {
+	if !strings.ContainsAny(s, `\]|`) {
+		return s
 	}
-	return len(newTitle)
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', ']', '|':
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
+
+// escapedWikiBodyLen is len(escapeWikiBody(s)) WITHOUT building it.
+//
+// The projection path runs before the cascade's cap can fire, so it must not
+// materialise anything proportional to the title (codex R5, BUG-2804). This is
+// that rule applied to the escaped form.
+func escapedWikiBodyLen(s string) int {
+	n := len(s)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\', ']', '|':
+			n++
+		}
+	}
+	return n
+}
+
+// TitleEscaper carries a rename's emission-ready forms, computed ONCE per
+// cascade rather than per source or per bracket.
+//
+// It exists for the allocation reason, not for tidiness. A cascade renames one
+// item to one new title, but RewriteBracketsAt and ProjectRewrittenLen are
+// called once per SOURCE — and the scan bound admits a very large number of
+// sources when their titles are short. Escaping inside those functions would
+// therefore multiply an unbounded newTitle by an unbounded source count, which
+// is the BUG-2804 R5 defect in a new costume.
+type TitleEscaper struct {
+	escTitle string
+	escSlug  string
+	// rawSlug is the UNESCAPED slug; matching compares unescaped values.
+	rawSlug string
+	// Lengths are carried separately so the projection path can measure
+	// without touching the strings at all.
+	titleLen int
+	slugLen  int
+}
+
+// NewTitleEscaper precomputes the escaped forms for one rename.
+func NewTitleEscaper(newTitle, collSlug string) TitleEscaper {
+	return TitleEscaper{
+		escTitle: escapeWikiBody(newTitle),
+		escSlug:  escapeWikiBody(collSlug),
+		rawSlug:  collSlug,
+		titleLen: escapedWikiBodyLen(newTitle),
+		slugLen:  escapedWikiBodyLen(collSlug),
+	}
+}
+
+// scanBracketBody finds the body of the wiki-link bracket starting at
+// `position`, honouring the escape grammar.
+//
+// It implements exactly the parser's body production
+// (`(?:\\.|[^\]\\])+`, extract.go): a backslash consumes the next byte
+// whatever it is, an unescaped `]` is only legal as the first half of the
+// closing `]]`, and the body must be non-empty.
+//
+// The naive `strings.Index(rest, "]]")` this replaces finds the WRONG close on
+// an escaped body: in `[[A\]]]` it stops at the `]` belonging to the `\]`
+// escape and returns the body `A\`. That was latent while the rewriter never
+// emitted escapes; BUG-2805's fix makes escaped bodies routine, so the scan has
+// to agree with the parser or each rename corrupts what the last one wrote.
+func scanBracketBody(content string, position int) (body string, bracketEnd int, ok bool) {
+	start := position + 2
+	i := start
+	for i < len(content) {
+		switch content[i] {
+		case '\\':
+			if i+1 >= len(content) {
+				return "", 0, false // trailing backslash: `\\.` has nothing to consume
+			}
+			i += 2
+		case ']':
+			if i+1 < len(content) && content[i+1] == ']' {
+				if i == start {
+					return "", 0, false // empty body; the production is `+`
+				}
+				return content[start:i], i + 2, true
+			}
+			return "", 0, false // bare `]` is not in the body production
+		default:
+			i++
+		}
+	}
+	return "", 0, false
+}
+
+// segmentLen is the byte length of the title segment a matched bracket will
+// carry: the optional escaped `<collSlug>/` prefix plus the escaped title.
+// Computed from precomputed lengths, never built.
+func (e TitleEscaper) segmentLen(qualified bool) int {
+	if qualified {
+		return e.slugLen + 1 + e.titleLen
+	}
+	return e.titleLen
+}
+
+// collSlugForMatch returns the RAW slug the matcher compares target_title
+// against. Matching works on unescaped values, so the escaped form must not
+// leak into it.
+func (e TitleEscaper) collSlugForMatch() string { return e.rawSlug }
 
 // bracketUnchanged reports whether rewriting the bracket at [position,
 // bracketEnd) would reproduce it byte-for-byte.
 //
-// Allocation-free, and now segment-wise: it walks the existing body against the
-// optional slug prefix, then newTitle, then the display suffix, rather than
-// concatenating them into a candidate string. Building the candidate just to
-// compare it would reintroduce the newTitle-proportional allocation that
-// bracketRewriteAt exists to avoid — on every bracket, in the projection path,
-// before the cap fires (codex R5).
-func bracketUnchanged(content string, position, bracketEnd int, qualified bool, newTitle, collSlug, displaySuffix string) bool {
+// Allocation-free and segment-wise: it walks the existing body against the
+// escaped slug prefix, then the escaped title, then the display suffix, rather
+// than concatenating them into a candidate string — which would reintroduce
+// the per-bracket allocation the projection path must not have (codex R5).
+func bracketUnchanged(content string, position, bracketEnd int, qualified bool, esc TitleEscaper, displaySuffix string) bool {
 	body := content[position+2 : bracketEnd-2]
-	if len(body) != bracketSegmentLen(qualified, newTitle, collSlug)+len(displaySuffix) {
+	if len(body) != esc.segmentLen(qualified)+len(displaySuffix) {
 		return false
 	}
 	if qualified {
-		if len(body) < len(collSlug)+1 {
+		if len(body) < esc.slugLen+1 {
 			return false
 		}
-		if body[:len(collSlug)] != collSlug || body[len(collSlug)] != '/' {
+		if body[:esc.slugLen] != esc.escSlug || body[esc.slugLen] != '/' {
 			return false
 		}
-		body = body[len(collSlug)+1:]
+		body = body[esc.slugLen+1:]
 	}
-	if len(body) < len(newTitle) || body[:len(newTitle)] != newTitle {
+	if len(body) < esc.titleLen || body[:esc.titleLen] != esc.escTitle {
 		return false
 	}
-	return body[len(newTitle):] == displaySuffix
+	return body[esc.titleLen:] == displaySuffix
 }
 
 // bracketRewriteAt is the per-bracket decision, and the ONLY copy of it. It
@@ -323,66 +443,59 @@ func bracketUnchanged(content string, position, bracketEnd int, qualified bool, 
 //
 // It reads only content[position:bracketEnd] — that locality is what makes a
 // single pass possible, since the rest of the body is pure carry.
-func bracketRewriteAt(content string, position int, targetTitle, newTitle, collSlug string) (qualified bool, displaySuffix string, bracketEnd int, ok bool) {
+func bracketRewriteAt(content string, position int, targetTitle, collSlug string) (qualified bool, displaySuffix string, bracketEnd int, ok bool) {
 	if position < 0 || position+2 > len(content) {
 		return false, "", 0, false
 	}
 	if content[position:position+2] != "[[" {
 		return false, "", 0, false
 	}
-	rest := content[position+2:]
-	closeIdx := strings.Index(rest, "]]")
-	if closeIdx < 0 {
+	body, end, found := scanBracketBody(content, position)
+	if !found {
 		return false, "", 0, false
 	}
-	body := rest[:closeIdx]
-	bracketEnd = position + 2 + closeIdx + 2 // past `]]`
+	bracketEnd = end
 
-	tLower := strings.ToLower(body)
-	ttLower := strings.ToLower(targetTitle)
-
-	// MATCH FIRST, then describe the replacement. Nothing proportional to
-	// newTitle is built here at all — this returns a DESCRIPTION (does the
-	// qualified prefix apply, what display suffix carries over) and lets each
-	// caller either measure it or write it.
+	// MATCH AGAINST THE UNESCAPED BODY (BUG-2805 direction 1). The stored
+	// bracket for a title containing `]`, `|` or `\` is escape-encoded, so
+	// comparing the RAW body against the plain title never matched and the
+	// link was left stale while the index row silently flipped to broken.
 	//
-	// Both properties matter and both were violated before (codex R1, then R5
-	// one layer down). An earlier version composed `collSlug + "/" + newTitle`
-	// BEFORE the match check, so every bracket paid for it including the
-	// leave-alone exit — and ProjectRewrittenLen calls this once per rewrite
-	// BEFORE the cap fires. BUG-2831 then measured that newTitle has no
-	// validation bound, so a bracket-dense body with a multi-megabyte new title
-	// projected gigabytes of immediately-discarded allocation ahead of the
-	// refusal that exists to prevent exactly that.
+	// Order mirrors the parser and the renderer, which both prefer the FULL
+	// body as a title before splitting on a pipe (wiki_links.go's title
+	// fallback, markdown.ts resolveWikiBody). Getting this order wrong would
+	// break literal-pipe titles like "A|B", which case 1 has always handled.
 	//
-	// Case 1: body equals target_title (case-insensitive) — no display segment.
-	// Case 2: body starts with target_title + "|" — the display segment from
-	// the pipe onward carries over verbatim (a SLICE of body, not a copy).
+	// Nothing proportional to the new title is built here — this returns a
+	// DESCRIPTION and lets each caller measure it or write it (codex R5).
 	switch {
-	case tLower == ttLower:
-	case len(tLower) > len(ttLower) && tLower[len(ttLower)] == '|' && tLower[:len(ttLower)] == ttLower:
-		// Spelled out rather than HasPrefix(tLower, ttLower+"|") so the
-		// concatenation disappears; it is the same predicate, byte for byte,
-		// on the same two already-lowered strings.
-		displaySuffix = body[len(targetTitle):] // includes the pipe
+	case strings.EqualFold(unescapeWikiBody(body), targetTitle):
+		// Case 1: the whole body is the title. No display segment.
 	default:
-		// Bracket doesn't match the expected shape — leave it alone.
-		// (Index drift or a stored full-body title with embedded pipe;
-		// the trailing replaceWikiLinks call will reconcile.)
-		return false, "", 0, false
+		rawKey, _, hasPipe := splitOnUnescapedPipe(body)
+		if !hasPipe || !strings.EqualFold(unescapeWikiBody(rawKey), targetTitle) {
+			// Bracket doesn't match the expected shape — leave it alone.
+			// (Index drift, or a body whose title segment is something else;
+			// the trailing replaceWikiLinks call will reconcile the index.)
+			return false, "", 0, false
+		}
+		// Case 2: title segment matches; everything from the unescaped pipe
+		// onward carries over VERBATIM, still escape-encoded. It is a slice of
+		// body, never a copy, and it is deliberately not re-escaped — it is
+		// already in stored form.
+		displaySuffix = body[len(rawKey):]
 	}
 
 	// Only now, on a confirmed match: does the `<collSlug>/` prefix carry over?
 	// A qualified body like `[[tasks/Old Title]]` becomes `[[tasks/New Title]]`
 	// — the cascade SELECT already proved this row points at the renamed item
 	// via stage-2 qualified-fallback resolution, so the slug is guaranteed to
-	// match collSlug. Reported as a flag; the caller writes collSlug and "/"
-	// directly rather than receiving them spliced onto newTitle.
-	if collSlug != "" {
-		pfx := collSlug + "/"
-		if strings.HasPrefix(strings.ToLower(targetTitle), strings.ToLower(pfx)) {
-			qualified = true
-		}
+	// match collSlug. Reported as a flag; the caller writes the escaped slug
+	// and "/" directly rather than receiving them spliced onto the title.
+	if collSlug != "" && len(targetTitle) > len(collSlug) &&
+		targetTitle[len(collSlug)] == '/' &&
+		strings.EqualFold(targetTitle[:len(collSlug)], collSlug) {
+		qualified = true
 	}
 	return qualified, displaySuffix, bracketEnd, true
 }
