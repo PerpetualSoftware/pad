@@ -199,7 +199,14 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 		}
 		want := content
 		for _, p := range desc {
-			want = RewriteBracketAt(want, p, target, newTitle, "")
+			// rewriteBracketAtV0, NOT RewriteBracketAt. The latter now delegates
+			// to RewriteBracketsAt, so folding it would build the oracle out of
+			// the code under test and the comparison would be circular — the
+			// same vacuity that made the one-element assertion worthless, in
+			// the multi-bracket case, which I missed when I caught it there
+			// (codex R3). The frozen pre-refactor primitive is the only
+			// genuinely independent oracle available.
+			want = rewriteBracketAtV0(want, p, target, newTitle, "")
 		}
 
 		// SHUFFLED on purpose. bracketOffsets returns ascending order, but the
