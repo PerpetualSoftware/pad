@@ -765,8 +765,11 @@ func TestImportBundle_RefusesNULInManifest(t *testing.T) {
 	got := httptest.NewRecorder()
 	dest.ServeHTTP(got, req)
 
-	if got.Code < 400 {
-		t.Errorf("a manifest carrying a NUL escape must be refused, got %d: %s", got.Code, got.Body.String())
+	// Exactly 400, not "any error": the refusal is a caller-input verdict
+	// the release note promises, and a >=400 assertion would let it decay
+	// into a 500 unnoticed (codex closing round 8).
+	if got.Code != http.StatusBadRequest {
+		t.Errorf("a manifest carrying a NUL escape must be refused with 400, got %d: %s", got.Code, got.Body.String())
 	}
 	if !strings.Contains(got.Body.String(), "NUL") {
 		t.Errorf("the refusal should name the cause, got body=%s", got.Body.String())

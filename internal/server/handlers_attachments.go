@@ -651,8 +651,11 @@ func writeAttachmentNotFound(w http.ResponseWriter) {
 //   - Resolves the storage backend via the Registry and opens the blob.
 //   - Sets Content-Type from the DB row (which is already the canonical
 //     post-allowlist MIME, not the client-supplied one).
-//   - Sets Content-Disposition from the MIME's RenderMode entry:
-//     RenderForceDownload → "attachment", everything else → "inline".
+//   - Sets Content-Disposition fail-closed via the explicit ServeInline
+//     allowlist (BUG-2413): only audited types are "inline", everything
+//     else — RenderChip types included — is "attachment". (An earlier
+//     version of this line derived the answer from RenderMode, the
+//     pre-BUG-2413 policy; codex closing round 8.)
 //   - Hands off to http.ServeContent when the backend supports Seek
 //     (FSStore returns *os.File, so this is the common path) — that
 //     gives us If-Modified-Since, If-None-Match, Range/206, Accept-Ranges

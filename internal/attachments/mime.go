@@ -16,9 +16,12 @@ const (
 	// (image, audio, video). Content-Disposition is "inline".
 	RenderInline RenderMode = iota
 	// RenderChip means the editor displays a download chip instead of
-	// embedding the bytes (PDFs, archives, office docs). The HTTP layer
-	// still serves these inline so the browser can preview if it wants
-	// to (PDF in particular); the Content-Disposition stays "inline".
+	// embedding the bytes (PDFs, archives, office docs). Content-Disposition
+	// for these is decided by the read path's explicit ServeInline allowlist
+	// (BUG-2413), NOT by this mode: most chip types are served as
+	// "attachment", with only the audited exceptions (PDF, say) inline. An
+	// earlier version of this comment said the HTTP layer served every chip
+	// inline, which described the pre-BUG-2413 policy (codex closing round 8).
 	RenderChip
 	// RenderForceDownload means we set Content-Disposition: attachment
 	// to keep the browser from interpreting the bytes inline. This is
