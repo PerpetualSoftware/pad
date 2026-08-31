@@ -2306,7 +2306,14 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// already has: no door can mint a NEW untitled or over-long item.
 	if input.Title != nil {
 		normalized := models.NormalizeItemTitle(*input.Title)
-		if normalized != existing.Title {
+		// The exemption tests BOTH forms against the stored title (codex round
+		// 1, P2). Comparing only the normalized one narrows the rule to less
+		// than it claims: a legacy row whose stored title carries edge
+		// whitespace is echoed back VERBATIM by a client that read it, and the
+		// normalized echo then differs from what is stored — so the row's own
+		// title reads as a rename and, if it also predates the bound, is
+		// refused. "Identical to the stored one" has to mean what it says.
+		if normalized != existing.Title && *input.Title != existing.Title {
 			if msg := models.ValidateItemTitle(normalized); msg != "" {
 				return nil, &InvalidItemTitleError{Reason: msg}
 			}

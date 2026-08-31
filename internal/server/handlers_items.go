@@ -1038,7 +1038,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// at the store's copy.
 	if input.Title != nil {
 		normalizedTitle := models.NormalizeItemTitle(*input.Title)
-		if normalizedTitle != item.Title {
+		if normalizedTitle != item.Title && *input.Title != item.Title {
 			if msg := models.ValidateItemTitle(normalizedTitle); msg != "" {
 				writeError(w, http.StatusBadRequest, "bad_request", msg)
 				return
@@ -1653,6 +1653,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// client as a 500 from this path only, while the plain path answers
 			// 413 for the identical store error.
 			if writeItemRenameCascadeTooLarge(w, err) {
+				return
+			}
+			// BUG-2833 / codex round 1, P2 — the identical omission, one
+			// release later. This block mirrors the plain path's arms, and a
+			// PATCH carrying both content and a title reaches the store through
+			// it, so a title the store refuses under the lock would answer 500
+			// here while the plain path answers 400.
+			if writeInvalidItemTitle(w, err) {
 				return
 			}
 			// Mirror the main UpdateItem path: map UNIQUE constraint /

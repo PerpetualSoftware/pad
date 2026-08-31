@@ -201,9 +201,13 @@ func TestItemTitle_StoresTheNormalizedValue(t *testing.T) {
 // stored title predates the bound must stay editable; only a genuine rename is
 // a write-time door.
 func TestItemTitle_GrandfathersLegacyRows(t *testing.T) {
-	if s := testStore(t); s.dialect.Driver() == DriverPostgres {
-		t.Skip("a legacy over-bound title cannot exist on Postgres: the slug it implies exceeds the 8191-byte btree index tuple, which is BUG-2831 itself")
-	}
+	// RUNS ON BOTH DIALECTS. It used to skip on Postgres, on the stated ground
+	// that a legacy over-bound title implies a slug past the btree index-tuple
+	// cap — which is true of BUG-2804's 2 MiB fixture and FALSE of this one
+	// (codex round 1, P2). overlongTitle() is 256 runes, so the slug it derives
+	// is 256 ASCII bytes: an order of magnitude under the 2704 the cap actually
+	// enforces. The skip was reasoning by analogy with a different fixture and
+	// left the non-retroactive rule untested on the backend BUG-2831 is about.
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleGrandfather")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -381,4 +385,152 @@ func highEntropySlug(n int) string {
 		out[i] = alphabet[(x>>33)%uint64(len(alphabet))]
 	}
 	return string(out)
+}
+
+// TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug regresses
+// codex round 1 P1.
+//
+// Truncation is the only way this loop can produce two identical slugs — a
+// bundle exported from a live workspace cannot contain a duplicate, because
+// UNIQUE(workspace_id, slug) held there. But the duplicate it creates lands in
+// either order, and the first fix resolved uniqueness ONLY for the row it had
+// truncated. Here the truncated row is inserted FIRST and the untouched row
+// that happens to own the resulting slug comes second, so the row that needs
+// resolving is the one the fix was not looking at.
+//
+// The failure mode is the whole import aborting — the opposite of the
+// coerce-and-continue policy the title coercion exists to honour.
+func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.T) {
+	s := testStore(t)
+	owner, err := s.CreateUser(models.UserCreate{
+		Name: "Owner", Email: "slug-collision-owner@example.com", Password: "passw0rd!",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// A long slug whose first MaxItemTitleRunes bytes are exactly `collides`
+	// padded out — so truncation lands on a value a later row already owns.
+	prefix := strings.Repeat("c", models.MaxItemTitleRunes)
+	longSlug := prefix + strings.Repeat("d", 500)
+
+	export := &models.WorkspaceExport{
+		Version: 1, ExportedAt: "2026-08-31T00:00:00Z",
+		Workspace: models.WorkspaceExportMeta{Name: "Collide", Slug: "collide"},
+		Collections: []models.CollectionExport{{
+			ID: "c1", Name: "Tasks", Slug: "tasks", Prefix: "TASK",
+			Schema:    `{"fields":[]}`,
+			CreatedAt: "2026-08-31T00:00:00Z", UpdatedAt: "2026-08-31T00:00:00Z",
+		}},
+		Items: []models.ItemExport{
+			{
+				// Inserted FIRST, truncates to `prefix`.
+				ID: "long-first", CollectionID: "c1",
+				Title: "Long slug row", Slug: longSlug,
+				Fields: `{}`, Tags: `[]`,
+				CreatedAt: "2026-08-31T00:00:00Z", UpdatedAt: "2026-08-31T00:00:00Z",
+			},
+			{
+				// Inserted SECOND, and its slug is already legal and untouched —
+				// so nothing about THIS row is coerced, yet it is the one that
+				// collides.
+				ID: "exact-second", CollectionID: "c1",
+				Title: "Exact slug row", Slug: prefix,
+				Fields: `{}`, Tags: `[]`,
+				CreatedAt: "2026-08-31T00:00:00Z", UpdatedAt: "2026-08-31T00:00:00Z",
+			},
+		},
+	}
+
+	ws, err := s.ImportWorkspace(export, "Collide Target", owner.ID)
+	if err != nil {
+		t.Fatalf("a slug collision created by OUR truncation must be resolved, not abort the import: %v", err)
+	}
+
+	items, err := s.ListItems(ws.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want both items imported, got %d", len(items))
+	}
+	seen := map[string]string{}
+	for _, it := range items {
+		if prev, dup := seen[it.Slug]; dup {
+			t.Errorf("duplicate slug %q on %q and %q", it.Slug, prev, it.Title)
+		}
+		seen[it.Slug] = it.Title
+	}
+	// Both rows survive AND stay distinguishable — a "fix" that let one
+	// overwrite the other would also produce two unique slugs.
+	titles := map[string]bool{}
+	for _, it := range items {
+		titles[it.Title] = true
+	}
+	for _, want := range []string{"Long slug row", "Exact slug row"} {
+		if !titles[want] {
+			t.Errorf("item %q did not survive the import", want)
+		}
+	}
+}
+
+// TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle regresses codex
+// round 1 P2: the exemption is "a title identical to the stored one", and
+// comparing only the NORMALIZED form makes that false for exactly the rows the
+// exemption exists for.
+func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "TitleEchoGrandfather")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// A legacy row that is BOTH over the bound AND carries edge whitespace —
+	// the combination is what makes the two comparisons disagree.
+	legacyTitle := "  " + strings.Repeat("q", models.MaxItemTitleRunes+1) + "  "
+	legacy := createLegacyTitledItem(t, s, ws.ID, col.ID, legacyTitle, "")
+	if legacy.Title != legacyTitle {
+		t.Fatalf("fixture did not store the title verbatim: %q", legacy.Title)
+	}
+
+	// A client that read this item and echoed it back sends the stored bytes.
+	echo := legacyTitle
+	if _, err := s.UpdateItem(legacy.ID, models.ItemUpdate{Title: &echo}); err != nil {
+		t.Fatalf("a verbatim echo of the stored title is not a rename and must be accepted: %v", err)
+	}
+
+	// Control: a genuinely different over-bound title is still refused, so the
+	// exemption has not been widened into a hole.
+	other := "  " + strings.Repeat("r", models.MaxItemTitleRunes+1) + "  "
+	if _, err := s.UpdateItem(legacy.ID, models.ItemUpdate{Title: &other}); err == nil {
+		t.Error("a DIFFERENT over-bound title must still be refused")
+	} else {
+		asInvalidTitle(t, err)
+	}
+}
+
+// TestItemTitle_GrandfathersAWriteThatNormalizesToTheStoredTitle covers the
+// OTHER disjunct of the exemption, which the verbatim-echo test above cannot
+// see: a stored legacy title with no edge whitespace, sent back with some.
+//
+// It is not a rename — the value written is byte-identical to what is already
+// there once normalized — so refusing it would refuse a no-op, which is the
+// same defect class as BUG-2833 in the opposite direction. A mutation dropping
+// this disjunct survived the rest of the suite, which is why the case is
+// pinned separately rather than folded into the test above.
+func TestItemTitle_GrandfathersAWriteThatNormalizesToTheStoredTitle(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "TitleNormalizedEcho")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Stored legacy title is over the bound and already trimmed.
+	legacyTitle := strings.Repeat("q", models.MaxItemTitleRunes+1)
+	legacy := createLegacyTitledItem(t, s, ws.ID, col.ID, legacyTitle, "")
+
+	padded := "  " + legacyTitle + "\t"
+	updated, err := s.UpdateItem(legacy.ID, models.ItemUpdate{Title: &padded})
+	if err != nil {
+		t.Fatalf("a title that NORMALIZES to the stored one writes nothing and must be accepted: %v", err)
+	}
+	if updated.Title != legacyTitle {
+		t.Errorf("title = %q, want the stored value unchanged", updated.Title)
+	}
 }

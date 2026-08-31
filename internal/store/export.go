@@ -459,6 +459,8 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// item ID so the second-pass loop can look up the normalized value.
 	coercedFields := make(map[string]string, len(data.Items))
 	coercedTags := make(map[string]string, len(data.Items))
+	// Slugs this import has already written. See the collision note in the loop.
+	claimedSlugs := make(map[string]bool, len(data.Items))
 	var nextItemNumber int
 	for _, it := range data.Items {
 		newItemID := newID()
@@ -498,22 +500,43 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 				"raw_runes", utf8.RuneCountInString(it.Title))
 		}
 		itemSlug, slugCoerced := importCoercedSlug(it.Slug)
-		if slugCoerced {
-			// Resolve collisions the truncation may have created, inside this
-			// transaction so the scan is read-your-writes against the rows this
-			// import has already inserted.
+		// Collision resolution is keyed on the CLAIMED SET, not on whether THIS
+		// row was truncated (codex round 1, P1). Truncation is the only source
+		// of duplicate slugs here — a bundle exported from a live workspace
+		// cannot contain two identical slugs, because UNIQUE(workspace_id, slug)
+		// held there — but the duplicate it creates can land in EITHER order:
+		// a long slug truncated to "x" can be inserted BEFORE a later row whose
+		// slug is already exactly "x". Resolving only the truncated row leaves
+		// that later, untouched row to hit the constraint and abort the entire
+		// import, which is the opposite of this loop's coerce-and-continue
+		// policy.
+		//
+		// Guarded by the map rather than by calling uniqueSlugQ unconditionally
+		// so an ordinary import of N items still issues no extra queries: the
+		// common case is a bundle with no truncation at all, where this costs
+		// one map lookup per row.
+		if claimedSlugs[itemSlug] {
 			unique, uerr := s.uniqueSlugQ(tx, "items", "workspace_id", ws.ID, itemSlug)
 			if uerr != nil {
 				return nil, fmt.Errorf("import item %s: unique slug after truncation: %w", it.ID, uerr)
 			}
+			slog.Warn("import_workspace resolved a colliding item slug",
+				"row_id", it.ID,
+				"workspace_id", ws.ID,
+				"requested", itemSlug,
+				"slug", unique,
+				"from_truncation", slugCoerced)
+			itemSlug = unique
+		}
+		if slugCoerced {
 			slog.Warn("import_workspace coerced item slug",
 				"reason", "too_long",
 				"row_id", it.ID,
 				"workspace_id", ws.ID,
 				"raw_runes", utf8.RuneCountInString(it.Slug),
-				"slug", unique)
-			itemSlug = unique
+				"slug", itemSlug)
 		}
+		claimedSlugs[itemSlug] = true
 		fieldsJSON := coerceJSONForImport(it.Fields, "{}", "items.fields", it.ID, ws.ID, true)
 		tagsJSON := coerceJSONForImport(it.Tags, "[]", "items.tags", it.ID, ws.ID, false)
 		coercedFields[it.ID] = fieldsJSON
