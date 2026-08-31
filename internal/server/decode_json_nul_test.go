@@ -1281,7 +1281,6 @@ func TestUnknownFieldRefusalThroughTheHandler(t *testing.T) {
 // EOF (or the playbook contract breaks), and non-JSON whitespace must NOT (or
 // the divergence is still there).
 func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
-	srv := testServer(t)
 
 	for _, tc := range []struct {
 		name    string
@@ -1314,7 +1313,6 @@ func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
 			}
 		})
 	}
-	_ = srv
 }
 
 // independentDecodesNUL is a SECOND implementation of the walker's contract,

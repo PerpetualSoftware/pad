@@ -194,8 +194,11 @@ reported up front.
 
 If you hit either, the affected value has to be repaired at the source before
 the import or migration will go through — the export itself succeeds either
-way, as described above. A preflight check and a repair path
-are tracked as BUG-2810; until then the failing row is named in the error.
+way, as described above. A preflight check and a repair path are tracked as
+BUG-2810. Until then, neither error names the exact row: the import answers
+400 naming the rule it refused on, and `pad db migrate-to-pg` reports which
+workspace's copy failed — locating the offending value inside it is manual
+today.
 
 
 This format is database-agnostic and can be used to:
