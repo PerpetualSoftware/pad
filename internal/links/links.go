@@ -166,6 +166,27 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, esc TitleEscap
 		return content, 0
 	}
 
+	// A rename that would emit an EMPTY title segment cannot be applied: the
+	// body production is `+`, so `[[]]` is not a link at all. Rewriting to it
+	// destroys the link AND its index row — the exact BUG-2805 direction-2a
+	// damage, reached through a different door.
+	//
+	// Two ways in, both real. A zero-value TitleEscaper (constructed as a
+	// struct literal rather than via NewTitleEscaper) has an empty title; and
+	// UpdateItem accepts a rename to "" outright, because the empty-title guard
+	// lives only in handleCreateItem, not handleUpdateItem — verified by
+	// renaming to "" and watching a linker become `Ref [[]] here.` with its
+	// index row deleted. The door-level validation gap is filed separately;
+	// this is the rewriter refusing to be the instrument.
+	//
+	// Refusing leaves the bracket naming the old title, which the caller's
+	// re-parse then reconciles — the ordinary `applied == 0` path. That is
+	// strictly better than destruction: the link stays clickable and a later,
+	// valid rename can still find and fix it.
+	if esc.titleLen == 0 {
+		return content, 0
+	}
+
 	ordered := make([]BracketRewrite, len(rewrites))
 	copy(ordered, rewrites)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Position < ordered[j].Position })
@@ -234,6 +255,13 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, esc TitleEsc
 	if len(rewrites) == 0 {
 		return len(content), 0
 	}
+	// Mirrors RewriteBracketsAt's refusal of an empty title segment. The two
+	// must agree exactly or the cascade charges for work the rewrite will not
+	// do — the lockstep property.
+	if esc.titleLen == 0 {
+		return len(content), 0
+	}
+
 	ordered := make([]BracketRewrite, len(rewrites))
 	copy(ordered, rewrites)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Position < ordered[j].Position })
@@ -377,6 +405,22 @@ func scanBracketBody(content string, position int) (body string, bracketEnd int,
 		case '\\':
 			if i+1 >= len(content) {
 				return "", 0, false // trailing backslash: `\\.` has nothing to consume
+			}
+			// `.` in Go's regexp does NOT match a newline, so `\\.` cannot
+			// consume one — a backslash before LF is not an escape pair to the
+			// parser, and the body fails to match at all. Treating it as a pair
+			// here made the scanner accept `[[A\<LF>B]]` that ExtractWikiLinks
+			// rejects (codex R2). Measured both ways before fixing.
+			//
+			// Only LF, deliberately: the Go parser's `.` excludes exactly that.
+			// The JS renderer's `.` additionally excludes CR, U+2028 and U+2029
+			// — measured with node — so Go indexes a `\<CR>` link the renderer
+			// will not render. That divergence is PRE-EXISTING in the two
+			// regexes and is filed separately rather than papered over here;
+			// this scanner's job is to agree with the parser that fills the
+			// index it reads from.
+			if content[i+1] == '\n' {
+				return "", 0, false
 			}
 			i += 2
 		case ']':

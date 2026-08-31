@@ -123,7 +123,12 @@ func behaviourCorpus() []diffCase {
 // The domain is: the bracket at `position` has a NON-EMPTY body containing none
 // of `\`, `]`, `|`. That is exactly "no escape grammar involved", which is
 // where BUG-2805 promises byte-identical behaviour.
-func guardedDomain(content string, position int) bool {
+func guardedDomain(content string, position int, newTitle string) bool {
+	if newTitle == "" {
+		// V0 emitted `[[]]` here, which is the DESTRUCTION itself — the oracle
+		// encodes the bug in this corner. See the intentional-divergence test.
+		return false
+	}
 	if position < 0 || position+2 > len(content) || content[position:position+2] != "[[" {
 		return true // rejection paths are unchanged; still guarded
 	}
@@ -168,6 +173,16 @@ func TestRewriteBracketAt_IntentionalDivergencesFromV0(t *testing.T) {
 				"title, never matched, and left the link stale while the index flipped broken.",
 		},
 		{
+			name: "empty new title is REFUSED, not emitted", content: "x [[Old]] y", position: 2,
+			targetTitle: "Old", newTitle: "",
+			wantV0: "x [[]] y", wantNew: "x [[Old]] y",
+			why: "V0's expected output IS the damage: `[[]]` is not a link under the `+` " +
+				"production, so the reparse deletes the index row. Reachable two ways — a " +
+				"zero-value TitleEscaper, and UpdateItem accepting a rename to \"\" because the " +
+				"empty-title guard lives only in handleCreateItem. Refusing leaves the link " +
+				"clickable and repairable; emitting destroys it permanently.",
+		},
+		{
 			name: "emission now ESCAPES", content: "Ref [[Plain Target]] here.", position: 4,
 			targetTitle: "Plain Target", newTitle: "New ] Name",
 			wantV0: "Ref [[New ] Name]] here.", wantNew: `Ref [[New \] Name]] here.`,
@@ -191,7 +206,7 @@ func TestRewriteBracketAt_IntentionalDivergencesFromV0(t *testing.T) {
 func TestRewriteBracketAt_MatchesPreRefactorImplementation(t *testing.T) {
 	for _, tc := range behaviourCorpus() {
 		t.Run(tc.name, func(t *testing.T) {
-			if !guardedDomain(tc.content, tc.position) {
+			if !guardedDomain(tc.content, tc.position, tc.newTitle) {
 				t.Skip("outside the V0-guarded domain — see TestRewriteBracketAt_IntentionalDivergencesFromV0")
 			}
 			want := rewriteBracketAtV0(tc.content, tc.position, tc.targetTitle, tc.newTitle, tc.collSlug)
@@ -223,7 +238,7 @@ func TestRewriteBracketAt_MatchesPreRefactorOnRandomInput(t *testing.T) {
 		newTitle := news[rng.Intn(len(news))]
 		slug := slugs[rng.Intn(len(slugs))]
 
-		if !guardedDomain(content, pos) {
+		if !guardedDomain(content, pos, newTitle) {
 			continue
 		}
 		want := rewriteBracketAtV0(content, pos, target, newTitle, slug)
@@ -257,6 +272,11 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 		content := randomBracketContent(rng)
 		target := titles[rng.Intn(len(titles))]
 		newTitle := news[rng.Intn(len(news))]
+		if newTitle == "" {
+			// The fold oracle emits `[[]]` for an empty title — the damage the
+			// rewriter now refuses. Covered by the intentional-divergence test.
+			continue
+		}
 
 		positions := bracketOffsets(content)
 		// Corrupt some of the time so skip paths get exercised.
@@ -740,6 +760,15 @@ func TestScanBracketBodyEdgeCasesMatchTheParser(t *testing.T) {
 			"the escaped pipe is body text, not a display separator"},
 		{"body is only an escaped ]", `[[\]]]`, true, `\]`,
 			"shortest body that needs escape-aware scanning"},
+		{"backslash before LF is NOT an escape pair", "[[A\\\nB]]", false, "",
+			"Go's regexp `.` does not match a newline, so `\\.` cannot consume one and the " +
+				"parser rejects the whole body. The scanner treated backslash-ANY as a pair and " +
+				"accepted it (codex R2 P2, introduced by this diff)"},
+		{"backslash before CR IS an escape pair to Go", "[[A\\\rB]]", true, "A\\\rB",
+			"Go's `.` excludes only LF. The JS renderer's `.` also excludes CR, U+2028 and " +
+				"U+2029 (measured with node), so Go indexes a link the renderer will not " +
+				"render — a PRE-EXISTING server/client grammar divergence, filed separately. " +
+				"This scanner agrees with the GO parser, which is what fills the index it reads"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body, _, ok := scanBracketBody(tc.content, 0)

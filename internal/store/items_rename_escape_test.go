@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -146,5 +147,100 @@ func TestCascade_EmitsEscapedTitlesAndDoesNotDestroyTheIndex(t *testing.T) {
 					"find the link, which is the permanence failure", got2.Content, want)
 			}
 		})
+	}
+}
+
+// TestCascade_RenameToEmptyTitleDoesNotDestroyLinks closes a second door onto
+// BUG-2805's data-destruction shape, found while probing the TitleEscaper's
+// zero value rather than by review.
+//
+// `handleUpdateItem` has NO empty-title guard — the "Title is required" check
+// lives only in `handleCreateItem` — and the store tolerates it, mapping an
+// empty slug to "untitled". So a rename to "" reaches the cascade, and the
+// rewriter emitted `[[]]`: not a link under the parser's `+` production, so the
+// re-parse deleted the index row. Measured before the guard: content became
+// `Ref [[]] here.`, parsed to 0 links, 0 index rows. Identical damage to
+// direction 2a, and PRE-EXISTING — escaping does not help, since escape("")
+// is "".
+//
+// The rewriter now refuses rather than emitting an unparseable bracket. The
+// link keeps naming the old title, stays clickable, and a later valid rename
+// can still repair it. The door-level validation gap is filed separately; this
+// pins that the rewriter will not be the instrument of destruction even if that
+// gap is never closed.
+func TestCascade_RenameToEmptyTitleDoesNotDestroyLinks(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "EmptyRenameGuard")
+	col := createTestCollection(t, s, ws.ID, "Notes")
+	target := createTestItem(t, s, ws.ID, col.ID, "Plain Target", "the item being renamed")
+	source := createTestItem(t, s, ws.ID, col.ID, "Src", "Ref [[Plain Target]] here.")
+
+	empty := ""
+	if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &empty}); err != nil {
+		// The store currently ALLOWS this. If a future change starts refusing
+		// it at the store or handler layer that is a fine outcome too — but say
+		// so loudly rather than letting this test silently stop exercising the
+		// path it was written for.
+		t.Skipf("rename to an empty title is now refused by the store (%v) — the door-level "+
+			"gap this test guards against may have been closed; re-read before deleting", err)
+	}
+
+	got, err := s.GetItem(source.ID)
+	if err != nil {
+		t.Fatalf("re-read source: %v", err)
+	}
+	if got.Content != "Ref [[Plain Target]] here." {
+		t.Errorf("content = %q, want the link left intact — emitting an empty bracket destroys "+
+			"the link and its index row", got.Content)
+	}
+	if n := len(links.ExtractWikiLinks(got.Content)); n != 1 {
+		t.Errorf("content parses to %d links, want 1 — the bracket must stay parseable", n)
+	}
+
+	// INDEX STATE IN FULL, not a row count. Codex R2 was right that the first
+	// version of this assertion was blind: it counted rows, so it would have
+	// passed with the row present but target_item_id cleared — a broken
+	// backlink reported as success.
+	//
+	// What SHOULD happen, and does: the row survives with target_item_id NULL.
+	// That is correct rather than damage — the target no longer has any title,
+	// so no title-form link can resolve to it, and a NULL target mirrors exactly
+	// what a renderer would resolve. The index is supposed to track
+	// resolvability. What must NOT happen is the row disappearing, which is what
+	// an unparseable `[[]]` emission caused.
+	var rows int
+	var resolvedTarget sql.NullString
+	if err := s.db.QueryRow(s.q(
+		`SELECT COUNT(*) FROM item_wiki_links WHERE source_item_id = ?`), source.ID).Scan(&rows); err != nil {
+		t.Fatalf("index query: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("index has %d rows for the source, want 1 — the row was destroyed", rows)
+	}
+	if err := s.db.QueryRow(s.q(
+		`SELECT target_item_id FROM item_wiki_links WHERE source_item_id = ?`), source.ID).Scan(&resolvedTarget); err != nil {
+		t.Fatalf("target query: %v", err)
+	}
+	if resolvedTarget.Valid {
+		t.Errorf("target_item_id is still set after the target lost its title — the index claims " +
+			"a resolution the renderer cannot reproduce")
+	}
+
+	// RECOVERY, which is the leg that distinguishes "broken but honest" from
+	// "irrecoverable". Codex R2 called this unrecoverable; it is not. Renaming
+	// back re-resolves the row through resolveBrokenTitleLinks, because the
+	// CONTENT was never destroyed — which is precisely what the emission guard
+	// protects.
+	back := "Plain Target"
+	if _, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &back}); err != nil {
+		t.Fatalf("recovery rename: %v", err)
+	}
+	if err := s.db.QueryRow(s.q(
+		`SELECT target_item_id FROM item_wiki_links WHERE source_item_id = ?`), source.ID).Scan(&resolvedTarget); err != nil {
+		t.Fatalf("target query after recovery: %v", err)
+	}
+	if !resolvedTarget.Valid {
+		t.Errorf("backlink did not recover when the title came back — THAT would make the empty " +
+			"rename irrecoverable, which is the claim this leg exists to test")
 	}
 }
