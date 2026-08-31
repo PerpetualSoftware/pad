@@ -2,6 +2,7 @@ package links
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -110,20 +111,112 @@ func RewriteWikiTitle(content, oldTitle, newTitle, collSlug string) string {
 // code regions from prose. A bracket inside fenced code at the
 // recorded position WILL be rewritten — matches the document
 // rename path's behavior.
+// Implemented as the one-element case of RewriteBracketsAt so the two cannot
+// drift: the per-bracket decision lives in exactly one place (bracketRewriteAt),
+// and TestRewriteBracketAt_EquivalentToRewriteBracketsAtOfOne pins the
+// equivalence over this function's existing behaviour corpus rather than
+// arguing it. BUG-2804.
 func RewriteBracketAt(content string, position int, targetTitle, newTitle, collSlug string) string {
+	out, _ := RewriteBracketsAt(content, []BracketRewrite{{Position: position, TargetTitle: targetTitle}}, newTitle, collSlug)
+	return out
+}
+
+// BracketRewrite names one bracket to rewrite: the byte offset its `[[` starts
+// at, and the target_title the index recorded for it. NewTitle and collSlug are
+// shared across a whole call because a rename cascade renames ONE item to ONE
+// new title.
+type BracketRewrite struct {
+	Position    int
+	TargetTitle string
+}
+
+// RewriteBracketsAt rewrites every bracket named in `rewrites` in a SINGLE pass
+// over `content`, returning the new content and how many rewrites it applied.
+//
+// This exists because calling RewriteBracketAt once per bracket is quadratic in
+// the body size, and that is reachable in one request: the cheapest wiki-link is
+// five bytes (`[[A]]`) and nothing caps links per item, so a C-byte body carries
+// C/5 brackets and each call rebuilt the whole body. Measured before the fix at
+// 1.00x the body allocated per call — see internal/store's BUG-2804 probes,
+// which measured the cascade at 2.01x body per bracket and showed allocation
+// growing 3.83/3.92/3.95 per doubling of C, i.e. O(C^2).
+//
+// Semantics, which are deliberately stricter than "apply them in some order":
+//
+//   - `rewrites` may arrive in ANY order. The cascade's SELECT returns positions
+//     DESCENDING (so that repeated whole-body rewrites did not invalidate each
+//     other's offsets); a single pass needs them ascending, so this function
+//     sorts a COPY and never mutates the caller's slice.
+//   - A rewrite whose bracket does not match the expected shape is SKIPPED and
+//     its bytes are carried verbatim — the same conservative posture
+//     RewriteBracketAt has always had, where a drifted offset leaves content
+//     alone and the caller's re-parse reconciles the index.
+//   - A rewrite that OVERLAPS one already applied is skipped. Distinct brackets
+//     cannot overlap, so this only fires on a corrupt or duplicated offset; in
+//     that case carrying the bytes verbatim is the only non-corrupting choice.
+//   - Applying nothing returns the input string unchanged, allocating nothing.
+//     Callers use the count to decide whether a write is owed, which also spares
+//     them a full-body string comparison to detect it.
+func RewriteBracketsAt(content string, rewrites []BracketRewrite, newTitle, collSlug string) (string, int) {
+	if len(rewrites) == 0 {
+		return content, 0
+	}
+
+	ordered := make([]BracketRewrite, len(rewrites))
+	copy(ordered, rewrites)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Position < ordered[j].Position })
+
+	var b strings.Builder
+	cursor := 0
+	applied := 0
+	for _, rw := range ordered {
+		if rw.Position < cursor {
+			// Overlaps a rewrite already applied (or a duplicate offset).
+			continue
+		}
+		replacement, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, newTitle, collSlug)
+		if !ok {
+			continue
+		}
+		if applied == 0 {
+			// First real rewrite — size the buffer once. len(content) is the
+			// right order of magnitude in both directions (a rename that grows
+			// the body reallocates once; one that shrinks it wastes a little).
+			b.Grow(len(content))
+		}
+		b.WriteString(content[cursor:rw.Position])
+		b.WriteString(replacement)
+		cursor = bracketEnd
+		applied++
+	}
+	if applied == 0 {
+		return content, 0
+	}
+	b.WriteString(content[cursor:])
+	return b.String(), applied
+}
+
+// bracketRewriteAt is the per-bracket decision, and the ONLY copy of it. It
+// returns the replacement text for the bracket at `position` (including its
+// enclosing `[[`/`]]`), the offset just past the bracket it replaces, and
+// whether the bracket matched at all.
+//
+// It reads only content[position:bracketEnd] — that locality is what makes a
+// single pass possible, since the rest of the body is pure carry.
+func bracketRewriteAt(content string, position int, targetTitle, newTitle, collSlug string) (replacement string, bracketEnd int, ok bool) {
 	if position < 0 || position+2 > len(content) {
-		return content
+		return "", 0, false
 	}
 	if content[position:position+2] != "[[" {
-		return content
+		return "", 0, false
 	}
 	rest := content[position+2:]
 	closeIdx := strings.Index(rest, "]]")
 	if closeIdx < 0 {
-		return content
+		return "", 0, false
 	}
 	body := rest[:closeIdx]
-	bracketEnd := position + 2 + closeIdx + 2 // past `]]`
+	bracketEnd = position + 2 + closeIdx + 2 // past `]]`
 
 	tLower := strings.ToLower(body)
 	ttLower := strings.ToLower(targetTitle)
@@ -145,20 +238,20 @@ func RewriteBracketAt(content string, position int, targetTitle, newTitle, collS
 	// Case 1: body equals target_title (case-insensitive) — no
 	// display segment, replace whole.
 	if tLower == ttLower {
-		return content[:position] + "[[" + newSegment + "]]" + content[bracketEnd:]
+		return "[[" + newSegment + "]]", bracketEnd, true
 	}
 
 	// Case 2: body starts with target_title + "|" — display segment
 	// follows. Preserve everything from the pipe onward verbatim.
 	if strings.HasPrefix(tLower, ttLower+"|") {
 		displaySuffix := body[len(targetTitle):] // includes the pipe
-		return content[:position] + "[[" + newSegment + displaySuffix + "]]" + content[bracketEnd:]
+		return "[[" + newSegment + displaySuffix + "]]", bracketEnd, true
 	}
 
 	// Bracket doesn't match the expected shape — leave it alone.
 	// (Index drift or a stored full-body title with embedded pipe;
 	// the trailing replaceWikiLinks call will reconcile.)
-	return content
+	return "", 0, false
 }
 
 // replaceAll substitutes every occurrence of old with new, scanning the INPUT
