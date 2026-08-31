@@ -306,3 +306,211 @@ func TestValidateUpload_RejectsExeByExtensionAlone(t *testing.T) {
 		t.Errorf("code = %q, want extension_blocked", code)
 	}
 }
+
+// TestExtMIMEMapKeysArePlain enforces the property SafeFallbackExtension
+// relies on instead of restating it as a comment.
+//
+// That predicate has no charset test of its own: a control-obfuscated suffix
+// like ".s<VT>vg" is refused because it matches no key here, not because
+// anything inspects its bytes. I originally wrote an explicit alphanumeric
+// loop too, and removing it changed no behaviour — a guard that cannot fire,
+// carrying a comment about what it protects against, misdescribes which line
+// does the work.
+//
+// So the loop is gone and this test holds the invariant up. If a key with a
+// dash, a space, or a control byte is ever added, this fails and whoever adds
+// it has to decide whether SafeFallbackExtension needs its own charset test
+// back.
+func TestExtMIMEMapKeysArePlain(t *testing.T) {
+	if len(extMIMEMap) == 0 {
+		t.Fatal("premise failed: the extension map is empty, so this test asserts nothing")
+	}
+	for ext := range extMIMEMap {
+		if len(ext) < 2 || ext[0] != '.' {
+			t.Errorf("extension key %q must start with a dot and have a body", ext)
+			continue
+		}
+		for _, r := range ext[1:] {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'z') {
+				t.Errorf("extension key %q contains %q, which is not lowercase alphanumeric; "+
+					"SafeFallbackExtension has no charset test of its own and relies on this", ext, r)
+			}
+		}
+	}
+}
+
+// TestCanonicalExtForMIMECoversTheMap holds the reverse map to the forward one
+// so the two cannot drift.
+//
+// The CLI used to keep its own MIME-to-extension table, which had fallen
+// behind this package's — it knew images and video but not gzip, tar, XML,
+// YAML, TOML, HTML, JavaScript or several documents, so `pad attachment view`
+// silently produced extensionless files for them. The CLI now delegates here,
+// which removes the second table; this test stops the reverse map growing the
+// same gap against the forward one.
+func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
+	if len(extMIMEMap) == 0 {
+		t.Fatal("premise failed: the forward map is empty, so this asserts nothing")
+	}
+	var sawBlocked bool
+	for ext, mimeStr := range extMIMEMap {
+		m := NormalizeMIME(mimeStr)
+		got := ExtensionForMIME(m)
+
+		// A BLOCKED type must have no reverse mapping. extMIMEMap is the
+		// refusal table — it lists .svg and .exe so uploads carrying them can
+		// be rejected — and reversing it wholesale turned a refusal list into
+		// a source of extensions that `pad attachment view` then names local
+		// files with (codex round 27).
+		if _, allowed := LookupMIME(m); !allowed {
+			sawBlocked = true
+			if got != "" {
+				t.Errorf("%s is BLOCKED but ExtensionForMIME returns %q; a client would name a local "+
+					"file with an extension this product refuses to accept", m, got)
+			}
+			continue
+		}
+
+		if got == "" {
+			t.Errorf("%s (from %q) has no reverse mapping; a client asking for its extension gets "+
+				"nothing and writes an extensionless file", m, ext)
+			continue
+		}
+		if back, ok := extMIMEMap[got]; !ok || NormalizeMIME(back) != m {
+			t.Errorf("ExtensionForMIME(%q) = %q, which does not map back to it", m, got)
+		}
+	}
+
+	// Premise: the map must actually CONTAIN a blocked type, or the blocked
+	// branch above asserts nothing and would pass against a reverse map that
+	// happily emitted .svg.
+	if !sawBlocked {
+		t.Fatal("premise failed: no blocked MIME type found in extMIMEMap, so the blocked-type " +
+			"assertion never ran")
+	}
+	if got := ExtensionForMIME("image/svg+xml"); got != "" {
+		t.Errorf("image/svg+xml is the named reason the extension blocklist exists; "+
+			"ExtensionForMIME returned %q", got)
+	}
+
+	// Every preferred spelling must name a MIME type this map actually uses.
+	// A preference for a type that is not here is a line that cannot fire,
+	// and one of them was: "text/yaml", where the map says application/yaml.
+	values := map[string]bool{}
+	for _, m := range extMIMEMap {
+		values[NormalizeMIME(m)] = true
+	}
+	for m, ext := range preferredExtensions() {
+		if !values[m] {
+			t.Errorf("preferred extension %q is declared for %q, which no entry in extMIMEMap uses; "+
+				"the preference can never apply", ext, m)
+		}
+		if back, ok := extMIMEMap[ext]; !ok || NormalizeMIME(back) != m {
+			t.Errorf("preferred extension %q for %q does not map back to it", ext, m)
+		}
+		// A preference must have something to choose AGAINST: with a single
+		// forward-map spelling the entry cannot fire — text/markdown sat
+		// here that way, "preferring" .md over a .markdown that was never in
+		// the map (codex closing round 5).
+		var spellings int
+		for _, mv := range extMIMEMap {
+			if NormalizeMIME(mv) == m {
+				spellings++
+			}
+		}
+		if spellings < 2 {
+			t.Errorf("preferred extension %q for %q has no competitor (%d spelling in extMIMEMap); "+
+				"the preference cannot fire", ext, m, spellings)
+		}
+	}
+
+	// Stability: the reverse map is built by iterating a Go map, whose order
+	// is randomised. A helper that answered differently per process would be
+	// worse than none, so the choice must be deterministic — for EVERY entry,
+	// not only the preferred ones. The first version of this loop compared
+	// just the preference list, so a non-preferred mapping could have
+	// regressed to map-order selection while it stayed green (codex closing
+	// round 2). Now every rebuild must equal the first, and the preferences
+	// are additionally pinned to their declared spellings.
+	first := buildCanonicalExtForMIME()
+	for m, want := range preferredExtensions() {
+		if got := first[m]; got != want {
+			t.Fatalf("wrong reverse mapping for %s: got %q want %q", m, got, want)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		built := buildCanonicalExtForMIME()
+		if len(built) != len(first) {
+			t.Fatalf("reverse map size changed across rebuilds: %d vs %d on iteration %d",
+				len(built), len(first), i)
+		}
+		for m, want := range first {
+			if got := built[m]; got != want {
+				t.Fatalf("unstable reverse mapping for %s: got %q want %q on iteration %d",
+					m, got, want, i)
+			}
+		}
+	}
+}
+
+// TestEveryAllowedMIMEHasAnExtension is the closing property the alias table
+// exists for: reversing extMIMEMap alone left four ALLOWED spellings
+// (text/xml, text/yaml, application/javascript, audio/webm) with no reverse
+// extension, because the forward map picks one spelling per extension and the
+// allowlist accepts more spellings than the forward map uses. The population
+// is asserted over the allowlist itself, not the four known cases, so a
+// future allowlist entry without a reverse extension fails here instead of
+// shipping another extensionless `pad attachment view` file (codex closing
+// round, BUG-2803).
+func TestEveryAllowedMIMEHasAnExtension(t *testing.T) {
+	if len(allowed) == 0 {
+		t.Fatal("premise failed: the allowlist is empty, so this asserts nothing")
+	}
+	for m := range allowed {
+		got := ExtensionForMIME(m)
+		if got == "" {
+			t.Errorf("%s is ALLOWED but has no reverse extension; `pad attachment view` writes an "+
+				"extensionless file for it", m)
+			continue
+		}
+		// Whatever extension is handed out, the forward map must know it and
+		// send it to an ALLOWED type — the reverse map must never mint an
+		// extension the product refuses (the BUG-2818 door).
+		back, ok := extMIMEMap[got]
+		if !ok {
+			t.Errorf("ExtensionForMIME(%q) = %q, an extension extMIMEMap does not know", m, got)
+			continue
+		}
+		if _, backAllowed := LookupMIME(back); !backAllowed {
+			t.Errorf("ExtensionForMIME(%q) = %q, which the forward map sends to BLOCKED type %q", m, got, back)
+		}
+	}
+
+	// Alias-table hygiene: each key must be an allowed type the forward loop
+	// produces NO mapping for (the alias application is unconditional, so a
+	// forward-derived key here would be silently overridden — this assertion
+	// is what makes that loud instead).
+	values := map[string]bool{}
+	for _, mv := range extMIMEMap {
+		values[NormalizeMIME(mv)] = true
+	}
+	for m, ext := range aliasExtensions() {
+		nm := NormalizeMIME(m)
+		if nm != m {
+			t.Errorf("alias key %q is not in normalized form (want %q)", m, nm)
+		}
+		if _, ok := LookupMIME(nm); !ok {
+			t.Errorf("alias %q is not on the allowlist; an alias for a refused type is a line that "+
+				"cannot legitimately fire", m)
+		}
+		if values[nm] {
+			t.Errorf("alias %q is a value extMIMEMap already uses — the forward loop derives its "+
+				"mapping and the alias would override it", m)
+		}
+		if back, ok := extMIMEMap[ext]; !ok {
+			t.Errorf("alias extension %q for %q is unknown to extMIMEMap", ext, m)
+		} else if _, backAllowed := LookupMIME(back); !backAllowed {
+			t.Errorf("alias extension %q for %q maps to BLOCKED type %q", ext, m, back)
+		}
+	}
+}

@@ -217,7 +217,7 @@ func (s *Server) handleRevokeConnectedApp(w http.ResponseWriter, r *http.Request
 		UserID:    user.ID,
 		Metadata:  string(metaJSON),
 		IPAddress: clientIP(r),
-		UserAgent: r.UserAgent(),
+		UserAgent: requestUserAgent(r),
 	}); err != nil {
 		slog.Warn("connected-apps: audit log write failed", "error", err, "user_id", user.ID, "connection_id", id)
 	}
@@ -342,9 +342,9 @@ func (s *Server) respondWithConnection(w http.ResponseWriter, userID, requestID 
 }
 
 // handleRenameConnectedApp: PATCH /api/v1/connected-apps/{id}/name
-// Body: {"name": "..."} — trimmed + capped at 120 chars (matches the
-// consent-screen suggested-name cap). Empty string is valid (clears
-// the name, the connections-page UI prompts again).
+// Body: {"name": "..."} — trimmed + capped at 120 BYTES, rune-safe
+// (matches the consent-screen suggested-name cap). Empty string is
+// valid (clears the name, the connections-page UI prompts again).
 func (s *Server) handleRenameConnectedApp(w http.ResponseWriter, r *http.Request) {
 	user, id, ok := s.requireConnectionOwner(w, r)
 	if !ok {
@@ -359,7 +359,7 @@ func (s *Server) handleRenameConnectedApp(w http.ResponseWriter, r *http.Request
 	}
 	name := strings.TrimSpace(body.Name)
 	if len(name) > 120 {
-		name = name[:120]
+		name = truncateBindableText(name, 120)
 	}
 	if err := s.store.RenameConnection(id, name); err != nil {
 		writeInternalError(w, err)

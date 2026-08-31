@@ -16,9 +16,12 @@ const (
 	// (image, audio, video). Content-Disposition is "inline".
 	RenderInline RenderMode = iota
 	// RenderChip means the editor displays a download chip instead of
-	// embedding the bytes (PDFs, archives, office docs). The HTTP layer
-	// still serves these inline so the browser can preview if it wants
-	// to (PDF in particular); the Content-Disposition stays "inline".
+	// embedding the bytes (PDFs, archives, office docs). Content-Disposition
+	// for these is decided by the read path's explicit ServeInline allowlist
+	// (BUG-2413), NOT by this mode: most chip types are served as
+	// "attachment", with only the audited exceptions (PDF, say) inline. An
+	// earlier version of this comment said the HTTP layer served every chip
+	// inline, which described the pre-BUG-2413 policy (codex closing round 8).
 	RenderChip
 	// RenderForceDownload means we set Content-Disposition: attachment
 	// to keep the browser from interpreting the bytes inline. This is
@@ -290,10 +293,154 @@ type uploadError struct{ msg string }
 
 func (e *uploadError) Error() string { return e.msg }
 
-// mimeForExt is a minimal extension → entry mapping used only for the
-// extension-vs-sniff sanity check. Keeping it small and deliberate means
-// unrecognized extensions just skip the cross-check (instead of forcing
-// us to enumerate every extension on the planet).
+// ExtensionForMIME returns the canonical file extension for a MIME type, or ""
+// when there is no mapping.
+//
+// Exported so a client need not keep its OWN table. The CLI did, and it had
+// drifted: it knew images and video but not gzip, tar, XML, YAML, TOML, HTML,
+// JavaScript or several document types this map has always allowed — so
+// `pad attachment view` silently produced an extensionless file for them,
+// defeating its contract of handing a path to something that opens files by
+// extension (codex round 26). Two tables for one relationship was the defect.
+func ExtensionForMIME(mimeType string) string {
+	if ext, ok := canonicalExtForMIME[NormalizeMIME(mimeType)]; ok {
+		return ext
+	}
+	return ""
+}
+
+// canonicalExtForMIME reverses extMIMEMap with one deliberate choice per MIME
+// type, since several extensions map to the same type. Held to the forward map
+// by TestCanonicalExtForMIMECoversTheMap.
+var canonicalExtForMIME = buildCanonicalExtForMIME()
+
+// preferredExtensions names the spelling to use where a type has several.
+//
+// Every key MUST be a value that extMIMEMap actually uses, or the entry is a
+// line that cannot fire. One of them was exactly that on first writing —
+// "text/yaml", where this map says application/yaml — so the preference never
+// applied and .yaml won on length. The test asserts the property rather than
+// trusting the next reader to notice.
+func preferredExtensions() map[string]string {
+	return map[string]string{
+		"image/jpeg":       ".jpg",  // over .jpeg
+		"application/yaml": ".yml",  // over .yaml
+		"text/html":        ".html", // over .htm, which shortest-wins would pick
+		// text/markdown is NOT here: .md is its only extMIMEMap spelling, so
+		// a preference had nothing to choose against — a line that cannot
+		// fire, the same class this map's doc warns about (codex closing
+		// round 5). The test now asserts every entry has a real competitor.
+	}
+}
+
+// aliasExtensions covers allowed MIME spellings that NO extension in
+// extMIMEMap maps to, so reversing the forward table alone leaves them
+// without an extension: the forward table picks one spelling per extension
+// (.xml says application/xml, .js says text/javascript, .webm says
+// video/webm), while the allowlist accepts the alias spellings too. An
+// attachment stored under an alias type with an unstorable filename came out
+// of `pad attachment view` extensionless — the exact failure the delegation
+// to this package was built to end (codex closing round).
+//
+// Every key MUST be an allowed type with no forward-derived reverse mapping,
+// and every value MUST be an extension the forward map sends to an ALLOWED
+// type — an alias must never mint an extension the product refuses (the
+// BUG-2818 door the blocked-type filter above closes). Both properties are
+// asserted by test, alongside the closing property this table exists for:
+// every allowed MIME type has a reverse extension.
+func aliasExtensions() map[string]string {
+	return map[string]string{
+		"text/xml":               ".xml",  // forward map spells it application/xml
+		"text/yaml":              ".yml",  // forward map spells it application/yaml; .yml matches its preference
+		"application/javascript": ".js",   // forward map spells it text/javascript
+		"audio/webm":             ".webm", // forward map spells it video/webm; the container is the same
+	}
+}
+
+func buildCanonicalExtForMIME() map[string]string {
+	preferred := preferredExtensions()
+	out := make(map[string]string, len(extMIMEMap))
+	for ext, mimeStr := range extMIMEMap {
+		m := NormalizeMIME(mimeStr)
+		// BLOCKED types get no reverse mapping. extMIMEMap is the forward
+		// table used to REFUSE uploads — it deliberately lists .svg, .exe and
+		// friends so their extensions can be recognised and rejected.
+		// Reversing it wholesale turned that refusal list into a SOURCE of
+		// extensions: ExtensionForMIME("image/svg+xml") answered ".svg", and
+		// `pad attachment view` names a local file with it. The old CLI table
+		// answered nothing for those, so this was a regression, and it
+		// reopened the same hazard BUG-2818 describes through a different
+		// door (codex round 27).
+		//
+		// A caller asking "what should I call a file of this type" must only
+		// ever be told about types this product actually accepts.
+		if _, ok := LookupMIME(m); !ok {
+			continue
+		}
+		if want, ok := preferred[m]; ok {
+			out[m] = want
+			continue
+		}
+		// Anything unlisted takes the shortest extension, then alphabetical,
+		// so the result does not depend on Go's randomised map order. A helper
+		// that answered differently per process would be worse than none.
+		cur, seen := out[m]
+		if !seen || len(ext) < len(cur) || (len(ext) == len(cur) && ext < cur) {
+			out[m] = ext
+		}
+	}
+	// Alias spellings last. Unconditional on purpose: an alias key that the
+	// forward loop ALSO produced would mean two sources disagree about one
+	// type, and the test asserting alias keys have no forward-derived mapping
+	// fails loudly rather than letting this line silently pick a winner.
+	for m, ext := range aliasExtensions() {
+		out[NormalizeMIME(m)] = ext
+	}
+	return out
+}
+
+// SafeFallbackExtension reports whether ext (with its leading dot, any case)
+// may be carried into a generic fallback filename when the original name was
+// unstorable.
+//
+// The bar is deliberately higher than "storable text". A fallback name is
+// SYNTHESISED by the server, so anything kept from the caller's input has to
+// earn its place:
+//
+//   - it must be a known extension, so an arbitrary suffix cannot ride along
+//     and later drive MIME or viewer behaviour that the bytes do not support;
+//   - it must map to an ALLOWED type, so the blocklist cannot be sidestepped
+//     by arriving through the fallback path instead of the ordinary one;
+//
+// A control-obfuscated suffix is excluded by the SAME map lookup rather than
+// by a separate charset test, and that is a deliberate choice recorded here
+// because a mutation exposed it. ".s<VT>vg" is storable (a vertical tab is
+// valid UTF-8 and not a NUL) but matches no key, so it is already refused.
+// I first wrote an explicit alphanumeric loop as well; removing it changed
+// nothing, because no key in extMIMEMap contains a non-alphanumeric character.
+// Keeping a guard that cannot fire, with a comment claiming it stops control
+// characters, would have misdescribed which line does the work — so the loop
+// is gone and TestExtMIMEMapKeysArePlain enforces the property it relied on.
+//
+// That divergence — storable here, stripped by Content-Disposition sanitising,
+// so ".s<VT>vg" reaches the client as ".svg" past a blocklist that never
+// evaluated it — is a pre-existing hazard on the ORDINARY upload path, where
+// the name is not synthesised at all. Tracked as BUG-2818; this predicate only
+// refuses to add a second door to it.
+//
+// Anything else is dropped and the fallback stays extensionless.
+func SafeFallbackExtension(ext string) bool {
+	if len(ext) < 2 || len(ext) > 16 || ext[0] != '.' {
+		return false
+	}
+	mimeStr, ok := extMIMEMap[strings.ToLower(ext)]
+	if !ok {
+		return false
+	}
+	_, allowed := LookupMIME(NormalizeMIME(mimeStr))
+	return allowed
+}
+
 var extMIMEMap = map[string]string{
 	".png":  "image/png",
 	".jpg":  "image/jpeg",

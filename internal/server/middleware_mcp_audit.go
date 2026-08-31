@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -350,6 +351,7 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 	if s.metrics == nil {
 		return
 	}
+	tool = metricsToolLabel(tool)
 	s.metrics.MCPToolCallsTotal.WithLabelValues(userID, tool, status).Inc()
 	// Histogram is per-tool only — duration distributions per user
 	// would explode the series count without a clear analytical
@@ -369,6 +371,92 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 // Returns ("(unknown)", "") on parse failure or empty body — gives
 // the audit reader a visible signal rather than silently dropping
 // the row.
+//
+// Both values that come from the CALLER's body are run through
+// sanitiseStoredText before they leave this function, because they
+// are bound to mcp_audit_log.tool_name (TEXT NOT NULL). This
+// middleware runs its own json.Unmarshal, so a `\u0000` escape in
+// `method` or `params.name` arrives here as a real NUL: PostgreSQL
+// then refuses the audit INSERT with 22021 and SQLite stores an
+// unprintable tool name. Nothing upstream catches it — the /mcp
+// transport decodes the JSON-RPC envelope itself rather than through
+// decodeJSON, so the body rule never sees this request (BUG-2803,
+// codex round 20; that unit's completeness map had wrongly certified
+// this reader as safe on the grounds that the dispatcher decodes the
+// body again, which is true and does not bear on what is persisted
+// here).
+//
+// Sanitising rather than refusing is deliberate: see sanitiseStoredText.
+// The request carrying a malformed name is the one most worth having
+// an audit row for. Both callers of this function — the ok path and
+// the denied path — are covered because the cleaning happens here
+// rather than at either call site.
+// metricsToolLabel collapses a marked audit label to the marker alone before it
+// becomes a Prometheus label value.
+//
+// The audit ROW wants the cleaned name — an operator reading one row needs to
+// know which tool it resembles. A metric SERIES does not: keeping the name
+// there would split "(sanitised) pad_item" from "pad_item" into two series per
+// user and status, for a distinction no aggregate query asks. Collapsing keeps
+// exactly one extra label value in total, and it is a constant rather than
+// anything a caller supplies.
+//
+// This bounds only the marker's contribution. The tool label as a whole is
+// still caller-driven and unbounded — see BUG-2817 — because it comes from
+// params.name. That is pre-existing and not this unit's to fix, but it is the
+// reason this function collapses rather than passing the marked name through.
+func metricsToolLabel(tool string) string {
+	if strings.HasPrefix(tool, sanitisedLabelPrefix) {
+		return strings.TrimSuffix(sanitisedLabelPrefix, " ")
+	}
+	return tool
+}
+
+// sanitisedLabelPrefix marks an identity that only became well-formed after
+// cleaning. Cleaning is lossy, so without a marker "pad_<NUL>item" is stored
+// as "pad_item" — an audit row and a Prometheus label indistinguishable from
+// a genuine pad_item call, and mintable by anyone who can send a request
+// (codex round 23). Marking keeps the diagnostic value of the cleaned text
+// while making the row honest about what arrived.
+//
+// The parenthesised spelling alone does NOT make the marker unforgeable — a
+// caller can name a tool "(sanitised) x" — which is why auditLabel below
+// reserves the whole leading-"(" namespace and re-marks anything
+// caller-supplied that enters it. Two earlier copies of this comment rested
+// the non-forgeability claim on "real names do not begin with (", the exact
+// reasoning round 25 retired (codex closing round 3).
+const sanitisedLabelPrefix = "(sanitised) "
+
+// auditLabel applies the marker; see the body for the namespace-reservation
+// rule that makes it non-forgeable.
+func auditLabel(clean string, changed bool) string {
+	// A caller can legitimately name a tool "(unknown)", or "(sanitised)
+	// pad_item", and then a genuine request is indistinguishable from a
+	// substituted one — the marker was forgeable and the older "(unknown)" /
+	// "tools/call" sentinels always were (codex round 25).
+	//
+	// So the leading "(" is RESERVED for values this server synthesises. Any
+	// caller-supplied name that enters that namespace is marked too, whether
+	// or not cleaning touched it. A marked "pad_item" is "(sanitised)
+	// pad_item"; a caller who sends that literal string gets "(sanitised)
+	// (sanitised) pad_item", which is a different value, so the two never
+	// collide. Same for a tool called "(unknown)".
+	//
+	// This is cheaper and more complete than marking only what cleaning
+	// changed, and it needs no schema change. The principled fix for the
+	// whole class is a separate provenance FIELD rather than sentinel strings
+	// in a caller-controlled namespace — BUG-2819, filed rather than folded
+	// in because it is a migration on two tables and this is not.
+	//
+	// Cost, stated: an MCP tool genuinely named with a leading "(" is
+	// recorded marked. Tool names are identifiers in every catalog this
+	// server knows, so nothing legitimate lands here today.
+	if !changed && !strings.HasPrefix(clean, "(") {
+		return clean
+	}
+	return sanitisedLabelPrefix + clean
+}
+
 func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 	if len(body) == 0 {
 		return "(unknown)", ""
@@ -377,20 +465,47 @@ func parseMCPRequestBody(body []byte) (toolName, argsHash string) {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	if err := json.Unmarshal(body, &env); err != nil || env.Method == "" {
+	if err := json.Unmarshal(body, &env); err != nil {
 		return "(unknown)", ""
 	}
+	// SANITISE FIRST, THEN test for emptiness — not the other way round. A
+	// value made entirely of NUL escapes is non-empty as decoded and empty
+	// once cleaned, so checking first passed it over the fallback and then
+	// blanked it, storing an empty tool_name. That is precisely the silent
+	// drop these fallbacks exist to prevent (codex round 21 — the boundary
+	// the round-20 sanitise created and did not test). Cleaning before the
+	// test makes the invariant structural instead of something every return
+	// has to remember.
+	// CLASSIFY ON THE RAW METHOD, store the sanitised one. Sanitising first
+	// and then comparing let "tools/<NUL>call" clean up INTO "tools/call",
+	// so the parser extracted params.name and hashed the arguments for a
+	// method that was never tools/call — producing an audit row identical to
+	// a genuine call (measured: tool_name="pad_item" with a full args_hash).
+	// That was a regression introduced by the round-21 fix, which reordered
+	// these two steps to keep the fallback alive; codex round 22 caught it.
+	// Cleaning is for the value that gets STORED. Dispatch decisions read
+	// what the client actually sent.
 	if env.Method != "tools/call" {
-		return env.Method, ""
+		if method, changed := sanitiseStoredTextChanged(env.Method); method != "" {
+			return auditLabel(method, changed), ""
+		}
+		// Empty only after cleaning — keep the visible signal rather than
+		// storing "". This is the round-21 boundary, preserved.
+		return "(unknown)", ""
 	}
 	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
-	if err := json.Unmarshal(env.Params, &p); err != nil || p.Name == "" {
+	if err := json.Unmarshal(env.Params, &p); err != nil {
 		return "tools/call", ""
 	}
-	return p.Name, hashCanonicalJSON(p.Arguments)
+	if name, changed := sanitiseStoredTextChanged(p.Name); name != "" {
+		// The hash still describes the real arguments, so it is kept; it is
+		// the NAME that has to stay distinguishable.
+		return auditLabel(name, changed), hashCanonicalJSON(p.Arguments)
+	}
+	return "tools/call", ""
 }
 
 // hashCanonicalJSON returns a SHA-256 hex of a canonicalized form of

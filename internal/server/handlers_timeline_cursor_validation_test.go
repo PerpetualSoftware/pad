@@ -178,12 +178,26 @@ func TestListBeforeTime_InvalidUTF8CursorIsADialectDivergence(t *testing.T) {
 }
 
 // The other direction of the same rule: the server must never EMIT a cursor it
-// would then refuse. A structured id comes from the item's fields blob, which
-// nothing validates on write, so a JSON \u0000 escape reaches the timeline as
-// a real NUL on SQLite (Postgres's jsonb refuses it at the door — a
-// one-backend hazard). Handing that out as next_before_id would wedge paging
-// on the item: the client sends it back and gets a 400 from the validation
-// above.
+// would then refuse. A structured id comes from the item's fields blob, and a
+// JSON NUL escape there reaches the timeline as a real NUL on SQLite
+// (Postgres's jsonb refuses it at the door — a one-backend hazard). Handing
+// that out as next_before_id would wedge paging on the item: the client sends
+// it back and gets a 400 from the validation above.
+//
+// THE FIXTURE WRITES THE BLOB DIRECTLY, and it did not have to when this test
+// was written. The original built the item through the API, on the premise —
+// stated in this comment until BUG-2803 — that "nothing validates the fields
+// blob on write". That premise is now false: decodeJSON refuses a request
+// body whose strings decode to a NUL, including one nested inside a
+// JSON-encoded `fields` string, so the API can no longer produce this row.
+//
+// The DEFENCE this test covers is still live, which is why the test is
+// repaired rather than deleted. Rows in this shape can predate the rule, and
+// the store has no such check of its own, so anything writing a blob directly
+// — a migration, an import, a future non-HTTP writer — can still produce one.
+// The timeline must keep refusing to hand out an unusable cursor for data it
+// did not create. Writing the row through the store is what makes the test
+// about the timeline's defence rather than about the request validator.
 func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
@@ -193,10 +207,32 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 	// truncating limit — that is what makes it the emitted next_before_id
 	// rather than merely an entry id. The clean one is the control: it
 	// distinguishes "replaced the unusable id" from "stopped using raw ids".
-	notes := `[{"id":"note-\u0000-bad","summary":"middle","created_at":"2026-04-02T10:00:01Z"},` +
+	notes := `[{"id":"note-PLACEHOLDER-bad","summary":"middle","created_at":"2026-04-02T10:00:01Z"},` +
 		`{"id":"note-clean","summary":"newest note","created_at":"2026-04-02T10:00:02Z"},` +
 		`{"id":"note-oldest","summary":"oldest","created_at":"2026-04-02T10:00:00Z"}]`
 	item := timelineItemWithStructured(t, srv, ws, notes, "")
+
+	// Swap the placeholder for the JSON NUL ESCAPE directly in the stored
+	// blob — the six characters, not a raw NUL byte. The NUL only comes into
+	// existence when Go DECODES the blob, which is precisely how the timeline
+	// ends up with one inside an entry id.
+	//
+	// A raw NUL does not work here, and the reason is not the one this
+	// comment first gave: items.fields is a plain `TEXT NOT NULL DEFAULT
+	// '{}'` column with no CHECK constraint on SQLite. What was OBSERVED is
+	// that the update fails with "SQL logic error: malformed JSON"; the
+	// likely source is one of the expression indexes over json_extract(fields
+	// ...) rather than a column constraint, and that attribution is NOT
+	// verified. The claim corrected to what the run actually showed (codex
+	// round 8).
+	// The API refuses this body (BUG-2803); the store does not, which is the
+	// gap this test exists to cover.
+	if _, err := srv.store.DB().Exec(
+		`UPDATE items SET fields = REPLACE(fields, 'PLACEHOLDER', ?) WHERE id = ?`,
+		string([]byte{'\\', 'u', '0', '0', '0', '0'}), item.ID,
+	); err != nil {
+		t.Fatalf("inject NUL into the stored fields blob: %v", err)
+	}
 
 	// The item's own `created` activity plus three notes; limit=3 truncates,
 	// so the cursor is the third entry — the NUL-bearing note.

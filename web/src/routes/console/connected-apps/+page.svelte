@@ -80,6 +80,17 @@
 		try {
 			const updated = await api.connectedApps.rename(app.id, draft);
 			replaceApp(updated);
+			// Sync the draft to what the server actually STORED, not to what
+			// was typed. The server normalises — it trims, and it caps the
+			// name at 120 BYTES via a rune-safe truncation while this input
+			// allows 120 CHARACTERS, so any multibyte name near the limit
+			// comes back shorter than the draft. Without this the equality
+			// check below never matches, Save stays enabled forever, and each
+			// press re-sends the same request (codex round 24, BUG-2803).
+			//
+			// Assigning the canonical value rather than comparing lengths
+			// keeps this correct for any future normalisation too.
+			nameDrafts[app.id] = updated.name ?? '';
 		} catch (e) {
 			setError(app.id, e instanceof Error ? e.message : 'Failed to rename');
 		} finally {

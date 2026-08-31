@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -2190,17 +2192,66 @@ func decodeJSON(r *http.Request, v interface{}) error {
 // default cap is too small — but always pass an explicit cap, never
 // remove the wrapper.
 func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
-	// http.MaxBytesReader.Close() is a no-op; the decoder leaves r.Body at
-	// EOF anyway. Setting this here also lets the server return a 413
-	// automatically via the error we wrap below.
-	if r.Body != nil {
-		r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
+	raw, err := readBodyForDecode(r, maxBytes)
+	if err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
 	}
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	// An EMPTY (or whitespace-only) body must keep returning a wrapped
+	// io.EOF. json.Decoder.Decode answered io.EOF there and at least one
+	// caller depends on it — handlers_playbooks.go treats
+	// errors.Is(err, io.EOF) as "no arguments supplied" and runs anyway —
+	// while json.Unmarshal answers a SyntaxError instead, which that check
+	// cannot see. Found by TestPlaybookRunAcceptsEmptyBody, which is exactly
+	// the wiring a helper-level change is blind to.
+	// Trim only the four bytes JSON itself calls whitespace. bytes.TrimSpace
+	// uses unicode.IsSpace, which also strips \v, \f, U+00A0 and friends —
+	// none of which encoding/json accepts. With TrimSpace a body of just
+	// "\v" looked EMPTY here and returned io.EOF, so an EOF-tolerant caller
+	// (playbook run, share links) treated a syntactically invalid body as an
+	// ABSENT one and proceeded. Same Go-versus-spec whitespace divergence
+	// that bites when a Go trim stands in for another grammar's definition
+	// (codex round 22).
+	if len(bytes.Trim(raw, " \t\r\n")) == 0 {
+		return fmt.Errorf("invalid JSON: %w", io.EOF)
+	}
+	// Refuse a decoded NUL BEFORE unmarshalling, so the value never exists
+	// in a Go string that a handler could hand to the store. See
+	// bodyDecodesNUL for why the body needs its own rule and why the check
+	// cannot be a substring search. BUG-2803.
+	if bodyDecodesNUL(raw) {
+		return errJSONBodyNUL
+	}
+	// json.Unmarshal rather than a Decoder over the buffer: it is the
+	// cheaper of the two by ~2x in total allocation (see readBodyForDecode's
+	// measurement), and it REFUSES trailing non-whitespace after the JSON
+	// value where Decode silently ignores it. That second difference is a
+	// deliberate behaviour change in the same direction as this fix —
+	// malformed input is refused at the door rather than partly consumed —
+	// and it is the only compatibility change in BUG-2803. Trailing
+	// whitespace, which real clients do send, is still accepted.
+	if err := json.Unmarshal(raw, v); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 	return nil
 }
+
+// errJSONBodyNUL is returned by decodeJSON when a string in the request body
+// decodes to a value containing a NUL. Every decodeJSON caller already turns
+// a decode error into a 400, so the refusal reaches the client as a client
+// error at every call site without touching any of them.
+//
+// NOT every caller shows this message, and the earlier version of this
+// comment claimed otherwise: many substitute a generic string of their own
+// ("Invalid JSON body"). The status is uniform; the wording is not. Where a
+// caller's own message would actively mislead — the OAuth registration
+// endpoint's "Request body must be JSON", for a body that IS valid JSON —
+// that caller distinguishes the two cases explicitly (codex round 8).
+//
+// The wording avoids writing the escape sequence literally: the message is
+// rendered in terminals, logs and a browser, and a literal escape in an error
+// string is the kind of thing an intermediate layer transforms.
+var errJSONBodyNUL = errors.New(
+	"request body contains a NUL character in a JSON string (a u0000 escape); text values cannot contain NUL")
 
 // getWorkspaceID resolves workspace slug/ID from the request.
 // If RequireWorkspaceAccess already resolved the workspace, reads from context.

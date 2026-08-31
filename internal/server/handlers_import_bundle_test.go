@@ -632,3 +632,165 @@ func TestIsSafeBundleEntryName(t *testing.T) {
 		})
 	}
 }
+
+// TestImportBundle_RefusesNULInExport is codex round 3's P1 on BUG-2803. The
+// tar.gz bundle path parses pad-export.json itself rather than through
+// decodeJSON, so it inherited none of that helper's checks: the SAME workspace
+// import, reached with Content-Type application/gzip instead of
+// application/json, walked straight past the NUL refusal and into Postgres.
+//
+// The control leg is the identical bundle with an ordinary value. Without it a
+// 400 proves nothing here — this path answers 400 for a dozen unrelated
+// reasons (bad gzip, out-of-order tar, duplicate entries).
+func TestImportBundle_RefusesNULInExport(t *testing.T) {
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	clean := rr.Body.String()
+
+	// Put the escape inside the exported workspace NAME. Editing the JSON
+	// text directly is the point: the bundle is bytes on the wire, and this
+	// is the shape a hand-built bundle would carry.
+	esc := string([]byte{'\\', 'u', '0', '0', '0', '0'})
+	withNUL := strings.Replace(clean, `"name":"`, `"name":"a`+esc+`b `, 1)
+	if withNUL == clean {
+		t.Fatal("fixture did not modify the export; the probe would be vacuous")
+	}
+
+	bundle := func(t *testing.T, exportJSON string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gzw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gzw)
+		if err := tw.WriteHeader(&tar.Header{Name: "pad-export.json", Mode: 0o644, Size: int64(len(exportJSON))}); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if _, err := tw.Write([]byte(exportJSON)); err != nil {
+			t.Fatalf("write export: %v", err)
+		}
+		tw.Close()
+		gzw.Close()
+		return buf.Bytes()
+	}
+
+	post := func(t *testing.T, name string, body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		dest, _ := testServerWithAttachments(t)
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name="+name, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/gzip")
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		dest.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if got := post(t, "CleanBundle", bundle(t, clean)); got.Code != http.StatusOK && got.Code != http.StatusCreated {
+		t.Fatalf("control bundle must import, got %d: %s", got.Code, got.Body.String())
+	}
+	got := post(t, "NULBundle", bundle(t, withNUL))
+	if got.Code != http.StatusBadRequest {
+		t.Errorf("bundle carrying a NUL escape: status=%d, want 400; body=%s", got.Code, got.Body.String())
+	}
+	if !strings.Contains(got.Body.String(), "NUL") {
+		t.Errorf("the 400 should name the cause, got body=%s", got.Body.String())
+	}
+}
+
+// TestImportBundle_RefusesNULInManifest is the leg codex round 13 found
+// missing: TestImportBundle_RefusesNULInExport builds bundles containing only
+// pad-export.json, so removing the INDEPENDENT manifest check left the suite
+// green. The manifest is a second JSON document parsed the same way and needs
+// its own coverage.
+//
+// Both bundles carry a valid export; they differ only in the manifest, so a
+// refusal cannot come from the export half.
+func TestImportBundle_RefusesNULInManifest(t *testing.T) {
+	src, srcSlug := testServerWithAttachments(t)
+	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export src: %d %s", rr.Code, rr.Body.String())
+	}
+	exportJSON := rr.Body.Bytes()
+
+	esc := string([]byte{'\\', 'u', '0', '0', '0', '0'})
+	cleanManifest := `{"version":1,"entries":[]}`
+	nulManifest := `{"version":1,"entries":[{"id":"00000000-0000-0000-0000-000000000001",` +
+		`"filename":"a` + esc + `b.png","mime":"image/png","size_bytes":1,"content_hash":"deadbeef"}]}`
+
+	bundle := func(t *testing.T, manifest string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		gzw := gzip.NewWriter(&buf)
+		tw := tar.NewWriter(gzw)
+		for _, e := range []struct {
+			name string
+			body []byte
+		}{
+			{"pad-export.json", exportJSON},
+			{"attachments/manifest.json", []byte(manifest)},
+		} {
+			if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body))}); err != nil {
+				t.Fatalf("write header %s: %v", e.name, err)
+			}
+			if _, err := tw.Write(e.body); err != nil {
+				t.Fatalf("write %s: %v", e.name, err)
+			}
+		}
+		tw.Close()
+		gzw.Close()
+		return buf.Bytes()
+	}
+
+	post := func(t *testing.T, name string, body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		dest, _ := testServerWithAttachments(t)
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name="+name, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/gzip")
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		dest.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if got := post(t, "CleanManifest", bundle(t, cleanManifest)); got.Code != http.StatusOK && got.Code != http.StatusCreated {
+		t.Fatalf("control bundle must import, got %d: %s", got.Code, got.Body.String())
+	}
+	dest, _ := testServerWithAttachments(t)
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=NULManifest",
+		bytes.NewReader(bundle(t, nulManifest)))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "127.0.0.1:1234"
+	got := httptest.NewRecorder()
+	dest.ServeHTTP(got, req)
+
+	// Exactly 400, not "any error": the refusal is a caller-input verdict
+	// the release note promises, and a >=400 assertion would let it decay
+	// into a 500 unnoticed (codex closing round 8).
+	if got.Code != http.StatusBadRequest {
+		t.Errorf("a manifest carrying a NUL escape must be refused with 400, got %d: %s", got.Code, got.Body.String())
+	}
+	if !strings.Contains(got.Body.String(), "NUL") {
+		t.Errorf("the refusal should name the cause, got body=%s", got.Body.String())
+	}
+
+	// And the PERSISTED state, which the HTTP answer alone does not tell you
+	// (codex round 18). A manifest refusal is NOT a rollback: it keeps the
+	// partial workspace, exactly as every other manifest failure does — the
+	// rollback branch fires only for *importStatusError, and mid-stream
+	// manifest failures intentionally keep what was imported (TASK-896).
+	//
+	// Asserting it here makes that contract deliberate rather than
+	// incidental: if someone later routes this rejection through the
+	// rollback branch, this test says so instead of staying green while the
+	// release note goes stale.
+	list := doRequest(dest, "GET", "/api/v1/workspaces", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list workspaces: %d %s", list.Code, list.Body.String())
+	}
+	if !strings.Contains(list.Body.String(), "NULManifest") {
+		t.Errorf("a manifest refusal keeps the partial workspace (TASK-896); it is absent, so the "+
+			"behaviour changed and the release note now says something false: %s", list.Body.String())
+	}
+}

@@ -160,6 +160,47 @@ pad workspace import < my-workspace.json
 pad workspace import --name "imported-workspace" < my-workspace.json
 ```
 
+### One case where an export is not importable
+
+A workspace whose stored data contains a **NUL character** exports fine and is
+refused on import, with a 400 naming the cause. This is not a corruption of
+your backup — it is the import applying a rule the write path now applies too
+(BUG-2803): Pad does not accept a NUL in a text or JSON value. That is an
+application rule, not a universal storage fact — PostgreSQL does refuse a NUL
+outright, but SQLite accepts one in a TEXT column, which is why the rule has to
+be enforced rather than assumed, and why the paragraphs below matter.
+
+**The rule lives in the binary, not in the database**, so "before the rule
+existed" is a statement about which build served the write, not about a date.
+On SQLite, any window in which an older binary serves the same database can
+still create such rows: a rollback to the previous version, a staged rollout
+where an old and a new instance share a database, or a second older instance
+pointed at the same file. Once that window closes the guard is back, but the
+rows are already stored, and they behave exactly like genuinely old ones.
+
+Only SQLite is affected. PostgreSQL refuses a NUL in a text or JSON column
+itself, at every binary version, so a PostgreSQL instance never stored such a
+value regardless of which build wrote it.
+
+If you want the guarantee rather than the guard, drain writes from older
+binaries before the new one starts serving, or roll forward rather than back.
+Enforcing the invariant below the HTTP layer, so the running build stops
+mattering, is tracked as BUG-2813.
+
+The same limitation applies to `pad db migrate-to-pg`, which copies rows
+directly and does not go through the import guard: a row carrying a NUL will
+fail against PostgreSQL's JSONB parser during the copy rather than being
+reported up front.
+
+If you hit either, the affected value has to be repaired at the source before
+the import or migration will go through — the export itself succeeds either
+way, as described above. A preflight check and a repair path are tracked as
+BUG-2810. Until then, neither error names the exact row: the import answers
+400 naming the rule it refused on, and `pad db migrate-to-pg` reports which
+workspace's copy failed — locating the offending value inside it is manual
+today.
+
+
 This format is database-agnostic and can be used to:
 - Transfer workspaces between Pad instances
 - Create workspace templates

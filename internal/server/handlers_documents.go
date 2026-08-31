@@ -423,7 +423,7 @@ func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action 
 		Metadata:    metadata,
 		UserID:      uid,
 		IPAddress:   clientIP(r),
-		UserAgent:   r.Header.Get("User-Agent"),
+		UserAgent:   requestUserAgent(r),
 	})
 	// Bump last_write_at on the actor. Every action that flows through this
 	// helper (created/updated/archived/restored/moved/commented) is a write.
@@ -454,7 +454,7 @@ func (s *Server) logAuditEventForUser(action string, r *http.Request, userID str
 		Metadata:  metadata,
 		UserID:    userID,
 		IPAddress: clientIP(r),
-		UserAgent: r.Header.Get("User-Agent"),
+		UserAgent: requestUserAgent(r),
 	})
 }
 
@@ -483,7 +483,7 @@ func (s *Server) logWorkspaceAuditEvent(workspaceID, action string, r *http.Requ
 		Metadata:    metadata,
 		UserID:      currentUserID(r),
 		IPAddress:   clientIP(r),
-		UserAgent:   r.Header.Get("User-Agent"),
+		UserAgent:   requestUserAgent(r),
 	})
 }
 

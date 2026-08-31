@@ -46,11 +46,35 @@ const multipartParseMemory = 1 << 20 // 1 MiB
 // ONLY. Unlike (*http.Request).FormValue it does not fall back to the
 // URL query string, which keeps the two item_id input channels distinct
 // so they can be resolved and cross-checked independently.
+// multipartValues returns a multipart form field's TEXT values, dropping any
+// that are not bindable text.
+//
+// The multipart body is exempt from BUG-2803's JSON rule for a good reason —
+// its payload is binary blob content and must not be scanned for text
+// validity — but its TEXT fields are a different thing: item_id goes to
+// ResolveItem and into a database comparison exactly as the query-string
+// channel does, and that channel has been validated at the transport since
+// BUG-2784. A raw NUL arriving through the form instead of the query reached
+// the store unchecked (codex round 4, BUG-2803).
+//
+// Dropping rather than erroring keeps this helper's signature and matches
+// what callers already do with absent values: resolveUploadItemID treats
+// absent and explicitly-empty alike, so an unusable value becomes "no value"
+// and the request is answered by the same path that handles a missing one. A
+// value that cannot name anything and one that was never sent are the same
+// thing to the caller.
 func multipartValues(r *http.Request, key string) []string {
 	if r.MultipartForm == nil {
 		return nil
 	}
-	return r.MultipartForm.Value[key]
+	raw := r.MultipartForm.Value[key]
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if bindableText(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // maxUploadItemIDValues bounds how many item_id values one input channel
@@ -301,8 +325,70 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// Sanitize the filename: strip path components so a client can't
 	// sneak directory traversal through the display name. We don't
 	// store this in the storage backend — only in the DB row for UI.
+	// The uploaded filename is caller-supplied text bound for a text column,
+	// and a multipart header can carry a NUL through the RFC 5987 encoded
+	// form (filename*=UTF-8\'\'a%00.png). Same predicate as the path and
+	// query rules; falling back to a generic name rather than refusing the
+	// upload, because the bytes are fine and only the label is unusable
+	// (codex round 4, BUG-2803).
+	// Reduce to a leaf under BOTH separator conventions before anything else.
+	// filepath.Base is platform-specific, so on Unix it leaves a backslash
+	// alone — and the stored name is consumed cross-platform (a Windows client
+	// joining it onto a directory reads "..\\evil" as a traversal). Splitting
+	// on the backslash too makes the stored value a safe path component
+	// everywhere rather than only on the server's own OS (codex round 28).
+	//
+	// This NORMALISES rather than refuses: a legitimate Unix name containing a
+	// backslash keeps its last segment instead of being replaced wholesale,
+	// which is less lossy than the alternative and still portable.
 	filename := filepath.Base(header.Filename)
-	if filename == "" || filename == "." || filename == "/" {
+	if i := strings.LastIndexByte(filename, '\\'); i >= 0 {
+		filename = filename[i+1:]
+	}
+	if !bindableText(filename) {
+		// Keep the EXTENSION when it is itself storable. The unusable part
+		// of a name like "sh<NUL>ot.png" is the stem; ".png" is ordinary
+		// text, and it is what every downstream consumer dispatches on —
+		// Content-Disposition, the web download anchor, bundle export naming,
+		// and `pad attachment view`, whose whole contract is handing a path to
+		// something that opens files by extension.
+		//
+		// Dropping it made this fallback lossier than the empty-name one two
+		// lines below, which has always produced "upload.bin" (codex round
+		// 24). Bounded to a short extension so a hostile name cannot smuggle
+		// a long tail through the fallback.
+		// bindableText is NOT the bar here (codex round 25). It permits
+		// control characters — they are valid UTF-8 and not NUL — and a
+		// control character survives storage but is STRIPPED when the name
+		// is written into Content-Disposition. So ".s<VT>vg" passes the
+		// extension blocklist, which sees no known extension, and reappears
+		// as ".svg" at the client. attachments.SafeFallbackExtension requires
+		// a KNOWN, ALLOWED, plain-alphanumeric extension instead, so a
+		// synthesised name can only carry a suffix the product already
+		// accepts on the ordinary path.
+		if ext := filepath.Ext(filename); attachments.SafeFallbackExtension(ext) {
+			filename = "upload" + strings.ToLower(ext)
+		} else {
+			filename = "upload"
+		}
+	}
+	// A name that is only dots or separators is not a filename, it is a PATH
+	// COMPONENT, and consumers join it onto a directory. ".." was missing
+	// here: it survives bindableText, and filepath.Ext("..") is "." — non-empty
+	// — so even an extension check passes it through, while filepath.Join on
+	// the client side resolves it to the PARENT directory (codex round 26).
+	//
+	// Only "." and ".." are path components; "..." and longer runs are
+	// ordinary POSIX filenames and are kept (codex round 27 — the trimmed-form
+	// check I used first refused those too, which is over-refusal for no
+	// gain). A backslash is likewise a legal character in a Unix filename, and
+	// filepath.Base above has already reduced any "a/b" to "b", so a separator
+	// test here is dead on this platform and was removed rather than left to
+	// look load-bearing.
+	//
+	// What remains is the real hazard: a name a consumer joins onto a
+	// directory and lands somewhere else.
+	if filename == "" || filename == "." || filename == ".." || filename == "/" {
 		filename = "upload.bin"
 	}
 
@@ -565,8 +651,11 @@ func writeAttachmentNotFound(w http.ResponseWriter) {
 //   - Resolves the storage backend via the Registry and opens the blob.
 //   - Sets Content-Type from the DB row (which is already the canonical
 //     post-allowlist MIME, not the client-supplied one).
-//   - Sets Content-Disposition from the MIME's RenderMode entry:
-//     RenderForceDownload → "attachment", everything else → "inline".
+//   - Sets Content-Disposition fail-closed via the explicit ServeInline
+//     allowlist (BUG-2413): only audited types are "inline", everything
+//     else — RenderChip types included — is "attachment". (An earlier
+//     version of this line derived the answer from RenderMode, the
+//     pre-BUG-2413 policy; codex closing round 8.)
 //   - Hands off to http.ServeContent when the backend supports Seek
 //     (FSStore returns *os.File, so this is the common path) — that
 //     gives us If-Modified-Since, If-None-Match, Range/206, Accept-Ranges

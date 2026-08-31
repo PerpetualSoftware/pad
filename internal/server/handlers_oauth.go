@@ -227,9 +227,17 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input dcrRequest
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeDCRError(w, http.StatusBadRequest, "invalid_client_metadata",
-			"Request body must be JSON: "+err.Error())
+	if err := decodeJSON(r, &input); err != nil {
+		// Two different failures reach here and the message must not
+		// conflate them: a body that is not JSON, and a body that IS valid
+		// JSON but carries text the database cannot store (BUG-2803). The
+		// second one was being reported as "must be JSON", which sends a
+		// client looking for a syntax error it does not have (codex round 7).
+		msg := "Request body must be JSON: " + err.Error()
+		if errors.Is(err, errJSONBodyNUL) {
+			msg = err.Error()
+		}
+		writeDCRError(w, http.StatusBadRequest, "invalid_client_metadata", msg)
 		return
 	}
 
@@ -987,7 +995,7 @@ func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequest
 	// prompts the user to name it on first visit.
 	name := strings.TrimSpace(r.FormValue("connection_name"))
 	if len(name) > 120 {
-		name = name[:120]
+		name = truncateBindableText(name, 120)
 	}
 
 	// may_create_workspaces is a checkbox — present (value="1") if
@@ -1779,12 +1787,14 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 	// edit before submit; nothing client-side is binding.
 	//
 	// Trim + cap defensively. Long suggested names would just truncate
-	// in the connections-page UI; capping at 120 chars matches the
-	// schema column's effective-text limit (TEXT in SQLite, no hard
-	// cap in PG, but 120 keeps the connections-page card width sane).
+	// in the connections-page UI; capping at 120 BYTES (rune-safe cut —
+	// the form's maxlength=120 counts characters, so a multibyte name
+	// can pass the client and still be truncated here) keeps the
+	// connections-page card width sane (TEXT in SQLite, no hard cap
+	// in PG).
 	suggested := strings.TrimSpace(r.URL.Query().Get("suggested_name"))
 	if len(suggested) > 120 {
-		suggested = suggested[:120]
+		suggested = truncateBindableText(suggested, 120)
 	}
 
 	data := consentData{

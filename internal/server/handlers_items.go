@@ -1969,8 +1969,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		TargetCollection string         `json:"target_collection"`
 		FieldOverrides   map[string]any `json:"field_overrides"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
 	if input.TargetCollection == "" {

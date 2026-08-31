@@ -177,3 +177,72 @@ func TestListWatches_RequiresAuth(t *testing.T) {
 		t.Fatalf("unexpected 500: %s", rec.Body.String())
 	}
 }
+
+// chunkedBearerCall is bearerCall with ContentLength forced to -1, the way a
+// chunked request arrives. The old guard (`ContentLength > 0`) silently
+// DROPPED such bodies — predicate ignored, unconditional watch, 200 (codex
+// closing round 4).
+func chunkedBearerCall(t *testing.T, srv *Server, method, path, token string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.RemoteAddr = "127.0.0.1:0"
+	req.ContentLength = -1
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCreateWatch_ChunkedBodyIsDecoded(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	path := "/api/v1/workspaces/" + slug + "/items/" + item.Slug + "/watch"
+
+	// The discriminating assertion is the PREDICATE, not the status code:
+	// the unfixed handler also answered 200, with the predicate silently
+	// dropped to "".
+	rr := chunkedBearerCall(t, srv, "POST", path, tok.Token, []byte(`{"predicate":"status=done"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("chunked create watch: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var w models.Watch
+	parseJSON(t, rr, &w)
+	if w.Predicate != "status=done" {
+		t.Fatalf("chunked body was dropped: predicate = %q, want %q", w.Predicate, "status=done")
+	}
+}
+
+func TestCreateWatch_ChunkedMalformedBodyRejected(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	path := "/api/v1/workspaces/" + slug + "/items/" + item.Slug + "/watch"
+
+	// A chunked body must reach the SAME gate a measured one does — here the
+	// NUL rule. Unfixed, this answered 200 and created an unconditional watch.
+	rr := chunkedBearerCall(t, srv, "POST", path, tok.Token, []byte("{\"predicate\":\"status=do\\u0000ne\"}"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("chunked NUL body: expected 400, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateWatch_ChunkedEmptyBodyStaysValid(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	path := "/api/v1/workspaces/" + slug + "/items/" + item.Slug + "/watch"
+
+	// The tolerant no-body contract must survive the fix: decodeJSON answers
+	// an empty body with io.EOF, which the handler treats as absent.
+	rr := chunkedBearerCall(t, srv, "POST", path, tok.Token, []byte(""))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("chunked empty body: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var w models.Watch
+	parseJSON(t, rr, &w)
+	if w.Predicate != "" {
+		t.Fatalf("expected unconditional watch, got predicate %q", w.Predicate)
+	}
+}

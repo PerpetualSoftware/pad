@@ -573,3 +573,64 @@ func fieldString(t *testing.T, fieldsJSON, key string) string {
 	s, _ := m[key].(string)
 	return s
 }
+
+// TestImportArtifactUnbindableTextRejected covers the last body reader the
+// BUG-2803 sweep turned up (codex round 3). The artifact endpoint takes RAW
+// TEXT, not JSON, so it never went through decodeJSON and inherited neither
+// the NUL refusal nor the path/query rule — a body is neither a path nor a
+// query. A raw NUL or invalid UTF-8 reached the store, and Postgres answered
+// SQLSTATE 22021, which the handler turned into a 500 for what is a client
+// error.
+//
+// Note the shape difference from the JSON half: here a RAW byte is the vector,
+// because there is no JSON decoder in the way to reject it. The predicate is
+// the same bindableText the path and query middlewares apply.
+func TestImportArtifactUnbindableTextRejected(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	good := "---\npad_artifact: convention\nformat_version: 1\ntitle: Fine\n---\n\nbody\n"
+
+	// Control: the identical artifact, no bad bytes. Without it a 400 says
+	// nothing — this endpoint answers 400 for malformed frontmatter too.
+	if rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", []byte(good)); rr.Code != http.StatusOK && rr.Code != http.StatusCreated {
+		t.Fatalf("control artifact must import, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"NUL byte in the body", []byte(strings.Replace(good, "body", "bo\x00dy", 1))},
+		{"invalid UTF-8 in the body", append([]byte(strings.Replace(good, "body", "bo", 1)), 0xff, '\n')},
+		// codex round 4: YAML has its own escape vocabulary. A double-quoted
+		// scalar carries no NUL in the request bytes — the raw check passes —
+		// and manufactures one during the YAML decode. Measured before the
+		// post-decode check existed: this imported 201 with a NUL in the
+		// title. Same shape as the JSON half, where a value only becomes
+		// dangerous after a SECOND parse.
+		// codex round 8: the first version of the post-decode check walked
+		// the artifact by TYPE and missed two reachable fields — arguments,
+		// whose declared type []map[string]any never matched the walk's
+		// []any case, and provenance, whose strings are rendered into a
+		// footer appended to the stored content. The check now marshals the
+		// artifact and searches the output, so every field is covered.
+		{"YAML-escaped NUL inside a playbook argument", []byte(
+			"---\npad_artifact: playbook\nformat_version: 1\ntitle: Args\narguments:\n  - name: \"a" +
+				string([]byte{'\\', '0'}) + "b\"\n    type: string\n---\n\nbody\n")},
+		{"YAML-escaped NUL in provenance", []byte(
+			"---\npad_artifact: convention\nformat_version: 1\ntitle: Prov\nprovenance:\n  workspace: \"a" +
+				string([]byte{'\\', '0'}) + "b\"\n  author: someone\n---\n\nbody\n")},
+		{"YAML-escaped NUL in the title", []byte("---\npad_artifact: convention\nformat_version: 1\ntitle: \"a" + string([]byte{'\\', '0'}) + "b\"\n---\n\nbody\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", tc.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "invalid_body") {
+				t.Errorf("expected the invalid_body code, got %s", rr.Body.String())
+			}
+		})
+	}
+}

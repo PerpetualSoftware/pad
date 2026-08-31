@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -342,4 +345,475 @@ func validQueryText(rawQuery string) bool {
 		}
 	}
 	return true
+}
+
+// unicodeEscapePrefix is the four bytes that begin any JSON \u escape for a
+// character below U+0100. Built from bytes rather than written as a literal,
+// for the reason the tests do the same.
+var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
+
+// bodyDecodesNUL reports whether any string a handler could read out of this
+// JSON body — an object key or a value, at any nesting depth, including
+// inside a JSON document carried as a string — decodes to a string containing
+// a NUL.
+//
+// WHY THE BODY NEEDS ITS OWN RULE, when ValidatePath and ValidateQuery already
+// apply bindableText at the transport. Those work because a decoded path or
+// query value is a substring of the raw request with ASCII substitutions: the
+// bad byte in the raw text IS the bad byte in the value, so a middleware can
+// find it without parsing. That property does not hold for a JSON body. The
+// reachable NUL arrives as a six-character JSON escape (backslash, u, and
+// four zeros — spelled out rather than written, since a literal is one
+// transformation away from being the character it describes), all ordinary
+// ASCII, so
+// a transport-level scan for a NUL byte sees nothing, and no request
+// middleware can find it without decoding the body, which is the handler's
+// job. BUG-2784 recorded this as the reason its rule stops at the query
+// string; this is the missing half.
+//
+// THE GATE IS A BACKSLASH, NOT THE ESCAPE SUBSTRING, and the difference is a
+// real bypass rather than a stylistic one.
+//
+// The obvious fast path — "does the raw body contain that escape?" — is
+// UNSOUND, and codex round 4 on BUG-2803 demonstrated it. The escape may be
+// spelled obliquely: `\u005c` decodes to a BACKSLASH, so a body carrying
+// `\u005cu0000` contains no literal six-character escape anywhere in its raw
+// bytes, yet the OUTER decode manufactures one inside the string, and if that
+// string is re-parsed as a JSON document (see jsonEncodedFieldKeys) the
+// second parse turns it into a real NUL. Measured before the fix: that body
+// answered 201 through the real router while the direct spelling answered
+// 400.
+//
+// The mistake was applying a fact about how a NUL is spelled INSIDE a decoded
+// string to the RAW BYTES, where the backslash itself can be written as an
+// escape. It is the same layer-confusion this whole bug is made of, three
+// rounds in a row.
+//
+// A backslash is the sound gate: every JSON escape mechanism requires one, so
+// a body with no backslash anywhere has decoded strings byte-identical to its
+// raw bytes, and a raw NUL cannot survive the decoder. No backslash therefore
+// means no NUL, at any depth, however spelled. Bodies WITH a backslash pay for
+// an exact answer — a larger set than before (any nested JSON carries `\"`),
+// which is the cost of being correct here.
+//
+// WHY THE EXACT STEP IS NOT A SUBSTRING SEARCH EITHER. Containing
+// the escape is not sufficient either: `\\u0000` (an escaped backslash followed
+// by literal text) contains the same six characters and decodes to no NUL at
+// all. Refusing on the substring alone would reject a legitimate value, and in
+// THIS product that is not hypothetical — items and documents store markdown,
+// and writing about a JSON escape sequence is an ordinary thing for a document
+// to do.
+//
+// So the exact step is a walk over the DECODED body (valueDecodesNUL), which
+// distinguishes those cases by construction rather than by pattern, needs no
+// knowledge of the destination type, and reaches nested maps such as an item's
+// `fields` blob that a struct-shaped check would miss.
+//
+// WHY NOT REFLECT OVER THE DECODED VALUE, which is the other obvious design.
+// A reflective walk sees a []byte field AFTER base64 decoding, so a body
+// carrying legitimate binary — `{"b":"AQAC"}` decodes to the bytes 01 00 02 —
+// would be refused for a NUL that is not text and never reaches a text
+// column. A token walk sees the base64 characters instead. No request struct
+// has such a field today (searched: []byte fields with a json tag in
+// internal/server and internal/models, non-test — the only hit is
+// models.YjsUpdate.UpdateData, which no handler decodes from a body, since
+// collab moves Yjs data over the WebSocket as binary). The token walk is
+// chosen so that adding one later cannot silently start rejecting valid
+// requests.
+//
+// A malformed body returns false rather than an error: the caller's decode
+// runs next and reports the JSON error itself, so there is exactly one place
+// that phrases "invalid JSON" and this function never has to agree with it.
+// That choice has a consequence, and it is finding (2) below rather than a
+// clean separation of concerns.
+//
+// WHAT THIS CHECK DOES NOT COVER — four measured disagreements between what
+// this scan sees and what the typed decode does, left OPEN deliberately
+// (BUG-2803 rounds 16-17; lead ruling: land-and-follow). They are
+// recorded here because this is the function a reader consults before
+// trusting the check, and an unqualified doc comment above an incomplete
+// guard is how the next person inherits a false belief.
+//
+// The root cause of all four is one thing: this scan decodes into
+// map[string]any, and encoding/json's typed decode does NOT agree with that
+// model about keys. TWO UNDER-REFUSE (a NUL gets through) and TWO
+// OVER-REFUSE (a legitimate body is rejected).
+//
+// UNDER-REFUSALS — these are the BUG-2812 unit's spec, not a TODO here. Both
+// dissolve under a token-stream walk that never builds values, which is that
+// unit's design. The ruling's reasoning for not folding that rewrite in: a
+// review loop finding something in nearly every round says the pre-scan
+// machinery has a DESIGN problem, and the answer to that is a unit of its
+// own rather than a late restructure of a branch already deep in review.
+//
+//  1. DUPLICATE KEYS MERGE DIFFERENTLY (P1). For
+//     {"fields_patch":{"orphan":"<NUL>"},"fields_patch":{"status":"open"}},
+//     decoding into map[string]any REPLACES the first value, so this scan
+//     sees only `status`; encoding/json MERGES into an already-populated map
+//     field, so the handler keeps both and persists the NUL. The `any` scan
+//     structurally cannot see the shadowed occurrence — no amount of care
+//     inside this model reaches it.
+//  2. A SCAN FAILURE LETS A KNOWN-BAD VALUE THROUGH (P1). For
+//     {"title":"a<NUL>b","ignored":1e999}, the overflowing number makes the
+//     `any` unmarshal fail, this function returns false (see the paragraph
+//     above), and the typed decode then SKIPS the unknown field and accepts
+//     the body with its NUL title. Returning an error instead would reject
+//     bodies the handlers accept today, so the fix is not "refuse on scan
+//     failure" — it is not building values in the first place.
+//
+// OVER-REFUSALS — dispositions, ACCEPTED as-is, and the reason each is
+// tolerable is that it refuses rather than admits:
+//
+//  3. UNKNOWN FIELDS ARE SCANNED THOUGH HANDLERS IGNORE THEM (P2).
+//     {"title":"valid","future_field":"<NUL>"} is refused although the value
+//     reaches nothing. Scoping the scan to known fields would need the
+//     destination type, which this function deliberately does not have (see
+//     WHY NOT REFLECT above) — so the alternative is not a smaller change,
+//     it is a different design. ACCEPTED, and it is an OBSERVABLE
+//     COMPATIBILITY CHANGE: a client sending a forward-compatible field with
+//     a NUL escape in it now gets a 400 where it got a 200. Stated in the
+//     release note for that reason, not only here.
+//  4. CASE-VARIANT DUPLICATES OVER-REJECT (P2). For
+//     {"title":"<NUL>","TITLE":"safe"} the typed decode keeps `safe` and
+//     discards the NUL, while this scan sees both keys and refuses. Same
+//     root as (1), opposite direction: there the map model hides an
+//     occurrence, here it retains one the decode drops. ACCEPTED — refusing
+//     a body that deliberately spells one field twice in two cases costs a
+//     caller nothing real.
+//
+// The asymmetry is the honest summary: within the map model, (1) and (4) are
+// the same defect seen from two sides, and only one of them fails safe.
+func bodyDecodesNUL(raw []byte) bool {
+	if !bytes.Contains(raw, unicodeEscapePrefix) {
+		return false
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		// Malformed: the caller's own decode reports the JSON error, so this
+		// function never has to phrase one.
+		return false
+	}
+	return valueDecodesNUL(v, false)
+}
+
+// jsonEncodedFieldKeys are the REQUEST-BODY keys whose STRING value is itself
+// a JSON document that something downstream re-parses. They are the only keys
+// under which the walk descends into a second document.
+//
+// WHY THE SCOPING EXISTS. The first version of this check recursed into ANY
+// string that parsed as a JSON document, on the argument that a structural
+// test beats a destination-typed one. Codex round 2 on BUG-2803 showed what
+// that costs: a plain-text `content` value holding a JSON snippet that merely
+// MENTIONS the escape was ACCEPTED before this branch, is stored in a text
+// column that has no problem with it, and was newly refused — including on
+// re-import of an export carrying it. Refusing input the server itself
+// produced is a worse failure than the narrow door the recursion closed.
+//
+// WHY A LIST IS SAFE HERE, when ValidateQuery's comment rejects exactly this
+// shape for query parameters: there the set of names is UNBOUNDED BY DESIGN
+// (parseItemListParams turns any unrecognised parameter into a field filter),
+// so no list could be complete. Here the set is a closed property of the wire
+// model — a field is JSON-encoded because a Go struct declares it as a string
+// holding JSON — and TestJSONEncodedFieldKeysCoversTheModels derives it from
+// internal/models and fails when a new one appears.
+//
+// OVER-INCLUSION IS THE SAFE DIRECTION and this list takes it: a listed key
+// that is not really JSON-encoded costs one parse attempt and can only refuse
+// a complete JSON document carrying the escape, while a missing key reopens a
+// door. `traits` is listed by hand for that reason — it carries JSON but its
+// field declaration has no comment saying so, which is exactly how the
+// derivation test would have missed it, so that test asserts coverage in one
+// direction only and the list is allowed to be a superset.
+var jsonEncodedFieldKeys = map[string]bool{
+	"config":         true,
+	"events":         true,
+	"fields":         true,
+	"metadata":       true,
+	"phase_data":     true,
+	"plan_overrides": true,
+	"schema":         true,
+	"settings":       true,
+	"tags":           true,
+	"traits":         true,
+}
+
+// isJSONEncodedFieldKey matches a wire key the way the DECODER that consumes
+// it does: case-insensitively.
+//
+// encoding/json matches an incoming key to a struct field by an exact match
+// first and a CASE-INSENSITIVE one otherwise, so `{"Fields":...}` and
+// `{"FIELDS":...}` both land in ItemCreate.Fields. A case-SENSITIVE lookup
+// here therefore skipped the nested walk for a body the handler went on to
+// accept, and the database answered the original 500 (codex round 16,
+// measured: `fields` refused, `Fields` and `FIELDS` accepted).
+//
+// This is the same defect shape as the rest of BUG-2803 — a check that agrees
+// with one layer's rules while the layer that actually consumes the value
+// uses different ones — and it is the reason this predicate is a function
+// rather than a bare map index: the map is the vocabulary, the MATCHING RULE
+// belongs to the consumer.
+func isJSONEncodedFieldKey(k string) bool {
+	if jsonEncodedFieldKeys[k] {
+		return true
+	}
+	// EqualFold, not ToLower. encoding/json matches with Unicode SIMPLE
+	// FOLDING, which is wider than lower-casing: U+017F LATIN SMALL LETTER
+	// LONG S folds to 's', so "ſchema" reaches the `schema` field while
+	// strings.ToLower("ſchema") is still "ſchema" and missed the allowlist
+	// (codex round 17). Fixing the ASCII half and leaving the Unicode half
+	// would have been this bug's own pattern one more time.
+	for canonical := range jsonEncodedFieldKeys {
+		if strings.EqualFold(k, canonical) {
+			return true
+		}
+	}
+	return false
+}
+
+// valueDecodesNUL walks a decoded request body for a string that contains a
+// NUL, descending into a JSON document carried as a string exactly once.
+//
+// inUserData says the walk has left the REQUEST's own structure and is inside
+// caller data — the natural object under `fields`, an element of a `tags`
+// array, or a re-parsed document. The key list is not consulted there, and
+// both halves of that matter:
+//
+//   - A collection may declare a user field literally named `schema` or
+//     `tags`. Treating `{"fields":{"schema":"..."}}`'s inner key as a wire key
+//     refused valid text that happened to hold a JSON example (codex round 8).
+//   - Below the document Postgres parses, an escape is harmless. Measured on
+//     Postgres 17 with the check disabled: a NUL escape two levels deep
+//     imports 201, because `fields` is parsed ONCE and the inner text is
+//     re-escaped when the blob is written, so Postgres never sees an escape
+//     (codex round 7).
+//
+// Together those make the descent exactly one level deep by construction,
+// which is why there is no depth counter here. An earlier version had one,
+// bounding a recursion that inherited the flag through the whole subtree;
+// with the flag no longer inherited, a counter would be a bound that can
+// never fire, and dead protection reads as protection.
+//
+// WHY A DECODED WALK RATHER THAN reflection over the destination struct: a
+// reflective walk sees []byte fields AFTER base64 decoding, so a body
+// carrying legitimate binary — {"b":"AQAC"} decodes to the bytes 01 00 02 —
+// would be refused for a NUL that is not text and never reaches a text
+// column. Decoding into `any` never produces a []byte, so the value seen here
+// is the base64 TEXT. No request struct has such a field today (searched:
+// []byte with a json tag in internal/server and internal/models, non-test —
+// only models.YjsUpdate.UpdateData, which no handler decodes from a body);
+// this shape is chosen so that adding one later cannot silently start
+// rejecting valid requests.
+func valueDecodesNUL(v any, inUserData bool) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.ContainsRune(t, 0)
+	case map[string]any:
+		for k, sub := range t {
+			if strings.ContainsRune(k, 0) {
+				return true
+			}
+			if !inUserData && isJSONEncodedFieldKey(k) {
+				if str, isString := sub.(string); isString {
+					// BOTH checks. The nested walk answers "is there an
+					// escape inside the document this string carries"; it
+					// does NOT answer "does this string itself contain a
+					// NUL", and taking the JSON-encoded branch used to skip
+					// the plain check entirely — so a direct NUL in a
+					// `fields` value was accepted, reopening the door this
+					// whole change exists to close (codex round 9, a
+					// regression introduced by the round-8 restructure).
+					if strings.ContainsRune(str, 0) || nestedDocumentDecodesNUL(str) {
+						return true
+					}
+					continue
+				}
+				// The field's NATURAL shape: an array or object whose
+				// elements the server marshals itself. Nothing re-parses
+				// them, so everything below is caller data.
+				if valueDecodesNUL(sub, true) {
+					return true
+				}
+				continue
+			}
+			if valueDecodesNUL(sub, inUserData) {
+				return true
+			}
+		}
+	case []any:
+		for _, sub := range t {
+			if valueDecodesNUL(sub, inUserData) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nestedDocumentDecodesNUL walks a JSON document carried as a string — an
+// item's `fields` blob, a collection's `schema` — for a string containing a
+// NUL. This is the layer Postgres itself parses, so an escape here is fatal
+// where one a level deeper is not.
+func nestedDocumentDecodesNUL(s string) bool {
+	if !strings.Contains(s, string(unicodeEscapePrefix)) || !stringIsJSONDocument(s) {
+		return false
+	}
+	var inner any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &inner); err != nil {
+		return false
+	}
+	return valueDecodesNUL(inner, true)
+}
+
+// stringIsJSONDocument reports whether a string is a complete JSON object or
+// array — the shape a downstream consumer will re-parse.
+//
+// WHY THE RECURSION IT GATES EXISTS. Several fields cross the wire as
+// JSON-ENCODED STRINGS rather than nested objects: an item's `fields`, a
+// collection's `schema`, a workspace's `settings`. In such a body the OUTER
+// decode yields the inner document as literal text, in which the escape is
+// still six ordinary characters and no NUL exists. A single-layer walk
+// therefore passed it, and Postgres refused it later with a DIFFERENT error
+// from the rest of this family:
+//
+//	insert collection: ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)
+//
+// 22P05, not the 22021 the path and query halves produce. The outer string is
+// pure ASCII so it never trips the text-encoding check; this is Postgres's own
+// JSON parser refusing the escape inside a document bound for jsonb, which
+// cannot represent a NUL. Measured on Postgres 17: item `fields`, collection
+// `schema` and workspace `settings` each answered 500 with a 201 control leg,
+// after the single-layer check was in place. Found by codex round 1 on
+// BUG-2803, by asking what the destination TYPE does with the value — the
+// angle the endpoint-and-field sweep never rotated to.
+func stringIsJSONDocument(s string) bool {
+	t := strings.TrimSpace(s)
+	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
+		return false
+	}
+	return json.Valid([]byte(t))
+}
+
+// readBodyForDecode reads the whole request body so it can be scanned before
+// it is decoded, with the caller's size cap applied.
+//
+// Buffering is not a cost paid for the scan. json.Decoder.Decode already
+// holds the entire top-level value in memory before it finishes — refill
+// accumulates into dec.buf and grows it by DOUBLING (encoding/json/stream.go,
+// `newBuf := make([]byte, len(dec.buf), 2*cap(dec.buf)+minRead)` plus a copy)
+// — so streaming never avoided the copy, it just reallocated its way there.
+// Measured on the 64 MiB workspace-import shape, total allocation: stream and
+// decode 354.7 MiB, read-all and Unmarshal 256.5 MiB, read-all and Decode
+// 512.5 MiB. Peak heap is indistinguishable between the first two and is
+// order-dependent, so it does not discriminate. BUG-2803.
+func readBodyForDecode(r *http.Request, maxBytes int64) ([]byte, error) {
+	if r.Body == nil {
+		return nil, io.EOF
+	}
+	// The nil ResponseWriter is deliberate and its consequence is worth
+	// stating, because the comment this replaces got it wrong twice over:
+	// MaxBytesReader.Close forwards to the underlying body rather than being
+	// a no-op, and with a nil writer there is no automatic 413 — hitting the
+	// cap surfaces as a read error, which decodeJSONWithLimit wraps and every
+	// caller turns into a 400. That is the existing behaviour, unchanged
+	// here; only the claim about it is corrected (codex round 8).
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
+	return io.ReadAll(r.Body)
+}
+
+// truncateBindableText cuts s to at most maxBytes bytes WITHOUT splitting a
+// rune, so the result is still valid UTF-8.
+//
+// A plain s[:n] slices bytes. If byte n lands inside a multi-byte rune the
+// result ends in a partial sequence, which is not valid UTF-8 — so a value
+// that PASSED the body check a few frames earlier becomes unbindable on its
+// way to the store, and Postgres answers 22021 for a request the server
+// already accepted. Found by the codex round 5 enumeration on BUG-2803, which
+// asked what could still reach a text parameter unvalidated and named
+// truncation rather than any input path.
+//
+// The failure is invisible in testing with ASCII, which is why it survived
+// four review rounds aimed at the input side: every fixture in this area uses
+// ASCII names, and ASCII cannot reproduce it.
+func truncateBindableText(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	// Walk back off any continuation bytes (10xxxxxx) to the start of the
+	// rune that straddles the boundary, then drop that rune entirely.
+	for cut > 0 && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut]
+}
+
+// requestUserAgent returns the User-Agent header as text the database can
+// store, replacing any invalid UTF-8 and dropping any NUL.
+//
+// A header is not a path, a query or a body, so none of the rules above see
+// it — and unlike those, it is not the caller ASKING for anything: it is
+// metadata this server chose to record. Refusing the whole request because a
+// header is malformed would answer 400 to a request whose actual subject is
+// fine, so this sanitizes rather than rejects, which is the opposite
+// disposition from the rest of this file and deliberately so.
+//
+// The sink is one text column: activities.user_agent, reached from three
+// document paths and the connected-apps revoke.
+//
+// THE LOGIN PATHS ARE NOT SINKS, and I wired them before reading
+// store.CreateSession, which is the mistake this note exists to stop
+// recurring. It HASHES the header (sessions.ua_hash) and never stores the
+// text — the round-5 enumeration listed "sessions.user_agent" and I took the
+// name for a column. Sanitising there would have been actively harmful:
+// login would store sha256(sanitised) while middleware_auth still compares
+// sha256(RAW), so every session belonging to a client with a non-UTF-8
+// User-Agent would fail validation. Hashing arbitrary bytes is well defined
+// and needs no help; the hash sites are deliberately untouched.
+//
+// Found by the codex round 5 enumeration on BUG-2803. The filing's own
+// earlier probe had recorded User-Agent as NOT reproducing on the item-create
+// path, which was true and did not generalise: these are different sinks.
+func requestUserAgent(r *http.Request) string {
+	return sanitiseStoredText(r.Header.Get("User-Agent"))
+}
+
+// sanitiseStoredText makes a caller-influenced string safe to bind to a text
+// column, by removing what a text column cannot hold rather than by refusing
+// the request.
+//
+// SANITISE VERSUS REFUSE is the whole decision here, and it turns on WHO ASKED
+// FOR THE VALUE TO EXIST. The body rule refuses, because there the bad value
+// is the thing the caller asked to store. This helper serves metadata the
+// SERVER chose to record about a request — a User-Agent header, an MCP audit
+// row — where the caller never asked for a write at all. Turning an otherwise
+// fine request into a 400, or losing the audit row entirely, because of a
+// field the server elected to keep would be the wrong trade: the request
+// carrying a malformed value is precisely the one most worth recording.
+//
+// Extracted so the two callers share one rule rather than two copies that
+// drift. Do NOT reach for this on a value the caller asked to persist — that
+// is the body rule's job, and silently cleaning such a value would store
+// something the caller did not send.
+func sanitiseStoredText(s string) string {
+	clean, _ := sanitiseStoredTextChanged(s)
+	return clean
+}
+
+// sanitiseStoredTextChanged is sanitiseStoredText plus the fact a caller needs
+// when the value is an IDENTITY rather than free text: whether anything was
+// removed.
+//
+// Cleaning is LOSSY, so distinct inputs collapse onto the same output —
+// "pad_<NUL>item" and "pad_item" both become "pad_item". For a User-Agent
+// that is fine; nothing decides anything on it. For a value that NAMES what a
+// request did, it is a forgery: an audit row or a metric label that cannot be
+// told apart from the genuine one it imitates (codex round 23, after round 22
+// closed the coarser version of the same hole).
+//
+// Callers that store an identity must use this and mark a changed value, so
+// "was cleaned" stays visible instead of being silently absorbed. Callers that
+// store descriptive text can keep using sanitiseStoredText.
+func sanitiseStoredTextChanged(s string) (string, bool) {
+	clean := strings.ReplaceAll(strings.ToValidUTF8(s, ""), "\x00", "")
+	return clean, clean != s
 }

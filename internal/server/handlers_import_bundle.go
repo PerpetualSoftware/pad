@@ -274,6 +274,18 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			if err != nil {
 				return nil, fmt.Errorf("read pad-export.json: %w", err)
 			}
+			// The bundle path parses pad-export.json HERE rather than
+			// through decodeJSON, so it inherits none of that helper's
+			// checks — including BUG-2803's NUL refusal. A gzip import is
+			// the same door as the JSON one, reached by a different
+			// Content-Type, so it gets the same answer rather than a 500
+			// from Postgres further down (codex round 3).
+			if bodyDecodesNUL(buf) {
+				return nil, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle pad-export.json could not be decoded: " + errJSONBodyNUL.Error(),
+				}
+			}
 			var export models.WorkspaceExport
 			if err := json.Unmarshal(buf, &export); err != nil {
 				return nil, &importStatusError{
@@ -323,6 +335,31 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			buf, err := readEntry(tr, hdr.Size)
 			if err != nil {
 				return ws, fmt.Errorf("read manifest.json: %w", err)
+			}
+			// The manifest is a second JSON document inside the bundle,
+			// parsed here rather than through decodeJSON, so it needs the
+			// same check pad-export.json gets a few lines up. Without it a
+			// NUL in a manifest string reached rehydrateAttachment, whose
+			// failure is logged and SKIPPED below — so the import reported
+			// success while silently dropping the attachment (codex round 4,
+			// BUG-2803). The skip-on-failure behaviour is pre-existing and
+			// deliberate (a partial restore beats none); refusing the bad
+			// INPUT is what stops it from being reached that way.
+			//
+			// IT DOES NOT ROLL BACK, and the earlier wording implied more
+			// than it delivers (codex round 18). A plain error with a
+			// non-nil workspace keeps the partial workspace, exactly as
+			// every other manifest failure below does — the rollback branch
+			// fires only for *importStatusError, and the comment there
+			// records that mid-stream manifest failures intentionally keep
+			// what was imported, tracked under TASK-896. Returning a
+			// rollback-shaped error HERE would give NUL-bearing manifests
+			// different semantics from malformed ones, which is a change to
+			// the bundle-import contract rather than a fix to this bug. The
+			// resulting state is pinned by a test and stated in the release
+			// note instead of being left incidental.
+			if bodyDecodesNUL(buf) {
+				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)", errJSONBodyNUL)
 			}
 			var manifest models.AttachmentManifest
 			if err := json.Unmarshal(buf, &manifest); err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	goMime "mime"
 	"os"
 	"path/filepath"
@@ -237,68 +238,59 @@ func parseAttachmentFilename(disposition string) string {
 	return filepath.Base(name)
 }
 
-// extensionForMIME returns a leading-dot extension for a MIME type,
-// or "" if the MIME isn't on our known list. Used as a last-resort
-// fallback when the Content-Disposition header is missing a filename
-// — we'd rather give the agent `<id>.png` than `<id>` with no hint
-// for downstream tooling.
+// safeLocalFilename reduces a SERVER-SUPPLIED filename to something safe to
+// join onto a local directory.
 //
-// We can't use mime.ExtensionsByType here because its results depend
-// on the host's /etc/mime.types and aren't deterministic across
-// platforms (Linux/macOS/Windows all differ). The hardcoded map
-// mirrors the canonical entries in internal/attachments/mime.go.
+// The name in Content-Disposition originates with whoever uploaded the file.
+// Treating it as a path component is how `..` turns into a write outside the
+// temp directory this command just created: filepath.Ext("..") is ".", which
+// is non-empty, so even an extension check waves it through, and
+// filepath.Join(dir, "..") is dir's PARENT (codex round 26).
+//
+// The server has its own guard, and it is being tightened for this case. This
+// one is independent on purpose: a client that builds a local path out of a
+// remote string should not be relying on the remote end to have sanitised it,
+// and this CLI talks to whatever instance it is pointed at.
+//
+// Returns "" when nothing usable survives, which the caller already handles by
+// falling back to the attachment id.
+func safeLocalFilename(name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	switch name {
+	case "", ".", "..", string(filepath.Separator):
+		return ""
+	}
+	// Base() has already stripped directories; anything still carrying a
+	// separator is a name the local filesystem would read as a path.
+	if strings.ContainsAny(name, `/\`) {
+		return ""
+	}
+	// A name that is only dots ("...", "....") is not a path component worth
+	// keeping and confuses extension handling.
+	if strings.Trim(name, ".") == "" {
+		return ""
+	}
+	// A TRAILING dot survives every check above, and filepath.Ext("photo.")
+	// is "." — non-empty — so the caller's MIME-extension fallback never
+	// fires and the temp file dispatches on no extension; Windows cannot
+	// store the name at all. Strip the dots instead of refusing: "photo." is
+	// an ordinary name wearing one (codex closing round). Cannot empty the
+	// name — the dots-only case returned above.
+	return strings.TrimRight(name, ".")
+}
+
+// extensionForMIME delegates to the server package's mapping instead of
+// keeping a second table here.
+//
+// It used to keep its own, and the copy had drifted: it knew images and video
+// but not gzip, tar, XML, YAML, TOML, HTML, JavaScript or several document
+// types the server has always allowed. So `pad attachment view` produced an
+// extensionless temp file for those, defeating its own contract of handing a
+// path to something that opens files by extension (codex round 26).
+//
+// Two tables for one relationship is the defect; the delegation is the fix.
 func extensionForMIME(mimeType string) string {
-	if i := strings.IndexByte(mimeType, ';'); i >= 0 {
-		mimeType = mimeType[:i]
-	}
-	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
-	switch mimeType {
-	case "image/png":
-		return ".png"
-	case "image/jpeg":
-		return ".jpg"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	case "image/avif":
-		return ".avif"
-	case "image/heic":
-		return ".heic"
-	case "image/heif":
-		return ".heif"
-	case "video/mp4":
-		return ".mp4"
-	case "video/webm":
-		return ".webm"
-	case "video/quicktime":
-		return ".mov"
-	case "audio/mpeg":
-		return ".mp3"
-	case "audio/wav":
-		return ".wav"
-	case "audio/ogg":
-		return ".ogg"
-	case "audio/flac":
-		return ".flac"
-	case "audio/aac":
-		return ".aac"
-	case "audio/mp4":
-		return ".m4a"
-	case "application/pdf":
-		return ".pdf"
-	case "application/zip":
-		return ".zip"
-	case "application/json":
-		return ".json"
-	case "text/plain":
-		return ".txt"
-	case "text/markdown":
-		return ".md"
-	case "text/csv":
-		return ".csv"
-	}
-	return ""
+	return attachments.ExtensionForMIME(mimeType)
 }
 
 func attachmentViewCmd() *cobra.Command {
@@ -313,9 +305,14 @@ and save it to disk. Prints the absolute path of the saved file on
 stdout — designed for agents to use as $(pad attachment view <id>).
 
 With no -o flag, the file lands in a fresh OS temp directory. The
-filename comes from the attachment's Content-Disposition header so
-agents can hand the path to image-viewing tools without rewriting
-the extension.
+filename starts from the attachment's Content-Disposition header,
+reduced to a safe local path component (whitespace trimmed, path
+separators and dot-only or trailing-dot forms removed — stricter
+than what the server stores, because this name is written to YOUR
+filesystem); when the result has no extension, the canonical
+extension for the attachment's MIME type is appended so viewers
+that dispatch on extension still open it. An unusable name falls
+back to the attachment id, reduced the same way.
 
 With -o <path>, the file is written to that path using the same
 atomic temp-then-rename strategy as 'pad attachment download'.
@@ -347,9 +344,34 @@ Examples:
 				if err != nil {
 					return err
 				}
-				name := parseAttachmentFilename(meta.ContentDisposition)
+				name := safeLocalFilename(parseAttachmentFilename(meta.ContentDisposition))
 				if name == "" {
-					name = id + extensionForMIME(meta.MIME)
+					// The id is a CLI argument, but in the documented agent
+					// flow it is harvested from item CONTENT (a
+					// "pad-attachment:" ref another workspace member wrote),
+					// so it gets the same reduction as the server-supplied
+					// name before becoming a path component — a raw
+					// traversal-shaped id joined onto the temp dir escapes
+					// it (codex closing round 3).
+					base := safeLocalFilename(id)
+					if base == "" {
+						base = "attachment"
+					}
+					name = base + extensionForMIME(meta.MIME)
+				} else if filepath.Ext(name) == "" {
+					// A stored name can be extensionless — most often the
+					// server's generic "upload" fallback, used when the
+					// uploaded filename could not be stored as text
+					// (BUG-2803). The old check only covered an ABSENT name,
+					// so any non-empty one was taken as authoritative and the
+					// MIME fallback never ran.
+					//
+					// That matters because this command's contract is to hand
+					// the path to whatever opens files — `open "$IMG"`,
+					// `xdg-open`, an image viewer — and those dispatch on the
+					// extension. An extensionless temp file silently stops
+					// opening as an image (codex round 24).
+					name += extensionForMIME(meta.MIME)
 				}
 				dir, err := os.MkdirTemp("", "pad-attachment-")
 				if err != nil {

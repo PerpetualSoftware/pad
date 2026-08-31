@@ -1719,6 +1719,22 @@ func (c *Client) UploadAttachment(wsSlug, itemRef, filename string, body io.Read
 	return &result, nil
 }
 
+// attachmentIDPathSegment renders an attachment id as a single, inert URL
+// path segment. The id reaches these URLs from item content
+// ("pad-attachment:" refs other workspace members wrote), so it is treated
+// as hostile: PathEscape stops a slash-carrying id from re-routing the
+// request to a different endpoint whose 200 would then vouch for it
+// downstream (codex closing round 3), and the exact dot segments "." and
+// ".." — which PathEscape leaves UNCHANGED, so a proxy or server can still
+// normalize them away — are refused outright rather than sent (codex
+// closing round 4). A real id is a UUID; neither refusal can fire on one.
+func attachmentIDPathSegment(id string) (string, error) {
+	if id == "." || id == ".." {
+		return "", fmt.Errorf("invalid attachment id %q", id)
+	}
+	return url.PathEscape(id), nil
+}
+
 // DownloadAttachment streams the bytes of an attachment into w. Returns
 // the Content-Type the server set and the number of bytes copied so
 // callers can verify size or render with the right MIME hint.
@@ -1727,7 +1743,11 @@ func (c *Client) UploadAttachment(wsSlug, itemRef, filename string, body io.Read
 // silently falls back to the original if the derived row doesn't exist
 // (TASK-872 / TASK-878 contract).
 func (c *Client) DownloadAttachment(wsSlug, attachmentID, variant string, w io.Writer) (mime string, size int64, err error) {
-	path := "/workspaces/" + wsSlug + "/attachments/" + attachmentID
+	p, err := attachmentIDPathSegment(attachmentID)
+	if err != nil {
+		return "", 0, err
+	}
+	path := "/workspaces/" + wsSlug + "/attachments/" + p
 	if variant != "" {
 		path += "?variant=" + url.QueryEscape(variant)
 	}
@@ -1772,7 +1792,11 @@ type AttachmentMetadata struct {
 // structured metadata. Variant is forwarded the same way as
 // DownloadAttachment — empty string for the original blob.
 func (c *Client) HeadAttachment(wsSlug, attachmentID, variant string) (*AttachmentMetadata, error) {
-	path := "/workspaces/" + wsSlug + "/attachments/" + attachmentID
+	p, err := attachmentIDPathSegment(attachmentID)
+	if err != nil {
+		return nil, err
+	}
+	path := "/workspaces/" + wsSlug + "/attachments/" + p
 	if variant != "" {
 		path += "?variant=" + url.QueryEscape(variant)
 	}

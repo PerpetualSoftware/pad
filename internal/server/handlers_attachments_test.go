@@ -11,8 +11,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -876,3 +878,297 @@ func TestUpload_QuotaCheckResolves(t *testing.T) {
 var _ = io.Discard
 var _ = models.Attachment{}
 var _ = strings.Contains
+
+// TestUpload_MultipartTextFieldsAreBindableText covers codex round 4's P2 on
+// BUG-2803. The multipart body is deliberately exempt from the JSON NUL rule
+// — its payload is binary blob content and must not be scanned for text
+// validity — but its TEXT fields are a different thing. `item_id` goes to
+// ResolveItem and into a database comparison exactly as the query-string
+// channel does, and that channel has been validated at the transport since
+// BUG-2784; the form channel was not. The FILENAME is the same shape: a
+// multipart header can carry a NUL through the RFC 5987 encoded form.
+//
+// Both legs have a control that differs only in the bad byte, so a pass
+// cannot come from the upload failing for an unrelated reason.
+func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	upload := func(t *testing.T, filename string, itemID *string) *httptest.ResponseRecorder {
+		t.Helper()
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		if itemID != nil {
+			// WriteField would reject nothing, which is the point: the raw
+			// bytes reach r.MultipartForm.Value verbatim.
+			_ = mw.WriteField("item_id", *itemID)
+		}
+		part, _ := mw.CreateFormFile("file", filename)
+		part.Write(realPNG())
+		mw.Close()
+
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/"+slug+"/attachments", &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.RemoteAddr = "127.0.0.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// uploadWithRawDisposition writes the part header by hand so the test can
+	// use the RFC 5987 encoded filename form. A RAW NUL in the header is not
+	// the vector: Go's multipart reader refuses it as a malformed MIME header
+	// line before any handler sees it (measured — the request answers 400
+	// with "malformed MIME header line"). The percent-encoded form is
+	// accepted by the header parser and decodes to the byte afterwards, which
+	// is what makes it the reachable spelling.
+	uploadWithRawDisposition := func(t *testing.T, disposition string) *httptest.ResponseRecorder {
+		t.Helper()
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", disposition)
+		h.Set("Content-Type", "image/png")
+		part, err := mw.CreatePart(h)
+		if err != nil {
+			t.Fatalf("create part: %v", err)
+		}
+		part.Write(realPNG())
+		mw.Close()
+
+		req := httptest.NewRequest("POST", "/api/v1/workspaces/"+slug+"/attachments", &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.RemoteAddr = "127.0.0.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+
+	t.Run("filename carrying a NUL does not reach the attachment row", func(t *testing.T) {
+		control := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''clean.png`)
+		if control.Code != http.StatusCreated && control.Code != http.StatusOK {
+			t.Fatalf("control upload must succeed, got %d: %s", control.Code, control.Body.String())
+		}
+		if !strings.Contains(control.Body.String(), "clean.png") {
+			t.Fatalf("control should keep its encoded filename, got %s", control.Body.String())
+		}
+
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''sh%00ot.png`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload with an unusable filename should still succeed (the BYTES are fine), got %d: %s",
+				rr.Code, rr.Body.String())
+		}
+		// Assert the REPLACEMENT, not the absence of a raw NUL byte. The
+		// response is JSON, so a NUL in the filename comes back as the
+		// six-character escape rather than as a 0x00 — a ContainsRune(body,
+		// 0) check passes whether or not the fix is present, and it did:
+		// disabling the fallback left this leg green until the assertion was
+		// changed. CONVE-12, caught by the mutation rather than by review.
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if strings.ContainsRune(got.Filename, 0) {
+			t.Errorf("the stored filename still carries a NUL: %q", got.Filename)
+		}
+		// The EXTENSION survives the fallback. The unusable part of
+		// "sh<NUL>ot.png" is the stem; ".png" is ordinary text and is what
+		// every consumer dispatches on — Content-Disposition, the web
+		// download anchor, bundle export naming, and `pad attachment view`,
+		// whose contract is handing a path to something that opens files by
+		// extension. Dropping it made this fallback lossier than the
+		// empty-name one, which has always produced "upload.bin" (codex
+		// round 24).
+		if got.Filename != "upload.png" {
+			t.Errorf("expected the generic fallback to keep the storable extension, got %q", got.Filename)
+		}
+	})
+
+	t.Run("a control-obfuscated extension does not survive the fallback", func(t *testing.T) {
+		// The one with teeth (codex round 25). A vertical tab is valid UTF-8
+		// and not a NUL, so bindableText calls ".s<VT>vg" storable. The
+		// extension blocklist then sees no KNOWN extension and passes it,
+		// and Content-Disposition sanitising strips the control byte — so the
+		// client is handed ".svg" for a name the blocklist never evaluated as
+		// SVG. Carrying it into a synthesised fallback name would be adding a
+		// door to that; the fallback now requires a known, allowed,
+		// alphanumeric extension.
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''bad%00.s%0Bvg`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload should still succeed, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if strings.Contains(strings.ToLower(got.Filename), "svg") {
+			t.Errorf("a control-obfuscated .svg reached the stored name as %q; sanitising the header "+
+				"later turns that into .svg for the client, past a blocklist that never saw it", got.Filename)
+		}
+		if got.Filename != "upload" {
+			t.Errorf("expected the extension to be dropped entirely, got %q", got.Filename)
+		}
+	})
+
+	t.Run("an unknown extension does not survive the fallback", func(t *testing.T) {
+		// ".foo" is plain text and plain alphanumeric, but it is not a known
+		// extension, so it cannot be carried into a name the SERVER
+		// synthesised — otherwise an arbitrary suffix rides along on content
+		// that does not support it.
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''bad%00.foo`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload should still succeed, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if got.Filename != "upload" {
+			t.Errorf("an unknown extension must be dropped from a synthesised name, got %q", got.Filename)
+		}
+	})
+
+	t.Run("an unusable extension does not survive the fallback", func(t *testing.T) {
+		// The counterpart leg. Keeping a storable extension must not become
+		// "keep whatever trails the last dot" — an extension that is itself
+		// unstorable has to be dropped, or the fallback reintroduces exactly
+		// the value it exists to remove.
+		rr := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename*=UTF-8''shot.p%00ng`)
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload should still succeed, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var got struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode upload response: %v (body %s)", err, rr.Body.String())
+		}
+		if strings.ContainsRune(got.Filename, 0) {
+			t.Errorf("the stored filename still carries a NUL: %q", got.Filename)
+		}
+		if got.Filename != "upload" {
+			t.Errorf("an unstorable extension must be dropped, not carried into the fallback; got %q",
+				got.Filename)
+		}
+	})
+
+	t.Run("a path-component filename never reaches the row", func(t *testing.T) {
+		// ".." is not a filename, it is a path component, and consumers join
+		// it onto a directory — the CLI builds its temp path this way, where
+		// filepath.Join(dir, "..") is dir's PARENT. It survives bindableText,
+		// and filepath.Ext("..") is "." (non-empty), so an extension check
+		// waves it through too (codex round 26).
+		for _, raw := range []string{"..", "./", "a/b"} {
+			rr := uploadWithRawDisposition(t,
+				`form-data; name="file"; filename=`+strconv.Quote(raw))
+			if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+				t.Fatalf("upload %q should still succeed, got %d: %s", raw, rr.Code, rr.Body.String())
+			}
+			var got struct {
+				Filename string `json:"filename"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode upload response for %q: %v (body %s)", raw, err, rr.Body.String())
+			}
+			if strings.Trim(got.Filename, ".") == "" || strings.ContainsAny(got.Filename, `/\`) {
+				t.Errorf("upload %q stored the path component %q; a consumer joining that onto a "+
+					"directory escapes it", raw, got.Filename)
+			}
+		}
+
+		// PRESERVATION controls. Refusing path components must not become
+		// refusing anything unusual: "..." and a backslash are ordinary POSIX
+		// filenames and a user who uploads one should get it back (codex
+		// round 27 flagged the earlier version as over-refusing both).
+		// A backslash name is legitimate on Unix too, but expressing one
+		// through a quoted Content-Disposition tests the header grammar more
+		// than it tests this guard, so it is left out deliberately rather
+		// than fudged.
+		// A Windows-style path must be reduced to its leaf, not stored whole:
+		// the stored name is consumed cross-platform, and a client joining
+		// "..\\evil" onto a directory traverses upward (codex round 28).
+		winPath := uploadWithRawDisposition(t,
+			`form-data; name="file"; filename=`+strconv.Quote(`..\evil.png`))
+		var win struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(winPath.Body.Bytes(), &win); err != nil {
+			t.Fatalf("decode windows-path response: %v", err)
+		}
+		if win.Filename != "evil.png" {
+			t.Errorf("a backslash path must be reduced to its leaf; got %q, which a Windows consumer "+
+				"joining onto a directory would read as a traversal", win.Filename)
+		}
+
+		for _, keep := range []string{"...", "....", "a.b.c.png"} {
+			rr := uploadWithRawDisposition(t,
+				`form-data; name="file"; filename=`+strconv.Quote(keep))
+			var got struct {
+				Filename string `json:"filename"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response for %q: %v", keep, err)
+			}
+			if got.Filename != keep {
+				t.Errorf("legitimate filename %q was altered to %q; the guard is for path "+
+					"components, not for unusual-looking names", keep, got.Filename)
+			}
+		}
+
+		// Premise: an ordinary name is still kept verbatim, so the loop above
+		// pins path components rather than a handler that renames everything.
+		rr := uploadWithRawDisposition(t, `form-data; name="file"; filename="ordinary.png"`)
+		var ok struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &ok); err != nil {
+			t.Fatalf("decode control response: %v", err)
+		}
+		if ok.Filename != "ordinary.png" {
+			t.Fatalf("premise failed: an ordinary filename must be kept, got %q", ok.Filename)
+		}
+	})
+
+	t.Run("item_id carrying a NUL is not resolved", func(t *testing.T) {
+		// A NUL-bearing item_id cannot name anything, so it must be treated
+		// as no value rather than handed to the store. The control is a
+		// syntactically fine but non-existent ref, which the handler answers
+		// with a 4xx — if the NUL leg produced a 500 instead, the value
+		// reached the database.
+		// Assert it behaves like NO value, not merely "not a 500". A 500 is
+		// the Postgres-only symptom; on SQLite an unfiltered value would
+		// instead resolve to nothing and answer 4xx, so a >=500 check would
+		// pass on this backend whether or not the filter exists.
+		control := upload(t, "clean.png", nil)
+		if control.Code != http.StatusCreated && control.Code != http.StatusOK {
+			t.Fatalf("control (no item_id) must succeed, got %d: %s", control.Code, control.Body.String())
+		}
+		// Both byte classes, not just the NUL: a filter that rejected NULs
+		// while letting malformed UTF-8 through would have passed the
+		// earlier version of this leg (codex round 13). Invalid UTF-8 is the
+		// class that reaches Postgres as 22021 on a UTF8 database.
+		for _, bad := range []string{"TASK-1\x00", "TASK-1\xff"} {
+			rr := upload(t, "clean.png", &bad)
+			if rr.Code != control.Code {
+				t.Errorf("an unusable item_id %q must be treated as no value (like the control, %d), got %d: %s",
+					bad, control.Code, rr.Code, rr.Body.String())
+			}
+		}
+		bad := "TASK-1\x00"
+		rr := upload(t, "clean.png", &bad)
+		if rr.Code != control.Code {
+			t.Errorf("an unusable item_id must be treated as no value (like the control, %d), got %d: %s",
+				control.Code, rr.Code, rr.Body.String())
+		}
+	})
+}

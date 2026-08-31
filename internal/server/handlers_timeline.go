@@ -336,9 +336,16 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 		// A raw id must be usable as a CURSOR, not merely unique: the client
 		// sends it back as `before_id` and the handler now refuses a value the
 		// database would refuse (BUG-2774's validCursorID). These ids come
-		// from the item's fields blob and nothing validates them on write, so
-		// a JSON `\u0000` reaches here intact on SQLite — Postgres's jsonb
-		// rejects it at the door, which is why this is a one-backend hazard.
+		// from the item's fields blob, and a JSON NUL escape there reaches
+		// here intact on SQLite — Postgres's jsonb rejects it at the door,
+		// which is why this is a one-backend hazard. This comment used to
+		// say "nothing validates them on write"; since BUG-2803 the HTTP
+		// API does refuse a request body whose strings decode to a NUL,
+		// including one nested inside a JSON-encoded `fields` string. The
+		// store does not, so rows predating that rule, and anything writing
+		// a blob by another path (a migration, an import, a future
+		// non-HTTP writer), can still carry one — which is why this
+		// fallback stays.
 		// Emitting such an id would make the server hand out a cursor it then
 		// answers 400 to, wedging paging on that item (codex round 1). It gets
 		// the positional fallback the empty and duplicate cases already take.
