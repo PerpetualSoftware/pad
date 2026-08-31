@@ -1,11 +1,16 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // HTTP-layer regressions for item title validation (BUG-2833 empty,
@@ -141,5 +146,113 @@ func TestItemTitleTrimmedOverTheWire(t *testing.T) {
 	parseJSON(t, rr, &updated)
 	if updated.Title != "Renamed" {
 		t.Errorf("updated title = %q, want %q", updated.Title, "Renamed")
+	}
+}
+
+// TestWriteInvalidItemTitleMapsTo400 covers the store-refusal arm DIRECTLY.
+//
+// It exists because a mutation test showed the arm surviving: the handlers'
+// own pre-lock checks catch every case reachable from an HTTP test, so the
+// store's typed refusal never arrives through the wire in the suite. The arm is
+// still load-bearing — it is what a title that only becomes invalid UNDER THE
+// LOCK lands on (the handler compares against an item read before any lock, so
+// a concurrent rename can turn an echoed legacy title into a genuine one) — and
+// an untested error mapping is how a deliberate 400 becomes a 500 in a later
+// refactor. Testing the mapping directly is the honest way to cover a branch
+// whose only production trigger is a race.
+func TestWriteInvalidItemTitleMapsTo400(t *testing.T) {
+	t.Run("maps the typed refusal", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		if !writeInvalidItemTitle(rr, &store.InvalidItemTitleError{Reason: "Title is required"}) {
+			t.Fatal("writeInvalidItemTitle returned false for its own error type")
+		}
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "Title is required") {
+			t.Errorf("body = %s, want the typed Reason", rr.Body.String())
+		}
+	})
+
+	t.Run("maps through a wrapper without publishing it", func(t *testing.T) {
+		// The call path wraps this error on the way up. The client must get the
+		// typed Reason, not the accumulated wrapper text.
+		wrapped := fmt.Errorf("update item: %w", &store.InvalidItemTitleError{Reason: "Title is too long: 300 characters, maximum 255"})
+		rr := httptest.NewRecorder()
+		if !writeInvalidItemTitle(rr, wrapped) {
+			t.Fatal("writeInvalidItemTitle returned false for a wrapped refusal; errors.As must see through wrappers")
+		}
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), "update item:") {
+			t.Errorf("body = %s, must not publish the wrapper text", rr.Body.String())
+		}
+	})
+
+	t.Run("declines everything else", func(t *testing.T) {
+		// The control leg. Without it this test would pass against a helper
+		// that returns true unconditionally, which would swallow every other
+		// store error into a 400.
+		rr := httptest.NewRecorder()
+		if writeInvalidItemTitle(rr, errors.New("some unrelated store failure")) {
+			t.Error("writeInvalidItemTitle claimed an unrelated error; it must fall through")
+		}
+		if rr.Code != http.StatusOK || rr.Body.Len() != 0 {
+			t.Errorf("declining must write nothing, got status %d body %q", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestCreateItemCheckedMapsStoreTitleRefusalTo400 covers the create path's
+// store-refusal arm directly, for the same reason as the update path's helper
+// test above: handleCreateItem's own check catches everything reachable over
+// the wire, so the arm's absence is a latent 500 rather than a visible one — and
+// a mutation test is what surfaced it.
+//
+// createItemChecked is a separate function from handleCreateItem, and the
+// pre-check lives in the handler, so calling it directly reaches the store
+// refusal that no HTTP request can.
+func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
+	srv := testServer(t)
+	wsSlug := createWSWithCollections(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(wsSlug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug(%q): %v", wsSlug, err)
+	}
+	coll, err := srv.store.GetCollectionBySlug(ws.ID, "tasks")
+	if err != nil || coll == nil {
+		t.Fatalf("GetCollectionBySlug: %v", err)
+	}
+	var schema models.CollectionSchema
+	if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/", nil)
+	for _, tc := range []struct{ name, title, want string }{
+		{"empty", "", "Title is required"},
+		{"over the bound", strings.Repeat("a", models.MaxItemTitleRunes+1), "too long"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cerr := srv.createItemChecked(req, ws.ID, coll, schema,
+				models.ItemCreate{Title: tc.title}, map[string]any{}, "")
+			if cerr == nil {
+				t.Fatal("createItemChecked accepted an invalid title")
+			}
+			if cerr.status != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 — a deliberate refusal must not read as a server fault", cerr.status)
+			}
+			if !strings.Contains(cerr.message, tc.want) {
+				t.Errorf("message = %q, want it to mention %q", cerr.message, tc.want)
+			}
+		})
+	}
+
+	// Control: a valid title still creates, so the arm above is not swallowing
+	// the success path.
+	if _, cerr := srv.createItemChecked(req, ws.ID, coll, schema,
+		models.ItemCreate{Title: "Perfectly Fine"}, map[string]any{}, ""); cerr != nil {
+		t.Fatalf("a valid title must still create: %d %s", cerr.status, cerr.message)
 	}
 }

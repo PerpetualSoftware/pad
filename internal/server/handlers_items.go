@@ -786,6 +786,16 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input)
 	if err != nil {
+		// BUG-2833 / BUG-2831: the store's typed title refusal is a 400, not a
+		// 500. Today the handler's own check above catches every reachable
+		// case, so this arm is belt-and-braces — but its ABSENCE was a latent
+		// 500 that a mutation test surfaced, and the update path needs the same
+		// arm for a title that only becomes invalid under the lock. Both paths
+		// answer the same way because both go through the same helper.
+		var badTitle *store.InvalidItemTitleError
+		if errors.As(err, &badTitle) {
+			return nil, &itemCreateError{http.StatusBadRequest, "bad_request", badTitle.Reason}
+		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
 			// Could be the slug-per-workspace constraint OR the playbook
 			// invocation_slug partial unique index (TASK-1378). Keep the
@@ -934,6 +944,29 @@ func writeItemRenameCascadeTooLarge(w http.ResponseWriter, err error) bool {
 		fmt.Sprintf("This rename would rewrite more linked content than the server will process in one "+
 			"operation: at least %d bytes, and the limit is %d. Reduce the number of items linking "+
 			"this title, or split the rename, and try again.", tooLarge.Processed, tooLarge.Max))
+	return true
+}
+
+// writeInvalidItemTitle maps the store's typed title refusal to a 400, and
+// reports whether it did — same shape as writeItemRenameCascadeTooLarge above,
+// and for the same reason: without it the refusal falls through to
+// writeInternalError and lands as a 500, telling the caller the server broke
+// and that retrying might work, when the request was understood, deliberately
+// declined, and will be declined identically until the title changes.
+//
+// It is shared by the create and update paths rather than inlined at each,
+// because "create and update disagreed about one field" is the whole of
+// BUG-2833 and duplicating the arm would be the same mistake in the error path.
+//
+// The Reason is taken from the TYPED field, never by splicing err.Error(): the
+// call path wraps this error on the way up and those wrappers must not be
+// published to the client.
+func writeInvalidItemTitle(w http.ResponseWriter, err error) bool {
+	var bad *store.InvalidItemTitleError
+	if !errors.As(err, &bad) {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "bad_request", bad.Reason)
 	return true
 }
 
@@ -1763,9 +1796,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// must be a 400 rather than writeInternalError's 500 — the request was
 		// understood and declined, and retrying it unchanged will be declined
 		// identically.
-		var badItemTitle *store.InvalidItemTitleError
-		if errors.As(err, &badItemTitle) {
-			writeError(w, http.StatusBadRequest, "bad_request", badItemTitle.Reason)
+		if writeInvalidItemTitle(w, err) {
 			return
 		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both
