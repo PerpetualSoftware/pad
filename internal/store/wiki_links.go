@@ -650,12 +650,21 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// and refuses DURING the scan (BUG-2804 / codex R4).
 	//
 	// `works` holds one entry per matching LINK ROW, not per source, and each
-	// entry carries that row's target_title — which is unbounded, because
-	// nothing validates item title length (there is a MaxDocumentTitleRunes,
-	// but no item equivalent). So a renamed item with a ~2 MiB title (one JSON
-	// request delivers that) linked from many rows makes this loop retain
-	// rows x title bytes BEFORE a single body is read, and the content-bytes
-	// cap in the loop below never fires because the content can be tiny.
+	// entry carries that row's target_title. Since BUG-2833 / BUG-2831 a NEW
+	// title is bounded at models.MaxItemTitleRunes, so the ~2 MiB single-request
+	// title this comment used to describe is no longer reachable through any
+	// door. That does NOT retire this charge, for two reasons:
+	//
+	//   - the bound is non-retroactive by ruling, so rows written before it
+	//     still carry unbounded target_titles, and this loop reads STORED
+	//     titles rather than the one being written;
+	//   - even at the bound the quantity is rows x title bytes, so an in-range
+	//     title reaches the cap at roughly 24,000 link rows — more than the
+	//     64 the test fixture uses, and well within what a popular item
+	//     accumulates.
+	//
+	// The content-bytes cap in the loop below still cannot see either case,
+	// because the content can be tiny.
 	//
 	// Charging it here rather than after the scan is what makes the bound real:
 	// at the moment of refusal the process holds only the rows already counted,
