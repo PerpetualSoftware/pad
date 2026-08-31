@@ -40,7 +40,7 @@ func ReplaceTitle(content, oldTitle, newTitle string) string {
 //
 // Known limitation: titles containing the wiki-link escape characters
 // (`]`, `|`, `\`) get stored in source content as `\]`, `\|`, `\\`,
-// which the editor's grammar at web/src/lib/utils/markdown.ts:461
+// which the editor's grammar at web/src/lib/utils/markdown.ts::WIKI_LINK_PATTERN_SOURCE
 // supports. This rewriter does NOT attempt escape-aware matching on
 // the TITLE segment — a title literally containing `]` would be
 // stored escaped and would fail to match the regex's `oldTitle`
@@ -59,7 +59,7 @@ func RewriteWikiTitle(content, oldTitle, newTitle, collSlug string) string {
 	//   3: optional `|display` suffix including the pipe (or empty)
 	//
 	// The display segment uses the same `(?:\\.|[^\]\\])*` grammar as
-	// the editor (markdown.ts:461) so an alias with escaped `]`/`|`
+	// the editor (markdown.ts::WIKI_LINK_PATTERN_SOURCE) so an alias with escaped `]`/`|`
 	// inside doesn't end the match early. Inline `(?i:...)` scopes
 	// the case-insensitivity to the title segment only — the slug
 	// portion compares against c.slug which is canonically lowercase,
@@ -119,9 +119,15 @@ func RewriteWikiTitle(content, oldTitle, newTitle, collSlug string) string {
 // sibling, which compare against the pre-refactor code frozen as an oracle —
 // comparing this function to RewriteBracketsAt-of-one would be vacuous, since
 // that is now its definition. BUG-2804.
-func RewriteBracketAt(content string, position int, targetTitle, newTitle, collSlug string) string {
+// oldTitle is the renamed item's title before the rename. It is separate from
+// targetTitle — which is what the INDEX ROW recorded for this bracket — because
+// the two differ for a collection-qualified reference: a `[[tasks/Setup]]` row
+// pointing at an item titled `Setup` stores targetTitle `tasks/Setup` and has
+// oldTitle `Setup`. Only their relationship says whether the rewritten bracket
+// keeps a `<slug>/` prefix; see TitleEscaper.qualifiedFor (BUG-2830).
+func RewriteBracketAt(content string, position int, targetTitle, oldTitle, newTitle, collSlug string) string {
 	out, _ := RewriteBracketsAt(content, []BracketRewrite{{Position: position, TargetTitle: targetTitle}},
-		NewTitleEscaper(newTitle, collSlug))
+		NewTitleEscaper(oldTitle, newTitle, collSlug))
 	return out
 }
 
@@ -199,7 +205,7 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, esc TitleEscap
 			// Overlaps a rewrite already applied (or a duplicate offset).
 			continue
 		}
-		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, esc.collSlugForMatch())
+		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, esc)
 		if !ok {
 			continue
 		}
@@ -272,7 +278,7 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, esc TitleEsc
 		if rw.Position < cursor {
 			continue
 		}
-		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, esc.collSlugForMatch())
+		qualified, displaySuffix, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, esc)
 		if !ok {
 			continue
 		}
@@ -310,7 +316,7 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, esc TitleEsc
 // parser reads back exactly the title that went in.
 //
 // Byte-for-byte the same rule as the editor's escapeWikiBody
-// (web/src/lib/utils/markdown.ts:748): backslash first, then `]` and `|`.
+// (web/src/lib/utils/markdown.ts::escapeWikiBody): backslash first, then `]` and `|`.
 // Doing backslash first is what keeps it the exact inverse of
 // unescapeWikiBody — escaping `]` first would leave the introduced backslashes
 // to be escaped again.
@@ -367,6 +373,12 @@ type TitleEscaper struct {
 	escSlug  string
 	// rawSlug is the UNESCAPED slug; matching compares unescaped values.
 	rawSlug string
+	// rawOldTitle is the renamed item's title BEFORE the rename, unescaped.
+	//
+	// It is what distinguishes a bracket that was collection-qualified from one
+	// whose literal title merely looks qualified — see qualifiedFor (BUG-2830).
+	// Per-cascade like everything else here: one rename, one old title.
+	rawOldTitle string
 	// Lengths are carried separately so the projection path can measure
 	// without touching the strings at all.
 	titleLen int
@@ -374,14 +386,103 @@ type TitleEscaper struct {
 }
 
 // NewTitleEscaper precomputes the escaped forms for one rename.
-func NewTitleEscaper(newTitle, collSlug string) TitleEscaper {
+//
+// oldTitle is REQUIRED, not optional, and that is deliberate: it is the only
+// thing that can tell a qualified reference from a literal slash-bearing title
+// (BUG-2830), and a caller that forgets it would silently get the old, wrong
+// behaviour back. Making it a parameter puts that in the compiler's hands.
+func NewTitleEscaper(oldTitle, newTitle, collSlug string) TitleEscaper {
 	return TitleEscaper{
-		escTitle: escapeWikiBody(newTitle),
-		escSlug:  escapeWikiBody(collSlug),
-		rawSlug:  collSlug,
-		titleLen: escapedWikiBodyLen(newTitle),
-		slugLen:  escapedWikiBodyLen(collSlug),
+		escTitle:    escapeWikiBody(newTitle),
+		escSlug:     escapeWikiBody(collSlug),
+		rawSlug:     collSlug,
+		rawOldTitle: oldTitle,
+		titleLen:    escapedWikiBodyLen(newTitle),
+		slugLen:     escapedWikiBodyLen(collSlug),
 	}
+}
+
+// qualifiedFor decides whether the bracket that stored `targetTitle` carried a
+// `<collSlug>/` prefix that must be re-emitted after the rename.
+//
+// ## Why this is a comparison and not a prefix test (BUG-2830)
+//
+// The previous rule was "targetTitle starts with collSlug + `/`". That cannot
+// distinguish two situations whose stored rows are BYTE-IDENTICAL:
+//
+//	A) an item literally titled `tasks/Setup`, in collection `tasks`, linked as
+//	   [[tasks/Setup]] and resolved by stage 1 (exact title match);
+//	B) an item titled `Setup`, in collection `tasks`, linked as [[tasks/Setup]]
+//	   and resolved by stage-2 qualified fallback, which stores target_title as
+//	   the FULL body — also `tasks/Setup`.
+//
+// Both rows read `target_title = "tasks/Setup"`, `collSlug = "tasks"`. Renaming
+// to `Renamed`, (A) must become [[Renamed]] and (B) must become
+// [[tasks/Renamed]]. The prefix test answered (B) for both, so a rename of (A)
+// silently rewrote a literal-title reference into a qualified one — a different
+// kind of reference than the author wrote, resolved by a different rule.
+//
+// What that costs depends on what else the workspace holds, and both cases are
+// measured in internal/store:
+//
+//   - With an item LITERALLY titled `tasks/Renamed` (slash included), the link
+//     is STOLEN outright. resolveTitleTx tries an exact full-title match before
+//     the qualified fallback, so that item wins and the renamed item loses its
+//     backlink — a silent retarget, pinned by
+//     TestItemRename_LiteralSlashTitleRetargetsOntoALiteralSlashSibling.
+//   - With no such item, the emitted bracket still finds the renamed item,
+//     because collSlug is that item's own collection and it now carries the new
+//     title. The cost there is that resolution becomes ambiguous wherever a
+//     same-titled sibling exists, and that a later collection move breaks
+//     `[[tasks/X]]` where `[[X]]` would have followed the item.
+//
+// Stated as two cases because I got it wrong as one, twice: first asserting the
+// steal with a decoy that could not be stolen, then over-correcting to "the
+// renamed item always wins". The stage order in resolveTitleTx is what settles
+// it, and it had to be read rather than remembered.
+//
+// The old title is the discriminator, and it is exact in both directions:
+//
+//	targetTitle == oldTitle                  -> literal  (case A)
+//	targetTitle == collSlug + "/" + oldTitle  -> qualified (case B)
+//
+// Case A wins when both could apply (oldTitle is itself `tasks/Setup` in
+// collection `tasks`), and that is the correct precedence, not a tiebreak of
+// convenience: the renderer's stage 1 beats stage 2, so a row pointing at this
+// item resolved literally. resolveBrokenTitleLinks in internal/store makes the
+// same stage-1-over-stage-2 ruling for the same reason — the discriminator
+// already existed in the codebase and was simply discarded before reaching the
+// rewriter.
+//
+// Anything else is index drift: the row's target_title corresponds to neither
+// form of this item's old title. We report NO match rather than guessing, which
+// routes the bracket to the existing leave-it-alone path so the trailing
+// replaceWikiLinks reconciles the index.
+func (e TitleEscaper) qualifiedFor(targetTitle string) (qualified, ok bool) {
+	if strings.EqualFold(targetTitle, e.rawOldTitle) {
+		return false, true
+	}
+	// NO byte-length precondition on the title comparison. strings.EqualFold is
+	// Unicode simple case folding, and case-equivalent strings can differ in
+	// byte length — EqualFold("K", "K") (KELVIN SIGN) is true at 1 byte vs
+	// 3. A length check in front of it is therefore not a cheap pre-filter but
+	// a strictly narrower predicate, and it made a qualified bracket whose title
+	// folds across lengths read as index drift, leaving the link stale through
+	// the rename (codex R1 P2).
+	//
+	// The slug boundary is still located by BYTE offset, and that one is sound:
+	// collection slugs are ASCII-lowercase by construction (store.slugify), so
+	// no case fold can change their length. The comparison against rawSlug stays
+	// EqualFold anyway, because target_title preserves the case the author
+	// typed.
+	if e.rawSlug != "" &&
+		len(targetTitle) > len(e.rawSlug) &&
+		targetTitle[len(e.rawSlug)] == '/' &&
+		strings.EqualFold(targetTitle[:len(e.rawSlug)], e.rawSlug) &&
+		strings.EqualFold(targetTitle[len(e.rawSlug)+1:], e.rawOldTitle) {
+		return true, true
+	}
+	return false, false
 }
 
 // scanBracketBody finds the body of the wiki-link bracket starting at
@@ -448,11 +549,6 @@ func (e TitleEscaper) segmentLen(qualified bool) int {
 	return e.titleLen
 }
 
-// collSlugForMatch returns the RAW slug the matcher compares target_title
-// against. Matching works on unescaped values, so the escaped form must not
-// leak into it.
-func (e TitleEscaper) collSlugForMatch() string { return e.rawSlug }
-
 // bracketUnchanged reports whether rewriting the bracket at [position,
 // bracketEnd) would reproduce it byte-for-byte.
 //
@@ -487,7 +583,7 @@ func bracketUnchanged(content string, position, bracketEnd int, qualified bool, 
 //
 // It reads only content[position:bracketEnd] — that locality is what makes a
 // single pass possible, since the rest of the body is pure carry.
-func bracketRewriteAt(content string, position int, targetTitle, collSlug string) (qualified bool, displaySuffix string, bracketEnd int, ok bool) {
+func bracketRewriteAt(content string, position int, targetTitle string, esc TitleEscaper) (qualified bool, displaySuffix string, bracketEnd int, ok bool) {
 	if position < 0 || position+2 > len(content) {
 		return false, "", 0, false
 	}
@@ -531,15 +627,18 @@ func bracketRewriteAt(content string, position int, targetTitle, collSlug string
 	}
 
 	// Only now, on a confirmed match: does the `<collSlug>/` prefix carry over?
-	// A qualified body like `[[tasks/Old Title]]` becomes `[[tasks/New Title]]`
-	// — the cascade SELECT already proved this row points at the renamed item
-	// via stage-2 qualified-fallback resolution, so the slug is guaranteed to
-	// match collSlug. Reported as a flag; the caller writes the escaped slug
-	// and "/" directly rather than receiving them spliced onto the title.
-	if collSlug != "" && len(targetTitle) > len(collSlug) &&
-		targetTitle[len(collSlug)] == '/' &&
-		strings.EqualFold(targetTitle[:len(collSlug)], collSlug) {
-		qualified = true
+	// A qualified body like `[[tasks/Old Title]]` becomes `[[tasks/New Title]]`,
+	// while an item whose LITERAL title is `tasks/Old Title` must not acquire a
+	// prefix it never had. Those two cases are indistinguishable from
+	// targetTitle alone — see qualifiedFor, which decides it against the old
+	// title instead (BUG-2830). Reported as a flag; the caller writes the
+	// escaped slug and "/" directly rather than receiving them spliced onto the
+	// title.
+	qualified, decided := esc.qualifiedFor(targetTitle)
+	if !decided {
+		// Index drift: this row's target_title is neither form of the old
+		// title. Leave the bracket alone rather than emit a guess.
+		return false, "", 0, false
 	}
 	return qualified, displaySuffix, bracketEnd, true
 }

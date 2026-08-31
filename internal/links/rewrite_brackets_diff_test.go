@@ -66,6 +66,34 @@ func rewriteBracketAtV0(content string, position int, targetTitle, newTitle, col
 	return content
 }
 
+// v0OldTitle reconstructs the old title that the code BEFORE BUG-2830
+// implicitly assumed when it decided whether a bracket was collection-
+// qualified.
+//
+// V0 had no oldTitle parameter: it inferred "this bracket was qualified" from
+// targetTitle merely STARTING WITH collSlug + "/". That inference is exactly
+// the BUG-2830 defect, because a literal title like `tasks/Setup` in collection
+// `tasks` starts with the prefix without ever having been qualified.
+//
+// This helper exists so the differential tests can keep using the frozen oracle
+// where it is still authoritative. Feeding the new function the old title V0
+// would have inferred makes the two agree on every input where V0's inference
+// happened to be RIGHT — which is the whole guarded corpus. The inputs where
+// the inference was WRONG cannot be produced by this derivation at all, and are
+// pinned by name in TestRewriteBracketAt_IntentionalDivergencesFromV0 instead.
+//
+// Deliberately NOT a call into the production code: it is a statement about
+// what the old implementation assumed, so it has to be written out here to stay
+// an independent oracle.
+func v0OldTitle(targetTitle, collSlug string) string {
+	if collSlug != "" && len(targetTitle) > len(collSlug) &&
+		targetTitle[len(collSlug)] == '/' &&
+		strings.EqualFold(targetTitle[:len(collSlug)], collSlug) {
+		return targetTitle[len(collSlug)+1:]
+	}
+	return targetTitle
+}
+
 // diffCase is one (content, position, targetTitle, newTitle, collSlug) probe.
 type diffCase struct {
 	name        string
@@ -153,13 +181,15 @@ func TestRewriteBracketAt_IntentionalDivergencesFromV0(t *testing.T) {
 		content         string
 		position        int
 		targetTitle     string
+		oldTitle        string
+		collSlug        string
 		newTitle        string
 		wantV0, wantNew string
 		why             string
 	}{
 		{
 			name: "empty body is not a link", content: "x [[]] y", position: 2,
-			targetTitle: "", newTitle: "New",
+			targetTitle: "", oldTitle: "", newTitle: "New",
 			wantV0: "x [[New]] y", wantNew: "x [[]] y",
 			why: "the parser's body production is `+`, so `[[]]` is not a link and no " +
 				"position is ever recorded for one. V0 would MINT a link out of a non-link " +
@@ -167,14 +197,14 @@ func TestRewriteBracketAt_IntentionalDivergencesFromV0(t *testing.T) {
 		},
 		{
 			name: "escaped body now MATCHES", content: `see [[Weird \] Title]] here`, position: 4,
-			targetTitle: "Weird ] Title", newTitle: "Renamed",
+			targetTitle: "Weird ] Title", oldTitle: "Weird ] Title", newTitle: "Renamed",
 			wantV0: `see [[Weird \] Title]] here`, wantNew: "see [[Renamed]] here",
 			why: "BUG-2805 direction 1: V0 compared the RAW body against the unescaped " +
 				"title, never matched, and left the link stale while the index flipped broken.",
 		},
 		{
 			name: "empty new title is REFUSED, not emitted", content: "x [[Old]] y", position: 2,
-			targetTitle: "Old", newTitle: "",
+			targetTitle: "Old", oldTitle: "Old", newTitle: "",
 			wantV0: "x [[]] y", wantNew: "x [[Old]] y",
 			why: "V0's expected output IS the damage: `[[]]` is not a link under the `+` " +
 				"production, so the reparse deletes the index row. Reachable two ways — a " +
@@ -184,19 +214,41 @@ func TestRewriteBracketAt_IntentionalDivergencesFromV0(t *testing.T) {
 		},
 		{
 			name: "emission now ESCAPES", content: "Ref [[Plain Target]] here.", position: 4,
-			targetTitle: "Plain Target", newTitle: "New ] Name",
+			targetTitle: "Plain Target", oldTitle: "Plain Target", newTitle: "New ] Name",
 			wantV0: "Ref [[New ] Name]] here.", wantNew: `Ref [[New \] Name]] here.`,
 			why: "BUG-2805 direction 2a: V0's plain concatenation emitted an unparseable " +
 				"bracket, so the reparse deleted the index row — permanent damage.",
 		},
+		{
+			name: "literal slash-bearing title is NOT re-qualified", content: "see [[tasks/Setup]] here", position: 4,
+			targetTitle: "tasks/Setup", oldTitle: "tasks/Setup", collSlug: "tasks", newTitle: "Renamed",
+			wantV0: "see [[tasks/Renamed]] here", wantNew: "see [[Renamed]] here",
+			why: "BUG-2830. The item's LITERAL title is `tasks/Setup` and it lives in " +
+				"collection `tasks`, so the bracket was resolved by stage 1, not by " +
+				"qualified fallback. V0 inferred `qualified` from the prefix alone and " +
+				"emitted `[[tasks/Renamed]]`, converting a literal-title reference into a " +
+				"qualified one — which an item literally titled `tasks/Renamed` then takes " +
+				"outright. The old title is what distinguishes the two cases, and V0 never " +
+				"had it.",
+		},
+		{
+			name: "genuinely qualified bracket still keeps its prefix", content: "see [[tasks/Setup]] here", position: 4,
+			targetTitle: "tasks/Setup", oldTitle: "Setup", collSlug: "tasks", newTitle: "Renamed",
+			wantV0: "see [[tasks/Renamed]] here", wantNew: "see [[tasks/Renamed]] here",
+			why: "The TWIN of the case above, and the reason it is here rather than in the " +
+				"guarded corpus: byte-identical content, position, targetTitle and collSlug, " +
+				"differing ONLY in the old title, and the correct outputs differ. It agrees " +
+				"with V0 — the point is not divergence but that the fix did not buy case A " +
+				"by breaking case B, which a one-sided test would not have shown.",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := rewriteBracketAtV0(tc.content, tc.position, tc.targetTitle, tc.newTitle, ""); got != tc.wantV0 {
+			if got := rewriteBracketAtV0(tc.content, tc.position, tc.targetTitle, tc.newTitle, tc.collSlug); got != tc.wantV0 {
 				t.Fatalf("fixture drift: V0 = %q, want %q — this test documents a divergence "+
 					"FROM a specific old behaviour, so the old behaviour must be what it says", got, tc.wantV0)
 			}
-			if got := RewriteBracketAt(tc.content, tc.position, tc.targetTitle, tc.newTitle, ""); got != tc.wantNew {
+			if got := RewriteBracketAt(tc.content, tc.position, tc.targetTitle, tc.oldTitle, tc.newTitle, tc.collSlug); got != tc.wantNew {
 				t.Errorf("new = %q, want %q\nwhy this diverges: %s", got, tc.wantNew, tc.why)
 			}
 		})
@@ -210,7 +262,7 @@ func TestRewriteBracketAt_MatchesPreRefactorImplementation(t *testing.T) {
 				t.Skip("outside the V0-guarded domain — see TestRewriteBracketAt_IntentionalDivergencesFromV0")
 			}
 			want := rewriteBracketAtV0(tc.content, tc.position, tc.targetTitle, tc.newTitle, tc.collSlug)
-			got := RewriteBracketAt(tc.content, tc.position, tc.targetTitle, tc.newTitle, tc.collSlug)
+			got := RewriteBracketAt(tc.content, tc.position, tc.targetTitle, v0OldTitle(tc.targetTitle, tc.collSlug), tc.newTitle, tc.collSlug)
 			if got != want {
 				t.Errorf("behaviour changed across the refactor\n content=%q pos=%d target=%q new=%q slug=%q\n  v0=%q\n new=%q",
 					tc.content, tc.position, tc.targetTitle, tc.newTitle, tc.collSlug, want, got)
@@ -242,7 +294,7 @@ func TestRewriteBracketAt_MatchesPreRefactorOnRandomInput(t *testing.T) {
 			continue
 		}
 		want := rewriteBracketAtV0(content, pos, target, newTitle, slug)
-		got := RewriteBracketAt(content, pos, target, newTitle, slug)
+		got := RewriteBracketAt(content, pos, target, v0OldTitle(target, slug), newTitle, slug)
 		if got != want {
 			t.Fatalf("divergence at iteration %d\n content=%q pos=%d target=%q new=%q slug=%q\n  v0=%q\n new=%q",
 				i, content, pos, target, newTitle, slug, want, got)
@@ -325,7 +377,7 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 		for _, p := range shuffled {
 			rewrites = append(rewrites, BracketRewrite{Position: p, TargetTitle: target})
 		}
-		got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper(newTitle, ""))
+		got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper(target, newTitle, ""))
 
 		if got != want {
 			t.Fatalf("single pass diverges from the descending fold at iteration %d\n content=%q positions=%v target=%q new=%q\n fold=%q\n pass=%q (applied=%d)",
@@ -342,11 +394,11 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 // no-op path the cascade relies on to skip a write.
 func TestRewriteBracketsAt_NoRewritesReturnsInputUnchanged(t *testing.T) {
 	const content = "nothing [[Other]] to do here"
-	got, applied := RewriteBracketsAt(content, nil, NewTitleEscaper("New", ""))
+	got, applied := RewriteBracketsAt(content, nil, NewTitleEscaper("Old", "New", ""))
 	if got != content || applied != 0 {
 		t.Fatalf("empty rewrites: got %q applied=%d, want %q applied=0", got, applied, content)
 	}
-	got, applied = RewriteBracketsAt(content, []BracketRewrite{{Position: 8, TargetTitle: "Old"}}, NewTitleEscaper("New", ""))
+	got, applied = RewriteBracketsAt(content, []BracketRewrite{{Position: 8, TargetTitle: "Old"}}, NewTitleEscaper("Old", "New", ""))
 	if got != content || applied != 0 {
 		t.Fatalf("non-matching rewrite: got %q applied=%d, want %q applied=0", got, applied, content)
 	}
@@ -366,7 +418,7 @@ func TestRewriteBracketsAt_DoesNotMutateCallerSlice(t *testing.T) {
 	before := make([]BracketRewrite, len(rewrites))
 	copy(before, rewrites)
 
-	if _, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("New", "")); applied != 3 {
+	if _, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("Old", "New", "")); applied != 3 {
 		t.Fatalf("applied = %d, want 3", applied)
 	}
 	for i := range before {
@@ -389,7 +441,7 @@ func TestRewriteBracketsAt_AppliesEveryBracketInOnePass(t *testing.T) {
 	for _, p := range offs {
 		rewrites = append(rewrites, BracketRewrite{Position: p, TargetTitle: "Old"})
 	}
-	got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("New", ""))
+	got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("Old", "New", ""))
 	if applied != n {
 		t.Fatalf("applied = %d, want %d", applied, n)
 	}
@@ -459,7 +511,7 @@ func TestRewriteBracketsAt_ByteIdenticalRewriteIsNotAChange(t *testing.T) {
 				t.Fatalf("fixture: %d brackets, want 1", len(offs))
 			}
 			got, applied := RewriteBracketsAt(tc.content,
-				[]BracketRewrite{{Position: offs[0], TargetTitle: tc.targetTitle}}, NewTitleEscaper(tc.newTitle, tc.collSlug))
+				[]BracketRewrite{{Position: offs[0], TargetTitle: tc.targetTitle}}, NewTitleEscaper(v0OldTitle(tc.targetTitle, tc.collSlug), tc.newTitle, tc.collSlug))
 			if got != tc.content {
 				t.Errorf("content changed: got %q, want %q", got, tc.content)
 			}
@@ -482,10 +534,17 @@ func TestRewriteBracketsAt_MixedChangedAndUnchangedCountsOnlyTheChanged(t *testi
 	}
 	rewrites := []BracketRewrite{
 		{Position: offs[0], TargetTitle: "Old"},
-		{Position: offs[1], TargetTitle: "New"}, // already reads [[New]] — no change
+		// Middle bracket already reads [[New]]. Since BUG-2830 its row is also
+		// index drift — target_title "New" is neither the old title nor its
+		// qualified form, so the rewriter refuses it rather than matching and
+		// then finding it byte-identical. Either way it is not counted, which
+		// is what this test asserts. The byte-identical-match path itself is
+		// pinned by TestRewriteBracketsAt_ByteIdenticalRewriteIsNotAChange,
+		// where newTitle == oldTitle makes it reachable.
+		{Position: offs[1], TargetTitle: "New"},
 		{Position: offs[2], TargetTitle: "Old"},
 	}
-	got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("New", ""))
+	got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("Old", "New", ""))
 	if want := "[[New]] and [[New]] and [[New]]"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -522,15 +581,24 @@ func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
 		"[[A[[B]]]] [[Old]]",
 	}
 
-	check := func(t *testing.T, content string, rewrites []BracketRewrite, newTitle, collSlug string) {
+	// Counts rewrites the corpus actually APPLIED. Lockstep is trivially true
+	// when both sides refuse everything, and BUG-2830 made the rewriter refuse
+	// more inputs than before (a row whose target_title is neither form of the
+	// old title is now index drift). Without this counter the suite could drift
+	// into asserting lockstep over an empty set and still report green.
+	totalApplied := 0
+
+	check := func(t *testing.T, content string, rewrites []BracketRewrite, oldTitle, newTitle, collSlug string) {
 		t.Helper()
-		wantLen, wantApplied := ProjectRewrittenLen(content, rewrites, NewTitleEscaper(newTitle, collSlug))
-		got, gotApplied := RewriteBracketsAt(content, rewrites, NewTitleEscaper(newTitle, collSlug))
+		esc := NewTitleEscaper(oldTitle, newTitle, collSlug)
+		wantLen, wantApplied := ProjectRewrittenLen(content, rewrites, esc)
+		got, gotApplied := RewriteBracketsAt(content, rewrites, esc)
 		if len(got) != wantLen || gotApplied != wantApplied {
-			t.Fatalf("projection and the real pass disagree\n content=%q rewrites=%+v new=%q slug=%q\n"+
+			t.Fatalf("projection and the real pass disagree\n content=%q rewrites=%+v old=%q new=%q slug=%q\n"+
 				" projected len=%d applied=%d\n actual    len=%d applied=%d (result %q)",
-				content, rewrites, newTitle, collSlug, wantLen, wantApplied, len(got), gotApplied, got)
+				content, rewrites, oldTitle, newTitle, collSlug, wantLen, wantApplied, len(got), gotApplied, got)
 		}
+		totalApplied += gotApplied
 	}
 
 	// MIXED target titles per position, not one title for the whole call.
@@ -550,18 +618,40 @@ func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
 						TargetTitle: titles[(ti+j)%len(titles)],
 					})
 				}
-				check(t, content, rewrites, newTitle, "")
+				check(t, content, rewrites, titles[ti], newTitle, "")
 			}
 		}
 	}
 
-	// The exact shape codex R2 named, asserted directly so the regression has
-	// a named home rather than depending on the random search rediscovering it:
-	// bracket [0,8) is a no-op, bracket [3,8) overlaps it and changes.
-	check(t, "[[A[[B]]]]", []BracketRewrite{
-		{Position: 0, TargetTitle: "A[[B"},
-		{Position: 3, TargetTitle: "B"},
-	}, "A[[B", "")
+	// The exact shape codex R2 named, asserted directly so the regression has a
+	// named home rather than depending on the random search rediscovering it:
+	// an earlier bracket that does NOT advance the cursor, followed by an
+	// overlapping one that APPLIES. That pairing is what made the projection
+	// and the pass disagree.
+	//
+	// Rewritten for BUG-2830. The original spelled it with two unrelated target
+	// titles ("A[[B" at 0, "B" at 3), which a real cascade cannot produce — all
+	// its rows point at ONE renamed item, so their target_titles can only be
+	// that item's old title or its `<slug>/` qualified form. The rewriter now
+	// refuses anything else, which would have made BOTH brackets no-ops and
+	// quietly emptied this regression of its content.
+	//
+	// Same shape, reachable inputs: in `[[A[[A]]]]` the outer bracket [0,8) has
+	// body "A[[A" and does not match target "A", so it is skipped WITHOUT
+	// advancing the cursor; the overlapping inner bracket [3,8) has body "A",
+	// matches, and applies. Verified to still apply exactly one rewrite — if a
+	// future change made it zero, totalApplied below would not notice on its
+	// own, so it is asserted here directly.
+	before := totalApplied
+	check(t, "[[A[[A]]]]", []BracketRewrite{
+		{Position: 0, TargetTitle: "A"},
+		{Position: 3, TargetTitle: "A"},
+	}, "A", "N", "")
+	if totalApplied-before != 1 {
+		t.Fatalf("the codex-R2 overlap fixture applied %d rewrites, want exactly 1 — "+
+			"a no-op-then-overlapping-change is the shape this regression exists to pin",
+			totalApplied-before)
+	}
 
 	const iterations = 20000
 	for i := 0; i < iterations; i++ {
@@ -592,8 +682,14 @@ func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
 			}
 			rewrites = append(rewrites, BracketRewrite{Position: p, TargetTitle: tt})
 		}
-		check(t, content, rewrites, newTitle, "")
+		check(t, content, rewrites, target, newTitle, "")
 	}
+
+	if totalApplied == 0 {
+		t.Fatal("the corpus applied ZERO rewrites — lockstep held only because both " +
+			"sides refused everything, which asserts nothing about the invariant")
+	}
+	t.Logf("lockstep corpus applied %d rewrites", totalApplied)
 }
 
 // TestRewriteBracketsAt_EmissionRoundTripsThroughTheParser is the property that
@@ -623,7 +719,7 @@ func TestRewriteBracketsAt_EmissionRoundTripsThroughTheParser(t *testing.T) {
 		offs := bracketOffsets(content)
 		got, applied := RewriteBracketsAt(content,
 			[]BracketRewrite{{Position: offs[0], TargetTitle: "Plain Target"}},
-			NewTitleEscaper(newTitle, ""))
+			NewTitleEscaper("Plain Target", newTitle, ""))
 		if applied != 1 {
 			t.Fatalf("iteration %d: applied = %d, want 1 (newTitle=%q)", i, applied, newTitle)
 		}
@@ -817,7 +913,7 @@ func TestBUG2805_AccidentalCompatibilitiesSurvive(t *testing.T) {
 		offs := bracketOffsets(content)
 		got, _ := RewriteBracketsAt(content,
 			[]BracketRewrite{{Position: offs[0], TargetTitle: "Plain Target"}},
-			NewTitleEscaper("New | Name", ""))
+			NewTitleEscaper("Plain Target", "New | Name", ""))
 		if want := `Ref [[New \| Name]] here.`; got != want {
 			t.Fatalf("emitted %q, want %q", got, want)
 		}
@@ -833,7 +929,7 @@ func TestBUG2805_AccidentalCompatibilitiesSurvive(t *testing.T) {
 		offs := bracketOffsets(content)
 		got, _ := RewriteBracketsAt(content,
 			[]BracketRewrite{{Position: offs[0], TargetTitle: "BS Target"}},
-			NewTitleEscaper(`Odd \ Name`, ""))
+			NewTitleEscaper("BS Target", `Odd \ Name`, ""))
 		links := ExtractWikiLinks(got)
 		if len(links) != 1 {
 			t.Fatalf("emitted %q — parser found %d links, want 1", got, len(links))
