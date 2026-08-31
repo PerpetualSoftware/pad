@@ -316,3 +316,70 @@ func bracketOffsets(content string) []int {
 	}
 	return out
 }
+
+// TestRewriteBracketsAt_ByteIdenticalRewriteIsNotAChange pins that `applied`
+// counts CHANGES, not matches (codex R1 P2).
+//
+// The cascade uses the count to decide whether to write the row at all. The
+// pre-BUG-2804 code compared whole bodies for this, so a rewrite that
+// reproduced the content byte-for-byte wrote nothing; counting matches instead
+// would rewrite content, bump seq, and emit an item.bulk_updated event for
+// every linker on a rename that changed nothing.
+//
+// REACHABILITY, stated rather than implied: I have NOT established that
+// cascadeTitleRename can reach this today — it returns early when
+// oldTitle == newTitle, which blocks the obvious route. This pins the
+// FUNCTION's contract, which the cascade depends on, without claiming a live
+// user-visible bug.
+func TestRewriteBracketsAt_ByteIdenticalRewriteIsNotAChange(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		content     string
+		targetTitle string
+		newTitle    string
+		collSlug    string
+	}{
+		{"plain body already equals the new title", "x [[Old]] y", "Old", "Old", ""},
+		{"qualified body already equals", "x [[tasks/Old]] y", "tasks/Old", "Old", "tasks"},
+		{"display suffix preserved, title unchanged", "x [[Old|alias]] y", "Old", "Old", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			offs := bracketOffsets(tc.content)
+			if len(offs) != 1 {
+				t.Fatalf("fixture: %d brackets, want 1", len(offs))
+			}
+			got, applied := RewriteBracketsAt(tc.content,
+				[]BracketRewrite{{Position: offs[0], TargetTitle: tc.targetTitle}}, tc.newTitle, tc.collSlug)
+			if got != tc.content {
+				t.Errorf("content changed: got %q, want %q", got, tc.content)
+			}
+			if applied != 0 {
+				t.Errorf("applied = %d, want 0 — a byte-identical rewrite is not a change, and the "+
+					"cascade uses this count to decide whether to write the row", applied)
+			}
+		})
+	}
+}
+
+// TestRewriteBracketsAt_MixedChangedAndUnchangedCountsOnlyTheChanged pins the
+// count when a single body carries both kinds, which is the case a whole-body
+// comparison could never have distinguished.
+func TestRewriteBracketsAt_MixedChangedAndUnchangedCountsOnlyTheChanged(t *testing.T) {
+	content := "[[Old]] and [[New]] and [[Old]]"
+	offs := bracketOffsets(content)
+	if len(offs) != 3 {
+		t.Fatalf("fixture: %d brackets, want 3", len(offs))
+	}
+	rewrites := []BracketRewrite{
+		{Position: offs[0], TargetTitle: "Old"},
+		{Position: offs[1], TargetTitle: "New"}, // already reads [[New]] — no change
+		{Position: offs[2], TargetTitle: "Old"},
+	}
+	got, applied := RewriteBracketsAt(content, rewrites, "New", "")
+	if want := "[[New]] and [[New]] and [[New]]"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if applied != 2 {
+		t.Errorf("applied = %d, want 2 — the middle bracket was already [[New]]", applied)
+	}
+}

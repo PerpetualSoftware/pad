@@ -1656,6 +1656,26 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 			return
 		}
+		// BUG-2804: the item rename cascade refuses renames that would process
+		// more linking content than MaxItemRenameCascadeBytes. Without this arm
+		// the refusal falls through to writeInternalError and lands as a 500 —
+		// which tells the caller the server broke and that retrying might work,
+		// when in fact the request was understood, deliberately declined, and
+		// will be declined identically until the workspace's content changes.
+		//
+		// Mirrors the document twin at handlers_documents.go:202, including its
+		// rule about composition: the sentence is built from the error's TYPED
+		// fields and never by splicing err.Error(), because every wrapper the
+		// call path added on the way up would otherwise be published to the
+		// client.
+		var cascadeTooLarge *store.ItemRenameCascadeTooLargeError
+		if errors.As(err, &cascadeTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
+				fmt.Sprintf("This rename would rewrite more linked content than the server will process in one "+
+					"operation: at least %d bytes, and the limit is %d. Reduce the number of items linking "+
+					"this title, or split the rename, and try again.", cascadeTooLarge.Processed, cascadeTooLarge.Max))
+			return
+		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both
 		// pass checkUniqueFields and then both hit the partial unique
 		// index on invocation_slug) to 409 conflict, matching the create

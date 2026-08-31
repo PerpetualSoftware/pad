@@ -710,7 +710,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 			return newItemRenameCascadeTooLargeError(newTitle, processed)
 		}
 
-		newContent, applied := links.RewriteBracketsAt(content, work.rewrites, newTitle, collSlug)
+		newContent, applied := s.buildCascadeBody(content, work.rewrites, newTitle, collSlug)
 		if applied == 0 {
 			// No bracket matched the expected shape at the recorded
 			// positions — possible if a previous content edit shifted
@@ -1573,6 +1573,27 @@ func snippetAround(content string, position int) string {
 		snippet = snippet + "…"
 	}
 	return snippet
+}
+
+// buildCascadeBody builds one rewritten body and reports the build through the
+// test seam, as ONE operation.
+//
+// The coupling is deliberate and load-bearing. An earlier version called
+// links.RewriteBracketsAt and fired the seam as two adjacent statements, and a
+// mutation that moved the cap check BETWEEN them — which is exactly the defect
+// the seam exists to detect — went undetected, because the build happened, the
+// mutant returned, and the seam never fired. The instrument could not observe
+// the thing it was built to observe.
+//
+// With the build and the count inside one function, a cap check can only be
+// before this call or after it, and "after" always means the count already
+// happened. There is no third position for the defect to hide in.
+func (s *Store) buildCascadeBody(content string, rewrites []links.BracketRewrite, newTitle, collSlug string) (string, int) {
+	newContent, applied := links.RewriteBracketsAt(content, rewrites, newTitle, collSlug)
+	if s.onItemCascadeBodyBuilt != nil && applied > 0 {
+		s.onItemCascadeBodyBuilt(len(newContent))
+	}
+	return newContent, applied
 }
 
 // ErrItemRenameCascadeTooLarge reports that an ITEM rename was refused because

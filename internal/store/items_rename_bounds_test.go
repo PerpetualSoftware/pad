@@ -2,7 +2,6 @@ package store
 
 import (
 	"errors"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -125,14 +124,28 @@ func TestItemRenameCascade_AllowsARealisticCascade(t *testing.T) {
 // rewrite would keep them all green while destroying the point of the guard,
 // which is that the amplified string is never built.
 //
-// Instrument is cumulative allocation, the same counter BUG-2798's equivalent
-// test uses. Both sides of the threshold are measured, not estimated — see the
-// trail for the figure this produced against a mutation with the cap check
-// moved below RewriteBracketsAt.
+// THE INSTRUMENT IS A COUNT, NOT AN ALLOCATION CEILING, and that is a
+// correction rather than a preference. The first version of this test used a
+// TotalAlloc ceiling, copied in spirit from BUG-2798's equivalent. Two things
+// went wrong with it, in this order:
+//
+//  1. With 16 MiB of slack the check-after-build mutant SURVIVED. BUG-2798
+//     could afford a generous ceiling because its rewrite was amplified 51.8x;
+//     M2 removed the amplification, so the defect is worth exactly one body.
+//  2. Tightened to cap+3 MiB it killed the mutant on SQLite — and then FAILED
+//     on Postgres, where the same refusal allocates ~242 MB against SQLite's
+//     ~69 MB because the driver copies row bytes differently. The ceiling was
+//     measuring the database driver, not the guard.
+//
+// Counting bodies BUILT is exact, identical on both dialects, and discriminates
+// by one whole unit: refusing before the build yields N, refusing after yields
+// N+1. Found by make test-pg, which is the whole reason that gate exists.
 func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 	const body = 2 << 20
 	perLinker := int64(body) * 2
-	linkers := int(MaxItemRenameCascadeBytes/perLinker) + 2
+	// The cascade admits floor(cap/perLinker) sources; the NEXT one crosses.
+	admits := int(MaxItemRenameCascadeBytes / perLinker)
+	linkers := admits + 2
 
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "ItemRenameNoBuild")
@@ -143,45 +156,25 @@ func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 		createTestItem(t, s, ws.ID, col.ID, "Linker "+itoa(i), linkerBody)
 	}
 
-	// THE CEILING IS TIGHT ON PURPOSE, and the margin is one body.
-	//
-	// BUG-2798's equivalent test could be generous because on that path the
-	// rewrite was amplified 51.8x, so building it before refusing was a
-	// twenty-fold difference. M2 removed the amplification here: the
-	// single-pass rewrite costs 1x the body, so checking the cap AFTER the
-	// build instead of before costs exactly ONE extra 2 MiB body. A generous
-	// ceiling cannot see that — measured: a 16 MiB slack let the
-	// check-after-build mutant SURVIVE, which is how this margin was chosen
-	// rather than guessed.
-	//
-	// Measured on this machine, three consecutive runs: refusing allocates
-	// 69,406,336 / 69,415,928 / 69,417,888 bytes — ~11.5 KB of spread. The
-	// check-after-build mutant allocates 71,505,640, i.e. 2,089,304 bytes more
-	// (one 2 MiB body, as predicted). The ceiling below is 70,254,592, which
-	// leaves ~837 KB of headroom over the clean figure while sitting ~1.25 MB
-	// under the mutant. Signal-to-noise is roughly 180x.
-	//
-	// If this test ever fails by a small margin on a different runtime, the fix
-	// is to re-measure and re-state both figures here — NOT to widen the
-	// ceiling until it passes, which would restore the surviving mutant.
-	const allocCeiling = MaxItemRenameCascadeBytes + (3 << 20)
+	var built int
+	s.onItemCascadeBodyBuilt = func(int) { built++ }
+	defer func() { s.onItemCascadeBodyBuilt = nil }()
 
 	newTitle := "New"
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
 	_, err := s.UpdateItem(target.ID, models.ItemUpdate{Title: &newTitle})
-	runtime.ReadMemStats(&after)
-
 	if !errors.Is(err, ErrItemRenameCascadeTooLarge) {
 		t.Fatalf("rename: got %v, want ErrItemRenameCascadeTooLarge", err)
 	}
-	allocated := after.TotalAlloc - before.TotalAlloc
-	t.Logf("refused rename allocated %d bytes; ceiling %d", allocated, uint64(allocCeiling))
-	if allocated > uint64(allocCeiling) {
-		t.Errorf("the refused rename allocated %d bytes, ceiling %d — the projection is running "+
-			"AFTER the rewritten bodies it was supposed to prevent", allocated, uint64(allocCeiling))
+
+	// The source that CROSSES the cap must not have had its body built. Every
+	// source admitted before it legitimately did.
+	if built != admits {
+		t.Errorf("cascade built %d rewritten bodies before refusing, want %d — the projection is "+
+			"running AFTER the body it was supposed to prevent (one extra build is exactly the defect)",
+			built, admits)
 	}
+	t.Logf("built %d rewritten bodies before refusing; cap admits %d sources of %d bytes each",
+		built, admits, body)
 }
 
 // TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform pins the
