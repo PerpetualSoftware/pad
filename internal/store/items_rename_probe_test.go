@@ -448,7 +448,13 @@ func TestProbeBUG2804_SelectMaterialisesContentPerLinkRow(t *testing.T) {
 		runtime.GC()
 		runtime.ReadMemStats(&before)
 
-		rows, err := s.db.Query(s.q(`
+		// BOTH shapes are measured, because the point of this probe is the
+		// DIFFERENCE. The "old" leg is the query cascadeTitleRename issued
+		// before BUG-2804 and no longer issues; keeping it is what makes the
+		// new leg's figure mean something rather than being a number with no
+		// scale. A probe that only measured the current code could not show
+		// that anything changed.
+		oldRows, err := s.db.Query(s.q(`
 			SELECT s.id, s.content, s.workspace_id, wl.position, wl.target_title
 			FROM item_wiki_links wl
 			JOIN items s ON s.id = wl.source_item_id
@@ -459,25 +465,72 @@ func TestProbeBUG2804_SelectMaterialisesContentPerLinkRow(t *testing.T) {
 			ORDER BY s.id, wl.position DESC
 		`), target.ID)
 		if err != nil {
-			t.Fatalf("select: %v", err)
+			t.Fatalf("select (old shape): %v", err)
 		}
-		n := 0
-		distinct := map[string]bool{}
-		for rows.Next() {
+		nOld := 0
+		for oldRows.Next() {
 			var id, content, wsID, targetTitle string
 			var position int
-			if err := rows.Scan(&id, &content, &wsID, &position, &targetTitle); err != nil {
-				rows.Close()
-				t.Fatalf("scan: %v", err)
+			if err := oldRows.Scan(&id, &content, &wsID, &position, &targetTitle); err != nil {
+				oldRows.Close()
+				t.Fatalf("scan (old shape): %v", err)
 			}
-			distinct[id] = true
-			n++
+			nOld++
 		}
-		rows.Close()
+		oldRows.Close()
 		runtime.ReadMemStats(&after)
+		oldAlloc := after.TotalAlloc - before.TotalAlloc
 
-		a := after.TotalAlloc - before.TotalAlloc
-		t.Logf("brackets=%-6d rows=%-6d distinctSources=%-3d SELECT+scan alloc=%-12d per row=%-9d (=%.2fx body)",
-			brackets, n, len(distinct), a, a/uint64(n), float64(a)/float64(n)/float64(body))
+		// New shape: the per-link query carries no content, and each DISTINCT
+		// source's body is read exactly once.
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		newRows, err := s.db.Query(s.q(`
+			SELECT s.id, s.workspace_id, wl.position, wl.target_title
+			FROM item_wiki_links wl
+			JOIN items s ON s.id = wl.source_item_id
+			WHERE wl.target_kind = 'title'
+			  AND wl.target_workspace_id IS NULL
+			  AND wl.target_item_id = ?
+			  AND s.deleted_at IS NULL
+			ORDER BY s.id, wl.position DESC
+		`), target.ID)
+		if err != nil {
+			t.Fatalf("select (new shape): %v", err)
+		}
+		nNew := 0
+		distinct := map[string]bool{}
+		var order []string
+		for newRows.Next() {
+			var id, wsID, targetTitle string
+			var position int
+			if err := newRows.Scan(&id, &wsID, &position, &targetTitle); err != nil {
+				newRows.Close()
+				t.Fatalf("scan (new shape): %v", err)
+			}
+			if !distinct[id] {
+				distinct[id] = true
+				order = append(order, id)
+			}
+			nNew++
+		}
+		newRows.Close()
+		for _, id := range order {
+			var content string
+			if err := s.db.QueryRow(s.q(`SELECT content FROM items WHERE id = ?`), id).Scan(&content); err != nil {
+				t.Fatalf("per-source read: %v", err)
+			}
+		}
+		runtime.ReadMemStats(&after)
+		newAlloc := after.TotalAlloc - before.TotalAlloc
+
+		if nOld != nNew {
+			t.Fatalf("row counts differ: old %d, new %d — the shapes are not comparable", nOld, nNew)
+		}
+		t.Logf("brackets=%-6d rows=%-6d sources=%-3d | OLD=%-12d (%.2fx body/row)  NEW=%-10d (%.2fx body total)  reduction=%.0fx",
+			brackets, nNew, len(distinct),
+			oldAlloc, float64(oldAlloc)/float64(nOld)/float64(body),
+			newAlloc, float64(newAlloc)/float64(body),
+			float64(oldAlloc)/float64(newAlloc))
 	}
 }

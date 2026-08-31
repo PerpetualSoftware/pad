@@ -202,8 +202,17 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 			want = RewriteBracketAt(want, p, target, newTitle, "")
 		}
 
-		rewrites := make([]BracketRewrite, 0, len(positions))
-		for _, p := range positions {
+		// SHUFFLED on purpose. bracketOffsets returns ascending order, but the
+		// real caller passes the cascade's `ORDER BY wl.position DESC` rows —
+		// so an ascending-only fixture cannot detect a missing internal sort.
+		// Found by mutation: dropping the sort left this test green until the
+		// order fed in stopped being the order the implementation wanted.
+		shuffled := make([]int, len(positions))
+		copy(shuffled, positions)
+		rng.Shuffle(len(shuffled), func(a, b int) { shuffled[a], shuffled[b] = shuffled[b], shuffled[a] })
+
+		rewrites := make([]BracketRewrite, 0, len(shuffled))
+		for _, p := range shuffled {
 			rewrites = append(rewrites, BracketRewrite{Position: p, TargetTitle: target})
 		}
 		got, applied := RewriteBracketsAt(content, rewrites, newTitle, "")

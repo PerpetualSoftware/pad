@@ -196,6 +196,46 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, newTitle, coll
 	return b.String(), applied
 }
 
+// ProjectRewrittenLen returns the byte length RewriteBracketsAt WOULD produce
+// for the same arguments, and how many rewrites it would apply, without
+// building the result.
+//
+// It exists so a caller can bound what a cascade will hold BEFORE allocating
+// it — refusing after the amplified string is built bounds nothing. Exact
+// rather than an estimate: it runs the same per-bracket decision
+// (bracketRewriteAt) and the same ordering and skip rules as the real pass, so
+// the two cannot disagree about which brackets apply.
+//
+// Cost is O(total bracket text), not O(len(content) * len(rewrites)) — each
+// bracket is inspected once and the untouched spans are only measured.
+func ProjectRewrittenLen(content string, rewrites []BracketRewrite, newTitle, collSlug string) (length, applied int) {
+	if len(rewrites) == 0 {
+		return len(content), 0
+	}
+	ordered := make([]BracketRewrite, len(rewrites))
+	copy(ordered, rewrites)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Position < ordered[j].Position })
+
+	length = len(content)
+	cursor := 0
+	for _, rw := range ordered {
+		if rw.Position < cursor {
+			continue
+		}
+		replacement, bracketEnd, ok := bracketRewriteAt(content, rw.Position, rw.TargetTitle, newTitle, collSlug)
+		if !ok {
+			continue
+		}
+		length += len(replacement) - (bracketEnd - rw.Position)
+		cursor = bracketEnd
+		applied++
+	}
+	if applied == 0 {
+		return len(content), 0
+	}
+	return length, applied
+}
+
 // bracketRewriteAt is the per-bracket decision, and the ONLY copy of it. It
 // returns the replacement text for the bracket at `position` (including its
 // enclosing `[[`/`]]`), the offset just past the bracket it replaces, and
