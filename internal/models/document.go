@@ -112,7 +112,7 @@ const MaxDocumentTitleRunes = 255
 // is therefore derived from the two mechanisms that actually consume a stored
 // bracket, both in web/src/lib/utils/markdown.ts:
 //
-//  1. THE GRAMMAR (markdown.ts:327, shared by renderMarkdown and
+//  1. THE GRAMMAR (markdown.ts::WIKI_LINK_PATTERN_SOURCE, shared by renderMarkdown and
 //     wikiLinksToMarkdown since BUG-1744): a bracket body is
 //     `(?:\\.|[^\]\\])+` — escape pairs, or anything that is neither `]` nor
 //     `\`. A raw `]` ends the bracket early, which IS BUG-2796's defect:
@@ -121,7 +121,7 @@ const MaxDocumentTitleRunes = 255
 //     title ending in `\` fails the same way — the trailing backslash pairs
 //     with the first `]` of the terminator and the bracket never closes.
 //
-//  2. THE UNESCAPER (markdown.ts:753, `\\(\\|\]|\|)` → `$1`): resolution
+//  2. THE UNESCAPER (markdown.ts::unescapeWikiBody, `\\(\\|\]|\|)` → `$1`): resolution
 //     unescapes the body before comparing it to a title, and the editor may
 //     therefore STORE a link in escaped form. That matters twice over: a
 //     title containing `\\` or `\|` emitted raw comes back as a different

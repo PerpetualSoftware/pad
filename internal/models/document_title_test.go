@@ -18,9 +18,9 @@ import (
 // can check the two by eye at the cited line numbers. Closing the drift for
 // real would need a shared fixture driven from both languages.
 var (
-	// markdown.ts:327 — shared by renderMarkdown and wikiLinksToMarkdown.
+	// markdown.ts::WIKI_LINK_PATTERN_SOURCE — shared by renderMarkdown and wikiLinksToMarkdown.
 	storedWikiLinkBracket = regexp.MustCompile(`\[\[((?:\\.|[^\]\\])+)\]\]`)
-	// markdown.ts:753 — unescapeWikiBody, applied before title comparison.
+	// markdown.ts::unescapeWikiBody — unescapeWikiBody, applied before title comparison.
 	wikiBodyEscape = regexp.MustCompile(`\\(\\|\]|\|)`)
 )
 
