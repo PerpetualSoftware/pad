@@ -289,9 +289,20 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 				// Over-bound title AND the over-bound slug it implies. The slug
 				// is the half that matters on Postgres: this loop writes it
 				// verbatim, and it is what carries UNIQUE(workspace_id, slug)
-				// into the 8191-byte btree tuple.
+				// into the btree index tuple.
+				//
+				// HIGH-ENTROPY, not strings.Repeat, and the difference decides
+				// whether this fixture reproduces the defect. Index tuples are
+				// compressed before the size check, so a 9000-byte slug of one
+				// repeated character IMPORTS FINE on Postgres — measured, with
+				// the coercion disabled. The same length of poorly-compressible
+				// text fails with `index row requires 9056 bytes, maximum size
+				// is 8191`. Built from a repeated character, this test would
+				// have passed against unfixed code on the backend the bug is
+				// about, while still failing the rune-count assertion — green
+				// for a reason unrelated to BUG-2831.
 				ID: "old-long", CollectionID: "old-coll-1",
-				Title: longTitle, Slug: strings.Repeat("y", 9000),
+				Title: longTitle, Slug: highEntropySlug(9000),
 				Fields: `{}`, Tags: `[]`,
 				CreatedAt: "2026-08-31T00:00:00Z", UpdatedAt: "2026-08-31T00:00:00Z",
 			},
@@ -349,4 +360,25 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 	if fine.Slug != "perfectly-ordinary" {
 		t.Errorf("in-range slug = %q, want it preserved verbatim as %q", fine.Slug, "perfectly-ordinary")
 	}
+}
+
+// highEntropySlug builds a deterministic, poorly-compressible slug of n bytes
+// from a fixed LCG — reproducible across runs and machines, unlike math/rand
+// without a pinned seed, and unlike strings.Repeat it survives the compression
+// Postgres applies before the btree size check.
+//
+// The measured thresholds against Postgres 17 with the import coercion
+// disabled: 2000 bytes accepted, 4000 refused (`index row size 4056 exceeds
+// btree version 4 maximum 2704`), 9000 refused (`index row requires 9056
+// bytes, maximum size is 8191`). 9000 is used above so the failure is the
+// unambiguous hard-cap one.
+func highEntropySlug(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	out := make([]byte, n)
+	x := uint64(0x9e3779b97f4a7c15)
+	for i := range out {
+		x = x*6364136223846793005 + 1442695040888963407
+		out[i] = alphabet[(x>>33)%uint64(len(alphabet))]
+	}
+	return string(out)
 }

@@ -107,10 +107,11 @@ const importUntitledTitle = "Untitled"
 // importCoercedSlug bounds an imported slug (BUG-2831). Coercing only the
 // title would not close the import door: this loop writes `it.Slug` from the
 // bundle VERBATIM rather than re-deriving it, and the slug — not the title —
-// is what carries UNIQUE(workspace_id, slug) into a Postgres btree whose index
-// tuple is capped at 8191 bytes. A bundle from a SQLite instance holding a
-// 2 MiB title carries a 2 MiB slug, and truncating the title alone would leave
-// the INSERT failing exactly as before.
+// is what carries UNIQUE(workspace_id, slug) into a Postgres btree index tuple
+// (capped at 2704 bytes in practice; see MaxItemTitleRunes for the
+// measurement). A bundle from a SQLite instance holding a 2 MiB title carries a
+// 2 MiB slug, and truncating the title alone would leave the INSERT failing
+// exactly as before.
 //
 // Untouched unless it exceeds the bound: an in-range slug is written byte for
 // byte, so nothing about ordinary round-tripping changes. Truncation can

@@ -1228,17 +1228,34 @@ type ItemLinkCreate struct {
 // exists:
 //
 //   - items carries UNIQUE(workspace_id, slug), which Postgres implements as a
-//     btree, and a btree index tuple is capped at 8191 bytes. That cap, not the
-//     title column, is what refuses a long title on Postgres while SQLite takes
-//     it (BUG-2831).
+//     btree, and a btree index tuple has a size cap. That cap, not the title
+//     column, is what refuses a long title on Postgres while SQLite takes it
+//     (BUG-2831).
 //   - store.slugify emits ONLY [a-z0-9-] — one output BYTE per input rune at
 //     most, and it truncates nothing. So an N-rune title yields at most N bytes
 //     of slug.
 //
-// 255 runes therefore bounds the slug at ~255 bytes against an 8191-byte
-// limit: ~32x headroom, so the compressibility that makes the failure
-// threshold unquotable stops mattering. The uniqueness suffix (-2, -3, ...)
-// adds a handful of bytes and does not change that.
+// THE CAP IS 2704 BYTES, NOT 8191, and this is measured rather than inherited.
+// BUG-2831 quoted 8191 — the absolute maximum — and the first version of this
+// comment repeated it. Driving high-entropy slugs of 2000 / 4000 / 9000 bytes
+// through ImportWorkspace against Postgres 17 (the container the PG gate uses)
+// with the coercion disabled gives:
+//
+//	2000 -> accepted
+//	4000 -> ERROR: index row size 4056 exceeds btree version 4 maximum 2704
+//	        for index "items_workspace_id_slug_key" (SQLSTATE 54000)
+//	9000 -> ERROR: index row requires 9056 bytes, maximum size is 8191 (SQLSTATE 54000)
+//
+// So 2704 is what a regular index tuple is held to (a third of a page) and
+// 8191 is the hard ceiling reached only past it. Both are post-compression:
+// a REPETITIVE 9000-byte slug is accepted, which is why the filing's threshold
+// was unquotable as a single number and why the test fixture uses a
+// deterministic high-entropy slug rather than strings.Repeat.
+//
+// 255 runes therefore bounds the slug at ~255 bytes against the 2704 that
+// actually fires: ~10x headroom, so compressibility stops mattering. The
+// uniqueness suffix (-2, -3, ...) adds a handful of bytes and does not change
+// that.
 //
 // RUNES, not bytes, because "255 characters" is what a user and a UI counter
 // mean. The byte-level residual on the TITLE column is up to 4x this number,
