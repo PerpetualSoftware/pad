@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -1216,4 +1218,72 @@ type ItemLinkCreate struct {
 	TargetID  string `json:"target_id"`
 	LinkType  string `json:"link_type,omitempty"`
 	CreatedBy string `json:"created_by,omitempty"`
+}
+
+// MaxItemTitleRunes bounds an item title at write time.
+//
+// 255 matches MaxDocumentTitleRunes, but for items the number is not borrowed
+// — it is mechanically sufficient, which is why BUG-2831's "there is no single
+// safe number, it depends on compressibility" does not apply once the bound
+// exists:
+//
+//   - items carries UNIQUE(workspace_id, slug), which Postgres implements as a
+//     btree, and a btree index tuple is capped at 8191 bytes. That cap, not the
+//     title column, is what refuses a long title on Postgres while SQLite takes
+//     it (BUG-2831).
+//   - store.slugify emits ONLY [a-z0-9-] — one output BYTE per input rune at
+//     most, and it truncates nothing. So an N-rune title yields at most N bytes
+//     of slug.
+//
+// 255 runes therefore bounds the slug at ~255 bytes against an 8191-byte
+// limit: ~32x headroom, so the compressibility that makes the failure
+// threshold unquotable stops mattering. The uniqueness suffix (-2, -3, ...)
+// adds a handful of bytes and does not change that.
+//
+// RUNES, not bytes, because "255 characters" is what a user and a UI counter
+// mean. The byte-level residual on the TITLE column is up to 4x this number,
+// which the title column (TEXT) carries without complaint — the slug is the
+// constrained derivative, and it is ASCII by construction.
+//
+// Enforced at WRITE time only, and deliberately NOT retroactive: an item whose
+// stored title already exceeds the bound keeps working, and an update that does
+// not set a title never validates one. Same grandfathering rule as documents
+// (Dave's ruling, day-63). Workspace import coerces rather than refuses, for
+// the same reason — see ImportWorkspace.
+const MaxItemTitleRunes = 255
+
+// NormalizeItemTitle is the canonical normalization for an item title:
+// leading/trailing whitespace is not part of a title.
+//
+// It exists as its own function because normalize-then-validate must not drift
+// between doors — the whole of BUG-2833 is create and update disagreeing about
+// one field, and BUG-2831 is create and Postgres disagreeing about the same
+// field. Every door calls this and then ValidateItemTitle, and stores what it
+// validated rather than the raw input.
+func NormalizeItemTitle(title string) string {
+	return strings.TrimSpace(title)
+}
+
+// ValidateItemTitle checks an ALREADY-NORMALIZED item title at write time.
+// Returns a message suitable for a 400 response, or "" when acceptable.
+//
+// Callers pass NormalizeItemTitle's output. Validating the normalized value is
+// the point rather than an implementation detail: a title of "   " is untitled
+// wearing a costume, and before this function existed it was legal on create
+// (which tested title == "" exactly) and refused on artifact import (which
+// trimmed first) — two doors, two rules, and the import door's comment claimed
+// to mirror the create gate it was in fact stricter than.
+//
+// Deliberately NOT covering wikiTitleRoundTripFailure, which ValidateDocumentTitle
+// does: the item rename cascade escapes its emission (BUG-2805), so an item
+// title containing wiki-link syntax round-trips. Documents' cascade does not
+// escape, which is why the check lives there and not here.
+func ValidateItemTitle(title string) string {
+	if title == "" {
+		return "Title is required"
+	}
+	if n := utf8.RuneCountInString(title); n > MaxItemTitleRunes {
+		return fmt.Sprintf("Title is too long: %d characters, maximum %d", n, MaxItemTitleRunes)
+	}
+	return ""
 }

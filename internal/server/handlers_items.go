@@ -617,8 +617,22 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Title == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "Title is required")
+	// BUG-2833 / BUG-2831. This used to be `input.Title == ""` inline, which is
+	// how create and update came to disagree: the rule was a literal in one
+	// handler, so the sibling handler on the same field never got it. It now
+	// runs through models.NormalizeItemTitle + models.ValidateItemTitle, the
+	// same pair store.CreateItem enforces authoritatively and
+	// handleUpdateItem/handleImportArtifact call.
+	//
+	// Two behaviour changes on THIS door, both deliberate:
+	//   - whitespace-only titles are now refused. "   " was legal on create and
+	//     refused on artifact import; it slugifies to empty and lands on the
+	//     store's "untitled" fallback, which Dave's ruling made defensive-only.
+	//   - titles over MaxItemTitleRunes are refused, closing BUG-2831's
+	//     dialect split at the door instead of at a Postgres btree error.
+	input.Title = models.NormalizeItemTitle(input.Title)
+	if msg := models.ValidateItemTitle(input.Title); msg != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
 
@@ -969,6 +983,35 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
+	}
+
+	// BUG-2833: the empty-title door. handleCreateItem has refused an empty
+	// title since it was written; this handler never had the check, so
+	// PATCH {"title": ""} was accepted and applied — one field, two handlers,
+	// two answers. BUG-2831 adds the length half: an unbounded title becomes an
+	// unbounded slug, which Postgres refuses at the UNIQUE(workspace_id, slug)
+	// btree while SQLite takes it.
+	//
+	// This check is the FAST, FRIENDLY one, not the authoritative one.
+	// store.UpdateItem re-runs it under the write lock, because `item` here was
+	// read before any lock and a concurrent rename could turn an echoed legacy
+	// title into a genuine one between that read and the write. Both call the
+	// same models pair, so they cannot drift into disagreeing the way create
+	// and update did.
+	//
+	// The `!= item.Title` clause is the grandfathering rule, not an
+	// optimization: re-sending an item's existing title is not a rename, so a
+	// legacy title that predates the bound keeps working. See the fuller note
+	// at the store's copy.
+	if input.Title != nil {
+		normalizedTitle := models.NormalizeItemTitle(*input.Title)
+		if normalizedTitle != item.Title {
+			if msg := models.ValidateItemTitle(normalizedTitle); msg != "" {
+				writeError(w, http.StatusBadRequest, "bad_request", msg)
+				return
+			}
+		}
+		input.Title = &normalizedTitle
 	}
 
 	// TASK-2022: `fields` (full replace) and `fields_patch` (field-level
@@ -1712,6 +1755,17 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// call path added on the way up would otherwise be published to the
 		// client.
 		if writeItemRenameCascadeTooLarge(w, err) {
+			return
+		}
+		// BUG-2833 / BUG-2831: the store's authoritative title check. The
+		// pre-lock check above catches this for ordinary callers; this arm is
+		// what a title that only became invalid under the lock lands on, and it
+		// must be a 400 rather than writeInternalError's 500 — the request was
+		// understood and declined, and retrying it unchanged will be declined
+		// identically.
+		var badItemTitle *store.InvalidItemTitleError
+		if errors.As(err, &badItemTitle) {
+			writeError(w, http.StatusBadRequest, "bad_request", badItemTitle.Reason)
 			return
 		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both

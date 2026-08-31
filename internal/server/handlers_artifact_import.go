@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/collections"
@@ -81,12 +80,20 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Require a title, matching handleCreateItem's "Title is required" gate.
-	// artifact.Decode tolerates a missing title (producing an "untitled"
-	// item), so we enforce it here so an import can't diverge from the normal
-	// create path's validation.
-	if strings.TrimSpace(art.Title) == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "Title is required")
+	// Require a well-formed title, matching handleCreateItem. artifact.Decode
+	// tolerates a missing title (producing an "untitled" item), so an import
+	// must not diverge from the normal create path's validation.
+	//
+	// BUG-2833: this comment used to claim it matched handleCreateItem's gate
+	// while testing strings.TrimSpace(...) == "" against a create path that
+	// tested art.Title == "" exactly — so a title of "   " was refused HERE and
+	// accepted THERE, and the comment asserting they agreed is what stopped
+	// anyone noticing. Both now call the same models pair, so the claim is
+	// enforced rather than asserted; create adopted this door's trim, which is
+	// the stricter and correct reading.
+	art.Title = models.NormalizeItemTitle(art.Title)
+	if msg := models.ValidateItemTitle(art.Title); msg != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
 

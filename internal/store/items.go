@@ -174,7 +174,41 @@ func (s *Store) acquireWorkspaceParentLinkLock(tx *sql.Tx, workspaceID string) e
 	return nil
 }
 
+// ErrInvalidItemTitle is the sentinel behind InvalidItemTitleError, so callers
+// can errors.Is it without depending on the concrete type.
+//
+// The store enforces the item-title rule rather than trusting its callers for
+// the reason BUG-2833 exists: the rule WAS caller-side only, it lived in
+// handleCreateItem alone, and handleUpdateItem — the sibling handler on the
+// same field — simply did not have it. A rule that has to be repeated at each
+// door is a rule that will be missing from one of them.
+var ErrInvalidItemTitle = errors.New("store: invalid item title")
+
+// InvalidItemTitleError carries the human-readable reason a title was refused,
+// so the HTTP layer can return it without re-deriving the rule or splicing an
+// internal error's text into a response.
+type InvalidItemTitleError struct{ Reason string }
+
+func (e *InvalidItemTitleError) Error() string {
+	return ErrInvalidItemTitle.Error() + ": " + e.Reason
+}
+
+func (e *InvalidItemTitleError) Unwrap() error { return ErrInvalidItemTitle }
+
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
+	// Title normalization + validation (BUG-2833 / BUG-2831). Before the retry
+	// loop: it depends only on the input, so re-running it per attempt would
+	// re-derive the same verdict, and normalizing here means every attempt
+	// slugifies the SAME string.
+	//
+	// No grandfathering clause here, unlike UpdateItem — a create has no prior
+	// title to be grandfathered against. Every item this path mints satisfies
+	// the bound.
+	input.Title = models.NormalizeItemTitle(input.Title)
+	if msg := models.ValidateItemTitle(input.Title); msg != "" {
+		return nil, &InvalidItemTitleError{Reason: msg}
+	}
+
 	// Retry loop: if a concurrent insert claims the same item_number — or the
 	// same slug — we roll back and re-derive both on the next attempt.
 	//
@@ -2246,6 +2280,39 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// Fields, Tags, Title, and the joined display names — is a string, and a
 	// string cannot be mutated in place, so today's consumers are covered.
 	preUpdate := *existing
+
+	// Title normalization + validation (BUG-2833 / BUG-2831). Placed HERE,
+	// immediately after the post-lock re-read, because everything downstream
+	// compares or derives from `*input.Title`: the version-force check, the
+	// `title = ?` SET, the slug derived by slugify, and the rename cascade.
+	// Normalizing later would leave those reading the raw value and the row
+	// holding the normalized one — the exact create/update divergence this
+	// unit exists to remove, re-created inside one function.
+	//
+	// This is the AUTHORITATIVE check; handleUpdateItem runs the same one
+	// pre-lock to produce a fast, friendly 400. Same split as documents, for
+	// the same reason: the handler compares against an item it read BEFORE the
+	// lock, so a concurrent rename can turn an echoed legacy title into a
+	// genuine one between the two reads. The decision belongs where the write
+	// happens.
+	//
+	// GRANDFATHERED, deliberately: a title identical to the stored one is not
+	// a rename, so it is not a write-time door and is not validated. That is
+	// what keeps the bound non-retroactive (Dave's day-63 ruling, carried over
+	// from MaxDocumentTitleRunes) — an item whose stored title predates the
+	// bound stays editable in every other respect, and a client that echoes
+	// the whole item back does not start failing on it. An item can therefore
+	// still be written with a legacy-invalid title, but only the one it
+	// already has: no door can mint a NEW untitled or over-long item.
+	if input.Title != nil {
+		normalized := models.NormalizeItemTitle(*input.Title)
+		if normalized != existing.Title {
+			if msg := models.ValidateItemTitle(normalized); msg != "" {
+				return nil, &InvalidItemTitleError{Reason: msg}
+			}
+		}
+		input.Title = &normalized
+	}
 
 	// Optimistic-concurrency guard runs FIRST — before the open-children
 	// precheck — so a caller who lost the race gets the promised

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -61,6 +62,67 @@ func coerceJSONForImport(raw, defaultJSON, field, rowID, workspaceID string, exp
 		"workspace_id", workspaceID,
 		"raw_len", len(raw))
 	return defaultJSON
+}
+
+// importCoercedTitle is the item-title half of the same log-and-coerce policy
+// (BUG-2833 / BUG-2831). It returns the title to write and, when it changed,
+// the reason — so the caller can log one line carrying the row identity.
+//
+// COERCE, NOT REFUSE, and that is a ruling rather than a shortcut. The
+// interactive doors (create, update, artifact import) REFUSE an empty or
+// over-long title, because they are minting a new value from a live caller who
+// can fix it. Import is restoring data this product already accepted: a
+// 300-rune title has always been legal, so validating a bundle would turn
+// "restore my archive" into a hard failure for rows we ourselves wrote, and
+// `pad db migrate` — which is ExportWorkspace piped into this same INSERT —
+// would refuse to migrate SQLite instances that work fine today.
+//
+// It also sits three lines from coerceJSONForImport, whose recorded IDEA-1488
+// disposition is log-and-coerce "so a legacy bundle with one malformed item
+// still imports". Refusing titles in the same loop would give one loop two
+// dispositions for the same class of problem.
+//
+// The coercion does NOT weaken Dave's untitled-items ruling. The imported row
+// lands WITH a title — the literal string "Untitled" — so the invariant that
+// no door writes an empty title into the database holds here too, and the
+// store's baseSlug == "" fallback stays defensive-only.
+func importCoercedTitle(raw string) (string, string) {
+	title := models.NormalizeItemTitle(raw)
+	if title == "" {
+		return importUntitledTitle, "empty"
+	}
+	if n := utf8.RuneCountInString(title); n > models.MaxItemTitleRunes {
+		return string([]rune(title)[:models.MaxItemTitleRunes]), "too_long"
+	}
+	return title, ""
+}
+
+// importUntitledTitle is what an empty imported title becomes. Capitalized
+// because it is a TITLE that a user will read in a list, not the lowercase
+// "untitled" slug fallback in items.go — the two are deliberately different
+// strings so a reader can tell which mechanism produced what they are looking
+// at.
+const importUntitledTitle = "Untitled"
+
+// importCoercedSlug bounds an imported slug (BUG-2831). Coercing only the
+// title would not close the import door: this loop writes `it.Slug` from the
+// bundle VERBATIM rather than re-deriving it, and the slug — not the title —
+// is what carries UNIQUE(workspace_id, slug) into a Postgres btree whose index
+// tuple is capped at 8191 bytes. A bundle from a SQLite instance holding a
+// 2 MiB title carries a 2 MiB slug, and truncating the title alone would leave
+// the INSERT failing exactly as before.
+//
+// Untouched unless it exceeds the bound: an in-range slug is written byte for
+// byte, so nothing about ordinary round-tripping changes. Truncation can
+// collide with another row in the same workspace, which is why the caller
+// resolves the result through uniqueSlugQ inside the import transaction rather
+// than hoping — but only for coerced slugs, so the uniqueness scan does not run
+// for every row of a large import.
+func importCoercedSlug(raw string) (string, bool) {
+	if utf8.RuneCountInString(raw) <= models.MaxItemTitleRunes {
+		return raw, false
+	}
+	return string([]rune(raw)[:models.MaxItemTitleRunes]), true
 }
 
 // ExportWorkspace exports all data for a workspace into a portable format.
@@ -423,6 +485,34 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// coercion above. The IDEA-1488 leg: log-and-coerce (not
 		// fail-stop) so a legacy bundle with one malformed item
 		// still imports.
+		// BUG-2833 / BUG-2831: title + slug coercion, same log-and-coerce
+		// policy as the fields/tags coercion below. See importCoercedTitle for
+		// why import coerces where the interactive doors refuse.
+		itemTitle, titleCoercion := importCoercedTitle(it.Title)
+		if titleCoercion != "" {
+			slog.Warn("import_workspace coerced item title",
+				"reason", titleCoercion,
+				"row_id", it.ID,
+				"workspace_id", ws.ID,
+				"raw_runes", utf8.RuneCountInString(it.Title))
+		}
+		itemSlug, slugCoerced := importCoercedSlug(it.Slug)
+		if slugCoerced {
+			// Resolve collisions the truncation may have created, inside this
+			// transaction so the scan is read-your-writes against the rows this
+			// import has already inserted.
+			unique, uerr := s.uniqueSlugQ(tx, "items", "workspace_id", ws.ID, itemSlug)
+			if uerr != nil {
+				return nil, fmt.Errorf("import item %s: unique slug after truncation: %w", it.ID, uerr)
+			}
+			slog.Warn("import_workspace coerced item slug",
+				"reason", "too_long",
+				"row_id", it.ID,
+				"workspace_id", ws.ID,
+				"raw_runes", utf8.RuneCountInString(it.Slug),
+				"slug", unique)
+			itemSlug = unique
+		}
 		fieldsJSON := coerceJSONForImport(it.Fields, "{}", "items.fields", it.ID, ws.ID, true)
 		tagsJSON := coerceJSONForImport(it.Tags, "[]", "items.tags", it.ID, ws.ID, false)
 		coercedFields[it.ID] = fieldsJSON
@@ -451,7 +541,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
-			newItemID, ws.ID, newCollID, it.Title, it.Slug, it.Content, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
+			newItemID, ws.ID, newCollID, itemTitle, itemSlug, it.Content, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, nextItemNumber,
 			it.CreatedAt, it.UpdatedAt, ws.ID)
 		if err != nil {

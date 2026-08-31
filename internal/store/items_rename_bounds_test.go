@@ -313,7 +313,15 @@ func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 	}
 	ws := createTestWorkspace(t, s, "ItemRenameScanBound")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	target := createTestItem(t, s, ws.ID, col.ID, hugeTitle, "the item being renamed")
+	// BUG-2833 / BUG-2831: a 2 MiB title is no longer reachable through
+	// CreateItem — models.MaxItemTitleRunes refuses it at the door, on both
+	// dialects. The scan bound it guards is NOT thereby obsolete: the charge is
+	// against each link row's STORED target_title, so a legacy row carrying a
+	// pre-bound title still drives exactly this pressure, and even an in-bound
+	// title reaches the cap at ~24,000 rows (the number this fixture trades
+	// away for 64). Built as legacy data so the test keeps measuring the guard
+	// rather than the new door in front of it.
+	target := createLegacyTitledItem(t, s, ws.ID, col.ID, hugeTitle, "the item being renamed")
 
 	contentBytes := 0
 	for i := 0; i < rowsNeeded; i++ {
