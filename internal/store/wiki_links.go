@@ -705,6 +705,14 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// Members of the item.bulk_updated emitted after the loop — only sources
 	// whose content this cascade actually rewrote, not every candidate it
 	// examined.
+	// ONE escaper for the whole cascade (BUG-2805). The rename has one new
+	// title, but the projection and rewrite below run once per SOURCE — and the
+	// scan bound admits a very large number of sources when their titles are
+	// short. Escaping inside those calls would multiply an unbounded new title
+	// by an unbounded source count, which is BUG-2804's R5 defect in a new
+	// costume.
+	esc := links.NewTitleEscaper(newTitle, collSlug)
+
 	var cascaded []string
 	for _, work := range works {
 		// One read per SOURCE, not per link (BUG-2804 M1).
@@ -728,7 +736,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 		// per-bracket decision and skip rules as the rewrite itself, so a
 		// source whose brackets no longer match is charged only for its read
 		// and never for a rewrite that will not happen.
-		projected, willApply := links.ProjectRewrittenLen(content, work.rewrites, newTitle, collSlug)
+		projected, willApply := links.ProjectRewrittenLen(content, work.rewrites, esc)
 		cost := int64(len(content))
 		if willApply > 0 {
 			cost += int64(projected)
@@ -738,7 +746,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 			return newItemRenameCascadeTooLargeError(newTitle, processed)
 		}
 
-		newContent, applied := s.buildCascadeBody(content, work.rewrites, newTitle, collSlug)
+		newContent, applied := s.buildCascadeBody(content, work.rewrites, esc)
 		if applied == 0 {
 			// No bracket matched the expected shape at the recorded
 			// positions — possible if a previous content edit shifted
@@ -1633,8 +1641,8 @@ func (s *Store) SetCascadeBuildObserver(fn func(bytes int)) {
 // With the build and the count inside one function, a cap check can only be
 // before this call or after it, and "after" always means the count already
 // happened. There is no third position for the defect to hide in.
-func (s *Store) buildCascadeBody(content string, rewrites []links.BracketRewrite, newTitle, collSlug string) (string, int) {
-	newContent, applied := links.RewriteBracketsAt(content, rewrites, newTitle, collSlug)
+func (s *Store) buildCascadeBody(content string, rewrites []links.BracketRewrite, esc links.TitleEscaper) (string, int) {
+	newContent, applied := links.RewriteBracketsAt(content, rewrites, esc)
 	if s.onItemCascadeBodyBuilt != nil && applied > 0 {
 		s.onItemCascadeBodyBuilt(len(newContent))
 	}

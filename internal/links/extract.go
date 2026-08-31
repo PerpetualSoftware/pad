@@ -105,13 +105,27 @@ var refPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 // (`(?:\\.|[^\]\\])+`), so any link the editor saves can be indexed
 // — even if its display text contains a literal `]` or `|`.
 //
+// CORRECTED 2026-08-31 (BUG-2805): this comment used to say that
 // renderMarkdown at markdown.ts:300 uses a simpler regex (`[^\]]+`)
-// that REJECTS escaped-bracket bodies, so escaped links don't
-// currently render as clickable links in the UI. That's a
-// pre-existing inconsistency in the editor pipeline; matching the
-// permissive grammar here makes the index forward-compatible with a
-// renderer fix without leaving a gap when one lands. Codex rounds
-// 4/7/10 P2.
+// and therefore REJECTS escaped bodies, making escaped links an
+// index-only citizen that never renders. That is no longer true, and
+// the citation had gone stale — markdown.ts:300 is inside a doc
+// comment now, and BOTH wiki-link regexes in that file
+// (renderMarkdown at :326 and wikiLinksToMarkdown at :625) use this
+// exact escape-aware production. The renderer comment at :323-325
+// names BUG-1744 as the change that aligned them.
+//
+// So the grammars agree across server and client, and escaped links
+// DO render as clickable. Verified by reading both regexes, not by
+// re-citing this comment — which is how the stale version survived
+// long enough to be quoted into a bug repro (TASK-2826) as a live
+// constraint. It matters for BUG-2805 in the direction that makes the
+// bug worse: the stale link that rename left behind was a WORKING,
+// clickable link, not an invisible one.
+//
+// Original rationale, still accurate: matching the permissive grammar
+// here keeps the index consistent with what the editor saves. Codex
+// rounds 4/7/10 P2.
 var wikiLinkPattern = regexp.MustCompile(`\[\[((?:\\.|[^\]\\])+)\]\]`)
 
 // fencedCodeRanges returns half-open `[start, end)` byte ranges that

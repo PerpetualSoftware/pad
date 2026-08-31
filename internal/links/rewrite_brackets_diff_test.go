@@ -111,9 +111,104 @@ func behaviourCorpus() []diffCase {
 	}
 }
 
+// guardedDomain reports whether the frozen V0 oracle is still authoritative for
+// this input.
+//
+// BUG-2805 deliberately changes behaviour in two places, so the oracle cannot
+// be applied blanket any more — but narrowing it to the domain BUG-2805 does
+// NOT touch keeps it load-bearing for everything else, which is the large
+// majority. Outside this domain the intended new behaviour is pinned by name in
+// TestRewriteBracketAt_IntentionalDivergencesFromV0 and the BUG-2805 tests.
+//
+// The domain is: the bracket at `position` has a NON-EMPTY body containing none
+// of `\`, `]`, `|`. That is exactly "no escape grammar involved", which is
+// where BUG-2805 promises byte-identical behaviour.
+func guardedDomain(content string, position int, newTitle string) bool {
+	if newTitle == "" {
+		// V0 emitted `[[]]` here, which is the DESTRUCTION itself — the oracle
+		// encodes the bug in this corner. See the intentional-divergence test.
+		return false
+	}
+	if position < 0 || position+2 > len(content) || content[position:position+2] != "[[" {
+		return true // rejection paths are unchanged; still guarded
+	}
+	rest := content[position+2:]
+	closeIdx := strings.Index(rest, "]]")
+	if closeIdx < 0 {
+		return true // unterminated: unchanged
+	}
+	body := rest[:closeIdx]
+	if body == "" {
+		return false // empty body — see the intentional-divergence test
+	}
+	return !strings.ContainsAny(body, `\]|`)
+}
+
+// TestRewriteBracketAt_IntentionalDivergencesFromV0 names every input where
+// BUG-2805 deliberately departs from the frozen pre-refactor oracle, so the
+// departures are a checked list rather than a gap in the differential tests.
+func TestRewriteBracketAt_IntentionalDivergencesFromV0(t *testing.T) {
+	cases := []struct {
+		name            string
+		content         string
+		position        int
+		targetTitle     string
+		newTitle        string
+		wantV0, wantNew string
+		why             string
+	}{
+		{
+			name: "empty body is not a link", content: "x [[]] y", position: 2,
+			targetTitle: "", newTitle: "New",
+			wantV0: "x [[New]] y", wantNew: "x [[]] y",
+			why: "the parser's body production is `+`, so `[[]]` is not a link and no " +
+				"position is ever recorded for one. V0 would MINT a link out of a non-link " +
+				"if handed a drifted offset; the escape-aware scanner refuses.",
+		},
+		{
+			name: "escaped body now MATCHES", content: `see [[Weird \] Title]] here`, position: 4,
+			targetTitle: "Weird ] Title", newTitle: "Renamed",
+			wantV0: `see [[Weird \] Title]] here`, wantNew: "see [[Renamed]] here",
+			why: "BUG-2805 direction 1: V0 compared the RAW body against the unescaped " +
+				"title, never matched, and left the link stale while the index flipped broken.",
+		},
+		{
+			name: "empty new title is REFUSED, not emitted", content: "x [[Old]] y", position: 2,
+			targetTitle: "Old", newTitle: "",
+			wantV0: "x [[]] y", wantNew: "x [[Old]] y",
+			why: "V0's expected output IS the damage: `[[]]` is not a link under the `+` " +
+				"production, so the reparse deletes the index row. Reachable two ways — a " +
+				"zero-value TitleEscaper, and UpdateItem accepting a rename to \"\" because the " +
+				"empty-title guard lives only in handleCreateItem. Refusing leaves the link " +
+				"clickable and repairable; emitting destroys it permanently.",
+		},
+		{
+			name: "emission now ESCAPES", content: "Ref [[Plain Target]] here.", position: 4,
+			targetTitle: "Plain Target", newTitle: "New ] Name",
+			wantV0: "Ref [[New ] Name]] here.", wantNew: `Ref [[New \] Name]] here.`,
+			why: "BUG-2805 direction 2a: V0's plain concatenation emitted an unparseable " +
+				"bracket, so the reparse deleted the index row — permanent damage.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rewriteBracketAtV0(tc.content, tc.position, tc.targetTitle, tc.newTitle, ""); got != tc.wantV0 {
+				t.Fatalf("fixture drift: V0 = %q, want %q — this test documents a divergence "+
+					"FROM a specific old behaviour, so the old behaviour must be what it says", got, tc.wantV0)
+			}
+			if got := RewriteBracketAt(tc.content, tc.position, tc.targetTitle, tc.newTitle, ""); got != tc.wantNew {
+				t.Errorf("new = %q, want %q\nwhy this diverges: %s", got, tc.wantNew, tc.why)
+			}
+		})
+	}
+}
+
 func TestRewriteBracketAt_MatchesPreRefactorImplementation(t *testing.T) {
 	for _, tc := range behaviourCorpus() {
 		t.Run(tc.name, func(t *testing.T) {
+			if !guardedDomain(tc.content, tc.position, tc.newTitle) {
+				t.Skip("outside the V0-guarded domain — see TestRewriteBracketAt_IntentionalDivergencesFromV0")
+			}
 			want := rewriteBracketAtV0(tc.content, tc.position, tc.targetTitle, tc.newTitle, tc.collSlug)
 			got := RewriteBracketAt(tc.content, tc.position, tc.targetTitle, tc.newTitle, tc.collSlug)
 			if got != want {
@@ -143,6 +238,9 @@ func TestRewriteBracketAt_MatchesPreRefactorOnRandomInput(t *testing.T) {
 		newTitle := news[rng.Intn(len(news))]
 		slug := slugs[rng.Intn(len(slugs))]
 
+		if !guardedDomain(content, pos, newTitle) {
+			continue
+		}
 		want := rewriteBracketAtV0(content, pos, target, newTitle, slug)
 		got := RewriteBracketAt(content, pos, target, newTitle, slug)
 		if got != want {
@@ -174,6 +272,11 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 		content := randomBracketContent(rng)
 		target := titles[rng.Intn(len(titles))]
 		newTitle := news[rng.Intn(len(news))]
+		if newTitle == "" {
+			// The fold oracle emits `[[]]` for an empty title — the damage the
+			// rewriter now refuses. Covered by the intentional-divergence test.
+			continue
+		}
 
 		positions := bracketOffsets(content)
 		// Corrupt some of the time so skip paths get exercised.
@@ -222,7 +325,7 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 		for _, p := range shuffled {
 			rewrites = append(rewrites, BracketRewrite{Position: p, TargetTitle: target})
 		}
-		got, applied := RewriteBracketsAt(content, rewrites, newTitle, "")
+		got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper(newTitle, ""))
 
 		if got != want {
 			t.Fatalf("single pass diverges from the descending fold at iteration %d\n content=%q positions=%v target=%q new=%q\n fold=%q\n pass=%q (applied=%d)",
@@ -239,11 +342,11 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 // no-op path the cascade relies on to skip a write.
 func TestRewriteBracketsAt_NoRewritesReturnsInputUnchanged(t *testing.T) {
 	const content = "nothing [[Other]] to do here"
-	got, applied := RewriteBracketsAt(content, nil, "New", "")
+	got, applied := RewriteBracketsAt(content, nil, NewTitleEscaper("New", ""))
 	if got != content || applied != 0 {
 		t.Fatalf("empty rewrites: got %q applied=%d, want %q applied=0", got, applied, content)
 	}
-	got, applied = RewriteBracketsAt(content, []BracketRewrite{{Position: 8, TargetTitle: "Old"}}, "New", "")
+	got, applied = RewriteBracketsAt(content, []BracketRewrite{{Position: 8, TargetTitle: "Old"}}, NewTitleEscaper("New", ""))
 	if got != content || applied != 0 {
 		t.Fatalf("non-matching rewrite: got %q applied=%d, want %q applied=0", got, applied, content)
 	}
@@ -263,7 +366,7 @@ func TestRewriteBracketsAt_DoesNotMutateCallerSlice(t *testing.T) {
 	before := make([]BracketRewrite, len(rewrites))
 	copy(before, rewrites)
 
-	if _, applied := RewriteBracketsAt(content, rewrites, "New", ""); applied != 3 {
+	if _, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("New", "")); applied != 3 {
 		t.Fatalf("applied = %d, want 3", applied)
 	}
 	for i := range before {
@@ -286,7 +389,7 @@ func TestRewriteBracketsAt_AppliesEveryBracketInOnePass(t *testing.T) {
 	for _, p := range offs {
 		rewrites = append(rewrites, BracketRewrite{Position: p, TargetTitle: "Old"})
 	}
-	got, applied := RewriteBracketsAt(content, rewrites, "New", "")
+	got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("New", ""))
 	if applied != n {
 		t.Fatalf("applied = %d, want %d", applied, n)
 	}
@@ -356,7 +459,7 @@ func TestRewriteBracketsAt_ByteIdenticalRewriteIsNotAChange(t *testing.T) {
 				t.Fatalf("fixture: %d brackets, want 1", len(offs))
 			}
 			got, applied := RewriteBracketsAt(tc.content,
-				[]BracketRewrite{{Position: offs[0], TargetTitle: tc.targetTitle}}, tc.newTitle, tc.collSlug)
+				[]BracketRewrite{{Position: offs[0], TargetTitle: tc.targetTitle}}, NewTitleEscaper(tc.newTitle, tc.collSlug))
 			if got != tc.content {
 				t.Errorf("content changed: got %q, want %q", got, tc.content)
 			}
@@ -382,7 +485,7 @@ func TestRewriteBracketsAt_MixedChangedAndUnchangedCountsOnlyTheChanged(t *testi
 		{Position: offs[1], TargetTitle: "New"}, // already reads [[New]] — no change
 		{Position: offs[2], TargetTitle: "Old"},
 	}
-	got, applied := RewriteBracketsAt(content, rewrites, "New", "")
+	got, applied := RewriteBracketsAt(content, rewrites, NewTitleEscaper("New", ""))
 	if want := "[[New]] and [[New]] and [[New]]"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -421,8 +524,8 @@ func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
 
 	check := func(t *testing.T, content string, rewrites []BracketRewrite, newTitle, collSlug string) {
 		t.Helper()
-		wantLen, wantApplied := ProjectRewrittenLen(content, rewrites, newTitle, collSlug)
-		got, gotApplied := RewriteBracketsAt(content, rewrites, newTitle, collSlug)
+		wantLen, wantApplied := ProjectRewrittenLen(content, rewrites, NewTitleEscaper(newTitle, collSlug))
+		got, gotApplied := RewriteBracketsAt(content, rewrites, NewTitleEscaper(newTitle, collSlug))
 		if len(got) != wantLen || gotApplied != wantApplied {
 			t.Fatalf("projection and the real pass disagree\n content=%q rewrites=%+v new=%q slug=%q\n"+
 				" projected len=%d applied=%d\n actual    len=%d applied=%d (result %q)",
@@ -491,4 +594,253 @@ func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
 		}
 		check(t, content, rewrites, newTitle, "")
 	}
+}
+
+// TestRewriteBracketsAt_EmissionRoundTripsThroughTheParser is the property that
+// makes BUG-2805 closed rather than patched: whatever title a rename emits, the
+// PARSER must read back exactly that title.
+//
+// This is the check no per-character test can give you. The repro on TASK-2826
+// enumerated `]`, `\]`, `|` and bare `\` and found four different outcomes —
+// destroyed, wrong-title, rescued, rescued. A property over generated titles
+// covers the combinations nobody enumerated, and it fails loudly on the two
+// that were real defects.
+func TestRewriteBracketsAt_EmissionRoundTripsThroughTheParser(t *testing.T) {
+	rng := rand.New(rand.NewSource(20260903))
+	// Alphabet weighted toward the characters that carry meaning in the body
+	// grammar; ordinary letters are along for realism.
+	alphabet := []string{"a", "B", " ", "]", "|", `\`, `\]`, `\|`, `\\`, "/", "é", "-"}
+
+	for i := 0; i < 4000; i++ {
+		n := 1 + rng.Intn(6)
+		var sb strings.Builder
+		for j := 0; j < n; j++ {
+			sb.WriteString(alphabet[rng.Intn(len(alphabet))])
+		}
+		newTitle := sb.String()
+
+		content := "before [[Plain Target]] after"
+		offs := bracketOffsets(content)
+		got, applied := RewriteBracketsAt(content,
+			[]BracketRewrite{{Position: offs[0], TargetTitle: "Plain Target"}},
+			NewTitleEscaper(newTitle, ""))
+		if applied != 1 {
+			t.Fatalf("iteration %d: applied = %d, want 1 (newTitle=%q)", i, applied, newTitle)
+		}
+
+		// The emitted content must parse, and the ONE link it contains must
+		// resolve to exactly the title we renamed to.
+		links := ExtractWikiLinks(got)
+		if len(links) != 1 {
+			t.Fatalf("iteration %d: emitted %q from newTitle=%q — parser found %d links, want 1. "+
+				"This is the BUG-2805 direction-2a shape: an unparseable bracket whose index row "+
+				"the reparse DELETES, permanently.", i, got, newTitle, len(links))
+		}
+		if links[0].Title != newTitle {
+			t.Fatalf("iteration %d: emitted %q from newTitle=%q — parser read title %q. "+
+				"This is the direction-2b shape: valid syntax for the WRONG title.",
+				i, got, newTitle, links[0].Title)
+		}
+	}
+}
+
+// TestScanBracketBodyAgreesWithTheParser pins the third half of BUG-2805, which
+// the repro did not name.
+//
+// The rewriter used strings.Index(rest, "]]") to find its closing delimiter.
+// That is not the grammar: in `[[A\]]]` it stops at the `]` belonging to the
+// `\]` escape. It was harmless only while the rewriter never EMITTED escapes —
+// and this fix makes escaped bodies routine, so a scan that disagrees with the
+// parser would corrupt on the next rename what this one wrote.
+//
+// The parser is the oracle: for every link ExtractWikiLinks reports, the
+// scanner must find the same body at the same offset.
+func TestScanBracketBodyAgreesWithTheParser(t *testing.T) {
+	// CONSTRUCTED FIRST, because the discriminating shape is rare under random
+	// generation: the naive `strings.Index(rest, "]]")` only picks the wrong
+	// close when an escaped `\]` is IMMEDIATELY followed by the real `]]`.
+	// `[[Weird \] Title]]` does NOT discriminate — its `\]` is followed by a
+	// space, so the naive scan happens to land correctly. Leaving this to the
+	// generator let the mutant survive this test and be killed only incidentally
+	// by an unrelated case.
+	for _, tc := range []struct{ name, content, wantBody string }{
+		{"escape immediately before the close", `[[A\]]]`, `A\]`},
+		{"escaped pipe before the close", `[[A\|]]`, `A\|`},
+		{"escaped backslash before the close", `[[A\\]]`, `A\\`},
+		{"escape mid-body", `[[Weird \] Title]]`, `Weird \] Title`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _, ok := scanBracketBody(tc.content, 0)
+			if !ok {
+				t.Fatalf("scanner found no bracket in %q", tc.content)
+			}
+			if body != tc.wantBody {
+				t.Errorf("scanner body = %q, want %q — it disagrees with the grammar about "+
+					"where the body ends", body, tc.wantBody)
+			}
+			ls := ExtractWikiLinks(tc.content)
+			if len(ls) != 1 {
+				t.Fatalf("fixture: parser found %d links in %q, want 1", len(ls), tc.content)
+			}
+			key, _, _ := splitOnUnescapedPipe(body)
+			if got := unescapeWikiBody(key); got != ls[0].Title {
+				t.Errorf("scanner key unescapes to %q, parser read title %q", got, ls[0].Title)
+			}
+		})
+	}
+
+	rng := rand.New(rand.NewSource(20260904))
+	pieces := []string{
+		"[[A]]", `[[A\]]]`, `[[A\|B]]`, `[[A\\]]`, "[[A|B]]", "[[", "]]", "text ",
+		`[[Weird \] Title]]`, "[[tasks/X]]", "é", `\`, "]", "|",
+	}
+
+	for i := 0; i < 4000; i++ {
+		var sb strings.Builder
+		for j := 0; j < 1+rng.Intn(5); j++ {
+			sb.WriteString(pieces[rng.Intn(len(pieces))])
+		}
+		content := sb.String()
+
+		for _, l := range ExtractWikiLinks(content) {
+			body, end, ok := scanBracketBody(content, l.Position)
+			if !ok {
+				t.Fatalf("iteration %d: parser reported a link at %d in %q but the scanner "+
+					"found no bracket there", i, l.Position, content)
+			}
+			// The scanner returns the RAW body; unescaping it must give what the
+			// parser resolved the title/key to.
+			if end > len(content) || end < l.Position {
+				t.Fatalf("iteration %d: scanner returned end=%d out of range for %q", i, end, content)
+			}
+			key, _, _ := splitOnUnescapedPipe(body)
+			if unescapeWikiBody(key) != l.Title && l.Kind == WikiLinkKindTitle {
+				t.Fatalf("iteration %d: content %q at %d — scanner body %q unescapes to key %q, "+
+					"parser read title %q. The scan disagrees with the grammar.",
+					i, content, l.Position, body, unescapeWikiBody(key), l.Title)
+			}
+		}
+	}
+}
+
+// TestScanBracketBodyEdgeCasesMatchTheParser locks the delimiter edges down
+// against the parser as oracle, one assertion per shape.
+//
+// The parity property above generates content; this enumerates the shapes where
+// a hand-written scanner and a regex are most likely to disagree, so a failure
+// names WHICH edge broke instead of printing a random string. Every row was
+// verified against ExtractWikiLinks rather than reasoned about — including the
+// two where BOTH refuse, which is the agreement that is easiest to lose by
+// making the scanner more permissive than the grammar.
+func TestScanBracketBodyEdgeCasesMatchTheParser(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		content  string
+		wantOK   bool
+		wantBody string
+		why      string
+	}{
+		{"escape consumes the would-be close", `[[A\]]`, false, "",
+			`the \] escape eats the first ], leaving a single ] that cannot close`},
+		{"escaped close then real close", `[[A\]]]`, true, `A\]`,
+			"the naive strings.Index scan stops one byte early here — this is THE discriminating shape"},
+		{"stray ] after the close", `[[A]]]`, true, "A",
+			"close at the FIRST ]], trailing ] is ordinary text"},
+		{"]] run after the close", `[[A]]]]`, true, "A",
+			"same: first ]] wins, the rest is text"},
+		{"trailing backslash at EOF", `[[A\`, false, "",
+			`the \. production has nothing to consume`},
+		{"escaped backslash then close", `[[A\\]]`, true, `A\\`,
+			`\\ is one escaped backslash, so the ]] that follows is a real close`},
+		{"empty body", "[[]]", false, "",
+			"the body production is `+`; `[[]]` is not a link at all"},
+		{"bare ] mid-body", "[[A]B]]", false, "",
+			"an unescaped ] is not in the body production — both scanner and parser refuse"},
+		{"escaped pipe", `[[A\|B]]`, true, `A\|B`,
+			"the escaped pipe is body text, not a display separator"},
+		{"body is only an escaped ]", `[[\]]]`, true, `\]`,
+			"shortest body that needs escape-aware scanning"},
+		{"backslash before LF is NOT an escape pair", "[[A\\\nB]]", false, "",
+			"Go's regexp `.` does not match a newline, so `\\.` cannot consume one and the " +
+				"parser rejects the whole body. The scanner treated backslash-ANY as a pair and " +
+				"accepted it (codex R2 P2, introduced by this diff)"},
+		{"backslash before CR IS an escape pair to Go", "[[A\\\rB]]", true, "A\\\rB",
+			"Go's `.` excludes only LF. The JS renderer's `.` also excludes CR, U+2028 and " +
+				"U+2029 (measured with node), so Go indexes a link the renderer will not " +
+				"render — a PRE-EXISTING server/client grammar divergence, filed separately. " +
+				"This scanner agrees with the GO parser, which is what fills the index it reads"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _, ok := scanBracketBody(tc.content, 0)
+			if ok != tc.wantOK || body != tc.wantBody {
+				t.Errorf("scanner(%q) = (body %q, ok %v), want (%q, %v)\nwhy: %s",
+					tc.content, body, ok, tc.wantBody, tc.wantOK, tc.why)
+			}
+			// The parser is the oracle: it must agree about whether a link is
+			// there at all.
+			ls := ExtractWikiLinks(tc.content)
+			if (len(ls) > 0) != tc.wantOK {
+				t.Errorf("parser found %d links in %q but the scanner says ok=%v — the scanner "+
+					"and the grammar disagree about whether this is a link", len(ls), tc.content, ok)
+			}
+		})
+	}
+}
+
+// TestBUG2805_AccidentalCompatibilitiesSurvive pins the two rescues Rook's
+// repro identified as non-reproducing directions (TASK-2826 2c and 2d).
+//
+// Both are ACCIDENTS of other code — the legacy full-body-with-pipe fallback
+// and unescapeWikiBody's leniency toward a stray backslash — and both are
+// keyed on the exact bytes an escape-aware emitter changes. A fix that quietly
+// broke them would trade two silent successes for two silent failures.
+func TestBUG2805_AccidentalCompatibilitiesSurvive(t *testing.T) {
+	t.Run("legacy unescaped-pipe content still parses to the full-body title", func(t *testing.T) {
+		// Content a USER already has, written before this fix. Untouched by the
+		// change — the parser side is not modified — and it must still resolve
+		// via the full-body reading.
+		got := ExtractWikiLinks("Ref [[New | Name]] here.")
+		if len(got) != 1 {
+			t.Fatalf("parser found %d links, want 1", len(got))
+		}
+		if got[0].Title != "New " || got[0].Display != " Name" {
+			t.Errorf("split reading changed: title=%q display=%q — the store's full-body "+
+				"fallback keys on exactly these values (wiki_links.go title fallback)",
+				got[0].Title, got[0].Display)
+		}
+	})
+
+	t.Run("escaped-pipe emission resolves without needing the fallback", func(t *testing.T) {
+		// What the fix now EMITS for the same rename. Better than the rescue:
+		// it parses as a single title directly, no fallback required.
+		content := "Ref [[Plain Target]] here."
+		offs := bracketOffsets(content)
+		got, _ := RewriteBracketsAt(content,
+			[]BracketRewrite{{Position: offs[0], TargetTitle: "Plain Target"}},
+			NewTitleEscaper("New | Name", ""))
+		if want := `Ref [[New \| Name]] here.`; got != want {
+			t.Fatalf("emitted %q, want %q", got, want)
+		}
+		links := ExtractWikiLinks(got)
+		if len(links) != 1 || links[0].Title != "New | Name" || links[0].HasDisplay {
+			t.Errorf("emitted link parsed as title=%q display=%v hasDisplay=%v; want the whole "+
+				"thing as one title", links[0].Title, links[0].Display, links[0].HasDisplay)
+		}
+	})
+
+	t.Run("stray backslash leniency preserved end to end", func(t *testing.T) {
+		content := "Go [[BS Target]] now."
+		offs := bracketOffsets(content)
+		got, _ := RewriteBracketsAt(content,
+			[]BracketRewrite{{Position: offs[0], TargetTitle: "BS Target"}},
+			NewTitleEscaper(`Odd \ Name`, ""))
+		links := ExtractWikiLinks(got)
+		if len(links) != 1 {
+			t.Fatalf("emitted %q — parser found %d links, want 1", got, len(links))
+		}
+		if links[0].Title != `Odd \ Name` {
+			t.Errorf("emitted %q parsed to %q, want %q — the bare-backslash title must still "+
+				"round-trip (2d)", got, links[0].Title, `Odd \ Name`)
+		}
+	})
 }
