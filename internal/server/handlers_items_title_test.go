@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -287,5 +290,77 @@ func TestIsDeterministicWriteFailureIncludesTitleRefusal(t *testing.T) {
 	}
 	if isDeterministicWriteFailure(errors.New("transient prune failure")) {
 		t.Error("an unrecognised error must stay recoverable so the fallback still degrades gracefully")
+	}
+}
+
+// TestUpdateItemErrorBlocksMapEveryStoreRefusal is a structural guard, and it
+// exists because this exact mistake has now been made four times in this one
+// function.
+//
+// handleUpdateItem reaches store.UpdateItemWithParentLink from THREE places —
+// the plain path, the collab-snapshot callback, and the collab-edit callback —
+// each with its own error block. BUG-2804 mapped the cascade refusal into the
+// plain block and missed the other two; its own comment records that as "a
+// population error, not a typo". BUG-2833 then mapped the title refusal into
+// the plain block, a reviewer named the collab-snapshot one, and the collab-edit
+// one was still missing — with that comment sitting directly above the helper
+// being called.
+//
+// So the durable fix is not another careful read. It is this: the arms are
+// counted, and adding a fourth block carrying one refusal but not its siblings
+// fails here with a message saying which. Counting AST call expressions rather
+// than grepping means comments and strings mentioning these names do not count.
+//
+// If you are here because this test failed: you added (or moved) an error
+// block. Give it every arm, in the same order as its siblings, or explain in
+// this test why the new block genuinely cannot produce one of these errors.
+//
+// WHAT IT DOES NOT COVER, stated because a structural test invites more
+// confidence than it earns: it counts SYNTACTIC PRESENCE, not reachability. An
+// arm disabled in place — `false && writeInvalidItemTitle(w, err)`, an
+// unreachable branch — still counts, and a mutant of that shape survives this
+// test (measured, not assumed). That is accepted: the failure this guards
+// against is an OMITTED arm, which is deletion-shaped, and deletion is exactly
+// what it detects — verified by deleting the arm from each of the three blocks
+// in turn and watching this test fail each time.
+func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "handlers_items.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse handlers_items.go: %v", err)
+	}
+
+	counts := map[string]int{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		switch ident.Name {
+		case "writeItemRenameCascadeTooLarge", "writeInvalidItemTitle", "asUpdateConflictError":
+			counts[ident.Name]++
+		}
+		return true
+	})
+
+	const wantBlocks = 3
+	for _, name := range []string{"writeItemRenameCascadeTooLarge", "writeInvalidItemTitle", "asUpdateConflictError"} {
+		if counts[name] != wantBlocks {
+			t.Errorf("%s is called %d time(s); every one of the %d UpdateItem error blocks must map it. "+
+				"A refusal mapped in some blocks and not others answers 400/409/413 down one route and "+
+				"500 — or a silent duplicate write — down another, for the identical store error.",
+				name, counts[name], wantBlocks)
+		}
+	}
+
+	// Control: the count is not trivially satisfied by a name that appears
+	// nowhere. If this fires, the AST walk is matching nothing and the
+	// assertions above are vacuous.
+	if counts["writeInvalidItemTitle"] == 0 {
+		t.Fatal("AST walk found no calls at all — the instrument is broken, not the code")
 	}
 }

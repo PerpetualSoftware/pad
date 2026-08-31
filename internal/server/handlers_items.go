@@ -1746,6 +1746,20 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// re-run the entire cascade — every linking body read and projected a
 			// second time — and refuse identically (codex R2).
 			return
+		} else if writeInvalidItemTitle(w, err) {
+			// FINAL for the same reason, and the pair with
+			// isDeterministicWriteFailure: that function is what stops
+			// applyContentViaCollab swallowing this error, and THIS arm is what
+			// consumes it once it arrives. Without both, a refused title falls
+			// through to the direct write below and is re-derived from scratch.
+			//
+			// BUG-2833 / codex R2. The comment on writeItemRenameCascadeTooLarge
+			// says this handler has THREE error blocks and that mapping only the
+			// plain one is a population error rather than a typo. I mapped two,
+			// then a reviewer named a third — and this is the fourth unit to make
+			// the identical mistake in the identical function. CONVE-18: the
+			// instance a reviewer names is a sample; grep the class.
+			return
 		} else if errors.Is(err, collab.ErrApplierAmbiguous) {
 			// BUG-2276 residual 2 (P1, mixed-deploy window): a legacy (non-bracket-
 			// capable) applier was caught by a concurrent version restore and its
