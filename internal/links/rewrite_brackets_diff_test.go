@@ -703,6 +703,61 @@ func TestScanBracketBodyAgreesWithTheParser(t *testing.T) {
 	}
 }
 
+// TestScanBracketBodyEdgeCasesMatchTheParser locks the delimiter edges down
+// against the parser as oracle, one assertion per shape.
+//
+// The parity property above generates content; this enumerates the shapes where
+// a hand-written scanner and a regex are most likely to disagree, so a failure
+// names WHICH edge broke instead of printing a random string. Every row was
+// verified against ExtractWikiLinks rather than reasoned about — including the
+// two where BOTH refuse, which is the agreement that is easiest to lose by
+// making the scanner more permissive than the grammar.
+func TestScanBracketBodyEdgeCasesMatchTheParser(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		content  string
+		wantOK   bool
+		wantBody string
+		why      string
+	}{
+		{"escape consumes the would-be close", `[[A\]]`, false, "",
+			`the \] escape eats the first ], leaving a single ] that cannot close`},
+		{"escaped close then real close", `[[A\]]]`, true, `A\]`,
+			"the naive strings.Index scan stops one byte early here — this is THE discriminating shape"},
+		{"stray ] after the close", `[[A]]]`, true, "A",
+			"close at the FIRST ]], trailing ] is ordinary text"},
+		{"]] run after the close", `[[A]]]]`, true, "A",
+			"same: first ]] wins, the rest is text"},
+		{"trailing backslash at EOF", `[[A\`, false, "",
+			`the \. production has nothing to consume`},
+		{"escaped backslash then close", `[[A\\]]`, true, `A\\`,
+			`\\ is one escaped backslash, so the ]] that follows is a real close`},
+		{"empty body", "[[]]", false, "",
+			"the body production is `+`; `[[]]` is not a link at all"},
+		{"bare ] mid-body", "[[A]B]]", false, "",
+			"an unescaped ] is not in the body production — both scanner and parser refuse"},
+		{"escaped pipe", `[[A\|B]]`, true, `A\|B`,
+			"the escaped pipe is body text, not a display separator"},
+		{"body is only an escaped ]", `[[\]]]`, true, `\]`,
+			"shortest body that needs escape-aware scanning"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _, ok := scanBracketBody(tc.content, 0)
+			if ok != tc.wantOK || body != tc.wantBody {
+				t.Errorf("scanner(%q) = (body %q, ok %v), want (%q, %v)\nwhy: %s",
+					tc.content, body, ok, tc.wantBody, tc.wantOK, tc.why)
+			}
+			// The parser is the oracle: it must agree about whether a link is
+			// there at all.
+			ls := ExtractWikiLinks(tc.content)
+			if (len(ls) > 0) != tc.wantOK {
+				t.Errorf("parser found %d links in %q but the scanner says ok=%v — the scanner "+
+					"and the grammar disagree about whether this is a link", len(ls), tc.content, ok)
+			}
+		})
+	}
+}
+
 // TestBUG2805_AccidentalCompatibilitiesSurvive pins the two rescues Rook's
 // repro identified as non-reproducing directions (TASK-2826 2c and 2d).
 //
