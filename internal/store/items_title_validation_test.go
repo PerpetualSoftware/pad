@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -493,8 +494,23 @@ func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
 
 	// A client that read this item and echoed it back sends the stored bytes.
 	echo := legacyTitle
-	if _, err := s.UpdateItem(legacy.ID, models.ItemUpdate{Title: &echo}); err != nil {
+	updated, err := s.UpdateItem(legacy.ID, models.ItemUpdate{Title: &echo})
+	if err != nil {
 		t.Fatalf("a verbatim echo of the stored title is not a rename and must be accepted: %v", err)
+	}
+	// ASSERT THE STORED BYTES, not merely that no error came back (codex round
+	// 2, P1). Checking err == nil alone passed against a version that skipped
+	// validation and then wrote the NORMALIZED title anyway — turning a
+	// protective exemption into a silent rewrite of the row it was protecting.
+	if updated.Title != legacyTitle {
+		t.Errorf("grandfathered write returned title %q, want the stored bytes unchanged", updated.Title)
+	}
+	stored, err := s.GetItem(legacy.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if stored.Title != legacyTitle {
+		t.Errorf("stored title = %q, want the legacy bytes untouched", stored.Title)
 	}
 
 	// Control: a genuinely different over-bound title is still refused, so the
@@ -532,5 +548,46 @@ func TestItemTitle_GrandfathersAWriteThatNormalizesToTheStoredTitle(t *testing.T
 	}
 	if updated.Title != legacyTitle {
 		t.Errorf("title = %q, want the stored value unchanged", updated.Title)
+	}
+}
+
+// TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle is the direct
+// regression for codex round 2's P1 — a hole the round-1 grandfathering fix
+// opened, not one the original code had.
+//
+// A legacy row stored as whitespace-only is the sharpest case: echoed back
+// verbatim, the raw comparison grandfathers it, and a version that skipped
+// validation while still assigning the normalized value wrote "" to the row —
+// minting the empty title Dave's ruling forbids, through the very clause meant
+// to protect legacy rows. No error is returned in that version, which is why
+// the assertion has to be on the stored bytes.
+func TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "TitleNoMintEmpty")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	for _, legacyTitle := range []string{"   ", "\t\n", "  " + strings.Repeat("z", models.MaxItemTitleRunes+1) + "  "} {
+		t.Run(fmt.Sprintf("%q", legacyTitle), func(t *testing.T) {
+			legacy := createLegacyTitledItem(t, s, ws.ID, col.ID, legacyTitle, "")
+			if legacy.Title != legacyTitle {
+				t.Fatalf("fixture did not store the title verbatim: %q", legacy.Title)
+			}
+
+			echo := legacyTitle
+			if _, err := s.UpdateItem(legacy.ID, models.ItemUpdate{Title: &echo}); err != nil {
+				t.Fatalf("a verbatim echo must be accepted as a no-op: %v", err)
+			}
+
+			stored, err := s.GetItem(legacy.ID)
+			if err != nil {
+				t.Fatalf("GetItem: %v", err)
+			}
+			if stored.Title != legacyTitle {
+				t.Errorf("stored title = %q, want the legacy bytes unchanged", stored.Title)
+			}
+			if strings.TrimSpace(stored.Title) == "" && legacyTitle != stored.Title {
+				t.Errorf("the grandfathering clause wrote an empty title — the one thing no door may do")
+			}
+		})
 	}
 }

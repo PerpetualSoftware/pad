@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -330,7 +331,40 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		t.Fatalf("parse handlers_items.go: %v", err)
 	}
 
-	counts := map[string]int{}
+	// The arms, in the order every block must apply them. Order is part of the
+	// contract, not style: the UNIQUE-constraint arm that closes each block
+	// matches on error TEXT, so a typed arm placed after it can be swallowed by
+	// a substring match rather than reached.
+	want := []string{
+		"asOpenChildrenGuardError",
+		"asUpdateConflictError",
+		"writeItemRenameCascadeTooLarge",
+		"writeInvalidItemTitle",
+	}
+	wantArm := map[string]bool{}
+	for _, w := range want {
+		wantArm[w] = true
+	}
+
+	// PER-BLOCK, not per-file (codex round 2): counting calls across the whole
+	// file lets one block's duplicate mask another's omission and says nothing
+	// about order.
+	//
+	// Blocks are recovered from SOURCE POSITION rather than from AST shape,
+	// which is what makes this robust: the three blocks are written
+	// differently — two as sequential `if` statements, one as an else-if chain
+	// — and an ast.Inspect that keys on either shape either misses blocks or
+	// double-counts them through nesting. (Both happened while writing this:
+	// first 0 blocks, then 8. The block-count guard below is what caught each,
+	// instead of the assertions quietly passing over nothing.)
+	//
+	// Every block opens with the open-children arm, so a new block starts at
+	// each occurrence of it, in file order.
+	type armRef struct {
+		name string
+		pos  token.Pos
+	}
+	var refs []armRef
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -340,27 +374,59 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		if !ok {
 			return true
 		}
-		switch ident.Name {
-		case "writeItemRenameCascadeTooLarge", "writeInvalidItemTitle", "asUpdateConflictError":
-			counts[ident.Name]++
+		if wantArm[ident.Name] {
+			refs = append(refs, armRef{ident.Name, call.Pos()})
 		}
 		return true
 	})
+	sort.Slice(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
 
-	const wantBlocks = 3
-	for _, name := range []string{"writeItemRenameCascadeTooLarge", "writeInvalidItemTitle", "asUpdateConflictError"} {
-		if counts[name] != wantBlocks {
-			t.Errorf("%s is called %d time(s); every one of the %d UpdateItem error blocks must map it. "+
-				"A refusal mapped in some blocks and not others answers 400/409/413 down one route and "+
-				"500 — or a silent duplicate write — down another, for the identical store error.",
-				name, counts[name], wantBlocks)
+	var blocks [][]string
+	var lines []int
+	for _, r := range refs {
+		if r.name == want[0] {
+			blocks = append(blocks, nil)
+			lines = append(lines, fset.Position(r.pos).Line)
+		}
+		if len(blocks) == 0 {
+			t.Fatalf("arm %q at line %d precedes any %q — the block-splitting assumption is wrong",
+				r.name, fset.Position(r.pos).Line, want[0])
+		}
+		blocks[len(blocks)-1] = append(blocks[len(blocks)-1], r.name)
+	}
+
+	// handleUpdateItem has three; handleMoveItem carries a lone open-children
+	// arm and cannot produce the others (it writes no title — verified in the
+	// BUG-2833 door sweep), so single-arm blocks are not update blocks.
+	var updateBlocks [][]string
+	var updateLines []int
+	for i, b := range blocks {
+		if len(b) > 1 {
+			updateBlocks = append(updateBlocks, b)
+			updateLines = append(updateLines, lines[i])
 		}
 	}
 
-	// Control: the count is not trivially satisfied by a name that appears
-	// nowhere. If this fires, the AST walk is matching nothing and the
-	// assertions above are vacuous.
-	if counts["writeInvalidItemTitle"] == 0 {
-		t.Fatal("AST walk found no calls at all — the instrument is broken, not the code")
+	const wantBlocks = 3
+	if len(updateBlocks) != wantBlocks {
+		t.Fatalf("found %d UpdateItem error block(s) at lines %v, want %d — the instrument's block "+
+			"detection is out of step with the code, so every assertion below would be meaningless. "+
+			"Blocks: %v", len(updateBlocks), updateLines, wantBlocks, updateBlocks)
+	}
+	for i, arms := range updateBlocks {
+		if len(arms) != len(want) {
+			t.Errorf("the error block at line %d maps %v; every block must map all of %v. A refusal "+
+				"mapped in some blocks and not others answers 400/409/413 down one route and 500 — or "+
+				"a silent duplicate write — down another, for the identical store error.",
+				updateLines[i], arms, want)
+			continue
+		}
+		for j := range want {
+			if arms[j] != want[j] {
+				t.Errorf("the error block at line %d applies its arms as %v; want %v",
+					updateLines[i], arms, want)
+				break
+			}
+		}
 	}
 }

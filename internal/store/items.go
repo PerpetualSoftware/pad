@@ -2313,12 +2313,28 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// normalized echo then differs from what is stored — so the row's own
 		// title reads as a rename and, if it also predates the bound, is
 		// refused. "Identical to the stored one" has to mean what it says.
-		if normalized != existing.Title && *input.Title != existing.Title {
+		//
+		// A GRANDFATHERED WRITE WRITES THE STORED BYTES, NOT THE NORMALIZED
+		// ONES (codex round 2, P1 — a hole the round-1 fix above opened).
+		// Skipping validation while still assigning `normalized` meant a
+		// legacy row stored as "   " was echoed back, skipped validation on the
+		// raw match, and then had "" written to it — minting exactly the empty
+		// title Dave's ruling forbids, through the clause meant to protect
+		// legacy rows. An over-bound title with edge whitespace went the same
+		// way, into a DIFFERENT over-bound title.
+		//
+		// So the two outcomes are now exclusive: grandfathered means the write
+		// is a genuine no-op (the row keeps the bytes it has), and anything
+		// else is validated before it is normalized in.
+		if normalized == existing.Title || *input.Title == existing.Title {
+			unchanged := existing.Title
+			input.Title = &unchanged
+		} else {
 			if msg := models.ValidateItemTitle(normalized); msg != "" {
 				return nil, &InvalidItemTitleError{Reason: msg}
 			}
+			input.Title = &normalized
 		}
-		input.Title = &normalized
 	}
 
 	// Optimistic-concurrency guard runs FIRST — before the open-children

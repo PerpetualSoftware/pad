@@ -732,6 +732,23 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 
 	// --- Create in B. Advances B's seq; writes the initial version row and
 	// the wiki-link index against the POST-rewrite content (DR-9a). ---
+	// TITLE VALIDATION IS DELIBERATELY NOT APPLIED HERE (BUG-2833 / BUG-2831,
+	// raised again by codex R2 as a finding — recorded so the next reader does
+	// not have to re-derive it).
+	//
+	// This path goes through createItemTxWithID, below store.CreateItem's
+	// write-time guard, so a source row whose title predates the bound is
+	// carried across intact. That is the intended behaviour, on the same
+	// reasoning as the grandfathering clause in UpdateItem and the lead's
+	// coerce-not-refuse ruling for ImportWorkspace: a copy carries a value that
+	// already exists in the database, and refusing it would break a working
+	// operation for data this product itself accepted.
+	//
+	// It cannot MINT an invalid title. The title below is `source.Title`,
+	// read from the source row — there is no caller-supplied title on this
+	// path at all (`--field` sets destination FIELDS, never the title), so no
+	// input a user controls reaches it. The copy stays repairable by rename in
+	// either workspace, where the bound does apply.
 	item, err := s.createItemTxWithID(tx, targetItemID, req.TargetWorkspaceID, req.TargetCollectionID, models.ItemCreate{
 		Title:   source.Title,
 		Content: newContent,

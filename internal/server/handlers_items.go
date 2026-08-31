@@ -1038,13 +1038,19 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// at the store's copy.
 	if input.Title != nil {
 		normalizedTitle := models.NormalizeItemTitle(*input.Title)
-		if normalizedTitle != item.Title && *input.Title != item.Title {
+		// Grandfathered writes keep the stored bytes; everything else is
+		// validated before it is normalized in. See the store's copy of this
+		// block for why the two must be exclusive (codex round 2, P1).
+		if normalizedTitle == item.Title || *input.Title == item.Title {
+			unchanged := item.Title
+			input.Title = &unchanged
+		} else {
 			if msg := models.ValidateItemTitle(normalizedTitle); msg != "" {
 				writeError(w, http.StatusBadRequest, "bad_request", msg)
 				return
 			}
+			input.Title = &normalizedTitle
 		}
-		input.Title = &normalizedTitle
 	}
 
 	// TASK-2022: `fields` (full replace) and `fields_patch` (field-level
