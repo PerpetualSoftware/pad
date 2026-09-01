@@ -106,7 +106,6 @@ item_grants.user_id
 item_grants.workspace_id
 item_links.created_at
 item_links.id
-item_links.link_type
 item_links.source_id
 item_links.target_id
 item_links.user_id
@@ -255,7 +254,6 @@ views.collection_id
 views.created_at
 views.id
 views.updated_at
-views.view_type
 views.workspace_id
 watches.created_at
 watches.id

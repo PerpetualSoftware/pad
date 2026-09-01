@@ -1,11 +1,14 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/textguard"
@@ -66,8 +69,15 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 
 	t.Run("decoded escape in a JSON KEY", func(t *testing.T) {
 		doc := `{"k` + textguard.EscNUL + `ey":"v"}`
-		if _, err := raw.Exec(`UPDATE items SET fields = ? WHERE id = ?`, doc, item.ID); err == nil {
-			t.Error("a NUL in a JSON KEY was stored; json_tree exposes keys and the trigger must read them")
+		_, err := raw.Exec(`UPDATE items SET fields = ? WHERE id = ?`, doc, item.ID)
+		if err == nil {
+			t.Fatal("a NUL in a JSON KEY was stored; json_tree exposes keys and the trigger must read them")
+		}
+		// Assert WHICH refusal (codex round 3). items.fields also carries
+		// migration 056's JSON constraint, so "some error" would be satisfied
+		// by a value that never reached the trigger at all.
+		if !strings.Contains(err.Error(), nulTriggerMarker) {
+			t.Errorf("refused, but not by our trigger: %v", err)
 		}
 	})
 
@@ -77,7 +87,11 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 			 VALUES (?, ?, ?, ?, ?, ?, '{}', '[]', '2026-01-01', '2026-01-01')`,
 			"trigger-insert-probe", ws.ID, col.ID, "ins"+textguard.NUL+"title", "trigger-insert-probe", "")
 		if err == nil {
-			t.Error("an unguarded INSERT stored a NUL title")
+			t.Fatal("an unguarded INSERT stored a NUL title")
+		}
+		if !strings.Contains(err.Error(), nulTriggerMarker) {
+			t.Errorf("refused, but not by our trigger — a NOT NULL or FK constraint would also fail "+
+				"this INSERT and prove nothing: %v", err)
 		}
 	})
 
@@ -198,33 +212,52 @@ func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
 	// arm-parity shape from the item-title unit, which exists because
 	// "somebody will add a fifth return and forget" is the failure that
 	// actually happens.
-	t.Run("every wrapper error path routes through the classifier", func(t *testing.T) {
-		src, err := os.ReadFile("nulguard.go")
-		if err != nil {
-			t.Fatalf("read nulguard.go: %v", err)
-		}
-		body := string(src)
-		// The four driver entry points that can surface a database error.
-		for _, fn := range []string{
-			"func (c guardConn) ExecContext(",
-			"func (c guardConn) QueryContext(",
-			"func (s guardStmt) ExecContext(",
-			"func (s guardStmt) QueryContext(",
+	// A FAKE DRIVER, driven through the real wrapper (codex round 3).
+	//
+	// The previous version grepped nulguard.go for the classifier's name, which
+	// a dead or commented call would satisfy. This wraps a driver that returns
+	// a marker-bearing error from each of the four entry points and asserts the
+	// caller receives the TYPED error — so the routing is exercised rather than
+	// read.
+	t.Run("each wrapper entry point classifies a marker error", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			run  func(*sql.DB) error
+		}{
+			{"conn Exec", func(db *sql.DB) error { _, e := db.Exec("UPDATE t SET a = ?", "x"); return e }},
+			{"conn Query", func(db *sql.DB) error { _, e := db.Query("SELECT ?", "x"); return e }},
+			{"stmt Exec", func(db *sql.DB) error {
+				st, e := db.Prepare("UPDATE t SET a = ?")
+				if e != nil {
+					return e
+				}
+				defer st.Close()
+				_, e = st.Exec("x")
+				return e
+			}},
+			{"stmt Query", func(db *sql.DB) error {
+				st, e := db.Prepare("SELECT ?")
+				if e != nil {
+					return e
+				}
+				defer st.Close()
+				_, e = st.Query("x")
+				return e
+			}},
 		} {
-			i := strings.Index(body, fn)
-			if i < 0 {
-				t.Errorf("%s not found — the instrument is out of step with the code, so its silence "+
-					"means nothing", fn)
-				continue
-			}
-			end := strings.Index(body[i:], "\n}\n")
-			if end < 0 {
-				t.Fatalf("could not find the end of %s", fn)
-			}
-			if !strings.Contains(body[i:i+end], "classifyTriggerRefusal") {
-				t.Errorf("%s returns a driver error without classifying it — a Layer B refusal down that "+
-					"path reaches the handler as a 500 instead of a 400", fn)
-			}
+			t.Run(tc.name, func(t *testing.T) {
+				db := openFakeGuarded(t)
+				defer db.Close()
+				err := tc.run(db)
+				if err == nil {
+					t.Fatal("the fake driver must return an error")
+				}
+				var typed *InvalidTextParameterError
+				if !errors.As(err, &typed) {
+					t.Errorf("a marker error through %s did NOT classify — a Layer B refusal down this "+
+						"path reaches the handler as a 500 instead of a 400; got %T: %v", tc.name, err, err)
+				}
+			})
 		}
 	})
 
@@ -417,6 +450,49 @@ func TestNULTriggersSurviveATableRebuild(t *testing.T) {
 		t.Error("protection was not actually restored — the trigger count matched but the rule does not hold")
 	}
 
+	// A STALE trigger — right name, wrong body — is the case a name-only check
+	// can never repair, because CREATE TRIGGER IF NOT EXISTS sees the name and
+	// does nothing forever (codex round 3). A mutation reverting the definition
+	// comparison survived until this existed.
+	t.Run("a same-name trigger with a no-op body is replaced", func(t *testing.T) {
+		for _, tr := range []string{"pad_nul_items_content_ins", "pad_nul_items_content_upd"} {
+			if _, err := s.db.Exec("DROP TRIGGER IF EXISTS " + tr); err != nil {
+				t.Fatalf("drop %s: %v", tr, err)
+			}
+		}
+		// A trigger that fires on the right table and event and does nothing.
+		if _, err := s.db.Exec(`CREATE TRIGGER pad_nul_items_content_upd
+			BEFORE UPDATE OF content ON items
+			FOR EACH ROW WHEN 0
+			BEGIN SELECT 1; END`); err != nil {
+			t.Fatalf("install the stale trigger: %v", err)
+		}
+		if _, err := s.db.Exec(`CREATE TRIGGER pad_nul_items_content_ins
+			BEFORE INSERT ON items
+			FOR EACH ROW WHEN 0
+			BEGIN SELECT 1; END`); err != nil {
+			t.Fatalf("install the stale trigger: %v", err)
+		}
+
+		// The COUNT is now correct, which is exactly why a count check passed.
+		if got := countTriggers(); got != before {
+			t.Fatalf("fixture: expected the count to be restored to %d, got %d", before, got)
+		}
+		// And protection is gone.
+		if _, err := raw.Exec(`UPDATE items SET content = ? WHERE id = ?`,
+			"stale"+textguard.NUL+"passes", item.ID); err != nil {
+			t.Fatalf("with a no-op trigger the write should succeed, showing the loss is real: %v", err)
+		}
+
+		if err := s.ensureNULTriggers(); err != nil {
+			t.Fatalf("ensureNULTriggers: %v", err)
+		}
+		if _, err := raw.Exec(`UPDATE items SET content = ? WHERE id = ?`,
+			"still"+textguard.NUL+"bad", item.ID); err == nil {
+			t.Error("a stale same-name trigger was not replaced — the check compares names, not definitions")
+		}
+	})
+
 	// And the no-op case: re-asserting when nothing is missing must not fail
 	// or duplicate.
 	if err := s.ensureNULTriggers(); err != nil {
@@ -425,4 +501,65 @@ func TestNULTriggersSurviveATableRebuild(t *testing.T) {
 	if got := countTriggers(); got != before {
 		t.Errorf("a second re-assertion changed the count to %d", got)
 	}
+}
+
+// ---- the fake driver, for the classifier routing test ----
+//
+// It implements exactly the optional interfaces the guard's registration
+// asserts, so wrapConn takes the ordinary path, and returns a marker-bearing
+// error from every execute/query entry point.
+
+type fakeConn struct{}
+
+func (fakeConn) Prepare(string) (driver.Stmt, error) { return fakeStmt{}, nil }
+func (fakeConn) Close() error                        { return nil }
+func (fakeConn) Begin() (driver.Tx, error)           { return nil, errors.New("no tx") } //nolint:staticcheck
+
+func (fakeConn) PrepareContext(context.Context, string) (driver.Stmt, error) { return fakeStmt{}, nil }
+func (fakeConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return nil, errors.New("no tx")
+}
+func (fakeConn) Ping(context.Context) error         { return nil }
+func (fakeConn) ResetSession(context.Context) error { return nil }
+
+func (fakeConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+	return nil, errFakeTrigger
+}
+func (fakeConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return nil, errFakeTrigger
+}
+
+type fakeStmt struct{}
+
+func (fakeStmt) Close() error  { return nil }
+func (fakeStmt) NumInput() int { return -1 }
+func (fakeStmt) Exec([]driver.Value) (driver.Result, error) { //nolint:staticcheck
+	return nil, errFakeTrigger
+}
+func (fakeStmt) Query([]driver.Value) (driver.Rows, error) { //nolint:staticcheck
+	return nil, errFakeTrigger
+}
+func (fakeStmt) ExecContext(context.Context, []driver.NamedValue) (driver.Result, error) {
+	return nil, errFakeTrigger
+}
+func (fakeStmt) QueryContext(context.Context, []driver.NamedValue) (driver.Rows, error) {
+	return nil, errFakeTrigger
+}
+
+type fakeDriver struct{}
+
+func (fakeDriver) Open(string) (driver.Conn, error) { return fakeConn{}, nil }
+
+var errFakeTrigger = errors.New("SQL logic error: " + nulTriggerMarker + ": items.title must not contain a NUL (1)")
+
+var fakeRegisterOnce sync.Once
+
+func openFakeGuarded(t *testing.T) *sql.DB {
+	t.Helper()
+	fakeRegisterOnce.Do(func() { sql.Register("pad-fake-nulguard", guardDriver{base: fakeDriver{}}) })
+	db, err := sql.Open("pad-fake-nulguard", "")
+	if err != nil {
+		t.Fatalf("open fake: %v", err)
+	}
+	return db
 }

@@ -733,6 +733,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_links.created_by must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_links_link_type_ins
+BEFORE INSERT ON item_links
+FOR EACH ROW WHEN NEW.link_type IS NOT NULL AND (
+			instr(NEW.link_type, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_links.link_type must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_links_link_type_upd
+BEFORE UPDATE OF link_type ON item_links
+FOR EACH ROW WHEN NEW.link_type IS NOT NULL AND (
+			instr(NEW.link_type, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_links.link_type must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_item_versions_change_summary_ins
 BEFORE INSERT ON item_versions
 FOR EACH ROW WHEN NEW.change_summary IS NOT NULL AND (
@@ -2039,6 +2057,24 @@ FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: views.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_views_view_type_ins
+BEFORE INSERT ON views
+FOR EACH ROW WHEN NEW.view_type IS NOT NULL AND (
+			instr(NEW.view_type, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: views.view_type must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_views_view_type_upd
+BEFORE UPDATE OF view_type ON views
+FOR EACH ROW WHEN NEW.view_type IS NOT NULL AND (
+			instr(NEW.view_type, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: views.view_type must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_watches_predicate_ins

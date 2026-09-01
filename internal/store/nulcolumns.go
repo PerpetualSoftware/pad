@@ -1,8 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 )
 
 // The enforcement population for the NUL invariant (DOC-2823 S2, Layer B).
@@ -100,6 +103,10 @@ var nulColumns = []nulColumn{
 	{"item_versions", "created_by", classText},
 	{"item_versions", "source", classText},
 	{"item_links", "created_by", classText},
+	// link_type is normalized on the ordinary create path and written VERBATIM
+	// by ImportWorkspace — the second-write-path shape again, and the third
+	// column in this unit found that way (codex round 3).
+	{"item_links", "link_type", classText},
 	{"versions", "content", classText},
 	{"versions", "change_summary", classText},
 
@@ -126,6 +133,10 @@ var nulColumns = []nulColumn{
 	// views
 	{"views", "config", classJSON},
 	{"views", "name", classText},
+	// view_type is `viewType := input.ViewType` with "list" only as a fallback,
+	// on create AND update — caller text, not an enum the store validates
+	// (codex round 3).
+	{"views", "view_type", classText},
 
 	// agent roles
 	// tools is FREE TEXT, not JSON — migration 019 says so in as many words
@@ -292,11 +303,9 @@ func (s *Store) ensureNULTriggers() error {
 		return nil
 	}
 
-	want := map[string]bool{}
-	for _, c := range NULProtectedColumns() {
-		want["pad_nul_"+c.Table+"_"+c.Column+"_ins"] = true
-		want["pad_nul_"+c.Table+"_"+c.Column+"_upd"] = true
-	}
+	// name -> the exact CREATE statement the list renders, so the check can
+	// compare DEFINITIONS.
+	want := renderedNULTriggers()
 
 	// The SET, not the count (codex round 2). A database with the right NUMBER
 	// of triggers but a missing one and an extra one read as healthy, and
@@ -306,13 +315,39 @@ func (s *Store) ensureNULTriggers() error {
 	// character wildcard, so 'pad_nul_%' also matches names this code never
 	// generates — a loose pattern in a health check is a health check that can
 	// be satisfied by the wrong thing.
-	have, err := s.currentNULTriggers()
+	data, err := migrationsFS.ReadFile("migrations/" + nulTriggerMigration)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", nulTriggerMigration, err)
+	}
+
+	// TRANSACTION FIRST, THEN INSPECT (codex rounds 2 and 3).
+	//
+	// Round 2 put the CREATE statements in a transaction, which closed the
+	// window between them. Round 3 found the window BEFORE them: checking
+	// whether triggers were missing outside the transaction let a raw writer
+	// commit an invalid row between the check and the lock. The store's DSN
+	// carries _txlock=immediate, so Begin takes the write lock up front and the
+	// inspection below sees the state the restore will act on.
+	//
+	// The restore is still all-or-nothing: SQLite's DDL is transactional, so
+	// there is never a moment where some tables are protected and others are
+	// not.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin trigger restore: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	have, err := nulTriggersIn(tx)
 	if err != nil {
 		return err
 	}
 	missing := false
-	for name := range want {
-		if !have[name] {
+	for name, stmt := range want {
+		// DEFINITION, not just presence (codex round 3). A same-name trigger
+		// with a stale or no-op body satisfies CREATE TRIGGER IF NOT EXISTS
+		// forever, so a name check can never repair it.
+		if have[name] != stmt {
 			missing = true
 			break
 		}
@@ -321,20 +356,13 @@ func (s *Store) ensureNULTriggers() error {
 		return nil
 	}
 
-	data, err := migrationsFS.ReadFile("migrations/" + nulTriggerMigration)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", nulTriggerMigration, err)
+	// Drop first, so a stale DEFINITION is actually replaced rather than
+	// skipped by IF NOT EXISTS.
+	for name := range have {
+		if _, derr := tx.Exec("DROP TRIGGER IF EXISTS " + name); derr != nil {
+			return fmt.Errorf("drop stale NUL trigger %s: %w", name, derr)
+		}
 	}
-
-	// IN ONE TRANSACTION (codex round 2). Running 206 CREATE statements outside
-	// a transaction leaves a window in which some tables are protected and
-	// others are not, and a concurrent writer can commit an invalid row inside
-	// it. SQLite's DDL is transactional, so the restoration is all-or-nothing.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin trigger restore: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	if err := execMulti(tx, string(data)); err != nil {
 		return fmt.Errorf("restore NUL triggers: %w", err)
 	}
@@ -348,22 +376,27 @@ func (s *Store) ensureNULTriggers() error {
 	return nil
 }
 
-// currentNULTriggers reads the trigger names actually present.
-func (s *Store) currentNULTriggers() (map[string]bool, error) {
-	rows, err := s.db.Query(
-		`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'pad_nul_*'`,
+// nulTriggersIn reads the NUL triggers present, name -> stored SQL.
+//
+// GLOB rather than LIKE: LIKE's `_` is a single-character wildcard, so
+// 'pad_nul_%' also matches names this code never generates, and a loose pattern
+// in a health check is a check that can be satisfied by the wrong thing.
+func nulTriggersIn(q Queryer) (map[string]string, error) {
+	rows, err := q.Query(
+		`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'pad_nul_*'`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list NUL triggers: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]bool{}
+	out := map[string]string{}
 	for rows.Next() {
 		var n string
-		if err := rows.Scan(&n); err != nil {
+		var sqlText sql.NullString
+		if err := rows.Scan(&n, &sqlText); err != nil {
 			return nil, err
 		}
-		out[n] = true
+		out[n] = normalizeTriggerSQL(sqlText.String)
 	}
 	return out, rows.Err()
 }
@@ -371,3 +404,87 @@ func (s *Store) currentNULTriggers() (map[string]bool, error) {
 // nulTriggerMigration is the generated file, named once so the generator, the
 // re-assertion and the pin test all refer to the same artifact.
 const nulTriggerMigration = "084_nul_invariant_triggers.sql"
+
+// renderedNULTriggers returns the exact CREATE statement each trigger should
+// have, keyed by name.
+//
+// It parses the SAME rendered migration text the file is generated from, so
+// there is still one definition of what a trigger is. Comparing DEFINITIONS
+// rather than names is what lets the restoration replace a stale trigger — a
+// same-name no-op body satisfies CREATE TRIGGER IF NOT EXISTS forever, so a
+// name check can never repair one (codex round 3).
+func renderedNULTriggers() map[string]string {
+	out := map[string]string{}
+	for _, stmt := range strings.Split(renderNULTriggerMigration(), ";\n\n") {
+		stmt = strings.TrimSpace(stmt)
+		i := strings.Index(stmt, "CREATE TRIGGER IF NOT EXISTS ")
+		if i < 0 {
+			continue
+		}
+		rest := stmt[i+len("CREATE TRIGGER IF NOT EXISTS "):]
+		j := strings.IndexAny(rest, " \n")
+		if j < 0 {
+			continue
+		}
+		out[rest[:j]] = normalizeTriggerSQL(stmt[i:])
+	}
+	return out
+}
+
+// normalizeTriggerSQL makes two spellings of the same trigger comparable.
+//
+// SQLite stores the statement text as written, minus the trailing semicolon,
+// and its whitespace survives verbatim — so the comparison collapses runs of
+// whitespace rather than requiring byte equality. Collapsing is safe here
+// because none of the generated triggers contain a string literal in which
+// whitespace is significant beyond a single space.
+func normalizeTriggerSQL(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// renderNULTriggerMigration is the single definition of the migration's text.
+//
+// It lives in PRODUCTION code, not the generator test, because it has three
+// production-relevant readers: the generator writes it, the pin test compares
+// the committed file against it byte for byte, and the startup restoration
+// compares the LIVE triggers against it (codex round 3). One definition, three
+// consumers — the same shape the column list has, for the same reason.
+func renderNULTriggerMigration() string {
+	cols := NULProtectedColumns()
+	sort.Slice(cols, func(i, j int) bool {
+		if cols[i].Table != cols[j].Table {
+			return cols[i].Table < cols[j].Table
+		}
+		return cols[i].Column < cols[j].Column
+	})
+
+	var b strings.Builder
+	b.WriteString(nulTriggerMigrationHeader)
+	for _, c := range cols {
+		for _, ev := range []struct{ suffix, on string }{
+			{"ins", "INSERT"},
+			{"upd", "UPDATE OF " + c.Column},
+		} {
+			name := fmt.Sprintf("pad_nul_%s_%s_%s", c.Table, c.Column, ev.suffix)
+			cond := fmt.Sprintf("instr(NEW.%s, char(0)) > 0", c.Column)
+			if c.Class == classJSON {
+				cond += fmt.Sprintf(`
+			OR (json_valid(NEW.%s) AND EXISTS (
+				SELECT 1 FROM json_tree(NEW.%s)
+				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
+			))`, c.Column, c.Column)
+			}
+			fmt.Fprintf(&b, `CREATE TRIGGER IF NOT EXISTS %s
+BEFORE %s ON %s
+FOR EACH ROW WHEN NEW.%s IS NOT NULL AND (
+			%s
+)
+BEGIN
+	SELECT RAISE(ABORT, '%s: %s.%s must not contain a NUL');
+END;
+
+`, name, ev.on, c.Table, c.Column, cond, nulTriggerMarker, c.Table, c.Column)
+		}
+	}
+	return b.String()
+}
