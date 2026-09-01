@@ -238,6 +238,12 @@ var nulColumns = []nulColumn{
 	{"versions", "source", classText},
 	{"workspace_invitations", "invited_by", classText},
 	{"workspaces", "source", classText},
+	// Found by re-running the sweep as a PATTERN (*_by) instead of the
+	// hand-written name list round 6 used — which was an enumeration one level
+	// up, and missed exactly the two names nobody thought to write down
+	// (codex round 7).
+	{"event_outbox", "claimed_by", classText},
+	{"oauth_connection_workspaces", "added_by", classText},
 
 	// second ring, remaining
 	{"attachments", "filename", classText},
@@ -428,7 +434,13 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	// Drop first, so a stale DEFINITION is actually replaced rather than
 	// skipped by IF NOT EXISTS.
 	for name := range have {
-		if _, derr := tx.Exec("DROP TRIGGER IF EXISTS " + name); derr != nil {
+		// QUOTED. Names come from sqlite_master, and a legal identifier that
+		// matches the GLOB — one containing a hyphen, say — would otherwise
+		// produce a syntax error here, failing the restoration and, because
+		// migrate propagates it, STARTUP (codex round 7). The one place a
+		// stray trigger is most likely to have an unusual name is the one
+		// place this code must survive it.
+		if _, derr := tx.Exec(`DROP TRIGGER IF EXISTS "` + strings.ReplaceAll(name, `"`, `""`) + `"`); derr != nil {
 			return false, fmt.Errorf("drop stale NUL trigger %s: %w", name, derr)
 		}
 	}

@@ -74,7 +74,6 @@ email_verification_tokens.used_at
 email_verification_tokens.user_id
 event_outbox.batch_id
 event_outbox.claimed_at
-event_outbox.claimed_by
 event_outbox.dispatched_at
 event_outbox.event_type
 event_outbox.id
@@ -157,7 +156,6 @@ oauth_clients.created_at
 oauth_clients.id
 oauth_clients.token_endpoint_auth_method
 oauth_connection_workspaces.added_at
-oauth_connection_workspaces.added_by
 oauth_connection_workspaces.request_id
 oauth_connection_workspaces.workspace_id
 oauth_connections.created_at

@@ -260,3 +260,64 @@ func isDerivedTable(name string) bool {
 	}
 	return false
 }
+
+// TestAttributionColumnsAreAllProtected keeps the class swept.
+//
+// Rounds 1, 2, 3, 6 and 7 of review each named unprotected attribution columns.
+// Round 6's answer was a sweep — but by a hand-written list of NAMES, which is
+// an enumeration one level up, and round 7 found the two names nobody thought
+// to write down (event_outbox.claimed_by, oauth_connection_workspaces.added_by).
+//
+// So the sweep is a PATTERN and it is a test, which is the difference between
+// having done it once and it staying done. A new *_by column fails here the day
+// it is added.
+func TestAttributionColumnsAreAllProtected(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("schema census runs against SQLite")
+	}
+	rows, err := s.db.Query(`SELECT m.name, ti.name, ti.type FROM sqlite_master m, pragma_table_info(m.name) ti WHERE m.type='table'`)
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	defer rows.Close()
+
+	protected := map[string]bool{}
+	for _, c := range NULProtectedColumns() {
+		protected[c.Table+"."+c.Column] = true
+	}
+
+	var unprotected []string
+	matched := 0
+	for rows.Next() {
+		var table, col, typ string
+		if err := rows.Scan(&table, &col, &typ); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if isDerivedTable(table) || !isTextAffinity(typ) {
+			continue
+		}
+		if !strings.HasSuffix(col, "_by") && col != "actor" && col != "author" && col != "source" && col != "owner" {
+			continue
+		}
+		matched++
+		key := table + "." + col
+		if protected[key] {
+			continue
+		}
+		if _, excused := nulExcluded[key]; excused {
+			continue
+		}
+		unprotected = append(unprotected, key)
+	}
+	if matched == 0 {
+		t.Fatal("the pattern matched no columns at all — the instrument is broken, not the schema")
+	}
+	sort.Strings(unprotected)
+	if len(unprotected) > 0 {
+		t.Errorf("%d attribution-style column(s) are unprotected:\n  %s\n\n"+
+			"These carry a writer identity that a request body can often set. Add them to nulColumns as "+
+			"classText, or to nulExcluded with the reason they cannot carry caller text.",
+			len(unprotected), strings.Join(unprotected, "\n  "))
+	}
+}

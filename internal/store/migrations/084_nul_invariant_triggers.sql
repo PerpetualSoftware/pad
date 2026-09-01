@@ -851,6 +851,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: email_optouts.email must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_event_outbox_claimed_by_ins
+BEFORE INSERT ON event_outbox
+FOR EACH ROW WHEN NEW.claimed_by IS NOT NULL AND (
+			instr(NEW.claimed_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: event_outbox.claimed_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_event_outbox_claimed_by_upd
+BEFORE UPDATE OF claimed_by ON event_outbox
+FOR EACH ROW WHEN NEW.claimed_by IS NOT NULL AND (
+			instr(NEW.claimed_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: event_outbox.claimed_by must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_event_outbox_payload_ins
 BEFORE INSERT ON event_outbox
 FOR EACH ROW WHEN NEW.payload IS NOT NULL AND (
@@ -1623,6 +1641,24 @@ FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_clients.scopes must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_connection_workspaces_added_by_ins
+BEFORE INSERT ON oauth_connection_workspaces
+FOR EACH ROW WHEN NEW.added_by IS NOT NULL AND (
+			instr(NEW.added_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_connection_workspaces.added_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_connection_workspaces_added_by_upd
+BEFORE UPDATE OF added_by ON oauth_connection_workspaces
+FOR EACH ROW WHEN NEW.added_by IS NOT NULL AND (
+			instr(NEW.added_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_connection_workspaces.added_by must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_connections_name_ins
