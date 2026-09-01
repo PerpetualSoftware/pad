@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -1763,6 +1764,15 @@ func TestExpectedFTSTriggers_MatchesActual(t *testing.T) {
 		var name, table string
 		if err := rows.Scan(&name, &table); err != nil {
 			t.Fatalf("scan: %v", err)
+		}
+		// Layer B's NUL triggers are not FTS triggers and are enumerated by
+		// their own instrument (TestNULTriggersMatchTheList, against the
+		// generated migration and the shared column list). Excluded here by
+		// PREFIX rather than by name so adding a protected column does not
+		// require editing this test too — which is the coupling that would
+		// make one of the two lists rot.
+		if strings.HasPrefix(name, "pad_nul_") {
+			continue
 		}
 		key := table + "/" + name
 		if !expected[key] {

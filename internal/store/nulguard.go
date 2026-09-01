@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,13 +60,21 @@ var ErrInvalidTextParameter = errors.New("store: invalid text parameter")
 // ordinal is enough to locate it while debugging, and the reason names the
 // rule rather than quoting the offender.
 type InvalidTextParameterError struct {
-	// Ordinal is the 1-based position of the offending parameter.
+	// Ordinal is the 1-based position of the offending parameter, or 0 when
+	// the refusal came from the DATABASE (a Layer B trigger), which identifies
+	// the column instead.
 	Ordinal int
 	// Reason is the rule that refused it, phrased for a caller.
 	Reason string
 }
 
 func (e *InvalidTextParameterError) Error() string {
+	if e.Ordinal < 1 {
+		// A refusal from the DATABASE knows the column, not the parameter
+		// position. Printing "parameter 0" for it would be a claim about
+		// something nobody measured.
+		return fmt.Sprintf("%s: %s", ErrInvalidTextParameter.Error(), e.Reason)
+	}
 	return fmt.Sprintf("%s: parameter %d: %s", ErrInvalidTextParameter.Error(), e.Ordinal, e.Reason)
 }
 
@@ -258,6 +267,50 @@ func classify(v driver.Value) (text string, isText bool, err error) {
 		"this type is legitimate, add it to classify() and say whether it is text or binary", v)
 }
 
+// nulTriggerMarker is the string every Layer B trigger puts in its RAISE(ABORT)
+// message, and the hook the driver error is classified by.
+//
+// A marker rather than a pattern-match on SQLite's phrasing, because that
+// phrasing is the driver's to change and this is ours. It is greppable in both
+// directions: a reader who sees it in a log finds the migration, and a reader
+// of the migration finds this.
+const nulTriggerMarker = "pad_nul_invariant"
+
+// classifyTriggerRefusal converts a Layer B trigger abort into the SAME typed
+// error Layer A produces, so a caller cannot tell which layer refused.
+//
+// That indistinguishability is the requirement, not a nicety. Ruling 2 admitted
+// the second ring of caller-influenced columns — user agents, IP addresses,
+// attachment filenames — on the condition that a header-derived value hitting a
+// trigger must not surface as a 500 or a broken login. It reaches the handler
+// as a 400 naming the rule because it becomes InvalidTextParameterError here.
+//
+// It also matters for the ordinary case: on a CURRENT binary Layer A answers
+// first and the trigger never fires, so the only way to reach this code is a
+// path Layer A does not cover — which is exactly when a caller most needs a
+// comprehensible answer rather than an internal error.
+func classifyTriggerRefusal(err error) error {
+	if err == nil || !strings.Contains(err.Error(), nulTriggerMarker) {
+		return err
+	}
+	// The message carries "pad_nul_invariant: <table>.<column> must not ...".
+	// The COLUMN is safe to surface — it names the rule's subject — while the
+	// value is not, and is never included.
+	reason := "value contains a NUL byte, which no text or JSON column can store"
+	if i := strings.Index(err.Error(), nulTriggerMarker+": "); i >= 0 {
+		rest := err.Error()[i+len(nulTriggerMarker)+2:]
+		if j := strings.Index(rest, " must not"); j > 0 {
+			reason = "column " + rest[:j] + " must not contain a NUL byte, in a value or in a JSON escape that decodes to one"
+		}
+	}
+	// NO ORDINAL. A trigger names the COLUMN, not the parameter position, and
+	// the position is genuinely unknown here — the error comes back from the
+	// database after the statement ran, not from inspecting an argument list.
+	// The first version used Ordinal: 0, which violated the field's documented
+	// 1-based contract and rendered as "parameter 0" (codex round 1).
+	return &InvalidTextParameterError{Reason: reason}
+}
+
 type guardDriver struct{ base driver.Driver }
 
 func (d guardDriver) Open(name string) (driver.Conn, error) {
@@ -398,14 +451,16 @@ func (c guardConn) ExecContext(ctx context.Context, q string, args []driver.Name
 	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
-	return c.Conn.(driver.ExecerContext).ExecContext(ctx, q, args)
+	res, err := c.Conn.(driver.ExecerContext).ExecContext(ctx, q, args)
+	return res, classifyTriggerRefusal(err)
 }
 
 func (c guardConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
 	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, q, args)
+	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, q, args)
+	return rows, classifyTriggerRefusal(err)
 }
 
 // guardStmt wraps only the two context forms, which every base statement here
@@ -419,14 +474,16 @@ func (s guardStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (d
 	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
-	return s.Stmt.(driver.StmtExecContext).ExecContext(ctx, args)
+	res, err := s.Stmt.(driver.StmtExecContext).ExecContext(ctx, args)
+	return res, classifyTriggerRefusal(err)
 }
 
 func (s guardStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
-	return s.Stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
+	rows, err := s.Stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
+	return rows, classifyTriggerRefusal(err)
 }
 
 // ---- registration ----
