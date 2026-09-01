@@ -5013,3 +5013,286 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		expect(root().querySelector('.lightbox-meta-error')).not.toBeNull();
 	});
 });
+
+// ── THE TEXT ARM (IDEA-2712 / GitHub #1169) ─────────────────────────────────
+//
+// CONVE-19: the loader is unit-tested on its own, which vouches for the LOADER,
+// not for its BINDING. These drive the component and assert the arm the viewer
+// actually mounts — including the negative control the union widening created,
+// where the fallback arm's old `!== 'raster-image'` condition would have drawn
+// "No preview available" over a document that was loading perfectly well.
+describe('Lightbox — the text arm', () => {
+	let textFetch: ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 128 });
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 128 });
+		textFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			body: null,
+			text: async () => '# Heading\n\nSome *emphasis*.'
+		});
+		vi.stubGlobal('fetch', textFetch);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	async function settleAsync() {
+		for (let i = 0; i < 8; i++) {
+			await Promise.resolve();
+			flushSync();
+		}
+	}
+
+	it('mounts the TEXT arm for a markdown attachment, not the fallback', async () => {
+		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
+		await settleAsync();
+		expect(root().querySelector('.lightbox-text')).not.toBeNull();
+		// THE NEGATIVE CONTROL for the fallback-condition change. With the old
+		// `shownRenderer !== 'raster-image'` test this element would be present
+		// AND say "No preview available" over the document — the arm would still
+		// have loaded, so asserting only the text arm's presence would pass on
+		// the broken condition too.
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		// No <img>, and the image loader was never pointed anywhere.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+	});
+
+	it('renders markdown through the shared pipeline, not as raw source', async () => {
+		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
+		await settleAsync();
+		const body = root().querySelector('.lightbox-text-body');
+		expect(body).not.toBeNull();
+		// The pipeline ran: a heading element exists rather than a literal '#'.
+		expect(body!.querySelector('h1')?.textContent).toBe('Heading');
+		expect(body!.querySelector('em')?.textContent).toBe('emphasis');
+	});
+
+	it('routes text/plain + a .md filename to the markdown renderer', async () => {
+		// A SYNTHETIC row in the shape the system actually stores — not a real
+		// upload; the metadata and download are both mocked here. What it pins is
+		// the ROUTING decision for that shape, and the reason the other markdown
+		// test above is not sufficient: `attachments.ValidateUpload` sniffs the
+		// bytes (`http.DetectContentType` → `text/plain` for prose) and returns the
+		// SNIFFED entry, so an uploaded `.md` row carries `text/plain`. A fixture
+		// that hand-sets `text/markdown` exercises a branch real uploads never
+		// take — which is exactly how the MIME-only split passed every unit test
+		// and rendered raw source in a browser.
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'text/plain', size: 128 });
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'text/plain', size: 128 });
+		mountViewer({
+			images: [{ ...image(IMG_A, 'notes', 'text/plain'), filename: 'notes.md' }]
+		});
+		await settleAsync();
+		const body = root().querySelector('.lightbox-text-body');
+		expect(body).not.toBeNull();
+		// Rendered, not shown as source.
+		expect(body!.querySelector('h1')?.textContent).toBe('Heading');
+		expect(body!.tagName).not.toBe('PRE');
+	});
+
+	it('renders PLAIN text as text, never as markdown', async () => {
+		textFetch.mockResolvedValue({
+			ok: true,
+			status: 200,
+			body: null,
+			text: async () => '# not a heading\n*not emphasis*'
+		});
+		mountViewer({
+			images: [{ ...image(IMG_A, 'notes', 'text/plain'), filename: 'notes.txt' }]
+		});
+		await settleAsync();
+		const pre = root().querySelector('.lightbox-text-plain');
+		expect(pre).not.toBeNull();
+		// The asterisks and hash survive as CHARACTERS — the assertion that the
+		// markdown pipeline did not touch this path.
+		expect(pre!.textContent).toBe('# not a heading\n*not emphasis*');
+		expect(pre!.querySelector('h1')).toBeNull();
+		expect(pre!.querySelector('em')).toBeNull();
+	});
+
+	it('SANITIZES a document carrying active content', async () => {
+		textFetch.mockResolvedValue({
+			ok: true,
+			status: 200,
+			body: null,
+			text: async () => 'before\n\n<script>window.__pwned = true;</script>\n\n<img src=x onerror="window.__pwned = true">\n\nafter'
+		});
+		mountViewer({ images: [image(IMG_A, 'evil.md', 'text/markdown')] });
+		await settleAsync();
+		const body = root().querySelector('.lightbox-text-body');
+		expect(body).not.toBeNull();
+		// Assert what the WRONG behaviour would leave behind (CONVE-12), not just
+		// that the page looks fine: no script element, and no inline handler.
+		expect(body!.querySelector('script')).toBeNull();
+		expect(body!.innerHTML).not.toContain('onerror');
+		expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
+		// ...and the surrounding document still rendered, so this is sanitization
+		// rather than the arm having failed to render at all.
+		expect(body!.textContent).toContain('before');
+		expect(body!.textContent).toContain('after');
+	});
+
+	// Also a guard rather than a discriminator: PDF stayed on the fallback before
+	// this branch too. It pins that widening the union did not accidentally claim
+	// PLAN-2393's reserved slot.
+	it('does not FETCH for a type the arm does not claim (PDF stays on the fallback)', async () => {
+		mountViewer({ images: [image(IMG_A, 'doc.pdf', 'application/pdf')] });
+		await settleAsync();
+		expect(root().querySelector('.lightbox-text')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		expect(textFetch).not.toHaveBeenCalled();
+	});
+
+	it('keeps the force-download bucket on the fallback arm, with no request', async () => {
+		// PLAN-2393 DR-6, asserted through the COMPONENT rather than the predicate:
+		// these share CategoryText with markdown server-side.
+		//
+		// Like its sibling in surfaceRenderers.test.ts, this passes against
+		// origin/main as well (codex R3 #5) — the old viewer already showed the
+		// fallback and made no request. Kept as a regression guard on the arm
+		// selection, labelled so nobody counts it as proof of the new behaviour.
+		for (const mime of ['text/html', 'text/javascript']) {
+			mountViewer({ images: [image(IMG_A, 'x', mime)] });
+			await settleAsync();
+			expect(root().querySelector('.lightbox-text')).toBeNull();
+			expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		}
+		expect(textFetch).not.toHaveBeenCalled();
+	});
+
+	it('shows the too-large notice, and no Retry, for an oversize document', async () => {
+		const big = { ...image(IMG_A, 'huge.md', 'text/markdown'), size_bytes: 4 << 20 };
+		mountViewer({ images: [big] });
+		await settleAsync();
+		const status = root().querySelector('.lightbox-text .lightbox-text-status');
+		expect(status?.textContent).toContain('too large to preview');
+		// Terminal, not an error: a retry would reach the same answer, so the arm
+		// points at Download instead of offering one.
+		expect(root().querySelector('.lightbox-text .lightbox-retry')).toBeNull();
+		expect(textFetch).not.toHaveBeenCalled();
+	});
+
+	// ── codex R1 regressions ──────────────────────────────────────────────────
+
+	it('re-decides on a LATE resolved size, cutting the transfer short (R1 #1)', async () => {
+		// Most producers seed `size_bytes: null` and let the metadata HEAD fill it,
+		// so the arm necessarily starts fetching before the size is known — the
+		// response gate is what bounds it in the meantime.
+		//
+		// THE HONEST LIMIT, and the reason this test says "cuts short" rather than
+		// "never fetches": the metadata gate can only SAVE a transfer when the size
+		// is known before the load. For a null seed it cannot, and no amount of
+		// wiring changes that without making every text preview wait for a HEAD.
+		// What the fix buys is the re-decision: `resolvedSize` is in `loadKey`, so
+		// the late size re-runs the load effect, the loader aborts what is in
+		// flight and lands in `too-large`. Before the fix the late size was never
+		// consulted at all and a 4 MB document rendered.
+		const signals: AbortSignal[] = [];
+		textFetch.mockImplementation((_url: string, init: RequestInit) => {
+			signals.push(init.signal as AbortSignal);
+			return new Promise<Response>(() => {});
+		});
+		// BOTH probes: the opened entry is force-REVALIDATED (T6), so leaving
+		// `metaRevalidate` at the beforeEach size would overwrite the big one and
+		// this test would silently assert nothing.
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 4 << 20 });
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 4 << 20 });
+		mountViewer({ images: [image(IMG_A, 'huge.md', 'text/markdown')] });
+		await settleAsync();
+
+		expect(root().querySelector('.lightbox-text-status')?.textContent).toContain(
+			'too large to preview'
+		);
+		// Assert what the WRONG behaviour leaves behind (CONVE-12): a request still
+		// running. The end state "too-large is showing" is reachable with the abort
+		// removed, so the signal is the discriminating artifact.
+		expect(signals.length).toBe(1);
+		expect(signals[0].aborted).toBe(true);
+	});
+
+	// WHAT THIS SUITE CAN AND CANNOT DECIDE, stated because two of codex R1's
+	// findings are CSS-mechanism findings and a test that cannot see CSS would
+	// report the jsdom default and call it a pass. `getComputedStyle` here returns
+	// `pointer-events: auto` for EVERY element — component styles are not injected
+	// in this environment — so asserting the layer's `pointer-events: none` would
+	// have been an instrument that cannot fail. It is not written.
+	//
+	// So: the wheel exclusion (a HANDLER change) is asserted here, with a control
+	// leg. The pointer-events and overscroll guarantees (CSS) are asserted in
+	// `web/e2e/attachment-text-preview.spec.ts`, where a real engine applies them.
+	// This file's coverage of R1 #3/#4 is the structure the CSS keys off, and no
+	// more than that.
+
+	it('leaves the wheel to the CARD, while still owning it everywhere else (R1 #3)', async () => {
+		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
+		await settleAsync();
+		const card = root().querySelector<HTMLElement>('.lightbox-text-scroll');
+		expect(card).not.toBeNull();
+
+		// Over the document: the viewer must NOT consume it, or the card can never
+		// scroll. `preventDefault` before the exclusion is exactly the bug.
+		const overCard = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true });
+		card!.dispatchEvent(overCard);
+		expect(overCard.defaultPrevented).toBe(false);
+
+		// THE CONTROL LEG: a wheel elsewhere on the stage is still consumed, so the
+		// exclusion is narrow rather than a handler that stopped acting. Without
+		// this, deleting the whole wheel handler would pass the assertion above.
+		const overStage = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true });
+		root().dispatchEvent(overStage);
+		expect(overStage.defaultPrevented).toBe(true);
+	});
+
+	it('puts the interactive card INSIDE a layer that is not itself the target (R1 #4)', async () => {
+		const onClose = vi.fn();
+		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')], onClose });
+		await settleAsync();
+		const layer = root().querySelector<HTMLElement>('.lightbox-text');
+		const card = layer?.querySelector<HTMLElement>('.lightbox-text-scroll');
+		// The structure the `pointer-events` rule keys off: a full-bleed layer that
+		// takes no pointer events, with the interactive surface nested inside it.
+		// The rule itself is asserted in e2e; this pins that the two elements exist
+		// and are nested, which is what makes the rule expressible at all.
+		expect(layer).not.toBeNull();
+		expect(card).not.toBeNull();
+		expect(card!.parentElement).toBe(layer);
+
+		// NO CLICK ASSERTION HERE, deliberately (codex R2 #6). Dispatching a click
+		// on `root()` FORCES `event.target === root`, which is the condition the
+		// close handler tests — so it passes just as happily with the old
+		// interactive full-bleed layer in place. jsdom does no hit-testing, so
+		// there is no way to ask it "what would a click at these coordinates
+		// hit?", and a test that cannot distinguish the bug from the fix is worse
+		// than no test: it reads as coverage.
+		//
+		// The real assertion lives in `web/e2e/attachment-text-preview.spec.ts`,
+		// which clicks REAL COORDINATES over the layer and expects the dialog to
+		// go. That leg was mutation-checked: reverting the layer to
+		// `pointer-events: auto` and rebuilding makes it fail.
+		void onClose;
+	});
+
+	it('the scrollable card is a KEYBOARD destination, inside the focus trap', async () => {
+		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
+		await settleAsync();
+		const card = root().querySelector<HTMLElement>('.lightbox-text-scroll')!;
+		expect(card.getAttribute('tabindex')).toBe('0');
+		// It must be a real trap stop, not merely focusable: the viewer's arrow
+		// keys are its own next/previous navigation, so a keyboard-only user with
+		// no tab stop here cannot reach past the document's first screen at all.
+		expect(paneFocusables(root()).includes(card)).toBe(true);
+		// And it carries a name, since a bare scroll region announces nothing.
+		expect(card.getAttribute('aria-label')).toBeTruthy();
+	});
+
+	it('offers a retry when the fetch fails', async () => {
+		textFetch.mockResolvedValue({ ok: false, status: 500, body: null, text: async () => '' });
+		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
+		await settleAsync();
+		expect(root().querySelector('.lightbox-text .lightbox-retry')).not.toBeNull();
+	});
+});

@@ -39,6 +39,9 @@
 	// null → the no-bytes icon fallback. This is the single gate that decides the
 	// stage's ARM; the old `canOpenInViewer` last-mile FILTER is gone.
 	import { getSurfaceRenderer, type SurfaceRendererId } from '$lib/attachments/surfaceRenderers';
+	import { createViewerTextLoader } from '$lib/attachments/viewerTextLoader.svelte';
+	import { renderMarkdownDocument } from '$lib/utils/markdown';
+	import { formatAttachmentSize } from '$lib/markdown/attachments';
 	import {
 		reset as resetZoom,
 		clampState,
@@ -97,7 +100,12 @@
 	// Filename / type / size for the shown image, seeded from the LightboxImage
 	// and completed by the SAME B metadata module the panel uses (TASK-2473): it
 	// fetches only what the seed left null (DR-2 — open now, fill after).
-	import { describeAttachmentType, formatBytes, iconForAttachment } from '$lib/attachments/display';
+	import {
+		describeAttachmentType,
+		formatBytes,
+		iconForAttachment,
+		isMarkdownAttachment
+	} from '$lib/attachments/display';
 	import { createSurfaceMetadata } from '$lib/attachments/surfaceMetadata.svelte';
 
 	interface Props {
@@ -191,9 +199,11 @@
 	 *    the whole set. There is no MIME refusal left here.
 	 *  - THE ARM is where safety lives (`shownRenderer`, from `getSurfaceRenderer`
 	 *    on the RESOLVED MIME). `'raster-image'` mounts the `<img>` and loads
-	 *    bytes; `null` — an unsafe/active type, a file, or a still-unresolved MIME
-	 *    — mounts the NO-BYTES icon fallback (no `<img>`, no `src`, no fetch). The
-	 *    allowlist governs the ARM, never admission.
+	 *    bytes; `'text'` (IDEA-2712) fetches a markdown / plain-text document and
+	 *    renders it through the shared sanitized pipeline; `null` — an
+	 *    unsafe/active type, a file, or a still-unresolved MIME — mounts the
+	 *    NO-BYTES icon fallback (no `<img>`, no `src`, no fetch). The allowlist
+	 *    governs the ARM, never admission.
 	 *
 	 * WHY ADMITTING UNSAFE/UNRESOLVED IS SAFE. The DR-16 concern was never "a
 	 * hostile row in the set" — it was rendering hostile BYTES as active
@@ -205,6 +215,16 @@
 	 * the 3c-i filter did by DROPPING, the arm now does by CLASSIFYING — with the
 	 * file/unresolved rows kept and shown, which is the whole point of the
 	 * converged surface.
+	 *
+	 * TWO ARMS NOW LOAD BYTES, and the invariant is unchanged in kind: the text
+	 * arm's bytes never become active same-origin content either. They are
+	 * rendered through `sanitizeMarkdownHtml`, and the types for which that would
+	 * be the wrong bet — `text/html`, `text/javascript`, `application/javascript`,
+	 * which share the server's `CategoryText` with markdown — are excluded from
+	 * `canPreviewAsText` by allowlist, so they never reach the arm. Exactly one
+	 * loader is armed at a time; the load effect disposes the other, so an arm
+	 * flip releases the previous arm's bytes rather than leaving them behind
+	 * something new.
 	 *
 	 * (The producer-side resolve-before-emit contract on the legacy viewer
 	 * channel is unchanged and unrelated: that is the NodeView's obligation, not
@@ -339,6 +359,14 @@
 	// allowlisted RESOLVED MIME, so admitting unsafe/unresolved rows renders no
 	// hostile bytes (see the admission note above).
 	let resolvedMime = $derived(img ? headerMeta.fields.mime_type : null);
+	// The RESOLVED size, for the same reason `resolvedMime` exists (IDEA-2712,
+	// codex R1 #1). The `LightboxImage` seed carries `size_bytes: null` on most
+	// producers — it is the metadata HEAD that fills it — so handing the text
+	// loader the SEED would put its metadata gate permanently in the vacuous case
+	// and leave the response gate doing all the work. That is not a hole (the
+	// response gate bounds it) but it silently retires the gate whose entire value
+	// is the transfer it saves.
+	let resolvedSize = $derived(img ? headerMeta.fields.size_bytes : null);
 	let shownRenderer = $derived<SurfaceRendererId | null>(
 		img ? getSurfaceRenderer(resolvedMime) : null
 	);
@@ -607,6 +635,12 @@
 	// shows (`displaySrc`, the canonical attachment URL) and the load phase; this
 	// component drives it from the shown image and reports each decode / error.
 	const loader = createViewerImageLoader();
+	// The TEXT arm's loader (IDEA-2712). A separate instance rather than a mode on
+	// the image loader: the two have no shared state, opposite cancellation models
+	// (an `<img>` src reassignment vs an AbortController) and disjoint arms, so
+	// merging them would be one object with two unrelated halves. Exactly one is
+	// ever armed — the load effect below disposes the other.
+	const textLoader = createViewerTextLoader();
 	// The id AND the pixel dimensions, as ONE stable primitive string — never the
 	// `img` object. A prop re-emit with the same VALUES (a re-derived `navigable`
 	// array) must not re-fire the load effect, but a genuine dimension change (an
@@ -626,8 +660,32 @@
 	// within one open, so adding it would be inert anyway. The same-id
 	// safe→unsafe MIME flip that DOES need in-open coherence is already covered by
 	// `shownRenderer` above.
+	// `resolvedSize` JOINS THE KEY (IDEA-2712, codex R1 #1) for the same reason the
+	// dimensions do: the text arm's metadata gate is a function of the size, so a
+	// size that arrives LATE (the HEAD filling a null seed) is a policy that
+	// arrived late. Without it, an entry that begins with an unknown size and
+	// resolves to 4 MB has already been fetched and never re-decides.
+	//
+	// `revalidateToken` rides the same text-arm slot (codex R3 #2). A parent
+	// RESTORE bumps that token so an archived-at-open surface re-probes — and the
+	// image loader is driven by the probe's own answer, but a FAILED TEXT GET is
+	// not: its `error` phase is loader state, invisible to the metadata layer. So
+	// without the token in the key, a text preview that 404'd because the parent
+	// was archived stays permanently errored after the restore that fixed it, with
+	// only a manual Retry to escape. Scoped to the text arm for the same reason
+	// the size is — the raster arm has its own revalidation path and must not be
+	// reloaded twice.
+	//
+	// IT IS SCOPED TO THE TEXT ARM, and this key is SHARED (codex R2 #1). An
+	// earlier version appended the size unconditionally with a comment calling it
+	// "inert for the raster arm, which does not read it" — false, and false in a
+	// way the comment's own reasoning hid: the RASTER arm does not read the size,
+	// but the EFFECT does, and a late size fill would re-run it and re-issue
+	// `loader.load()`, restarting an image load and — on mobile — resetting an
+	// original the user had already triggered. Reading a value is not the only way
+	// to depend on it; being in the key is.
 	let loadKey = $derived(
-		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}`
+		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}:${shownRenderer === 'text' ? `${resolvedSize ?? ''}:${revalidateToken}` : ''}`
 	);
 	// Captured NON-reactively at load time (see the effect): a breakpoint flip
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
@@ -771,6 +829,15 @@
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		// We own the wheel while frontmost — consume it even before the bitmap is
 		// measurable, so a scroll can never leak past the modal into the inert app.
+		// A wheel over the TEXT ARM's card is the one wheel this viewer does NOT own
+		// (IDEA-2712, codex R1 #3). It must reach the card so a document scrolls,
+		// which means returning BEFORE `preventDefault` — every other exclusion in
+		// this handler returns after it, because those surfaces want the wheel
+		// swallowed and this one wants it delivered. Scroll chaining to the inert
+		// page behind is stopped by `overscroll-behavior: contain` on the card
+		// rather than by consuming the event here: the CSS keeps the guarantee
+		// (nothing behind scrolls) while still letting the card scroll itself.
+		if ((e.target as Element | null)?.closest?.('.lightbox-text-scroll')) return;
 		e.preventDefault();
 		e.stopPropagation();
 		// A wheel over the TOOLBAR (or its delete drill-down) is consumed like every
@@ -1958,7 +2025,21 @@
 			// safe→unsafe flip actually re-runs this and reaches the dispose. The
 			// loader's own DR-16 gate (`start()`) is the backstop; the Lightbox
 			// decides no-bytes explicitly here.
-			if (shownRenderer === 'raster-image' && !soleMissing) {
+			if (shownRenderer === 'text' && !soleMissing) {
+				// The TEXT arm loads bytes too, so it takes the raster arm's whole
+				// discipline rather than the fallback's: the RESOLVED mime and the
+				// RESOLVED size (never the seed — see `resolvedSize`), both in
+				// `loadKey`, and the image loader disposed so the two can never both
+				// hold bytes for one entry. Its own gates (`canPreviewAsText` + the
+				// size bound) are the backstop at the request chokepoint; this is the
+				// Lightbox deciding the arm.
+				loader.dispose();
+				textLoader.load(
+					{ ...img, mime_type: resolvedMime, size_bytes: resolvedSize },
+					openWsSlug
+				);
+			} else if (shownRenderer === 'raster-image' && !soleMissing) {
+				textLoader.dispose();
 				// Pass the RESOLVED MIME, not the seed. A null-seed entry that
 				// reclassified to raster (its HEAD resolved an image) still carries a
 				// null seed `mime_type`, and the loader's own DR-16 gate (`start()`)
@@ -1970,11 +2051,15 @@
 				loader.load({ ...img, mime_type: resolvedMime }, openWsSlug, platform);
 			} else {
 				loader.dispose();
+				textLoader.dispose();
 			}
 		});
 	});
 	// Drop the load on unmount (close) — one teardown, no dependencies.
-	$effect(() => () => loader.dispose());
+	$effect(() => () => {
+		loader.dispose();
+		textLoader.dispose();
+	});
 
 	// Reactively abort a live gesture the instant the bitmap goes away (TASK-2476), or
 	// the instant a TOUCH gesture's paint arm is lost (TASK-2518). The pointer handlers
@@ -2090,6 +2175,13 @@
 		// control had focus — the Retry/tap-load button — and the fallback arm has no
 		// focusable content, so track the arm to re-home a stranded focus.
 		void shownRenderer;
+		// The TEXT arm's phase does the same thing and more (IDEA-2712, codex R3):
+		// its own Retry button unmounts on a successful retry, and — unlike every
+		// other arm — the arm's CONTENT is focusable, so a reload (a late size fill,
+		// a retry) unmounts whatever LINK inside the rendered document had focus.
+		// Tracking `loader.phase` alone missed all of it: that is the IMAGE loader,
+		// and on this arm it is disposed and never changes phase.
+		void textLoader.phase;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		handoffFocus(el);
@@ -2352,7 +2444,11 @@
 		and the tap-to-load / retry buttons use); on desktop that value was already the
 		inherited default, so nothing changes there.
 	-->
-	<div class="lightbox-stage" bind:this={stageEl}>
+	<div
+		class="lightbox-stage"
+		class:lightbox-stage-text={shownRenderer === 'text'}
+		bind:this={stageEl}
+	>
 		{#if hasMultiple}
 			<button
 				class="lightbox-nav prev"
@@ -2511,16 +2607,140 @@
 		{/if}
 
 		<!--
-			THE FALLBACK ARM (TASK-2476). A navigable entry the viewer cannot draw as an
-			image — an unsafe/active type that flipped or was added while open. NO
-			BYTES: no `<img>`, no `src`, no request (the load effect disposed the
-			loader on the arm flip). Just the file's identity — the large family icon,
-			its name, type · size — and an honest "No preview available". Same chrome,
-			same modal contract, same lease as the raster arm; zoom is disabled
-			(`bitmapPresent` is false here). `pointer-events: none` like the other
-			stage overlays, so a click on the empty area still reaches the backdrop.
+			THE TEXT ARM (IDEA-2712 / GitHub #1169). A markdown or plain-text document,
+			fetched by `textLoader` and rendered by US — never handed to the browser to
+			inline. This arm LOADS BYTES, so it takes the raster arm's discipline
+			rather than the fallback's: it is re-derived from the resolved MIME every
+			frame, `shownRenderer` is in the `loadKey`, and the load effect disposes
+			the other loader so one entry can never hold two.
+
+			WHY `{@html}` IS SAFE HERE, stated where it is used: the string comes from
+			`renderMarkdownDocument`, which is the shared `marked` pipeline followed by
+			the same `sanitizeMarkdownHtml` pass every other `{@html}` source in the app
+			goes through. The allowlist governing an attached document is by
+			construction the one governing item content. The types that would make this
+			dangerous — `text/html`, `text/javascript` — are not in `canPreviewAsText`,
+			so they never reach this arm at all (PLAN-2393 DR-6).
+
+			PLAIN TEXT IS NOT RENDERED AS MARKDOWN. A `.txt` goes into a `<pre>` as
+			TEXT, not through the pipeline: interpreting a plain-text file's asterisks
+			and underscores as formatting would be lying about its content. Svelte
+			escapes the interpolation, so that path emits no HTML at all.
+
+			POINTER SEMANTICS live on the CARD, not on this layer — see the comment at
+			the card itself. The first version of this arm put `pointer-events: auto`
+			on the full-bleed layer and asserted here that backdrop-click still
+			worked; it did not, and nothing tested it. Both are fixed and both are
+			now asserted.
 		-->
-		{#if img && shownRenderer !== 'raster-image' && !soleMissing}
+		{#if shownRenderer === 'text' && !soleMissing}
+			<div class="lightbox-text">
+				<!--
+					THE CARD IS THE INTERACTIVE SURFACE, the layer around it is not
+					(IDEA-2712, codex R1 #4). `.lightbox-text` spans the stage for
+					centring only and takes `pointer-events: none`, so a click on the
+					empty area still reaches the root and closes the viewer exactly as
+					it does on every other arm. An earlier version gave the full-bleed
+					layer `pointer-events: auto` and silently broke backdrop-close for
+					this arm alone — while a comment two lines away claimed it still
+					worked.
+
+					It is also the SCROLL container (`.lightbox-text-scroll`), which is
+					what the wheel handler excludes by class, and it carries
+					`overscroll-behavior: contain` so a scroll that reaches the end of
+					the document does not chain to the inert page behind.
+				-->
+				<!--
+					`tabindex="0"` because this is a SCROLLABLE REGION and nothing else
+					in the viewer can scroll it. Without a tab stop a keyboard-only
+					user can open a document and never reach past its first screen —
+					the arrow keys are owned by the viewer's own next/previous
+					navigation, so there is no fallback. It joins the focus trap by
+					design (it is a real destination), and `role="document"` with the
+					filename as its accessible name is what a screen reader announces
+					on arrival.
+				-->
+				<!--
+					svelte-ignore a11y_no_noninteractive_tabindex — the rule's premise
+					(only interactive elements earn a tab stop) has a documented
+					exception for SCROLLABLE REGIONS, which is exactly what this is:
+					WCAG 2.1.1 requires content reachable by keyboard, and a scroll
+					container that is not a tab stop strands everything past its first
+					screen. `role="document"` is the honest role for a previewed file
+					(it puts a screen reader into reading mode), and it is what makes
+					the linter call the element noninteractive — the label and the tab
+					stop together are the accessible pattern, not a workaround.
+				-->
+				<div
+					class="lightbox-text-scroll"
+					role="document"
+					aria-label={displayName}
+					tabindex="0"
+				>
+				{#if textLoader.phase === 'loading'}
+					<p class="lightbox-text-status" role="status">Loading preview…</p>
+				{:else if textLoader.phase === 'too-large'}
+					<!--
+						TERMINAL, AND DELIBERATELY NOT AN ERROR — nothing went wrong and a
+						retry reaches the same answer, so there is no Retry button here.
+						The toolbar's existing Download action is the way out, which is
+						why this text points at it rather than offering its own control.
+					-->
+					<p class="lightbox-text-status" role="status">
+						{#if textLoader.oversizeBytes !== null}
+							This file is {formatAttachmentSize(textLoader.oversizeBytes)} — too large to preview.
+						{:else}
+							This file is too large to preview.
+						{/if}
+						Use Download to open it.
+					</p>
+				{:else if textLoader.phase === 'error'}
+					<div class="lightbox-status lightbox-error" role="alert">
+						<p class="lightbox-error-text">This file couldn't be loaded.</p>
+						<!-- Hands focus off before disappearing, like the raster retry. -->
+						<button
+							class="lightbox-retry"
+							type="button"
+							onclick={() => {
+								handoffFocus(rootEl!, rootEl?.querySelector('.lightbox-text .lightbox-retry') ?? null);
+								textLoader.retry();
+							}}
+						>
+							Retry
+						</button>
+					</div>
+				{:else if textLoader.phase === 'ready'}
+					{#if isMarkdownAttachment(resolvedMime, headerMeta.fields.filename)}
+						<div class="lightbox-text-body markdown-body">
+							{@html renderMarkdownDocument(textLoader.text)}
+						</div>
+					{:else}
+						<pre class="lightbox-text-body lightbox-text-plain">{textLoader.text}</pre>
+					{/if}
+				{/if}
+				</div>
+			</div>
+		{/if}
+
+		<!--
+			THE FALLBACK ARM (TASK-2476). A navigable entry NO RENDERER CLAIMS — an
+			unsafe/active type that flipped or was added while open, a file, or a
+			still-unresolved MIME. NO BYTES: no `<img>`, no `src`, no request (the
+			load effect disposed both loaders on the arm flip). Just the file's
+			identity — the large family icon, its name, type · size — and an honest
+			"No preview available". Same chrome, same modal contract, same lease as
+			the raster arm; zoom is disabled (`bitmapPresent` is false here).
+			`pointer-events: none` like the other stage overlays, so a click on the
+			empty area still reaches the backdrop.
+
+			THE CONDITION IS `=== null`, NOT `!== 'raster-image'` (IDEA-2712). While
+			the union had one member those were the same test; they are not any more,
+			and the negated form would have claimed the text arm's entries and drawn
+			"No preview available" over a document that was loading fine. `null` IS
+			the registry's "no renderer claims this" answer, so this arm now says what
+			it means and stays correct when `'pdf'` lands.
+		-->
+		{#if img && shownRenderer === null && !soleMissing}
 			<div class="lightbox-fallback" role="group" aria-label="No preview available">
 				<span class="lightbox-fallback-icon" aria-hidden="true">
 					<AttachmentIcon id={fallbackIconId} size={72} />
@@ -2666,6 +2886,17 @@
 		touch-action: none;
 	}
 
+	/* TOUCH-ACTION INTERSECTS DOWN THE ANCESTOR CHAIN (codex R2 #2). The card's
+	   `pan-y` cannot override an ancestor's `none` — the allowed behaviours for a
+	   touch are the INTERSECTION along the chain, so `none` on the stage wins and
+	   a phone could not scroll the document at all. The stage claims `none` for
+	   the pan/zoom gesture, and on the text arm there is no such gesture (no
+	   bitmap, zoom disabled), so it gives the claim up for the duration. Scoped to
+	   the arm rather than relaxed globally: every other arm still needs it. */
+	.lightbox-stage-text {
+		touch-action: auto;
+	}
+
 	.lightbox-image {
 		max-width: 100%;
 		max-height: 100%;
@@ -2718,6 +2949,91 @@
 	   overlays; inert, so a click on the surrounding area still reaches the backdrop
 	   and closes. Logical properties + min-width:0 so a long filename ellipsizes
 	   (DR-13) rather than blowing the box out. */
+	/* THE TEXT ARM (IDEA-2712). Unlike every other stage overlay this one takes
+	   `pointer-events: auto`: a document must scroll and be selectable, which is
+	   the entire point of previewing it. It is a light card on the dark stage
+	   rather than white-on-black body text — a page of prose reversed out at
+	   stage contrast is unreadable at length, and this arm is the only one whose
+	   content is meant to be READ rather than looked at. */
+	/* The centring layer only — NOT interactive. `pointer-events: none` is what
+	   keeps backdrop-click-to-close working on this arm (codex R1 #4); the card
+	   inside turns them back on. */
+	.lightbox-text {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-4);
+		pointer-events: none;
+		overflow: hidden;
+		background: transparent;
+	}
+
+	/* The card: the interactive, scrollable, selectable surface. The wheel handler
+	   excludes this class by name, so the three properties below are what actually
+	   deliver the "scrollable and selectable" the arm promises:
+	     - `pointer-events: auto` — clicks, selection and the wheel land here
+	     - `overscroll-behavior: contain` — a scroll at the end of the document
+	       does NOT chain to the inert page behind, which is the guarantee the
+	       wheel handler's `preventDefault` was providing before this arm existed
+	     - `touch-action: pan-y` / `user-select: text` — the stage sets
+	       `touch-action: none` and the backdrop `user-select: none` for the pan
+	       gesture; a document has to opt back out of both. */
+	.lightbox-text-scroll {
+		pointer-events: auto;
+		width: min(80ch, 100%);
+		max-height: 100%;
+		overflow: auto;
+		overscroll-behavior: contain;
+		touch-action: pan-y;
+		user-select: text;
+		-webkit-user-select: text;
+	}
+
+	.lightbox-text-status {
+		margin: auto;
+		color: #fff;
+		text-align: center;
+		max-width: 40ch;
+		line-height: 1.5;
+	}
+
+	.lightbox-text-body {
+		margin: 0;
+		padding: var(--space-4);
+		border-radius: var(--radius-md, 8px);
+		background: var(--bg-primary, #fff);
+		color: var(--text-primary, #111);
+		/* Long words, URLs and code lines must not push the card wider than the
+		   stage — the page itself must never scroll horizontally. */
+		overflow-wrap: anywhere;
+	}
+
+	/* Plain text keeps its own line breaks and spacing (that is what makes it
+	   plain text), but still wraps rather than forcing a horizontal scrollbar
+	   across the whole stage. */
+	.lightbox-text-plain {
+		white-space: pre-wrap;
+		font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+		font-size: 0.875rem;
+		line-height: 1.6;
+	}
+
+	/* Wide content INSIDE a rendered document scrolls in its own box rather than
+	   widening the card (tables and code blocks are the two that do this). */
+	.lightbox-text-body :global(pre),
+	.lightbox-text-body :global(table) {
+		max-width: 100%;
+		overflow-x: auto;
+	}
+
+	.lightbox-text-body :global(img) {
+		max-width: 100%;
+		height: auto;
+	}
+
 	.lightbox-fallback {
 		position: absolute;
 		inset: 0;

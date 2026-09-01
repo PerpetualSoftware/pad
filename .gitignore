@@ -59,5 +59,9 @@ dist/
 # Playwright e2e artifacts (scoped to the test fixture, never the
 # developer's real ~/.pad)
 .pad-e2e/
+# Per-seat e2e data dirs: a shared checkout runs concurrent suites, so each
+# seat points PAD_E2E_DATA_DIR at its own. They hold a generated encryption.key
+# and a multi-MB WAL — never committable.
+.pad-e2e-*/
 web/playwright-report/
 web/test-results/
