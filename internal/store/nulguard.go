@@ -38,8 +38,10 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/PerpetualSoftware/pad/internal/textguard"
@@ -68,7 +70,7 @@ func (e *InvalidTextParameterError) Error() string {
 
 func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParameter }
 
-// checkParams applies the shared predicate to every string/[]byte argument.
+// CLASSING NOTE for normalizeAndCheck below.
 //
 // CLASSING, and why it is what it is. The wrapper sees positional parameters,
 // not columns, so it cannot consult the 86-column classification directly. It
@@ -102,46 +104,53 @@ func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParame
 //     rather than buried here; if it is ever paid down, the mechanism is S2's
 //     column-attached triggers, which DO have the classing this layer lacks.
 //
-// The alternative — deriving JSON-ness from the call site's knowledge — puts
-// the classification back at the call sites this design exists to stop
-// depending on.
-func checkParams(args []driver.NamedValue) error {
-	for _, a := range args {
-		// STRING ONLY, and []byte is deliberately exempt.
-		//
-		// The invariant is about TEXT and JSON columns. In this store, Go's
-		// `string` is how text and JSON are bound and `[]byte` is how BINARY
-		// is bound — and binary legitimately contains NUL bytes, so checking
-		// []byte refuses valid writes. The existing collab suite caught this
-		// immediately: item_yjs_updates.update_data is raw Yjs binary, and the
-		// first version of this guard refused every op-log append.
-		//
-		// The rule is measured, not assumed:
-		//
-		//   - item_yjs_updates.update_data (BLOB on SQLite, BYTEA on Postgres)
-		//     is the ONLY binary column in either schema.
-		//   - No json.Marshal result is bound without a string() conversion,
-		//     so no JSON column receives a []byte parameter.
-		//
-		// The second of those was established by a source-level sweep, and
-		// this unit's own history is a catalogue of source-level sweeps missing
-		// things. So the claim is pinned BEHAVIOURALLY rather than trusted:
-		// TestBinaryColumnCensus fails the moment a new BLOB/BYTEA column
-		// enters either schema, which is when someone must re-examine whether
-		// []byte is still binary-only here.
-		s, ok := checkedValue(a.Value)
+// BINARY is exempt, and that is measured rather than assumed. The invariant is
+// about text and JSON columns; in this store []byte binds BINARY, and
+// item_yjs_updates.update_data — the only BLOB/BYTEA column in either schema —
+// legitimately contains NUL bytes. The first version of this guard checked
+// []byte and refused every Yjs op-log append; the existing collab suite caught
+// it immediately. TestBinaryColumnCensus fails when a new binary column
+// appears, which is when that exemption must be re-examined.
+// normalizeAndCheck resolves each parameter to the value that will actually be
+// bound, checks it, and WRITES THE RESOLVED VALUE BACK so the driver binds the
+// same thing that was inspected.
+//
+// Three defects in the first version, all found by codex round 3, and all of
+// them the same underlying error — inspecting one value and forwarding another:
+//
+//   - Value() was called for the check and the ORIGINAL Valuer was forwarded,
+//     so pgx called Value() a second time. A stateful valuer could return clean
+//     text to the guard and NUL-bearing text to the database.
+//   - A typed-nil valuer, (*sql.NullString)(nil), was called directly and
+//     panicked. database/sql special-cases that as SQL NULL.
+//   - Only an exact `string` was recognised. pgx implements NamedValueChecker
+//     and accepts *string, named string types and json.RawMessage unconverted,
+//     so each of those carried text the guard never saw.
+//
+// Resolution is therefore by REFLECTION on the kind rather than by a list of
+// types: anything whose kind is String is text, and anything that is a byte
+// slice is binary and exempt (see the classing note in checkParams).
+func normalizeAndCheck(args []driver.NamedValue) error {
+	for i := range args {
+		resolved, err := resolveValue(args[i].Value)
+		if err != nil {
+			return err
+		}
+		args[i].Value = resolved
+
+		s, ok := textOf(resolved)
 		if !ok {
 			continue
 		}
 		if textguard.ContainsNUL(s) {
 			return &InvalidTextParameterError{
-				Ordinal: a.Ordinal,
+				Ordinal: args[i].Ordinal,
 				Reason:  "value contains a NUL byte, which no text or JSON column can store",
 			}
 		}
 		if textguard.DocumentDecodesNULAnyShape(s) {
 			return &InvalidTextParameterError{
-				Ordinal: a.Ordinal,
+				Ordinal: args[i].Ordinal,
 				Reason:  "value is a JSON document containing an escape that decodes to a NUL",
 			}
 		}
@@ -149,59 +158,50 @@ func checkParams(args []driver.NamedValue) error {
 	return nil
 }
 
-// ---- the wrapper ----
-//
-// SHAPE, and why it is not one type.
-//
-// A wrapper that implements an optional interface the BASE lacks does not
-// merely add a no-op: database/sql BRANCHES on whether the interface is
-// present, so advertising one changes its behaviour even when the method
-// delegates faithfully. Measured on the two drivers Pad uses:
-//
-//	                        sqlite   pgx
-//	driver.DriverContext    no       YES
-//	conn Pinger             yes      yes
-//	conn SessionResetter    yes      yes
-//	conn Validator          yes      NO
-//	conn NamedValueChecker  no       YES
-//	stmt NamedValueChecker  no       no
-//	stmt ColumnConverter    no       no
-//
-// So Validator and NamedValueChecker VARY between the two, and a single
-// wrapper type advertising both would have told database/sql that pgx
-// validates connections and that sqlite converts its own arguments — neither
-// true (codex round 2). The conn wrapper is therefore selected per-connection
-// from four variants covering those two interfaces.
-//
-// The interfaces that do NOT vary are asserted at registration instead of
-// varied over: requireBaseInterfaces fails loudly if a driver bump ever drops
-// one, which is better than silently degrading and better than sixteen types.
+// resolveValue unwraps a driver.Valuer exactly ONCE, mirroring what
+// database/sql's default converter does — including its typed-nil rule, which
+// is why a nil pointer must be answered before Value() is reached rather than
+// by recovering from the panic it would cause.
+func resolveValue(v driver.Value) (driver.Value, error) {
+	valuer, ok := v.(driver.Valuer)
+	if !ok {
+		return v, nil
+	}
+	rv := reflect.ValueOf(valuer)
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return nil, nil
+	}
+	out, err := valuer.Value()
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
-// checkedValue extracts the string a parameter will bind, following
-// driver.Valuer when the driver's own NamedValueChecker has left one in place.
+// textOf reports the string a value carries, if it carries one.
 //
-// This closes a real hole (codex round 2). checkParams originally type-asserted
-// `string` only, and pgx implements NamedValueChecker — so it ACCEPTS a
-// sql.NullString unchanged rather than letting database/sql's default converter
-// unwrap it, and the guard never saw the text. Measured: on Postgres a
-// sql.NullString carrying a NUL passed the guard entirely and was refused by
-// the server with SQLSTATE 22021, i.e. as a 500 rather than the typed 400 the
-// same value gets on SQLite. The dialect split, reappearing in the response
-// shape. internal/store/wiki_links.go binds sql.NullString today.
-func checkedValue(v driver.Value) (string, bool) {
-	switch t := v.(type) {
-	case string:
-		return t, true
-	case driver.Valuer:
-		// Value() is contractually pure; the standard converter calls it for
-		// exactly this purpose.
-		inner, err := t.Value()
-		if err != nil {
+// By KIND, not by type identity. A named string type (`type Slug string`) and a
+// *string both carry text that a driver accepting them unconverted would bind
+// as text, and a type-switch on `string` sees neither.
+//
+// Byte slices are deliberately NOT text here — see checkParams' classing note:
+// []byte is how this store binds BINARY, and item_yjs_updates.update_data
+// legitimately contains NUL bytes. json.RawMessage is the one byte-slice shape
+// that IS text, and it is recognised by its named type because that is exactly
+// what it means.
+func textOf(v any) (string, bool) {
+	if raw, ok := v.(json.RawMessage); ok {
+		return string(raw), true
+	}
+	rv := reflect.ValueOf(v)
+	for rv.IsValid() && rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
 			return "", false
 		}
-		if str, ok := inner.(string); ok {
-			return str, true
-		}
+		rv = rv.Elem()
+	}
+	if rv.IsValid() && rv.Kind() == reflect.String {
+		return rv.String(), true
 	}
 	return "", false
 }
@@ -211,6 +211,10 @@ type guardDriver struct{ base driver.Driver }
 func (d guardDriver) Open(name string) (driver.Conn, error) {
 	c, err := d.base.Open(name)
 	if err != nil {
+		return nil, err
+	}
+	if err := assertConnInterfaces(c); err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 	return wrapConn(c), nil
@@ -253,6 +257,10 @@ type guardConnector struct {
 func (c guardConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	conn, err := c.base.Connect(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := assertConnInterfaces(conn); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	return wrapConn(conn), nil
@@ -323,6 +331,10 @@ func (c guardConn) PrepareContext(ctx context.Context, q string) (driver.Stmt, e
 	if err != nil {
 		return nil, err
 	}
+	if err := assertStmtInterfaces(st); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 	return guardStmt{st}, nil
 }
 
@@ -331,14 +343,14 @@ func (c guardConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.T
 }
 
 func (c guardConn) ExecContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Result, error) {
-	if err := checkParams(args); err != nil {
+	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
 	return c.Conn.(driver.ExecerContext).ExecContext(ctx, q, args)
 }
 
 func (c guardConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
-	if err := checkParams(args); err != nil {
+	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
 	return c.Conn.(driver.QueryerContext).QueryContext(ctx, q, args)
@@ -352,14 +364,14 @@ func (c guardConn) QueryContext(ctx context.Context, q string, args []driver.Nam
 type guardStmt struct{ driver.Stmt }
 
 func (s guardStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	if err := checkParams(args); err != nil {
+	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
 	return s.Stmt.(driver.StmtExecContext).ExecContext(ctx, args)
 }
 
 func (s guardStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	if err := checkParams(args); err != nil {
+	if err := normalizeAndCheck(args); err != nil {
 		return nil, err
 	}
 	return s.Stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
@@ -393,11 +405,9 @@ func registerGuardedDrivers() error {
 				return
 			}
 			base := probe.Driver()
-			if err := requireBaseInterfaces(d.base, probe); err != nil {
-				_ = probe.Close()
-				registerGuardedErr = err
-				return
-			}
+			// sql.Open does NOT connect, so this costs nothing and touches no
+			// network. The interface assertions happen at connect time instead
+			// — see assertConnInterfaces.
 			_ = probe.Close()
 			wrapped := guardDriver{base: base}
 			if _, ok := base.(driver.DriverContext); ok {
@@ -410,55 +420,67 @@ func registerGuardedDrivers() error {
 	return registerGuardedErr
 }
 
-// requireBaseInterfaces asserts the optional interfaces the wrapper implements
-// UNCONDITIONALLY are actually present on the base.
+// assertConnInterfaces checks, on a REAL connection the caller already asked
+// for, that the base implements everything the wrapper advertises flatly.
 //
-// This is what makes the shape sound. Four interfaces vary across drivers and
-// are selected per-connection (see the shape note); the rest are advertised
-// flatly, and advertising one the base lacks would change database/sql's
-// behaviour rather than merely add a no-op. Rather than sixteen wrapper types
-// or a comment saying "both drivers have these", the assumption is CHECKED at
-// registration, once, and a driver bump that drops one fails loudly at startup
-// instead of degrading silently in production.
+// It runs at CONNECT time, not at registration, and that is the fix for a
+// genuinely dangerous first version (codex round 3): registration opened a
+// probe *sql.DB for BOTH drivers and called Conn() on each, so creating a
+// SQLite store attempted a live PostgreSQL connection using whatever the
+// environment's default host, port and credentials happened to be — network
+// access, and a wrong-server contact, as a side effect of opening a local file.
+// Worse, the probe swallowed its own connection error, so the guarantees were
+// skipped in exactly the case where the check could not run.
 //
-// It also refuses a base whose STATEMENTS implement NamedValueChecker or
-// ColumnConverter, because guardStmt does not forward those — measured absent
-// on both drivers today, and a driver that gains one would otherwise lose its
-// own argument conversion without any signal.
-func requireBaseInterfaces(name string, probe *sql.DB) error {
-	conn, err := probe.Conn(context.Background())
-	if err != nil {
-		// A driver that cannot open a connection to an empty DSN tells us
-		// nothing; this is a best-effort check, not a reachability test.
-		return nil //nolint:nilerr // see comment
-	}
-	defer func() { _ = conn.Close() }()
-
+// Checking here costs one type-assert set per connection and answers about the
+// connection actually in hand.
+func assertConnInterfaces(c driver.Conn) error {
 	var missing []string
-	rawErr := conn.Raw(func(dc any) error {
-		for _, want := range []struct {
-			name string
-			ok   bool
-		}{
-			{"Pinger", isIface[driver.Pinger](dc)},
-			{"SessionResetter", isIface[driver.SessionResetter](dc)},
-			{"ExecerContext", isIface[driver.ExecerContext](dc)},
-			{"QueryerContext", isIface[driver.QueryerContext](dc)},
-			{"ConnPrepareContext", isIface[driver.ConnPrepareContext](dc)},
-			{"ConnBeginTx", isIface[driver.ConnBeginTx](dc)},
-		} {
-			if !want.ok {
-				missing = append(missing, want.name)
-			}
+	for _, want := range []struct {
+		name string
+		ok   bool
+	}{
+		{"Pinger", isIface[driver.Pinger](c)},
+		{"SessionResetter", isIface[driver.SessionResetter](c)},
+		{"ExecerContext", isIface[driver.ExecerContext](c)},
+		{"QueryerContext", isIface[driver.QueryerContext](c)},
+		{"ConnPrepareContext", isIface[driver.ConnPrepareContext](c)},
+		{"ConnBeginTx", isIface[driver.ConnBeginTx](c)},
+	} {
+		if !want.ok {
+			missing = append(missing, want.name)
 		}
-		return nil
-	})
-	if rawErr != nil {
-		return nil //nolint:nilerr // best-effort, as above
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("store: driver %q no longer implements %v; the NUL write guard advertises these "+
-			"unconditionally and would misreport them to database/sql — see nulguard.go's shape note", name, missing)
+		return fmt.Errorf("store: the database driver does not implement %v; the NUL write guard "+
+			"advertises these unconditionally and would misreport them to database/sql — see "+
+			"nulguard.go's shape note", missing)
+	}
+	return nil
+}
+
+// assertStmtInterfaces is the statement half, and it exists because the claim
+// was previously made in a COMMENT and nowhere else (codex round 3): the code
+// said statement-level NamedValueChecker and ColumnConverter were "measured
+// absent on both drivers and asserted", and nothing asserted it. guardStmt does
+// not forward either, so a driver that gained one would silently lose its own
+// argument conversion.
+//
+// Checked on the first statement each connection prepares, for the same reason
+// as the conn half: it is the object actually in hand.
+func assertStmtInterfaces(st driver.Stmt) error {
+	if !isIface[driver.StmtExecContext](st) || !isIface[driver.StmtQueryContext](st) {
+		return errors.New("store: driver statements do not implement the context interfaces; the NUL " +
+			"write guard advertises them unconditionally")
+	}
+	if isIface[driver.NamedValueChecker](st) {
+		return errors.New("store: driver statements now implement NamedValueChecker, which the NUL write " +
+			"guard does not forward — forwarding it needs a guardStmt variant, as the conn wrapper has")
+	}
+	//nolint:staticcheck // ColumnConverter is deprecated; a driver still using it would silently lose it
+	if isIface[driver.ColumnConverter](st) {
+		return errors.New("store: driver statements now implement ColumnConverter, which the NUL write " +
+			"guard does not forward")
 	}
 	return nil
 }

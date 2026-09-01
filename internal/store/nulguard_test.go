@@ -403,6 +403,43 @@ func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
 				}
 				return out
 			}
+			// STATEMENT level too (codex round 3): the parity test originally
+			// stopped at the connection, while guardStmt wraps statements and
+			// forwards a different set. A wrapper that hid StmtExecContext
+			// would have passed.
+			stmtIfaces := func(db *sql.DB) map[string]bool {
+				conn, err := db.Conn(t.Context())
+				if err != nil {
+					t.Fatalf("conn: %v", err)
+				}
+				defer conn.Close()
+				out := map[string]bool{}
+				if rerr := conn.Raw(func(dc any) error {
+					cpc, ok := dc.(driver.ConnPrepareContext)
+					if !ok {
+						return nil
+					}
+					st, serr := cpc.PrepareContext(t.Context(), "SELECT 1")
+					if serr != nil {
+						return nil //nolint:nilerr // a driver that cannot prepare this tells us nothing
+					}
+					defer st.Close()
+					out["StmtExecContext"] = isIface[driver.StmtExecContext](st)
+					out["StmtQueryContext"] = isIface[driver.StmtQueryContext](st)
+					out["stmt NamedValueChecker"] = isIface[driver.NamedValueChecker](st)
+					return nil
+				}); rerr != nil {
+					t.Fatalf("raw: %v", rerr)
+				}
+				return out
+			}
+			bs, ws := stmtIfaces(baseDB), stmtIfaces(wrapDB)
+			for name, want := range bs {
+				if ws[name] != want {
+					t.Errorf("stmt %s: base=%t wrapped=%t", name, want, ws[name])
+				}
+			}
+
 			b, w := ifaces(baseDB), ifaces(wrapDB)
 			if len(b) == 0 {
 				t.Fatal("the probe read no interfaces — the instrument is broken, not the wrapper")
@@ -446,13 +483,93 @@ func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
 			"caller gets a 500 where SQLite gives a 400", err)
 	}
 
-	// Controls: a clean NullString still writes, and a NULL one is untouched.
+	// Controls: a clean NullString still writes, and a NULL one becomes SQL
+	// NULL rather than an empty string.
 	clean := sql.NullString{String: "clean content", Valid: true}
 	if _, err := s.db.Exec(s.q(`UPDATE items SET content = ? WHERE id = ?`), clean, item.ID); err != nil {
 		t.Errorf("a clean sql.NullString must still write: %v", err)
 	}
+
+	// The NULL leg ASSERTS NULL (codex round 3). Checking only that the write
+	// succeeded would pass against a normalization that turned NULL into "" —
+	// which is precisely the kind of silent conversion a guard that rewrites
+	// parameters could introduce.
 	null := sql.NullString{Valid: false}
 	if _, err := s.db.Exec(s.q(`UPDATE items SET content = ? WHERE id = ?`), null, item.ID); err != nil {
-		t.Errorf("a NULL sql.NullString must still write: %v", err)
+		t.Fatalf("a NULL sql.NullString must still write: %v", err)
 	}
+	var readBack sql.NullString
+	if err := s.db.QueryRow(s.q(`SELECT content FROM items WHERE id = ?`), item.ID).Scan(&readBack); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if readBack.Valid {
+		t.Errorf("content read back as %q (Valid=true); a NULL parameter must store SQL NULL, not a string",
+			readBack.String)
+	}
+}
+
+// TestWriteGuardResolvesValuerOnce regresses the OTHER two halves of codex
+// round 3's Valuer findings, neither of which needs a database.
+//
+// They are unit-level on purpose: the integration test above only exercises
+// the Valuer path meaningfully on POSTGRES, because SQLite's driver lacks
+// NamedValueChecker and database/sql therefore unwraps sql.NullString before
+// the guard ever runs. That made it pass for the wrong reason by default
+// (codex round 3), and these do not depend on which driver is present.
+func TestWriteGuardResolvesValuerOnce(t *testing.T) {
+	t.Run("typed-nil valuer binds NULL instead of panicking", func(t *testing.T) {
+		args := []driver.NamedValue{{Ordinal: 1, Value: (*sql.NullString)(nil)}}
+		if err := normalizeAndCheck(args); err != nil {
+			t.Fatalf("a typed-nil valuer must resolve to NULL, got %v", err)
+		}
+		if args[0].Value != nil {
+			t.Errorf("resolved to %#v, want nil — database/sql special-cases a nil pointer valuer as SQL NULL",
+				args[0].Value)
+		}
+	})
+
+	t.Run("Value is called exactly once and its result is forwarded", func(t *testing.T) {
+		v := &countingValuer{outputs: []string{"clean", "poisoned" + textguard.NUL + "second"}}
+		args := []driver.NamedValue{{Ordinal: 1, Value: v}}
+		if err := normalizeAndCheck(args); err != nil {
+			t.Fatalf("the first (clean) value must be accepted: %v", err)
+		}
+		if v.calls != 1 {
+			t.Errorf("Value() called %d times, want exactly 1 — calling it for the check and letting the "+
+				"driver call it again lets a stateful valuer show the guard one value and the database another",
+				v.calls)
+		}
+		if got, _ := args[0].Value.(string); got != "clean" {
+			t.Errorf("forwarded %#v, want the RESOLVED value the guard inspected", args[0].Value)
+		}
+	})
+
+	t.Run("text shapes pgx accepts unconverted are seen", func(t *testing.T) {
+		poisoned := "bad" + textguard.NUL + "text"
+		type namedString string
+		for name, val := range map[string]driver.Value{
+			"*string":         &poisoned,
+			"named string":    namedString(poisoned),
+			"json.RawMessage": json.RawMessage(`"` + textguard.EscNUL + `"`),
+		} {
+			args := []driver.NamedValue{{Ordinal: 1, Value: val}}
+			if err := normalizeAndCheck(args); err == nil {
+				t.Errorf("%s carrying a NUL was accepted; pgx implements NamedValueChecker and binds these "+
+					"unconverted, so a string-only check never sees them", name)
+			}
+		}
+	})
+}
+
+// countingValuer returns a different value on each call, so a guard that
+// resolves twice can be caught doing it.
+type countingValuer struct {
+	outputs []string
+	calls   int
+}
+
+func (c *countingValuer) Value() (driver.Value, error) {
+	out := c.outputs[min(c.calls, len(c.outputs)-1)]
+	c.calls++
+	return out, nil
 }
