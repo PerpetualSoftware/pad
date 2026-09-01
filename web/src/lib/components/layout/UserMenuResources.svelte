@@ -23,6 +23,14 @@
 	// (external-link convention). Companion to AuthHeader/AuthFooter/+error
 	// from PLAN-900.
 
+	import {
+		CHANGELOG_URL,
+		DOCS_URL,
+		GITHUB_REPO_URL,
+		STATUS_URL,
+		SUPPORT_MAILTO
+	} from '$lib/brand/links';
+
 	let {
 		cloudMode = false,
 		onclose
@@ -50,11 +58,11 @@
 	// footer means a user visiting both surfaces sees the same linear pattern
 	// — small cohesion win that Codex flagged on first review.
 	const cloudLinks: ResourceLink[] = [
-		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' },
-		{ label: 'Docs', href: 'https://getpad.dev/docs' },
-		{ label: 'Changelog', href: 'https://getpad.dev/changelog' },
-		{ label: 'Status', href: 'https://status.getpad.dev' },
-		{ label: 'Support', href: 'mailto:support@getpad.dev' }
+		{ label: 'GitHub', href: GITHUB_REPO_URL },
+		{ label: 'Docs', href: DOCS_URL },
+		{ label: 'Changelog', href: CHANGELOG_URL },
+		{ label: 'Status', href: STATUS_URL },
+		{ label: 'Support', href: SUPPORT_MAILTO }
 	];
 
 	// Self-hosted is a subset that preserves the relative canonical order —
@@ -62,8 +70,8 @@
 	// (operators have their own changelog/status if any; getpad.dev's
 	// support@ mailbox is not theirs to direct people to).
 	const selfHostedLinks: ResourceLink[] = [
-		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' },
-		{ label: 'Docs', href: 'https://getpad.dev/docs' }
+		{ label: 'GitHub', href: GITHUB_REPO_URL },
+		{ label: 'Docs', href: DOCS_URL }
 	];
 
 	const links = $derived(cloudMode ? cloudLinks : selfHostedLinks);
