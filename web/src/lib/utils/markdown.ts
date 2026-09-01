@@ -497,6 +497,58 @@ export function renderMarkedWithAttachments(
 	}
 }
 
+/**
+ * Render a STANDALONE markdown document through the shared `marked` pipeline,
+ * sanitized (IDEA-2712 / GitHub #1169). The attachment-preview entry point.
+ *
+ * A third thin wrapper in FRONT of the one pipeline, for the same reason
+ * {@link renderMarkedWithAttachments} is the second: a surface with different
+ * needs gets a wrapper, never a second renderer. Two markdown pipelines
+ * disagreeing about one format is the failure this shape exists to prevent.
+ *
+ * WHAT IT DELIBERATELY OMITS, and why the omissions are the point:
+ *
+ *  - **No wiki-link resolution.** An attached `.md` was authored somewhere
+ *    else, so its `[[brackets]]` are not references into whatever workspace
+ *    happens to be showing it. Resolving them would silently retarget a
+ *    foreign document's links at local items — the same hazard BUG-2830
+ *    closed from the rename direction, entered through the front door. They
+ *    stay inert text, the posture the public share route already takes.
+ *  - **No attachment context.** A `pad-attachment:` href inside an attached
+ *    document is not ours to resolve either. The context is CLEARED for the
+ *    duration rather than merely left alone (codex R3): this module's context
+ *    is module-level state, so a call nested inside another render — an
+ *    attachment resolver or a `missing` hook that itself renders markdown —
+ *    would otherwise inherit the OUTER document's workspace and resolver, and
+ *    quietly resolve a foreign file's references against them. Save, clear,
+ *    restore, mirroring {@link renderMarkedWithAttachments}'s save/restore for
+ *    the same reason it does it.
+ *
+ *    With no context installed, a `pad-attachment:` image href falls through to
+ *    marked's default `<img src="pad-attachment:…">`, which `sanitizeMarkdownHtml`
+ *    then DROPS — DOMPurify's URL policy does not know that scheme. So the
+ *    reference disappears rather than rendering as a broken-image icon; either
+ *    way nothing resolves, but the earlier comment here said "broken image" and
+ *    that was a guess about the sanitizer's behaviour, not a reading of it.
+ *
+ * Sanitization is INHERITED, not re-derived: the same `sanitizeMarkdownHtml`
+ * pass every other `{@html}` source in the app goes through, so the tag and
+ * attribute allowlist for an attached document is by construction the one
+ * that governs item content.
+ */
+export function renderMarkdownDocument(content: string): string {
+	// Save/restore rather than assume none is installed — see the doc comment.
+	// Synchronous by contract, like the sibling wrapper: `marked` is not
+	// configured async here, so the `finally` cannot be outlived.
+	const prev = currentAttachmentCtx;
+	currentAttachmentCtx = null;
+	try {
+		return sanitizeMarkdownHtml(marked(content) as string);
+	} finally {
+		currentAttachmentCtx = prev;
+	}
+}
+
 export function wordCount(content: string): number {
 	return content.trim().split(/\s+/).filter(w => w.length > 0).length;
 }

@@ -70,6 +70,9 @@ vi.mock('$lib/api/client', () => ({
 import Sidebar from './Sidebar.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
 import { acquire, __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
+import { GITHUB_REPO_URL } from '$lib/brand/links';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 function aside(): HTMLElement {
 	const el = document.querySelector('aside.sidebar');
@@ -237,5 +240,75 @@ describe('Sidebar — mobile left-edge swipe-to-open (TASK-2430)', () => {
 		acquire(mountViewer());
 		window.dispatchEvent(touch('touchmove', 200, 300, document.body));
 		expect(uiStore.sidebarOpen).toBe(false);
+	});
+});
+
+// ── THE REPO LINK (IDEA-2711 / GitHub #1168) ────────────────────────────────
+//
+// CONVE-19 again, in its cheapest form: the constant is trivially correct on
+// its own, so what is worth asserting is the BINDING — that the anchor is
+// actually in the rendered footer and carries the external-link attributes.
+//
+// WHAT THE DOM TEST CANNOT SEE (codex R3 #6): comparing the rendered href to
+// the imported constant passes identically for a component that hardcoded the
+// same string, because both sides end up as the same characters. That
+// assertion pins the VALUE, not the source of it — and "points at the shared
+// constant rather than a literal someone retyped" was an overstatement of what
+// it proves. The single-source property is a SOURCE property, so the last test
+// below reads the source and asserts the literal is absent from the consumers.
+// That is the one a re-duplication actually fails.
+describe('sidebar — GitHub repo link', () => {
+	function githubLink(): HTMLAnchorElement {
+		const el = aside().querySelector<HTMLAnchorElement>('.sidebar-footer a.github-btn');
+		if (!el) throw new Error('github link not found in the sidebar footer');
+		return el;
+	}
+
+	it('renders in the footer, at the repo URL', () => {
+		expect(githubLink().getAttribute('href')).toBe(GITHUB_REPO_URL);
+	});
+
+	it('opens off-property safely', () => {
+		const a = githubLink();
+		expect(a.getAttribute('target')).toBe('_blank');
+		// `noopener` is the load-bearing half — without it the opened tab gets a
+		// handle on this one via `window.opener`.
+		const rel = (a.getAttribute('rel') ?? '').split(/\s+/);
+		expect(rel).toContain('noopener');
+		expect(rel).toContain('noreferrer');
+	});
+
+	it('has an accessible name, since the mark alone carries none', () => {
+		const a = githubLink();
+		expect(a.getAttribute('aria-label')).toContain('GitHub');
+		// The SVG must not be announced separately.
+		expect(a.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+	});
+
+	it('the URL literal lives ONLY in the shared module', () => {
+		// The single-source property the DOM test cannot decide. A component that
+		// re-hardcoded the same string renders an identical href and passes every
+		// assertion above; it fails this one.
+		//
+		// Deliberately narrow: it names the two consumers rather than sweeping the
+		// tree, so it cannot fail for an unrelated file (a doc, a fixture, a
+		// changelog entry legitimately quoting the URL) and cannot quietly stop
+		// covering them by drifting into a glob that no longer matches.
+		// `process.cwd()` is `web/` under vitest (the config's root); resolving
+		// from `import.meta.url` is unavailable here because vitest serves the
+		// module over a non-file URL.
+		const root = process.cwd();
+		for (const rel of [
+			'src/lib/components/layout/Sidebar.svelte',
+			'src/lib/components/layout/UserMenuResources.svelte'
+		]) {
+			const source = readFileSync(join(root, rel), 'utf8');
+			expect(source, `${rel} hardcodes the repo URL`).not.toContain(
+				'github.com/PerpetualSoftware/pad'
+			);
+			// ...and it does reference the constant, so the absence above is
+			// "imported from the module", not "the link was deleted".
+			expect(source).toContain('GITHUB_REPO_URL');
+		}
 	});
 });

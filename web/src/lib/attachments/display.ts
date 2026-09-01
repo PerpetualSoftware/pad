@@ -328,3 +328,140 @@ export function canBrowserPreview(mime: string | null | undefined): boolean {
 	const m = normalizeMime(mime);
 	return VIEWER_MIMES.has(m) || BROWSER_PREVIEW_MIMES.has(m);
 }
+
+/**
+ * The types the IN-APP text preview renders (IDEA-2712 / GitHub #1169).
+ *
+ * A THIRD predicate, deliberately not an edit to either sibling above.
+ * The three answer different questions and only look alike:
+ *
+ *  - `canOpenInViewer` (DR-16) — may the in-app IMAGE viewer decode this?
+ *  - `canBrowserPreview` (DR-5) — may the BROWSER be handed this in a new
+ *    tab? For `text/markdown` the honest answer stays NO: the browser
+ *    downloads it. Widening DR-5 to reach #1169 would route markdown to
+ *    the Open-in-new-tab action (`actions.ts`) and reproduce the exact
+ *    download-instead-of-render behaviour the issue reports.
+ *  - this one — do WE fetch the bytes and render them ourselves? That is
+ *    a question about our own renderer, and it is the only one #1169 asks.
+ *
+ * NOT PART OF THE SERVER MIRROR. `internal/attachments/mime.go`'s
+ * `inlineSafe` declares itself the mirror of `VIEWER_MIMES` +
+ * `BROWSER_PREVIEW_MIMES` — the set the server may send with
+ * `Content-Disposition: inline`. This set is deliberately outside that
+ * pair and must never be added to it: we never ask the browser to inline
+ * these bytes, we `fetch()` them (which a download disposition does not
+ * impede) and render sanitized HTML ourselves. Keeping it out of the
+ * mirror is what lets `text/markdown` preview in-app while still being
+ * served as an attachment.
+ *
+ * MIME-EXACT, NEVER BY CATEGORY. `CategoryText` server-side CONTAINS the
+ * force-download bucket — `text/html`, `text/javascript` and
+ * `application/javascript` are all `CategoryText` (mime.go). A
+ * category test would therefore admit exactly the types PLAN-2393 DR-6
+ * forbids inlining. An allowlist excludes them by construction rather
+ * than by anyone remembering to.
+ *
+ * SMALLER THAN WHAT WE COULD RENDER, on purpose. `text/csv`,
+ * `text/tab-separated-values`, JSON, XML, YAML and TOML are all
+ * allowlisted uploads and all renderable as raw text — and all left out,
+ * because each has an obviously better rendering (a table; syntax
+ * highlighting) that this unit does not build. Shipping them as raw text
+ * now would make that better rendering a REGRESSION for anyone who got
+ * used to the raw view.
+ */
+const TEXT_PREVIEW_MIMES: ReadonlySet<string> = new Set(['text/markdown', 'text/plain']);
+
+/**
+ * May the in-app text preview render this MIME? See
+ * {@link TEXT_PREVIEW_MIMES} for the set and the three reasons it is
+ * neither a category test nor a widening of `canBrowserPreview`.
+ *
+ * Fails closed like its siblings: unknown, unresolved and null MIMEs get
+ * no renderer, so the surface shows its existing file panel.
+ */
+export function canPreviewAsText(mime: string | null | undefined): boolean {
+	return TEXT_PREVIEW_MIMES.has(normalizeMime(mime));
+}
+
+/**
+ * Within the text-preview set, is this the MARKDOWN one? (IDEA-2712)
+ *
+ * The arm needs to tell the two members apart — markdown goes through the
+ * shared `marked` pipeline, plain text goes into a `<pre>` as text.
+ *
+ * THE EXTENSION IS CONSULTED, AND IT IS NOT BELT-AND-BRACES — IT IS THE PATH
+ * THAT ACTUALLY FIRES. An uploaded `.md` is stored as **`text/plain`**, not
+ * `text/markdown`. `attachments.ValidateUpload` sniffs the bytes with
+ * `http.DetectContentType`, which answers `text/plain` for any prose, and
+ * returns the SNIFFED entry; the extension is used only to REJECT a mismatch,
+ * and `.md` → `text/markdown` shares `CategoryText` with `text/plain`, so
+ * nothing rejects and the sniffed type is what lands in the row. Measured, not
+ * assumed: `ValidateUpload([]byte("# Heading\n..."), "preview.md")` returns
+ * `mime="text/plain"`.
+ *
+ * So a MIME-only test is a branch that never runs for the files this feature
+ * exists for. Every unit test that hand-sets `mime_type: 'text/markdown'`
+ * passes anyway, which is precisely why this was found in a browser and not
+ * here: those fixtures encode what the author believed the system stores.
+ *
+ * The MIME check stays FIRST because it is the stronger signal when present —
+ * an explicitly-typed row (a CLI upload that declares the type, or a future
+ * server that trusts the extension) should be honoured regardless of filename.
+ * The extension is the fallback, and it is gated on the MIME already being in
+ * the text-preview set so a filename can never widen what previews.
+ */
+const MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['md', 'markdown']);
+
+export function isMarkdownAttachment(
+	mime: string | null | undefined,
+	filename?: string | null
+): boolean {
+	if (normalizeMime(mime) === 'text/markdown') return true;
+	// Gate on the set, never on the filename alone: the extension chooses a
+	// RENDERER among types already admitted, and must not admit anything.
+	if (!canPreviewAsText(mime)) return false;
+	return MARKDOWN_EXTENSIONS.has(extensionOf(filename));
+}
+
+/**
+ * Byte ceiling above which the text preview offers the existing download
+ * affordance instead of rendering (IDEA-2712 / GitHub #1169).
+ *
+ * THE RECEIPT. Measured 2026-09-01 over two independent populations of
+ * real markdown:
+ *
+ *   | sample                                   |  n | p50    | p90    | max   |
+ *   |------------------------------------------|----|--------|--------|-------|
+ *   | `*.md` in this repo (no node_modules)    | 25 | 3.6 KB |  42 KB | 82 KB |
+ *   | `docs` collection item bodies (workspace) | 63 | 5.0 KB |  13 KB | 23 KB |
+ *
+ * Authored repo docs and Pad-native documents agree: real markdown is
+ * single-digit-to-tens of KB. 1 MiB is ~12x the largest document observed
+ * in either sample and ~25x the repo's p99.
+ *
+ * LOAD CONDITIONS. The cost this bounds is main-thread: `marked` plus
+ * DOMPurify plus DOM construction, synchronously, in the viewer.
+ *
+ * ERROR DIRECTION, chosen deliberately: err toward RENDERING. An unusually
+ * large but genuine document still previews; the cap exists for the
+ * pathological case a 25 MiB upload bound admits (a log renamed `.md`, a
+ * generated dump), not to enforce taste about document length. It sits
+ * well under `defaultAttachmentMaxBytes` (25 MiB, handlers_attachments.go)
+ * so it has a live range to act in.
+ *
+ * WHAT IT DOES NOT COVER: a small file that is expensive to render anyway
+ * — deeply nested lists, thousands of inline links. Byte count is a proxy
+ * for render cost, not a measure of it. If that bites, the answer is a
+ * render-time budget, not a smaller byte cap; shrinking this number cannot
+ * deliver that fix.
+ *
+ * Enforced from `size_bytes` METADATA where the surface HAS it — then no bytes
+ * are requested at all. Where it does not (`LightboxImage.size_bytes` is
+ * `number | null` by declaration, and most producers seed null, leaving the
+ * metadata HEAD to fill it) the load necessarily starts first: the response
+ * bound holds the line, and the late size re-decides and aborts what is in
+ * flight. So the cap always bounds what is RENDERED; it saves the TRANSFER only
+ * when the size is known before the load. Claiming otherwise would be false for
+ * the common seeding (codex R1 #1).
+ */
+export const TEXT_PREVIEW_MAX_BYTES = 1 << 20; // 1 MiB

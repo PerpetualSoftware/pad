@@ -6,6 +6,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { GITHUB_REPO_URL } from '$lib/brand/links';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
@@ -647,6 +648,30 @@
 						</svg>
 					{/if}
 				</button>
+				<!--
+					THE REPO LINK (IDEA-2711 / GitHub #1168). A running instance had no
+					visible connection to the project it is — the only in-app link lived
+					inside the user-menu dropdown, so people went to a search engine
+					instead, which is what the issue reports. Icon-only here to match the
+					collapse / theme / bell controls it sits beside; the accessible name
+					carries the destination, since the mark alone does not.
+
+					The URL comes from `$lib/brand/links`, not a literal: it was already
+					written twice in UserMenuResources and a third copy is how a rename
+					goes half-applied.
+				-->
+				<a
+					class="github-btn"
+					href={GITHUB_REPO_URL}
+					target="_blank"
+					rel="noopener noreferrer"
+					title="Pad on GitHub"
+					aria-label="Pad on GitHub (opens in a new tab)"
+				>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+						<path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+					</svg>
+				</a>
 				<button
 					class="bell-btn"
 					onclick={() => { notificationPanelOpen = !notificationPanelOpen; }}
@@ -1196,6 +1221,18 @@
 		text-decoration: none;
 	}
 	.settings-btn:hover { background: var(--bg-hover); color: var(--text-secondary); text-decoration: none; }
+	/* IDEA-2711: sized and coloured off the sibling icon controls in this row so
+	   the mark reads as one of them rather than as content. */
+	.github-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-2);
+		border-radius: var(--radius);
+		color: var(--text-muted);
+		text-decoration: none;
+	}
+	.github-btn:hover { background: var(--bg-hover); color: var(--text-secondary); text-decoration: none; }
 	.version-label {
 		display: block;
 		text-align: center;

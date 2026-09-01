@@ -3,6 +3,7 @@ import { browserLogin, seedDoc } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 import {
+	REAL_PDF,
 	VIEWER,
 	VIEWER_FALLBACK,
 	VIEWER_FALLBACK_NAME,
@@ -77,11 +78,30 @@ async function uploadTo(
 }
 
 /**
- * Upload a NON-image bound to `itemId`. `text/plain` is in the server's
- * allowlist and is one of the types the panel offers Open for, so the tile it
- * produces is a file tile — the one that opens the options panel.
+ * Upload a NON-image bound to `itemId`, of a type NO RENDERER CLAIMS — so the
+ * surface it opens is the no-bytes fallback arm.
+ *
+ * WAS `text/plain` (IDEA-2712). That stopped being a fallback fixture when the
+ * viewer gained an in-app text renderer: a `.txt` now previews, which is the
+ * point of that change, so a test asserting "No preview available" over one
+ * would be asserting the bug. PDF is the replacement because it keeps every
+ * property this fixture was chosen for — allowlisted, non-image, and
+ * `canBrowserPreview`, so the toolbar still offers Open in new tab — while
+ * remaining unclaimed by any renderer (`'pdf'` is PLAN-2393's reserved slot,
+ * not built).
+ *
+ * WHEN PLAN-2393 BUILDS THAT SLOT, THESE TESTS WILL GO RED, AND THAT IS THE
+ * DESIGN. A PDF will then preview and stop being a fallback fixture, exactly as
+ * text did here. The failure is the signal to pick the next type no renderer
+ * claims — an archive is the obvious candidate — not to weaken the assertion.
+ * A fallback-arm test is only ever as durable as the emptiness of the renderer
+ * registry, so it is written to fail loudly when that changes rather than to
+ * survive by asserting less.
+ *
+ * The strip→surface wiring for a PREVIEWABLE text file is covered in
+ * `attachment-text-preview.spec.ts`, which opens its document from a tile.
  */
-async function uploadTextTo(
+async function uploadFallbackFileTo(
 	fixture: SuiteFixture,
 	request: APIRequestContext,
 	itemId: string,
@@ -93,7 +113,7 @@ async function uploadTextTo(
 		{
 			headers: { Authorization: `Bearer ${fixture.apiToken}` },
 			multipart: {
-				file: { name: filename, mimeType: 'text/plain', buffer: Buffer.from('notes\n') }
+				file: { name: filename, mimeType: 'application/pdf', buffer: REAL_PDF }
 			}
 		}
 	);
@@ -340,7 +360,7 @@ test.describe('item attachment strip', () => {
 		await browserLogin(page);
 
 		const doc = await seedDoc(fixture, request, 'Surface wiring');
-		await uploadTextTo(fixture, request, doc.id, 'notes.txt');
+		await uploadFallbackFileTo(fixture, request, doc.id, 'notes.pdf');
 
 		await page.goto(itemUrl(fixture, doc.slug));
 		const tile = page.locator(TILE).first();
@@ -349,23 +369,23 @@ test.describe('item attachment strip', () => {
 		// A file tile is a real button naming its action, not a download link —
 		// the whole point of the change (DR-1, DR-12).
 		await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
-		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.txt/);
+		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.pdf/);
 
 		await tile.click();
 		// The converged surface opens — a role="dialog" naming the file, NOT a menu.
-		const surface = viewerDialog(page, 'notes.txt');
+		const surface = viewerDialog(page, 'notes.pdf');
 		await expect(surface).toHaveCount(1);
 		await expect(page.locator('[role="menu"]')).toHaveCount(0);
 		// The no-bytes fallback arm: the family icon, the file's name, an honest
 		// "No preview available" — no <img>, no bytes for a non-raster type.
 		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
-		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('notes.txt');
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('notes.pdf');
 		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
 		await expect(page.locator(`${VIEWER} .lightbox-image`)).toHaveCount(0);
 		// The toolbar carries the real Download anchor with the filename — the DR-16
-		// save semantics a plain navigation would lose. text/plain is
-		// browser-previewable, so Open in new tab is offered too.
-		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'notes.txt');
+		// save semantics a plain navigation would lose. PDF is browser-previewable,
+		// so Open in new tab is offered too.
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'notes.pdf');
 		await expect(viewerOpenAnchor(page)).toBeVisible();
 
 		await page.keyboard.press('Escape');
@@ -379,7 +399,7 @@ test.describe('item attachment strip', () => {
 		for (const key of ['Enter', ' ']) {
 			await tile.focus();
 			await page.keyboard.press(key);
-			await expect(viewerDialog(page, 'notes.txt')).toHaveCount(1);
+			await expect(viewerDialog(page, 'notes.pdf')).toHaveCount(1);
 			await expect(page.locator(VIEWER)).toHaveCount(1);
 			await expect(page.locator('[role="menu"]')).toHaveCount(0);
 			await page.keyboard.press('Escape');
@@ -407,12 +427,14 @@ test.describe('item attachment strip', () => {
 		await page.goto(itemUrl(fixture, doc.slug));
 
 		// Drop a NON-image so the editor renders a file chip rather than an
-		// inline image.
+		// inline image — and one NO RENDERER CLAIMS, so the surface shows the
+		// fallback arm this test asserts. `text/plain` used to serve here and no
+		// longer can: it previews in-app since IDEA-2712.
 		await dropFileIntoEditor(
 			page,
-			'handbook.txt',
-			Buffer.from('chapter one\n').toString('base64'),
-			'text/plain'
+			'handbook.pdf',
+			REAL_PDF.toString('base64'),
+			'application/pdf'
 		);
 
 		const chip = page.locator('.editor-content .ProseMirror button.file-chip').first();
@@ -423,11 +445,11 @@ test.describe('item attachment strip', () => {
 
 		await chip.click();
 		// The same converged surface, addressed by the file's own name.
-		await expect(viewerDialog(page, 'handbook.txt')).toHaveCount(1);
+		await expect(viewerDialog(page, 'handbook.pdf')).toHaveCount(1);
 		await expect(page.locator('[role="menu"]')).toHaveCount(0);
-		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('handbook.txt');
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('handbook.pdf');
 		// The Download anchor carries the filename — even though a dropped chip's
 		// metadata may be partial, the download attribute is never dropped (DR-16).
-		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'handbook.txt');
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'handbook.pdf');
 	});
 });
