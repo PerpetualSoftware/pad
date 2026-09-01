@@ -225,8 +225,22 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 	// ...) rather than a column constraint, and that attribution is NOT
 	// verified. The claim corrected to what the run actually showed (codex
 	// round 8).
-	// The API refuses this body (BUG-2803); the store does not, which is the
-	// gap this test exists to cover.
+	// The API refuses this body (BUG-2803), and since DOC-2823 S2 so do the
+	// database's own triggers — which is why the injection is bracketed by
+	// dropping and restoring them.
+	//
+	// The fixture needs a row that VIOLATES the invariant, because the
+	// behaviour under test is what the timeline does with legacy data. Layer B
+	// exists precisely to stop such a row being written, so a test that needs
+	// one has to step around it deliberately and put it back. Doing that in
+	// place, rather than through a general helper, keeps the fact that this
+	// test manufactures illegal data visible at the point it happens.
+	dropNULTriggers := []string{"pad_nul_items_fields_ins", "pad_nul_items_fields_upd"}
+	for _, tr := range dropNULTriggers {
+		if _, err := srv.store.DB().Exec("DROP TRIGGER IF EXISTS " + tr); err != nil {
+			t.Fatalf("drop %s for the legacy-row fixture: %v", tr, err)
+		}
+	}
 	if _, err := srv.store.DB().Exec(
 		`UPDATE items SET fields = REPLACE(fields, 'PLACEHOLDER', ?) WHERE id = ?`,
 		string([]byte{'\\', 'u', '0', '0', '0', '0'}), item.ID,
