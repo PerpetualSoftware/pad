@@ -666,29 +666,6 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 // where one a level deeper is not.
 func nestedDocumentDecodesNUL(s string) bool { return textguard.DocumentDecodesNUL(s) }
 
-// stringIsJSONDocument reports whether a string is a complete JSON object or
-// array — the shape a downstream consumer will re-parse.
-//
-// WHY THE RECURSION IT GATES EXISTS. Several fields cross the wire as
-// JSON-ENCODED STRINGS rather than nested objects: an item's `fields`, a
-// collection's `schema`, a workspace's `settings`. In such a body the OUTER
-// decode yields the inner document as literal text, in which the escape is
-// still six ordinary characters and no NUL exists. A single-layer walk
-// therefore passed it, and Postgres refused it later with a DIFFERENT error
-// from the rest of this family:
-//
-//	insert collection: ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)
-//
-// 22P05, not the 22021 the path and query halves produce. The outer string is
-// pure ASCII so it never trips the text-encoding check; this is Postgres's own
-// JSON parser refusing the escape inside a document bound for jsonb, which
-// cannot represent a NUL. Measured on Postgres 17: item `fields`, collection
-// `schema` and workspace `settings` each answered 500 with a 201 control leg,
-// after the single-layer check was in place. Found by codex round 1 on
-// BUG-2803, by asking what the destination TYPE does with the value — the
-// angle the endpoint-and-field sweep never rotated to.
-func stringIsJSONDocument(s string) bool { return textguard.IsJSONDocument(s) }
-
 // readBodyForDecode reads the whole request body so it can be scanned before
 // it is decoded, with the caller's size cap applied.
 //

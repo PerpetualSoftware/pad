@@ -1,0 +1,273 @@
+package store
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/textguard"
+)
+
+// TestBinaryColumnCensus pins the one assumption the write guard's classing
+// rests on: that []byte parameters in this store are BINARY, so exempting them
+// from the NUL check refuses nothing legitimate and hides nothing.
+//
+// It is a census rather than an argument because this unit's whole history is
+// source-level instruments missing things — a Sprintf-built statement, a
+// multi-line SQL literal, a write site two separate greps each half-found. A
+// census over the migration SQL answers "what binary columns exist" in a way a
+// reader can re-run, and it FAILS when a new one appears, which is exactly when
+// someone must re-examine whether []byte is still binary-only here.
+//
+// If you are here because this failed: you added a BLOB/BYTEA column. Decide
+// whether anything binds TEXT to it, or text to any other column as []byte,
+// then add it below.
+func TestBinaryColumnCensus(t *testing.T) {
+	want := map[string]bool{"item_yjs_updates.update_data": true}
+
+	// One pattern per dialect spelling, applied to the raw migration text so
+	// nothing depends on a Go-side model of the schema.
+	colRe := regexp.MustCompile(`(?im)^\s*([a-z_]+)\s+(BLOB|BYTEA)\b`)
+	tableRe := regexp.MustCompile(`(?is)CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_]+)\s*\((.*?)\n\s*\);`)
+
+	found := map[string]bool{}
+	for _, dir := range []string{"migrations", "pgmigrations"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		var sqlFiles int
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".sql") {
+				continue
+			}
+			sqlFiles++
+			body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatalf("read %s: %v", e.Name(), err)
+			}
+			for _, tbl := range tableRe.FindAllStringSubmatch(string(body), -1) {
+				for _, col := range colRe.FindAllStringSubmatch(tbl[2], -1) {
+					found[tbl[1]+"."+col[1]] = true
+				}
+			}
+		}
+		// The instrument must have read something, or "no binary columns
+		// found" is a statement about the walk rather than about the schema.
+		if sqlFiles == 0 {
+			t.Fatalf("no .sql files read from %s — the census walked nothing", dir)
+		}
+	}
+
+	if len(found) == 0 {
+		t.Fatal("census found ZERO binary columns; item_yjs_updates.update_data is known to exist, so the instrument is broken, not the schema")
+	}
+
+	var extra, missing []string
+	for c := range found {
+		if !want[c] {
+			extra = append(extra, c)
+		}
+	}
+	for c := range want {
+		if !found[c] {
+			missing = append(missing, c)
+		}
+	}
+	sort.Strings(extra)
+	sort.Strings(missing)
+	if len(extra) > 0 {
+		t.Errorf("new binary column(s) %v — the write guard exempts every []byte parameter from the NUL "+
+			"check on the grounds that []byte means binary here. Re-examine that before adding these.", extra)
+	}
+	if len(missing) > 0 {
+		t.Errorf("expected binary column(s) %v not found by the census — either they were removed or the "+
+			"instrument stopped seeing them; both need a human", missing)
+	}
+}
+
+// TestWriteGuardRefusesTheCorpus is Layer A's leg of the four-way differential
+// test: the SAME corpus every other layer is measured against, driven through
+// a REAL write to a REAL database.
+//
+// It is a real write rather than a call to checkParams because the point is
+// coverage of the path, not of the predicate — textguard's own test already
+// covers the predicate. What this asserts is that a value reaching the driver
+// is refused there, whichever of the four receivers carried it.
+func TestWriteGuardRefusesTheCorpus(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "NulGuard")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Guard subject", "")
+
+	for _, c := range textguard.Corpus {
+		t.Run(c.Name, func(t *testing.T) {
+			// items.content is a user-text column; items.fields is JSON. The
+			// corpus case's own classing chooses which one carries it, which
+			// is how this leg measures that the STORE's classing agrees with
+			// the corpus's.
+			var err error
+			if c.IsJSON {
+				fields := c.Value
+				_, err = s.UpdateItem(item.ID, models_ItemUpdateFields(fields))
+			} else {
+				content := c.Value
+				_, err = s.UpdateItem(item.ID, models_ItemUpdateContent(content))
+			}
+
+			refused := err != nil && strings.Contains(err.Error(), ErrInvalidTextParameter.Error())
+			if refused != c.Refused {
+				t.Errorf("store write refused=%t, corpus says %t\nvalue: %q\nisJSON: %t\nerr: %v\nwhy this case exists: %s",
+					refused, c.Refused, c.Value, c.IsJSON, err, c.Why)
+			}
+		})
+	}
+}
+
+// Small constructors, so the corpus loop reads as the assertion rather than as
+// struct plumbing.
+func models_ItemUpdateContent(v string) (u models.ItemUpdate) { u.Content = &v; return }
+func models_ItemUpdateFields(v string) (u models.ItemUpdate)  { u.Fields = &v; return }
+
+// TestWriteGuardCoversTheQueryPath is the leg the lead required before this
+// guard's coverage claim could be written, and a mutation is why it exists in
+// this shape: removing checkParams from guardConn.QueryContext SURVIVED the
+// corpus leg above, because every write that leg makes goes through Exec.
+//
+// Writes DO ride the Query path in this store — three of them today:
+//
+//	password_resets.go     UPDATE ... RETURNING user_id   (s.db.QueryRow)
+//	email_verification.go  UPDATE ... RETURNING user_id   (tx.QueryRow)
+//	yjs_updates.go         INSERT ... RETURNING id        (s.db.QueryRow, Postgres)
+//
+// so an Exec-only guard would have left a real hole rather than a theoretical
+// one. This drives a RETURNING write directly, because what is under test is
+// the PATH: the predicate is covered by textguard's own tests, and the corpus
+// leg covers Exec.
+//
+// It also answers the lead's other branch. If those three writes are ever
+// rewritten away, this test does not become vacuous — it constructs its own
+// RETURNING statement, so it keeps guarding the path against the day someone
+// adds the next one.
+func TestWriteGuardCoversTheQueryPath(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "NulGuardQueryPath")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Query path subject", "")
+
+	// A NUL-bearing value through UPDATE ... RETURNING — the exact shape
+	// password_resets.go and email_verification.go use.
+	var returned string
+	err := s.db.QueryRow(
+		s.q(`UPDATE items SET content = ? WHERE id = ? RETURNING id`),
+		"poisoned"+textguard.NUL+"content", item.ID,
+	).Scan(&returned)
+	if err == nil {
+		t.Fatal("a NUL-bearing parameter on the QUERY path was accepted; the guard covers Exec only")
+	}
+	if !strings.Contains(err.Error(), ErrInvalidTextParameter.Error()) {
+		t.Errorf("refused, but not by the guard: %v", err)
+	}
+
+	// The row must be untouched — a guard that refuses after writing is not a
+	// guard.
+	after, gerr := s.GetItem(item.ID)
+	if gerr != nil {
+		t.Fatalf("GetItem: %v", gerr)
+	}
+	if textguard.ContainsNUL(after.Content) {
+		t.Error("the refused value reached the row anyway")
+	}
+
+	// CONTROL: a clean value on the same path still works, so the leg
+	// discriminates rather than proving that RETURNING is simply broken here.
+	var ok string
+	if err := s.db.QueryRow(
+		s.q(`UPDATE items SET content = ? WHERE id = ? RETURNING id`),
+		"clean content", item.ID,
+	).Scan(&ok); err != nil {
+		t.Fatalf("a clean value on the query path must succeed: %v", err)
+	}
+	if ok != item.ID {
+		t.Errorf("RETURNING gave %q, want %q", ok, item.ID)
+	}
+}
+
+// TestWriteGuardCoversPreparedStatements covers the route that JUSTIFIES this
+// guard living at the driver rather than at *sql.DB.
+//
+// A wrapper one layer up cannot see a prepared statement's arguments: the
+// statement is prepared once and executed against the driver directly. That is
+// the measurement that retired the in-package seam shape, and leaving it
+// untested would mean the design's central reason was the one thing unverified.
+// Both prepared mutants — dropping the check from guardStmt.ExecContext and
+// from guardStmt.QueryContext — SURVIVED until this existed.
+//
+// The store prepares statements today in agent_roles.go (two sites, binding
+// ids and ints). Those carry no user text, so this test constructs its own
+// rather than borrowing one: what is under test is the ROUTE, and it must stay
+// covered when the next prepared statement does carry text.
+func TestWriteGuardCoversPreparedStatements(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "NulGuardPrepared")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Prepared subject", "")
+
+	t.Run("prepared Exec", func(t *testing.T) {
+		stmt, err := s.db.Prepare(s.q(`UPDATE items SET content = ? WHERE id = ?`))
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		defer stmt.Close()
+
+		if _, err := stmt.Exec("poisoned"+textguard.NUL+"content", item.ID); err == nil {
+			t.Error("a NUL-bearing parameter through a PREPARED statement was accepted — a *sql.DB-level wrapper would miss exactly this")
+		} else if !strings.Contains(err.Error(), ErrInvalidTextParameter.Error()) {
+			t.Errorf("refused, but not by the guard: %v", err)
+		}
+
+		// Control on the same statement handle.
+		if _, err := stmt.Exec("clean content", item.ID); err != nil {
+			t.Errorf("a clean value through the same prepared statement must succeed: %v", err)
+		}
+	})
+
+	t.Run("prepared Query", func(t *testing.T) {
+		stmt, err := s.db.Prepare(s.q(`SELECT id FROM items WHERE workspace_id = ? AND content = ?`))
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		defer stmt.Close()
+
+		// A READ carrying a NUL is refused too. That is deliberate and worth
+		// stating: on Postgres such a parameter is a query error rather than a
+		// miss, so refusing it uniformly is what stops the two dialects
+		// answering differently — the BUG-2831 lesson applied to reads.
+		rows, err := stmt.Query(ws.ID, "looking"+textguard.NUL+"for")
+		if err == nil {
+			_ = rows.Close()
+			t.Error("a NUL-bearing parameter through a prepared QUERY was accepted")
+		} else if !strings.Contains(err.Error(), ErrInvalidTextParameter.Error()) {
+			t.Errorf("refused, but not by the guard: %v", err)
+		}
+
+		clean, err := stmt.Query(ws.ID, "clean content")
+		if err != nil {
+			t.Fatalf("a clean read through the same prepared statement must succeed: %v", err)
+		}
+		_ = clean.Close()
+	})
+
+	// The row survived every refusal above.
+	after, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if textguard.ContainsNUL(after.Content) {
+		t.Error("a refused value reached the row anyway")
+	}
+}
