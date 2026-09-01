@@ -2301,9 +2301,18 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// what keeps the bound non-retroactive (Dave's day-63 ruling, carried over
 	// from MaxDocumentTitleRunes) — an item whose stored title predates the
 	// bound stays editable in every other respect, and a client that echoes
-	// the whole item back does not start failing on it. An item can therefore
-	// still be written with a legacy-invalid title, but only the one it
-	// already has: no door can mint a NEW untitled or over-long item.
+	// the whole item back does not start failing on it.
+	//
+	// The guarantee this buys, stated at the width it actually holds (codex
+	// round 4): NO CALLER-SUPPLIED TITLE can be stored unvalidated. An item may
+	// still be written with a legacy-invalid title, but only the one it already
+	// has. It is NOT true that no row anywhere gets a fresh invalid title —
+	// ImportWorkspace coerces one in (to "Untitled" or a truncation) and
+	// cross-workspace copy carries the source row's title into a new row
+	// verbatim. Both are deliberate legacy-data exceptions, documented at their
+	// own call sites; neither takes a title from the caller. An earlier version
+	// of this comment said "no door can mint a NEW untitled or over-long item",
+	// which reads as a global invariant and is false of the copy path.
 	if input.Title != nil {
 		normalized := models.NormalizeItemTitle(*input.Title)
 		// The exemption tests BOTH forms against the stored title (codex round

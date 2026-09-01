@@ -356,6 +356,33 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 		t.Errorf("want 2 items coerced to %q (the empty one and the whitespace-only one), got %d", "Untitled", untitled)
 	}
 
+	// THE COERCED-LONG ROW MUST SURVIVE, WITH THE EXPECTED TITLE (codex round
+	// 4). Without this, an implementation that silently DROPPED the over-long
+	// item would satisfy every assertion above — it would still see two
+	// "Untitled" rows and the ordinary one, and the per-item bound checks are
+	// vacuously true over a row that is not there. Coerce-and-continue means
+	// the row lands, not that the import survives it.
+	if len(items) != len(export.Items) {
+		t.Errorf("imported %d items, want all %d — a coerced row must land, not be skipped",
+			len(items), len(export.Items))
+	}
+	wantTruncated := longTitle[:models.MaxItemTitleRunes]
+	truncated, ok := byOriginal[wantTruncated]
+	if !ok {
+		var got []string
+		for _, it := range items {
+			got = append(got, fmt.Sprintf("%q (%d runes)", it.Title[:min(20, len(it.Title))], utf8.RuneCountInString(it.Title)))
+		}
+		t.Fatalf("the over-long row did not import under its truncated title (want %d runes of %q); got %v",
+			models.MaxItemTitleRunes, "x...", got)
+	}
+	if n := utf8.RuneCountInString(truncated.Title); n != models.MaxItemTitleRunes {
+		t.Errorf("truncated title is %d runes, want exactly %d", n, models.MaxItemTitleRunes)
+	}
+	if truncated.Slug == "" {
+		t.Error("the coerced row imported with an empty slug")
+	}
+
 	// The in-range item is untouched: coercion must not normalize rows that
 	// were already fine, or every round-trip rewrites data it had no reason to.
 	fine, ok := byOriginal["Perfectly Ordinary"]
