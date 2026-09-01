@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
 // ValidatePath rejects a request whose percent-DECODED URL path is not a
@@ -604,12 +606,21 @@ func isJSONEncodedFieldKey(k string) bool {
 // this shape is chosen so that adding one later cannot silently start
 // rejecting valid requests.
 func valueDecodesNUL(v any, inUserData bool) bool {
+	// S1 (DOC-2823): once classing is switched OFF there is nothing
+	// request-specific left to do, and the walk is textguard's — literally the
+	// same traversal this function used to carry inline. Delegating rather than
+	// keeping a copy is the point of extracting the package: two walks of the
+	// same shape, in two layers, is the disagreement this cluster exists
+	// because of.
+	if inUserData {
+		return textguard.ValueDecodesNUL(v)
+	}
 	switch t := v.(type) {
 	case string:
-		return strings.ContainsRune(t, 0)
+		return textguard.ContainsNUL(t)
 	case map[string]any:
 		for k, sub := range t {
-			if strings.ContainsRune(k, 0) {
+			if textguard.ContainsNUL(k) {
 				return true
 			}
 			if !inUserData && isJSONEncodedFieldKey(k) {
@@ -622,7 +633,7 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 					// `fields` value was accepted, reopening the door this
 					// whole change exists to close (codex round 9, a
 					// regression introduced by the round-8 restructure).
-					if strings.ContainsRune(str, 0) || nestedDocumentDecodesNUL(str) {
+					if textguard.ContainsNUL(str) || nestedDocumentDecodesNUL(str) {
 						return true
 					}
 					continue
@@ -653,16 +664,7 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 // item's `fields` blob, a collection's `schema` — for a string containing a
 // NUL. This is the layer Postgres itself parses, so an escape here is fatal
 // where one a level deeper is not.
-func nestedDocumentDecodesNUL(s string) bool {
-	if !strings.Contains(s, string(unicodeEscapePrefix)) || !stringIsJSONDocument(s) {
-		return false
-	}
-	var inner any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &inner); err != nil {
-		return false
-	}
-	return valueDecodesNUL(inner, true)
-}
+func nestedDocumentDecodesNUL(s string) bool { return textguard.DocumentDecodesNUL(s) }
 
 // stringIsJSONDocument reports whether a string is a complete JSON object or
 // array — the shape a downstream consumer will re-parse.
@@ -685,13 +687,7 @@ func nestedDocumentDecodesNUL(s string) bool {
 // after the single-layer check was in place. Found by codex round 1 on
 // BUG-2803, by asking what the destination TYPE does with the value — the
 // angle the endpoint-and-field sweep never rotated to.
-func stringIsJSONDocument(s string) bool {
-	t := strings.TrimSpace(s)
-	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
-		return false
-	}
-	return json.Valid([]byte(t))
-}
+func stringIsJSONDocument(s string) bool { return textguard.IsJSONDocument(s) }
 
 // readBodyForDecode reads the whole request body so it can be scanned before
 // it is decoded, with the caller's size cap applied.
