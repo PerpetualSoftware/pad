@@ -664,7 +664,18 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 // item's `fields` blob, a collection's `schema` — for a string containing a
 // NUL. This is the layer Postgres itself parses, so an escape here is fatal
 // where one a level deeper is not.
-func nestedDocumentDecodesNUL(s string) bool { return textguard.DocumentDecodesNUL(s) }
+// ANY JSON DOCUMENT SHAPE, scalars included (codex round 1 on DOC-2823 S1).
+//
+// This used to test objects and arrays only, which is the right rule for
+// deciding "is this a nested document worth walking" and the WRONG one for
+// deciding "will a jsonb parser read this". A `fields` value that is a bare
+// JSON string decoding to a NUL is a complete jsonb document Postgres refuses;
+// the narrow rule let it past the gate to be caught at the store instead.
+//
+// Both layers now use the same shape test, which is what makes the differential
+// corpus able to assert they AGREE rather than merely that something refuses
+// eventually.
+func nestedDocumentDecodesNUL(s string) bool { return textguard.DocumentDecodesNULAnyShape(s) }
 
 // readBodyForDecode reads the whole request body so it can be scanned before
 // it is decoded, with the caller's size cap applied.

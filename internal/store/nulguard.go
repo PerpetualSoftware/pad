@@ -79,11 +79,28 @@ func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParame
 //   - Every value bound to a JSON-classed column IS a JSON document; the store
 //     marshals it before binding. So no JSON column's value escapes the
 //     document check.
+//
 //   - A user-TEXT column whose value happens to parse as JSON gets the
-//     document check too. That is the only over-reach, and it costs a refusal
-//     only for text that is BOTH valid JSON AND contains an escape that
-//     decodes to a NUL — a value that is, on any column, a value Postgres
-//     would refuse the moment anything parsed it.
+//     document check too. This is a REAL over-refusal, and the first version of
+//     this comment justified it wrongly: it claimed such a value "is, on any
+//     column, a value Postgres would refuse the moment anything parsed it".
+//     That is false. Nothing parses a TEXT column, and Postgres stores the
+//     escape there as six ordinary characters quite happily (codex round 1,
+//     finding 3).
+//
+//     So the honest statement of the trade: a user pasting a JSON document
+//     that contains a live NUL escape into an item's CONTENT is refused,
+//     though it would store fine. That is not hypothetical in a documentation
+//     tool — writing about this very bug produces such a value.
+//
+//     It is accepted for now because the alternative is worse in the direction
+//     that matters. Deriving JSON-ness from the CALL SITE's knowledge puts the
+//     classification back at the sites this design exists to stop depending on,
+//     and the failure mode of over-refusal is a loud 400 naming the rule, while
+//     the failure mode of under-refusal is a NUL at rest that only the next
+//     dialect migration discovers. Flagged to the lead as a measured trade
+//     rather than buried here; if it is ever paid down, the mechanism is S2's
+//     column-attached triggers, which DO have the classing this layer lacks.
 //
 // The alternative — deriving JSON-ness from the call site's knowledge — puts
 // the classification back at the call sites this design exists to stop
@@ -122,7 +139,7 @@ func checkParams(args []driver.NamedValue) error {
 				Reason:  "value contains a NUL byte, which no text or JSON column can store",
 			}
 		}
-		if textguard.DocumentDecodesNUL(s) {
+		if textguard.DocumentDecodesNULAnyShape(s) {
 			return &InvalidTextParameterError{
 				Ordinal: a.Ordinal,
 				Reason:  "value is a JSON document containing an escape that decodes to a NUL",
@@ -144,7 +161,55 @@ func (d guardDriver) Open(name string) (driver.Conn, error) {
 	return guardConn{c}, nil
 }
 
+// guardConn forwards the OPTIONAL connection interfaces as well as the
+// required ones.
+//
+// Embedding driver.Conn alone silently HID them, which is a production
+// regression rather than a cosmetic gap: measured, the raw modernc conn
+// implements Pinger, SessionResetter and Validator, and the wrapped one
+// implemented none. database/sql degrades quietly for each — Ping succeeds
+// without pinging anything, pooled connections stop being reset between uses,
+// and a connection the driver knows is dead stays in the pool.
+//
+// Each method below delegates when the base supports it and otherwise does
+// exactly what database/sql does for a conn that lacks the interface, so
+// wrapping a driver without one is equivalent to not wrapping it. Always
+// implementing them is safe for that reason.
 type guardConn struct{ driver.Conn }
+
+func (c guardConn) Ping(ctx context.Context) error {
+	if p, ok := c.Conn.(driver.Pinger); ok {
+		return p.Ping(ctx)
+	}
+	// database/sql treats a non-Pinger connection as reachable by virtue of
+	// existing; matching that keeps the wrapper transparent.
+	return nil
+}
+
+func (c guardConn) ResetSession(ctx context.Context) error {
+	if r, ok := c.Conn.(driver.SessionResetter); ok {
+		return r.ResetSession(ctx)
+	}
+	return nil
+}
+
+func (c guardConn) IsValid() bool {
+	if v, ok := c.Conn.(driver.Validator); ok {
+		return v.IsValid()
+	}
+	return true
+}
+
+// CheckNamedValue forwards the driver's own argument conversion when it has
+// one. Without this the wrapper would fall back to database/sql's default
+// converter and quietly narrow the argument types a driver accepts — pgx in
+// particular converts a great deal more than the default does.
+func (c guardConn) CheckNamedValue(nv *driver.NamedValue) error {
+	if ck, ok := c.Conn.(driver.NamedValueChecker); ok {
+		return ck.CheckNamedValue(nv)
+	}
+	return driver.ErrSkip
+}
 
 // Prepare exists because driver.Conn requires it, and it DELEGATES rather than
 // wrapping separately.
@@ -178,6 +243,14 @@ func (c guardConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.T
 	if b, ok := c.Conn.(driver.ConnBeginTx); ok {
 		return b.BeginTx(ctx, opts)
 	}
+	// A base without ConnBeginTx cannot honour isolation or read-only, and
+	// SILENTLY starting a plain transaction would give the caller weaker
+	// guarantees than it asked for. database/sql itself refuses in this
+	// situation; matching that keeps the wrapper transparent rather than
+	// permissive.
+	if opts.Isolation != driver.IsolationLevel(sql.LevelDefault) || opts.ReadOnly {
+		return nil, errors.New("store: driver does not support transaction options")
+	}
 	return c.Conn.Begin() //nolint:staticcheck // fallback for a driver without ConnBeginTx
 }
 
@@ -207,6 +280,16 @@ func (c guardConn) QueryContext(ctx context.Context, q string, args []driver.Nam
 
 type guardStmt struct{ driver.Stmt }
 
+// The statement methods FALL BACK to the positional form rather than returning
+// driver.ErrSkip.
+//
+// The distinction matters and the first version had it wrong. At the CONN
+// level, ErrSkip is the documented signal and database/sql falls back to
+// prepare-and-execute. At the STATEMENT level it does not: because this
+// wrapper always implements StmtExecContext, database/sql calls it and
+// propagates whatever comes back, so an ErrSkip would surface as a query
+// FAILURE against any base statement lacking the context form rather than
+// degrading to the older interface.
 func (s guardStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
 	if err := checkParams(args); err != nil {
 		return nil, err
@@ -214,7 +297,11 @@ func (s guardStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (d
 	if e, ok := s.Stmt.(driver.StmtExecContext); ok {
 		return e.ExecContext(ctx, args)
 	}
-	return nil, driver.ErrSkip
+	vals, err := positionalArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	return s.Stmt.Exec(vals) //nolint:staticcheck // the documented fallback for a pre-context driver
 }
 
 func (s guardStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
@@ -224,7 +311,29 @@ func (s guardStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (
 	if q, ok := s.Stmt.(driver.StmtQueryContext); ok {
 		return q.QueryContext(ctx, args)
 	}
-	return nil, driver.ErrSkip
+	vals, err := positionalArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	return s.Stmt.Query(vals) //nolint:staticcheck // the documented fallback for a pre-context driver
+}
+
+// positionalArgs converts named values back to the positional form the
+// pre-context statement interfaces take, refusing a NAMED argument rather than
+// dropping its name — silently binding a named parameter by position would
+// bind the wrong value.
+func positionalArgs(args []driver.NamedValue) ([]driver.Value, error) {
+	vals := make([]driver.Value, len(args))
+	for _, a := range args {
+		if a.Name != "" {
+			return nil, errors.New("store: driver does not support named parameters")
+		}
+		if a.Ordinal < 1 || a.Ordinal > len(vals) {
+			return nil, errors.New("store: parameter ordinal out of range")
+		}
+		vals[a.Ordinal-1] = a.Value
+	}
+	return vals, nil
 }
 
 // ---- registration ----

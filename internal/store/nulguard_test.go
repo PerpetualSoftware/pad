@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -33,6 +34,11 @@ func TestBinaryColumnCensus(t *testing.T) {
 	// nothing depends on a Go-side model of the schema.
 	colRe := regexp.MustCompile(`(?im)^\s*([a-z_]+)\s+(BLOB|BYTEA)\b`)
 	tableRe := regexp.MustCompile(`(?is)CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_]+)\s*\((.*?)\n\s*\);`)
+	// ALTER TABLE ... ADD COLUMN is the OTHER way a binary column enters a
+	// schema, and the first version of this census could not see it (codex
+	// round 1, finding 7) — which would have let exactly the change this test
+	// exists to catch walk past it.
+	alterRe := regexp.MustCompile(`(?im)ALTER\s+TABLE\s+([a-z_]+)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z_]+)\s+(BLOB|BYTEA)\b`)
 
 	found := map[string]bool{}
 	for _, dir := range []string{"migrations", "pgmigrations"} {
@@ -54,6 +60,9 @@ func TestBinaryColumnCensus(t *testing.T) {
 				for _, col := range colRe.FindAllStringSubmatch(tbl[2], -1) {
 					found[tbl[1]+"."+col[1]] = true
 				}
+			}
+			for _, alt := range alterRe.FindAllStringSubmatch(string(body), -1) {
+				found[alt[1]+"."+alt[2]] = true
 			}
 		}
 		// The instrument must have read something, or "no binary columns
@@ -110,8 +119,16 @@ func TestWriteGuardRefusesTheCorpus(t *testing.T) {
 			// corpus case's own classing chooses which one carries it, which
 			// is how this leg measures that the STORE's classing agrees with
 			// the corpus's.
+			//
+			// A JSON-CLASSED value that is not valid JSON goes to the TEXT
+			// column, matching the native-Postgres leg's routing and for the
+			// same reason: the fields column would reject it as malformed
+			// before the guard was ever consulted, and the case would then
+			// "pass" while measuring SQLite's JSON parser instead of this
+			// guard. The strengthened accepted-case assertion caught exactly
+			// that (codex round 1, finding 7).
 			var err error
-			if c.IsJSON {
+			if c.IsJSON && json.Valid([]byte(strings.TrimSpace(c.Value))) {
 				fields := c.Value
 				_, err = s.UpdateItem(item.ID, models_ItemUpdateFields(fields))
 			} else {
@@ -120,6 +137,14 @@ func TestWriteGuardRefusesTheCorpus(t *testing.T) {
 			}
 
 			refused := err != nil && strings.Contains(err.Error(), ErrInvalidTextParameter.Error())
+			// An ACCEPTED case must actually SUCCEED, not merely avoid the
+			// guard (codex round 1, finding 7). Without this, a write failing
+			// for any other reason — a schema rejection, a constraint, a typo
+			// in the fixture — read as "the guard let it through" and the case
+			// proved nothing.
+			if !c.Refused && err != nil {
+				t.Fatalf("case is expected to be accepted but the write FAILED for another reason: %v\nwhy this case exists: %s", err, c.Why)
+			}
 			if refused != c.Refused {
 				t.Errorf("store write refused=%t, corpus says %t\nvalue: %q\nisJSON: %t\nerr: %v\nwhy this case exists: %s",
 					refused, c.Refused, c.Value, c.IsJSON, err, c.Why)
@@ -269,5 +294,35 @@ func TestWriteGuardCoversPreparedStatements(t *testing.T) {
 	}
 	if textguard.ContainsNUL(after.Content) {
 		t.Error("a refused value reached the row anyway")
+	}
+}
+
+// TestStoreOverRefusalsStillOverRefuse pins the known divergence between this
+// guard and every other layer: values that are legitimate TEXT and are refused
+// anyway, because the guard classes by value shape rather than by column.
+//
+// It fails when one STOPS being refused, which is the interesting event — it
+// means the guard gained real column knowledge, and the case should move into
+// textguard.Corpus where every layer is held to it.
+func TestStoreOverRefusalsStillOverRefuse(t *testing.T) {
+	if len(textguard.StoreOverRefusals) == 0 {
+		t.Skip("no recorded over-refusals")
+	}
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OverRefusal")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Over-refusal subject", "")
+
+	for _, c := range textguard.StoreOverRefusals {
+		t.Run(c.Name, func(t *testing.T) {
+			content := c.Value
+			_, err := s.UpdateItem(item.ID, models.ItemUpdate{Content: &content})
+			refused := err != nil && strings.Contains(err.Error(), ErrInvalidTextParameter.Error())
+			if !refused {
+				t.Errorf("this over-refusal has been PAID DOWN: the store now accepts %q as text, which "+
+					"is the correct answer. Move this case into textguard.Corpus so every layer is held "+
+					"to it, and delete it from StoreOverRefusals.\nwhy it was recorded: %s", c.Value, c.Why)
+			}
+		})
 	}
 }

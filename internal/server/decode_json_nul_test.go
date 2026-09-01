@@ -1376,18 +1376,33 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 							if !strings.EqualFold(k, listed) {
 								continue
 							}
-							// Production only descends into a DOCUMENT — a
-							// string whose trimmed form starts with "{" or
-							// "[" (stringIsJSONDocument). A JSON scalar such
-							// as "\"a<escape>b\"" is valid JSON and is NOT a
-							// document, so production leaves it alone. The
-							// oracle unmarshalled anything valid and so said
-							// true where production said false (codex round
-							// 27) — closer to production is not the same as
-							// identical, and only identical is a usable
-							// oracle.
+							// ANY valid JSON document, scalars included.
+							//
+							// This was narrowed to objects and arrays in
+							// BUG-2803 codex round 27, to make the oracle
+							// agree with production. The disagreement was
+							// real; the direction of the fix was not. Nobody
+							// measured which walker matched POSTGRES, and the
+							// answer is that the oracle's original wider rule
+							// did:
+							//
+							//	SELECT ('"a<escape>b"')::jsonb;
+							//	ERROR:  unsupported Unicode escape sequence
+							//
+							// measured on Postgres 17 during DOC-2823 S1. A
+							// bare JSON string is a complete jsonb document;
+							// it is refused there and was stored on SQLite,
+							// which is the dialect split the S1 guard exists
+							// to close. Production was widened to match, and
+							// this oracle is restored to what it always said.
+							//
+							// The lesson worth keeping: two implementations
+							// made to agree are not thereby correct. Round 27
+							// had two walkers and no authority, so agreement
+							// was the only available test and it picked the
+							// wrong survivor.
 							trimmed := strings.TrimSpace(sv)
-							if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+							if trimmed == "" {
 								break
 							}
 							var inner any

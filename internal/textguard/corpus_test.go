@@ -89,3 +89,28 @@ func TestParameterRefusedMatchesTheCorpus(t *testing.T) {
 		})
 	}
 }
+
+// TestKnownGapsStillGap asserts the recorded under-refusals are STILL
+// under-refusals — and it is written to fail when one closes, not when one
+// persists.
+//
+// That direction is the point. A gap that closes silently is a layer diverging
+// from the others without anyone deciding to, which is the failure this whole
+// cluster is made of. When BUG-2812's token-walk lands and this fails, the fix
+// is to move the entry into Corpus with Refused as it should be.
+func TestKnownGapsStillGap(t *testing.T) {
+	if len(KnownGaps) == 0 {
+		t.Skip("no recorded gaps")
+	}
+	for _, c := range KnownGaps {
+		t.Run(c.Name, func(t *testing.T) {
+			got := ParameterRefused(c.Value, c.IsJSON)
+			if got == c.Refused {
+				t.Errorf("this gap has CLOSED: ParameterRefused(%q, isJSON=%t) now returns %t, which is the "+
+					"CORRECT answer. That is good news and a required action — move this case into Corpus "+
+					"and delete it from KnownGaps, so the differential test starts enforcing it on every layer.\n"+
+					"why it was a gap: %s", c.Value, c.IsJSON, got, c.Why)
+			}
+		})
+	}
+}

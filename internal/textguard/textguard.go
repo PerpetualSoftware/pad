@@ -44,9 +44,20 @@ const escapePrefix = `\u00`
 // about the value's length.
 func ContainsNUL(s string) bool { return strings.ContainsRune(s, 0) }
 
-// IsJSONDocument reports whether a string is a complete JSON object or array -
-// the shape a downstream consumer, or Postgres's own jsonb parser, will
-// re-parse.
+// IsJSONDocument reports whether a string is a complete JSON OBJECT OR ARRAY -
+// the shape a downstream consumer treats as a nested document.
+//
+// Objects and arrays only, deliberately, and this is the HTTP gate's rule
+// unchanged: it decides whether a request field's string value is a nested
+// document worth walking, and a bare scalar in that position is just a string
+// the gate has already checked directly.
+//
+// The STORE cannot use this rule, because jsonb accepts a scalar as a complete
+// document: a bare JSON string consisting of the NUL escape is a valid jsonb
+// value that Postgres refuses and SQLite stores, which is the dialect split all
+// over again (codex round 1, finding 1). DocumentDecodesNULAnyShape is the
+// store's version. Two rules, two callers, and the difference is which question
+// is asked - "is this a nested document" versus "will a jsonb parser read it".
 func IsJSONDocument(s string) bool {
 	t := strings.TrimSpace(s)
 	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
@@ -71,6 +82,24 @@ func DocumentDecodesNUL(s string) bool {
 	}
 	var inner any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &inner); err != nil {
+		return false
+	}
+	return ValueDecodesNUL(inner)
+}
+
+// DocumentDecodesNULAnyShape is DocumentDecodesNUL widened to every JSON
+// document shape a jsonb column accepts, scalars included.
+//
+// The store's write guard uses this one. A bare JSON string, a number, a
+// boolean and null are all complete documents to Postgres; the first of them
+// can decode to a NUL, and the object/array-only rule walked straight past it.
+func DocumentDecodesNULAnyShape(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" || !strings.Contains(t, escapePrefix) || !json.Valid([]byte(t)) {
+		return false
+	}
+	var inner any
+	if err := json.Unmarshal([]byte(t), &inner); err != nil {
 		return false
 	}
 	return ValueDecodesNUL(inner)
@@ -123,5 +152,8 @@ func ParameterRefused(value string, isJSON bool) bool {
 	if ContainsNUL(value) {
 		return true
 	}
-	return isJSON && DocumentDecodesNUL(value)
+	// ANY SHAPE, not just objects and arrays: a jsonb column accepts a bare
+	// scalar as a complete document, and a scalar can decode to a NUL (codex
+	// round 1, finding 1).
+	return isJSON && DocumentDecodesNULAnyShape(value)
 }

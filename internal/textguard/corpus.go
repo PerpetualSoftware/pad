@@ -112,4 +112,58 @@ var Corpus = []Case{
 		Name: "NUL at the very start", Value: NUL + "leading", IsJSON: false, Refused: true,
 		Why: "the other end, for the same reason.",
 	},
+	{
+		Name: "JSON SCALAR document that decodes to a NUL", Value: `"` + EscNUL + `"`, IsJSON: true, Refused: true,
+		Why: "codex round 1 finding 1. A bare JSON string is a complete document to jsonb - Postgres refuses this, SQLite stored it, and the object/array-only shape test walked past it. The dialect split, reopened by a rule that was right for the HTTP gate and wrong for the store.",
+	},
+	{
+		Name: "JSON scalar document that is clean", Value: `"ordinary"`, IsJSON: true, Refused: false,
+		Why: "the control for the case above. Without it, widening the shape test to scalars could refuse every scalar and still pass.",
+	},
+}
+
+// StoreOverRefusals are values every OTHER layer accepts and the store's write
+// guard refuses.
+//
+// They are not in Corpus, because Corpus is the set every layer must agree on
+// and these are exactly where one layer does not. Keeping them separate is the
+// difference between a documented trade and a silently broken differential
+// test.
+//
+// The cause is the store guard's CLASSING. It sees positional parameters, not
+// columns, so it classes a value as JSON when the value itself parses as a
+// complete JSON document — and a TEXT column's value that happens to be one
+// gets the document check it does not need. Nothing parses a text column;
+// Postgres stores the escape there as six ordinary characters.
+//
+// Pinned by TestStoreOverRefusalsStillOverRefuse in internal/store, which fails
+// when one stops being refused — the same direction as KnownGaps, and for the
+// same reason: the interesting event is the behaviour CHANGING, and a change
+// here means someone gave the guard real column knowledge and should move these
+// into Corpus.
+var StoreOverRefusals = []Case{
+	{
+		Name: "prose that happens to be a JSON document with a live escape", Value: `{"note":"documenting ` + EscNUL + ` for a reader"}`, IsJSON: false, Refused: false,
+		Why: "codex round 1, finding 3. Classed as TEXT this SHOULD be accepted, and every other layer does accept it. Not hypothetical in a documentation tool - writing about this very bug produces such a value. The store refuses it because it classes by value shape.",
+	},
+}
+
+// KnownGaps are corpus cases the layers currently answer WRONG, together, on
+// purpose.
+//
+// DOC-2823 requires them: Layer A shares the HTTP gate's predicate, so it
+// inherits the gate's map-model gaps until BUG-2812's token-walk replaces the
+// decode, and the design says Layer A "must NOT quietly fix either gap on its
+// own" — a divergence between the layers is worse than a shared, recorded
+// under-refusal.
+//
+// They are kept OUT of Corpus so the differential tests stay green, and
+// asserted separately by TestKnownGapsStillGap. That test fails when a gap
+// CLOSES, which is the signal that BUG-2812 has landed and these entries should
+// move into Corpus with Refused flipped.
+var KnownGaps = []Case{
+	{
+		Name: "duplicate key, the NUL in the SHADOWED value", Value: `{"a":"` + EscNUL + `","a":"clean"}`, IsJSON: true, Refused: true,
+		Why: "codex round 1 finding 2. encoding/json keeps the LAST duplicate, so the walk never sees the first value and the escape survives into a SQLite text-backed JSON column. Postgres's own parser keeps the last too, so it accepts this as well - the two agree today, which is why it is a recorded gap rather than a dialect split. Closing it needs the token-walk (BUG-2812), not a change here.",
+	},
 }

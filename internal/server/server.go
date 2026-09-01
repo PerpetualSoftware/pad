@@ -2186,14 +2186,37 @@ func writeInternalError(w http.ResponseWriter, err error) {
 	// 500, because the request is understood and will be refused identically
 	// on retry, and the log line below keeps the detail. If the re-emit case
 	// ever needs its own status, it needs its own error type first.
-	var badText *store.InvalidTextParameterError
-	if errors.As(err, &badText) {
+	if reason, ok := nulRefusalReason(err); ok {
 		slog.Warn("write refused: invalid text parameter", "error", err)
-		writeError(w, http.StatusBadRequest, "bad_request", badText.Reason)
+		writeError(w, http.StatusBadRequest, "bad_request", reason)
 		return
 	}
 	slog.Error("internal server error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
+}
+
+// nulRefusalReason classifies the store's NUL refusal and returns the sentence
+// a caller should be given.
+//
+// ONE classifier, SEVERAL envelopes — and the several is deliberate rather than
+// an omission (codex round 1, finding 4). writeInternalError covers every
+// handler that lets an error reach its generic arm, but three paths carry their
+// own error shape for their own reasons: createItemChecked returns a typed
+// *itemCreateError for its caller to write, a bulk op reports per-item failures
+// inside an otherwise successful response, and the cross-workspace copy answers
+// with a deliberately retry-DISCOURAGING message because its failure may have
+// committed (PLAN-2357 DR-13).
+//
+// Those envelopes should stay different. What must not differ is the
+// CLASSIFICATION and the wording, which is what this function makes shared —
+// the same discipline as the item-title unit's writeInvalidItemTitle, learned
+// there by getting it wrong in three error blocks of one function.
+func nulRefusalReason(err error) (string, bool) {
+	var badText *store.InvalidTextParameterError
+	if errors.As(err, &badText) {
+		return badText.Reason, true
+	}
+	return "", false
 }
 
 // defaultJSONBodyLimit is the default cap applied to JSON request bodies

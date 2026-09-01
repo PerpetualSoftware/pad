@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -50,12 +51,23 @@ func TestNativePostgresAgreesWithTheCorpus(t *testing.T) {
 
 			var err error
 			if c.IsJSON {
-				// A value classed as JSON but which is not a document would be
-				// a jsonb SYNTAX error rather than a NUL refusal, and that is
-				// a different verdict than the one under test. Those cases are
-				// measured on the text column instead, where Postgres judges
-				// them purely on the NUL rule.
-				if textguard.IsJSONDocument(c.Value) {
+				// The routing question is "would Postgres's jsonb parser read
+				// this", and the answer is json.Valid — NOT IsJSONDocument,
+				// which tests for objects and arrays only.
+				//
+				// Using the narrow test here sent a JSON SCALAR to the text
+				// column, where Postgres of course accepted it as eight
+				// ordinary characters, and the leg reported agreement about a
+				// column the value would never have been bound to. Measured
+				// directly, the scalar IS refused as jsonb:
+				//
+				//	SELECT ('"a<escape>b"')::jsonb;
+				//	ERROR:  unsupported Unicode escape sequence
+				//
+				// A value that is not valid JSON at all still goes to the text
+				// column: that would be a jsonb SYNTAX error, a different
+				// verdict from the NUL rule under test.
+				if json.Valid([]byte(strings.TrimSpace(c.Value))) {
 					_, err = db.Exec(`INSERT INTO nul_differential (id, doc) VALUES ($1, $2)`, id, c.Value)
 				} else {
 					_, err = db.Exec(`INSERT INTO nul_differential (id, txt) VALUES ($1, $2)`, id, c.Value)
