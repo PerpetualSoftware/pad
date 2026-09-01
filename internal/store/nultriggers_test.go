@@ -493,13 +493,26 @@ func TestNULTriggersSurviveATableRebuild(t *testing.T) {
 		}
 	})
 
-	// And the no-op case: re-asserting when nothing is missing must not fail
-	// or duplicate.
-	if err := s.ensureNULTriggers(); err != nil {
-		t.Fatalf("re-asserting when nothing is missing must be a no-op: %v", err)
+	// THE NO-OP CASE, asserted on whether WORK HAPPENED (codex round 5).
+	//
+	// Two earlier observables were wrong and both passed. The trigger COUNT is
+	// unchanged by a full drop-and-recreate. So are sqlite_master ROWIDs, since
+	// SQLite reuses them when the drops and creates happen in one transaction
+	// in the same order — a mutation removing the fix still survived a rowid
+	// assertion.
+	//
+	// So the operation reports what it did. That is the difference between
+	// asking "does the state look the same afterwards" — which a rebuild also
+	// satisfies — and "was anything rebuilt".
+	restored, err := s.ensureNULTriggersReporting()
+	if err != nil {
+		t.Fatalf("re-asserting when nothing is missing must succeed: %v", err)
 	}
-	if got := countTriggers(); got != before {
-		t.Errorf("a second re-assertion changed the count to %d", got)
+	if restored {
+		t.Error("a re-assertion with nothing missing REBUILT the triggers. Every startup would then drop " +
+			"and recreate all of them under an immediate write lock — SQLite stores 'CREATE TRIGGER' " +
+			"while the generator renders 'CREATE TRIGGER IF NOT EXISTS', so the definitions must be " +
+			"normalized before they are compared.")
 	}
 }
 
@@ -562,4 +575,39 @@ func openFakeGuarded(t *testing.T) *sql.DB {
 		t.Fatalf("open fake: %v", err)
 	}
 	return db
+}
+
+// TestNULTriggerRestorationFailsLoudlyOnAQueryError regresses codex round 5's
+// P1.
+//
+// The applied-check folded a query ERROR in with "not applied" behind a
+// nolint:nilerr, so a migrated database with a read failure would start
+// successfully with the invariant unenforced — the one outcome this layer
+// exists to prevent, reached by the code meant to establish it.
+//
+// The failure is forced by giving schema_migrations a shape the query cannot
+// use, which is the closest reachable analogue of a corrupt or partially
+// restored database.
+func TestNULTriggerRestorationFailsLoudlyOnAQueryError(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("Layer B is SQLite-only")
+	}
+
+	// Control first: it succeeds on a healthy database, so the failure below
+	// is the corruption and not the fixture.
+	if _, err := s.ensureNULTriggersReporting(); err != nil {
+		t.Fatalf("control: a healthy database must not error: %v", err)
+	}
+
+	if _, err := s.db.Exec(`ALTER TABLE schema_migrations RENAME COLUMN version TO version_renamed`); err != nil {
+		t.Fatalf("corrupt schema_migrations: %v", err)
+	}
+
+	_, err := s.ensureNULTriggersReporting()
+	if err == nil {
+		t.Error("a schema_migrations query failure was swallowed as 'not applied'. A migrated database " +
+			"would then start with the triggers unrestored and no signal — enforcement silently absent " +
+			"in exactly the case the check could not run.")
+	}
 }

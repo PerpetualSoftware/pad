@@ -299,8 +299,22 @@ var nulExcluded = map[string]string{
 // CREATE TRIGGER IF NOT EXISTS, so re-running it is a no-op when nothing is
 // missing — which is the common case, checked with one query first.
 func (s *Store) ensureNULTriggers() error {
+	_, err := s.ensureNULTriggersReporting()
+	return err
+}
+
+// ensureNULTriggersReporting is ensureNULTriggers, reporting whether it
+// actually RESTORED anything.
+//
+// The bool exists for tests and is not decoration: the no-op case was asserted
+// first on the trigger COUNT and then on sqlite_master ROWIDs, and BOTH are
+// satisfied by a full drop-and-recreate — SQLite reuses the rowids when the
+// drops and creates happen in one transaction in the same order. Two wrong
+// observables in a row is the point at which the honest fix is to make the
+// thing itself observable (codex round 5).
+func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	if s.dialect.Driver() != DriverSQLite {
-		return nil
+		return false, nil
 	}
 
 	// NOTHING TO RESTORE BEFORE THE MIGRATION THAT CREATES THEM.
@@ -310,12 +324,12 @@ func (s *Store) ensureNULTriggers() error {
 	// during a FRESH install while the early migrations are still creating the
 	// tables. Attempting the trigger SQL then fails on "no such table" — caught
 	// immediately by the test suite when the per-migration call was added.
-	var applied int
-	if err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, nulTriggerMigration,
-	).Scan(&applied); err != nil || applied == 0 {
-		// A missing schema_migrations table means we are earlier still.
-		return nil //nolint:nilerr // absence is the answer, not an error
+	applied, err := s.nulTriggerMigrationApplied()
+	if err != nil {
+		return false, err
+	}
+	if !applied {
+		return false, nil
 	}
 
 	// name -> the exact CREATE statement the list renders, so the check can
@@ -332,7 +346,7 @@ func (s *Store) ensureNULTriggers() error {
 	// be satisfied by the wrong thing.
 	data, err := migrationsFS.ReadFile("migrations/" + nulTriggerMigration)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", nulTriggerMigration, err)
+		return false, fmt.Errorf("read %s: %w", nulTriggerMigration, err)
 	}
 
 	// TRANSACTION FIRST, THEN INSPECT (codex rounds 2 and 3).
@@ -349,13 +363,13 @@ func (s *Store) ensureNULTriggers() error {
 	// not.
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin trigger restore: %w", err)
+		return false, fmt.Errorf("begin trigger restore: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	have, err := nulTriggersIn(tx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	missing := false
 	for name, stmt := range want {
@@ -368,21 +382,21 @@ func (s *Store) ensureNULTriggers() error {
 		}
 	}
 	if !missing {
-		return nil
+		return false, nil
 	}
 
 	// Drop first, so a stale DEFINITION is actually replaced rather than
 	// skipped by IF NOT EXISTS.
 	for name := range have {
 		if _, derr := tx.Exec("DROP TRIGGER IF EXISTS " + name); derr != nil {
-			return fmt.Errorf("drop stale NUL trigger %s: %w", name, derr)
+			return false, fmt.Errorf("drop stale NUL trigger %s: %w", name, derr)
 		}
 	}
 	if err := execMulti(tx, string(data)); err != nil {
-		return fmt.Errorf("restore NUL triggers: %w", err)
+		return false, fmt.Errorf("restore NUL triggers: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit trigger restore: %w", err)
+		return false, fmt.Errorf("commit trigger restore: %w", err)
 	}
 
 	// THE RESIDUAL, stated because it is real and this unit cannot close it.
@@ -400,7 +414,7 @@ func (s *Store) ensureNULTriggers() error {
 	slog.Warn("NUL invariant triggers were missing and have been restored — a table rebuild most likely "+
 		"dropped them; rows written while they were absent are NOT retroactively checked",
 		"had", len(have), "want", len(want))
-	return nil
+	return true, nil
 }
 
 // nulTriggersIn reads the NUL triggers present, name -> stored SQL.
@@ -466,7 +480,44 @@ func renderedNULTriggers() map[string]string {
 // because none of the generated triggers contain a string literal in which
 // whitespace is significant beyond a single space.
 func normalizeTriggerSQL(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	// IF NOT EXISTS is dropped, because SQLite does NOT store it: the generated
+	// statement says CREATE TRIGGER IF NOT EXISTS and sqlite_master holds
+	// CREATE TRIGGER. Comparing the two verbatim made every trigger look
+	// changed, so every startup dropped and recreated all 226 of them under an
+	// immediate write lock (codex round 5).
+	//
+	// The no-op test did not catch it because it asserted the trigger COUNT was
+	// unchanged, which is true of a full drop-and-recreate — the assertion was
+	// on the wrong observable.
+	out := strings.Join(strings.Fields(s), " ")
+	return strings.Replace(out, "CREATE TRIGGER IF NOT EXISTS ", "CREATE TRIGGER ", 1)
+}
+
+// nulTriggerMigrationApplied reports whether the migration that creates the
+// triggers has run.
+//
+// A QUERY ERROR IS AN ERROR (codex round 5). The first version folded it in
+// with "not applied" behind a nolint:nilerr, so a migrated database with a
+// transient read failure would start successfully with the invariant
+// unenforced — the one outcome this whole layer exists to prevent. Only the
+// schema_migrations table being ABSENT means "earlier than that migration".
+func (s *Store) nulTriggerMigrationApplied() (bool, error) {
+	var exists int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check schema_migrations: %w", err)
+	}
+	if exists == 0 {
+		return false, nil
+	}
+	var applied int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, nulTriggerMigration,
+	).Scan(&applied); err != nil {
+		return false, fmt.Errorf("check %s applied: %w", nulTriggerMigration, err)
+	}
+	return applied > 0, nil
 }
 
 // renderNULTriggerMigration is the single definition of the migration's text.
