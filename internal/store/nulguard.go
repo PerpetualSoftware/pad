@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
@@ -138,8 +139,11 @@ func normalizeAndCheck(args []driver.NamedValue) error {
 		}
 		args[i].Value = resolved
 
-		s, ok := textOf(resolved)
-		if !ok {
+		s, isText, cerr := classify(resolved)
+		if cerr != nil {
+			return cerr
+		}
+		if !isText {
 			continue
 		}
 		if textguard.ContainsNUL(s) {
@@ -158,52 +162,100 @@ func normalizeAndCheck(args []driver.NamedValue) error {
 	return nil
 }
 
-// resolveValue unwraps a driver.Valuer exactly ONCE, mirroring what
-// database/sql's default converter does — including its typed-nil rule, which
-// is why a nil pointer must be answered before Value() is reached rather than
-// by recovering from the panic it would cause.
+// maxValuerDepth bounds the unwrap loop. database/sql's own converter resolves
+// once, but a driver with its own NamedValueChecker may recurse — so the guard
+// resolves to a FIXED POINT rather than once, or an outer valuer returning an
+// inner one would hand the guard a clean value and the driver a NUL-bearing
+// one (codex round 4). The bound exists because a cyclic valuer would hang;
+// four is far past anything real.
+const maxValuerDepth = 4
+
+var valuerType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
+
+// resolveValue unwraps driver.Valuer to a fixed point, mirroring database/sql's
+// converter at each step — including its typed-nil rule.
+//
+// That rule is COPIED, not approximated: database/sql treats a nil pointer as
+// SQL NULL only when the POINTER'S ELEMENT TYPE implements Valuer, and calls a
+// pointer-receiver-only valuer even when nil. An earlier version here nil'd
+// every nil pointer valuer, which is broader than the library (codex round 4).
 func resolveValue(v driver.Value) (driver.Value, error) {
-	valuer, ok := v.(driver.Valuer)
-	if !ok {
-		return v, nil
+	for depth := 0; depth < maxValuerDepth; depth++ {
+		valuer, ok := v.(driver.Valuer)
+		if !ok {
+			return v, nil
+		}
+		rv := reflect.ValueOf(valuer)
+		if rv.Kind() == reflect.Ptr && rv.IsNil() && rv.Type().Elem().Implements(valuerType) {
+			return nil, nil
+		}
+		out, err := valuer.Value()
+		if err != nil {
+			return nil, err
+		}
+		v = out
 	}
-	rv := reflect.ValueOf(valuer)
-	if rv.Kind() == reflect.Ptr && rv.IsNil() {
-		return nil, nil
-	}
-	out, err := valuer.Value()
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	return nil, errors.New("store: parameter valuer did not resolve within the depth bound")
 }
 
-// textOf reports the string a value carries, if it carries one.
+// classify sorts a resolved parameter into text, exempt, or REFUSED.
 //
-// By KIND, not by type identity. A named string type (`type Slug string`) and a
-// *string both carry text that a driver accepting them unconverted would bind
-// as text, and a type-switch on `string` sees neither.
+// An ALLOW-LIST, and that is the point (codex round 4). Two rounds were spent
+// widening a text detector shape by shape — exact string, then *string and
+// named string types, then json.RawMessage — and the next round named five
+// more (json.Marshaler, fmt.Stringer, pgx's TextValuer, defined []byte aliases,
+// JSON-marshallable structs). Enumerating what CAN carry text is a losing game
+// against a driver as permissive as pgx.
 //
-// Byte slices are deliberately NOT text here — see checkParams' classing note:
-// []byte is how this store binds BINARY, and item_yjs_updates.update_data
-// legitimately contains NUL bytes. json.RawMessage is the one byte-slice shape
-// that IS text, and it is recognised by its named type because that is exactly
-// what it means.
-func textOf(v any) (string, bool) {
-	if raw, ok := v.(json.RawMessage); ok {
-		return string(raw), true
+// So this enumerates what the store actually BINDS and refuses anything else.
+// The vocabulary is small and stable: strings, binary blobs, numbers, booleans,
+// times, NULL. A parameter outside it is a programming error, and refusing it
+// loudly beats binding it unchecked — which is what every earlier version did
+// by default.
+func classify(v driver.Value) (text string, isText bool, err error) {
+	if v == nil {
+		return "", false, nil
 	}
+	if raw, ok := v.(json.RawMessage); ok {
+		return string(raw), true, nil
+	}
+
 	rv := reflect.ValueOf(v)
-	for rv.IsValid() && rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Ptr {
 		if rv.IsNil() {
-			return "", false
+			return "", false, nil
 		}
 		rv = rv.Elem()
 	}
-	if rv.IsValid() && rv.Kind() == reflect.String {
-		return rv.String(), true
+
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String(), true, nil
+
+	case reflect.Slice:
+		// Byte slices are BINARY and exempt — see the classing note above.
+		// json.RawMessage is handled by name before reaching here, because a
+		// byte slice that means JSON is the one exception.
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return "", false, nil
+		}
+
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return "", false, nil
+
+	case reflect.Struct:
+		// time.Time is the only struct this store binds.
+		if _, ok := rv.Interface().(time.Time); ok {
+			return "", false, nil
+		}
 	}
-	return "", false
+
+	return "", false, fmt.Errorf("store: parameter of type %T is outside the shapes this store binds; "+
+		"the NUL write guard refuses rather than passing an unclassifiable value through unchecked. If "+
+		"this type is legitimate, add it to classify() and say whether it is text or binary", v)
 }
 
 type guardDriver struct{ base driver.Driver }

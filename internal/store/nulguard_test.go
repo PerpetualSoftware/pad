@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
@@ -544,6 +545,52 @@ func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 		}
 	})
 
+	t.Run("a valuer returning a valuer resolves to a fixed point", func(t *testing.T) {
+		// codex round 4: resolving ONCE let an outer valuer hand the guard a
+		// clean inner valuer while pgx went on to evaluate it and send the NUL.
+		inner := sql.NullString{String: "bad" + textguard.NUL + "text", Valid: true}
+		args := []driver.NamedValue{{Ordinal: 1, Value: nestingValuer{inner}}}
+		if err := normalizeAndCheck(args); err == nil {
+			t.Error("a NUL reached through a nested valuer was accepted")
+		}
+	})
+
+	t.Run("a cyclic valuer is refused rather than hanging", func(t *testing.T) {
+		args := []driver.NamedValue{{Ordinal: 1, Value: cyclicValuer{}}}
+		if err := normalizeAndCheck(args); err == nil {
+			t.Error("a valuer that never resolves must be refused, not looped on")
+		}
+	})
+
+	t.Run("an unclassifiable shape is REFUSED, not passed through", func(t *testing.T) {
+		// The allow-list's whole point (codex round 4). Two rounds were spent
+		// naming text-carrying shapes one at a time; this asserts the default
+		// answer for anything unnamed is refusal rather than silent acceptance.
+		type unexpected struct{ Note string }
+		args := []driver.NamedValue{{Ordinal: 1, Value: unexpected{Note: "hello"}}}
+		err := normalizeAndCheck(args)
+		if err == nil {
+			t.Fatal("an unclassifiable parameter was passed through unchecked")
+		}
+		if !strings.Contains(err.Error(), "outside the shapes this store binds") {
+			t.Errorf("refused, but not by the allow-list: %v", err)
+		}
+	})
+
+	t.Run("the shapes the store DOES bind are all exempt or checked", func(t *testing.T) {
+		// The control for the case above: an allow-list that refused everything
+		// would pass it and break the product.
+		for _, v := range []driver.Value{
+			nil, "text", []byte{0, 1, 2}, int64(7), float64(1.5), true, time.Now(),
+			sql.NullString{String: "x", Valid: true}, sql.NullInt64{Int64: 3, Valid: true},
+		} {
+			args := []driver.NamedValue{{Ordinal: 1, Value: v}}
+			if err := normalizeAndCheck(args); err != nil {
+				t.Errorf("a %T parameter must be accepted: %v", v, err)
+			}
+		}
+	})
+
 	t.Run("text shapes pgx accepts unconverted are seen", func(t *testing.T) {
 		poisoned := "bad" + textguard.NUL + "text"
 		type namedString string
@@ -560,6 +607,17 @@ func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 		}
 	})
 }
+
+// nestingValuer returns ANOTHER valuer, the shape that defeats a
+// resolve-once guard.
+type nestingValuer struct{ inner driver.Valuer }
+
+func (n nestingValuer) Value() (driver.Value, error) { return n.inner, nil }
+
+// cyclicValuer never resolves, so the depth bound is what stops it.
+type cyclicValuer struct{}
+
+func (c cyclicValuer) Value() (driver.Value, error) { return cyclicValuer{}, nil }
 
 // countingValuer returns a different value on each call, so a guard that
 // resolves twice can be caught doing it.

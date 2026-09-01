@@ -45,6 +45,43 @@ func TestNativePostgresAgreesWithTheCorpus(t *testing.T) {
 	}
 	defer func() { _, _ = db.Exec(`DROP TABLE IF EXISTS nul_differential`) }()
 
+	// KNOWN GAPS get their own leg, and it asserts POSTGRES's answer rather
+	// than ours (codex round 4). Running only Corpus here meant the recorded
+	// gaps were never measured against the database at all — which is how one
+	// of them carried a rationale claiming Postgres agreed with us when it
+	// does not.
+	t.Run("known gaps against Postgres", func(t *testing.T) {
+		for i, c := range textguard.KnownGaps {
+			t.Run(c.Name, func(t *testing.T) {
+				id := "gap-" + string(rune('a'+i%26))
+				var err error
+				if json.Valid([]byte(strings.TrimSpace(c.Value))) {
+					_, err = db.Exec(`INSERT INTO nul_differential (id, doc) VALUES ($1, $2)`, id, c.Value)
+				} else {
+					_, err = db.Exec(`INSERT INTO nul_differential (id, txt) VALUES ($1, $2)`, id, c.Value)
+				}
+				pgRefused := err != nil
+				ourAnswer := textguard.ParameterRefused(c.Value, c.IsJSON)
+
+				// The point of a recorded gap is that WE do not refuse it. If
+				// that stops being true the entry belongs in Corpus.
+				if ourAnswer {
+					t.Errorf("this gap has CLOSED — the guard now refuses it. Move the case into Corpus.")
+				}
+				// And the interesting fact is what Postgres does, because it
+				// decides whether the gap is a shared blind spot or a dialect
+				// split. Recorded, not asserted either way, so the test states
+				// the truth without pretending we have chosen a disposition.
+				t.Logf("DIALECT SPLIT MEASURED: postgres refuses=%t, this guard refuses=%t, err=%v",
+					pgRefused, ourAnswer, err)
+				if pgRefused && !ourAnswer {
+					t.Logf("Postgres refuses what we accept: a SQLite instance stores this value and a " +
+						"Postgres one cannot. That is the split BUG-2812's token-walk closes.")
+				}
+			})
+		}
+	})
+
 	for i, c := range textguard.Corpus {
 		t.Run(c.Name, func(t *testing.T) {
 			id := "case-" + string(rune('a'+i%26)) + strings.Repeat("x", i/26)

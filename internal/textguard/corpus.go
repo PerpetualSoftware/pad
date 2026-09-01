@@ -164,6 +164,6 @@ var StoreOverRefusals = []Case{
 var KnownGaps = []Case{
 	{
 		Name: "duplicate key, the NUL in the SHADOWED value", Value: `{"a":"` + EscNUL + `","a":"clean"}`, IsJSON: true, Refused: true,
-		Why: "codex round 1 finding 2. encoding/json keeps the LAST duplicate, so the walk never sees the first value and the escape survives into a SQLite text-backed JSON column. Postgres's own parser keeps the last too, so it accepts this as well - the two agree today, which is why it is a recorded gap rather than a dialect split. Closing it needs the token-walk (BUG-2812), not a change here.",
+		Why: "codex round 1 finding 2, RATIONALE CORRECTED in round 4. encoding/json keeps the LAST duplicate, so the map-model walk never sees the shadowed value and the escape survives. I first wrote that Postgres accepts it too, 'so the two agree today' - that was asserted, not measured, and it is FALSE. Measured on Postgres 17: ERROR: unsupported Unicode escape sequence, DETAIL: \\u0000 cannot be converted to text. Its parser processes the scalar BEFORE duplicate elimination, while the control {\"a\":\"x\",\"a\":\"clean\"} deduplicates cleanly. So this is a REAL dialect split - Postgres refuses, this guard accepts, SQLite stores - not a shared gap. It stays recorded rather than fixed here because closing it means replacing the shared predicate's decode with a token walk, which is BUG-2812/S4 and moves BOTH layers at once; a fix in Layer A alone is the divergence DOC-2823 forbids.",
 	},
 }
