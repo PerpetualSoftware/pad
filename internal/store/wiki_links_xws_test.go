@@ -283,7 +283,7 @@ func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
 
 // TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized regresses
 // Codex round 4 P2. The renderer treats `[[<current-ws>::TASK-1]]`
-// identically to `[[TASK-1]]` (markdown.ts:307 short-circuit), so an
+// identically to `[[TASK-1]]` (markdown.ts::renderMarkdown (cross-workspace branch) short-circuit), so an
 // indexed workspace_ref row pointing at the current workspace must
 // be normalized to a ref-kind row at write time — otherwise the
 // link surfaces in the renderer but produces no backlink: the
@@ -323,7 +323,7 @@ func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) 
 // Codex round 5 P2. `[[<current-ws>::ISO-9001]]` where no ISO-9001
 // ref-item exists must NOT fall through to title lookup the way
 // bare `[[ISO-9001]]` does. The renderer's same-ws qualified path
-// (markdown.ts:478-481) treats ref-misses as broken without title
+// (markdown.ts::wikiLinksToMarkdown (cross-workspace branch)) treats ref-misses as broken without title
 // fallback; the index must match or it creates ghost backlinks the
 // UI doesn't render.
 func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
@@ -350,7 +350,7 @@ func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
 	}
 
 	// For contrast: bare `[[ISO-9001]]` SHOULD title-fallback per
-	// markdown.ts:513 (preserves the Phase 2a behavior).
+	// markdown.ts::resolveWikiBody (preserves the Phase 2a behavior).
 	createTestItem(t, s, ws.ID, col.ID, "Source2", "See [[ISO-9001]].")
 	got2, _ := s.GetBacklinks(titledItem.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if len(got2) != 1 {

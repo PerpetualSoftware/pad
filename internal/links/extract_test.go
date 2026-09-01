@@ -137,7 +137,7 @@ func TestExtractWikiLinks_TitleForms(t *testing.T) {
 
 // TestExtractWikiLinks_TitlePreservesWhitespace regresses Codex
 // round 9 P2 against PR #621. The renderer doesn't trim before
-// title matching (web/src/lib/utils/markdown.ts:541-543), so an
+// title matching (web/src/lib/utils/markdown.ts::resolveWikiBody), so an
 // item titled "Foo" doesn't match `[[ Foo ]]`. The extractor must
 // preserve whitespace in the title kind too, or the index would
 // surface backlinks the UI can't actually click on. Ref/workspace_ref
@@ -658,7 +658,7 @@ func TestExtractWikiLinks_RefVsTitleFallback(t *testing.T) {
 
 // TestExtractWikiLinks_EscapedBodyChars regresses Codex rounds
 // 4/7/10 P2: the editor's wikiLinksToMarkdown can produce bodies
-// containing `\]`, `\|`, `\\` escapes (markdown.ts:461). The
+// containing `\]`, `\|`, `\\` escapes (markdown.ts::WIKI_LINK_PATTERN_SOURCE). The
 // extractor must parse those — both the regex and the body parser —
 // so the resulting link is indexed with the unescaped display text.
 func TestExtractWikiLinks_EscapedBodyChars(t *testing.T) {
@@ -769,7 +769,7 @@ func TestExtractWikiLinks_EscapedBodyChars(t *testing.T) {
 
 // TestSplitOnUnescapedPipe / TestUnescapeWikiBody — direct unit
 // tests for the helpers. Round-trip safety against the editor's
-// serializer (escapeWikiBody/unescapeWikiBody in markdown.ts:652-658)
+// serializer (escapeWikiBody/unescapeWikiBody in markdown.ts::escapeWikiBody / ::unescapeWikiBody)
 // is the property we care about.
 func TestSplitOnUnescapedPipe(t *testing.T) {
 	cases := []struct {

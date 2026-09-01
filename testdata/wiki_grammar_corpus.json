@@ -1,0 +1,250 @@
+{
+  "_comment": [
+    "SHARED cross-language corpus for the wiki-link bracket grammar (BUG-2834).",
+    "",
+    "GENERATED FILE -- pure ASCII by construction. Every control character and",
+    "non-ASCII code point below is a \\uXXXX escape, never a raw byte, so this",
+    "file survives editors, diffs, terminals and copy-paste intact. An early",
+    "probe for this very bug typed U+2028/U+2029 into a shell heredoc, silently",
+    "lost them, and would have 'confirmed' the divergence on two cases that were",
+    "actually spaces. Do not hand-edit a raw control character into this file.",
+    "",
+    "Consumed by BOTH implementations of the grammar, which are written as the",
+    "same pattern text in two languages that do not agree on what it means:",
+    "",
+    "  Go: internal/links/extract.go      wikiLinkPattern",
+    "      asserted by internal/links/grammar_parity_test.go",
+    "  JS: web/src/lib/utils/markdown.ts  renderMarkdown + wikiLinksToMarkdown",
+    "      asserted by web/src/lib/utils/markdown.grammarParity.test.ts",
+    "",
+    "THE POINT: neither implementation defines truth. The `expect` fields are",
+    "derived from the grammar SPEC and both languages are asserted against them,",
+    "so a divergence introduced on EITHER side fails on that side. This file",
+    "exists because the two patterns are BYTE-IDENTICAL SOURCE TEXT -- a reviewer",
+    "comparing them side by side concludes they agree, and BUG-2834 lived in the",
+    "gap between that reading and the host languages' definition of `.`.",
+    "",
+    "THE SPEC. The body production is `(?:\\\\.|[^\\]\\\\])+` where `.` means ANY",
+    "CHARACTER EXCEPT LINE FEED (U+000A) -- Go's RE2 definition. JavaScript's `.`",
+    "additionally excludes CR, U+2028 and U+2029, which IS the divergence; the JS",
+    "patterns therefore spell it `[^\\n]` explicitly rather than `.`.",
+    "",
+    "`content` is the FULL input string. `expect.match` is whether the grammar",
+    "matches anywhere in it; `expect.body` is capture group 1 of the FIRST match",
+    "and is absent when match is false."
+  ],
+  "cases": [
+    {
+      "name": "plain body",
+      "why": "baseline: the ordinary form must match in both languages",
+      "content": "[[Title]]",
+      "expect": {
+        "match": true,
+        "body": "Title"
+      }
+    },
+    {
+      "name": "pipe display segment",
+      "why": "the `|` display separator is an ordinary body byte to the grammar",
+      "content": "[[Title|Display]]",
+      "expect": {
+        "match": true,
+        "body": "Title|Display"
+      }
+    },
+    {
+      "name": "escaped close bracket",
+      "why": "the `\\\\.` alternative's primary job: `\\]` must not terminate the body",
+      "content": "[[A\\]B]]",
+      "expect": {
+        "match": true,
+        "body": "A\\]B"
+      }
+    },
+    {
+      "name": "escaped pipe",
+      "why": "escapeWikiBody emits `\\|` for a literal pipe in a title",
+      "content": "[[A\\|B]]",
+      "expect": {
+        "match": true,
+        "body": "A\\|B"
+      }
+    },
+    {
+      "name": "escaped backslash",
+      "why": "escapeWikiBody doubles backslashes first; the pair must be one unit",
+      "content": "[[A\\\\B]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\\B"
+      }
+    },
+    {
+      "name": "empty body",
+      "why": "the production is `+`, so an empty body is not a link",
+      "content": "[[]]",
+      "expect": {
+        "match": false
+      }
+    },
+    {
+      "name": "escaped close consumes the first of a bare pair",
+      "why": "`[[A\\]]` has nothing left to close with -- the naive strings.Index scan got this wrong (BUG-2805)",
+      "content": "[[A\\]]",
+      "expect": {
+        "match": false
+      }
+    },
+    {
+      "name": "escaped close then real close",
+      "why": "`[[A\\]]]` closes on the LAST two brackets, body keeps the escape",
+      "content": "[[A\\]]]",
+      "expect": {
+        "match": true,
+        "body": "A\\]"
+      }
+    },
+    {
+      "name": "trailing backslash with nothing to consume",
+      "why": "`\\\\.` needs a byte after the backslash; there is none",
+      "content": "[[A\\",
+      "expect": {
+        "match": false
+      }
+    },
+    {
+      "name": "surplus closing brackets",
+      "why": "the match ends at the first legal close; the extra `]]` is outside it",
+      "content": "[[A]]]]",
+      "expect": {
+        "match": true,
+        "body": "A"
+      }
+    },
+    {
+      "name": "inner open brackets are ordinary body bytes",
+      "why": "`[` is not excluded by `[^\\]\\\\]`, so the body swallows it -- checks greediness agrees across RE2 and backtracking",
+      "content": "[[A[[B]]]]",
+      "expect": {
+        "match": true,
+        "body": "A[[B"
+      }
+    },
+    {
+      "name": "raw LF inside body",
+      "why": "a RAW line terminator is matched by the `[^\\]\\\\]` alternative in BOTH languages -- this is why `.` excluding them was never a deliberate rule about titles",
+      "content": "[[A\nB]]",
+      "expect": {
+        "match": true,
+        "body": "A\nB"
+      }
+    },
+    {
+      "name": "raw CR inside body",
+      "why": "same as raw LF: the second alternative admits it, so only the ESCAPED form ever diverged",
+      "content": "[[A\rB]]",
+      "expect": {
+        "match": true,
+        "body": "A\rB"
+      }
+    },
+    {
+      "name": "backslash before LF",
+      "why": "BUG-2834 control: Go's `.` excludes LF, so this is NOT an escape pair and the bracket fails -- both languages already agreed here, and the fix must not change it (scanBracketBody in links.go depends on it)",
+      "content": "[[A\\\nB]]",
+      "expect": {
+        "match": false
+      }
+    },
+    {
+      "name": "backslash before CR",
+      "why": "BUG-2834 divergence 1 of 3: Go matched, JS did not. CRLF line endings make this the plausible one -- a body ending in a backslash immediately before a CRLF break",
+      "content": "[[A\\\rB]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\rB"
+      }
+    },
+    {
+      "name": "backslash before U+2028 LINE SEPARATOR",
+      "why": "BUG-2834 divergence 2 of 3: excluded by ECMAScript's LineTerminator, not by RE2's",
+      "content": "[[A\\\u2028B]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\u2028B"
+      }
+    },
+    {
+      "name": "backslash before U+2029 PARAGRAPH SEPARATOR",
+      "why": "BUG-2834 divergence 3 of 3",
+      "content": "[[A\\\u2029B]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\u2029B"
+      }
+    },
+    {
+      "name": "backslash before U+000B VERTICAL TAB",
+      "why": "BOUNDS the divergence: a vertical whitespace control that is NOT an ECMAScript LineTerminator. Agreement here is what makes the population exactly three rather than 'the whitespace controls'",
+      "content": "[[A\\\u000bB]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\u000bB"
+      }
+    },
+    {
+      "name": "backslash before U+000C FORM FEED",
+      "why": "BOUNDS the divergence: same role as VT",
+      "content": "[[A\\\fB]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\fB"
+      }
+    },
+    {
+      "name": "backslash before U+0085 NEXT LINE",
+      "why": "BOUNDS the divergence: a Unicode line break that ECMAScript does NOT count as a LineTerminator. The 'it is all Unicode line breaks' hypothesis dies here",
+      "content": "[[A\\\u0085B]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\u0085B"
+      }
+    },
+    {
+      "name": "backslash before space",
+      "why": "ordinary escape of a non-special byte: legal in both, and the negative control for the divergence cases above",
+      "content": "[[A\\ B]]",
+      "expect": {
+        "match": true,
+        "body": "A\\ B"
+      }
+    },
+    {
+      "name": "backslash before tab",
+      "why": "ordinary escape, horizontal whitespace",
+      "content": "[[A\\\tB]]",
+      "expect": {
+        "match": true,
+        "body": "A\\\tB"
+      }
+    },
+    {
+      "name": "collection-qualified body",
+      "why": "the `<slug>/<title>` form is ordinary body text to the GRAMMAR -- the ambiguity it creates is BUG-2830's, decided above the grammar, not inside it",
+      "content": "[[tasks/Setup]]",
+      "expect": {
+        "match": true,
+        "body": "tasks/Setup"
+      }
+    },
+    {
+      "name": "cross-workspace form",
+      "why": "`::` is likewise ordinary body text to the grammar",
+      "content": "[[team::TASK-5]]",
+      "expect": {
+        "match": true,
+        "body": "team::TASK-5"
+      }
+    }
+  ]
+}

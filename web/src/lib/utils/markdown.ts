@@ -10,6 +10,49 @@ import {
 	resolveAttachmentLink
 } from '$lib/markdown/attachments';
 
+/**
+ * The wiki-link bracket grammar — the ONE copy on the JS side.
+ *
+ * Body production: a backslash-escaped character, or any character that is
+ * neither `]` nor `\`. Kept deliberately permissive so anything the editor can
+ * save is also indexable; see `wikiLinkPattern` in internal/links/extract.go,
+ * which is the server-side half of the same grammar.
+ *
+ * ## Why `\\[^\n]` and not `\\.` (BUG-2834)
+ *
+ * The Go and JS patterns used to be BYTE-IDENTICAL source text — both spelled
+ * the escape alternative `\\.` — and they still did not mean the same thing,
+ * because the two languages do not agree on `.`:
+ *
+ *   - Go (RE2): `.` matches everything except LF (U+000A).
+ *   - JavaScript: `.` additionally excludes CR, U+2028 and U+2029 — the full
+ *     ECMAScript LineTerminator set.
+ *
+ * So a body containing a backslash immediately before CR / U+2028 / U+2029 was
+ * INDEXED by the server and NOT RENDERED here: the backlink panel claimed a
+ * link the document refused to draw. CRLF line endings make the CR case the
+ * plausible one — a body ending in a backslash right before a CRLF break.
+ *
+ * `[^\n]` states Go's definition explicitly, so the two sides now agree by
+ * construction rather than by looking alike. Measured, not reasoned: the three
+ * divergent code points plus VT / FF / U+0085 (which always agreed, and which
+ * bound the divergence to exactly the LineTerminator set) are pinned in
+ * testdata/wiki_grammar_corpus.json and asserted from both languages.
+ *
+ * LF stays excluded on BOTH sides — that was never the divergence, and
+ * `scanBracketBody` in internal/links/links.go depends on it.
+ *
+ * Exported as SOURCE TEXT rather than as a shared RegExp object: a `/g` regex
+ * carries `lastIndex` state, and handing the same object to both a `replace()`
+ * and a test's `exec()` would couple them through it.
+ */
+export const WIKI_LINK_PATTERN_SOURCE = String.raw`\[\[((?:\\[^\n]|[^\]\\])+)\]\]`;
+
+// The shared instance for this module's two rewrite sites. Safe to reuse
+// despite the `/g` flag because `String.prototype.replace` resets `lastIndex`
+// both before and after a global match — unlike `exec`/`test`, which do not.
+const WIKI_LINK_PATTERN = new RegExp(WIKI_LINK_PATTERN_SOURCE, 'g');
+
 // Mirror of marked's internal cleanUrl() — percent-encodes the href so the
 // rendered HTML stays well-formed even when input contains spaces, quotes, or
 // other URL-unsafe characters. The %25 → % round-trip avoids double-encoding
@@ -320,10 +363,11 @@ export function renderMarkdown(
 	attachmentResolver?: AttachmentResolver,
 	attachmentImageVariant: 'thumb-sm' | 'thumb-md' = 'thumb-md'
 ): string {
-	// Body may contain backslash-escaped chars (`\]`, `\\`, `\|`) — same
-	// capture as wikiLinksToMarkdown so the two renderers accept identical
-	// stored syntax (BUG-1744).
-	const withLinks = content.replace(/\[\[((?:\\.|[^\]\\])+)\]\]/g, (_match, body: string) => {
+	// Body may contain backslash-escaped chars (`\]`, `\\`, `\|`) — the SAME
+	// pattern object as wikiLinksToMarkdown, so the two renderers cannot drift
+	// apart in accepted syntax (BUG-1744 aligned them; BUG-2834 removed the
+	// second copy that let them look aligned while diverging).
+	const withLinks = content.replace(WIKI_LINK_PATTERN, (_match, body: string) => {
 		// Cross-workspace form: [[workspace-slug::REF]] or [[workspace-slug::REF|Display]].
 		// `::` is the unambiguous separator. The workspace prefix is recognized
 		// only when both the slug AND the right-hand side match their expected
@@ -620,9 +664,10 @@ function resolveWikiBody(body: string, items: Item[]): { item: Item | null; disp
  */
 export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlug: string, username?: string): string {
 	// Body may contain backslash-escaped chars (`\]`, `\\`, `\|`) so the tokens
-	// we emit can carry arbitrary display text. The capture is (\\.|[^\]\\])+,
-	// i.e. "a backslash-escaped char OR any non-`]`/non-`\` char".
-	return content.replace(/\[\[((?:\\.|[^\]\\])+)\]\]/g, (_match, body: string) => {
+	// we emit can carry arbitrary display text. Shares WIKI_LINK_PATTERN with
+	// renderMarkdown — see its definition for why the escape alternative is
+	// spelled `\\[^\n]` rather than `\\.` (BUG-2834).
+	return content.replace(WIKI_LINK_PATTERN, (_match, body: string) => {
 		const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
 
 		// Cross-workspace form: [[workspace::REF]] / [[workspace::REF|Display]].

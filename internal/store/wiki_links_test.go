@@ -884,7 +884,7 @@ func TestWikiLinks_SecondItemSameTitleDoesNotStealBacklinks(t *testing.T) {
 // TestWikiLinks_LiteralTitleArrivalRetargetsQualifiedFallback regresses
 // Codex round 2 P2: a row resolved via qualified-fallback (stage 2)
 // must flip to point at a later-arriving literal-title match (stage 1
-// always wins per renderer order at markdown.ts:541).
+// always wins per renderer order at markdown.ts::resolveWikiBody).
 //
 //	Step 1: source writes `[[tasks/Setup]]`. No literal "tasks/Setup"
 //	        item exists; item "Setup" exists in collection "tasks".
@@ -1022,7 +1022,7 @@ func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 // Codex round 10 P2: a ref-shaped body with surrounding whitespace
 // (`[[ TASK-5 ]]`) that doesn't match any actual ref falls through
 // to title lookup using the UNTRIMMED key — matches the renderer's
-// `key.toLowerCase()` (no trim) at markdown.ts:541-543. An item
+// `key.toLowerCase()` (no trim) at markdown.ts::resolveWikiBody. An item
 // literally titled " TASK-5 " (with spaces) must resolve via the
 // fallback when no real TASK-5 ref exists.
 func TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle(t *testing.T) {
@@ -1135,7 +1135,7 @@ func TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor(t *testing.T) {
 // TestWikiLinks_RefShapedFallsThroughToTitle regresses Codex round 6
 // finding 1. A ref-shaped body like `[[ISO-9001]]` should resolve to
 // an item literally titled "ISO-9001" when no ISO-9001 ref-item
-// exists — the renderer falls through (markdown.ts:513), so the
+// exists — the renderer falls through (markdown.ts::resolveWikiBody), so the
 // index must too. Without the fallback, GetBacklinks would never
 // find the backlink even though the renderer renders the link.
 func TestWikiLinks_RefShapedFallsThroughToTitle(t *testing.T) {

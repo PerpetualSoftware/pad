@@ -164,7 +164,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			}
 			// Ref didn't resolve — try title fallback. Mirrors the
 			// renderer's "If the ref doesn't resolve we FALL THROUGH
-			// to the legacy title path" at web/src/lib/utils/markdown.ts:513.
+			// to the legacy title path" at web/src/lib/utils/markdown.ts::resolveWikiBody.
 			// Order matches the renderer:
 			//   (a) If HasDisplay, try FULL body (RawKey+"|"+Display)
 			//       as a title — covers literal-pipe titles like
@@ -243,7 +243,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			// in WHATEVER FORM RESOLVED so the rename cascade can
 			// reconstruct the literal bracket string in source
 			// content. Resolution mirrors the renderer's order at
-			// web/src/lib/utils/markdown.ts:516-558:
+			// web/src/lib/utils/markdown.ts::resolveWikiBody:
 			//
 			//   (a) If a pipe was present (HasDisplay), try the
 			//       FULL body (Title + "|" + Display) as a title.
@@ -294,7 +294,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			// Codex round 4: when nothing resolved AND there was a
 			// pipe, key the broken row on the FULL BODY rather than
 			// the split key. The renderer's preferred interpretation
-			// for `[[A|B]]` is "title A|B" (markdown.ts:516); if an
+			// for `[[A|B]]` is "title A|B" (markdown.ts::resolveWikiBody); if an
 			// item literally titled "A|B" arrives later,
 			// resolveBrokenTitleLinks needs target_title="A|B" to
 			// find this row. Storing the split key would orphan it
@@ -334,7 +334,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			// = NULL — broken-link semantics, identical to the way
 			// broken ref-form rows persist with target_item_id=NULL.
 			// The renderer's resolver-route fallback (`/-/r/<ws>/<ref>`
-			// at markdown.ts:485) returns 404 in that case; the index
+			// at markdown.ts::renderMarkdown (cross-workspace branch)) returns 404 in that case; the index
 			// matches that behavior.
 			cachedWS, hit := resolvedWorkspaces[link.WorkspaceSlug]
 			if !hit {
@@ -404,7 +404,7 @@ func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int) 
 }
 
 // resolveTitleTx mirrors the renderer's title-resolution logic
-// (web/src/lib/utils/markdown.ts:541–558) inside the parse-time
+// (web/src/lib/utils/markdown.ts::resolveWikiBody) inside the parse-time
 // transaction. Two-stage lookup:
 //
 //  1. Exact case-insensitive match on items.title against the full
@@ -460,7 +460,7 @@ func resolveTitleTx(tx *sql.Tx, s *Store, workspaceID, title string) sql.NullStr
 	// title contains a `/`. Split on the FIRST `/` because an item's
 	// title can legitimately contain additional slashes after the
 	// collection delimiter (e.g. "docs/api/auth-flow"). The renderer
-	// at markdown.ts:548 uses `key.split('/')` then `rest.join('/')`
+	// at markdown.ts::resolveWikiBody uses `key.split('/')` then `rest.join('/')`
 	// — equivalent to "split once, keep the rest verbatim."
 	slash := strings.IndexByte(title, '/')
 	if slash <= 0 || slash >= len(title)-1 {
@@ -711,7 +711,15 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// short. Escaping inside those calls would multiply an unbounded new title
 	// by an unbounded source count, which is BUG-2804's R5 defect in a new
 	// costume.
-	esc := links.NewTitleEscaper(newTitle, collSlug)
+	//
+	// oldTitle rides along because it is the ONLY thing that distinguishes a
+	// collection-qualified bracket from one whose literal title merely starts
+	// with `<collSlug>/` — both store the same target_title, and guessing from
+	// its shape silently rewrote the literal case into a qualified reference,
+	// which can hand the link to a different item outright (BUG-2830). See
+	// links.TitleEscaper.qualifiedFor for the two measured cases and
+	// items_rename_slug_prefix_test.go for both fixtures.
+	esc := links.NewTitleEscaper(oldTitle, newTitle, collSlug)
 
 	var cascaded []string
 	for _, work := range works {
@@ -1283,7 +1291,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 // applied below.
 //
 // `targetRef` matches case-insensitively (mirrors the renderer's
-// resolver-route handling at markdown.ts:485 which forwards
+// resolver-route handling at markdown.ts::renderMarkdown (cross-workspace branch) which forwards
 // ref-shapes verbatim to the server-side resolver, which is itself
 // case-insensitive).
 //

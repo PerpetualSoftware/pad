@@ -77,7 +77,7 @@ type WikiLinkRef struct {
 	// before the first unescaped pipe, or the whole body if no
 	// pipe). Populated for `WikiLinkKindRef` so the ref→title
 	// fallback in the store layer can mirror the renderer's
-	// untrimmed title lookup at web/src/lib/utils/markdown.ts:541-543
+	// untrimmed title lookup at web/src/lib/utils/markdown.ts::resolveWikiBody
 	// — an item literally titled `" TASK-5 "` (with surrounding
 	// whitespace) resolves via the renderer's untrimmed key but
 	// would miss a canonical-trimmed `"TASK-5"` lookup. Codex
@@ -100,28 +100,47 @@ type WikiLinkRef struct {
 var refPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 
 // wikiLinkPattern matches `[[...]]` while allowing the body to
-// contain escaped chars (`\]`, `\|`, `\\`). Mirrors the editor's
-// `wikiLinksToMarkdown` grammar in web/src/lib/utils/markdown.ts:461
-// (`(?:\\.|[^\]\\])+`), so any link the editor saves can be indexed
-// — even if its display text contains a literal `]` or `|`.
+// contain escaped chars (`\]`, `\|`, `\\`). It is the SERVER half of a
+// grammar the web client also implements, as
+// `markdown.ts::WIKI_LINK_PATTERN_SOURCE`, so any link the editor saves
+// can be indexed — even if its display text contains a literal `]`
+// or `|`.
+//
+// ## The two halves are pinned by a shared corpus, not by looking alike
+//
+// testdata/wiki_grammar_corpus.json carries the expectations; this side
+// is asserted against it by grammar_parity_test.go and the client side
+// by markdown.grammarParity.test.ts. Read that corpus before changing
+// this pattern — and add cases THERE, not to one language's test.
+//
+// The corpus exists because "the two regexes are byte-identical source
+// text" turned out not to mean "the two grammars agree" (BUG-2834). The
+// escape alternative was spelled `\\.` on both sides, and `.` is not the
+// same character class in the two languages: Go's RE2 excludes only LF,
+// while ECMAScript also excludes CR, U+2028 and U+2029. So a body with a
+// backslash immediately before one of those three was indexed here and
+// NOT rendered there — the backlink panel claimed a link the document
+// refused to draw. The client now spells the class `[^\n]` explicitly to
+// match RE2, which is why the two patterns no longer read identically:
+// they agree by construction instead. Nothing changed on this side.
+//
+// LF remains excluded on both sides, and scanBracketBody in links.go
+// depends on that; it is not part of the BUG-2834 divergence.
 //
 // CORRECTED 2026-08-31 (BUG-2805): this comment used to say that
-// renderMarkdown at markdown.ts:300 uses a simpler regex (`[^\]]+`)
-// and therefore REJECTS escaped bodies, making escaped links an
-// index-only citizen that never renders. That is no longer true, and
-// the citation had gone stale — markdown.ts:300 is inside a doc
-// comment now, and BOTH wiki-link regexes in that file
-// (renderMarkdown at :326 and wikiLinksToMarkdown at :625) use this
-// exact escape-aware production. The renderer comment at :323-325
-// names BUG-1744 as the change that aligned them.
+// renderMarkdown used a simpler regex (`[^\]]+`) and therefore REJECTED
+// escaped bodies, making escaped links an index-only citizen that never
+// renders. That was false — BUG-1744 had already aligned both client
+// regexes on this exact escape-aware production. Escaped links DO render
+// as clickable. The stale claim survived long enough to be quoted into a
+// bug repro (TASK-2826) as a live constraint, where it understated
+// BUG-2805: the link a rename left stale was a WORKING, clickable link,
+// not an invisible artifact.
 //
-// So the grammars agree across server and client, and escaped links
-// DO render as clickable. Verified by reading both regexes, not by
-// re-citing this comment — which is how the stale version survived
-// long enough to be quoted into a bug repro (TASK-2826) as a live
-// constraint. It matters for BUG-2805 in the direction that makes the
-// bug worse: the stale link that rename left behind was a WORKING,
-// clickable link, not an invisible one.
+// That is also why the citations here name SYMBOLS rather than line
+// numbers (BUG-2832). Nothing checks a cross-language line citation —
+// no compiler, no test, no linter — and seven of them across four files
+// had silently drifted onto unrelated code by the time anyone looked.
 //
 // Original rationale, still accurate: matching the permissive grammar
 // here keeps the index consistent with what the editor saves. Codex
@@ -529,7 +548,7 @@ func parseBody(body string) *WikiLinkRef {
 	// Split on the FIRST UNESCAPED `|`. `\|` is part of the key or
 	// display text (depending on which side of the split it's on)
 	// and must NOT cleave the body. Mirrors splitWikiBody at
-	// markdown.ts:664. The display side is preserved verbatim
+	// markdown.ts::splitWikiBody. The display side is preserved verbatim
 	// (post-unescape) — the renderer doesn't trim it, and the
 	// WikiLinkRef.Display doc comment promises verbatim storage.
 	// Trimming would silently differ from client behavior on
@@ -546,7 +565,7 @@ func parseBody(body string) *WikiLinkRef {
 	// fallthrough so the index mirrors the renderer's whitespace-
 	// sensitive title resolution: the renderer compares items.title
 	// against `key` directly with no implicit trim
-	// (web/src/lib/utils/markdown.ts:541-543). If we trimmed here,
+	// (web/src/lib/utils/markdown.ts::resolveWikiBody). If we trimmed here,
 	// `[[ Foo ]]` would index a backlink to item "Foo" that the UI
 	// renders as broken, creating ghost entries in the backlinks
 	// panel. Codex round 9 P2.
@@ -623,7 +642,7 @@ func isWorkspaceSlug(s string) bool {
 
 // splitOnUnescapedPipe scans `body` for the first `|` that isn't
 // preceded by an unescaped `\`, splitting the body into (key,
-// display, found). Mirrors splitWikiBody at markdown.ts:664. A `\`
+// display, found). Mirrors splitWikiBody at markdown.ts::splitWikiBody. A `\`
 // always consumes the following byte (even if it's not a recognized
 // escape) so the algorithm can't get desynced by stray backslashes.
 func splitOnUnescapedPipe(body string) (key, suffix string, found bool) {
@@ -644,7 +663,7 @@ func splitOnUnescapedPipe(body string) (key, suffix string, found bool) {
 // unescapeWikiBody undoes the editor's body-escape sequences:
 // `\]` → `]`, `\|` → `|`, `\\` → `\`. Other backslash sequences are
 // left as-is (the renderer does the same — see unescapeWikiBody at
-// markdown.ts:657). Idempotent on already-unescaped strings.
+// markdown.ts::unescapeWikiBody). Idempotent on already-unescaped strings.
 func unescapeWikiBody(s string) string {
 	if !strings.ContainsRune(s, '\\') {
 		return s

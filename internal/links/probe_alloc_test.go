@@ -21,7 +21,7 @@ func TestProbeRewriteBracketAtAllocation(t *testing.T) {
 		runtime.ReadMemStats(&before)
 		const n = 200
 		for i := 0; i < n; i++ {
-			_ = RewriteBracketAt(body, 0, "A", tc.newTitle, "")
+			_ = RewriteBracketAt(body, 0, "A", "A", tc.newTitle, "")
 		}
 		runtime.ReadMemStats(&after)
 		per := (after.TotalAlloc - before.TotalAlloc) / n
@@ -58,7 +58,7 @@ func TestProjectRewrittenLenDoesNotAllocatePerBracket(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	length, applied := ProjectRewrittenLen(content, rewrites, NewTitleEscaper(newTitle, "tasks"))
+	length, applied := ProjectRewrittenLen(content, rewrites, NewTitleEscaper("A", newTitle, "tasks"))
 	runtime.ReadMemStats(&after)
 
 	if applied != brackets {
