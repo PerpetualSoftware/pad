@@ -175,6 +175,59 @@ func TestNULTriggersMatchTheList(t *testing.T) {
 // exercise this is to classify the driver error directly and, separately, to
 // prove an unguarded write produces a message the classifier recognises.
 func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
+	// WHY THERE IS NO END-TO-END LEG HERE, stated rather than faked.
+	//
+	// Codex round 2 was right that testing classifyTriggerRefusal with a
+	// synthetic error would pass even if the wrapper stopped calling it. My
+	// first answer was an "integration" leg that wrote a nested-document value
+	// through a guarded connection and asserted the typed error came back. It
+	// PASSED — and for the wrong reason: the refusal came from LAYER A, whose
+	// message ("parameter 1: value is a JSON document...") is the same TYPE, so
+	// errors.As succeeded while the trigger was never involved.
+	//
+	// Reaching a trigger through a guarded connection needs a value Layer A
+	// ACCEPTS and Layer B REFUSES. By construction there is none: both
+	// implement the same predicate, and the four-way differential test asserts
+	// exactly that they agree on the whole corpus. The unreachability IS the
+	// property, so a test that manufactured a reachable case would be testing a
+	// disagreement we have gone to some trouble to prevent.
+	//
+	// What is testable, and is: (a) the classifier's behaviour, below; (b) that
+	// the marker it parses is the one the migration emits, below; and (c) that
+	// every error path in the wrapper passes through it, structurally — the
+	// arm-parity shape from the item-title unit, which exists because
+	// "somebody will add a fifth return and forget" is the failure that
+	// actually happens.
+	t.Run("every wrapper error path routes through the classifier", func(t *testing.T) {
+		src, err := os.ReadFile("nulguard.go")
+		if err != nil {
+			t.Fatalf("read nulguard.go: %v", err)
+		}
+		body := string(src)
+		// The four driver entry points that can surface a database error.
+		for _, fn := range []string{
+			"func (c guardConn) ExecContext(",
+			"func (c guardConn) QueryContext(",
+			"func (s guardStmt) ExecContext(",
+			"func (s guardStmt) QueryContext(",
+		} {
+			i := strings.Index(body, fn)
+			if i < 0 {
+				t.Errorf("%s not found — the instrument is out of step with the code, so its silence "+
+					"means nothing", fn)
+				continue
+			}
+			end := strings.Index(body[i:], "\n}\n")
+			if end < 0 {
+				t.Fatalf("could not find the end of %s", fn)
+			}
+			if !strings.Contains(body[i:i+end], "classifyTriggerRefusal") {
+				t.Errorf("%s returns a driver error without classifying it — a Layer B refusal down that "+
+					"path reaches the handler as a 500 instead of a 400", fn)
+			}
+		}
+	})
+
 	t.Run("a trigger abort classifies as the Layer A error", func(t *testing.T) {
 		raw := errors.New("SQL logic error: pad_nul_invariant: activities.user_agent must not contain a NUL (1)")
 		got := classifyTriggerRefusal(raw)

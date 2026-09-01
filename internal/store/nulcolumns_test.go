@@ -146,6 +146,25 @@ func TestNULColumnCensus(t *testing.T) {
 			"baseline with GEN_NUL_BASELINE=1 — but decide first.",
 			len(newlyUnaccounted), strings.Join(newlyUnaccounted, "\n  "))
 	}
+	// A baseline entry that has become PROTECTED is a stale record, and leaving
+	// it there is what lets a protection REGRESSION pass silently: the column
+	// would drop out of the protected set, land back in `unaccounted`, find
+	// itself still listed in the baseline, and read as expected (codex round
+	// 2). The two sets must stay disjoint.
+	var protectedButBaselined []string
+	for key := range known {
+		if protected[key] {
+			protectedButBaselined = append(protectedButBaselined, key)
+		}
+	}
+	sort.Strings(protectedButBaselined)
+	if len(protectedButBaselined) > 0 {
+		t.Errorf("%d column(s) are BOTH protected and recorded as unprotected:\n  %s\n\n"+
+			"Remove them from nul_unprotected_baseline.txt. While they are listed there, losing their "+
+			"protection would not fail this test.",
+			len(protectedButBaselined), strings.Join(protectedButBaselined, "\n  "))
+	}
+
 	if len(goneFromBaseline) > 0 {
 		t.Errorf("%d baseline column(s) are no longer in the schema:\n  %s\n\n"+
 			"A removed or renamed column is worth a look — a RENAME means the old name's exemption now "+

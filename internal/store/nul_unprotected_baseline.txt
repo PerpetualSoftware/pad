@@ -6,7 +6,6 @@ activities.user_id
 activities.workspace_id
 agent_roles.created_at
 agent_roles.id
-agent_roles.slug
 agent_roles.updated_at
 agent_roles.workspace_id
 api_tokens.created_at
@@ -44,13 +43,11 @@ collection_grants.workspace_id
 collections.created_at
 collections.deleted_at
 collections.id
-collections.slug
 collections.updated_at
 collections.workspace_id
 comment_reactions.actor
 comment_reactions.comment_id
 comment_reactions.created_at
-comment_reactions.emoji
 comment_reactions.id
 comment_reactions.user_id
 comments.activity_id
@@ -64,7 +61,6 @@ comments.updated_at
 comments.user_id
 comments.workspace_id
 custom_templates.created_at
-custom_templates.icon
 custom_templates.id
 custom_templates.updated_at
 custom_templates.workspace_id
@@ -109,7 +105,6 @@ item_grants.permission
 item_grants.user_id
 item_grants.workspace_id
 item_links.created_at
-item_links.created_by
 item_links.id
 item_links.link_type
 item_links.source_id
@@ -120,10 +115,8 @@ item_stars.created_at
 item_stars.item_id
 item_stars.user_id
 item_versions.created_at
-item_versions.created_by
 item_versions.id
 item_versions.item_id
-item_versions.source
 item_versions.user_id
 item_wiki_links.source_item_id
 item_wiki_links.target_item_id
@@ -144,14 +137,11 @@ items.assigned_user_id
 items.collection_id
 items.content_flushed_at
 items.created_at
-items.created_by
 items.created_by_user_id
 items.deleted_at
 items.id
-items.last_modified_by
 items.last_modified_by_user_id
 items.parent_id
-items.source
 items.updated_at
 items.workspace_id
 mcp_audit_log.args_hash
@@ -177,7 +167,6 @@ oauth_authorization_codes.requested_at
 oauth_authorization_codes.signature
 oauth_clients.created_at
 oauth_clients.id
-oauth_clients.logo_url
 oauth_clients.token_endpoint_auth_method
 oauth_connection_workspaces.added_at
 oauth_connection_workspaces.added_by
@@ -265,7 +254,6 @@ versions.source
 views.collection_id
 views.created_at
 views.id
-views.slug
 views.updated_at
 views.view_type
 views.workspace_id
@@ -296,6 +284,5 @@ workspaces.created_at
 workspaces.deleted_at
 workspaces.id
 workspaces.owner_id
-workspaces.slug
 workspaces.source
 workspaces.updated_at

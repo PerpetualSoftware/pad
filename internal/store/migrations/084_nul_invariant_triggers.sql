@@ -555,6 +555,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: custom_templates.doc_type must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_custom_templates_icon_ins
+BEFORE INSERT ON custom_templates
+FOR EACH ROW WHEN NEW.icon IS NOT NULL AND (
+			instr(NEW.icon, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: custom_templates.icon must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_custom_templates_icon_upd
+BEFORE UPDATE OF icon ON custom_templates
+FOR EACH ROW WHEN NEW.icon IS NOT NULL AND (
+			instr(NEW.icon, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: custom_templates.icon must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_custom_templates_name_ins
 BEFORE INSERT ON custom_templates
 FOR EACH ROW WHEN NEW.name IS NOT NULL AND (
@@ -697,6 +715,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: event_outbox.payload must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_links_created_by_ins
+BEFORE INSERT ON item_links
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_links.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_links_created_by_upd
+BEFORE UPDATE OF created_by ON item_links
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_links.created_by must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_item_versions_change_summary_ins
 BEFORE INSERT ON item_versions
 FOR EACH ROW WHEN NEW.change_summary IS NOT NULL AND (
@@ -731,6 +767,42 @@ FOR EACH ROW WHEN NEW.content IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_versions.content must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_versions_created_by_ins
+BEFORE INSERT ON item_versions
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_versions.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_versions_created_by_upd
+BEFORE UPDATE OF created_by ON item_versions
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_versions.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_versions_source_ins
+BEFORE INSERT ON item_versions
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_versions.source must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_versions_source_upd
+BEFORE UPDATE OF source ON item_versions
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_versions.source must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_item_wiki_links_display_text_ins
@@ -805,6 +877,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: items.content must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_created_by_ins
+BEFORE INSERT ON items
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_created_by_upd
+BEFORE UPDATE OF created_by ON items
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.created_by must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_items_fields_ins
 BEFORE INSERT ON items
 FOR EACH ROW WHEN NEW.fields IS NOT NULL AND (
@@ -829,6 +919,60 @@ FOR EACH ROW WHEN NEW.fields IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: items.fields must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_last_modified_by_ins
+BEFORE INSERT ON items
+FOR EACH ROW WHEN NEW.last_modified_by IS NOT NULL AND (
+			instr(NEW.last_modified_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.last_modified_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_last_modified_by_upd
+BEFORE UPDATE OF last_modified_by ON items
+FOR EACH ROW WHEN NEW.last_modified_by IS NOT NULL AND (
+			instr(NEW.last_modified_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.last_modified_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_slug_ins
+BEFORE INSERT ON items
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_slug_upd
+BEFORE UPDATE OF slug ON items
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_source_ins
+BEFORE INSERT ON items
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.source must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_source_upd
+BEFORE UPDATE OF source ON items
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.source must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_items_tags_ins

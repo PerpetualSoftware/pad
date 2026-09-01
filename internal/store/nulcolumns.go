@@ -59,8 +59,20 @@ var nulColumns = []nulColumn{
 	{"items", "tags", classJSON},
 	{"items", "title", classText},
 	{"items", "content", classText},
-	// items.slug is deliberately absent: slugify emits only [a-z0-9-], so a
-	// NUL cannot survive into it.
+	// items.slug IS protected (codex round 2), and the reasoning that excluded
+	// it was true of one write path and false of another — the lesson this
+	// cluster keeps re-teaching. The API path derives the slug through slugify,
+	// whose [a-z0-9-] output cannot carry a NUL. ImportWorkspace has its OWN
+	// INSERT and writes the BUNDLE's slug verbatim: importCoercedSlug returns
+	// it unchanged whenever it is inside the length bound, so a crafted bundle
+	// puts any bytes it likes in this column.
+	{"items", "slug", classText},
+
+	// Attribution columns. The handlers let a request body's value win over the
+	// server's own, so these carry caller text.
+	{"items", "created_by", classText},
+	{"items", "last_modified_by", classText},
+	{"items", "source", classText},
 
 	// collections
 	{"collections", "schema", classJSON},
@@ -85,6 +97,9 @@ var nulColumns = []nulColumn{
 	// versions
 	{"item_versions", "content", classText},
 	{"item_versions", "change_summary", classText},
+	{"item_versions", "created_by", classText},
+	{"item_versions", "source", classText},
+	{"item_links", "created_by", classText},
 	{"versions", "content", classText},
 	{"versions", "change_summary", classText},
 
@@ -127,6 +142,7 @@ var nulColumns = []nulColumn{
 	{"custom_templates", "content", classText},
 	{"custom_templates", "name", classText},
 	{"custom_templates", "description", classText},
+	{"custom_templates", "icon", classText},
 	{"custom_templates", "doc_type", classText}, // second ring
 
 	// webhooks
@@ -168,9 +184,9 @@ var nulColumns = []nulColumn{
 
 	// CALLER-SUPPLIED SLUGS (codex round 1).
 	//
-	// items.slug is excluded because it is DERIVED — ItemCreate has no Slug
-	// field, so slugify's [a-z0-9-] output is the only thing that reaches it.
-	// That reasoning does NOT transfer to these: CreateWorkspace and
+	// These are caller-supplied, and were missed because items.slug's
+	// derived-only reasoning was read as covering slugs generally.
+	// CreateWorkspace and
 	// CreateCollection both start with `slug := input.Slug` and only fall back
 	// to slugify when the caller supplied none. The census's exclusion note was
 	// right about items and was read as covering slugs generally.
@@ -256,7 +272,6 @@ var nulExcluded = map[string]string{
 	"mcp_audit_log.error_kind":            "server enum, mcp_audit.go",
 	"users.recovery_codes":                "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
 	"workspace_members.collection_access": "validated enum all/selected",
-	"items.slug":                          "DERIVED: ItemCreate has no Slug field, so slugify's [a-z0-9-] output is the only thing that reaches it. NOTE this reasoning is specific to items — workspaces, collections, views and agent_roles all accept a caller-supplied slug and ARE protected.",
 	"item_yjs_updates.update_data":        "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
 
@@ -277,14 +292,32 @@ func (s *Store) ensureNULTriggers() error {
 		return nil
 	}
 
-	var have int
-	if err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'pad_nul_%'`,
-	).Scan(&have); err != nil {
-		return fmt.Errorf("count NUL triggers: %w", err)
+	want := map[string]bool{}
+	for _, c := range NULProtectedColumns() {
+		want["pad_nul_"+c.Table+"_"+c.Column+"_ins"] = true
+		want["pad_nul_"+c.Table+"_"+c.Column+"_upd"] = true
 	}
-	want := len(NULProtectedColumns()) * 2 // one BEFORE INSERT + one BEFORE UPDATE each
-	if have == want {
+
+	// The SET, not the count (codex round 2). A database with the right NUMBER
+	// of triggers but a missing one and an extra one read as healthy, and
+	// CREATE TRIGGER IF NOT EXISTS would then never repair the missing one.
+	//
+	// Matched with GLOB rather than LIKE because LIKE's `_` is a single-
+	// character wildcard, so 'pad_nul_%' also matches names this code never
+	// generates — a loose pattern in a health check is a health check that can
+	// be satisfied by the wrong thing.
+	have, err := s.currentNULTriggers()
+	if err != nil {
+		return err
+	}
+	missing := false
+	for name := range want {
+		if !have[name] {
+			missing = true
+			break
+		}
+	}
+	if !missing {
 		return nil
 	}
 
@@ -292,13 +325,47 @@ func (s *Store) ensureNULTriggers() error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", nulTriggerMigration, err)
 	}
-	if err := execMulti(s.db, string(data)); err != nil {
+
+	// IN ONE TRANSACTION (codex round 2). Running 206 CREATE statements outside
+	// a transaction leaves a window in which some tables are protected and
+	// others are not, and a concurrent writer can commit an invalid row inside
+	// it. SQLite's DDL is transactional, so the restoration is all-or-nothing.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin trigger restore: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := execMulti(tx, string(data)); err != nil {
 		return fmt.Errorf("restore NUL triggers: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit trigger restore: %w", err)
+	}
+
 	slog.Warn("NUL invariant triggers were missing and have been restored — a table rebuild most likely "+
-		"dropped them; the rows written while they were absent are NOT checked",
-		"had", have, "want", want)
+		"dropped them; rows written while they were absent are NOT retroactively checked",
+		"had", len(have), "want", len(want))
 	return nil
+}
+
+// currentNULTriggers reads the trigger names actually present.
+func (s *Store) currentNULTriggers() (map[string]bool, error) {
+	rows, err := s.db.Query(
+		`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'pad_nul_*'`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list NUL triggers: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out[n] = true
+	}
+	return out, rows.Err()
 }
 
 // nulTriggerMigration is the generated file, named once so the generator, the
