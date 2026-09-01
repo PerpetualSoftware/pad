@@ -208,6 +208,27 @@ func (s *Server) runOutboxDrainTick() {
 		slog.Error("outbox drain: claim failed", "error", err)
 		return
 	}
+	// Report what the claim REFUSED to read. The claim excludes rows over
+	// store.MaxOutboxClaimableBytes in its own predicate so they cannot occupy
+	// candidate slots (BUG-2827); without this they would then be invisible
+	// until retention silently reaped them. Only a binary older than that cap
+	// can have written one, so on most instances this logs nothing, ever.
+	//
+	// Logged rather than dead-lettered: stamping dispatched_at would record
+	// that an event went out when it did not, in the table that is the only
+	// durable answer to "did this mutation emit?". Leaving the row pending
+	// keeps that answer honest and hands its lifecycle to the undispatched
+	// retention bound, which already exists for events that can never be
+	// delivered.
+	if oversized, oerr := s.store.OversizedPendingOutbox(5); oerr != nil {
+		slog.Error("outbox drain: oversized scan failed", "error", oerr)
+	} else {
+		for _, row := range oversized {
+			slog.Error("outbox drain: payload over the size limit, not claimed",
+				"event_id", row.ID, "event_type", row.EventType,
+				"bytes", row.Bytes, "limit", store.MaxOutboxClaimableBytes)
+		}
+	}
 	for _, unit := range groupOutboxDeliveries(events) {
 		s.deliverOutboxUnit(unit)
 	}

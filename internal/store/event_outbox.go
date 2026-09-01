@@ -124,6 +124,180 @@ func newMutationOptions(opts []MutationOption) mutationOptions {
 // durable output rather than resting containment on the hop count alone.
 const maxOutboxHop = 4
 
+// MaxOutboxPayloadBytes is the largest payload a single outbox row may carry.
+//
+// A BACKSTOP, NOT THE MEMORY BOUND, and the distinction is the whole reason
+// this number is as large as it is. The measurement that set it (BUG-2827,
+// taken against an 8,434-item instance):
+//
+//   - The widest wiki-title cascade on that instance is 23 members / 175.6 KiB
+//     of member bodies; the widest wiki-ref cascade is 50 members / 365.5 KiB.
+//   - The collection-option arm is the big one, because its member set is
+//     every row carrying the renamed value: renaming the tasks.status option
+//     "done" covers 4,429 members / 7.34 MiB of bodies.
+//   - Marshalled payload runs ~1.46x the body sum (measured: item.updated
+//     payloads mean 3,518 B against an item body mean of 2,416 B), so that
+//     rename emits ~11 MiB in ONE row, today, from a user clicking rename in
+//     the collection editor.
+//
+// So a bound tight enough to bound the drain's memory would refuse routine
+// work. The drain protects itself instead (see maxOutboxClaimBytes), and this
+// constant is set by the DIALECT CEILING: SQLite refuses a value over 1 GB
+// with SQLITE_TOOBIG, and Postgres somewhere in (512 MB, 1 GB] with an error
+// that poisons the enclosing transaction (25P02) so the failure surfaces as an
+// unrelated "current transaction is aborted". 64 MiB is ~5.8x the largest
+// legitimate payload the measured instance can produce and two orders below
+// both ceilings, so what a caller hits is always the named refusal below and
+// never the opaque one.
+//
+// IT MUST ALSO CLEAR MaxItemRenameCascadeBytes, which is why it is not simply
+// 64 MiB. That constant (wiki_links.go, BUG-2804) bounds the wiki-title rename
+// cascade at 64 MiB of source bodies and answers a refusal with
+// rename_cascade_too_large — a message that names the actual operation and
+// tells the user what to do about it. Marshalling runs ~1.46x, so a cascade
+// that squeaks under that bound can produce a payload near 96 MiB. A 64 MiB
+// cap here would let the vaguer refusal fire FIRST on the very renames the
+// more specific bound was written to describe. At 128 MiB the specific bound
+// always wins, and this stays what it is meant to be: the backstop for the
+// arms that have no bound of their own — principally the collection-option
+// rename, whose member set is every row carrying the renamed value and which
+// is bounded by nothing today.
+//
+// RESIDUAL, said plainly because it has no fix here: a workspace that outgrows
+// this cannot shrink its own cascade, so the refusal leaves the user with no
+// recourse. The real answer is chunking one bulk event across rows sharing a
+// batch_id — the drain already folds those back into one wire event — and that
+// is a follow-up, not something to improvise inside a bound.
+const MaxOutboxPayloadBytes = 128 << 20
+
+// OversizedOutboxPayloadError reports a payload refused by MaxOutboxPayloadBytes.
+//
+// A distinct type rather than a formatted error because the HTTP layer maps it
+// to a 4xx: the mutation was well-formed and the server is refusing it under a
+// stated rule, which is not a 500. Carrying the two numbers lets the message
+// name the rule AND the distance from it, so an operator can tell "just over"
+// from "wildly over" without reading the row.
+type OversizedOutboxPayloadError struct {
+	EventType string
+	Bytes     int
+	Limit     int
+}
+
+func (e *OversizedOutboxPayloadError) Error() string {
+	return fmt.Sprintf("outbox: event %s has a %d-byte payload, over the %d-byte limit",
+		e.EventType, e.Bytes, e.Limit)
+}
+
+// maxOutboxClaimBytes is how many payload bytes ONE claim pass may take.
+//
+// THIS is the memory bound, not MaxOutboxPayloadBytes — and it has to exist
+// separately because the two protect against different things. The row cap
+// governs what a current binary may WRITE; this governs what any binary may
+// READ, including rows a pre-cap binary already wrote, which no write-side
+// rule can reach retroactively.
+//
+// It is needed because the drain's row limit does not bound bytes and never
+// did: ClaimPendingOutboxEvents takes `limit` oldest rows AND every claimable
+// sibling of any batch they touch, then outboxEventsClaimedBy Scans every one
+// of those payloads into memory. At the default limit of 100 that is 100
+// unbounded reads per tick, which is the crash loop BUG-2827 reports — and it
+// is self-sustaining, because runOutboxDrainTick runs retention AFTER the
+// claim, so a pass that dies claiming never reaches the prune that would have
+// cleared the row.
+//
+// SMALLER THAN MaxOutboxPayloadBytes, which means one row can legally exceed
+// a whole pass's budget. That is handled by always taking the first candidate
+// whatever it costs, and the alternative is worse: a row written legitimately
+// under the cap but too large for any pass would be claimed by no pass ever —
+// permanently starved by the bound meant to keep the drain alive. Taking it
+// alone costs one pass its batching, once.
+//
+// So a pass retains ~64 MiB in the normal case and at most one row's payload
+// above that in the worst. Two transients sit on top of that, both bounded by
+// it rather than open-ended: outboxEventsClaimedBy scans each payload into a
+// string and then copies it to []byte, and FoldBulkHeader builds one wire
+// payload out of a batch's header plus its members while still holding them.
+// Peak is therefore a small multiple of this number, not a multiple of the
+// queue depth, which is the property that was missing.
+const maxOutboxClaimBytes = 64 << 20
+
+// MaxOutboxClaimableBytes is the per-row size above which the claim refuses to
+// read a row at all. It is NOT MaxOutboxPayloadBytes, and the gap between them
+// is a dialect fact rather than slack.
+//
+// The write cap measures the Go bytes json.Marshal produced. The claim
+// measures what the driver will hand to Scan, which on Postgres is the JSONB
+// — text rendering, and that rendering inserts one space after every colon
+// and comma. So a payload written at EXACTLY the cap comes back over it, and a
+// claim thresholded at the same number would write the row through the guard
+// and then never claim it: delivered to nobody, reported as nothing, reaped by
+// retention seven days later. Found by running the suite against real
+// Postgres, where a 40,000-byte payload read back as 40,001.
+//
+// 2x, because the expansion is bounded well under that. Every inserted byte
+// follows a colon or comma, so the worst case is a document of single-character
+// keys and values (`{"a":1,"b":2}`) at about 1.4x; our payloads are long string
+// values and expand by a small fraction of a percent. Normalization can also
+// SHRINK a document (existing whitespace stripped, duplicate keys collapsed),
+// so the correction is one-directional only for the compact output
+// encoding/json actually produces.
+//
+// What it still excludes is what it is for: rows left by a binary older than
+// the write cap, which can be hundreds of megabytes.
+const MaxOutboxClaimableBytes = 2 * MaxOutboxPayloadBytes
+
+// outboxRowCap and outboxClaimBudget read the bounds THROUGH the test seams,
+// so every enforcement site gets the override and none can be missed by a test
+// that lowers one. Zero override means the production constant.
+func (s *Store) outboxRowCap() int {
+	if s.outboxRowCapOverride > 0 {
+		return s.outboxRowCapOverride
+	}
+	return MaxOutboxPayloadBytes
+}
+
+// outboxClaimableRowCap is the claim-side per-row ceiling, kept at the same
+// multiple of the write cap under the test seam as it is in production so a
+// lowered seam cannot accidentally test a pairing production never has.
+func (s *Store) outboxClaimableRowCap() int { return 2 * s.outboxRowCap() }
+
+func (s *Store) outboxClaimBudget() int {
+	if s.outboxClaimBudgetOverride > 0 {
+		return s.outboxClaimBudgetOverride
+	}
+	return maxOutboxClaimBytes
+}
+
+// Batch bounds for ScrubOutboxUserRefsTx's candidate read.
+//
+// Same byte figure as the claim path and for the same reason — it is the
+// answer to "how many payload bytes may one read pass hold", and the scrub is
+// a read pass. The row cap is the second half of the same question: a budget
+// in bytes alone still admits an unbounded number of tiny rows, whose per-row
+// struct and slice overhead is what would then dominate.
+const (
+	maxOutboxScrubBytes = maxOutboxClaimBytes
+	maxOutboxScrubRows  = 500
+)
+
+// outboxScrubBytes deliberately reads the CLAIM budget: maxOutboxScrubBytes is
+// defined as maxOutboxClaimBytes, so giving the scrub a second seam would let
+// a test move one without the other and assert against a pairing production
+// never has.
+func (s *Store) outboxScrubBytes() int {
+	if s.outboxClaimBudgetOverride > 0 {
+		return s.outboxClaimBudgetOverride
+	}
+	return maxOutboxScrubBytes
+}
+
+func (s *Store) outboxScrubRows() int {
+	if s.outboxScrubRowsOverride > 0 {
+		return s.outboxScrubRowsOverride
+	}
+	return maxOutboxScrubRows
+}
+
 // writeOutboxTx appends one canonical event to the outbox on the caller's
 // transaction.
 //
@@ -185,6 +359,27 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// identical on both.
 	if !json.Valid(ev.Payload) {
 		return fmt.Errorf("outbox: event %s has a malformed JSON payload", ev.EventType)
+	}
+	// SIZE IS CHECKED HERE, at the one choke point every outbox row passes
+	// through, rather than at the bulk emitter that motivated it. The bulk
+	// emitter is the only caller that can currently build a payload this
+	// large, but "currently" is a property of today's callers and the next one
+	// would inherit the ceiling silently (CONVE-18).
+	//
+	// REFUSING FAILS THE MUTATION, deliberately, and this is the fork worth
+	// naming: the hop bound above drops the event and keeps the mutation,
+	// which is right there because the cascade is what is illegitimate. Here
+	// the mutation and the event are the same fact. Dropping the event would
+	// let a rename cascade across thousands of items with no record that it
+	// happened, which is exactly the silent loss the outbox exists to prevent
+	// — and it is also what the v1 doc on emitBulkItemEventTx rejects when it
+	// refuses to cap the member list or omit content.
+	if len(ev.Payload) > s.outboxRowCap() {
+		return &OversizedOutboxPayloadError{
+			EventType: ev.EventType,
+			Bytes:     len(ev.Payload),
+			Limit:     s.outboxRowCap(),
+		}
 	}
 	if ev.Hop > maxOutboxHop {
 		// Cascade bound reached: drop the event, keep the mutation. No
@@ -505,37 +700,73 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	// locks in opposite orders. Scoped to those per-row updates: any bulk
 	// statement elsewhere in this transaction takes its own locks in its own
 	// order (codex round 6).
-	rows, err := tx.Query(s.q(`
-		SELECT id, payload FROM event_outbox
-		WHERE subject_id = ? OR CAST(payload AS TEXT) LIKE ?
-		ORDER BY id
-	`), userID, "%"+userID+"%")
-	if err != nil {
-		return fmt.Errorf("outbox: scrub user refs: find rows: %w", err)
-	}
+	// BATCHED, because the collect below holds every matching payload in
+	// memory at once and nothing bounded how many that was. The scrub's own
+	// filter is a substring match over the whole retention window, so on an
+	// instance carrying large bulk payloads a single account deletion could
+	// allocate the matched set in one go — the same unbounded-read shape as
+	// the drain's claim (BUG-2827), reached by a different door.
+	//
+	// The READ FULLY, THEN WRITE precondition is preserved PER BATCH rather
+	// than abandoned: each pass closes its cursor before issuing any Exec, so
+	// the BUG-2409 deadlock shape never appears. The keyset cursor keeps the
+	// per-row UPDATEs in ascending id order across batches too, which is the
+	// lock ordering the note above requires — batching would otherwise be a
+	// quiet way to reintroduce the deadlock it was written to prevent.
 	type candidate struct {
 		id      string
 		payload string
 	}
-	var candidates []candidate
-	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.id, &c.payload); err != nil {
+	cursor := ""
+	for {
+		rows, err := tx.Query(s.q(`
+			SELECT id, payload FROM event_outbox
+			WHERE (subject_id = ? OR CAST(payload AS TEXT) LIKE ?)
+			  AND id > ?
+			ORDER BY id
+			LIMIT ?
+		`), userID, "%"+userID+"%", cursor, s.outboxScrubRows())
+		if err != nil {
+			return fmt.Errorf("outbox: scrub user refs: find rows: %w", err)
+		}
+		var candidates []candidate
+		held := 0
+		for rows.Next() {
+			var c candidate
+			if err := rows.Scan(&c.id, &c.payload); err != nil {
+				rows.Close()
+				return fmt.Errorf("outbox: scrub user refs: scan row: %w", err)
+			}
+			candidates = append(candidates, c)
+			held += len(c.payload)
+			// Checked AFTER appending, so a single payload larger than the
+			// whole budget is still processed rather than skipped forever.
+			// Erasure has no size exemption: a payload too big to batch with
+			// others is exactly as much of a privacy obligation as a small
+			// one, and the drain's cap does not apply here because these rows
+			// may predate it.
+			if held >= s.outboxScrubBytes() {
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
-			return fmt.Errorf("outbox: scrub user refs: scan row: %w", err)
+			return fmt.Errorf("outbox: scrub user refs: iterate rows: %w", err)
 		}
-		candidates = append(candidates, c)
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("outbox: scrub user refs: iterate rows: %w", err)
-	}
-	rows.Close()
 
-	for _, c := range candidates {
-		if err := s.scrubOutboxRowTx(tx, c.id, c.payload, userID); err != nil {
-			return err
+		if len(candidates) == 0 {
+			break
 		}
+		for _, c := range candidates {
+			if err := s.scrubOutboxRowTx(tx, c.id, c.payload, userID); err != nil {
+				return err
+			}
+		}
+		// Advance past the last row READ, not the last row rewritten. A
+		// candidate the Go rewrite left untouched (a LIKE false positive) is
+		// still consumed, so the cursor always moves and the loop terminates.
+		cursor = candidates[len(candidates)-1].id
 	}
 
 	// The COLUMN half: member rows carry the user id as their subject —
@@ -750,8 +981,14 @@ type bulkItemEventPayload struct {
 // a select option, renaming an item and cascading its backlinks) must not
 // arrive at a webhook consumer as hundreds of separate deliveries.
 //
-// PAYLOAD SIZE IS DELIBERATELY UNBOUNDED IN V1, and that is a decision rather
-// than an oversight. The alternatives both cost correctness: capping the
+// PAYLOAD SIZE WAS DELIBERATELY UNBOUNDED IN V1. SUPERSEDED by BUG-2827: the
+// follow-up condition this paragraph names below was met and acted on, and the
+// bound now lives at the outbox write itself (MaxOutboxPayloadBytes) rather
+// than here. The reasoning is kept verbatim because it still explains what the
+// bound does NOT do — it refuses the whole mutation rather than capping the
+// member list or dropping content, for exactly the reasons given here.
+//
+// The original decision, as written: The alternatives both cost correctness: capping the
 // member list silently drops binding evaluation for the tail, and omitting
 // `content` from the snapshots would break precisely the bindings that matter
 // for the wiki-title cascade, whose entire delta IS content. One large row is
@@ -760,6 +997,11 @@ type bulkItemEventPayload struct {
 // payload is bounded by data the mutation already touched. If a real workspace
 // shows this producing unreasonable rows, bounding it is a measured follow-up,
 // not a guess made here.
+//
+// (That follow-up: measurement against an 8,434-item instance found the
+// collection-option arm producing ~11 MiB in one row for a routine status
+// rename, and the drain reading up to 100 such rows per tick with no byte
+// bound at all. The row cap and the drain's claim budget came out of it.)
 //
 // A bulk mutation that touched nothing writes nothing: an empty member set is
 // not an event.
@@ -1423,14 +1665,32 @@ func (s *Store) claimOutboxIDs(token string, ids []string, leaseCutoff string) e
 // oldest claimable pending rows, plus every claimable sibling of any batch
 // they belong to.
 func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string, error) {
+	size := s.dialect.OctetLength("payload")
+	// OVERSIZED ROWS ARE EXCLUDED IN SQL, not filtered in Go, and that is the
+	// difference between a fix and a second jam. Candidates are the oldest
+	// `limit` claimable rows; a row skipped in Go would still have consumed
+	// its slot, so a hundred oversized rows at the head of the queue would
+	// return a hundred skips and drain nothing behind them until the 7-day
+	// undispatched reaper cleared them. Filtering in the predicate means they
+	// never occupy a slot at all.
+	//
+	// COST NOTE, on Postgres specifically: payload is JSONB there, and
+	// octet_length has no jsonb overload, so the ::text cast detoasts the
+	// value to measure it. For rows inside the cap that read is one the pass
+	// was about to do anyway. For an oversized legacy row it is a transient
+	// allocation in the Postgres backend proportional to the row — bounded by
+	// Postgres's own 1 GB field limit, and outside the Go heap, so the
+	// crash-looping drain this exists to protect stays up either way. Named
+	// rather than left for a reader to discover.
 	rows, err := s.db.Query(s.q(`
-		SELECT id, COALESCE(batch_id, '')
+		SELECT id, COALESCE(batch_id, ''), `+size+`
 		FROM event_outbox
 		WHERE dispatched_at IS NULL
 		  AND (claimed_at IS NULL OR claimed_at < ?)
+		  AND `+size+` <= ?
 		ORDER BY occurred_at, id
 		LIMIT ?
-	`), leaseCutoff, limit)
+	`), leaseCutoff, s.outboxClaimableRowCap(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list claimable outbox events: %w", err)
 	}
@@ -1438,6 +1698,7 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 
 	seen := map[string]bool{}
 	var ids []string
+	budget := s.outboxClaimBudget()
 	// Batches are collected as a SET: a 100-row candidate slice drawn from one
 	// large batch would otherwise run the same sibling scan 100 times for the
 	// same answer (codex round 2).
@@ -1445,13 +1706,23 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 	var batches []string
 	for rows.Next() {
 		var id, batch string
-		if err := rows.Scan(&id, &batch); err != nil {
+		var bytes int
+		if err := rows.Scan(&id, &batch, &bytes); err != nil {
 			return nil, fmt.Errorf("scan claimable outbox event: %w", err)
 		}
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
+		if seen[id] {
+			continue
 		}
+		// ALWAYS TAKE THE FIRST ROW, whatever it costs. The budget is smaller
+		// than the per-row cap, so a legitimately written row can exceed a whole
+		// pass; refusing it here would starve it in every pass forever. Past the
+		// first, the budget is what stops a pass accumulating.
+		if len(ids) > 0 && bytes > budget {
+			break
+		}
+		budget -= bytes
+		seen[id] = true
+		ids = append(ids, id)
 		if batch != "" && !seenBatch[batch] {
 			seenBatch[batch] = true
 			batches = append(batches, batch)
@@ -1461,45 +1732,122 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 		return nil, fmt.Errorf("iterate claimable outbox events: %w", err)
 	}
 
+	// SIBLINGS ARE SPENT FROM THE SAME BUDGET, which knowingly relaxes the
+	// "batches are claimed whole" rule above. Taken literally that rule makes
+	// the budget bypassable by construction — one batch of ten thousand
+	// members is an unbounded read no row limit touches — and a memory bound
+	// with a documented way around it is not a bound.
+	//
+	// The wire consequence is already defined behaviour rather than new
+	// damage: groupOutboxDeliveries delivers members of a batch whose header
+	// is absent individually, correlated by the batch_id they all carry, and
+	// SPEC-3 v1.6 demotes one-wire-event-per-batch to the normal case for
+	// exactly this reason. The alternative is a batch that OOMs every pass
+	// forever, which delivers nothing at all.
 	for _, batch := range batches {
 		siblings, err := s.claimableBatchSiblings(batch, leaseCutoff)
 		if err != nil {
 			return nil, err
 		}
-		for _, id := range siblings {
-			if !seen[id] {
-				seen[id] = true
-				ids = append(ids, id)
+		for _, sib := range siblings {
+			if seen[sib.id] {
+				continue
 			}
+			if sib.bytes > budget {
+				continue
+			}
+			budget -= sib.bytes
+			seen[sib.id] = true
+			ids = append(ids, sib.id)
 		}
 	}
 	return ids, nil
 }
 
-func (s *Store) claimableBatchSiblings(batchID, leaseCutoff string) ([]string, error) {
+// claimableSibling is a batch member and the payload bytes claiming it costs.
+type claimableSibling struct {
+	id    string
+	bytes int
+}
+
+// OversizedOutboxRow is a pending row the claim path refuses to read.
+type OversizedOutboxRow struct {
+	ID        string
+	EventType string
+	Bytes     int
+}
+
+// OversizedPendingOutbox lists pending rows over MaxOutboxPayloadBytes.
+//
+// EXISTS SO THE EXCLUSION IS NOT SILENT. pendingClaimCandidates drops these in
+// the predicate, which is what stops them jamming the queue — but a row that
+// is never claimed, never logged, and eventually reaped by retention is an
+// event that vanishes with nobody told. Only rows written by a binary older
+// than MaxOutboxPayloadBytes can be here at all, so this is expected to return
+// nothing forever on an instance that never ran one. The threshold is
+// MaxOutboxClaimableBytes, the claim's ceiling, not the write cap — those
+// differ on purpose (see that constant).
+//
+// Bounded by `limit` because this runs every drain tick and its purpose is to
+// raise an alarm, not to enumerate a backlog.
+func (s *Store) OversizedPendingOutbox(limit int) ([]OversizedOutboxRow, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	size := s.dialect.OctetLength("payload")
 	rows, err := s.db.Query(s.q(`
-		SELECT id
+		SELECT id, event_type, `+size+`
+		FROM event_outbox
+		WHERE dispatched_at IS NULL
+		  AND `+size+` > ?
+		ORDER BY occurred_at, id
+		LIMIT ?
+	`), s.outboxClaimableRowCap(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list oversized outbox events: %w", err)
+	}
+	defer rows.Close()
+	var out []OversizedOutboxRow
+	for rows.Next() {
+		var r OversizedOutboxRow
+		if err := rows.Scan(&r.ID, &r.EventType, &r.Bytes); err != nil {
+			return nil, fmt.Errorf("scan oversized outbox event: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oversized outbox events: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) claimableBatchSiblings(batchID, leaseCutoff string) ([]claimableSibling, error) {
+	size := s.dialect.OctetLength("payload")
+	rows, err := s.db.Query(s.q(`
+		SELECT id, `+size+`
 		FROM event_outbox
 		WHERE batch_id = ?
 		  AND dispatched_at IS NULL
 		  AND (claimed_at IS NULL OR claimed_at < ?)
-	`), batchID, leaseCutoff)
+		  AND `+size+` <= ?
+		ORDER BY occurred_at, id
+	`), batchID, leaseCutoff, s.outboxClaimableRowCap())
 	if err != nil {
 		return nil, fmt.Errorf("list batch siblings: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	var out []claimableSibling
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var sib claimableSibling
+		if err := rows.Scan(&sib.id, &sib.bytes); err != nil {
 			return nil, fmt.Errorf("scan batch sibling: %w", err)
 		}
-		ids = append(ids, id)
+		out = append(out, sib)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate batch siblings: %w", err)
 	}
-	return ids, nil
+	return out, nil
 }
 
 func (s *Store) outboxEventsClaimedBy(token string) ([]OutboxEvent, error) {

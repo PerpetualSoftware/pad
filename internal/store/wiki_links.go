@@ -1773,9 +1773,12 @@ func newItemRenameCascadeTooLargeError(newTitle string, processed int64) error {
 // Peak residency is bounded by it in both, since each phase refuses before
 // allocating past it.
 //
-// Still NOT bounded here, and genuinely a separate vector: the outbox member
-// snapshots re-read every cascaded body after this function's work is done
-// (BUG-2827).
+// Still not bounded HERE, and genuinely a separate vector: the outbox member
+// snapshots re-read every cascaded body after this function's work is done.
+// That vector now has its own bound rather than none (BUG-2827) — see
+// store.MaxOutboxPayloadBytes, which is deliberately set ABOVE what this
+// constant can marshal to, so a rename large enough to refuse is refused by
+// the message above and never by the outbox's vaguer one.
 // cascadeRowOverheadBytes and cascadeSourceOverheadBytes are the per-entry
 // costs the scan charges on top of the strings it retains.
 //
