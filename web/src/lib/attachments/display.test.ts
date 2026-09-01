@@ -5,7 +5,8 @@ import {
 	describeAttachmentType,
 	formatBytes,
 	iconForAttachment,
-	isImage
+	isImage,
+	isMarkdownAttachment
 } from './display';
 import {
 	ACTION_ICON_IDS,
@@ -335,5 +336,36 @@ describe('describeAttachmentType', () => {
 
 	it('reads the filename when the stored MIME is uselessly generic', () => {
 		expect(describeAttachmentType('application/octet-stream', 'notes.md')).toBe('MD text');
+	});
+});
+
+describe('isMarkdownAttachment — IDEA-2712', () => {
+	it('honours an explicit text/markdown MIME, filename or not', () => {
+		expect(isMarkdownAttachment('text/markdown', null)).toBe(true);
+		expect(isMarkdownAttachment('text/markdown; charset=utf-8', 'x.bin')).toBe(true);
+	});
+
+	it('falls back to the EXTENSION, which is the path that actually fires', () => {
+		// An uploaded .md is stored as text/plain — the server sniffs the bytes
+		// and returns the sniffed entry (measured: ValidateUpload("# H", "a.md")
+		// → text/plain). A MIME-only test would never route a real markdown
+		// attachment to the markdown renderer.
+		expect(isMarkdownAttachment('text/plain', 'notes.md')).toBe(true);
+		expect(isMarkdownAttachment('text/plain', 'NOTES.MARKDOWN')).toBe(true);
+	});
+
+	it('is plain text without a markdown extension', () => {
+		expect(isMarkdownAttachment('text/plain', 'notes.txt')).toBe(false);
+		expect(isMarkdownAttachment('text/plain', null)).toBe(false);
+		expect(isMarkdownAttachment('text/plain', 'data.csv')).toBe(false);
+	});
+
+	it('the extension can never ADMIT a type the set excludes', () => {
+		// The filename chooses a RENDERER among admitted types; it must not widen
+		// what previews. A .md name on an HTML or PDF row stays false.
+		expect(isMarkdownAttachment('text/html', 'evil.md')).toBe(false);
+		expect(isMarkdownAttachment('text/javascript', 'payload.md')).toBe(false);
+		expect(isMarkdownAttachment('application/pdf', 'doc.md')).toBe(false);
+		expect(isMarkdownAttachment(null, 'notes.md')).toBe(false);
 	});
 });
