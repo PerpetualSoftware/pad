@@ -316,14 +316,19 @@ func TestIsDeterministicWriteFailureIncludesTitleRefusal(t *testing.T) {
 // block. Give it every arm, in the same order as its siblings, or explain in
 // this test why the new block genuinely cannot produce one of these errors.
 //
-// WHAT IT DOES NOT COVER, stated because a structural test invites more
-// confidence than it earns: it counts SYNTACTIC PRESENCE, not reachability. An
-// arm disabled in place — `false && writeInvalidItemTitle(w, err)`, an
-// unreachable branch — still counts, and a mutant of that shape survives this
-// test (measured, not assumed). That is accepted: the failure this guards
-// against is an OMITTED arm, which is deletion-shaped, and deletion is exactly
-// what it detects — verified by deleting the arm from each of the three blocks
-// in turn and watching this test fail each time.
+// WHAT IT COVERS AND WHAT IT DOES NOT, stated because a structural test invites
+// more confidence than it earns. It detects an arm that is DELETED, one that is
+// out of ORDER, and — since codex round 3 — one DISABLED by being made an
+// operand of a boolean condition, which is the shape that defeated the
+// presence-only version. All three are verified by mutation rather than
+// asserted.
+//
+// It is still lexical. An arm made unreachable some other way — an early
+// return above it, a condition that is a call which always returns false —
+// would pass. Closing that needs control-flow analysis or a route-level test,
+// and a route-level test is not available here: the handlers' own pre-checks
+// catch every title refusal reachable over the wire, so the store-sourced one
+// these arms exist for has no HTTP trigger except a concurrent rename.
 func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "handlers_items.go", nil, 0)
@@ -377,6 +382,46 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		if wantArm[ident.Name] {
 			refs = append(refs, armRef{ident.Name, call.Pos()})
 		}
+		return true
+	})
+
+	// REACHABILITY, not just presence (codex round 3). Counting call
+	// expressions detects a DELETED arm but not a disabled one: `false &&
+	// writeInvalidItemTitle(w, err)` short-circuits at runtime while leaving
+	// the call in the AST, so the sequence above still reads as correct while
+	// every title refusal falls through to a 500. Measured — that mutant
+	// survived the presence-only version of this test.
+	//
+	// The check is narrow on purpose: each arm must be tested DIRECTLY, as the
+	// whole of an if-condition, not as one operand of a boolean expression.
+	// That is how all three blocks are written, so anything else is either the
+	// mutation above or a genuine restructuring that deserves to be looked at.
+	ast.Inspect(file, func(n ast.Node) bool {
+		ifStmt, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		bin, ok := ifStmt.Cond.(*ast.BinaryExpr)
+		if !ok {
+			return true
+		}
+		ast.Inspect(bin, func(c ast.Node) bool {
+			call, ok := c.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := call.Fun.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if wantArm[ident.Name] {
+				t.Errorf("the arm %q at line %d is an operand of a boolean expression rather than the "+
+					"whole condition. It still counts as present below, but it may never execute — "+
+					"which is a refusal silently answering 500 while this test reads as green.",
+					ident.Name, fset.Position(call.Pos()).Line)
+			}
+			return true
+		})
 		return true
 	})
 	sort.Slice(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
