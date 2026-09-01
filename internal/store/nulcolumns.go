@@ -210,6 +210,35 @@ var nulColumns = []nulColumn{
 	{"comment_reactions", "emoji", classText},
 	{"oauth_clients", "logo_url", classText},
 
+	// ATTRIBUTION COLUMNS, swept as a CLASS (codex round 6, CONVE-18).
+	//
+	// Rounds 2, 3 and 6 each named one or two of these, which is the signal
+	// that the reviewer was sampling a population rather than finding
+	// instances. Enumerating every created_by / last_modified_by / source /
+	// actor / author / *_by column in the schema found SIXTEEN unprotected,
+	// against the eight round 6 listed.
+	//
+	// Some are server-set today (granted_by, invited_by, uploaded_by are user
+	// ids). They go in anyway, on Ruling 2's posture for the second ring: an
+	// instr trigger is near-free, and litigating each one is how the last three
+	// rounds were spent.
+	{"activities", "source", classText},
+	{"attachments", "uploaded_by", classText},
+	{"collection_grants", "granted_by", classText},
+	{"comment_reactions", "actor", classText},
+	{"comments", "created_by", classText},
+	{"comments", "source", classText},
+	{"documents", "created_by", classText},
+	{"documents", "last_modified_by", classText},
+	{"documents", "source", classText},
+	{"item_grants", "granted_by", classText},
+	{"item_workspace_moves", "created_by", classText},
+	{"share_links", "created_by", classText},
+	{"versions", "created_by", classText},
+	{"versions", "source", classText},
+	{"workspace_invitations", "invited_by", classText},
+	{"workspaces", "source", classText},
+
 	// second ring, remaining
 	{"attachments", "filename", classText},
 	{"attachments", "mime_type", classText},
@@ -372,6 +401,17 @@ func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 		return false, err
 	}
 	missing := false
+	// An EXTRA pad_nul_ trigger is unhealthy too (codex round 6). A stray one
+	// left by a partial restore or a manual edit can ABORT legitimate writes,
+	// and a check that only asks "is everything I expect present" reports that
+	// database as fine. The drop-then-recreate below removes them, so detecting
+	// them is all that was missing.
+	for name := range have {
+		if _, expected := want[name]; !expected {
+			missing = true
+			break
+		}
+	}
 	for name, stmt := range want {
 		// DEFINITION, not just presence (codex round 3). A same-name trigger
 		// with a stale or no-op body satisfies CREATE TRIGGER IF NOT EXISTS

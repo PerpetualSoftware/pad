@@ -1,7 +1,6 @@
 activities.created_at
 activities.document_id
 activities.id
-activities.source
 activities.user_id
 activities.workspace_id
 agent_roles.created_at
@@ -24,7 +23,6 @@ attachments.item_id
 attachments.last_referenced_at
 attachments.parent_id
 attachments.storage_key
-attachments.uploaded_by
 attachments.variant
 attachments.workspace_id
 cli_auth_sessions.code
@@ -35,7 +33,6 @@ cli_auth_sessions.token
 cli_auth_sessions.user_id
 collection_grants.collection_id
 collection_grants.created_at
-collection_grants.granted_by
 collection_grants.id
 collection_grants.permission
 collection_grants.user_id
@@ -45,18 +42,15 @@ collections.deleted_at
 collections.id
 collections.updated_at
 collections.workspace_id
-comment_reactions.actor
 comment_reactions.comment_id
 comment_reactions.created_at
 comment_reactions.id
 comment_reactions.user_id
 comments.activity_id
 comments.created_at
-comments.created_by
 comments.id
 comments.item_id
 comments.parent_id
-comments.source
 comments.updated_at
 comments.user_id
 comments.workspace_id
@@ -65,12 +59,9 @@ custom_templates.id
 custom_templates.updated_at
 custom_templates.workspace_id
 documents.created_at
-documents.created_by
 documents.deleted_at
 documents.id
-documents.last_modified_by
 documents.slug
-documents.source
 documents.status
 documents.updated_at
 documents.workspace_id
@@ -98,7 +89,6 @@ item_collection_moves.item_id
 item_collection_moves.to_collection_id
 item_collection_moves.workspace_id
 item_grants.created_at
-item_grants.granted_by
 item_grants.id
 item_grants.item_id
 item_grants.permission
@@ -122,7 +112,6 @@ item_wiki_links.target_item_id
 item_wiki_links.target_kind
 item_wiki_links.target_workspace_id
 item_workspace_moves.created_at
-item_workspace_moves.created_by
 item_workspace_moves.id
 item_workspace_moves.source_item_id
 item_workspace_moves.source_workspace_id
@@ -210,7 +199,6 @@ share_link_views.viewed_at
 share_link_views.viewer_fingerprint
 share_link_views.viewer_user_id
 share_links.created_at
-share_links.created_by
 share_links.expires_at
 share_links.id
 share_links.last_viewed_at
@@ -246,10 +234,8 @@ users.stripe_customer_id
 users.totp_secret
 users.updated_at
 versions.created_at
-versions.created_by
 versions.document_id
 versions.id
-versions.source
 views.collection_id
 views.created_at
 views.id
@@ -271,7 +257,6 @@ workspace_invitations.code_hash
 workspace_invitations.created_at
 workspace_invitations.expires_at
 workspace_invitations.id
-workspace_invitations.invited_by
 workspace_invitations.role
 workspace_invitations.workspace_id
 workspace_members.created_at
@@ -282,5 +267,4 @@ workspaces.created_at
 workspaces.deleted_at
 workspaces.id
 workspaces.owner_id
-workspaces.source
 workspaces.updated_at

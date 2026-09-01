@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
@@ -609,5 +610,58 @@ func TestNULTriggerRestorationFailsLoudlyOnAQueryError(t *testing.T) {
 		t.Error("a schema_migrations query failure was swallowed as 'not applied'. A migrated database " +
 			"would then start with the triggers unrestored and no signal — enforcement silently absent " +
 			"in exactly the case the check could not run.")
+	}
+}
+
+// TestNULTriggerRestorationRemovesStrays regresses codex round 6: the health
+// check asked only whether every EXPECTED trigger was present, so a database
+// carrying an extra pad_nul_ trigger read as healthy.
+//
+// That is not cosmetic. A stray trigger left by a partial restore or a manual
+// edit can ABORT legitimate writes, and the check that is supposed to notice
+// would report the database fine forever.
+func TestNULTriggerRestorationRemovesStrays(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("Layer B is SQLite-only")
+	}
+	ws := createTestWorkspace(t, s, "StrayWS")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Stray subject", "")
+
+	// A stray that refuses everything — the shape that makes this matter.
+	if _, err := s.db.Exec(`CREATE TRIGGER pad_nul_stray_refuses_everything
+		BEFORE UPDATE OF title ON items
+		FOR EACH ROW
+		BEGIN SELECT RAISE(ABORT, 'stray trigger'); END`); err != nil {
+		t.Fatalf("install stray: %v", err)
+	}
+
+	// It really does break a legitimate write, so the repair below is measured
+	// against a real fault.
+	newTitle := "a perfectly ordinary title"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &newTitle}); err == nil {
+		t.Fatal("fixture: the stray trigger should have refused a legitimate write")
+	}
+
+	restored, err := s.ensureNULTriggersReporting()
+	if err != nil {
+		t.Fatalf("ensureNULTriggersReporting: %v", err)
+	}
+	if !restored {
+		t.Error("a database with a stray pad_nul_ trigger was reported healthy")
+	}
+
+	var strays int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='pad_nul_stray_refuses_everything'`,
+	).Scan(&strays); err != nil {
+		t.Fatalf("count strays: %v", err)
+	}
+	if strays != 0 {
+		t.Error("the stray trigger survived the restoration")
+	}
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &newTitle}); err != nil {
+		t.Errorf("a legitimate write is still refused after restoration: %v", err)
 	}
 }

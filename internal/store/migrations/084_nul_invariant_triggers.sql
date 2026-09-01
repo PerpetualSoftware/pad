@@ -91,6 +91,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: activities.metadata must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_activities_source_ins
+BEFORE INSERT ON activities
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: activities.source must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_activities_source_upd
+BEFORE UPDATE OF source ON activities
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: activities.source must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_activities_user_agent_ins
 BEFORE INSERT ON activities
 FOR EACH ROW WHEN NEW.user_agent IS NOT NULL AND (
@@ -279,6 +297,42 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: attachments.mime_type must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_attachments_uploaded_by_ins
+BEFORE INSERT ON attachments
+FOR EACH ROW WHEN NEW.uploaded_by IS NOT NULL AND (
+			instr(NEW.uploaded_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: attachments.uploaded_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_attachments_uploaded_by_upd
+BEFORE UPDATE OF uploaded_by ON attachments
+FOR EACH ROW WHEN NEW.uploaded_by IS NOT NULL AND (
+			instr(NEW.uploaded_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: attachments.uploaded_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_collection_grants_granted_by_ins
+BEFORE INSERT ON collection_grants
+FOR EACH ROW WHEN NEW.granted_by IS NOT NULL AND (
+			instr(NEW.granted_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: collection_grants.granted_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_collection_grants_granted_by_upd
+BEFORE UPDATE OF granted_by ON collection_grants
+FOR EACH ROW WHEN NEW.granted_by IS NOT NULL AND (
+			instr(NEW.granted_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: collection_grants.granted_by must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_collections_description_ins
 BEFORE INSERT ON collections
 FOR EACH ROW WHEN NEW.description IS NOT NULL AND (
@@ -447,6 +501,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: collections.traits must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_comment_reactions_actor_ins
+BEFORE INSERT ON comment_reactions
+FOR EACH ROW WHEN NEW.actor IS NOT NULL AND (
+			instr(NEW.actor, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comment_reactions.actor must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_comment_reactions_actor_upd
+BEFORE UPDATE OF actor ON comment_reactions
+FOR EACH ROW WHEN NEW.actor IS NOT NULL AND (
+			instr(NEW.actor, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comment_reactions.actor must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_comment_reactions_emoji_ins
 BEFORE INSERT ON comment_reactions
 FOR EACH ROW WHEN NEW.emoji IS NOT NULL AND (
@@ -499,6 +571,42 @@ FOR EACH ROW WHEN NEW.body IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: comments.body must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_comments_created_by_ins
+BEFORE INSERT ON comments
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comments.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_comments_created_by_upd
+BEFORE UPDATE OF created_by ON comments
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comments.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_comments_source_ins
+BEFORE INSERT ON comments
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comments.source must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_comments_source_upd
+BEFORE UPDATE OF source ON comments
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comments.source must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_custom_templates_content_ins
@@ -609,6 +717,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.content must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_documents_created_by_ins
+BEFORE INSERT ON documents
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_documents_created_by_upd
+BEFORE UPDATE OF created_by ON documents
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.created_by must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_documents_doc_type_ins
 BEFORE INSERT ON documents
 FOR EACH ROW WHEN NEW.doc_type IS NOT NULL AND (
@@ -625,6 +751,42 @@ FOR EACH ROW WHEN NEW.doc_type IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.doc_type must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_documents_last_modified_by_ins
+BEFORE INSERT ON documents
+FOR EACH ROW WHEN NEW.last_modified_by IS NOT NULL AND (
+			instr(NEW.last_modified_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.last_modified_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_documents_last_modified_by_upd
+BEFORE UPDATE OF last_modified_by ON documents
+FOR EACH ROW WHEN NEW.last_modified_by IS NOT NULL AND (
+			instr(NEW.last_modified_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.last_modified_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_documents_source_ins
+BEFORE INSERT ON documents
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.source must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_documents_source_upd
+BEFORE UPDATE OF source ON documents
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: documents.source must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_documents_tags_ins
@@ -713,6 +875,24 @@ FOR EACH ROW WHEN NEW.payload IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: event_outbox.payload must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_grants_granted_by_ins
+BEFORE INSERT ON item_grants
+FOR EACH ROW WHEN NEW.granted_by IS NOT NULL AND (
+			instr(NEW.granted_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_grants.granted_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_grants_granted_by_upd
+BEFORE UPDATE OF granted_by ON item_grants
+FOR EACH ROW WHEN NEW.granted_by IS NOT NULL AND (
+			instr(NEW.granted_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_grants.granted_by must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_item_links_created_by_ins
@@ -875,6 +1055,24 @@ FOR EACH ROW WHEN NEW.target_title IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_wiki_links.target_title must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_workspace_moves_created_by_ins
+BEFORE INSERT ON item_workspace_moves
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_workspace_moves.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_item_workspace_moves_created_by_upd
+BEFORE UPDATE OF created_by ON item_workspace_moves
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: item_workspace_moves.created_by must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_items_content_ins
@@ -1757,6 +1955,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: sessions.ip_address must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_share_links_created_by_ins
+BEFORE INSERT ON share_links
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: share_links.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_share_links_created_by_upd
+BEFORE UPDATE OF created_by ON share_links
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: share_links.created_by must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_share_links_restrict_to_email_ins
 BEFORE INSERT ON share_links
 FOR EACH ROW WHEN NEW.restrict_to_email IS NOT NULL AND (
@@ -1997,6 +2213,42 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: versions.content must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_versions_created_by_ins
+BEFORE INSERT ON versions
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: versions.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_versions_created_by_upd
+BEFORE UPDATE OF created_by ON versions
+FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
+			instr(NEW.created_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: versions.created_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_versions_source_ins
+BEFORE INSERT ON versions
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: versions.source must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_versions_source_upd
+BEFORE UPDATE OF source ON versions
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: versions.source must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_views_config_ins
 BEFORE INSERT ON views
 FOR EACH ROW WHEN NEW.config IS NOT NULL AND (
@@ -2175,6 +2427,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: workspace_invitations.email must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_workspace_invitations_invited_by_ins
+BEFORE INSERT ON workspace_invitations
+FOR EACH ROW WHEN NEW.invited_by IS NOT NULL AND (
+			instr(NEW.invited_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: workspace_invitations.invited_by must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_workspace_invitations_invited_by_upd
+BEFORE UPDATE OF invited_by ON workspace_invitations
+FOR EACH ROW WHEN NEW.invited_by IS NOT NULL AND (
+			instr(NEW.invited_by, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: workspace_invitations.invited_by must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_workspaces_description_ins
 BEFORE INSERT ON workspaces
 FOR EACH ROW WHEN NEW.description IS NOT NULL AND (
@@ -2253,5 +2523,23 @@ FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: workspaces.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_workspaces_source_ins
+BEFORE INSERT ON workspaces
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: workspaces.source must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_workspaces_source_upd
+BEFORE UPDATE OF source ON workspaces
+FOR EACH ROW WHEN NEW.source IS NOT NULL AND (
+			instr(NEW.source, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: workspaces.source must not contain a NUL');
 END;
 
