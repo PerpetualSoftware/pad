@@ -263,7 +263,8 @@ func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T
 // below is built as LEGACY data for exactly that reason. The guard is not
 // thereby obsolete: the bound is non-retroactive, this scan reads STORED
 // titles rather than the one being written, and at the bound the same pressure
-// arrives with ~24,000 link rows instead of 64.
+// arrives with ~240,000 link rows instead of 64 — 64 MiB / (255 + 24), computed
+// for THIS bound rather than carried over from BUG-2804's few-KB ceiling.
 //
 // This is the case my own doc comment on MaxItemRenameCascadeBytes previously
 // claimed was impossible — it asserted the cascade's retention was O(1) in the
@@ -333,9 +334,16 @@ func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 	// dialects. The scan bound it guards is NOT thereby obsolete: the charge is
 	// against each link row's STORED target_title, so a legacy row carrying a
 	// pre-bound title still drives exactly this pressure, and even an in-bound
-	// title reaches the cap at ~24,000 rows (the number this fixture trades
-	// away for 64). Built as legacy data so the test keeps measuring the guard
-	// rather than the new door in front of it.
+	// title reaches the cap — at ~240,000 rows, 64 MiB / (255 + 24).
+	//
+	// NOT the ~24,000 the paragraph above quotes, and the difference is the
+	// point: that figure is BUG-2804's, derived from Postgres's practical title
+	// ceiling of a few KB, and an earlier version of this comment reused it for
+	// the 255-rune bound without recomputing (codex round 5). Two ceilings, two
+	// numbers, one sentence away from each other.
+	//
+	// Built as legacy data so the test keeps measuring the guard rather than
+	// the new door in front of it.
 	target := createLegacyTitledItem(t, s, ws.ID, col.ID, hugeTitle, "the item being renamed")
 
 	contentBytes := 0

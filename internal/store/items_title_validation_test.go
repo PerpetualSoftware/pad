@@ -347,8 +347,21 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 		if n := utf8.RuneCountInString(it.Title); n > models.MaxItemTitleRunes {
 			t.Errorf("item %s imported with a %d-rune title, over the %d bound", it.ID, n, models.MaxItemTitleRunes)
 		}
-		if n := utf8.RuneCountInString(it.Slug); n > models.MaxItemTitleRunes {
-			t.Errorf("item %s imported with a %d-rune slug, over the %d bound — the btree half of BUG-2831 is still open",
+		// The slug bound allows for the uniqueness suffix (codex round 5). A
+		// truncated slug that collides is resolved to "<255 runes>-2", so a
+		// hard <= MaxItemTitleRunes assertion states the design more strictly
+		// than it is — it happens to hold for this fixture and would fail a
+		// legitimate implementation on the next one.
+		//
+		// The real safety requirement is the INDEX-BYTE limit (~2704 on
+		// Postgres), not a rune count; the rune bound is how this unit reaches
+		// it with room to spare. A handful of suffix bytes does not touch that,
+		// so the assertion allows them and still fails the unbounded case by
+		// two orders of magnitude.
+		const slugSuffixAllowance = 16
+		if n := utf8.RuneCountInString(it.Slug); n > models.MaxItemTitleRunes+slugSuffixAllowance {
+			t.Errorf("item %s imported with a %d-rune slug, past the %d bound plus its uniqueness "+
+				"suffix allowance — the btree half of BUG-2831 is still open",
 				it.ID, n, models.MaxItemTitleRunes)
 		}
 	}
@@ -483,11 +496,36 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 		t.Fatalf("want both items imported, got %d", len(items))
 	}
 	seen := map[string]string{}
+	bySlugTitle := map[string]string{}
 	for _, it := range items {
 		if prev, dup := seen[it.Slug]; dup {
 			t.Errorf("duplicate slug %q on %q and %q", it.Slug, prev, it.Title)
 		}
 		seen[it.Slug] = it.Title
+		bySlugTitle[it.Title] = it.Slug
+	}
+
+	// PROVE THE TRUNCATION, not merely that the import survived (codex round
+	// 5). Uniqueness alone is satisfied by an implementation that truncates
+	// NOTHING: 755 runes and 255 runes are already distinct, so no collision
+	// arises, both rows land, and every assertion above passes while the very
+	// mechanism under test is absent. The test has to name the two slugs it
+	// expects.
+	longRowSlug := bySlugTitle["Long slug row"]
+	exactRowSlug := bySlugTitle["Exact slug row"]
+	if longRowSlug != prefix {
+		t.Errorf("the long row's slug = %d runes (%q...), want it truncated to exactly the %d-rune prefix",
+			utf8.RuneCountInString(longRowSlug), longRowSlug[:min(12, len(longRowSlug))], models.MaxItemTitleRunes)
+	}
+	// The second row owned `prefix` in the bundle and must have been moved off
+	// it — which only happens if the FIRST row truncated onto it.
+	if exactRowSlug == prefix {
+		t.Errorf("the second row kept slug %q, so nothing collided with it — the first row was not truncated onto it",
+			prefix)
+	}
+	if !strings.HasPrefix(exactRowSlug, prefix+"-") {
+		t.Errorf("the second row's slug = %q, want the %d-rune prefix plus a uniqueness suffix",
+			exactRowSlug, models.MaxItemTitleRunes)
 	}
 	// Both rows survive AND stay distinguishable — a "fix" that let one
 	// overwrite the other would also produce two unique slugs.
@@ -616,5 +654,67 @@ func TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle(t *testing.T) {
 				t.Errorf("the grandfathering clause wrote an empty title — the one thing no door may do")
 			}
 		})
+	}
+}
+
+// TestItemTitle_GrandfatheredEchoDoesNotMoveTheSlug regresses codex round 5's
+// P1, which is the second defect the grandfathering clause has produced.
+//
+// Assigning the stored title back left input.Title NON-NIL, and every consumer
+// downstream keys on that pointer rather than on whether the value changed —
+// including the SET clause, which regenerates the slug from slugify(title)
+// unconditionally. For a row whose slug does NOT derive from its current title,
+// a write that changes nothing would silently move the item's URL, and the
+// activity change-list would not show it because the TITLE is unchanged.
+//
+// The fixture's slug must therefore be DELIBERATELY out of step with its title,
+// which is not exotic: ImportWorkspace writes the bundle's slug verbatim, and
+// this unit's own import truncation rewrites slugs without touching titles.
+// (The earlier grandfathering tests all derive the slug from the title, which
+// is exactly why they could not see this.)
+func TestItemTitle_GrandfatheredEchoDoesNotMoveTheSlug(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "TitleEchoSlug")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	legacyTitle := strings.Repeat("k", models.MaxItemTitleRunes+1)
+	item := createLegacyTitledItem(t, s, ws.ID, col.ID, legacyTitle, "")
+
+	// Put the slug out of step with the title, the way an import does.
+	const importedSlug = "slug-from-a-bundle"
+	if _, err := s.db.Exec(s.q("UPDATE items SET slug = ? WHERE id = ?"), importedSlug, item.ID); err != nil {
+		t.Fatalf("fixture: set an import-shaped slug: %v", err)
+	}
+
+	echo := legacyTitle
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &echo}); err != nil {
+		t.Fatalf("echoing the stored title must be accepted: %v", err)
+	}
+
+	after, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if after.Slug != importedSlug {
+		t.Errorf("slug = %q, want it untouched (%q). A write that changes no title must not move the "+
+			"item's URL — and nothing in the activity change-list would have reported that it did.",
+			after.Slug, importedSlug)
+	}
+	if after.Title != legacyTitle {
+		t.Errorf("title = %q, want the legacy bytes unchanged", after.Title)
+	}
+
+	// Control: a REAL rename must still regenerate the slug, or this test would
+	// be satisfied by a version that never regenerates it at all.
+	renamed := "A Proper New Title"
+	updated, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &renamed})
+	if err != nil {
+		t.Fatalf("a genuine rename must be accepted: %v", err)
+	}
+	if updated.Slug == importedSlug {
+		t.Errorf("slug = %q after a real rename; it must be re-derived from the new title", updated.Slug)
+	}
+	if updated.Slug != "a-proper-new-title" {
+		t.Errorf("slug = %q, want %q", updated.Slug, "a-proper-new-title")
 	}
 }

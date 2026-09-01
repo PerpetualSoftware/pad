@@ -1265,8 +1265,22 @@ type ItemLinkCreate struct {
 // Enforced at WRITE time only, and deliberately NOT retroactive: an item whose
 // stored title already exceeds the bound keeps working, and an update that does
 // not set a title never validates one. Same grandfathering rule as documents
-// (Dave's ruling, day-63). Workspace import coerces rather than refuses, for
-// the same reason — see ImportWorkspace.
+// (Dave's ruling, day-63).
+//
+// TWO PATHS DO NOT VALIDATE, both by ruling and both carrying legacy data
+// rather than caller input (codex round 5 — an earlier version of this comment
+// said every door normalizes then validates, which is not true of either):
+//
+//   - ImportWorkspace COERCES rather than refuses, so restoring an archive
+//     cannot die on a row this product itself once accepted.
+//   - Cross-workspace copy PROPAGATES the source row's title verbatim, for the
+//     same reason; it takes no title from the caller, so it cannot mint one.
+//
+// The guarantee that holds across every path is therefore narrower than "every
+// stored title satisfies this bound": no CALLER-SUPPLIED title is stored
+// without being validated against it. Legacy titles at rest are out of scope
+// here; making the bound global would be a count-then-repair sweep over
+// existing rows, not a change to any door.
 const MaxItemTitleRunes = 255
 
 // NormalizeItemTitle is the canonical normalization for an item title:

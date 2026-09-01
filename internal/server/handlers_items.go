@@ -954,9 +954,15 @@ func writeItemRenameCascadeTooLarge(w http.ResponseWriter, err error) bool {
 // and that retrying might work, when the request was understood, deliberately
 // declined, and will be declined identically until the title changes.
 //
-// It is shared by the create and update paths rather than inlined at each,
-// because "create and update disagreed about one field" is the whole of
-// BUG-2833 and duplicating the arm would be the same mistake in the error path.
+// Shared by the THREE update error blocks (the plain path, the collab-snapshot
+// callback and the collab-edit callback), which is where duplicating an arm has
+// actually gone wrong twice — see the note on writeItemRenameCascadeTooLarge.
+//
+// The CREATE path does not use it and cannot: createItemChecked returns a typed
+// *itemCreateError for its caller to write, rather than writing the response
+// itself, so it maps the same store error with its own errors.As block. An
+// earlier version of this comment claimed create shared this helper (codex
+// round 5) — the rule they share is the 400, not the code.
 //
 // The Reason is taken from the TYPED field, never by splicing err.Error(): the
 // call path wraps this error on the way up and those wrappers must not be
@@ -1025,31 +1031,32 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// unbounded slug, which Postgres refuses at the UNIQUE(workspace_id, slug)
 	// btree while SQLite takes it.
 	//
-	// This check is the FAST, FRIENDLY one, not the authoritative one.
-	// store.UpdateItem re-runs it under the write lock, because `item` here was
-	// read before any lock and a concurrent rename could turn an echoed legacy
-	// title into a genuine one between that read and the write. Both call the
-	// same models pair, so they cannot drift into disagreeing the way create
-	// and update did.
+	// THIS CHECK REFUSES; IT DOES NOT DECIDE. It may answer 400 early, and it
+	// must not alter `input` — the grandfathering decision and the
+	// normalization both belong to store.UpdateItem, under the write lock.
 	//
-	// The `!= item.Title` clause is the grandfathering rule, not an
-	// optimization: re-sending an item's existing title is not a rename, so a
-	// legacy title that predates the bound keeps working. See the fuller note
-	// at the store's copy.
+	// The reason is a real regression this handler caused when it did decide
+	// (caught by BUG-2776's own TOCTOU test): `item` here is read BEFORE any
+	// lock, so "the title equals the stored one" is a claim about a snapshot
+	// that a concurrent rename can invalidate. A rival renames the item inside
+	// the window; this request then sends the title IT last saw, which against
+	// the row AS COMMITTED is a genuine rename back. Deciding here dropped that
+	// write entirely and the timeline lost a rename that happened.
+	//
+	// Normalizing here is the same mistake in the other direction: it would
+	// destroy the store's raw-echo comparison, which is what lets a client echo
+	// a legacy title carrying edge whitespace without it reading as a rename.
+	//
+	// So the early refusal is skipped when the title matches the pre-lock read
+	// — a fast path that can only ever be wrong about whether to REFUSE, never
+	// about what to write, and the store refuses again anyway.
 	if input.Title != nil {
 		normalizedTitle := models.NormalizeItemTitle(*input.Title)
-		// Grandfathered writes keep the stored bytes; everything else is
-		// validated before it is normalized in. See the store's copy of this
-		// block for why the two must be exclusive (codex round 2, P1).
-		if normalizedTitle == item.Title || *input.Title == item.Title {
-			unchanged := item.Title
-			input.Title = &unchanged
-		} else {
+		if normalizedTitle != item.Title && *input.Title != item.Title {
 			if msg := models.ValidateItemTitle(normalizedTitle); msg != "" {
 				writeError(w, http.StatusBadRequest, "bad_request", msg)
 				return
 			}
-			input.Title = &normalizedTitle
 		}
 	}
 

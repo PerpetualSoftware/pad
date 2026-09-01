@@ -2336,8 +2336,20 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// is a genuine no-op (the row keeps the bytes it has), and anything
 		// else is validated before it is normalized in.
 		if normalized == existing.Title || *input.Title == existing.Title {
-			unchanged := existing.Title
-			input.Title = &unchanged
+			// NIL, not "the same bytes" (codex round 5, P1). Writing the stored
+			// title back leaves input.Title non-nil, and everything downstream
+			// keys on that pointer rather than on whether the value changed:
+			// the SET clause below regenerates the SLUG from slugify(title),
+			// unconditionally. For a row whose slug does NOT derive from its
+			// current title — an imported row carrying a bundle slug, or one
+			// this unit's own import truncation renamed — an echo that changes
+			// nothing would silently move the item's URL, and the activity
+			// change-list would not show it because the TITLE is unchanged.
+			//
+			// Treating it as not-provided is the honest encoding of "this write
+			// does not touch the title", and it also skips the forced version
+			// and the rename cascade, both of which key on the same pointer.
+			input.Title = nil
 		} else {
 			if msg := models.ValidateItemTitle(normalized); msg != "" {
 				return nil, &InvalidItemTitleError{Reason: msg}

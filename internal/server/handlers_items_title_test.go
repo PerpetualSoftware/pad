@@ -351,17 +351,19 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		wantArm[w] = true
 	}
 
+	// ---- membership + order, per block ----
+	//
 	// PER-BLOCK, not per-file (codex round 2): counting calls across the whole
 	// file lets one block's duplicate mask another's omission and says nothing
 	// about order.
 	//
 	// Blocks are recovered from SOURCE POSITION rather than from AST shape,
-	// which is what makes this robust: the three blocks are written
-	// differently — two as sequential `if` statements, one as an else-if chain
-	// — and an ast.Inspect that keys on either shape either misses blocks or
-	// double-counts them through nesting. (Both happened while writing this:
-	// first 0 blocks, then 8. The block-count guard below is what caught each,
-	// instead of the assertions quietly passing over nothing.)
+	// which is what makes this robust: the three blocks are written differently
+	// — two as sequential `if` statements, one as an else-if chain — and an
+	// ast.Inspect keyed on either shape either misses blocks or double-counts
+	// them through nesting. (Both happened while writing this: first 0 blocks,
+	// then 8. The block-count guard below is what caught each, instead of the
+	// assertions quietly passing over nothing.)
 	//
 	// Every block opens with the open-children arm, so a new block starts at
 	// each occurrence of it, in file order.
@@ -382,46 +384,6 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		if wantArm[ident.Name] {
 			refs = append(refs, armRef{ident.Name, call.Pos()})
 		}
-		return true
-	})
-
-	// REACHABILITY, not just presence (codex round 3). Counting call
-	// expressions detects a DELETED arm but not a disabled one: `false &&
-	// writeInvalidItemTitle(w, err)` short-circuits at runtime while leaving
-	// the call in the AST, so the sequence above still reads as correct while
-	// every title refusal falls through to a 500. Measured — that mutant
-	// survived the presence-only version of this test.
-	//
-	// The check is narrow on purpose: each arm must be tested DIRECTLY, as the
-	// whole of an if-condition, not as one operand of a boolean expression.
-	// That is how all three blocks are written, so anything else is either the
-	// mutation above or a genuine restructuring that deserves to be looked at.
-	ast.Inspect(file, func(n ast.Node) bool {
-		ifStmt, ok := n.(*ast.IfStmt)
-		if !ok {
-			return true
-		}
-		bin, ok := ifStmt.Cond.(*ast.BinaryExpr)
-		if !ok {
-			return true
-		}
-		ast.Inspect(bin, func(c ast.Node) bool {
-			call, ok := c.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			ident, ok := call.Fun.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if wantArm[ident.Name] {
-				t.Errorf("the arm %q at line %d is an operand of a boolean expression rather than the "+
-					"whole condition. It still counts as present below, but it may never execute — "+
-					"which is a refusal silently answering 500 while this test reads as green.",
-					ident.Name, fset.Position(call.Pos()).Line)
-			}
-			return true
-		})
 		return true
 	})
 	sort.Slice(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
@@ -473,5 +435,131 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 				break
 			}
 		}
+	}
+
+	// ---- reachability ----
+	//
+	// Counting call expressions detects a DELETED arm but not a disabled one:
+	// `false && writeInvalidItemTitle(w, err)` short-circuits at runtime while
+	// leaving the call in the AST, so the sequence above reads as correct while
+	// every title refusal falls through to a 500. Measured — that mutant
+	// survived the presence-only version (codex round 3).
+	//
+	// WHITELIST, not blacklist. The first attempt rejected conditions that were
+	// BinaryExpr, which `!writeInvalidItemTitle(w, err)` — a UnaryExpr — walked
+	// straight past while inverting the arm's meaning (codex round 5).
+	// Enumerating the ways to disable a call is a losing game; enumerating the
+	// two ways these arms are legitimately written is not:
+	//
+	//	if f(w, err) { ... }            // cond IS the call
+	//	if x, ok := f(err); ok { ... }  // cond is the bare `ok` ident
+	//
+	// Anything else is either a disabling mutation or a restructuring that
+	// deserves to be looked at deliberately.
+	ast.Inspect(file, func(n ast.Node) bool {
+		ifStmt, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		armsHere := armsIn(ifStmt, want)
+		if len(armsHere) == 0 {
+			return true
+		}
+		switch cond := ifStmt.Cond.(type) {
+		case *ast.CallExpr:
+			if ident, ok := cond.Fun.(*ast.Ident); ok && wantArm[ident.Name] {
+				return true
+			}
+		case *ast.Ident:
+			if ifStmt.Init != nil {
+				return true
+			}
+		}
+		t.Errorf("the arm(s) %v at line %d are guarded by a condition that is neither the bare call nor "+
+			"a plain `ok` ident (%T). They still count as present, but may never execute — which is a "+
+			"refusal silently answering 500 while this test reads as green.",
+			armsHere, fset.Position(ifStmt.Pos()).Line, ifStmt.Cond)
+		return true
+	})
+}
+
+// armsIn returns the named arm functions this if-statement tests, in source
+// order. It reads the INIT statement as well as the condition, because the arms
+// take both shapes — `if x, ok := f(err); ok {` puts the call in Init, while
+// `if f(w, err) {` puts it in Cond. Reading only Cond found zero blocks, and
+// the block-count guard is what caught that rather than silently asserting
+// nothing.
+func armsIn(ifStmt *ast.IfStmt, want []string) []string {
+	var found []string
+	collect := func(n ast.Node) {
+		if n == nil {
+			return
+		}
+		ast.Inspect(n, func(c ast.Node) bool {
+			call, ok := c.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := call.Fun.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			for _, w := range want {
+				if ident.Name == w {
+					found = append(found, w)
+				}
+			}
+			return true
+		})
+	}
+	collect(ifStmt.Init)
+	collect(ifStmt.Cond)
+	return found
+}
+
+// TestPatchItemVerbatimEchoOfALegacyTitleIsANoOp covers the raw-echo
+// grandfathering leg OVER HTTP, which is where the clients that actually do
+// this live.
+//
+// It exists because a mutation exposed the gap: making the handler normalize
+// `input.Title` before forwarding destroys the store's raw-echo comparison, and
+// that mutant SURVIVED — the only test for the leg called store.UpdateItem
+// directly, so nothing measured the path a browser or CLI takes. The handler's
+// job here is to refuse early and change nothing; a normalization on the way
+// through is a decision, and decisions belong under the lock.
+func TestPatchItemVerbatimEchoOfALegacyTitleIsANoOp(t *testing.T) {
+	srv := testServer(t)
+	wsSlug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, wsSlug, "Ordinary", `{"status":"open"}`)
+
+	// Make it legacy: over the bound AND carrying edge whitespace, written
+	// straight to the row so it bypasses the write-time guard exactly as a
+	// pre-bound row does.
+	legacyTitle := "  " + strings.Repeat("m", models.MaxItemTitleRunes+1) + "  "
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind("UPDATE items SET title = ? WHERE id = ?"),
+		legacyTitle, item.ID); err != nil {
+		t.Fatalf("fixture: write the legacy title: %v", err)
+	}
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+item.Slug, map[string]interface{}{
+		"title": legacyTitle,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("echoing the stored title back must be a no-op, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+	if updated.Title != legacyTitle {
+		t.Errorf("title = %q, want the legacy bytes unchanged — a normalization on the way through "+
+			"turns a no-op echo into a rename", updated.Title)
+	}
+
+	// Control: a genuine rename to an over-bound title is still refused through
+	// the same door, so this is grandfathering and not a hole.
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+wsSlug+"/items/"+item.Slug, map[string]interface{}{
+		"title": strings.Repeat("n", models.MaxItemTitleRunes+1),
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("a DIFFERENT over-bound title must still be refused, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

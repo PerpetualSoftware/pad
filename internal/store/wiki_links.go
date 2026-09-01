@@ -650,18 +650,28 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// and refuses DURING the scan (BUG-2804 / codex R4).
 	//
 	// `works` holds one entry per matching LINK ROW, not per source, and each
-	// entry carries that row's target_title. Since BUG-2833 / BUG-2831 a NEW
-	// title is bounded at models.MaxItemTitleRunes, so the ~2 MiB single-request
-	// title this comment used to describe is no longer reachable through any
-	// door. That does NOT retire this charge, for two reasons:
+	// entry carries that row's target_title. Since BUG-2833 / BUG-2831 a title
+	// supplied by a CALLER is bounded at models.MaxItemTitleRunes, so the
+	// ~2 MiB single-request title this comment used to describe cannot be
+	// created or renamed in. That does NOT retire this charge, for three
+	// reasons:
 	//
 	//   - the bound is non-retroactive by ruling, so rows written before it
 	//     still carry unbounded target_titles, and this loop reads STORED
 	//     titles rather than the one being written;
-	//   - even at the bound the quantity is rows x title bytes, so an in-range
-	//     title reaches the cap at roughly 24,000 link rows — more than the
-	//     64 the test fixture uses, and well within what a popular item
-	//     accumulates.
+	//   - two paths still admit an unbounded title without a caller supplying
+	//     one — cross-workspace copy carries a legacy source title into a new
+	//     row, and ImportWorkspace coerces (so its rows are bounded, but a
+	//     pre-import row is not). "No door can receive a ~2 MiB title" would be
+	//     too strong (codex round 5);
+	//   - even at the bound the quantity is rows x (title bytes + overhead), so
+	//     an in-range title reaches the cap at roughly 240,000 link rows.
+	//
+	// That last figure is COMPUTED for this bound rather than carried over:
+	// MaxItemRenameCascadeBytes (64 MiB) / (255 + cascadeRowOverheadBytes, 24)
+	// = ~240,500 rows. The ~24,000 an earlier version of this comment quoted is
+	// BUG-2804's number, derived from Postgres's practical title ceiling of a
+	// few KB, and it does not survive a 255-rune bound.
 	//
 	// The content-bytes cap in the loop below still cannot see either case,
 	// because the content can be tiny.
