@@ -1289,8 +1289,15 @@ const MaxItemTitleRunes = 255
 // It exists as its own function because normalize-then-validate must not drift
 // between doors — the whole of BUG-2833 is create and update disagreeing about
 // one field, and BUG-2831 is create and Postgres disagreeing about the same
-// field. Every door calls this and then ValidateItemTitle, and stores what it
-// validated rather than the raw input.
+// field.
+//
+// Every door that takes a title FROM A CALLER pairs this with
+// ValidateItemTitle and stores what it validated, never the raw input. The two
+// legacy-data paths do not, by ruling: ImportWorkspace coerces (it normalizes,
+// then truncates or substitutes rather than refusing) and cross-workspace copy
+// carries the source row's title through untouched. See MaxItemTitleRunes for
+// both. An earlier version of this comment said "every door", which reads as
+// covering those two and does not (codex round 6).
 func NormalizeItemTitle(title string) string {
 	return strings.TrimSpace(title)
 }

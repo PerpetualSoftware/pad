@@ -744,11 +744,14 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// already exists in the database, and refusing it would break a working
 	// operation for data this product itself accepted.
 	//
-	// It cannot MINT an invalid title. The title below is `source.Title`,
-	// read from the source row — there is no caller-supplied title on this
-	// path at all (`--field` sets destination FIELDS, never the title), so no
-	// input a user controls reaches it. The copy stays repairable by rename in
-	// either workspace, where the bound does apply.
+	// What it cannot do is mint an invalid title FROM CALLER INPUT — which is
+	// the guarantee this unit actually makes, and is narrower than "cannot mint
+	// an invalid title", since a legacy-invalid source row does put that title
+	// on a NEW destination row (codex round 6). The title below is
+	// `source.Title`, read from the source row; there is no caller-supplied
+	// title on this path at all (`--field` sets destination FIELDS, never the
+	// title), so no input a user controls reaches it. The copy stays repairable
+	// by rename in either workspace, where the bound does apply.
 	item, err := s.createItemTxWithID(tx, targetItemID, req.TargetWorkspaceID, req.TargetCollectionID, models.ItemCreate{
 		Title:   source.Title,
 		Content: newContent,

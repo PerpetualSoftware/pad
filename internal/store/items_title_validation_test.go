@@ -686,9 +686,25 @@ func TestItemTitle_GrandfatheredEchoDoesNotMoveTheSlug(t *testing.T) {
 		t.Fatalf("fixture: set an import-shaped slug: %v", err)
 	}
 
-	echo := legacyTitle
-	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &echo}); err != nil {
-		t.Fatalf("echoing the stored title must be accepted: %v", err)
+	// BOTH grandfathering legs, against the same out-of-step slug (codex round
+	// 6). The raw echo and the padded form take different branches, and the
+	// padded one had no slug coverage at all: the test that exercises it
+	// derives its slug FROM the title, so the non-nil-pointer mutant
+	// regenerates the identical slug there and passes.
+	for _, echo := range []string{legacyTitle, "  " + legacyTitle + "\t"} {
+		title := echo
+		if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Title: &title}); err != nil {
+			t.Fatalf("echoing the stored title (%d runes, padded=%t) must be accepted: %v",
+				utf8.RuneCountInString(echo), echo != legacyTitle, err)
+		}
+		mid, err := s.GetItem(item.ID)
+		if err != nil {
+			t.Fatalf("GetItem: %v", err)
+		}
+		if mid.Slug != importedSlug {
+			t.Errorf("slug = %q after a %s echo, want it untouched (%q)",
+				mid.Slug, map[bool]string{true: "padded", false: "verbatim"}[echo != legacyTitle], importedSlug)
+		}
 	}
 
 	after, err := s.GetItem(item.ID)

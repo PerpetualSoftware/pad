@@ -323,12 +323,21 @@ func TestIsDeterministicWriteFailureIncludesTitleRefusal(t *testing.T) {
 // presence-only version. All three are verified by mutation rather than
 // asserted.
 //
-// It is still lexical. An arm made unreachable some other way — an early
-// return above it, a condition that is a call which always returns false —
-// would pass. Closing that needs control-flow analysis or a route-level test,
-// and a route-level test is not available here: the handlers' own pre-checks
-// catch every title refusal reachable over the wire, so the store-sourced one
-// these arms exist for has no HTTP trigger except a concurrent rename.
+// It is still LEXICAL, and that is a boundary rather than a to-do. Three review
+// rounds each named a new way to satisfy the letter of it — a short-circuited
+// condition, an inverted one, a missing return — and each was closed, but a
+// lexical instrument has no last one: an early return above the block, a
+// wrapping `if false`, or a condition calling something that always returns
+// false would all pass. What it buys is protection against the failure that has
+// ACTUALLY happened twice in this function, which is an omitted or misordered
+// arm.
+//
+// The behavioural complement is not available here, and it is worth saying why
+// rather than leaving it as an obvious gap: the handlers' own pre-checks catch
+// every title refusal reachable over the wire, so the store-sourced refusal
+// these arms exist for has no HTTP trigger except a concurrent rename inside
+// the lock window. Driving that from a test needs a store-level seam that does
+// not exist. The helper itself is unit-tested; these arms' job is to call it.
 func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "handlers_items.go", nil, 0)
@@ -479,6 +488,29 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 			"a plain `ok` ident (%T). They still count as present, but may never execute — which is a "+
 			"refusal silently answering 500 while this test reads as green.",
 			armsHere, fset.Position(ifStmt.Pos()).Line, ifStmt.Cond)
+		return true
+	})
+
+	// ---- each arm must actually STOP ----
+	//
+	// An arm that matches and then falls through has written its response and
+	// let the next arm write another, or let the request continue to the
+	// generic 500 (codex round 6). The body's last statement is a bare return
+	// in all three blocks; anything else is a behaviour change worth looking at.
+	ast.Inspect(file, func(n ast.Node) bool {
+		ifStmt, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		armsHere := armsIn(ifStmt, want)
+		if len(armsHere) == 0 || ifStmt.Body == nil || len(ifStmt.Body.List) == 0 {
+			return true
+		}
+		if _, ok := ifStmt.Body.List[len(ifStmt.Body.List)-1].(*ast.ReturnStmt); !ok {
+			t.Errorf("the arm(s) %v at line %d do not end in a return; a matched arm that falls through "+
+				"lets a second response be written, or lets the request reach the generic 500.",
+				armsHere, fset.Position(ifStmt.Pos()).Line)
+		}
 		return true
 	})
 }
