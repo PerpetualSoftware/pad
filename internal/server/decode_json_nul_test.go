@@ -1376,18 +1376,33 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 							if !strings.EqualFold(k, listed) {
 								continue
 							}
-							// Production only descends into a DOCUMENT — a
-							// string whose trimmed form starts with "{" or
-							// "[" (stringIsJSONDocument). A JSON scalar such
-							// as "\"a<escape>b\"" is valid JSON and is NOT a
-							// document, so production leaves it alone. The
-							// oracle unmarshalled anything valid and so said
-							// true where production said false (codex round
-							// 27) — closer to production is not the same as
-							// identical, and only identical is a usable
-							// oracle.
+							// ANY valid JSON document, scalars included.
+							//
+							// This was narrowed to objects and arrays in
+							// BUG-2803 codex round 27, to make the oracle
+							// agree with production. The disagreement was
+							// real; the direction of the fix was not. Nobody
+							// measured which walker matched POSTGRES, and the
+							// answer is that the oracle's original wider rule
+							// did:
+							//
+							//	SELECT ('"a<escape>b"')::jsonb;
+							//	ERROR:  unsupported Unicode escape sequence
+							//
+							// measured on Postgres 17 during DOC-2823 S1. A
+							// bare JSON string is a complete jsonb document;
+							// it is refused there and was stored on SQLite,
+							// which is the dialect split the S1 guard exists
+							// to close. Production was widened to match, and
+							// this oracle is restored to what it always said.
+							//
+							// The lesson worth keeping: two implementations
+							// made to agree are not thereby correct. Round 27
+							// had two walkers and no authority, so agreement
+							// was the only available test and it picked the
+							// wrong survivor.
 							trimmed := strings.TrimSpace(sv)
-							if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+							if trimmed == "" {
 								break
 							}
 							var inner any
@@ -1460,11 +1475,40 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 		// And its counterpart, where the listed key's value IS a string and
 		// the descent is correct. Both sides must answer TRUE.
 		`{"fields":"{\"k\":\"a` + esc + `b\"}"}`,
-		// A JSON SCALAR under a listed key. Valid JSON, but not a document,
-		// so production does not descend and the escape stays literal text.
-		// Both sides must answer FALSE. The oracle used to say true here.
+		// A JSON SCALAR under a listed key. Both sides must answer TRUE, and
+		// this case CHANGED ANSWER when the shape test was widened — correctly.
+		//
+		// The doubling is at the OUTER level: after the outer decode the fields
+		// value is a 10-character JSON string carrying a LIVE escape, so
+		// descending one layer finds a NUL. It answered FALSE before only
+		// because production refused to descend into scalars at all, and the
+		// old comment explained it as "the escape stays literal text", which
+		// was never the reason (codex round 2).
+		//
+		// Verified against the authority rather than argued, because I first
+		// re-pinned it FALSE from that stale comment and was wrong:
+		//
+		//	fields value after the outer decode: a 10-char JSON string
+		//	SELECT ('"a<escape>b"')::jsonb;
+		//	ERROR:  unsupported Unicode escape sequence
 		`{"fields":"\"a` + doubled + `b\""}`,
+		// The same scalar with a LIVE escape. Both sides must answer TRUE, and
+		// nothing pinned that until now: a bare JSON string is a complete jsonb
+		// document, measured refused by Postgres 17 with "unsupported Unicode
+		// escape sequence".
+		`{"fields":"\"a` + esc + `b\""}`,
 		`{"title":"a control escape that is not a NUL: \\u0001"}`,
+	}
+
+	// Bodies whose answer is known INDEPENDENTLY of either walker, so the test
+	// can catch the two of them agreeing on a wrong answer — which is exactly
+	// what happened before: BUG-2803 round 27 made them agree by narrowing the
+	// oracle, and both were then wrong about scalars for a release (codex
+	// round 2).
+	pinned := map[string]bool{
+		`{"fields":"\"a` + esc + `b\""}`:         true,
+		`{"fields":"\"a` + doubled + `b\""}`:     true,
+		`{"fields":"{\"k\":\"a` + esc + `b\"}"}`: true,
 	}
 
 	var sawTrue, sawFalse bool
@@ -1474,6 +1518,10 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 		if got != want {
 			t.Errorf("corpus[%d] %s\n  production=%v independent=%v — one of the two walkers is "+
 				"wrong; read both before assuming it is the oracle", i, body, got, want)
+		}
+		if expected, ok := pinned[body]; ok && got != expected {
+			t.Errorf("corpus[%d] %s\n  both walkers answer %v, but the correct answer is %v — "+
+				"agreement is not correctness", i, body, got, expected)
 		}
 		if want {
 			sawTrue = true

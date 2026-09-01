@@ -779,6 +779,23 @@ func (s *Server) writeCopyError(w http.ResponseWriter, err error) {
 	// land on the commit itself — so the message says "check", never "retry".
 	// Deliberately not writeInternalError: its generic text would invite the
 	// exact retry that duplicates the item.
+	// The NUL refusal is NOT ambiguous, so it must not get the ambiguous
+	// message (codex round 3). It fires at parameter binding, before any
+	// statement executes and long before commit, so nothing landed and a retry
+	// of the same value will be refused identically. Telling the caller to
+	// "check the destination workspace" for a copy that provably did not start
+	// is worse than unhelpful — it invites exactly the manual reconciliation
+	// DR-13's wording exists to prevent, for the one failure where there is
+	// nothing to reconcile.
+	//
+	// A legacy NUL-bearing source row reaches this: the source predates the
+	// guard, the destination insert is guarded, and the copy is where the two
+	// meet.
+	if reason, ok := nulRefusalReason(err); ok {
+		slog.Warn("cross-workspace item copy refused: invalid text parameter", "error", err)
+		writeError(w, http.StatusBadRequest, "bad_request", reason)
+		return
+	}
 	slog.Error("cross-workspace item copy failed", "error", err)
 	writeError(w, http.StatusInternalServerError, "copy_failed",
 		"The copy did not complete. It may or may not have landed — check the destination workspace before trying again.")

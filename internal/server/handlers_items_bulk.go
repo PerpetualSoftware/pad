@@ -392,11 +392,25 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 // item (for seq) on success, or a structured per-row error.
 // resolvedTarget carries the request-level collection resolution for `move`
 // (nil for every other op), so the per-item path never re-resolves.
+// bulkStoreError wraps a store error as a per-item bulk failure, classifying
+// the NUL refusal so it carries a real code instead of arriving as an
+// unlabelled message (codex round 1, finding 4).
+//
+// A bulk response stays 200 with the item listed under Failed — that is the
+// bulk contract, and a deterministic refusal of ONE item should not fail the
+// other forty-nine. What it should not do is look like an internal fault.
+func bulkStoreError(err error) *bulkOpError {
+	if reason, ok := nulRefusalReason(err); ok {
+		return &bulkOpError{message: reason, code: "bad_request"}
+	}
+	return &bulkOpError{message: err.Error()}
+}
+
 func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection, batchID string) (*models.Item, *bulkOpError) {
 	switch req.Op {
 	case "archive":
 		if err := s.store.DeleteItem(item.ID, store.WithEventBatch(batchID)); err != nil {
-			return nil, &bulkOpError{message: err.Error()}
+			return nil, bulkStoreError(err)
 		}
 		// DeleteItem bumps seq; re-read so the batch event carries the
 		// post-archive cursor. Falls back to the pre-delete row on a
@@ -420,7 +434,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 					code:    "conflict",
 				}
 			}
-			return nil, &bulkOpError{message: err.Error()}
+			return nil, bulkStoreError(err)
 		}
 		return restored, nil
 
@@ -451,7 +465,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 		}
 		updated, err := s.store.UpdateItem(item.ID, input, store.WithEventBatch(batchID))
 		if err != nil {
-			return nil, &bulkOpError{message: err.Error()}
+			return nil, bulkStoreError(err)
 		}
 		return updated, nil
 	}
@@ -545,7 +559,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 				details: raw,
 			}
 		}
-		return nil, &bulkOpError{message: err.Error()}
+		return nil, bulkStoreError(err)
 	}
 	if updated == nil {
 		return nil, &bulkOpError{message: "item not found"}
@@ -598,7 +612,7 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 		Source:         source,
 	}, store.WithEventBatch(batchID))
 	if err != nil {
-		return nil, &bulkOpError{message: err.Error()}
+		return nil, bulkStoreError(err)
 	}
 	return updated, nil
 }
@@ -723,7 +737,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 				details: raw,
 			}
 		}
-		return nil, &bulkOpError{message: err.Error()}
+		return nil, bulkStoreError(err)
 	}
 	return moved, nil
 }

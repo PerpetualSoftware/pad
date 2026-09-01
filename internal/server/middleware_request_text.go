@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
 // ValidatePath rejects a request whose percent-DECODED URL path is not a
@@ -604,12 +606,21 @@ func isJSONEncodedFieldKey(k string) bool {
 // this shape is chosen so that adding one later cannot silently start
 // rejecting valid requests.
 func valueDecodesNUL(v any, inUserData bool) bool {
+	// S1 (DOC-2823): once classing is switched OFF there is nothing
+	// request-specific left to do, and the walk is textguard's — literally the
+	// same traversal this function used to carry inline. Delegating rather than
+	// keeping a copy is the point of extracting the package: two walks of the
+	// same shape, in two layers, is the disagreement this cluster exists
+	// because of.
+	if inUserData {
+		return textguard.ValueDecodesNUL(v)
+	}
 	switch t := v.(type) {
 	case string:
-		return strings.ContainsRune(t, 0)
+		return textguard.ContainsNUL(t)
 	case map[string]any:
 		for k, sub := range t {
-			if strings.ContainsRune(k, 0) {
+			if textguard.ContainsNUL(k) {
 				return true
 			}
 			if !inUserData && isJSONEncodedFieldKey(k) {
@@ -622,7 +633,7 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 					// `fields` value was accepted, reopening the door this
 					// whole change exists to close (codex round 9, a
 					// regression introduced by the round-8 restructure).
-					if strings.ContainsRune(str, 0) || nestedDocumentDecodesNUL(str) {
+					if textguard.ContainsNUL(str) || nestedDocumentDecodesNUL(str) {
 						return true
 					}
 					continue
@@ -653,45 +664,18 @@ func valueDecodesNUL(v any, inUserData bool) bool {
 // item's `fields` blob, a collection's `schema` — for a string containing a
 // NUL. This is the layer Postgres itself parses, so an escape here is fatal
 // where one a level deeper is not.
-func nestedDocumentDecodesNUL(s string) bool {
-	if !strings.Contains(s, string(unicodeEscapePrefix)) || !stringIsJSONDocument(s) {
-		return false
-	}
-	var inner any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &inner); err != nil {
-		return false
-	}
-	return valueDecodesNUL(inner, true)
-}
-
-// stringIsJSONDocument reports whether a string is a complete JSON object or
-// array — the shape a downstream consumer will re-parse.
+// ANY JSON DOCUMENT SHAPE, scalars included (codex round 1 on DOC-2823 S1).
 //
-// WHY THE RECURSION IT GATES EXISTS. Several fields cross the wire as
-// JSON-ENCODED STRINGS rather than nested objects: an item's `fields`, a
-// collection's `schema`, a workspace's `settings`. In such a body the OUTER
-// decode yields the inner document as literal text, in which the escape is
-// still six ordinary characters and no NUL exists. A single-layer walk
-// therefore passed it, and Postgres refused it later with a DIFFERENT error
-// from the rest of this family:
+// This used to test objects and arrays only, which is the right rule for
+// deciding "is this a nested document worth walking" and the WRONG one for
+// deciding "will a jsonb parser read this". A `fields` value that is a bare
+// JSON string decoding to a NUL is a complete jsonb document Postgres refuses;
+// the narrow rule let it past the gate to be caught at the store instead.
 //
-//	insert collection: ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)
-//
-// 22P05, not the 22021 the path and query halves produce. The outer string is
-// pure ASCII so it never trips the text-encoding check; this is Postgres's own
-// JSON parser refusing the escape inside a document bound for jsonb, which
-// cannot represent a NUL. Measured on Postgres 17: item `fields`, collection
-// `schema` and workspace `settings` each answered 500 with a 201 control leg,
-// after the single-layer check was in place. Found by codex round 1 on
-// BUG-2803, by asking what the destination TYPE does with the value — the
-// angle the endpoint-and-field sweep never rotated to.
-func stringIsJSONDocument(s string) bool {
-	t := strings.TrimSpace(s)
-	if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
-		return false
-	}
-	return json.Valid([]byte(t))
-}
+// Both layers now use the same shape test, which is what makes the differential
+// corpus able to assert they AGREE rather than merely that something refuses
+// eventually.
+func nestedDocumentDecodesNUL(s string) bool { return textguard.DocumentDecodesNULAnyShape(s) }
 
 // readBodyForDecode reads the whole request body so it can be scanned before
 // it is decoded, with the caller's size cap applied.

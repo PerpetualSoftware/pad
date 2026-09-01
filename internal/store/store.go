@@ -234,7 +234,13 @@ func (s *Store) DB() *sql.DB { return s.db }
 //     connections after the first one applies it.
 func New(dbPath string) (*Store, error) {
 	dsn := dbPath + "?_pragma=busy_timeout(30000)&_pragma=foreign_keys(on)&_txlock=immediate"
-	db, err := sql.Open("sqlite", dsn)
+	// The NUL invariant's Layer A rides the DRIVER, not the call sites — see
+	// nulguard.go for why that is the only shape whose completeness nobody has
+	// to maintain.
+	if err := registerGuardedDrivers(); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open(guardedSQLiteDriver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -305,7 +311,15 @@ func (s *Store) startWALCheckpointer() {
 
 // openPostgresDB opens and configures a PostgreSQL connection pool.
 func openPostgresDB(connStr string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", connStr)
+	// Layer A on Postgres too, deliberately. Postgres refuses a NUL natively,
+	// so the wrapper is not what makes the write safe there — it is what makes
+	// the two dialects give the SAME answer, with the same typed error, which
+	// is what the four-way differential test asserts and what BUG-2831's
+	// dialect split cost us the last time two backends disagreed.
+	if err := registerGuardedDrivers(); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open(guardedPostgresDriver, connStr)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}

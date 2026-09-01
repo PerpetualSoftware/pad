@@ -796,6 +796,13 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		if errors.As(err, &badTitle) {
 			return nil, &itemCreateError{http.StatusBadRequest, "bad_request", badTitle.Reason}
 		}
+		// The NUL refusal, in this path's own envelope (codex round 1). Same
+		// classification as everywhere else, same sentence; only the shape
+		// differs, because createItemChecked returns its error rather than
+		// writing it.
+		if reason, ok := nulRefusalReason(err); ok {
+			return nil, &itemCreateError{http.StatusBadRequest, "bad_request", reason}
+		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
 			// Could be the slug-per-workspace constraint OR the playbook
 			// invocation_slug partial unique index (TASK-1378). Keep the
