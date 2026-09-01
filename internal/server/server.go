@@ -2167,6 +2167,31 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 // message to the client. This prevents leaking SQL errors, file paths,
 // and other internal details.
 func writeInternalError(w http.ResponseWriter, err error) {
+	// The store's NUL refusal is a DECISION, not a fault, and it is mapped
+	// here rather than at each handler for the same reason Layer A lives at
+	// the driver: this is the one funnel every 500 already passes through, so
+	// mapping it once covers every handler that exists and every one that will
+	// (DOC-2823 S1). Enumerating error blocks is what the item-title unit had
+	// to do three times in one function before a structural test caught the
+	// third.
+	//
+	// 400, matching what the HTTP gate answers for the SAME value refused at
+	// the door. Two statuses for one rule would be the layers disagreeing
+	// again, in the response this time instead of in the predicate.
+	//
+	// The honest residual: a value can reach the store from something the
+	// SERVER composed rather than the caller supplied — that is BUG-2814's
+	// re-emit population — and for those a 400 tells the caller their request
+	// was bad when it was our stored data. It is still the better answer than
+	// 500, because the request is understood and will be refused identically
+	// on retry, and the log line below keeps the detail. If the re-emit case
+	// ever needs its own status, it needs its own error type first.
+	var badText *store.InvalidTextParameterError
+	if errors.As(err, &badText) {
+		slog.Warn("write refused: invalid text parameter", "error", err)
+		writeError(w, http.StatusBadRequest, "bad_request", badText.Reason)
+		return
+	}
 	slog.Error("internal server error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 }
