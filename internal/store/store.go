@@ -443,6 +443,24 @@ func (s *Store) migrate() error {
 		if err := applySQLiteMigration(s.db, name, string(data)); err != nil {
 			return err
 		}
+
+		// AFTER EACH MIGRATION, not once at the end (codex round 4).
+		//
+		// A table-rebuild migration drops that table's triggers, and until they
+		// are back the invariant is unenforced for it. Restoring once after the
+		// whole chain left that gap open across every remaining migration and
+		// the FTS validation; restoring here narrows it to the moment between
+		// one migration's commit and the next statement.
+		//
+		// It cannot be closed completely from here — the DROP and the recreate
+		// are in different transactions, so a concurrent raw writer can still
+		// commit between them — and that residual is stated rather than papered
+		// over: see ensureNULTriggers, and S3's repair sweep, which is the only
+		// thing that makes an EXISTING violating row go away regardless of how
+		// it got there.
+		if err := s.ensureNULTriggers(); err != nil {
+			return err
+		}
 	}
 
 	// Defensive: log a warning for any FTS trigger that should exist but
@@ -451,6 +469,10 @@ func (s *Store) migrate() error {
 	// its triggers, leaving search broken until someone notices.
 	s.validateFTSInvariants()
 
+	// A final re-assertion, covering a database that arrived with triggers
+	// already missing (a manual drop, a restored backup taken mid-rebuild) and
+	// therefore had no migration to trigger the per-migration check above.
+	//
 	// The NUL triggers are RE-ASSERTED, not merely checked (DOC-2823 S2, codex
 	// round 1).
 	//

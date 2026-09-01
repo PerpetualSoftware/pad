@@ -303,6 +303,21 @@ func (s *Store) ensureNULTriggers() error {
 		return nil
 	}
 
+	// NOTHING TO RESTORE BEFORE THE MIGRATION THAT CREATES THEM.
+	//
+	// This runs after every migration (codex round 4, to narrow the window in
+	// which a rebuild has dropped the triggers), which means it also runs
+	// during a FRESH install while the early migrations are still creating the
+	// tables. Attempting the trigger SQL then fails on "no such table" — caught
+	// immediately by the test suite when the per-migration call was added.
+	var applied int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, nulTriggerMigration,
+	).Scan(&applied); err != nil || applied == 0 {
+		// A missing schema_migrations table means we are earlier still.
+		return nil //nolint:nilerr // absence is the answer, not an error
+	}
+
 	// name -> the exact CREATE statement the list renders, so the check can
 	// compare DEFINITIONS.
 	want := renderedNULTriggers()
@@ -370,6 +385,18 @@ func (s *Store) ensureNULTriggers() error {
 		return fmt.Errorf("commit trigger restore: %w", err)
 	}
 
+	// THE RESIDUAL, stated because it is real and this unit cannot close it.
+	//
+	// The DROP (inside a rebuild migration's own transaction) and this recreate
+	// are in DIFFERENT transactions, so a concurrent raw writer — an old binary
+	// on the same file, which is the population Layer B exists for — can commit
+	// a violating row in between. Restoring the triggers does not remove it.
+	//
+	// Running after EVERY migration narrows the window to one statement's worth
+	// of time rather than the whole remaining chain, which is as far as
+	// enforcement can go from here. Making an existing violating row go away is
+	// S3's repair sweep, and it is needed regardless: rows written before S2
+	// shipped are the same problem arriving by a different route.
 	slog.Warn("NUL invariant triggers were missing and have been restored — a table rebuild most likely "+
 		"dropped them; rows written while they were absent are NOT retroactively checked",
 		"had", len(have), "want", len(want))
