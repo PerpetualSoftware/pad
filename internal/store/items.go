@@ -174,7 +174,41 @@ func (s *Store) acquireWorkspaceParentLinkLock(tx *sql.Tx, workspaceID string) e
 	return nil
 }
 
+// ErrInvalidItemTitle is the sentinel behind InvalidItemTitleError, so callers
+// can errors.Is it without depending on the concrete type.
+//
+// The store enforces the item-title rule rather than trusting its callers for
+// the reason BUG-2833 exists: the rule WAS caller-side only, it lived in
+// handleCreateItem alone, and handleUpdateItem — the sibling handler on the
+// same field — simply did not have it. A rule that has to be repeated at each
+// door is a rule that will be missing from one of them.
+var ErrInvalidItemTitle = errors.New("store: invalid item title")
+
+// InvalidItemTitleError carries the human-readable reason a title was refused,
+// so the HTTP layer can return it without re-deriving the rule or splicing an
+// internal error's text into a response.
+type InvalidItemTitleError struct{ Reason string }
+
+func (e *InvalidItemTitleError) Error() string {
+	return ErrInvalidItemTitle.Error() + ": " + e.Reason
+}
+
+func (e *InvalidItemTitleError) Unwrap() error { return ErrInvalidItemTitle }
+
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
+	// Title normalization + validation (BUG-2833 / BUG-2831). Before the retry
+	// loop: it depends only on the input, so re-running it per attempt would
+	// re-derive the same verdict, and normalizing here means every attempt
+	// slugifies the SAME string.
+	//
+	// No grandfathering clause here, unlike UpdateItem — a create has no prior
+	// title to be grandfathered against. Every item this path mints satisfies
+	// the bound.
+	input.Title = models.NormalizeItemTitle(input.Title)
+	if msg := models.ValidateItemTitle(input.Title); msg != "" {
+		return nil, &InvalidItemTitleError{Reason: msg}
+	}
+
 	// Retry loop: if a concurrent insert claims the same item_number — or the
 	// same slug — we roll back and re-derive both on the next attempt.
 	//
@@ -2246,6 +2280,83 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// Fields, Tags, Title, and the joined display names — is a string, and a
 	// string cannot be mutated in place, so today's consumers are covered.
 	preUpdate := *existing
+
+	// Title normalization + validation (BUG-2833 / BUG-2831). Placed HERE,
+	// immediately after the post-lock re-read, because everything downstream
+	// compares or derives from `*input.Title`: the version-force check, the
+	// `title = ?` SET, the slug derived by slugify, and the rename cascade.
+	// Normalizing later would leave those reading the raw value and the row
+	// holding the normalized one — the exact create/update divergence this
+	// unit exists to remove, re-created inside one function.
+	//
+	// This is the AUTHORITATIVE check; handleUpdateItem runs the same one
+	// pre-lock to produce a fast, friendly 400. Same split as documents, for
+	// the same reason: the handler compares against an item it read BEFORE the
+	// lock, so a concurrent rename can turn an echoed legacy title into a
+	// genuine one between the two reads. The decision belongs where the write
+	// happens.
+	//
+	// GRANDFATHERED, deliberately: a title identical to the stored one is not
+	// a rename, so it is not a write-time door and is not validated. That is
+	// what keeps the bound non-retroactive (Dave's day-63 ruling, carried over
+	// from MaxDocumentTitleRunes) — an item whose stored title predates the
+	// bound stays editable in every other respect, and a client that echoes
+	// the whole item back does not start failing on it.
+	//
+	// The guarantee this buys, stated at the width it actually holds (codex
+	// round 4): NO CALLER-SUPPLIED TITLE can be stored unvalidated. An item may
+	// still be written with a legacy-invalid title, but only the one it already
+	// has. It is NOT true that no row anywhere gets a fresh invalid title —
+	// ImportWorkspace coerces one in (to "Untitled" or a truncation) and
+	// cross-workspace copy carries the source row's title into a new row
+	// verbatim. Both are deliberate legacy-data exceptions, documented at their
+	// own call sites; neither takes a title from the caller. An earlier version
+	// of this comment said "no door can mint a NEW untitled or over-long item",
+	// which reads as a global invariant and is false of the copy path.
+	if input.Title != nil {
+		normalized := models.NormalizeItemTitle(*input.Title)
+		// The exemption tests BOTH forms against the stored title (codex round
+		// 1, P2). Comparing only the normalized one narrows the rule to less
+		// than it claims: a legacy row whose stored title carries edge
+		// whitespace is echoed back VERBATIM by a client that read it, and the
+		// normalized echo then differs from what is stored — so the row's own
+		// title reads as a rename and, if it also predates the bound, is
+		// refused. "Identical to the stored one" has to mean what it says.
+		//
+		// A GRANDFATHERED WRITE WRITES THE STORED BYTES, NOT THE NORMALIZED
+		// ONES (codex round 2, P1 — a hole the round-1 fix above opened).
+		// Skipping validation while still assigning `normalized` meant a
+		// legacy row stored as "   " was echoed back, skipped validation on the
+		// raw match, and then had "" written to it — minting exactly the empty
+		// title Dave's ruling forbids, through the clause meant to protect
+		// legacy rows. An over-bound title with edge whitespace went the same
+		// way, into a DIFFERENT over-bound title.
+		//
+		// So the two outcomes are now exclusive: grandfathered means the write
+		// is a genuine no-op (the row keeps the bytes it has), and anything
+		// else is validated before it is normalized in.
+		if normalized == existing.Title || *input.Title == existing.Title {
+			// NIL, not "the same bytes" (codex round 5, P1). Writing the stored
+			// title back leaves input.Title non-nil, and everything downstream
+			// keys on that pointer rather than on whether the value changed:
+			// the SET clause below regenerates the SLUG from slugify(title),
+			// unconditionally. For a row whose slug does NOT derive from its
+			// current title — an imported row carrying a bundle slug, or one
+			// this unit's own import truncation renamed — an echo that changes
+			// nothing would silently move the item's URL, and the activity
+			// change-list would not show it because the TITLE is unchanged.
+			//
+			// Treating it as not-provided is the honest encoding of "this write
+			// does not touch the title", and it also skips the forced version
+			// and the rename cascade, both of which key on the same pointer.
+			input.Title = nil
+		} else {
+			if msg := models.ValidateItemTitle(normalized); msg != "" {
+				return nil, &InvalidItemTitleError{Reason: msg}
+			}
+			input.Title = &normalized
+		}
+	}
 
 	// Optimistic-concurrency guard runs FIRST — before the open-children
 	// precheck — so a caller who lost the race gets the promised

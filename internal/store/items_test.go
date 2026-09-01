@@ -36,6 +36,45 @@ func createTestItem(t *testing.T, s *Store, workspaceID, collectionID, title, co
 	return item
 }
 
+// createLegacyTitledItem creates an item and then writes `title` onto the row
+// DIRECTLY, bypassing the write-time validation in CreateItem/UpdateItem
+// (models.ValidateItemTitle, BUG-2833 / BUG-2831).
+//
+// It exists because that validation is deliberately NON-RETROACTIVE: a stored
+// title that predates the bound stays valid, keeps resolving, and keeps
+// cascading. Rows like that are real — every database written before the guard
+// may hold them — so the behaviours that handle them still need fixtures, and
+// after the guard the ordinary create path can no longer build one.
+//
+// Using it is an assertion that the row under test is LEGACY data. Do not
+// reach for it to dodge the validator in a test about a normal write: if the
+// title could be minted through a door today, build it through that door.
+//
+// The slug is derived exactly as the pre-guard create path derived it —
+// slugify with no truncation, then uniqueness — so the fixture reproduces what
+// such a row actually looks like rather than an idealized version of it.
+func createLegacyTitledItem(t *testing.T, s *Store, workspaceID, collectionID, title, content string) *models.Item {
+	t.Helper()
+	item := createTestItem(t, s, workspaceID, collectionID, "legacy title placeholder", content)
+
+	baseSlug := slugify(title)
+	if baseSlug == "" {
+		baseSlug = "untitled"
+	}
+	slug, err := s.uniqueSlugExcluding(s.db, "items", "workspace_id", workspaceID, baseSlug, item.ID)
+	if err != nil {
+		t.Fatalf("legacy title fixture: unique slug: %v", err)
+	}
+	if _, err := s.db.Exec(s.q("UPDATE items SET title = ?, slug = ? WHERE id = ?"), title, slug, item.ID); err != nil {
+		t.Fatalf("legacy title fixture: write title: %v", err)
+	}
+	updated, err := s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("legacy title fixture: re-read: %v", err)
+	}
+	return updated
+}
+
 func TestListItems_UnparentedStructuralParity(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Unparented")

@@ -1034,7 +1034,13 @@ func TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle(t *testing.T) {
 	// no TASKS collection prefix variant matching "TASK-5", so the
 	// ref resolution misses and title fallback must use the raw
 	// (untrimmed) key.
-	target := createTestItem(t, s, ws.ID, col.ID, " TASK-5 ", "")
+	// BUG-2833: item titles are trimmed at every write door now, so a title
+	// with real surrounding whitespace can only exist as legacy data — which is
+	// precisely the population this fallback still has to serve, since the
+	// bound is non-retroactive. Building it through CreateItem would silently
+	// produce "TASK-5" and the test would pass for the wrong reason (no
+	// whitespace anywhere, nothing about untrimmed keys exercised).
+	target := createLegacyTitledItem(t, s, ws.ID, col.ID, " TASK-5 ", "")
 	createTestItem(t, s, ws.ID, col.ID, "Source", "See [[ TASK-5 ]] anyway.")
 
 	got, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})

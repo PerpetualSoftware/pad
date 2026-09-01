@@ -460,11 +460,18 @@ func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string,
 // isDeterministicWriteFailure reports whether an error from a direct-write
 // callback is a settled answer rather than a transient condition.
 //
-// These three are the errors handleUpdateItem already treats as FINAL at every
-// call site: a rejection, a conflict, and a refusal. None can come out
+// These are the errors handleUpdateItem already treats as FINAL at every call
+// site: a rejection, a conflict, and two refusals. None can come out
 // differently on a retry, so a fallback path that swallows one and retries is
 // doing the work twice to reach the same answer — and, worse, may reach it by
 // a route that reports it differently.
+//
+// THIS LIST IS A CLOSED SET THAT KEEPS GETTING REOPENED. It said "these three"
+// until BUG-2833 added a fourth store-level refusal on the same write path, and
+// nothing failed when the new error was omitted — the request still reached an
+// answer, just twice and by the other route. Anyone adding a typed, permanent
+// refusal to store.UpdateItem owes this function an entry and the sentence
+// above a recount.
 func isDeterministicWriteFailure(err error) bool {
 	if err == nil {
 		return false
@@ -473,6 +480,10 @@ func isDeterministicWriteFailure(err error) bool {
 		return true
 	}
 	if _, ok := asUpdateConflictError(err); ok {
+		return true
+	}
+	var badTitle *store.InvalidItemTitleError
+	if errors.As(err, &badTitle) {
 		return true
 	}
 	var tooLarge *store.ItemRenameCascadeTooLargeError

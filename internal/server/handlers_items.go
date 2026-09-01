@@ -617,8 +617,22 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Title == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "Title is required")
+	// BUG-2833 / BUG-2831. This used to be `input.Title == ""` inline, which is
+	// how create and update came to disagree: the rule was a literal in one
+	// handler, so the sibling handler on the same field never got it. It now
+	// runs through models.NormalizeItemTitle + models.ValidateItemTitle, the
+	// same pair store.CreateItem enforces authoritatively and
+	// handleUpdateItem/handleImportArtifact call.
+	//
+	// Two behaviour changes on THIS door, both deliberate:
+	//   - whitespace-only titles are now refused. "   " was legal on create and
+	//     refused on artifact import; it slugifies to empty and lands on the
+	//     store's "untitled" fallback, which Dave's ruling made defensive-only.
+	//   - titles over MaxItemTitleRunes are refused, closing BUG-2831's
+	//     dialect split at the door instead of at a Postgres btree error.
+	input.Title = models.NormalizeItemTitle(input.Title)
+	if msg := models.ValidateItemTitle(input.Title); msg != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
 
@@ -772,6 +786,16 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input)
 	if err != nil {
+		// BUG-2833 / BUG-2831: the store's typed title refusal is a 400, not a
+		// 500. Today the handler's own check above catches every reachable
+		// case, so this arm is belt-and-braces — but its ABSENCE was a latent
+		// 500 that a mutation test surfaced, and the update path needs the same
+		// arm for a title that only becomes invalid under the lock. Both paths
+		// answer the same way because both go through the same helper.
+		var badTitle *store.InvalidItemTitleError
+		if errors.As(err, &badTitle) {
+			return nil, &itemCreateError{http.StatusBadRequest, "bad_request", badTitle.Reason}
+		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
 			// Could be the slug-per-workspace constraint OR the playbook
 			// invocation_slug partial unique index (TASK-1378). Keep the
@@ -923,6 +947,35 @@ func writeItemRenameCascadeTooLarge(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+// writeInvalidItemTitle maps the store's typed title refusal to a 400, and
+// reports whether it did — same shape as writeItemRenameCascadeTooLarge above,
+// and for the same reason: without it the refusal falls through to
+// writeInternalError and lands as a 500, telling the caller the server broke
+// and that retrying might work, when the request was understood, deliberately
+// declined, and will be declined identically until the title changes.
+//
+// Shared by the THREE update error blocks (the plain path, the collab-snapshot
+// callback and the collab-edit callback), which is where duplicating an arm has
+// actually gone wrong twice — see the note on writeItemRenameCascadeTooLarge.
+//
+// The CREATE path does not use it and cannot: createItemChecked returns a typed
+// *itemCreateError for its caller to write, rather than writing the response
+// itself, so it maps the same store error with its own errors.As block. An
+// earlier version of this comment claimed create shared this helper (codex
+// round 5) — the rule they share is the 400, not the code.
+//
+// The Reason is taken from the TYPED field, never by splicing err.Error(): the
+// call path wraps this error on the way up and those wrappers must not be
+// published to the client.
+func writeInvalidItemTitle(w http.ResponseWriter, err error) bool {
+	var bad *store.InvalidItemTitleError
+	if !errors.As(err, &bad) {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "bad_request", bad.Reason)
+	return true
+}
+
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -969,6 +1022,42 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
+	}
+
+	// BUG-2833: the empty-title door. handleCreateItem has refused an empty
+	// title since it was written; this handler never had the check, so
+	// PATCH {"title": ""} was accepted and applied — one field, two handlers,
+	// two answers. BUG-2831 adds the length half: an unbounded title becomes an
+	// unbounded slug, which Postgres refuses at the UNIQUE(workspace_id, slug)
+	// btree while SQLite takes it.
+	//
+	// THIS CHECK REFUSES; IT DOES NOT DECIDE. It may answer 400 early, and it
+	// must not alter `input` — the grandfathering decision and the
+	// normalization both belong to store.UpdateItem, under the write lock.
+	//
+	// The reason is a real regression this handler caused when it did decide
+	// (caught by BUG-2776's own TOCTOU test): `item` here is read BEFORE any
+	// lock, so "the title equals the stored one" is a claim about a snapshot
+	// that a concurrent rename can invalidate. A rival renames the item inside
+	// the window; this request then sends the title IT last saw, which against
+	// the row AS COMMITTED is a genuine rename back. Deciding here dropped that
+	// write entirely and the timeline lost a rename that happened.
+	//
+	// Normalizing here is the same mistake in the other direction: it would
+	// destroy the store's raw-echo comparison, which is what lets a client echo
+	// a legacy title carrying edge whitespace without it reading as a rename.
+	//
+	// So the early refusal is skipped when the title matches the pre-lock read
+	// — a fast path that can only ever be wrong about whether to REFUSE, never
+	// about what to write, and the store refuses again anyway.
+	if input.Title != nil {
+		normalizedTitle := models.NormalizeItemTitle(*input.Title)
+		if normalizedTitle != item.Title && *input.Title != item.Title {
+			if msg := models.ValidateItemTitle(normalizedTitle); msg != "" {
+				writeError(w, http.StatusBadRequest, "bad_request", msg)
+				return
+			}
+		}
 	}
 
 	// TASK-2022: `fields` (full replace) and `fields_patch` (field-level
@@ -1579,6 +1668,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			if writeItemRenameCascadeTooLarge(w, err) {
 				return
 			}
+			// BUG-2833 / codex round 1, P2 — the identical omission, one
+			// release later. This block mirrors the plain path's arms, and a
+			// PATCH carrying both content and a title reaches the store through
+			// it, so a title the store refuses under the lock would answer 500
+			// here while the plain path answers 400.
+			if writeInvalidItemTitle(w, err) {
+				return
+			}
 			// Mirror the main UpdateItem path: map UNIQUE constraint /
 			// duplicate key races (e.g. concurrent edits both racing the
 			// invocation_slug partial unique index) to 409 conflict so
@@ -1662,6 +1759,20 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// re-run the entire cascade — every linking body read and projected a
 			// second time — and refuse identically (codex R2).
 			return
+		} else if writeInvalidItemTitle(w, err) {
+			// FINAL for the same reason, and the pair with
+			// isDeterministicWriteFailure: that function is what stops
+			// applyContentViaCollab swallowing this error, and THIS arm is what
+			// consumes it once it arrives. Without both, a refused title falls
+			// through to the direct write below and is re-derived from scratch.
+			//
+			// BUG-2833 / codex R2. The comment on writeItemRenameCascadeTooLarge
+			// says this handler has THREE error blocks and that mapping only the
+			// plain one is a population error rather than a typo. I mapped two,
+			// then a reviewer named a third — and this is the fourth unit to make
+			// the identical mistake in the identical function. CONVE-18: the
+			// instance a reviewer names is a sample; grep the class.
+			return
 		} else if errors.Is(err, collab.ErrApplierAmbiguous) {
 			// BUG-2276 residual 2 (P1, mixed-deploy window): a legacy (non-bracket-
 			// capable) applier was caught by a concurrent version restore and its
@@ -1712,6 +1823,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// call path added on the way up would otherwise be published to the
 		// client.
 		if writeItemRenameCascadeTooLarge(w, err) {
+			return
+		}
+		// BUG-2833 / BUG-2831: the store's authoritative title check. The
+		// pre-lock check above catches this for ordinary callers; this arm is
+		// what a title that only became invalid under the lock lands on, and it
+		// must be a 400 rather than writeInternalError's 500 — the request was
+		// understood and declined, and retrying it unchanged will be declined
+		// identically.
+		if writeInvalidItemTitle(w, err) {
 			return
 		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both

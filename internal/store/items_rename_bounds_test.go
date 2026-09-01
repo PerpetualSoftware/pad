@@ -251,14 +251,20 @@ func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T
 // TestItemRenameCascade_BoundsTheScanNotJustTheRewrite closes codex R4's P1.
 //
 // The rewrite loop's cap charges CONTENT bytes. The scan that feeds it retains
-// one entry per matching link ROW, each carrying that row's target_title — and
-// item titles have no length bound (MaxDocumentTitleRunes covers documents
-// only; there is no item equivalent, verified by grep across internal/).
+// one entry per matching link ROW, each carrying that row's target_title.
 //
-// So the attack needs no large content at all: give the renamed item a title
-// measured in megabytes, link it from enough rows, and the cascade retains
-// rows x title bytes before reading a single body. A content-bytes cap cannot
-// see it, because the content is a few dozen bytes per linker.
+// So the attack needs no large content at all: give the renamed item a large
+// title, link it from enough rows, and the cascade retains rows x title bytes
+// before reading a single body. A content-bytes cap cannot see it, because the
+// content is a few dozen bytes per linker.
+//
+// This comment used to say item titles have no length bound. Since
+// BUG-2833 / BUG-2831 they do — models.MaxItemTitleRunes — and the fixture
+// below is built as LEGACY data for exactly that reason. The guard is not
+// thereby obsolete: the bound is non-retroactive, this scan reads STORED
+// titles rather than the one being written, and at the bound the same pressure
+// arrives with ~240,000 link rows instead of 64 — 64 MiB / (255 + 24), computed
+// for THIS bound rather than carried over from BUG-2804's few-KB ceiling.
 //
 // This is the case my own doc comment on MaxItemRenameCascadeBytes previously
 // claimed was impossible — it asserted the cascade's retention was O(1) in the
@@ -266,9 +272,10 @@ func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T
 // (BUG-2827), which is a different vector entirely.
 func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 	// The largest title one JSON request can deliver (server.defaultJSONBodyLimit
-	// is 2 MiB). Nothing validates item title length, so this is reachable
-	// through the ordinary create path — and using the maximum keeps the ROW
-	// COUNT down, which is what this test's runtime is dominated by.
+	// is 2 MiB). This is no longer reachable through the ordinary create path —
+	// models.MaxItemTitleRunes refuses it — so the fixture is seeded as legacy
+	// data below. The size is kept because it is what keeps the ROW COUNT down,
+	// and this test's runtime is dominated by row count.
 	const titleBytes = 2 << 20
 	hugeTitle := strings.Repeat("T", titleBytes)
 
@@ -288,19 +295,28 @@ func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 	//
 	// On Postgres this fixture cannot be built at all: `items` carries
 	// UNIQUE(workspace_id, slug), the slug is derived from the title with no
-	// truncation (store.go::slugify), and a btree index tuple is capped at
-	// 8191 bytes. Creating the target fails with
+	// truncation (store.go::slugify), and a btree index tuple has a size cap.
+	// Creating the target fails with
 	//
 	//	insert item: ERROR: index row requires 24064 bytes, maximum size is 8191 (SQLSTATE 54000)
 	//
 	// — 24,064 rather than 2 MiB because the repetitive title compresses hard
-	// before indexing. So the huge-title shape is UNREACHABLE on Postgres,
-	// which bounds item titles in practice at a few KB while SQLite accepts
-	// them at any length.
+	// before indexing. So the huge-title shape is UNREACHABLE on Postgres, and
+	// the LEGACY-DATA seeding this test now uses cannot manufacture it either:
+	// the row goes in through the same UNIQUE index.
 	//
-	// That divergence is a defect in its own right (same input accepted on one
+	// That divergence WAS a defect in its own right (same input accepted on one
 	// backend, refused with a 500-shaped error on the other — the BUG-2782 /
-	// BUG-2784 family) and is reported separately rather than bundled here.
+	// BUG-2784 family). It was filed as BUG-2831 and is now FIXED: item titles
+	// are bounded at models.MaxItemTitleRunes on both backends, so the input
+	// this comment describes is refused identically either side. What remains
+	// dialect-specific is only that a pre-bound legacy ROW can exist on SQLite
+	// and not on Postgres, which is why the skip below stays.
+	//
+	// (The cap that actually fires first is 2704 bytes, not 8191 — measured;
+	// see models.MaxItemTitleRunes. The reading quoted above is from the
+	// hard-ceiling arm and is left verbatim because it is what BUG-2804's run
+	// actually printed.)
 	//
 	// What it does NOT mean is that the scan bound is SQLite-only. Row count is
 	// unbounded on both backends: at Postgres's practical title ceiling the
@@ -309,11 +325,26 @@ func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 	// trade — 64 rows instead of 24,000 — and pays for it by being
 	// dialect-scoped.
 	if s.dialect.Driver() == DriverPostgres {
-		t.Skip("huge-title fixture is unreachable on Postgres: UNIQUE(workspace_id, slug) btree caps the index tuple at 8191 bytes")
+		t.Skip("huge-title fixture is unreachable on Postgres: UNIQUE(workspace_id, slug) btree caps the index tuple, so even a legacy-seeded row cannot carry this slug")
 	}
 	ws := createTestWorkspace(t, s, "ItemRenameScanBound")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	target := createTestItem(t, s, ws.ID, col.ID, hugeTitle, "the item being renamed")
+	// BUG-2833 / BUG-2831: a 2 MiB title is no longer reachable through
+	// CreateItem — models.MaxItemTitleRunes refuses it at the door, on both
+	// dialects. The scan bound it guards is NOT thereby obsolete: the charge is
+	// against each link row's STORED target_title, so a legacy row carrying a
+	// pre-bound title still drives exactly this pressure, and even an in-bound
+	// title reaches the cap — at ~240,000 rows, 64 MiB / (255 + 24).
+	//
+	// NOT the ~24,000 the paragraph above quotes, and the difference is the
+	// point: that figure is BUG-2804's, derived from Postgres's practical title
+	// ceiling of a few KB, and an earlier version of this comment reused it for
+	// the 255-rune bound without recomputing (codex round 5). Two ceilings, two
+	// numbers, one sentence away from each other.
+	//
+	// Built as legacy data so the test keeps measuring the guard rather than
+	// the new door in front of it.
+	target := createLegacyTitledItem(t, s, ws.ID, col.ID, hugeTitle, "the item being renamed")
 
 	contentBytes := 0
 	for i := 0; i < rowsNeeded; i++ {

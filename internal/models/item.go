@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -1216,4 +1218,110 @@ type ItemLinkCreate struct {
 	TargetID  string `json:"target_id"`
 	LinkType  string `json:"link_type,omitempty"`
 	CreatedBy string `json:"created_by,omitempty"`
+}
+
+// MaxItemTitleRunes bounds an item title at write time.
+//
+// 255 matches MaxDocumentTitleRunes, but for items the number is not borrowed
+// — it is mechanically sufficient, which is why BUG-2831's "there is no single
+// safe number, it depends on compressibility" does not apply once the bound
+// exists:
+//
+//   - items carries UNIQUE(workspace_id, slug), which Postgres implements as a
+//     btree, and a btree index tuple has a size cap. That cap, not the title
+//     column, is what refuses a long title on Postgres while SQLite takes it
+//     (BUG-2831).
+//   - store.slugify emits ONLY [a-z0-9-] — one output BYTE per input rune at
+//     most, and it truncates nothing. So an N-rune title yields at most N bytes
+//     of slug.
+//
+// THE CAP IS 2704 BYTES, NOT 8191, and this is measured rather than inherited.
+// BUG-2831 quoted 8191 — the absolute maximum — and the first version of this
+// comment repeated it. Driving high-entropy slugs of 2000 / 4000 / 9000 bytes
+// through ImportWorkspace against Postgres 17 (the container the PG gate uses)
+// with the coercion disabled gives:
+//
+//	2000 -> accepted
+//	4000 -> ERROR: index row size 4056 exceeds btree version 4 maximum 2704
+//	        for index "items_workspace_id_slug_key" (SQLSTATE 54000)
+//	9000 -> ERROR: index row requires 9056 bytes, maximum size is 8191 (SQLSTATE 54000)
+//
+// So 2704 is what a regular index tuple is held to (a third of a page) and
+// 8191 is the hard ceiling reached only past it. Both are post-compression:
+// a REPETITIVE 9000-byte slug is accepted, which is why the filing's threshold
+// was unquotable as a single number and why the test fixture uses a
+// deterministic high-entropy slug rather than strings.Repeat.
+//
+// 255 runes therefore bounds the slug at ~255 bytes against the 2704 that
+// actually fires: ~10x headroom, so compressibility stops mattering. The
+// uniqueness suffix (-2, -3, ...) adds a handful of bytes and does not change
+// that.
+//
+// RUNES, not bytes, because "255 characters" is what a user and a UI counter
+// mean. The byte-level residual on the TITLE column is up to 4x this number,
+// which the title column (TEXT) carries without complaint — the slug is the
+// constrained derivative, and it is ASCII by construction.
+//
+// Enforced at WRITE time only, and deliberately NOT retroactive: an item whose
+// stored title already exceeds the bound keeps working, and an update that does
+// not set a title never validates one. Same grandfathering rule as documents
+// (Dave's ruling, day-63).
+//
+// TWO PATHS DO NOT VALIDATE, both by ruling and both carrying legacy data
+// rather than caller input (codex round 5 — an earlier version of this comment
+// said every door normalizes then validates, which is not true of either):
+//
+//   - ImportWorkspace COERCES rather than refuses, so restoring an archive
+//     cannot die on a row this product itself once accepted.
+//   - Cross-workspace copy PROPAGATES the source row's title verbatim, for the
+//     same reason; it takes no title from the caller, so it cannot mint one.
+//
+// The guarantee that holds across every path is therefore narrower than "every
+// stored title satisfies this bound": no CALLER-SUPPLIED title is stored
+// without being validated against it. Legacy titles at rest are out of scope
+// here; making the bound global would be a count-then-repair sweep over
+// existing rows, not a change to any door.
+const MaxItemTitleRunes = 255
+
+// NormalizeItemTitle is the canonical normalization for an item title:
+// leading/trailing whitespace is not part of a title.
+//
+// It exists as its own function because normalize-then-validate must not drift
+// between doors — the whole of BUG-2833 is create and update disagreeing about
+// one field, and BUG-2831 is create and Postgres disagreeing about the same
+// field.
+//
+// Every door that takes a title FROM A CALLER pairs this with
+// ValidateItemTitle and stores what it validated, never the raw input. The two
+// legacy-data paths do not, by ruling: ImportWorkspace coerces (it normalizes,
+// then truncates or substitutes rather than refusing) and cross-workspace copy
+// carries the source row's title through untouched. See MaxItemTitleRunes for
+// both. An earlier version of this comment said "every door", which reads as
+// covering those two and does not (codex round 6).
+func NormalizeItemTitle(title string) string {
+	return strings.TrimSpace(title)
+}
+
+// ValidateItemTitle checks an ALREADY-NORMALIZED item title at write time.
+// Returns a message suitable for a 400 response, or "" when acceptable.
+//
+// Callers pass NormalizeItemTitle's output. Validating the normalized value is
+// the point rather than an implementation detail: a title of "   " is untitled
+// wearing a costume, and before this function existed it was legal on create
+// (which tested title == "" exactly) and refused on artifact import (which
+// trimmed first) — two doors, two rules, and the import door's comment claimed
+// to mirror the create gate it was in fact stricter than.
+//
+// Deliberately NOT covering wikiTitleRoundTripFailure, which ValidateDocumentTitle
+// does: the item rename cascade escapes its emission (BUG-2805), so an item
+// title containing wiki-link syntax round-trips. Documents' cascade does not
+// escape, which is why the check lives there and not here.
+func ValidateItemTitle(title string) string {
+	if title == "" {
+		return "Title is required"
+	}
+	if n := utf8.RuneCountInString(title); n > MaxItemTitleRunes {
+		return fmt.Sprintf("Title is too long: %d characters, maximum %d", n, MaxItemTitleRunes)
+	}
+	return ""
 }
