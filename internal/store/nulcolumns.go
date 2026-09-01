@@ -1,5 +1,10 @@
 package store
 
+import (
+	"fmt"
+	"log/slog"
+)
+
 // The enforcement population for the NUL invariant (DOC-2823 S2, Layer B).
 //
 // ONE LIST, THREE CONSUMERS. The trigger migration is GENERATED from this list,
@@ -108,7 +113,12 @@ var nulColumns = []nulColumn{
 	{"views", "name", classText},
 
 	// agent roles
-	{"agent_roles", "tools", classJSON},
+	// tools is FREE TEXT, not JSON — migration 019 says so in as many words
+	// ("free-text notes about preferred tools/models", e.g. "Claude Code +
+	// Sonnet 4.6"). TASK-2825's census classed it J and this list inherited
+	// that; codex round 1 caught it. Classing it JSON would refuse a user's
+	// note that happens to be valid JSON carrying an escape.
+	{"agent_roles", "tools", classText},
 	{"agent_roles", "name", classText},
 	{"agent_roles", "description", classText},
 	{"agent_roles", "icon", classText},
@@ -156,6 +166,23 @@ var nulColumns = []nulColumn{
 	{"share_links", "restrict_to_email", classText},
 	{"workspace_invitations", "email", classText},
 
+	// CALLER-SUPPLIED SLUGS (codex round 1).
+	//
+	// items.slug is excluded because it is DERIVED — ItemCreate has no Slug
+	// field, so slugify's [a-z0-9-] output is the only thing that reaches it.
+	// That reasoning does NOT transfer to these: CreateWorkspace and
+	// CreateCollection both start with `slug := input.Slug` and only fall back
+	// to slugify when the caller supplied none. The census's exclusion note was
+	// right about items and was read as covering slugs generally.
+	{"workspaces", "slug", classText},
+	{"collections", "slug", classText},
+	{"views", "slug", classText},
+	{"agent_roles", "slug", classText},
+
+	// Other caller-influenced columns the census did not reach.
+	{"comment_reactions", "emoji", classText},
+	{"oauth_clients", "logo_url", classText},
+
 	// second ring, remaining
 	{"attachments", "filename", classText},
 	{"attachments", "mime_type", classText},
@@ -175,9 +202,22 @@ var oauthRequestTables = []string{
 	"oauth_pkce_requests",
 }
 
-var oauthRequestColumns = []string{
-	"request_form",
+// Only session_data is JSON. The other five are NOT, and the census's
+// "shared-writer extension" classed all six alike (codex round 1).
+//
+// Measured in internal/oauth/storage.go: RequestForm is
+// `req.GetRequestForm().Encode()` — url-encoded form data; Scopes,
+// GrantedScopes, Audience and GrantedAudience are `strings.Join(..., " ")`.
+// Only SessionData is `string(sessionBytes)` from a marshal.
+//
+// oauth_clients.scopes and friends ARE json, via jsonStringList — same word,
+// different tables, which is how the extension went wrong.
+var oauthRequestJSONColumns = []string{
 	"session_data",
+}
+
+var oauthRequestTextColumns = []string{
+	"request_form",
 	"scopes",
 	"granted_scopes",
 	"audience",
@@ -189,11 +229,14 @@ var oauthRequestColumns = []string{
 // Exported so the guard test and the migration generator consume the SAME
 // value rather than two readings of the same table.
 func NULProtectedColumns() []nulColumn {
-	out := make([]nulColumn, 0, len(nulColumns)+len(oauthRequestTables)*len(oauthRequestColumns))
+	out := make([]nulColumn, 0, len(nulColumns)+len(oauthRequestTables)*(len(oauthRequestJSONColumns)+len(oauthRequestTextColumns)))
 	out = append(out, nulColumns...)
 	for _, t := range oauthRequestTables {
-		for _, c := range oauthRequestColumns {
+		for _, c := range oauthRequestJSONColumns {
 			out = append(out, nulColumn{t, c, classJSON})
+		}
+		for _, c := range oauthRequestTextColumns {
+			out = append(out, nulColumn{t, c, classText})
 		}
 	}
 	return out
@@ -213,5 +256,51 @@ var nulExcluded = map[string]string{
 	"mcp_audit_log.error_kind":            "server enum, mcp_audit.go",
 	"users.recovery_codes":                "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
 	"workspace_members.collection_access": "validated enum all/selected",
-	"items.slug":                          "slugify emits only [a-z0-9-]; a NUL cannot survive into it",
+	"items.slug":                          "DERIVED: ItemCreate has no Slug field, so slugify's [a-z0-9-] output is the only thing that reaches it. NOTE this reasoning is specific to items — workspaces, collections, views and agent_roles all accept a caller-supplied slug and ARE protected.",
+	"item_yjs_updates.update_data":        "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
+
+// ensureNULTriggers re-applies the Layer B trigger migration if any of its
+// triggers are missing.
+//
+// It runs after every migration pass, and exists because a table rebuild drops
+// the table's triggers while migration 084 stays recorded as applied — so
+// without this, the first rebuild after S2 would remove protection from that
+// table forever, with nothing to see.
+//
+// It re-runs the migration FILE rather than regenerating SQL here, so there is
+// still exactly one definition of what the triggers are. Every statement is
+// CREATE TRIGGER IF NOT EXISTS, so re-running it is a no-op when nothing is
+// missing — which is the common case, checked with one query first.
+func (s *Store) ensureNULTriggers() error {
+	if s.dialect.Driver() != DriverSQLite {
+		return nil
+	}
+
+	var have int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'pad_nul_%'`,
+	).Scan(&have); err != nil {
+		return fmt.Errorf("count NUL triggers: %w", err)
+	}
+	want := len(NULProtectedColumns()) * 2 // one BEFORE INSERT + one BEFORE UPDATE each
+	if have == want {
+		return nil
+	}
+
+	data, err := migrationsFS.ReadFile("migrations/" + nulTriggerMigration)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", nulTriggerMigration, err)
+	}
+	if err := execMulti(s.db, string(data)); err != nil {
+		return fmt.Errorf("restore NUL triggers: %w", err)
+	}
+	slog.Warn("NUL invariant triggers were missing and have been restored — a table rebuild most likely "+
+		"dropped them; the rows written while they were absent are NOT checked",
+		"had", have, "want", want)
+	return nil
+}
+
+// nulTriggerMigration is the generated file, named once so the generator, the
+// re-assertion and the pin test all refer to the same artifact.
+const nulTriggerMigration = "084_nul_invariant_triggers.sql"

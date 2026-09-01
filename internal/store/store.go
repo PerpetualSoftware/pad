@@ -451,6 +451,26 @@ func (s *Store) migrate() error {
 	// its triggers, leaving search broken until someone notices.
 	s.validateFTSInvariants()
 
+	// The NUL triggers are RE-ASSERTED, not merely checked (DOC-2823 S2, codex
+	// round 1).
+	//
+	// SQLite drops a table's triggers when the table is dropped, and this
+	// codebase rebuilds tables to change constraints — migrations 025, 055,
+	// 056, 057, 068 and 072 all do it. A future rebuild would silently take
+	// the NUL triggers with it, and migration 084 would never run again because
+	// it is already recorded as applied.
+	//
+	// The FTS check above warns in that situation and leaves search broken
+	// until someone notices, which was judged the right cost for a derived
+	// index. It is the wrong cost for a DATA INVARIANT: the whole point of
+	// Layer B is that the file enforces the rule for writers we do not control,
+	// so a silently absent trigger is silently no protection. Re-asserting is
+	// cheap (CREATE TRIGGER IF NOT EXISTS over a fixed set) and turns a rebuild
+	// from a silent loss into a no-op.
+	if err := s.ensureNULTriggers(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

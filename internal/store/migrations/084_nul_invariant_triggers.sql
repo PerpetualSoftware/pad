@@ -1,7 +1,7 @@
 -- Layer B of the NUL invariant (DOC-2823 S2): the database owns the rule.
 --
 -- GENERATED from internal/store/nulcolumns.go. Do not edit by hand — run
---   GEN_NUL_TRIGGERS=1 go test ./internal/store/ -run TestZZGenerateTriggerMigration
+--   GEN_NUL_TRIGGERS=1 go test ./internal/store/ -run TestGenerateNULTriggerMigration
 -- and commit the result. TestNULTriggersMatchTheList fails if this file and the
 -- Go list disagree.
 --
@@ -163,14 +163,28 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: agent_roles.name must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_agent_roles_slug_ins
+BEFORE INSERT ON agent_roles
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: agent_roles.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_agent_roles_slug_upd
+BEFORE UPDATE OF slug ON agent_roles
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: agent_roles.slug must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_agent_roles_tools_ins
 BEFORE INSERT ON agent_roles
 FOR EACH ROW WHEN NEW.tools IS NOT NULL AND (
 			instr(NEW.tools, char(0)) > 0
-			OR (json_valid(NEW.tools) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.tools)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: agent_roles.tools must not contain a NUL');
@@ -180,10 +194,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_agent_roles_tools_upd
 BEFORE UPDATE OF tools ON agent_roles
 FOR EACH ROW WHEN NEW.tools IS NOT NULL AND (
 			instr(NEW.tools, char(0)) > 0
-			OR (json_valid(NEW.tools) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.tools)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: agent_roles.tools must not contain a NUL');
@@ -393,6 +403,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: collections.settings must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_collections_slug_ins
+BEFORE INSERT ON collections
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: collections.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_collections_slug_upd
+BEFORE UPDATE OF slug ON collections
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: collections.slug must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_collections_traits_ins
 BEFORE INSERT ON collections
 FOR EACH ROW WHEN NEW.traits IS NOT NULL AND (
@@ -417,6 +445,24 @@ FOR EACH ROW WHEN NEW.traits IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: collections.traits must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_comment_reactions_emoji_ins
+BEFORE INSERT ON comment_reactions
+FOR EACH ROW WHEN NEW.emoji IS NOT NULL AND (
+			instr(NEW.emoji, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comment_reactions.emoji must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_comment_reactions_emoji_upd
+BEFORE UPDATE OF emoji ON comment_reactions
+FOR EACH ROW WHEN NEW.emoji IS NOT NULL AND (
+			instr(NEW.emoji, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: comment_reactions.emoji must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_comments_author_ins
@@ -851,10 +897,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_audience_ins
 BEFORE INSERT ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.audience must not contain a NUL');
@@ -864,10 +906,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_audience_upd
 BEFORE UPDATE OF audience ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.audience must not contain a NUL');
@@ -877,10 +915,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_granted_audience_ins
 BEFORE INSERT ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.granted_audience must not contain a NUL');
@@ -890,10 +924,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_granted_audience_upd
 BEFORE UPDATE OF granted_audience ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.granted_audience must not contain a NUL');
@@ -903,10 +933,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_granted_scopes_ins
 BEFORE INSERT ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.granted_scopes must not contain a NUL');
@@ -916,10 +942,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_granted_scopes_upd
 BEFORE UPDATE OF granted_scopes ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.granted_scopes must not contain a NUL');
@@ -929,10 +951,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_request_form_ins
 BEFORE INSERT ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.request_form must not contain a NUL');
@@ -942,10 +960,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_request_form_upd
 BEFORE UPDATE OF request_form ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.request_form must not contain a NUL');
@@ -955,10 +969,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_scopes_ins
 BEFORE INSERT ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.scopes must not contain a NUL');
@@ -968,10 +978,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_access_tokens_scopes_upd
 BEFORE UPDATE OF scopes ON oauth_access_tokens
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_access_tokens.scopes must not contain a NUL');
@@ -1007,10 +1013,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_audience_ins
 BEFORE INSERT ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.audience must not contain a NUL');
@@ -1020,10 +1022,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_audience_upd
 BEFORE UPDATE OF audience ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.audience must not contain a NUL');
@@ -1033,10 +1031,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_granted_audience_
 BEFORE INSERT ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.granted_audience must not contain a NUL');
@@ -1046,10 +1040,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_granted_audience_
 BEFORE UPDATE OF granted_audience ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.granted_audience must not contain a NUL');
@@ -1059,10 +1049,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_granted_scopes_in
 BEFORE INSERT ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.granted_scopes must not contain a NUL');
@@ -1072,10 +1058,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_granted_scopes_up
 BEFORE UPDATE OF granted_scopes ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.granted_scopes must not contain a NUL');
@@ -1085,10 +1067,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_request_form_ins
 BEFORE INSERT ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.request_form must not contain a NUL');
@@ -1098,10 +1076,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_request_form_upd
 BEFORE UPDATE OF request_form ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.request_form must not contain a NUL');
@@ -1111,10 +1085,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_scopes_ins
 BEFORE INSERT ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.scopes must not contain a NUL');
@@ -1124,10 +1094,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_authorization_codes_scopes_upd
 BEFORE UPDATE OF scopes ON oauth_authorization_codes
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_authorization_codes.scopes must not contain a NUL');
@@ -1183,6 +1149,24 @@ FOR EACH ROW WHEN NEW.grant_types IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_clients.grant_types must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_clients_logo_url_ins
+BEFORE INSERT ON oauth_clients
+FOR EACH ROW WHEN NEW.logo_url IS NOT NULL AND (
+			instr(NEW.logo_url, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_clients.logo_url must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_clients_logo_url_upd
+BEFORE UPDATE OF logo_url ON oauth_clients
+FOR EACH ROW WHEN NEW.logo_url IS NOT NULL AND (
+			instr(NEW.logo_url, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_clients.logo_url must not contain a NUL');
 END;
 
 CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_clients_name_ins
@@ -1303,10 +1287,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_audience_ins
 BEFORE INSERT ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.audience must not contain a NUL');
@@ -1316,10 +1296,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_audience_upd
 BEFORE UPDATE OF audience ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.audience must not contain a NUL');
@@ -1329,10 +1305,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_granted_audience_ins
 BEFORE INSERT ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.granted_audience must not contain a NUL');
@@ -1342,10 +1314,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_granted_audience_upd
 BEFORE UPDATE OF granted_audience ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.granted_audience must not contain a NUL');
@@ -1355,10 +1323,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_granted_scopes_ins
 BEFORE INSERT ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.granted_scopes must not contain a NUL');
@@ -1368,10 +1332,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_granted_scopes_upd
 BEFORE UPDATE OF granted_scopes ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.granted_scopes must not contain a NUL');
@@ -1381,10 +1341,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_request_form_ins
 BEFORE INSERT ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.request_form must not contain a NUL');
@@ -1394,10 +1350,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_request_form_upd
 BEFORE UPDATE OF request_form ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.request_form must not contain a NUL');
@@ -1407,10 +1359,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_scopes_ins
 BEFORE INSERT ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.scopes must not contain a NUL');
@@ -1420,10 +1368,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_pkce_requests_scopes_upd
 BEFORE UPDATE OF scopes ON oauth_pkce_requests
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_pkce_requests.scopes must not contain a NUL');
@@ -1459,10 +1403,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_audience_ins
 BEFORE INSERT ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.audience must not contain a NUL');
@@ -1472,10 +1412,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_audience_upd
 BEFORE UPDATE OF audience ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.audience IS NOT NULL AND (
 			instr(NEW.audience, char(0)) > 0
-			OR (json_valid(NEW.audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.audience must not contain a NUL');
@@ -1485,10 +1421,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_granted_audience_ins
 BEFORE INSERT ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.granted_audience must not contain a NUL');
@@ -1498,10 +1430,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_granted_audience_upd
 BEFORE UPDATE OF granted_audience ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.granted_audience IS NOT NULL AND (
 			instr(NEW.granted_audience, char(0)) > 0
-			OR (json_valid(NEW.granted_audience) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_audience)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.granted_audience must not contain a NUL');
@@ -1511,10 +1439,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_granted_scopes_ins
 BEFORE INSERT ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.granted_scopes must not contain a NUL');
@@ -1524,10 +1448,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_granted_scopes_upd
 BEFORE UPDATE OF granted_scopes ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.granted_scopes IS NOT NULL AND (
 			instr(NEW.granted_scopes, char(0)) > 0
-			OR (json_valid(NEW.granted_scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.granted_scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.granted_scopes must not contain a NUL');
@@ -1537,10 +1457,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_request_form_ins
 BEFORE INSERT ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.request_form must not contain a NUL');
@@ -1550,10 +1466,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_request_form_upd
 BEFORE UPDATE OF request_form ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.request_form IS NOT NULL AND (
 			instr(NEW.request_form, char(0)) > 0
-			OR (json_valid(NEW.request_form) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.request_form)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.request_form must not contain a NUL');
@@ -1563,10 +1475,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_scopes_ins
 BEFORE INSERT ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.scopes must not contain a NUL');
@@ -1576,10 +1484,6 @@ CREATE TRIGGER IF NOT EXISTS pad_nul_oauth_refresh_tokens_scopes_upd
 BEFORE UPDATE OF scopes ON oauth_refresh_tokens
 FOR EACH ROW WHEN NEW.scopes IS NOT NULL AND (
 			instr(NEW.scopes, char(0)) > 0
-			OR (json_valid(NEW.scopes) AND EXISTS (
-				SELECT 1 FROM json_tree(NEW.scopes)
-				WHERE instr(value, char(0)) > 0 OR instr(key, char(0)) > 0
-			))
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: oauth_refresh_tokens.scopes must not contain a NUL');
@@ -1975,6 +1879,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: views.name must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_views_slug_ins
+BEFORE INSERT ON views
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: views.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_views_slug_upd
+BEFORE UPDATE OF slug ON views
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: views.slug must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_watches_predicate_ins
 BEFORE INSERT ON watches
 FOR EACH ROW WHEN NEW.predicate IS NOT NULL AND (
@@ -2133,5 +2055,23 @@ FOR EACH ROW WHEN NEW.settings IS NOT NULL AND (
 )
 BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: workspaces.settings must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_workspaces_slug_ins
+BEFORE INSERT ON workspaces
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: workspaces.slug must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_workspaces_slug_upd
+BEFORE UPDATE OF slug ON workspaces
+FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
+			instr(NEW.slug, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: workspaces.slug must not contain a NUL');
 END;
 

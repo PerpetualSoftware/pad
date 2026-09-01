@@ -60,13 +60,21 @@ var ErrInvalidTextParameter = errors.New("store: invalid text parameter")
 // ordinal is enough to locate it while debugging, and the reason names the
 // rule rather than quoting the offender.
 type InvalidTextParameterError struct {
-	// Ordinal is the 1-based position of the offending parameter.
+	// Ordinal is the 1-based position of the offending parameter, or 0 when
+	// the refusal came from the DATABASE (a Layer B trigger), which identifies
+	// the column instead.
 	Ordinal int
 	// Reason is the rule that refused it, phrased for a caller.
 	Reason string
 }
 
 func (e *InvalidTextParameterError) Error() string {
+	if e.Ordinal < 1 {
+		// A refusal from the DATABASE knows the column, not the parameter
+		// position. Printing "parameter 0" for it would be a claim about
+		// something nobody measured.
+		return fmt.Sprintf("%s: %s", ErrInvalidTextParameter.Error(), e.Reason)
+	}
 	return fmt.Sprintf("%s: parameter %d: %s", ErrInvalidTextParameter.Error(), e.Ordinal, e.Reason)
 }
 
@@ -295,7 +303,12 @@ func classifyTriggerRefusal(err error) error {
 			reason = "column " + rest[:j] + " must not contain a NUL byte, in a value or in a JSON escape that decodes to one"
 		}
 	}
-	return &InvalidTextParameterError{Ordinal: 0, Reason: reason}
+	// NO ORDINAL. A trigger names the COLUMN, not the parameter position, and
+	// the position is genuinely unknown here — the error comes back from the
+	// database after the statement ran, not from inspecting an argument list.
+	// The first version used Ordinal: 0, which violated the field's documented
+	// 1-based contract and rendered as "parameter 0" (codex round 1).
+	return &InvalidTextParameterError{Reason: reason}
 }
 
 type guardDriver struct{ base driver.Driver }

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"regexp"
-	"sort"
 	"strings"
 	"testing"
 
@@ -120,47 +118,45 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 	})
 }
 
-// TestNULTriggersMatchTheList pins the generated migration against the Go list
-// it was generated from.
+// TestNULTriggersMatchTheList pins the committed migration against the Go list
+// it is generated from — BYTE FOR BYTE.
 //
-// The migration is a checked-in artifact, so nothing stops someone editing it
-// by hand or adding a column to the list without regenerating. This is what
-// makes "generated from the list" a fact rather than a comment.
+// The first version compared trigger NAMES and counts, which codex round 1
+// showed would pass a wrong BEFORE UPDATE OF clause, a wrong predicate, or a
+// changed RAISE marker — all of which are the parts that do the work. Names are
+// the one thing a hand edit is least likely to get wrong.
+//
+// If this fails: decide which side is right. If the LIST is right, regenerate
+// with GEN_NUL_TRIGGERS=1 go test ./internal/store/ -run
+// TestGenerateNULTriggerMigration. If the FILE is right, the list is wrong and
+// regenerating would erase the evidence.
 func TestNULTriggersMatchTheList(t *testing.T) {
-	body, err := os.ReadFile("migrations/084_nul_invariant_triggers.sql")
+	committed, err := os.ReadFile("migrations/" + nulTriggerMigration)
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
-	re := regexp.MustCompile(`CREATE TRIGGER IF NOT EXISTS pad_nul_(\w+)_(ins|upd)\b`)
-	found := map[string]bool{}
-	for _, m := range re.FindAllStringSubmatch(string(body), -1) {
-		found[m[1]+"_"+m[2]] = true
-	}
-	if len(found) == 0 {
-		t.Fatal("no triggers found in the migration — the instrument is broken, not the file")
+	rendered := renderNULTriggerMigration()
+	if string(committed) == rendered {
+		return
 	}
 
-	var missing []string
-	want := 0
-	for _, c := range NULProtectedColumns() {
-		for _, suffix := range []string{"ins", "upd"} {
-			want++
-			key := c.Table + "_" + c.Column + "_" + suffix
-			if !found[key] {
-				missing = append(missing, key)
-			}
+	// A diff a human can act on, rather than 2000 lines of "not equal".
+	cl := strings.Split(string(committed), "\n")
+	rl := strings.Split(rendered, "\n")
+	for i := 0; i < len(cl) || i < len(rl); i++ {
+		var c, r string
+		if i < len(cl) {
+			c = cl[i]
+		}
+		if i < len(rl) {
+			r = rl[i]
+		}
+		if c != r {
+			t.Fatalf("the committed migration and the list disagree, first at line %d:\n  committed: %q\n  rendered:  %q\n"+
+				"(committed has %d lines, the list renders %d)", i+1, c, r, len(cl), len(rl))
 		}
 	}
-	sort.Strings(missing)
-	if len(missing) > 0 {
-		t.Errorf("%d trigger(s) in the list but not the migration:\n  %s\n\nRegenerate with "+
-			"GEN_NUL_TRIGGERS=1 go test ./internal/store/ -run TestZZGenerateTriggerMigration",
-			len(missing), strings.Join(missing, "\n  "))
-	}
-	if len(found) != want {
-		t.Errorf("migration has %d triggers, the list implies %d — an extra trigger protects a column "+
-			"nobody listed, which is as much a drift as a missing one", len(found), want)
-	}
+	t.Fatalf("migration and list differ but no differing line was found — the comparison is broken")
 }
 
 // TestTriggerRefusalIsIndistinguishableFromLayerA discharges Ruling 2's
@@ -266,11 +262,28 @@ func TestLayerBAgreesWithTheCorpus(t *testing.T) {
 				t.Errorf("LAYER B refused=%t, corpus says %t\nvalue: %q\nisJSON: %t\nerr: %v\n"+
 					"why this case exists: %s", refused, c.Refused, c.Value, c.IsJSON, werr, c.Why)
 			}
-			// An accepted case must actually land, not merely avoid the
-			// trigger — the same assertion the store leg needed before it
-			// stopped passing for the wrong reason.
-			if !c.Refused && werr != nil {
-				t.Errorf("expected accepted, but the write failed for another reason: %v", werr)
+			if !c.Refused {
+				if werr != nil {
+					t.Fatalf("expected accepted, but the write failed for another reason: %v", werr)
+				}
+				// READ IT BACK. The comment used to claim persistence and the
+				// code only checked that no error came back (codex round 1) —
+				// which a trigger that silently discarded the row would also
+				// satisfy, and which says nothing about whether the value
+				// survived intact.
+				var stored string
+				var rerr error
+				if c.IsJSON && json.Valid([]byte(strings.TrimSpace(c.Value))) {
+					rerr = raw.QueryRow(`SELECT settings FROM workspaces WHERE id = ?`, ws.ID).Scan(&stored)
+				} else {
+					rerr = raw.QueryRow(`SELECT content FROM items WHERE id = ?`, item.ID).Scan(&stored)
+				}
+				if rerr != nil {
+					t.Fatalf("read back: %v", rerr)
+				}
+				if stored != c.Value {
+					t.Errorf("stored value differs from what was written\n  wrote: %q\n  read:  %q", c.Value, stored)
+				}
 			}
 		})
 	}
@@ -279,4 +292,84 @@ func TestLayerBAgreesWithTheCorpus(t *testing.T) {
 func execRaw(db *sql.DB, q string, args ...any) error {
 	_, err := db.Exec(q, args...)
 	return err
+}
+
+// TestNULTriggersSurviveATableRebuild regresses codex round 1's sharpest
+// finding: SQLite drops a table's triggers when the table is dropped, this
+// codebase rebuilds tables to change constraints (migrations 025, 055, 056,
+// 057, 068, 072 all do), and migration 084 would never run again because it is
+// recorded as applied.
+//
+// The consequence is worse than the FTS equivalent that warns and moves on. A
+// missing FTS trigger breaks search visibly; a missing NUL trigger is silently
+// no protection at all, against exactly the old-binary writer Layer B exists
+// for.
+//
+// This simulates the rebuild by dropping the triggers, then runs the same
+// re-assertion path startup uses.
+func TestNULTriggersSurviveATableRebuild(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("Layer B is SQLite-only")
+	}
+	ws := createTestWorkspace(t, s, "RebuildWS")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Rebuild subject", "")
+
+	countTriggers := func() int {
+		var n int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'pad_nul_%'`,
+		).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+	before := countTriggers()
+	if before == 0 {
+		t.Fatal("no NUL triggers to begin with — the fixture proves nothing")
+	}
+
+	// The rebuild, simulated on one table.
+	for _, tr := range []string{"pad_nul_items_content_ins", "pad_nul_items_content_upd"} {
+		if _, err := s.db.Exec("DROP TRIGGER IF EXISTS " + tr); err != nil {
+			t.Fatalf("drop %s: %v", tr, err)
+		}
+	}
+	if countTriggers() != before-2 {
+		t.Fatalf("the fixture did not actually drop the triggers")
+	}
+
+	// PROVE protection is gone first, so the restoration below is measured
+	// against a real loss rather than against nothing.
+	raw, err := sql.Open("sqlite", s.dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`UPDATE items SET content = ? WHERE id = ?`,
+		"unprotected"+textguard.NUL+"write", item.ID); err != nil {
+		t.Fatalf("with the triggers dropped the write should succeed, showing the loss is real: %v", err)
+	}
+
+	// Now the startup path.
+	if err := s.ensureNULTriggers(); err != nil {
+		t.Fatalf("ensureNULTriggers: %v", err)
+	}
+	if got := countTriggers(); got != before {
+		t.Errorf("after re-assertion there are %d triggers, want %d", got, before)
+	}
+	if _, err := raw.Exec(`UPDATE items SET content = ? WHERE id = ?`,
+		"still"+textguard.NUL+"bad", item.ID); err == nil {
+		t.Error("protection was not actually restored — the trigger count matched but the rule does not hold")
+	}
+
+	// And the no-op case: re-asserting when nothing is missing must not fail
+	// or duplicate.
+	if err := s.ensureNULTriggers(); err != nil {
+		t.Fatalf("re-asserting when nothing is missing must be a no-op: %v", err)
+	}
+	if got := countTriggers(); got != before {
+		t.Errorf("a second re-assertion changed the count to %d", got)
+	}
 }

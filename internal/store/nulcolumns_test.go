@@ -52,7 +52,7 @@ func TestNULColumnCensus(t *testing.T) {
 		}
 		// FTS5 shadow tables are derived storage regenerated from base
 		// columns, so enforcement at the base covers them.
-		if strings.Contains(table, "_fts") || table == "sqlite_sequence" || strings.HasPrefix(table, "sqlite_") {
+		if isDerivedTable(table) {
 			continue
 		}
 		key := table + "." + col
@@ -60,8 +60,7 @@ func TestNULColumnCensus(t *testing.T) {
 
 		// TEXT-affinity columns are the population. SQLite's declared type is
 		// what the census used and what a reader can re-run.
-		u := strings.ToUpper(typ)
-		if !strings.Contains(u, "TEXT") && !strings.Contains(u, "CHAR") && !strings.Contains(u, "CLOB") {
+		if !isTextAffinity(typ) {
 			continue
 		}
 		textCols = append(textCols, key)
@@ -193,4 +192,52 @@ func TestNULColumnListIsWellFormed(t *testing.T) {
 		}
 	}
 	t.Logf("list: %d protected (%d JSON, %d text), %d excluded", len(seen), jsonN, textN, len(nulExcluded))
+}
+
+// isTextAffinity reports whether a declared column type can hold text.
+//
+// WIDER than the first version, which matched TEXT/CHAR/CLOB only (codex round
+// 1). SQLite gives BLOB affinity to a column with NO declared type and to one
+// declared JSON — both hold text perfectly well — so a future column declared
+// either way would have slipped past the census entirely. Matching on what
+// CANNOT hold text is the safer direction: a false positive costs one baseline
+// line, a false negative costs an unprotected column.
+func isTextAffinity(declared string) bool {
+	u := strings.ToUpper(strings.TrimSpace(declared))
+	switch {
+	case u == "":
+		return true
+	case strings.Contains(u, "INT"),
+		strings.Contains(u, "REAL"),
+		strings.Contains(u, "FLOA"),
+		strings.Contains(u, "DOUB"),
+		strings.Contains(u, "NUMERIC"),
+		strings.Contains(u, "DECIMAL"),
+		strings.Contains(u, "BOOL"),
+		strings.Contains(u, "DATE"):
+		return false
+	}
+	return true
+}
+
+// isDerivedTable reports whether a table is FTS5 shadow storage rather than
+// something written directly.
+//
+// It matches the shapes SQLite actually creates rather than the substring
+// "_fts" anywhere in the name (codex round 1): a real table someone names
+// "user_fts_settings" would otherwise be skipped, and skipping a real table is
+// exactly the failure this census exists to prevent.
+func isDerivedTable(name string) bool {
+	if strings.HasPrefix(name, "sqlite_") {
+		return true
+	}
+	if strings.HasSuffix(name, "_fts") {
+		return true
+	}
+	for _, suffix := range []string{"_data", "_idx", "_content", "_docsize", "_config"} {
+		if strings.Contains(name, "_fts") && strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
