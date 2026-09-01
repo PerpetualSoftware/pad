@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -305,8 +307,13 @@ func TestWriteGuardCoversPreparedStatements(t *testing.T) {
 // means the guard gained real column knowledge, and the case should move into
 // textguard.Corpus where every layer is held to it.
 func TestStoreOverRefusalsStillOverRefuse(t *testing.T) {
-	if len(textguard.StoreOverRefusals) == 0 {
-		t.Skip("no recorded over-refusals")
+	// NOT a skip, for the same reason as KnownGaps: an empty slice would let
+	// someone delete the record of a divergence and see green (codex round 2).
+	const wantOverRefusals = 1
+	if len(textguard.StoreOverRefusals) != wantOverRefusals {
+		t.Fatalf("StoreOverRefusals has %d entries, expected %d. If one was PAID DOWN, move its case into "+
+			"textguard.Corpus and update this count in the same edit.",
+			len(textguard.StoreOverRefusals), wantOverRefusals)
 	}
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OverRefusal")
@@ -324,5 +331,128 @@ func TestStoreOverRefusalsStillOverRefuse(t *testing.T) {
 					"to it, and delete it from StoreOverRefusals.\nwhy it was recorded: %s", c.Value, c.Why)
 			}
 		})
+	}
+}
+
+// TestWrapperAdvertisesExactlyWhatTheBaseDoes is the guard against the mistake
+// this wrapper has now made twice.
+//
+// database/sql BRANCHES on whether an optional interface is present, so a
+// wrapper advertising one the base lacks changes behaviour rather than adding a
+// no-op — it told database/sql that pgx validates connections (it does not) and
+// that sqlite converts its own arguments (it does not). The fix for THAT then
+// advertised DriverContext for sqlite, which lacks it, and every SQLite open
+// failed instantly. Loud that time; the same mistake on a branch-only interface
+// is silent.
+//
+// So the property is pinned rather than reasoned about: for every optional
+// interface the wrapper varies over, wrapped and base must agree exactly.
+func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
+	if err := registerGuardedDrivers(); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	type pair struct{ base, guarded, dsn string }
+	pairs := []pair{{"sqlite", guardedSQLiteDriver, t.TempDir() + "/parity.db"}}
+	if dsn := os.Getenv("PAD_TEST_POSTGRES_URL"); dsn != "" {
+		pairs = append(pairs, pair{"pgx", guardedPostgresDriver, dsn})
+	} else {
+		t.Log("pgx leg skipped: PAD_TEST_POSTGRES_URL not set")
+	}
+
+	for _, p := range pairs {
+		t.Run(p.base, func(t *testing.T) {
+			baseDB, err := sql.Open(p.base, p.dsn)
+			if err != nil {
+				t.Fatalf("open base: %v", err)
+			}
+			defer baseDB.Close()
+			wrapDB, err := sql.Open(p.guarded, p.dsn)
+			if err != nil {
+				t.Fatalf("open guarded: %v", err)
+			}
+			defer wrapDB.Close()
+
+			// Driver level.
+			_, baseCtx := baseDB.Driver().(driver.DriverContext)
+			_, wrapCtx := wrapDB.Driver().(driver.DriverContext)
+			if baseCtx != wrapCtx {
+				t.Errorf("DriverContext: base=%t wrapped=%t — they must match", baseCtx, wrapCtx)
+			}
+
+			// Connection level.
+			ifaces := func(db *sql.DB) map[string]bool {
+				conn, err := db.Conn(t.Context())
+				if err != nil {
+					t.Fatalf("conn: %v", err)
+				}
+				defer conn.Close()
+				out := map[string]bool{}
+				if rerr := conn.Raw(func(dc any) error {
+					out["Pinger"] = isIface[driver.Pinger](dc)
+					out["SessionResetter"] = isIface[driver.SessionResetter](dc)
+					out["Validator"] = isIface[driver.Validator](dc)
+					out["NamedValueChecker"] = isIface[driver.NamedValueChecker](dc)
+					out["ExecerContext"] = isIface[driver.ExecerContext](dc)
+					out["QueryerContext"] = isIface[driver.QueryerContext](dc)
+					out["ConnPrepareContext"] = isIface[driver.ConnPrepareContext](dc)
+					out["ConnBeginTx"] = isIface[driver.ConnBeginTx](dc)
+					return nil
+				}); rerr != nil {
+					t.Fatalf("raw: %v", rerr)
+				}
+				return out
+			}
+			b, w := ifaces(baseDB), ifaces(wrapDB)
+			if len(b) == 0 {
+				t.Fatal("the probe read no interfaces — the instrument is broken, not the wrapper")
+			}
+			for name, want := range b {
+				if w[name] != want {
+					t.Errorf("conn %s: base=%t wrapped=%t — advertising an interface the base lacks (or "+
+						"hiding one it has) changes database/sql's behaviour", name, want, w[name])
+				}
+			}
+		})
+	}
+}
+
+// TestWriteGuardSeesThroughDriverValuer regresses codex round 2's second P1.
+//
+// checkParams originally type-asserted `string`. pgx implements
+// driver.NamedValueChecker and ACCEPTS a sql.NullString unchanged rather than
+// letting database/sql's default converter unwrap it — so the guard never saw
+// the text. Measured before the fix: on Postgres a NUL-bearing sql.NullString
+// passed the guard entirely and was refused by the SERVER with SQLSTATE 22021,
+// i.e. as a 500, while the identical value on SQLite got the typed 400. The
+// dialect split, reappearing in the response shape.
+//
+// internal/store/wiki_links.go binds sql.NullString today, so this is a live
+// parameter shape rather than a constructed one.
+func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "ValuerGuard")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Valuer subject", "")
+
+	poisoned := sql.NullString{String: "poisoned" + textguard.NUL + "content", Valid: true}
+	_, err := s.db.Exec(s.q(`UPDATE items SET content = ? WHERE id = ?`), poisoned, item.ID)
+	if err == nil {
+		t.Fatal("a NUL-bearing sql.NullString was accepted")
+	}
+	if !strings.Contains(err.Error(), ErrInvalidTextParameter.Error()) {
+		t.Errorf("refused, but NOT by the guard: %v\nOn Postgres this is the tell — the server's own "+
+			"SQLSTATE 22021 instead of our typed refusal means the value went past Layer A and the "+
+			"caller gets a 500 where SQLite gives a 400", err)
+	}
+
+	// Controls: a clean NullString still writes, and a NULL one is untouched.
+	clean := sql.NullString{String: "clean content", Valid: true}
+	if _, err := s.db.Exec(s.q(`UPDATE items SET content = ? WHERE id = ?`), clean, item.ID); err != nil {
+		t.Errorf("a clean sql.NullString must still write: %v", err)
+	}
+	null := sql.NullString{Valid: false}
+	if _, err := s.db.Exec(s.q(`UPDATE items SET content = ? WHERE id = ?`), null, item.ID); err != nil {
+		t.Errorf("a NULL sql.NullString must still write: %v", err)
 	}
 }

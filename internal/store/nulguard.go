@@ -129,7 +129,7 @@ func checkParams(args []driver.NamedValue) error {
 		// TestBinaryColumnCensus fails the moment a new BLOB/BYTEA column
 		// enters either schema, which is when someone must re-examine whether
 		// []byte is still binary-only here.
-		s, ok := a.Value.(string)
+		s, ok := checkedValue(a.Value)
 		if !ok {
 			continue
 		}
@@ -150,6 +150,61 @@ func checkParams(args []driver.NamedValue) error {
 }
 
 // ---- the wrapper ----
+//
+// SHAPE, and why it is not one type.
+//
+// A wrapper that implements an optional interface the BASE lacks does not
+// merely add a no-op: database/sql BRANCHES on whether the interface is
+// present, so advertising one changes its behaviour even when the method
+// delegates faithfully. Measured on the two drivers Pad uses:
+//
+//	                        sqlite   pgx
+//	driver.DriverContext    no       YES
+//	conn Pinger             yes      yes
+//	conn SessionResetter    yes      yes
+//	conn Validator          yes      NO
+//	conn NamedValueChecker  no       YES
+//	stmt NamedValueChecker  no       no
+//	stmt ColumnConverter    no       no
+//
+// So Validator and NamedValueChecker VARY between the two, and a single
+// wrapper type advertising both would have told database/sql that pgx
+// validates connections and that sqlite converts its own arguments — neither
+// true (codex round 2). The conn wrapper is therefore selected per-connection
+// from four variants covering those two interfaces.
+//
+// The interfaces that do NOT vary are asserted at registration instead of
+// varied over: requireBaseInterfaces fails loudly if a driver bump ever drops
+// one, which is better than silently degrading and better than sixteen types.
+
+// checkedValue extracts the string a parameter will bind, following
+// driver.Valuer when the driver's own NamedValueChecker has left one in place.
+//
+// This closes a real hole (codex round 2). checkParams originally type-asserted
+// `string` only, and pgx implements NamedValueChecker — so it ACCEPTS a
+// sql.NullString unchanged rather than letting database/sql's default converter
+// unwrap it, and the guard never saw the text. Measured: on Postgres a
+// sql.NullString carrying a NUL passed the guard entirely and was refused by
+// the server with SQLSTATE 22021, i.e. as a 500 rather than the typed 400 the
+// same value gets on SQLite. The dialect split, reappearing in the response
+// shape. internal/store/wiki_links.go binds sql.NullString today.
+func checkedValue(v driver.Value) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case driver.Valuer:
+		// Value() is contractually pure; the standard converter calls it for
+		// exactly this purpose.
+		inner, err := t.Value()
+		if err != nil {
+			return "", false
+		}
+		if str, ok := inner.(string); ok {
+			return str, true
+		}
+	}
+	return "", false
+}
 
 type guardDriver struct{ base driver.Driver }
 
@@ -158,182 +213,156 @@ func (d guardDriver) Open(name string) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return guardConn{c}, nil
+	return wrapConn(c), nil
 }
 
-// guardConn forwards the OPTIONAL connection interfaces as well as the
-// required ones.
+// guardDriverCtx is guardDriver PLUS driver.DriverContext, and it is a separate
+// TYPE for the same reason the conn wrapper has four variants: implementing
+// OpenConnector unconditionally would advertise DriverContext for sqlite, whose
+// base lacks it.
 //
-// Embedding driver.Conn alone silently HID them, which is a production
-// regression rather than a cosmetic gap: measured, the raw modernc conn
-// implements Pinger, SessionResetter and Validator, and the wrapped one
-// implemented none. database/sql degrades quietly for each — Ping succeeds
-// without pinging anything, pooled connections stop being reset between uses,
-// and a connection the driver knows is dead stays in the pool.
+// That is not hypothetical caution — the first version of this fix did exactly
+// that, and every SQLite open failed at once. The failure was loud, which is
+// the only reason it cost minutes; the same mistake on a method database/sql
+// merely branches on would have been silent.
 //
-// Each method below delegates when the base supports it and otherwise does
-// exactly what database/sql does for a conn that lacks the interface, so
-// wrapping a driver without one is equivalent to not wrapping it. Always
-// implementing them is safe for that reason.
+// The interface matters because without it sql.Open falls back to a legacy
+// connector that IGNORES the context, so a cancelled or deadlined request can
+// leave a connection attempt running — on pgx, up to its 60-second dial timeout
+// (codex round 2).
+type guardDriverCtx struct{ guardDriver }
+
+func (d guardDriverCtx) OpenConnector(name string) (driver.Connector, error) {
+	c, err := d.base.(driver.DriverContext).OpenConnector(name)
+	if err != nil {
+		return nil, err
+	}
+	// The OUTER driver, not the embedded one. database/sql answers
+	// db.Driver() from the connector, so handing back guardDriver here made a
+	// pgx-backed pool report a driver WITHOUT DriverContext — losing the very
+	// interface this type exists to forward. Caught by the parity test on its
+	// first run, which is what that test is for.
+	return guardConnector{base: c, drv: d}, nil
+}
+
+type guardConnector struct {
+	base driver.Connector
+	drv  driver.Driver
+}
+
+func (c guardConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.base.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return wrapConn(conn), nil
+}
+
+func (c guardConnector) Driver() driver.Driver { return c.drv }
+
+// wrapConn selects the variant matching the base connection's optional
+// interfaces. See the shape note above for why this is a selection rather than
+// one type.
+func wrapConn(c driver.Conn) driver.Conn {
+	_, hasValidator := c.(driver.Validator)
+	_, hasNVC := c.(driver.NamedValueChecker)
+	base := guardConn{c}
+	switch {
+	case hasValidator && hasNVC:
+		return guardConnVN{base}
+	case hasValidator:
+		return guardConnV{base}
+	case hasNVC:
+		return guardConnN{base}
+	default:
+		return base
+	}
+}
+
 type guardConn struct{ driver.Conn }
 
+// Pinger and SessionResetter are implemented unconditionally, which is sound
+// only because requireBaseInterfaces has already established that every base
+// has them.
 func (c guardConn) Ping(ctx context.Context) error {
-	if p, ok := c.Conn.(driver.Pinger); ok {
-		return p.Ping(ctx)
-	}
-	// database/sql treats a non-Pinger connection as reachable by virtue of
-	// existing; matching that keeps the wrapper transparent.
-	return nil
+	return c.Conn.(driver.Pinger).Ping(ctx)
 }
 
 func (c guardConn) ResetSession(ctx context.Context) error {
-	if r, ok := c.Conn.(driver.SessionResetter); ok {
-		return r.ResetSession(ctx)
-	}
-	return nil
+	return c.Conn.(driver.SessionResetter).ResetSession(ctx)
 }
 
-func (c guardConn) IsValid() bool {
-	if v, ok := c.Conn.(driver.Validator); ok {
-		return v.IsValid()
-	}
-	return true
+type guardConnV struct{ guardConn }
+
+func (c guardConnV) IsValid() bool { return c.Conn.(driver.Validator).IsValid() }
+
+type guardConnN struct{ guardConn }
+
+func (c guardConnN) CheckNamedValue(nv *driver.NamedValue) error {
+	return c.Conn.(driver.NamedValueChecker).CheckNamedValue(nv)
 }
 
-// CheckNamedValue forwards the driver's own argument conversion when it has
-// one. Without this the wrapper would fall back to database/sql's default
-// converter and quietly narrow the argument types a driver accepts — pgx in
-// particular converts a great deal more than the default does.
-func (c guardConn) CheckNamedValue(nv *driver.NamedValue) error {
-	if ck, ok := c.Conn.(driver.NamedValueChecker); ok {
-		return ck.CheckNamedValue(nv)
-	}
-	return driver.ErrSkip
+type guardConnVN struct{ guardConn }
+
+func (c guardConnVN) IsValid() bool { return c.Conn.(driver.Validator).IsValid() }
+
+func (c guardConnVN) CheckNamedValue(nv *driver.NamedValue) error {
+	return c.Conn.(driver.NamedValueChecker).CheckNamedValue(nv)
 }
 
-// Prepare exists because driver.Conn requires it, and it DELEGATES rather than
-// wrapping separately.
-//
-// A mutation is why: giving it its own wrapping body left a second place to get
-// the wrapping right, and dropping the wrap there survived the whole suite —
-// because database/sql routes to PrepareContext whenever the conn implements
-// driver.ConnPrepareContext, which both modernc and pgx do. So the branch was
-// unreachable for every driver Pad uses, and a test for it would have been a
-// test of nothing. One implementation is better than an untestable second.
+// Prepare delegates to PrepareContext so there is ONE wrapping site. A mutation
+// showed the separate body was unreachable: database/sql routes to
+// PrepareContext whenever the conn implements ConnPrepareContext, which every
+// base here does (asserted at registration).
 func (c guardConn) Prepare(q string) (driver.Stmt, error) {
 	return c.PrepareContext(context.Background(), q)
 }
 
 func (c guardConn) PrepareContext(ctx context.Context, q string) (driver.Stmt, error) {
-	if p, ok := c.Conn.(driver.ConnPrepareContext); ok {
-		s, err := p.PrepareContext(ctx, q)
-		if err != nil {
-			return nil, err
-		}
-		return guardStmt{s}, nil
-	}
-	s, err := c.Conn.Prepare(q)
+	st, err := c.Conn.(driver.ConnPrepareContext).PrepareContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	return guardStmt{s}, nil
+	return guardStmt{st}, nil
 }
 
 func (c guardConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if b, ok := c.Conn.(driver.ConnBeginTx); ok {
-		return b.BeginTx(ctx, opts)
-	}
-	// A base without ConnBeginTx cannot honour isolation or read-only, and
-	// SILENTLY starting a plain transaction would give the caller weaker
-	// guarantees than it asked for. database/sql itself refuses in this
-	// situation; matching that keeps the wrapper transparent rather than
-	// permissive.
-	if opts.Isolation != driver.IsolationLevel(sql.LevelDefault) || opts.ReadOnly {
-		return nil, errors.New("store: driver does not support transaction options")
-	}
-	return c.Conn.Begin() //nolint:staticcheck // fallback for a driver without ConnBeginTx
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
 }
 
-// ExecContext and QueryContext return driver.ErrSkip when the base conn does
-// not implement the optional interface, which makes database/sql fall back to
-// Prepare + the statement path — where guardStmt applies the same check. The
-// value never reaches the database unvalidated on either route.
 func (c guardConn) ExecContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Result, error) {
 	if err := checkParams(args); err != nil {
 		return nil, err
 	}
-	if e, ok := c.Conn.(driver.ExecerContext); ok {
-		return e.ExecContext(ctx, q, args)
-	}
-	return nil, driver.ErrSkip
+	return c.Conn.(driver.ExecerContext).ExecContext(ctx, q, args)
 }
 
 func (c guardConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
 	if err := checkParams(args); err != nil {
 		return nil, err
 	}
-	if qc, ok := c.Conn.(driver.QueryerContext); ok {
-		return qc.QueryContext(ctx, q, args)
-	}
-	return nil, driver.ErrSkip
+	return c.Conn.(driver.QueryerContext).QueryContext(ctx, q, args)
 }
 
+// guardStmt wraps only the two context forms, which every base statement here
+// implements (asserted at registration). Statement-level NamedValueChecker and
+// ColumnConverter are NOT forwarded because neither driver implements them —
+// measured, and asserted, so a driver that starts to will fail registration
+// rather than silently lose its conversion.
 type guardStmt struct{ driver.Stmt }
 
-// The statement methods FALL BACK to the positional form rather than returning
-// driver.ErrSkip.
-//
-// The distinction matters and the first version had it wrong. At the CONN
-// level, ErrSkip is the documented signal and database/sql falls back to
-// prepare-and-execute. At the STATEMENT level it does not: because this
-// wrapper always implements StmtExecContext, database/sql calls it and
-// propagates whatever comes back, so an ErrSkip would surface as a query
-// FAILURE against any base statement lacking the context form rather than
-// degrading to the older interface.
 func (s guardStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
 	if err := checkParams(args); err != nil {
 		return nil, err
 	}
-	if e, ok := s.Stmt.(driver.StmtExecContext); ok {
-		return e.ExecContext(ctx, args)
-	}
-	vals, err := positionalArgs(args)
-	if err != nil {
-		return nil, err
-	}
-	return s.Stmt.Exec(vals) //nolint:staticcheck // the documented fallback for a pre-context driver
+	return s.Stmt.(driver.StmtExecContext).ExecContext(ctx, args)
 }
 
 func (s guardStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	if err := checkParams(args); err != nil {
 		return nil, err
 	}
-	if q, ok := s.Stmt.(driver.StmtQueryContext); ok {
-		return q.QueryContext(ctx, args)
-	}
-	vals, err := positionalArgs(args)
-	if err != nil {
-		return nil, err
-	}
-	return s.Stmt.Query(vals) //nolint:staticcheck // the documented fallback for a pre-context driver
-}
-
-// positionalArgs converts named values back to the positional form the
-// pre-context statement interfaces take, refusing a NAMED argument rather than
-// dropping its name — silently binding a named parameter by position would
-// bind the wrong value.
-func positionalArgs(args []driver.NamedValue) ([]driver.Value, error) {
-	vals := make([]driver.Value, len(args))
-	for _, a := range args {
-		if a.Name != "" {
-			return nil, errors.New("store: driver does not support named parameters")
-		}
-		if a.Ordinal < 1 || a.Ordinal > len(vals) {
-			return nil, errors.New("store: parameter ordinal out of range")
-		}
-		vals[a.Ordinal-1] = a.Value
-	}
-	return vals, nil
+	return s.Stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
 }
 
 // ---- registration ----
@@ -364,9 +393,77 @@ func registerGuardedDrivers() error {
 				return
 			}
 			base := probe.Driver()
+			if err := requireBaseInterfaces(d.base, probe); err != nil {
+				_ = probe.Close()
+				registerGuardedErr = err
+				return
+			}
 			_ = probe.Close()
-			sql.Register(d.guarded, guardDriver{base: base})
+			wrapped := guardDriver{base: base}
+			if _, ok := base.(driver.DriverContext); ok {
+				sql.Register(d.guarded, guardDriverCtx{wrapped})
+			} else {
+				sql.Register(d.guarded, wrapped)
+			}
 		}
 	})
 	return registerGuardedErr
+}
+
+// requireBaseInterfaces asserts the optional interfaces the wrapper implements
+// UNCONDITIONALLY are actually present on the base.
+//
+// This is what makes the shape sound. Four interfaces vary across drivers and
+// are selected per-connection (see the shape note); the rest are advertised
+// flatly, and advertising one the base lacks would change database/sql's
+// behaviour rather than merely add a no-op. Rather than sixteen wrapper types
+// or a comment saying "both drivers have these", the assumption is CHECKED at
+// registration, once, and a driver bump that drops one fails loudly at startup
+// instead of degrading silently in production.
+//
+// It also refuses a base whose STATEMENTS implement NamedValueChecker or
+// ColumnConverter, because guardStmt does not forward those — measured absent
+// on both drivers today, and a driver that gains one would otherwise lose its
+// own argument conversion without any signal.
+func requireBaseInterfaces(name string, probe *sql.DB) error {
+	conn, err := probe.Conn(context.Background())
+	if err != nil {
+		// A driver that cannot open a connection to an empty DSN tells us
+		// nothing; this is a best-effort check, not a reachability test.
+		return nil //nolint:nilerr // see comment
+	}
+	defer func() { _ = conn.Close() }()
+
+	var missing []string
+	rawErr := conn.Raw(func(dc any) error {
+		for _, want := range []struct {
+			name string
+			ok   bool
+		}{
+			{"Pinger", isIface[driver.Pinger](dc)},
+			{"SessionResetter", isIface[driver.SessionResetter](dc)},
+			{"ExecerContext", isIface[driver.ExecerContext](dc)},
+			{"QueryerContext", isIface[driver.QueryerContext](dc)},
+			{"ConnPrepareContext", isIface[driver.ConnPrepareContext](dc)},
+			{"ConnBeginTx", isIface[driver.ConnBeginTx](dc)},
+		} {
+			if !want.ok {
+				missing = append(missing, want.name)
+			}
+		}
+		return nil
+	})
+	if rawErr != nil {
+		return nil //nolint:nilerr // best-effort, as above
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("store: driver %q no longer implements %v; the NUL write guard advertises these "+
+			"unconditionally and would misreport them to database/sql — see nulguard.go's shape note", name, missing)
+	}
+	return nil
+}
+
+func isIface[T any](v any) bool {
+	_, ok := v.(T)
+	return ok
 }

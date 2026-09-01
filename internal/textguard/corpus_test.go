@@ -99,8 +99,16 @@ func TestParameterRefusedMatchesTheCorpus(t *testing.T) {
 // cluster is made of. When BUG-2812's token-walk lands and this fails, the fix
 // is to move the entry into Corpus with Refused as it should be.
 func TestKnownGapsStillGap(t *testing.T) {
-	if len(KnownGaps) == 0 {
-		t.Skip("no recorded gaps")
+	// NOT a skip. An empty slice used to skip, so DELETING the last entry made
+	// the suite green — exactly the edit this test exists to catch, passing
+	// silently (codex round 2). Emptying it is a claim that every recorded gap
+	// has closed, and that claim has a required consequence: the cases move
+	// into Corpus. Assert the count instead.
+	const wantGaps = 1
+	if len(KnownGaps) != wantGaps {
+		t.Fatalf("KnownGaps has %d entries, expected %d. If a gap CLOSED, move its case into Corpus and "+
+			"update this count in the same edit. If a gap was ADDED, add it to Corpus's counterpart "+
+			"reasoning too, and update this count.", len(KnownGaps), wantGaps)
 	}
 	for _, c := range KnownGaps {
 		t.Run(c.Name, func(t *testing.T) {
