@@ -170,7 +170,12 @@ const maxOutboxHop = 4
 // is a follow-up, not something to improvise inside a bound.
 const MaxOutboxPayloadBytes = 128 << 20
 
-// OversizedOutboxPayloadError reports a payload refused by MaxOutboxPayloadBytes.
+// OversizedOutboxPayloadError reports an outbox write refused for size.
+//
+// THREE SITES RAISE IT, against two different limits, which is why Measured
+// exists: the pre-marshal early-out charges member content against the write
+// cap, writeOutboxTx charges the marshalled payload against the same cap, and
+// the post-insert check charges the stored row against the CLAIM ceiling.
 //
 // A distinct type rather than a formatted error because the HTTP layer maps it
 // to a 4xx: the mutation was well-formed and the server is refusing it under a
@@ -202,10 +207,10 @@ func (e *OversizedOutboxPayloadError) Error() string {
 		e.EventType, e.Limit, measured, e.Bytes)
 }
 
-// The two things OversizedOutboxPayloadError.Measured can name.
+// The three things OversizedOutboxPayloadError.Measured can name.
 const (
 	measuredMemberBodies = "the member content, a lower bound on the payload it would marshal to"
-	measuredStoredRow    = "the row as the database stored it"
+	measuredStoredRow    = "the row as the database will hand it back"
 	measuredGoPayload    = "the marshalled payload"
 )
 
@@ -1758,7 +1763,14 @@ func (s *Store) PruneUndispatchedOutbox(before, leaseCutoff string) (int64, erro
 // strand its events. At-least-once is exactly the promise that makes
 // re-claiming safe.
 //
-// BATCHES ARE CLAIMED WHOLE, past the limit if necessary. A batch split across
+// BATCHES ARE CLAIMED WHOLE WHERE THEY FIT, past the row limit if necessary.
+// The qualifier is load-bearing since BUG-2827: the byte budget and the row
+// cap can both stop a sibling scan part-way, so a batch larger than either is
+// split deliberately. See pendingClaimCandidates for why a rule that cannot be
+// interrupted would make those bounds bypassable, and groupOutboxDeliveries
+// for what a consumer sees when it happens.
+//
+// The original reasoning, which still governs everything inside those bounds: A batch split across
 // two passes would be folded into two wire events each reporting a partial
 // member count — the limit is a throughput knob, and letting it decide what a
 // bulk operation "was" would make the wire event's truth depend on queue depth.
@@ -1945,9 +1957,7 @@ type OversizedOutboxRow struct {
 // is never claimed, never logged, and eventually reaped by retention is an
 // event that vanishes with nobody told. Only rows written by a binary older
 // than MaxOutboxPayloadBytes can be here at all, so this is expected to return
-// nothing forever on an instance that never ran one. The threshold is
-// MaxOutboxClaimableBytes, the claim's ceiling, not the write cap — those
-// differ on purpose (see that constant).
+// nothing forever on an instance that never ran one.
 //
 // Bounded by `limit` because this runs every drain tick and its purpose is to
 // raise an alarm, not to enumerate a backlog.

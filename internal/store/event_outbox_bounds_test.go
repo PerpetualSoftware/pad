@@ -149,6 +149,11 @@ func TestOutboxRefusesAPayloadOverTheRowCap(t *testing.T) {
 		t.Errorf("EventType = %q, want %q — the caller needs to see which event was refused",
 			typed.EventType, kernelevents.ItemCreated)
 	}
+	if typed.Measured != measuredGoPayload {
+		t.Errorf("Measured = %q, want %q — the three refusal sites count different things and the "+
+			"caller cannot reconcile two numbers for one mutation without being told which",
+			typed.Measured, measuredGoPayload)
+	}
 
 	// THE REFUSAL MUST FAIL THE MUTATION, not drop the event. The hop bound
 	// in the same function returns nil precisely so the mutation survives, so
@@ -551,6 +556,9 @@ func TestBulkEventIsRefusedBeforeItIsMarshalled(t *testing.T) {
 	// marshalled size is strictly larger (quoting, escaping, key names, the
 	// envelope), so equality with the projection can only come from the
 	// pre-marshal check.
+	if typed.Measured != measuredMemberBodies {
+		t.Errorf("Measured = %q, want %q", typed.Measured, measuredMemberBodies)
+	}
 	if want := projectedBulkPayloadBytes(members); typed.Bytes != want {
 		t.Errorf("Bytes = %d, want the projected %d — the refusal came from writeOutboxTx after "+
 			"marshalling, not from the early-out before it", typed.Bytes, want)
@@ -613,6 +621,18 @@ func TestEverythingWrittenIsClaimable(t *testing.T) {
 		if typed.Bytes <= len(payload) {
 			t.Errorf("refusal reported %d bytes, not more than the %d written — it was charged "+
 				"against the Go payload, not the stored row", typed.Bytes, len(payload))
+		}
+		if typed.Measured != measuredStoredRow {
+			t.Errorf("Measured = %q, want %q", typed.Measured, measuredStoredRow)
+		}
+		// The refusal branch must not be vacuously satisfied by a row that
+		// committed anyway: "refused" has to mean nothing is pending.
+		var n int
+		if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE subject_id = ?`), "numeric").Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("the write was refused but %d row(s) are present; the refusal did not roll back", n)
 		}
 		return
 	}
@@ -710,8 +730,17 @@ func TestScrubOnlyEverShrinksAPayload(t *testing.T) {
 	// needed is that the only writer of payload shrinks it — an invariant
 	// worth a test rather than a sentence, since the next person to add a
 	// payload rewrite will not read the sentence.
+	// CONTENT CHOSEN TO EXERCISE THE ENCODERS, not just to be long. The
+	// growth path a reviewer proposed runs through the two encoders
+	// disagreeing: Go escapes <, > and & to \u003c and friends, while
+	// Postgres jsonb stores and prints them literally, so a value that costs 1
+	// byte stored costs 6 in Go's output. Non-ASCII and an exponent-form
+	// number cover the other two places the round trip could change length.
+	// A fixture of one repeated ASCII letter, which is what this test had
+	// first, cannot tell any of that apart (codex round 4).
 	c := &models.Comment{ID: newID(), ItemID: item.ID, WorkspaceID: ws.ID,
-		Author: "Scrub Me", UserID: deleted.ID, Body: strings.Repeat("y", 500)}
+		Author: "Scrub Me", UserID: deleted.ID,
+		Body: strings.Repeat("x<y>z&w é ", 50)}
 	emitInTx(t, s, func(tx *sql.Tx) error {
 		return s.emitCommentEventTx(tx, kernelevents.CommentCreated, c)
 	})

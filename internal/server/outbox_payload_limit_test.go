@@ -27,7 +27,7 @@ func TestWriteInternalErrorMapsTheOutboxRowCapRefusal(t *testing.T) {
 		EventType: "item.bulk_updated",
 		Bytes:     200 << 20,
 		Limit:     store.MaxOutboxPayloadBytes,
-		Measured:  "the row as the database stored it",
+		Measured:  "the row as the database will hand it back",
 	}))
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
@@ -61,7 +61,7 @@ func TestWriteInternalErrorMapsTheOutboxRowCapRefusal(t *testing.T) {
 	// The store refuses on two different measurements against two different
 	// limits, so the message has to say which one this was or a caller cannot
 	// reconcile two numbers for one mutation.
-	if !strings.Contains(body.Error.Message, "the row as the database stored it") {
+	if !strings.Contains(body.Error.Message, "the row as the database will hand it back") {
 		t.Errorf("message does not say what was measured: %q", body.Error.Message)
 	}
 }
