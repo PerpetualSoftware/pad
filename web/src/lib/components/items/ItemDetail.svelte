@@ -743,6 +743,11 @@
 			await feed.loadMore();
 			const current = timelineFeed;
 			if (!current || !current.hasMore) return;
+			// A failed page resolves rather than throwing — the owner catches and
+			// records `error` — and leaves `hasMore` true, so without this the
+			// loop would retry a dead server six times per click, silently
+			// (codex round 2).
+			if (current.error) return;
 			const kinds: readonly string[] = activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS;
 			if (current.entries.filter((e) => kinds.includes(e.kind)).length > shownBefore) return;
 		}
@@ -6063,7 +6068,9 @@
 				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
 				<TimelineEntryList
 					entries={shown}
-					showEmpty={timelineFeed.entries.length === 0 && !timelineFeed.loading}
+					showEmpty={timelineFeed.entries.length === 0 &&
+						!timelineFeed.loading &&
+						!timelineFeed.error}
 					{wsSlug}
 					{username}
 					{itemSlug}

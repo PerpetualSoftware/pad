@@ -161,6 +161,36 @@ describe('timeline second view — the mirrored error', () => {
 		expect(state.feed?.error).toBeTruthy();
 		expect(state.feed?.entries).toEqual([]);
 	});
+
+	it('does not claim the item has no history while reporting an error', async () => {
+		// The two states contradict each other: "No timeline entries yet" is a
+		// statement about the ITEM, and a failed load knows nothing about the
+		// item. Rendering both at once — an unguarded `showEmpty` — puts
+		// something false next to something true (codex round 2).
+		//
+		// Asserted against the MOUNTED owner's DOM rather than by re-evaluating
+		// the condition: a test that recomputes `entries.length === 0 &&
+		// !loading && !error` passes whatever the component actually renders.
+		// The second view's copy of this condition is identical, and this is
+		// the one a unit test can reach.
+		timelineListMock.mockReset();
+		timelineListMock.mockRejectedValue(new Error('network is down'));
+
+		app = mount(ItemTimeline, {
+			target: host,
+			props: {
+				wsSlug: 'ws',
+				itemSlug: 'TASK-1',
+				itemId: 'item-a',
+				collectionId: 'coll-1',
+				currentContent: ''
+			}
+		}) as Record<string, unknown>;
+		await settle();
+
+		expect(host.textContent).toContain('network is down');
+		expect(host.textContent).not.toContain('No timeline entries yet');
+	});
 });
 
 describe('timeline second view — kind routing', () => {
