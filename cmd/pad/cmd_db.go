@@ -545,13 +545,13 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 	// answer cannot matter.
 	migrated := store.MigratedTables()
 	var migratedSuspects []store.NULSuspect
-	var suspectsElsewhere int
+	var suspectsElsewhere []store.NULSuspect
 	for _, sus := range report.Suspects {
 		if migrated[sus.Table] {
 			migratedSuspects = append(migratedSuspects, sus)
 			continue
 		}
-		suspectsElsewhere++
+		suspectsElsewhere = append(suspectsElsewhere, sus)
 	}
 
 	// COUNTED, NOT PROBED, and not silently dropped either (codex round 11).
@@ -561,11 +561,17 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 	// command that examines them properly — the alternative is a comment
 	// claiming they are reported while the code drops them, which is what the
 	// first version of this filter did.
-	if suspectsElsewhere > 0 {
+	if len(suspectsElsewhere) > 0 {
+		// NAMED, not just counted (codex round 12). The rows are already in
+		// hand; printing a bare number makes the operator run a second command
+		// to learn something this one could have told them.
 		fmt.Fprintf(os.Stderr,
-			"  NOTE: %d value(s) mentioning a NUL escape are in tables this migration does not copy;\n"+
-				"  they cannot block it and were not checked. 'pad db scan-nul' lists them.\n",
-			suspectsElsewhere)
+			"  NOTE: %d value(s) mentioning a NUL escape are in tables this migration does not copy.\n"+
+				"  They cannot block it and were not checked against the destination:\n",
+			len(suspectsElsewhere))
+		for _, sus := range suspectsElsewhere {
+			fmt.Fprintf(os.Stderr, "    %s\n", sus)
+		}
 	}
 
 	// A nil destination means the oracle is unavailable. That never happens on

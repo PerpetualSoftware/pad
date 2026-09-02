@@ -594,6 +594,11 @@ func TestPreflightDoesNotFailClosedOnUnmigratedSuspects(t *testing.T) {
 		t.Errorf("the suspect was filtered out of the check AND out of the report; an operator sees "+
 			"nothing about it. stderr was:\n%s", out)
 	}
+	// And the ROW is named, not just counted: a bare number makes the operator
+	// run a second command to learn what this one already knew.
+	if !strings.Contains(string(out), "activities.metadata") {
+		t.Errorf("the advisory does not name the affected table.column. stderr was:\n%s", out)
+	}
 }
 
 // plantActivitySuspect writes a suspect value into a non-migrated table.
