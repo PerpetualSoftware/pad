@@ -49,10 +49,14 @@ import {
 
 const INLINE_IMG = '.editor-content .ProseMirror img[data-attachment-id]';
 
-/** The timeline (and its comment images) live under the item's Activity tab. */
-async function openActivityTab(page: Page): Promise<void> {
-	await page.getByRole('tab', { name: 'Activity' }).click();
-	await expect(page.locator('.timeline')).toBeVisible();
+/**
+ * Comments (and their inline images) live under the item CONTENT on the
+ * Details tab — IDEA-2843 moved them out of the Activity tab, which now
+ * carries changes and versions only. Details is the tab a pane opens on, so
+ * there is nothing to click; the wait is what the tab click used to provide.
+ */
+async function openCommentsSurface(page: Page): Promise<void> {
+	await expect(page.locator('#item-comments .timeline')).toBeVisible();
 }
 
 test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
@@ -105,7 +109,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		const one = await uploadAttachment(fixture, request, doc.id, 'tl-tool.png');
 		await postComment(fixture, request, doc.slug, `shot\n\n![first](pad-attachment:${one})\n`);
 		await page.goto(itemUrl(fixture, doc.slug));
-		await openActivityTab(page);
+		await openCommentsSurface(page);
 		await page.locator('.timeline img[data-attachment-id]').first().click();
 		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
 		await expect(page.locator(VIEWER_TOOLBAR)).toBeVisible();

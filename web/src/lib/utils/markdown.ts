@@ -572,6 +572,28 @@ export function relativeTime(dateStr: string): string {
  * Fix markdown output from tiptap-markdown which escapes [[ ]] as \[\[ \]\].
  * Must be called on getMarkdown() output before saving.
  */
+/**
+ * Wrap text as a markdown blockquote — the same thing a person typing `> `
+ * in front of each line would produce, and deliberately nothing more
+ * (IDEA-2843 / GitHub #1228).
+ *
+ * Every line is prefixed, blank lines included: an unprefixed blank line ENDS
+ * a blockquote in markdown, so quoting a two-paragraph selection without it
+ * would silently drop the second paragraph out of the quote and leave it
+ * looking like the commenter's own words. That is the whole reason this is a
+ * function rather than a template literal at the call site.
+ *
+ * Trailing whitespace on the prefix of an empty line is trimmed, so the
+ * result is what a linter-clean hand-typed quote looks like.
+ */
+export function toBlockquote(text: string): string {
+	return text
+		.replace(/\r\n?/g, '\n')
+		.split('\n')
+		.map((line) => (line.length > 0 ? `> ${line}` : '>'))
+		.join('\n');
+}
+
 export function unescapeDocLinks(markdown: string): string {
 	return markdown.replace(/\\\[\\\[([^\]]+)\\\]\\\]/g, '[[$1]]');
 }

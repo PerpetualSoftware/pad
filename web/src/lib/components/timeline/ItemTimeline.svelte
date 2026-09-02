@@ -5,10 +5,6 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
-	import TimelineCommentCard from './TimelineCommentCard.svelte';
-	import TimelineActivityCard from './TimelineActivityCard.svelte';
-	import TimelineVersionCard from './TimelineVersionCard.svelte';
-	import TimelineStructuredCard from './TimelineStructuredCard.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import {
 		fetchAttachmentMetadata,
@@ -25,6 +21,8 @@
 		type LightboxImage
 	} from '$lib/attachments/events';
 	import { viewIdentity, createPaintFence } from '$lib/attachments/viewFence';
+	import TimelineEntryList from './TimelineEntryList.svelte';
+	import type { TimelineFeed } from './feed';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	interface Props {
@@ -108,9 +106,28 @@
 		 * no item_id). Defaults false → byte-identical for every existing caller.
 		 */
 		parentArchived?: boolean;
+		/**
+		 * Read-only mirror of the feed, for a SECOND view rendered elsewhere in
+		 * the DOM (IDEA-2843). Comments live under the item content while
+		 * changes and versions live in the pane's tabs, and one component
+		 * cannot be in two places — so this component stays the single owner of
+		 * fetching, SSE, pagination and mutations, and hands a host the values
+		 * a second `TimelineEntryList` needs to render from the SAME feed.
+		 *
+		 * Bound rather than fetched again: a second subscription would double
+		 * the SSE traffic and give the two views independently stale windows.
+		 * `loadMore` is included because pagination is a property of the ONE
+		 * feed — a view that can show older entries but not ask for them is a
+		 * dead end, and today both tabs page through the same cursor.
+		 */
+		feed?: TimelineFeed;
+		/** Heading for this view — it renders a slice, not "the timeline". */
+		title?: string;
+		/** Empty-state line, phrased for the kinds this view renders. */
+		emptyLabel?: string;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable(), title = 'Timeline', emptyLabel = 'No timeline entries yet.' }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -697,6 +714,18 @@
 	 * appear rather than a spinner and nothing, and it is small so a
 	 * pathological item cannot turn one click into an unbounded request fan.
 	 */
+	// Mirror the feed out for a host-rendered second view (IDEA-2843).
+	//
+	// Writes `feed`, reads everything else — no self-write, so this cannot
+	// abort its own flush. A fresh object per change is deliberate: the host
+	// holds it in `$state`, and identity change is what tells it to re-render.
+	// `loadMore` rides along because pagination belongs to the ONE feed; a
+	// second view that can show older entries but not ask for them is a dead
+	// end, and both tabs page through the same cursor today.
+	$effect(() => {
+		feed = { entries, loading, error, hasMore, loadingMore, loadMore };
+	});
+
 	const MAX_EMPTY_HOPS = 5;
 
 	/**
@@ -725,13 +754,31 @@
 		});
 	}
 
-	async function loadMore() {
+	/**
+	 * `forKinds` is the CALLER's view filter (IDEA-2843, codex rounds 3-4).
+	 *
+	 * The hop loop below used to stop as soon as a page added any entry of any
+	 * kind. One feed now serves views that render different kinds, so a page of
+	 * pure comments ends the loop having added nothing to a changes view — a
+	 * button that visibly does nothing. Whoever pressed the button says what
+	 * counts as progress; it defaults to this component's own `visibleKinds`,
+	 * which is what its own button wants.
+	 *
+	 * MAX_EMPTY_HOPS still bounds the walk, so a filter that matches nothing
+	 * left in the feed costs a fixed number of pages, not the whole timeline.
+	 */
+	async function loadMore(forKinds?: readonly string[]) {
 		if (loadingMore || !nextCursor) return;
 		// Capture identity before the await so a switch mid-flight can't append
 		// A's older page onto B's entries (TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
 		loadingMore = true;
+		// A successful page clears a previous failure. Without this the banner
+		// outlives the problem and sits next to the entries it claims did not
+		// load — newly visible because the error is mirrored to the tabs now
+		// (codex round 6).
+		error = '';
 		try {
 			for (let hop = 0; hop < MAX_EMPTY_HOPS && nextCursor; hop++) {
 				const cursor = nextCursor;
@@ -768,8 +815,14 @@
 				entries = byNewestFirst([...entries, ...newEntries]);
 				hasMore = resp.has_more;
 				nextCursor = cursorFrom(resp, entries);
-				// Stop as soon as the press produced something to look at.
-				if (newEntries.length > 0) break;
+				// Stop as soon as the press produced something THE CALLER can see.
+				// Counting every kind is what made this a dead button on a
+				// filtered view (codex rounds 3-4).
+				const wanted = forKinds ?? visibleKinds;
+				const newVisible = wanted
+					? newEntries.filter((e) => wanted.includes(e.kind))
+					: newEntries;
+				if (newVisible.length > 0) break;
 				// A cursor that did not move cannot make progress, so asking
 				// again would only repeat this request. Reachable against a
 				// server that predates next_before: the fallback re-derives
@@ -1063,6 +1116,23 @@
 		clearTimeout(sseRefreshTimer);
 	});
 
+	let composerRef = $state<{ appendMarkdown: (markdown: string) => boolean } | undefined>();
+
+	/**
+	 * Push a quote into the live composer from the selection toolbar
+	 * (IDEA-2843). Forwards to `CommentEditor.appendMarkdown`, which appends
+	 * after a blank line rather than replacing an in-progress draft.
+	 *
+	 * Returns false when there is no composer to reach — the user cannot
+	 * comment, or the composer is filtered out of this view — so the caller can
+	 * report that instead of appearing to have quoted into nothing. The
+	 * toolbar's Comment action is gated on the same permission, so a false here
+	 * means the two gates have drifted apart.
+	 */
+	export function quoteIntoComposer(markdown: string): boolean {
+		return composerRef?.appendMarkdown(markdown) ?? false;
+	}
+
 	let submitting: boolean = $state(false);
 
 	// Posts a new comment. Throws on failure so CommentEditor preserves the
@@ -1168,20 +1238,24 @@
 		}
 	}
 
-	function dotClass(kind: TimelineEntry['kind']): string {
-		if (kind === 'comment') return 'dot-comment';
-		if (kind === 'version') return 'dot-version';
-		if (kind === 'note') return 'dot-note';
-		if (kind === 'decision') return 'dot-decision';
-		return 'dot-activity';
-	}
 </script>
 
 <section class="timeline">
 	<header class="timeline-header">
-		<h3 class="timeline-title">Timeline</h3>
-		{#if entries.length > 0}
-			<span class="entry-count">{entries.length}{hasMore ? '+' : ''}</span>
+		<!-- Title and count describe what this view RENDERS, not the whole feed
+		     (IDEA-2843, codex round 3). The one feed is now split across views;
+		     "Timeline 3" over an empty comments list — three activity entries,
+		     no comments — is a count of something the reader cannot see. -->
+		<h3 class="timeline-title">{title}</h3>
+		<!-- The `+` rides the feed-wide `hasMore`, so "Comments 1+" can appear
+		     when the only unfetched entries are activity or versions. Left as
+		     is deliberately (codex round 7): `+` reads as a LOWER BOUND, and a
+		     lower bound of 1 over exactly one comment is true. The alternative —
+		     dropping it unless more of THIS kind exist — cannot be known without
+		     fetching the rest of the feed, so it would trade a true imprecise
+		     count for a confident wrong one. -->
+		{#if visibleEntries.length > 0}
+			<span class="entry-count">{visibleEntries.length}{hasMore ? '+' : ''}</span>
 		{/if}
 	</header>
 
@@ -1196,6 +1270,7 @@
 	{#if canEdit && showComposer}
 		<div class="compose">
 			<CommentEditor
+				bind:this={composerRef}
 				{wsSlug}
 				{itemId}
 				{hostToken}
@@ -1219,74 +1294,34 @@
 	{/if}
 
 	{#if !loading || entries.length > 0}
-		<div class="entry-list" bind:this={entryListEl}>
-			{#each visibleEntries as entry (entry.id)}
-				<div class="entry">
-					<div class="entry-rail">
-						<span class="dot {dotClass(entry.kind)}"></span>
-						<span class="line"></span>
-					</div>
-					<div class="entry-content">
-						{#if entry.kind === 'comment' && entry.comment}
-							<TimelineCommentCard
-								comment={entry.comment}
-								{wsSlug}
-								{username}
-								{items}
-								{currentUserId}
-								{canEdit}
-								{frozen}
-								{isAdmin}
-								{hostToken}
-								{attachmentResolver}
-								onDelete={handleDelete}
-								onReply={handleReply}
-								onEdit={handleEdit}
-								onReaction={handleReaction}
-								onRemoveReaction={handleRemoveReaction}
-							/>
-						{:else if entry.kind === 'activity' && entry.activity}
-							<TimelineActivityCard activity={entry.activity} />
-						{:else if entry.kind === 'version' && entry.version}
-							<TimelineVersionCard
-								version={entry.version}
-								{wsSlug}
-								{itemSlug}
-								{currentContent}
-								{onRestore}
-								{flushBeforeRestore}
-								frozen={frozen || restoreFrozen}
-							/>
-						<!-- No `&& entry.note` guard, unlike the kinds above: the card is
-						     null-safe, and a payload-less entry still occupies a rail. Requiring
-						     the payload turns a partial entry into a blank rail with no card at
-						     all, which reads as a rendering fault rather than as a thin entry. -->
-						{:else if entry.kind === 'note'}
-							<TimelineStructuredCard
-								kind="note"
-								note={entry.note}
-								actor={entry.actor}
-								createdAt={entry.created_at}
-							/>
-						{:else if entry.kind === 'decision'}
-							<TimelineStructuredCard
-								kind="decision"
-								decision={entry.decision}
-								actor={entry.actor}
-								createdAt={entry.created_at}
-							/>
-						{/if}
-					</div>
-				</div>
-			{/each}
-
-			{#if entries.length === 0 && !loading}
-				<div class="empty">No timeline entries yet.</div>
-			{/if}
-		</div>
+		<TimelineEntryList
+			bind:listEl={entryListEl}
+			entries={visibleEntries}
+			showEmpty={visibleEntries.length === 0 && !loading && !error && !hasMore}
+			{emptyLabel}
+			{wsSlug}
+			{username}
+			{items}
+			{hostToken}
+			{currentUserId}
+			{canEdit}
+			{frozen}
+			{isAdmin}
+			{attachmentResolver}
+			onDelete={handleDelete}
+			onReply={handleReply}
+			onEdit={handleEdit}
+			onReaction={handleReaction}
+			onRemoveReaction={handleRemoveReaction}
+			{itemSlug}
+			{currentContent}
+			{onRestore}
+			{flushBeforeRestore}
+			{restoreFrozen}
+		/>
 
 		{#if hasMore}
-			<button class="load-more-btn" type="button" disabled={loadingMore} onclick={loadMore}>
+			<button class="load-more-btn" type="button" disabled={loadingMore} onclick={() => loadMore()}>
 				{loadingMore ? 'Loading...' : 'Load more'}
 			</button>
 		{/if}
@@ -1380,78 +1415,6 @@
 		border-radius: var(--radius);
 		color: var(--accent-red);
 		font-size: 0.85em;
-	}
-
-	/* ── Timeline entries ─────────────────────────────────────────────────── */
-
-	.entry-list {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.entry {
-		display: flex;
-		gap: var(--space-3);
-	}
-
-	.entry-rail {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		flex-shrink: 0;
-		width: 16px;
-		padding-top: var(--space-2);
-	}
-
-	.dot {
-		width: 10px;
-		height: 10px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		z-index: 1;
-	}
-
-	.dot-comment {
-		background: var(--accent-blue);
-	}
-
-	.dot-activity {
-		background: var(--text-muted);
-	}
-
-	.dot-version {
-		background: var(--accent-green);
-	}
-
-	.dot-note {
-		background: var(--accent-cyan);
-	}
-
-	.dot-decision {
-		background: var(--accent-orange);
-	}
-
-	.line {
-		width: 1px;
-		flex: 1;
-		background: var(--border);
-	}
-
-	.entry:last-child .line {
-		display: none;
-	}
-
-	.entry-content {
-		flex: 1;
-		min-width: 0;
-		padding-bottom: var(--space-3);
-	}
-
-	.empty {
-		text-align: center;
-		padding: var(--space-6);
-		color: var(--text-muted);
-		font-size: 0.9em;
 	}
 
 	.load-more-btn {

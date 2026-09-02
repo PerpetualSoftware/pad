@@ -95,6 +95,63 @@
 		return unescapeDocLinks((editor.storage as any).markdown?.getMarkdown?.() ?? '').trim();
 	}
 
+	/**
+	 * Appends markdown to the composer from OUTSIDE the component, without
+	 * remounting it (IDEA-2843). The selection toolbar's "Comment" action uses
+	 * this to drop a blockquote of the reader's selection into the live
+	 * composer; the blockquote grammar is the CALLER's, so this stays a
+	 * general append.
+	 *
+	 * Why an imperative handle and not the `content` prop: `content` is read
+	 * ONCE, inside `new Editor({...})` in `onMount` below, and this component
+	 * has no `$effect` syncing it afterwards. Writing the prop on a mounted
+	 * composer is a SILENT no-op — no error, no warning, the text is simply
+	 * dropped. A `{#key}` remount would work but would destroy an in-progress
+	 * draft, which is the thing `doSubmit`'s identity capture (PLAN-2105 /
+	 * TASK-2112) exists to protect.
+	 *
+	 * Append, never replace: a draft the user has already typed is kept and the
+	 * addition goes after a blank line, so quoting a second passage into the
+	 * same comment works without losing the first. Returns false when there was
+	 * nothing to insert or no live editor, so a caller can tell the difference
+	 * between "inserted" and "silently did nothing" — the failure mode this
+	 * handle exists to remove.
+	 */
+	export function appendMarkdown(markdown: string): boolean {
+		if (!editor || editor.isDestroyed) return false;
+		const addition = markdown.trim();
+		if (addition === '') return false;
+		const existing = currentMarkdown();
+		const next = existing === '' ? addition : `${existing}\n\n${addition}`;
+		// setContent (block parse) rather than insertContentAt, and the reason
+		// is a PREFERENCE, not a defect avoided: both routes preserve the
+		// blockquote today. That was measured — swapping this line for
+		// insertContentAt leaves the whole suite green. What separates them is
+		// what they depend on. tiptap-markdown overrides insertContentAt to
+		// parse with `{ inline: true }`, and the block structure survives that
+		// only because normalizeInline unwraps the first child when it is a
+		// <p> and a blockquote is not one. setContent parses in block mode and
+		// depends on nothing of the sort.
+		//
+		// Nothing enforces this choice — a source guard for it would be a
+		// scanner with an unbounded tail, which is not worth it here. If a
+		// future edit moves to insertContentAt, the suite will stay green and
+		// this comment is the only warning that the quote's block structure
+		// then rides on a library internal.
+		//
+		// The round trip through markdown is not new loss: the composer already
+		// parses markdown at mount and serializes it on every submit, so both
+		// directions are the component's existing contract.
+		// `empty` (which gates the submit button) is maintained by the editor's
+		// own onUpdate: setContent's `emitUpdate` defaults true in
+		// @tiptap/core 3.30.2. An explicit `empty = editor.isEmpty` here was
+		// removed after a mutation showed it inert — the suite asserts the
+		// button becomes enabled, so if a future bump flips that default the
+		// test goes red and says so, which a defensive line would have hidden.
+		editor.chain().setContent(next).focus('end').run();
+		return true;
+	}
+
 	async function doSubmit() {
 		if (busy || !editor) return;
 		const md = currentMarkdown();
@@ -112,7 +169,21 @@
 			await onSubmit(md);
 			// Composer behaviour: clear on success. In edit/reply mode the host
 			// unmounts this component, so the clear is harmless there.
-			if (editor && !editor.isDestroyed && reqWs === wsSlug && reqItem === itemId) {
+			//
+			// ...but only if the composer still holds what was SENT. Anything
+			// added during the round trip is not part of the submitted comment,
+			// and clearing it destroys it: a quote pushed in through
+			// `appendMarkdown` while the submit was in flight (IDEA-2843, codex
+			// round 5), and — pre-existing, same mechanism — anything the user
+			// typed. This is the same class as the item-identity capture above,
+			// applied to the CONTENT rather than to which item it belongs to.
+			if (
+				editor &&
+				!editor.isDestroyed &&
+				reqWs === wsSlug &&
+				reqItem === itemId &&
+				currentMarkdown() === md
+			) {
 				editor.commands.clearContent();
 			}
 		} catch {
