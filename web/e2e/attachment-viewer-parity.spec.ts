@@ -60,14 +60,14 @@ const INLINE_IMG = '.editor-content .ProseMirror img[data-attachment-id]';
 const COMMENT_EDITOR = '.comment-editor .ProseMirror';
 
 /**
- * The timeline (and with it the comment composer) lives under the item's
- * ACTIVITY tab; on the Details tab it is mounted but has no box at all, so
- * every locator inside it is "not visible". Two of the four surfaces live
- * here, which is itself part of what makes them different code paths.
+ * The comment composer lives under the item CONTENT on the Details tab since
+ * IDEA-2843; before that it was on the Activity tab and this helper clicked
+ * there. Two of the four surfaces live here, which is itself part of what
+ * makes them different code paths. Details is the default tab, so the wait is
+ * all that remains of the old prelude.
  */
-async function openActivityTab(page: Page): Promise<void> {
-	await page.getByRole('tab', { name: 'Activity' }).click();
-	await expect(page.locator('.timeline')).toBeVisible();
+async function openCommentsSurface(page: Page): Promise<void> {
+	await expect(page.locator('#item-comments .timeline')).toBeVisible();
 }
 
 /** open → ←/→ → Escape → reopen → backdrop click → reopen → Close button. */
@@ -162,7 +162,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 			`two shots\n\n![first](pad-attachment:${one})\n\n![second](pad-attachment:${two})\n`
 		);
 		await page.goto(itemUrl(fixture, doc.slug));
-		await openActivityTab(page);
+		await openCommentsSurface(page);
 
 		const thumbs = page.locator('.timeline img[data-attachment-id]');
 		await expect(thumbs).toHaveCount(2);
@@ -205,7 +205,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Parity comment editor');
 		await page.goto(itemUrl(fixture, doc.slug));
-		await openActivityTab(page);
+		await openCommentsSurface(page);
 
 		await page.locator(COMMENT_EDITOR).first().click();
 		await dropFileIntoEditor(page, 'draft-a.png', REAL_PNG.toString('base64'), 'image/png', COMMENT_EDITOR);
@@ -343,7 +343,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		await expect(page.locator(VIEWER)).toHaveCount(0);
 
 		// ── The modified-key case, in the surface that owns the shortcut ──
-		await openActivityTab(page);
+		await openCommentsSurface(page);
 		await page.locator(COMMENT_EDITOR).first().click();
 		await dropFileIntoEditor(
 			page,

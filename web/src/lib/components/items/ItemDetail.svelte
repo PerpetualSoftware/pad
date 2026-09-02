@@ -25,6 +25,13 @@
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import TagInput from '$lib/components/fields/TagInput.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
+	import TimelineEntryList from '$lib/components/timeline/TimelineEntryList.svelte';
+	import {
+		COMMENT_KINDS,
+		CHANGE_KINDS,
+		VERSION_KINDS,
+		type TimelineFeed
+	} from '$lib/components/timeline/feed';
 	import ChildItems from '$lib/components/ChildItems.svelte';
 	import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
 	import { goto } from '$app/navigation';
@@ -700,6 +707,11 @@
 	let moving = $state(false);
 	let itemLinks = $state<ItemLink[]>([]);
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
+	// Mirrored out of the ONE mounted <ItemTimeline> (IDEA-2843), which now
+	// lives under the content on Details rendering comments. The Activity and
+	// Versions panels render the SAME feed through a second
+	// <TimelineEntryList> — one subscription, one composer, two views.
+	let timelineFeed = $state<TimelineFeed | undefined>(undefined);
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
 
@@ -5761,6 +5773,49 @@
 				{/if}
 			</div>
 		</div>
+
+		<!-- Comments, under the content (IDEA-2843 / GitHub #1228). They were
+		     reachable only through the Activity tab, which Dave called a
+		     regression: reviewing an agent-written doc means many small
+		     comments, and every one cost a trip away from the passage being
+		     commented on. TASK-2294's own spec had an activity preview on this
+		     panel; it never shipped, and this is that half.
+
+		     This is THE mounted ItemTimeline — the single owner of the fetch,
+		     the SSE subscription, pagination and every mutation. The Activity
+		     and Versions panels render the same feed from `timelineFeed`.
+
+		     {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112),
+		     the same remount the timeline had inside the panel block below —
+		     it cancels in-flight loads and resets the composer on an item
+		     switch. Moving out of that block without bringing the key would
+		     have dropped the guard silently. It wraps ONLY the timeline: the
+		     collab editor above must never be keyed.
+
+		     COMMENTS/REACTIONS are per-item / per-user REST entities,
+		     side-independent, so they are NOT frozen while peeking (BUG-2263) —
+		     composer + controls stay live on the passive side. -->
+		{#key itemSlug}
+			<div id="item-comments" class="timeline-section">
+				<ItemTimeline
+					bind:feed={timelineFeed}
+					{wsSlug}
+					{username}
+					{itemSlug}
+					currentContent={item.content ?? ''}
+					items={localIndex.getAll(wsSlug)}
+					onRestore={handleVersionRestore}
+					flushBeforeRestore={flushCollabBeforeRestore}
+					itemId={item.id}
+					hostToken={attachmentHostToken}
+					collectionId={item.collection_id}
+					frozen={false}
+					restoreFrozen={peeking}
+					parentArchived={itemMatchesRef && isArchived}
+					visibleKinds={[...COMMENT_KINDS]}
+				/>
+			</div>
+		{/key}
 		</div><!-- /tab-panel Details -->
 
 		<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
@@ -5907,10 +5962,26 @@
 		{/if}
 		</div><!-- /tab-panel Relationships -->
 
-		<!-- Unified Timeline (comments + activity + versions). ONE mounted
-		     instance serves both the Activity and Versions tabs — the
-		     visibleKinds render-filter switches with the tab, the SSE
-		     subscription and merged feed survive (PLAN-2290 Phase 4). -->
+		<!-- Activity / Versions — a SECOND VIEW of the one feed (IDEA-2843).
+		     The owning <ItemTimeline> now lives under the content on Details;
+		     this renders the same entries through `timelineFeed`, so there is
+		     still exactly one subscription and one composer. The composer is
+		     deliberately absent here — comments are on Details now.
+
+		     VERSION RESTORE stays frozen while peeking: it REST-writes this
+		     item's `items.content` directly (not via the Y.Doc applier), so on
+		     a peeking side whose Y.Doc is retained-alive a later collab flush
+		     could overwrite it — a same-item collision (Codex P1, BUG-2263).
+
+		     `note` / `decision` in the Activity filter below are the structured
+		     entries `pad item note` / `pad item decide` write into the item's
+		     fields blob. They belong to Activity, not Versions — things that
+		     happened to the record, not restore points. That whitelist is the
+		     ONLY gate on them: omitting them renders them on NEITHER tab, which
+		     is exactly how the feature shipped invisible the first time
+		     (BUG-2301). `comment` appears in NEITHER filter here, which is the
+		     move itself — it is not an omission of the BUG-2301 kind, because
+		     comments render on Details. -->
 		<div
 			class="tab-panel"
 			class:tab-hidden={activeTab !== 'activity' && activeTab !== 'versions'}
@@ -5919,38 +5990,37 @@
 			aria-label={activeTab === 'versions' ? 'Versions' : 'Activity'}
 		>
 		<div id="item-timeline" class="timeline-section">
-			<!-- Timeline COMMENTS/REACTIONS are per-item / per-user REST entities,
-			     side-independent, so they are NOT frozen while peeking (BUG-2263) —
-			     composer + controls stay live on the passive side. VERSION RESTORE is
-			     different: it REST-writes this item's `items.content` directly (not via
-			     the Y.Doc applier), so on a peeking side whose Y.Doc is retained-alive a
-			     later collab flush could overwrite it — a same-item collision. So it
-			     stays frozen: `restoreFrozen={peeking}` (Codex P1).
-
-			     `note` / `decision` in visibleKinds below are the structured entries
-			     `pad item note` / `pad item decide` write into the item's fields blob.
-			     They belong to Activity, not Versions — things that happened to the
-			     record, not restore points. That whitelist is the ONLY gate on them:
-			     omitting them there renders them on NEITHER tab, which is exactly how
-			     the feature shipped invisible the first time (BUG-2301). -->
-			<ItemTimeline
-				{wsSlug}
-				{username}
-				{itemSlug}
-				currentContent={item.content ?? ''}
-				items={localIndex.getAll(wsSlug)}
-				onRestore={handleVersionRestore}
-				flushBeforeRestore={flushCollabBeforeRestore}
-				itemId={item.id}
-				hostToken={attachmentHostToken}
-				collectionId={item.collection_id}
-				frozen={false}
-				restoreFrozen={peeking}
-				parentArchived={itemMatchesRef && isArchived}
-				visibleKinds={activeTab === 'versions'
-					? ['version']
-					: ['comment', 'activity', 'note', 'decision']}
-			/>
+			{#if timelineFeed}
+				{@const kinds: readonly string[] =
+					activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS}
+				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
+				<TimelineEntryList
+					entries={shown}
+					showEmpty={timelineFeed.entries.length === 0 && !timelineFeed.loading}
+					{wsSlug}
+					{username}
+					{itemSlug}
+					currentContent={item.content ?? ''}
+					items={localIndex.getAll(wsSlug)}
+					hostToken={attachmentHostToken}
+					onRestore={handleVersionRestore}
+					flushBeforeRestore={flushCollabBeforeRestore}
+					restoreFrozen={peeking}
+				/>
+				<!-- Pagination belongs to the ONE feed, so this asks the OWNER for
+				     the next page. Without it these tabs could show older entries
+				     only by visiting Details and paging there. -->
+				{#if timelineFeed.hasMore}
+					<button
+						class="load-more-btn"
+						type="button"
+						disabled={timelineFeed.loadingMore}
+						onclick={() => timelineFeed?.loadMore()}
+					>
+						{timelineFeed.loadingMore ? 'Loading...' : 'Load more'}
+					</button>
+				{/if}
+			{/if}
 		</div>
 		</div><!-- /tab-panel Activity/Versions -->
 		{/key}

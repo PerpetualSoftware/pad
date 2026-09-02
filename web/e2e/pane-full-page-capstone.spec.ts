@@ -329,11 +329,13 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await col.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(col.locator('button.link-delete-btn')).toHaveCount(1);
 		await expect(col.locator('button.add-relationship-btn')).toBeVisible();
-		// Activity tab: the comment composer.
-		await col.getByRole('tab', { name: 'Activity' }).click();
-		await expect(col.locator('.compose')).toBeVisible();
-		// Return to Details so the peek-era editor checks read the right tab.
+		// Details tab: the comment composer, under the content (IDEA-2843 —
+		// it used to be behind the Activity tab, which now carries changes and
+		// versions only). Return to Details first, since the Relationships
+		// click above left us elsewhere; the peek-era editor checks below need
+		// this tab anyway.
 		await col.getByRole('tab', { name: 'Details' }).click();
+		await expect(col.locator('#item-comments .compose')).toBeVisible();
 
 		// ── Open the pane → focus-follows-editing (PLAN-2179 DR-2 / TASK-2181) keeps
 		//    the MASTER editable (the pane opens as a read-only PREVIEW). Then click

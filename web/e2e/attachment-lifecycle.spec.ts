@@ -346,15 +346,17 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 
 		await page.goto(itemUrl(fixture, doc.slug));
 
-		// The timeline lives under the Activity tab. Open it and confirm the comment
-		// thumbnail resolved to a LIVE image first — the baseline the reconciliation
-		// flips away from. (The tab-panels are CSS-hidden, not `{#if}`-gated, so both
-		// the strip and the timeline stay MOUNTED across a switch — the timeline
-		// instance never remounts, which is what makes the reconciliation "live".)
-		const tlImg = `.timeline img[data-attachment-id="${att}"]`;
-		const tlMissing = `.timeline .attachment-missing[data-attachment-id="${att}"]`;
-		await page.getByRole('tab', { name: 'Activity' }).click();
-		await expect(page.locator('.timeline')).toBeVisible();
+		// Comments live under the item CONTENT on the Details tab (IDEA-2843);
+		// they used to be behind the Activity tab and this opened it. Confirm the
+		// comment thumbnail resolved to a LIVE image first — the baseline the
+		// reconciliation flips away from. (The tab-panels are CSS-hidden, not
+		// `{#if}`-gated, so the strip and the timeline stay MOUNTED across a
+		// switch — the timeline instance never remounts, which is what makes the
+		// reconciliation "live". That property is exercised at the end of the
+		// test, which still round-trips through another tab.)
+		const tlImg = `#item-comments img[data-attachment-id="${att}"]`;
+		const tlMissing = `#item-comments .attachment-missing[data-attachment-id="${att}"]`;
+		await expect(page.locator('#item-comments .timeline')).toBeVisible();
 		await expect(page.locator(tlImg)).toBeVisible();
 		await expect(page.locator(tlMissing)).toHaveCount(0);
 
@@ -368,10 +370,11 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 			if (el) el.__tl = 2;
 		});
 
-		// Delete the attachment through the STRIP UI. Switch to the Details tab where
-		// the strip is visible (its `.att-delete` is display:none while Activity is
-		// shown, so unclickable there), open the confirm drill-down, and confirm — this
-		// is the same-page path that runs `announceAttachmentDeleted`.
+		// Delete the attachment through the STRIP UI. The strip and the comments
+		// now share the Details tab (IDEA-2843), so this click is a no-op where it
+		// used to be a switch away from Activity; kept because the test must be
+		// ON Details for the strip's `.att-delete` to be clickable, whatever tab
+		// a future edit leaves us on.
 		await page.getByRole('tab', { name: 'Details' }).click();
 		// The delete control is CSS-revealed on hover / focus-within and sits over the
 		// tile, so focus it first (keyboard-reachable by contract) before clicking —
@@ -400,8 +403,12 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 			'the reconciliation is the live bus reaching the mounted timeline — not a reload or a remount'
 		).toBe(true);
 
-		// And it renders correctly when the tab is shown again.
+		// And it renders correctly after a tab round-trip. Comments are on
+		// Details now, so the switch that proves the panel is CSS-hidden rather
+		// than unmounted has to go OUT and BACK — leaving on Activity would
+		// assert against a hidden panel and pass for the wrong reason.
 		await page.getByRole('tab', { name: 'Activity' }).click();
+		await page.getByRole('tab', { name: 'Details' }).click();
 		await expect(page.locator(tlMissing)).toBeVisible();
 	});
 });

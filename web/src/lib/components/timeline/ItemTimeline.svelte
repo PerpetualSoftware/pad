@@ -22,6 +22,7 @@
 	} from '$lib/attachments/events';
 	import { viewIdentity, createPaintFence } from '$lib/attachments/viewFence';
 	import TimelineEntryList from './TimelineEntryList.svelte';
+	import type { TimelineFeed } from './feed';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	interface Props {
@@ -105,9 +106,24 @@
 		 * no item_id). Defaults false → byte-identical for every existing caller.
 		 */
 		parentArchived?: boolean;
+		/**
+		 * Read-only mirror of the feed, for a SECOND view rendered elsewhere in
+		 * the DOM (IDEA-2843). Comments live under the item content while
+		 * changes and versions live in the pane's tabs, and one component
+		 * cannot be in two places — so this component stays the single owner of
+		 * fetching, SSE, pagination and mutations, and hands a host the values
+		 * a second `TimelineEntryList` needs to render from the SAME feed.
+		 *
+		 * Bound rather than fetched again: a second subscription would double
+		 * the SSE traffic and give the two views independently stale windows.
+		 * `loadMore` is included because pagination is a property of the ONE
+		 * feed — a view that can show older entries but not ask for them is a
+		 * dead end, and today both tabs page through the same cursor.
+		 */
+		feed?: TimelineFeed;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable() }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -694,6 +710,18 @@
 	 * appear rather than a spinner and nothing, and it is small so a
 	 * pathological item cannot turn one click into an unbounded request fan.
 	 */
+	// Mirror the feed out for a host-rendered second view (IDEA-2843).
+	//
+	// Writes `feed`, reads everything else — no self-write, so this cannot
+	// abort its own flush. A fresh object per change is deliberate: the host
+	// holds it in `$state`, and identity change is what tells it to re-render.
+	// `loadMore` rides along because pagination belongs to the ONE feed; a
+	// second view that can show older entries but not ask for them is a dead
+	// end, and both tabs page through the same cursor today.
+	$effect(() => {
+		feed = { entries, loading, hasMore, loadingMore, loadMore };
+	});
+
 	const MAX_EMPTY_HOPS = 5;
 
 	/**
