@@ -202,6 +202,28 @@ describe('timeline second view — the mirrored error', () => {
 	});
 });
 
+describe('timeline second view — the composer identity gate', () => {
+	it('hides the composer when the loaded item does not match the requested one', () => {
+		// The host passes itemId/collectionId only while `itemMatchesRef`; during
+		// an A→B navigation it passes neither, and ItemTimeline must treat that
+		// as "cannot edit" rather than as a permissive default. An attachment
+		// dropped in the composer during that window would otherwise be
+		// associated with the PREVIOUS item (codex round 6).
+		app = mount(ItemTimeline, {
+			target: host,
+			props: {
+				wsSlug: 'ws',
+				itemSlug: 'TASK-2',
+				currentContent: ''
+				// itemId / collectionId deliberately absent — the A→B window.
+			}
+		}) as Record<string, unknown>;
+		flushSync();
+
+		expect(host.querySelector('.compose')).toBeNull();
+	});
+});
+
 describe('timeline second view — filtered pagination', () => {
 	it('keeps paging until a page adds an entry THIS view renders', async () => {
 		// The hop loop used to stop on any new entry of any kind. With one feed

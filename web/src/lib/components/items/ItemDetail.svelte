@@ -5817,6 +5817,20 @@
 		     side-independent, so they are NOT frozen while peeking (BUG-2263) —
 		     composer + controls stay live on the passive side. -->
 		{#key itemSlug}
+			<!-- ITEM IDENTITY PROPS ARE GATED ON itemMatchesRef (codex round 6).
+			     During an A→B navigation `item` still holds A while loadData
+			     fetches B, so itemId/collectionId would describe A while itemSlug
+			     describes B — and an attachment dropped in the composer during
+			     that window is associated with the WRONG item. Honest inputs
+			     rather than a new gate: with no itemId/collectionId,
+			     ItemTimeline's canEdit derives false and the composer hides until
+			     the identities agree.
+
+			     Pre-existing wiring, identical on main — the EXPOSURE is what
+			     changed. The composer used to sit behind the Activity tab, and
+			     tabs reset to Details on an item switch, so reaching it inside
+			     the load window took a deliberate click. It is now on the tab you
+			     land on. -->
 			<div id="item-comments" class="timeline-section">
 				<ItemTimeline
 					bind:this={timelineRef}
@@ -5828,9 +5842,9 @@
 					items={localIndex.getAll(wsSlug)}
 					onRestore={handleVersionRestore}
 					flushBeforeRestore={flushCollabBeforeRestore}
-					itemId={item.id}
+					itemId={itemMatchesRef ? item.id : undefined}
 					hostToken={attachmentHostToken}
-					collectionId={item.collection_id}
+					collectionId={itemMatchesRef ? item.collection_id : undefined}
 					frozen={false}
 					restoreFrozen={peeking}
 					parentArchived={itemMatchesRef && isArchived}

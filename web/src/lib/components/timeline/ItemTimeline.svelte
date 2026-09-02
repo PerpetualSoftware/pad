@@ -774,6 +774,11 @@
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
 		loadingMore = true;
+		// A successful page clears a previous failure. Without this the banner
+		// outlives the problem and sits next to the entries it claims did not
+		// load — newly visible because the error is mirrored to the tabs now
+		// (codex round 6).
+		error = '';
 		try {
 			for (let hop = 0; hop < MAX_EMPTY_HOPS && nextCursor; hop++) {
 				const cursor = nextCursor;
