@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -74,7 +75,7 @@ Nothing is repaired. Run '` + repairNULCommandHint + `' for that.`,
 			if err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
-			printNULScanReport(report, fromPath)
+			printNULScanReport(os.Stdout, report, fromPath)
 			return nil
 		},
 	}
@@ -144,7 +145,7 @@ row.`,
 			if err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
-			printNULScanReport(scan, fromPath)
+			printNULScanReport(os.Stdout, scan, fromPath)
 			if scan.Total() == 0 {
 				return nil
 			}
@@ -166,20 +167,20 @@ row.`,
 				return fmt.Errorf("repair: %w", err)
 			}
 
-			fmt.Fprintf(os.Stderr, "\nRepaired %d value(s).\n", len(report.Repaired))
+			fmt.Fprintf(os.Stdout, "\nRepaired %d value(s).\n", len(report.Repaired))
 			for _, v := range report.Repaired {
-				fmt.Fprintf(os.Stderr, "  %s\n", v)
+				fmt.Fprintf(os.Stdout, "  %s\n", v)
 			}
 			if len(report.Skipped) > 0 {
-				fmt.Fprintf(os.Stderr, "\nSkipped %d value(s):\n", len(report.Skipped))
+				fmt.Fprintf(os.Stdout, "\nSkipped %d value(s):\n", len(report.Skipped))
 				for _, sk := range report.Skipped {
-					fmt.Fprintf(os.Stderr, "  %s\n    %s\n", sk.Violation, sk.Reason)
+					fmt.Fprintf(os.Stdout, "  %s\n    %s\n", sk.Violation, sk.Reason)
 				}
 			}
 			if len(report.Failed) > 0 {
-				fmt.Fprintf(os.Stderr, "\nFailed on %d value(s):\n", len(report.Failed))
+				fmt.Fprintf(os.Stdout, "\nFailed on %d value(s):\n", len(report.Failed))
 				for _, f := range report.Failed {
-					fmt.Fprintf(os.Stderr, "  %s\n    %v\n", f.Violation, f.Err)
+					fmt.Fprintf(os.Stdout, "  %s\n    %v\n", f.Violation, f.Err)
 				}
 				return fmt.Errorf("%d value(s) could not be repaired", len(report.Failed))
 			}
@@ -236,36 +237,42 @@ func openNULToolsStore(path string) (*store.Store, error) {
 	return s, nil
 }
 
-// printNULScanReport renders a scan for a human, on stderr so a caller piping
-// stdout is unaffected.
-func printNULScanReport(report *store.NULScanReport, dbPath string) {
+// printNULScanReport renders a scan for a human.
+//
+// ON STDOUT, unlike the rest of this command group. `pad db backup` and
+// `pad db restore` keep their progress on stderr because stdout may carry the
+// backup itself; these two commands emit no data at all, and their REPORT is
+// the whole point — an operator piping `pad db scan-nul > affected.txt` should
+// get the list, not an empty file. Only the confirmation prompt stays on
+// stderr, where a prompt belongs.
+func printNULScanReport(w io.Writer, report *store.NULScanReport, dbPath string) {
 	if !report.Applicable {
-		fmt.Fprintf(os.Stderr, "Not applicable: %s.\n", report.Reason)
+		fmt.Fprintf(w, "Not applicable: %s.\n", report.Reason)
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Scanned %d protected column(s) in %s.\n", report.ColumnsScanned, dbPath)
+	fmt.Fprintf(w, "Scanned %d protected column(s) in %s.\n", report.ColumnsScanned, dbPath)
 	if len(report.ColumnsAbsent) > 0 {
 		// Not an error — an older schema legitimately lacks later columns —
 		// but a census that quietly skipped part of its population is not one.
-		fmt.Fprintf(os.Stderr, "  (%d listed column(s) absent from this schema: %v)\n",
+		fmt.Fprintf(w, "  (%d listed column(s) absent from this schema: %v)\n",
 			len(report.ColumnsAbsent), report.ColumnsAbsent)
 	}
 
 	if report.Total() == 0 {
-		fmt.Fprintln(os.Stderr, "No values carrying a NUL were found.")
+		fmt.Fprintln(w, "No values carrying a NUL were found.")
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "\nFound %d value(s) carrying a NUL:\n\n", report.Total())
+	fmt.Fprintf(w, "\nFound %d value(s) carrying a NUL:\n\n", report.Total())
 
 	byColumn := report.ByColumn()
 	for _, key := range sortedCountKeys(byColumn) {
-		fmt.Fprintf(os.Stderr, "  %-44s %d\n", key, byColumn[key])
+		fmt.Fprintf(w, "  %-44s %d\n", key, byColumn[key])
 	}
 
 	byWorkspace := report.ByWorkspace()
-	fmt.Fprintln(os.Stderr, "\nBy workspace:")
+	fmt.Fprintln(w, "\nBy workspace:")
 	for _, id := range sortedCountKeys(byWorkspace) {
 		label := id
 		if label == "" {
@@ -274,12 +281,12 @@ func printNULScanReport(report *store.NULScanReport, dbPath string) {
 			// an empty column.
 			label = "(instance-wide tables, no workspace)"
 		}
-		fmt.Fprintf(os.Stderr, "  %-44s %d\n", label, byWorkspace[id])
+		fmt.Fprintf(w, "  %-44s %d\n", label, byWorkspace[id])
 	}
 
-	fmt.Fprintln(os.Stderr, "\nRows:")
+	fmt.Fprintln(w, "\nRows:")
 	for _, v := range report.Violations {
-		fmt.Fprintf(os.Stderr, "  %s\n", v)
+		fmt.Fprintf(w, "  %s\n", v)
 	}
 }
 
