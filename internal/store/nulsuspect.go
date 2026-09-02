@@ -76,8 +76,10 @@ var ErrDestinationCheckUnavailable = errors.New("store: could not ask the destin
 // back as a plain error: the destination will reject the row too, but for a
 // reason outside this preflight's remit, and a NUL preflight that silently grew
 // into a general one would refuse migrations that have nothing to do with this
-// bug. A failure the server did NOT answer wraps
-// ErrDestinationCheckUnavailable, and the caller refuses on those.
+// bug. Anything else — no SQLSTATE, or an OPERATIONAL one such as a cancelled
+// query or a terminated connection — wraps ErrDestinationCheckUnavailable, and
+// the caller refuses on those. See classifyDestinationError for why the test is
+// "is this class 22" rather than "did the server answer".
 //
 // KNOWN OVER-REFUSAL, measured rather than reasoned about (codex round 5).
 // This casts the value AS STORED, and one write path normalises before writing:
@@ -101,11 +103,11 @@ var ErrDestinationCheckUnavailable = errors.New("store: could not ask the destin
 // rather than decided here; the REFUSAL WORDING no longer claims PostgreSQL
 // would reject the row, only that the value carries a NUL jsonb refuses.
 //
-// SQLSTATE by string match rather than a pgconn type assertion, following
+// SQLSTATE by string extraction rather than a pgconn type assertion, following
 // isDeadlockError in this package: internal/store keeps both drivers behind
 // database/sql, and pgx puts the code verbatim in the error text
 // ("... (SQLSTATE 22P05)"). TestDestinationOracleClassifiesRealPostgresErrors
-// pins the match against a real server rather than assuming the wording.
+// pins the extraction against a real server rather than assuming the wording.
 func (s *Store) CheckJSONBAcceptable(value string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return fmt.Errorf("the jsonb cast oracle needs a PostgreSQL destination")
@@ -115,37 +117,86 @@ func (s *Store) CheckJSONBAcceptable(value string) error {
 	if err == nil {
 		return nil
 	}
-	if isNULSQLState(err) {
+	switch classifyDestinationError(err) {
+	case destinationRefusedNUL:
 		return fmt.Errorf("%w: %v", ErrNULDestinationRefused, err)
-	}
-	if !hasSQLState(err) {
-		// No SQLSTATE means the server never rendered a verdict: the connection
-		// dropped, the context expired, the pool was closed. That is not "the
-		// value is fine".
+	case destinationRejectedValue:
+		return err
+	default:
 		return fmt.Errorf("%w: %v", ErrDestinationCheckUnavailable, err)
 	}
-	return err
 }
 
-// hasSQLState reports whether err carries a PostgreSQL error code, i.e. whether
-// the SERVER answered at all.
+// destinationVerdict is what a failed cast tells us.
+type destinationVerdict int
+
+const (
+	// destinationUnavailable: the server did not render a verdict about the
+	// value. No SQLSTATE at all, or an OPERATIONAL one.
+	destinationUnavailable destinationVerdict = iota
+	// destinationRejectedValue: the server judged the value and refused it, for
+	// a reason that is not a NUL.
+	destinationRejectedValue
+	// destinationRefusedNUL: the server judged the value and refused it for a
+	// NUL.
+	destinationRefusedNUL
+)
+
+// classifyDestinationError decides which of the three a cast failure is.
 //
-// Same string-matching approach as isNULSQLState and isDeadlockError, and the
-// same reason: internal/store keeps both drivers behind database/sql, and pgx
-// renders the code into the message for every server-side error.
-// TestDestinationOracleFailsClosedOnAnUnusableConnection pins the distinction
-// against a real closed pool rather than assuming it.
-func hasSQLState(err error) bool {
-	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "SQLSTATE")
+// THE TEST IS INVERTED FROM THE OBVIOUS ONE, and that inversion is the fix
+// (codex round 6). The first version asked "did the server answer at all",
+// treating every SQLSTATE-bearing error as a verdict about the value — but
+// 57014 (query cancelled), 57P01 (terminated by administrator), the 08 class
+// (connection exception) and the 53 class (out of resources) all carry
+// SQLSTATEs and say nothing about the value. Classified as verdicts, they let
+// the preflight proceed with an unverified suspect, which is the fail-open this
+// whole three-way split exists to close, one level deeper.
+//
+// So only CLASS 22 — data exception, PostgreSQL's class for "this value is
+// wrong" — counts as a verdict. `SELECT $1::jsonb` produces 22P02 for
+// malformed JSON and 22P05 / 22021 for the NUL cases; everything else means the
+// question was not answered, and the caller refuses rather than guessing.
+//
+// Erring toward "unavailable" is the safe direction: its cost is a refused
+// migration an operator re-runs, against a half-finished one they have to
+// unpick.
+func classifyDestinationError(err error) destinationVerdict {
+	code := sqlStateOf(err)
+	switch code {
+	case "22P05", "22021":
+		return destinationRefusedNUL
+	case "":
+		return destinationUnavailable
+	}
+	if strings.HasPrefix(code, "22") {
+		return destinationRejectedValue
+	}
+	return destinationUnavailable
 }
 
-// isNULSQLState reports whether err carries one of PostgreSQL's two NUL codes.
-func isNULSQLState(err error) bool {
+// sqlStateOf extracts the five-character error code pgx renders into a
+// server-side error's message, or "" when there is none.
+//
+// String extraction rather than a pgconn type assertion, following
+// isDeadlockError in this package: internal/store keeps both drivers behind
+// database/sql. The RENDERING is pinned by tests that provoke real errors from
+// a real server rather than by assuming the wording.
+func sqlStateOf(err error) string {
 	if err == nil {
-		return false
+		return ""
 	}
-	msg := strings.ToUpper(err.Error())
-	return strings.Contains(msg, "22P05") || strings.Contains(msg, "22021")
+	const marker = "SQLSTATE "
+	msg := err.Error()
+	i := strings.Index(strings.ToUpper(msg), marker)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(marker):]
+	if len(rest) < 5 {
+		return ""
+	}
+	return strings.ToUpper(rest[:5])
 }
 
 // RepairSuspectValue rewrites a suspect's NUL escapes with U+FFFD, using the

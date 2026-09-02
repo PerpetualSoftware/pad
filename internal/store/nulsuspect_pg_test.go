@@ -83,6 +83,17 @@ func TestDestinationOracleClassifiesRealPostgresErrors(t *testing.T) {
 		if errors.Is(err, ErrNULDestinationRefused) {
 			t.Errorf("a syntax failure was classified as a NUL refusal: %v", err)
 		}
+		// AND it is a completed verdict, not an unavailable check. This is the
+		// real-server half of classifyDestinationError's rule: it trusts that a
+		// bad VALUE produces SQLSTATE class 22, and here is a real one doing so.
+		// Without this the class-22 rule would rest entirely on documentation.
+		if errors.Is(err, ErrDestinationCheckUnavailable) {
+			t.Errorf("a verdict about the value was classified as an unavailable check: %v", err)
+		}
+		if code := sqlStateOf(err); !strings.HasPrefix(code, "22") {
+			t.Errorf("a malformed value produced SQLSTATE %q, not class 22 — classifyDestinationError's "+
+				"rule is built on that class being what a bad value yields", code)
+		}
 	})
 }
 
@@ -130,5 +141,91 @@ func TestDestinationOracleFailsClosedOnAnUnusableConnection(t *testing.T) {
 	}
 	if errors.Is(err, ErrNULDestinationRefused) {
 		t.Errorf("a connection failure was classified as a verdict about the value: %v", err)
+	}
+}
+
+// TestClassifyDestinationErrorTreatsOperationalCodesAsUnverified is codex round
+// 6's finding, and it is the fail-open one level below the one round 5 found.
+//
+// An operational SQLSTATE — a cancelled query, an administrator terminating the
+// backend, a connection exception — is the server answering that it could not
+// do the work, not a verdict about the value. Classified as a verdict, the
+// preflight proceeds with an UNVERIFIED suspect, which is exactly what the
+// three-way split exists to stop.
+//
+// SPLIT DELIBERATELY: the codes below are from PostgreSQL's error-code table
+// and are formatted the way pgx renders them, because provoking an
+// administrator shutdown inside a unit test is not worth it. The RENDERING half
+// — that pgx really does write "(SQLSTATE nnnnn)" and that class 22 really is
+// what a bad value produces — is measured against a real server in
+// TestDestinationOracleClassifiesRealPostgresErrors, and the no-code half in
+// TestDestinationOracleFailsClosedOnAnUnusableConnection. Neither half is
+// assumed alone.
+func TestClassifyDestinationErrorTreatsOperationalCodesAsUnverified(t *testing.T) {
+	pgxish := func(code, text string) error {
+		return errors.New("ERROR: " + text + " (SQLSTATE " + code + ")")
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want destinationVerdict
+		why  string
+	}{
+		{"NUL in jsonb", pgxish("22P05", "unsupported Unicode escape sequence"), destinationRefusedNUL,
+			"the code the whole preflight refuses on."},
+		{"NUL in text", pgxish("22021", "invalid byte sequence"), destinationRefusedNUL,
+			"the text-column counterpart."},
+		{"malformed JSON", pgxish("22P02", "invalid input syntax for type json"), destinationRejectedValue,
+			"class 22 and not a NUL: the destination judged the VALUE, so it is reported, not refused on."},
+		{"cancelled query", pgxish("57014", "canceling statement due to statement timeout"),
+			destinationUnavailable,
+			"THE FINDING. A timeout carries a SQLSTATE and says nothing about the value; treating it as a " +
+				"verdict lets an unverified suspect through."},
+		{"terminated by administrator", pgxish("57P01", "terminating connection due to administrator command"),
+			destinationUnavailable, "same class of mistake, different code."},
+		{"connection exception", pgxish("08006", "connection failure"), destinationUnavailable,
+			"class 08 is transport, not data."},
+		{"out of resources", pgxish("53200", "out of memory"), destinationUnavailable,
+			"class 53 is the server's own state."},
+		{"no code at all", errors.New("dial tcp: connection refused"), destinationUnavailable,
+			"the driver never reached a server; pinned for real in the closed-pool test."},
+		{"nil", nil, destinationUnavailable,
+			"boundary: a classifier that answered 'verdict' for nil would make a successful cast look " +
+				"like a rejection at any call site that forgot to check err first."},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyDestinationError(tc.err); got != tc.want {
+				t.Errorf("%s\n  err:  %v\n  got %v, want %v", tc.why, tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSQLStateExtractionEdges covers the parser the classification rests on.
+func TestSQLStateExtractionEdges(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+		why  string
+	}{
+		{"pgx rendering", errors.New("ERROR: boom (SQLSTATE 22P05)"), "22P05", "the shape pgx produces."},
+		{"no marker", errors.New("connection refused"), "", "nothing to extract."},
+		{"truncated code", errors.New("... SQLSTATE 22"), "",
+			"a marker with fewer than five characters after it must not yield a partial code that then " +
+				"matches a class prefix."},
+		{"lowercase marker", errors.New("... sqlstate 22p05)"), "22P05",
+			"the search is case-insensitive, so the extraction must be too."},
+		{"nil", nil, "", "boundary."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sqlStateOf(tc.err); got != tc.want {
+				t.Errorf("%s\n  got %q, want %q", tc.why, got, tc.want)
+			}
+		})
 	}
 }
