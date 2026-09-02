@@ -534,6 +534,23 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 		return nil
 	}
 
+	// THE TABLE FILTER COMES FIRST, before the destination is asked anything
+	// (codex round 10). The fail-closed rule refuses on a suspect that could
+	// not be verified, and running it over suspects from tables the migration
+	// never copies meant an unreadable row in `users` or `sessions` blocked a
+	// copy that would not have touched it — the same over-refusal round 9
+	// fixed for violations, reintroduced through the suspect path.
+	//
+	// Filtering here also stops the oracle making round trips about rows whose
+	// answer cannot matter.
+	migrated := store.MigratedTables()
+	var migratedSuspects []store.NULSuspect
+	for _, sus := range report.Suspects {
+		if migrated[sus.Table] {
+			migratedSuspects = append(migratedSuspects, sus)
+		}
+	}
+
 	// A nil destination means the oracle is unavailable. That never happens on
 	// the real path — migrate-to-pg has connected to the target by the time
 	// this runs — but it must be SAID rather than skipped, because silently
@@ -542,14 +559,14 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 	var refusedSuspects []store.NULSuspect
 	var otherFailures []suspectFailure
 	if dst == nil {
-		if len(report.Suspects) > 0 {
+		if len(migratedSuspects) > 0 {
 			fmt.Fprintf(os.Stderr,
 				"  NOTE: %d suspect value(s) could not be checked — no destination to ask.\n",
-				len(report.Suspects))
+				len(migratedSuspects))
 		}
 	} else {
 		var unverified []suspectFailure
-		refusedSuspects, otherFailures, unverified = checkSuspectsAgainstDestination(src, dst, report.Suspects)
+		refusedSuspects, otherFailures, unverified = checkSuspectsAgainstDestination(src, dst, migratedSuspects)
 
 		// FAIL CLOSED. A suspect the destination never rendered a verdict on —
 		// a dropped connection, a timeout, a row that could not be read back —
@@ -592,7 +609,6 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 	// lists them, and staying silent about a broken row because this particular
 	// command does not care about it would be the information-discarding this
 	// preflight already had to be corrected for once.
-	migrated := store.MigratedTables()
 	var blocking []store.NULViolation
 	var elsewhere []store.NULViolation
 	for _, v := range report.Violations {
@@ -602,26 +618,17 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 			elsewhere = append(elsewhere, v)
 		}
 	}
-	var blockingSuspects []store.NULSuspect
-	var suspectsElsewhere []store.NULSuspect
-	for _, sus := range refusedSuspects {
-		if migrated[sus.Table] {
-			blockingSuspects = append(blockingSuspects, sus)
-		} else {
-			suspectsElsewhere = append(suspectsElsewhere, sus)
-		}
-	}
+	// refusedSuspects is already table-filtered: the oracle was only asked about
+	// migrated ones.
+	blockingSuspects := refusedSuspects
 
-	if n := len(elsewhere) + len(suspectsElsewhere); n > 0 {
+	if n := len(elsewhere); n > 0 {
 		fmt.Fprintf(os.Stderr,
 			"\nNOTE: %d value(s) carrying a NUL are in tables this migration does not copy\n"+
 				"(users, platform settings, auth data). They do not block it, and\n"+
 				"'%s' will repair them:\n\n", n, repairNULCommandHint)
 		for _, v := range elsewhere {
 			fmt.Fprintf(os.Stderr, "  %s\n", v)
-		}
-		for _, sus := range suspectsElsewhere {
-			fmt.Fprintf(os.Stderr, "  %s\n", sus)
 		}
 	}
 

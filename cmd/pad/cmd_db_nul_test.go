@@ -511,3 +511,117 @@ func plantPlatformSetting(t *testing.T, dbPath, key, value string) {
 		t.Fatalf("plant: %v", err)
 	}
 }
+
+// TestPreflightDoesNotFailClosedOnUnmigratedSuspects is codex round 10, and it
+// is round 9's over-refusal reintroduced through the other path.
+//
+// The fail-closed rule refuses when a suspect cannot be VERIFIED. Applied
+// before the table filter, an unverifiable suspect in a table the migration
+// never copies blocked the copy.
+//
+// It needs a REAL DESTINATION: the fail-closed branch only runs once there is
+// something to ask, so a nil-destination fixture passes whether or not the
+// ordering is right. The first version of this test made exactly that mistake
+// and proved nothing.
+//
+// "Unverifiable" here is a NULL primary key — SQLite permits one in a declared
+// TEXT PRIMARY KEY, which no other engine does — so the row's value genuinely
+// cannot be read back to be cast.
+func TestPreflightDoesNotFailClosedOnUnmigratedSuspects(t *testing.T) {
+	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if dsn == "" {
+		t.Skip("the fail-closed branch needs a real destination to be reachable at all")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "src.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("open source: %v", err)
+	}
+	defer s.Close()
+
+	dst, err := store.NewPostgres(dsn)
+	if err != nil {
+		t.Fatalf("open destination: %v", err)
+	}
+	defer dst.Close()
+
+	// activities.metadata is JSON-classed (so the escape makes it a SUSPECT
+	// rather than a violation) and its table is NOT migrated.
+	plantActivitySuspect(t, dbPath, `{"a":"`+textguard.EscNUL+`","a":"clean"}`)
+
+	scan, err := s.ScanNUL()
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if scan.Total() != 0 {
+		t.Fatalf("the fixture should be a suspect, not a violation: %v", scan.Violations)
+	}
+	// The premise, asserted so the test cannot pass because the fixture stopped
+	// being unverifiable: the scan sees the row and cannot address it.
+	if len(scan.Suspects) != 1 {
+		t.Fatalf("expected one suspect, got %d", len(scan.Suspects))
+	}
+	if !scan.Suspects[0].KeyIncomplete {
+		t.Fatalf("the fixture is addressable, so it would be verified rather than failing closed: %v",
+			scan.Suspects[0].Key)
+	}
+
+	if err := preflightNULForMigration(s, dst, dbPath); err != nil {
+		t.Errorf("the preflight failed closed over an unverifiable suspect in a table the migration "+
+			"does not copy: %v", err)
+	}
+}
+
+// plantActivitySuspect writes a suspect value into a non-migrated table.
+func plantActivitySuspect(t *testing.T, dbPath, value string) {
+	t.Helper()
+
+	raw, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(30000)")
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	defer raw.Close()
+
+	if store.MigratedTables()["activities"] {
+		t.Fatal("activities is listed as migrated; pick a table the migration really skips")
+	}
+	// The triggers have to go first, and that is itself worth recording: Layer B
+	// REFUSES this value. SQLite's json_tree walks tokens rather than building a
+	// map, so it sees the NUL in the shadowed member that our Go predicate
+	// cannot — the database is stricter than the shared predicate for exactly
+	// this shape. Such a row can therefore only be LEGACY data, written before
+	// the triggers existed, which is precisely the population BUG-2810 is about.
+	rows, err := raw.Query(
+		`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'pad_nul_activities_metadata_*'`)
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, n)
+	}
+	rows.Close()
+	if len(names) == 0 {
+		t.Fatal("no activities.metadata triggers found; the fixture would prove nothing")
+	}
+	for _, n := range names {
+		if _, derr := raw.Exec(`DROP TRIGGER IF EXISTS "` + n + `"`); derr != nil {
+			t.Fatalf("drop %s: %v", n, derr)
+		}
+	}
+
+	// id NULL, deliberately: SQLite permits a NULL in a declared TEXT PRIMARY
+	// KEY, which is what makes this row unaddressable and therefore
+	// unverifiable. workspace_id is omitted too — an instance-wide row.
+	if _, err := raw.Exec(
+		`INSERT INTO activities (id, action, actor, source, metadata, created_at)
+		 VALUES (NULL, 'created', 'agent', 'cli', ?, datetime('now'))`, value); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+}
