@@ -379,6 +379,14 @@
 	.bubble-menu {
 		position: fixed;
 		z-index: 40;
+		/* A ROW. The action buttons are themselves `display: flex`, so without
+		   this they are block-level and stack vertically — invisible with one
+		   action, wrong the moment there were two, and it also falsified the
+		   width/height the positioner clamps against (codex round 7). The
+		   expanded state opts out below: the extract form lays itself out. */
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
@@ -388,6 +396,7 @@
 	}
 
 	.bubble-menu.expanded {
+		display: block;
 		padding: var(--space-2) var(--space-3);
 	}
 

@@ -1247,6 +1247,13 @@
 		     "Timeline 3" over an empty comments list — three activity entries,
 		     no comments — is a count of something the reader cannot see. -->
 		<h3 class="timeline-title">{title}</h3>
+		<!-- The `+` rides the feed-wide `hasMore`, so "Comments 1+" can appear
+		     when the only unfetched entries are activity or versions. Left as
+		     is deliberately (codex round 7): `+` reads as a LOWER BOUND, and a
+		     lower bound of 1 over exactly one comment is true. The alternative —
+		     dropping it unless more of THIS kind exist — cannot be known without
+		     fetching the rest of the feed, so it would trade a true imprecise
+		     count for a confident wrong one. -->
 		{#if visibleEntries.length > 0}
 			<span class="entry-count">{visibleEntries.length}{hasMore ? '+' : ''}</span>
 		{/if}

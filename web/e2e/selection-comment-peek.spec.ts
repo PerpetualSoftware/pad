@@ -140,8 +140,22 @@ test.describe('selection toolbar — Comment (IDEA-2843)', () => {
 		await expect(masterMain).toHaveAttribute('contenteditable', 'true');
 
 		// And with the master active again, both actions are available.
-		await expect(page.getByRole('button', { name: 'Comment on selection' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Extract', exact: true })).toBeVisible();
+		const comment = page.getByRole('button', { name: 'Comment on selection' });
+		const extract = page.getByRole('button', { name: 'Extract', exact: true });
+		await expect(comment).toBeVisible();
+		await expect(extract).toBeVisible();
+
+		// Side by side, not stacked. The menu's buttons are themselves flex, so
+		// without a row layout on the container they stack — which also
+		// falsifies the width the positioner clamps against, drifting the menu
+		// over the text it points at (codex round 7). Layout is not observable
+		// in jsdom, so this is the only place the claim can be made.
+		const commentBox = await comment.boundingBox();
+		const extractBox = await extract.boundingBox();
+		expect(commentBox).not.toBeNull();
+		expect(extractBox).not.toBeNull();
+		expect(Math.abs(commentBox!.y - extractBox!.y)).toBeLessThan(4);
+		expect(extractBox!.x).toBeGreaterThan(commentBox!.x);
 	});
 
 	test('Comment quotes the selection into the composer under the content, keeping a draft', async ({
