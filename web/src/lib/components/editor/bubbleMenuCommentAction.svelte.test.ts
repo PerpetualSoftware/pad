@@ -173,6 +173,19 @@ describe('selection toolbar — Comment action', () => {
 		expect(quoted).toEqual(['> First paragraph here.\n>\n> Second paragraph here.']);
 	});
 
+	it('keeps the menu and the selection when the insert fails', () => {
+		// `appendMarkdown` returns false when there is no composer to reach.
+		// Discarding that and hiding the menu would restore the exact silent
+		// no-op the handle exists to remove — the quote vanishes and the reader
+		// has no way to tell (codex round 3).
+		mountMenu({ onComment: () => false });
+		selectFirstParagraph();
+		button('Comment')!.click();
+		flushSync();
+
+		expect(button('Comment')).not.toBeNull();
+	});
+
 	it('leaves the document untouched — quoting is not Extract', () => {
 		const before = editor.getHTML();
 		mountMenu({ onComment: () => true });

@@ -5870,6 +5870,8 @@
 					restoreFrozen={peeking}
 					parentArchived={itemMatchesRef && isArchived}
 					visibleKinds={[...COMMENT_KINDS]}
+					title="Comments"
+					emptyLabel="No comments yet."
 				/>
 			</div>
 		{/key}
@@ -6068,9 +6070,8 @@
 				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
 				<TimelineEntryList
 					entries={shown}
-					showEmpty={timelineFeed.entries.length === 0 &&
-						!timelineFeed.loading &&
-						!timelineFeed.error}
+					showEmpty={shown.length === 0 && !timelineFeed.loading && !timelineFeed.error}
+					emptyLabel={activeTab === 'versions' ? 'No versions yet.' : 'No changes yet.'}
 					{wsSlug}
 					{username}
 					{itemSlug}

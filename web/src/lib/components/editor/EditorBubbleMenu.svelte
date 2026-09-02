@@ -148,7 +148,16 @@
 		// call site at all, which made that test true and unreachable.
 		const text = editor.state.doc.textBetween(selFrom, selTo, '\n\n').trim();
 		if (!text) return;
-		onComment(toBlockquote(text));
+		// The return value is the whole reason `appendMarkdown` has one: it
+		// says "inserted" or "did nothing", and discarding it here would put
+		// the silent no-op back exactly where the handle was built to remove it
+		// (codex round 3). A false means the composer is unreachable — the
+		// timeline is filtered away, or the user cannot comment — so keep the
+		// selection and the menu, and say so.
+		if (!onComment(toBlockquote(text))) {
+			toastStore.show("Couldn't add that quote — the comment box isn't available.", 'error');
+			return;
+		}
 		hide();
 	}
 

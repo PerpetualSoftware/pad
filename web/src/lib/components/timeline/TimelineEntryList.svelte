@@ -39,6 +39,13 @@
 		 * an empty list rather than claiming the item has no history.
 		 */
 		showEmpty?: boolean;
+		/**
+		 * What to say when empty. Each view renders a different slice, so
+		 * "No timeline entries yet." is wrong on all but the whole feed — a
+		 * changes tab with no changes has not established anything about
+		 * comments (codex round 3).
+		 */
+		emptyLabel?: string;
 
 		wsSlug: string;
 		username?: string;
@@ -76,6 +83,7 @@
 		entries,
 		listEl = $bindable(),
 		showEmpty = false,
+		emptyLabel = 'No timeline entries yet.',
 		wsSlug,
 		username = '',
 		items = [],
@@ -168,7 +176,7 @@
 	{/each}
 
 	{#if showEmpty}
-		<div class="empty">No timeline entries yet.</div>
+		<div class="empty">{emptyLabel}</div>
 	{/if}
 </div>
 

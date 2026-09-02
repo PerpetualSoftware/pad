@@ -121,9 +121,13 @@
 		 * dead end, and today both tabs page through the same cursor.
 		 */
 		feed?: TimelineFeed;
+		/** Heading for this view — it renders a slice, not "the timeline". */
+		title?: string;
+		/** Empty-state line, phrased for the kinds this view renders. */
+		emptyLabel?: string;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable() }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable(), title = 'Timeline', emptyLabel = 'No timeline entries yet.' }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -1214,9 +1218,13 @@
 
 <section class="timeline">
 	<header class="timeline-header">
-		<h3 class="timeline-title">Timeline</h3>
-		{#if entries.length > 0}
-			<span class="entry-count">{entries.length}{hasMore ? '+' : ''}</span>
+		<!-- Title and count describe what this view RENDERS, not the whole feed
+		     (IDEA-2843, codex round 3). The one feed is now split across views;
+		     "Timeline 3" over an empty comments list — three activity entries,
+		     no comments — is a count of something the reader cannot see. -->
+		<h3 class="timeline-title">{title}</h3>
+		{#if visibleEntries.length > 0}
+			<span class="entry-count">{visibleEntries.length}{hasMore ? '+' : ''}</span>
 		{/if}
 	</header>
 
@@ -1258,7 +1266,8 @@
 		<TimelineEntryList
 			bind:listEl={entryListEl}
 			entries={visibleEntries}
-			showEmpty={entries.length === 0 && !loading && !error}
+			showEmpty={visibleEntries.length === 0 && !loading && !error}
+			{emptyLabel}
 			{wsSlug}
 			{username}
 			{items}
