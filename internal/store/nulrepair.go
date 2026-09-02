@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
@@ -52,6 +51,22 @@ type NULRepairReport struct {
 	Repaired []NULViolation
 	Skipped  []NULRepairSkip
 	Failed   []NULRepairFailure
+
+	// The suspect class (see NULSuspect), kept in its own buckets so the
+	// violation counts still match what `pad db scan-nul` promised.
+	//
+	// SuspectsClean is the common and boring outcome: the value carried a
+	// literal the scanner had no reason to touch.
+	SuspectsRepaired []NULSuspect
+	SuspectsClean    []NULSuspect
+	SuspectsSkipped  []NULSuspect
+	SuspectsFailed   []NULSuspectFailure
+}
+
+// NULSuspectFailure is a suspect the repair tried and could not complete.
+type NULSuspectFailure struct {
+	Suspect NULSuspect
+	Err     error
 }
 
 // RepairNUL rewrites every offending stored value, replacing each NUL with
@@ -143,6 +158,30 @@ func (s *Store) RepairNUL() (*NULRepairReport, error) {
 			})
 		}
 	}
+
+	// SUSPECTS, per the day-54 ruling. Most carry only a harmless literal and
+	// come back unchanged; the one shape that matters — a NUL behind a literal
+	// duplicate key — is fixed here and nowhere else, because the predicate
+	// that gates the ordinary repair cannot see it.
+	//
+	// Reported separately from Repaired so the two counts stay honest: the
+	// scan's violation count is what `pad db scan-nul` promised to change, and
+	// folding suspects into it would make the dry run disagree with the run.
+	for _, sus := range scan.Suspects {
+		if sus.KeyIncomplete {
+			report.SuspectsSkipped = append(report.SuspectsSkipped, sus)
+			continue
+		}
+		changed, err := s.RepairSuspectValue(sus)
+		switch {
+		case err != nil:
+			report.SuspectsFailed = append(report.SuspectsFailed, NULSuspectFailure{Suspect: sus, Err: err})
+		case changed:
+			report.SuspectsRepaired = append(report.SuspectsRepaired, sus)
+		default:
+			report.SuspectsClean = append(report.SuspectsClean, sus)
+		}
+	}
 	return report, nil
 }
 
@@ -210,16 +249,7 @@ func (s *Store) repairOneNUL(v NULViolation) (bool, error) {
 }
 
 // nulRowPredicate renders the WHERE clause addressing one row, plus its args.
-func nulRowPredicate(v NULViolation) (string, []any) {
-	keys := sortedKeys(v.Key)
-	clauses := make([]string, 0, len(keys))
-	args := make([]any, 0, len(keys))
-	for _, k := range keys {
-		clauses = append(clauses, quoteIdent(k)+" = ?")
-		args = append(args, v.Key[k])
-	}
-	return strings.Join(clauses, " AND "), args
-}
+func nulRowPredicate(v NULViolation) (string, []any) { return nulKeyPredicate(v.Key) }
 
 // nulColumnIsJSON answers the classing question from the shared list, so the
 // repair and the predicate cannot disagree about a column.

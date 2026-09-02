@@ -71,13 +71,18 @@ func TestMigrateToPgPreflightRefusesAndNamesTheRepair(t *testing.T) {
 
 	// CONTROL FIRST: a clean database passes the preflight. Without this, a
 	// preflight that refused everything would satisfy the assertion below.
-	if err := preflightNULForMigration(s, dbPath); err != nil {
+	//
+	// A nil destination is the "no oracle" path: this leg is about the
+	// VIOLATION half, which needs no Postgres, and the suspect half has its own
+	// test that does. The function says so in its output rather than skipping
+	// silently.
+	if err := preflightNULForMigration(s, nil, dbPath); err != nil {
 		t.Fatalf("preflight refused a clean database: %v", err)
 	}
 
 	plantNULInWorkspaceName(t, dbPath, ws.ID, "bad"+textguard.NUL+"name")
 
-	err = preflightNULForMigration(s, dbPath)
+	err = preflightNULForMigration(s, nil, dbPath)
 	if err == nil {
 		t.Fatal("the preflight accepted a database carrying a value PostgreSQL will refuse — the migration " +
 			"would fail partway through the copy, which is the failure this replaces")
@@ -217,5 +222,137 @@ func TestSameFilePathIdentifiesTheServersDatabase(t *testing.T) {
 				t.Errorf("sameFilePath(%q, %q) = %v, want %v — %s", tc.a, tc.b, got, tc.want, tc.why)
 			}
 		})
+	}
+}
+
+// TestPreflightAsksTheDestinationAboutSuspects is the day-54 ruling's whole
+// point, end to end: the preflight refuses a row NO CHECK IN PAD CAN SEE,
+// because it asks the database that is about to reject it.
+//
+// Both legs matter and they are opposites. The literal-only leg is the
+// over-refusal control — a preflight that refused every suspect would block
+// migrations over prose that merely writes about this bug, and would pass the
+// refusal leg while doing it.
+func TestPreflightAsksTheDestinationAboutSuspects(t *testing.T) {
+	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if dsn == "" {
+		t.Skip("the preflight's oracle needs a real PostgreSQL destination (set PAD_TEST_POSTGRES_URL)")
+	}
+
+	esc := textguard.EscNUL
+	backslash := esc[:1]
+
+	newSource := func(t *testing.T, blob string) (*store.Store, string) {
+		t.Helper()
+		dbPath := filepath.Join(t.TempDir(), "src.db")
+		s, err := store.New(dbPath)
+		if err != nil {
+			t.Fatalf("open source: %v", err)
+		}
+		t.Cleanup(func() { s.Close() })
+
+		ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Suspect"})
+		if err != nil {
+			t.Fatalf("create workspace: %v", err)
+		}
+		plantWorkspaceSettings(t, dbPath, ws.ID, blob)
+		return s, dbPath
+	}
+
+	dst, err := store.NewPostgres(dsn)
+	if err != nil {
+		t.Fatalf("open destination: %v", err)
+	}
+	defer dst.Close()
+
+	t.Run("a NUL behind a repeated key refuses the migration", func(t *testing.T) {
+		src, path := newSource(t, `{"a":"`+esc+`","a":"clean"}`)
+
+		// The premise, asserted so this cannot quietly become a case we catch
+		// ourselves: our own scan finds NO violation here.
+		scan, err := src.ScanNUL()
+		if err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if scan.Total() != 0 {
+			t.Fatalf("the scan now reports this as a violation, so the oracle is not what refuses it: %v",
+				scan.Violations)
+		}
+		if len(scan.Suspects) != 1 {
+			t.Fatalf("expected exactly one suspect, got %d", len(scan.Suspects))
+		}
+
+		err = preflightNULForMigration(src, dst, path)
+		if err == nil {
+			t.Fatal("the preflight accepted a value PostgreSQL refuses — this is the row the ruling " +
+				"exists for, and it is invisible to every check Pad makes")
+		}
+		if !strings.Contains(err.Error(), "nothing was migrated") {
+			t.Errorf("the refusal does not say the migration did not start: %v", err)
+		}
+		// THE COUNT, not just the phrase. The first version of this assertion
+		// read only the phrase, and the message shipped saying "0 stored
+		// value(s) carry a NUL; nothing was migrated" — a refusal whose reason
+		// says there was nothing to refuse, because it counted violations while
+		// the listing counted violations plus refused suspects.
+		if !strings.HasPrefix(err.Error(), "1 stored value") {
+			t.Errorf("the refusal miscounts what it refused on: %v", err)
+		}
+	})
+
+	t.Run("a harmless literal does NOT refuse the migration", func(t *testing.T) {
+		src, path := newSource(t, `{"note":"x`+backslash+esc+`y"}`)
+
+		scan, err := src.ScanNUL()
+		if err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if len(scan.Suspects) != 1 {
+			t.Fatalf("expected the literal to be a suspect, got %d", len(scan.Suspects))
+		}
+
+		if err := preflightNULForMigration(src, dst, path); err != nil {
+			t.Fatalf("the preflight refused a value PostgreSQL accepts, so every suspect would block a "+
+				"migration: %v", err)
+		}
+	})
+}
+
+// plantWorkspaceSettings writes a settings blob through a raw handle with the
+// relevant triggers dropped — the pre-enforcement binary again.
+func plantWorkspaceSettings(t *testing.T, dbPath, wsID, blob string) {
+	t.Helper()
+
+	raw, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(30000)")
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	defer raw.Close()
+
+	rows, err := raw.Query(
+		`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'pad_nul_workspaces_settings_*'`)
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, n)
+	}
+	rows.Close()
+	if len(names) == 0 {
+		t.Fatal("no workspaces.settings triggers found; the fixture would prove nothing")
+	}
+	for _, n := range names {
+		if _, err := raw.Exec(`DROP TRIGGER IF EXISTS "` + n + `"`); err != nil {
+			t.Fatalf("drop %s: %v", n, err)
+		}
+	}
+	if _, err := raw.Exec(`UPDATE workspaces SET settings = ? WHERE id = ?`, blob, wsID); err != nil {
+		t.Fatalf("plant: %v", err)
 	}
 }

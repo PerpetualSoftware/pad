@@ -37,9 +37,32 @@ func Repair(value string, isJSON bool) string {
 	// rewriting them there is the false positive the corpus's third case
 	// exists to catch.
 	if isJSON && DocumentDecodesNULAnyShape(out) {
-		out, _ = repairJSONNULEscapes(out)
+		out, _ = RepairJSONEscapes(out)
 	}
 	return out
+}
+
+// RepairJSONEscapes rewrites every NUL escape a JSON parser would DECODE in an
+// already-valid JSON document, and reports how many it replaced.
+//
+// IT IS DELIBERATELY BROADER THAN Repair, and that difference is the whole
+// reason it is exported (DOC-2823 S3, the day-54 suspect ruling).
+//
+// Repair only reaches the scanner for a document DocumentDecodesNULAnyShape
+// answers true for — a map-model question, which cannot see a NUL in a value
+// shadowed by a LITERAL duplicate key, because the decode keeps the last one.
+// This function is a token-level walk over string literals, so it rewrites the
+// shadowed escape too. Measured: `Repair` leaves
+// `{"a":"<escape>","a":"clean"}` untouched; this returns
+// `{"a":"<U+FFFD escape>","a":"clean"}` with a count of 1.
+//
+// NEVER USE IT AS A PREDICATE. "Would this rewrite something" is not "does a
+// layer refuse this", and answering the second question with the first is the
+// layer-confusion the whole cluster is made of — textguard.KnownGaps stays a
+// recorded shared gap in what is REFUSED. This is only about what a REPAIR,
+// asked for explicitly by an operator, is allowed to fix.
+func RepairJSONEscapes(s string) (string, int) {
+	return repairJSONNULEscapes(s)
 }
 
 const (

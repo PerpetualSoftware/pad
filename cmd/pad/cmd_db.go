@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -421,7 +422,7 @@ Steps:
 			// It does NOT repair. Dave's day-54 ruling: a migration that
 			// rewrites user content decides consent for the operator, so this
 			// prints the exact command that asks for it.
-			if err := preflightNULForMigration(srcStore, fromPath); err != nil {
+			if err := preflightNULForMigration(srcStore, dstStore, fromPath); err != nil {
 				return err
 			}
 
@@ -508,26 +509,75 @@ func maskPassword(pgURL string) string {
 // the workspace loop, which is the whole point: the failure it replaces
 // happened partway through the copy.
 //
-// IT IS NOT EXHAUSTIVE, and the gap is inherited rather than introduced. The
-// scan shares the predicate every enforcement layer uses, which does not see a
-// NUL in a value shadowed by a LITERAL duplicate key — a recorded, deliberate
-// blind spot (textguard.KnownGaps) that DOC-2823 forbids closing in one layer
-// alone. PostgreSQL does refuse such a value, so a database carrying one still
-// fails during the copy. BUG-2812's token-walk is what closes it; until then
-// this preflight catches every shape but that one, and docs/backup.md says so.
-func preflightNULForMigration(src *store.Store, fromPath string) error {
+// TWO CHECKS, because our predicate alone cannot answer the question the
+// migration is actually asking (day-54 lead ruling on PR #1233).
+//
+// The first is the scan's violations: values every layer refuses. The second is
+// the SUSPECT class — pre-filter matches the predicate did not refuse. Most of
+// those are harmless doubled-backslash literals, but one shape in the set is
+// fatal here and invisible to every layer of ours: a NUL in a value shadowed by
+// a LITERAL duplicate key, which a map-model decode drops (textguard.KnownGaps,
+// which DOC-2823 forbids closing in a single layer).
+//
+// Dropping that class silently was the defect: the scan already HELD those rows
+// as candidates and threw them away, then promised the migration would go
+// through. So each suspect is cast on the DESTINATION connection —
+// `SELECT $1::jsonb`, side-effect-free, and the very cast an INSERT performs.
+// The database that is about to refuse the value is the oracle, which is exact
+// in both directions: no over-refusal on a literal, no miss on a shadowed one.
+func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath string) error {
 	report, err := src.ScanNUL()
 	if err != nil {
 		return fmt.Errorf("NUL preflight: %w", err)
 	}
-	if !report.Applicable || report.Total() == 0 {
+	if !report.Applicable {
 		return nil
 	}
 
+	// A nil destination means the oracle is unavailable. That never happens on
+	// the real path — migrate-to-pg has connected to the target by the time
+	// this runs — but it must be SAID rather than skipped, because silently
+	// dropping the suspect class is the exact defect this check was added to
+	// correct.
+	var refusedSuspects []store.NULSuspect
+	var otherFailures []suspectFailure
+	if dst == nil {
+		if len(report.Suspects) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"  NOTE: %d suspect value(s) could not be checked — no destination to ask.\n",
+				len(report.Suspects))
+		}
+	} else {
+		refusedSuspects, otherFailures = checkSuspectsAgainstDestination(src, dst, report.Suspects)
+	}
+
+	// Cast failures for reasons OTHER than a NUL are reported and not refused
+	// on. They mean the destination will reject that row too, but a NUL
+	// preflight that silently grew into a general one would start refusing
+	// migrations that have nothing to do with this bug. Naming them beats
+	// discarding them, which is the mistake this whole check exists to correct.
+	for _, f := range otherFailures {
+		fmt.Fprintf(os.Stderr,
+			"  NOTE: %s was rejected by the destination for a non-NUL reason, which this preflight does "+
+				"not refuse on: %v\n", f.suspect, f.err)
+	}
+
+	if report.Total() == 0 && len(refusedSuspects) == 0 {
+		return nil
+	}
+
+	total := report.Total() + len(refusedSuspects)
 	fmt.Fprintf(os.Stderr, "\nPreflight found %d stored value(s) in %s that PostgreSQL will not accept:\n\n",
-		report.Total(), fromPath)
+		total, fromPath)
 	for _, v := range report.Violations {
 		fmt.Fprintf(os.Stderr, "  %s\n", v)
+	}
+	for _, sus := range refusedSuspects {
+		// Named apart, because these were found by ASKING the destination
+		// rather than by our own predicate — an operator comparing this list
+		// against `pad db scan-nul`'s violations should be able to see why the
+		// two differ.
+		fmt.Fprintf(os.Stderr, "  %s (destination refused it; no layer of ours sees this one)\n", sus)
 	}
 	fmt.Fprintf(os.Stderr, "\nEach carries a NUL, which PostgreSQL refuses natively — SQLSTATE 22021 in a text\n"+
 		"column, 22P05 for an escape reaching jsonb. Migrating would fail partway through\n"+
@@ -536,5 +586,51 @@ func preflightNULForMigration(src *store.Store, fromPath string) error {
 		"then re-run this command. To see the same list without migrating: pad db scan-nul\n",
 		repairNULCommandHint)
 
-	return fmt.Errorf("%d stored value(s) carry a NUL; nothing was migrated", report.Total())
+	// `total`, not report.Total(). The first version returned the VIOLATION
+	// count here while the listing above showed violations plus refused
+	// suspects, so a preflight that refused one suspect and nothing else
+	// announced "0 stored value(s) carry a NUL; nothing was migrated" — a
+	// refusal whose own reason says there was nothing to refuse. Found by
+	// running the command against a real Postgres, not by a test: the tests
+	// asserted the message CONTAINED "nothing was migrated" and never read the
+	// number.
+	return fmt.Errorf("%d stored value(s) carry a NUL; nothing was migrated", total)
+}
+
+// suspectFailure pairs a suspect with the destination's complaint.
+type suspectFailure struct {
+	suspect store.NULSuspect
+	err     error
+}
+
+// checkSuspectsAgainstDestination asks the target database about each suspect.
+//
+// Returns the ones it refused for a NUL reason (which the preflight refuses on)
+// and the ones it refused for any other reason (which it reports).
+func checkSuspectsAgainstDestination(
+	src *store.Store, dst *store.Store, suspects []store.NULSuspect,
+) (refused []store.NULSuspect, other []suspectFailure) {
+	for _, sus := range suspects {
+		if sus.KeyIncomplete {
+			other = append(other, suspectFailure{sus, fmt.Errorf("row has a NULL key column and cannot be read back")})
+			continue
+		}
+		value, rerr := src.ReadNULTargetValue(sus.Table, sus.Column, sus.Key)
+		if rerr != nil {
+			// A row that vanished between the scan and here is not a reason to
+			// refuse a migration.
+			other = append(other, suspectFailure{sus, rerr})
+			continue
+		}
+		cerr := dst.CheckJSONBAcceptable(value)
+		switch {
+		case cerr == nil:
+			// The common case: a harmless literal the destination accepts.
+		case errors.Is(cerr, store.ErrNULDestinationRefused):
+			refused = append(refused, sus)
+		default:
+			other = append(other, suspectFailure{sus, cerr})
+		}
+	}
+	return refused, other
 }

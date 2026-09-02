@@ -83,6 +83,49 @@ func (v NULViolation) String() string {
 	return out
 }
 
+// NULSuspect is a value the SQL pre-filter matched and the predicate did NOT
+// refuse.
+//
+// WHY THESE ARE REPORTED AT ALL, rather than dropped as the pre-filter's
+// expected over-match (day-54 lead ruling on PR #1233). Most of them ARE that:
+// a doubled-backslash literal contains the escape's four leading characters and
+// decodes to no NUL, and refusing it is the false positive this whole predicate
+// family exists to avoid. But one shape in that set is genuinely fatal to a
+// migration and invisible to every layer — a NUL in a value shadowed by a
+// LITERAL duplicate key, which the decode drops (textguard.KnownGaps).
+//
+// Dropping the whole class silently meant the preflight was discarding
+// information it already held and then promising a migration would go through.
+// So the class is surfaced, and the DESTINATION decides: migrate-to-pg casts
+// each suspect on the target connection and refuses on the NUL SQLSTATEs. That
+// oracle is exact in both directions — no over-refusal on a literal, no miss on
+// a shadowed one — precisely because it is not a fourth opinion of ours.
+//
+// It carries NO VALUE, like NULViolation: the report travels into terminals and
+// logs, and the caller that needs the bytes reads them back by address.
+type NULSuspect struct {
+	Table       string
+	Column      string
+	Key         map[string]string
+	WorkspaceID string
+	// KeyIncomplete has the same meaning as on NULViolation: a NULL key column,
+	// so this row cannot be addressed for a read-back or a repair.
+	KeyIncomplete bool
+}
+
+// String renders a suspect the way the CLI reports it.
+func (v NULSuspect) String() string {
+	parts := make([]string, 0, len(v.Key))
+	for _, k := range sortedKeys(v.Key) {
+		parts = append(parts, k+"="+v.Key[k])
+	}
+	out := fmt.Sprintf("%s.%s [%s]", v.Table, v.Column, strings.Join(parts, ", "))
+	if v.WorkspaceID != "" {
+		out += " workspace=" + v.WorkspaceID
+	}
+	return out
+}
+
 // NULScanReport is what the counter returns.
 type NULScanReport struct {
 	// Applicable is false on PostgreSQL, where the state cannot exist. Reason
@@ -96,6 +139,11 @@ type NULScanReport struct {
 	// database; it is not bounded, because an operator deciding whether to
 	// repair needs the whole list and a truncated one would understate it.
 	Violations []NULViolation
+
+	// Suspects are pre-filter matches the predicate did not refuse. Most are
+	// harmless literals; one shape in the set is a migration-breaking value no
+	// layer can see. See NULSuspect.
+	Suspects []NULSuspect
 
 	// ColumnsScanned is how many of the protected columns actually exist in
 	// this database's schema, and ColumnsAbsent lists any that do not.
@@ -133,18 +181,22 @@ func (r *NULScanReport) ByColumn() map[string]int {
 // live server and safe to run repeatedly. `pad db migrate-to-pg` calls it as a
 // preflight for exactly that reason.
 //
-// ONE RESIDUAL, and it is inherited rather than introduced. The decision is
-// textguard's predicate, which shares the HTTP gate's map-model blind spots
-// until BUG-2812's token-walk replaces the decode — today that is a JSON
-// document with LITERAL duplicate keys, where the decode keeps the last one and
-// a NUL in a shadowed value is never seen (textguard.KnownGaps). PostgreSQL
-// refuses such a value, so a database carrying one passes the migrate-to-pg
-// preflight and then fails during the copy: for that one shape the preflight
-// does not deliver what it promises. Closing it HERE is explicitly what
-// DOC-2823 forbids — Layer A "must NOT quietly fix either gap on its own",
-// because layers disagreeing about one value is the defect this whole cluster
-// is made of. TestScanNULInheritsTheRecordedKnownGaps pins the miss and fails
-// when it stops being one.
+// WHAT IT CANNOT DECIDE, IT REPORTS. The predicate shares the HTTP gate's
+// map-model blind spots until BUG-2812's token-walk replaces the decode —
+// today that is a JSON document with LITERAL duplicate keys, where the decode
+// keeps the last one and a NUL in a shadowed value is never seen
+// (textguard.KnownGaps). Closing that HERE is what DOC-2823 forbids: Layer A
+// "must NOT quietly fix either gap on its own", because layers disagreeing
+// about one value is the defect this whole cluster is made of, and
+// TestScanNULInheritsTheRecordedKnownGaps pins the miss.
+//
+// But the SQL pre-filter matches such a row before the predicate drops it, and
+// an earlier version of this comment recorded that as an accepted residual —
+// the scan discarding information it already held, while migrate-to-pg went on
+// promising the migration would go through. The day-54 lead ruling on PR #1233
+// corrected it: those rows become the SUSPECT class (see NULSuspect), reported
+// under their own heading, and migrate-to-pg resolves each one by casting it on
+// the DESTINATION. Nothing about what any layer REFUSES changed.
 //
 // COST, stated because an operator should not be surprised by it: one
 // unindexed scan per protected column — 131 of them today (24 JSON-classed,
@@ -192,11 +244,12 @@ func (s *Store) ScanNUL() (*NULScanReport, error) {
 			addressing[c.Table] = addr
 		}
 
-		found, err := s.scanColumn(c, addr)
+		found, suspects, err := s.scanColumn(c, addr)
 		if err != nil {
 			return nil, err
 		}
 		report.Violations = append(report.Violations, found...)
+		report.Suspects = append(report.Suspects, suspects...)
 	}
 	sort.Strings(report.ColumnsAbsent)
 	return report, nil
@@ -291,7 +344,7 @@ func (s *Store) addressingFor(table string) (tableAddressing, error) {
 //
 // Whether the match MEANS anything is then textguard's call, on the value read
 // into Go — which is what keeps `{"a":"x\\u0000y"}` out of the report.
-func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, error) {
+func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, []NULSuspect, error) {
 	qt := quoteIdent(c.Table)
 	qc := quoteIdent(c.Column)
 
@@ -315,11 +368,12 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, e
 	q := fmt.Sprintf(`SELECT %s FROM %s WHERE %s`, strings.Join(sel, ", "), qt, where)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("scan %s.%s: %w", c.Table, c.Column, err)
+		return nil, nil, fmt.Errorf("scan %s.%s: %w", c.Table, c.Column, err)
 	}
 	defer rows.Close()
 
 	var out []NULViolation
+	var suspects []NULSuspect
 	for rows.Next() {
 		// EVERY column is scanned as a NULLABLE string, and that is not
 		// defensive padding — a plain *string fails with "converting NULL to
@@ -343,15 +397,38 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, e
 		dest = append(dest, &value)
 
 		if err := rows.Scan(dest...); err != nil {
-			return nil, fmt.Errorf("scan %s.%s row: %w", c.Table, c.Column, err)
+			return nil, nil, fmt.Errorf("scan %s.%s row: %w", c.Table, c.Column, err)
 		}
 
 		isJSON := c.Class == classJSON
 		if !textguard.ParameterRefused(value, isJSON) {
-			// The pre-filter matched and the predicate did not. This is the
-			// doubled-backslash case and it is EXPECTED, not an anomaly — the
+			// The pre-filter matched and the predicate did not. Usually that is
+			// the doubled-backslash literal, and it is EXPECTED — the
 			// pre-filter is allowed to be a superset and is worthless if it is
 			// not.
+			//
+			// It is RECORDED rather than dropped because one member of that set
+			// is not harmless, and no layer of ours can tell which (see
+			// NULSuspect). Only JSON-classed columns can produce one: a text
+			// column's pre-filter is the raw-NUL check alone, and a raw NUL is
+			// always a violation, never a suspect.
+			if isJSON {
+				sus := NULSuspect{
+					Table:         c.Table,
+					Column:        c.Column,
+					Key:           map[string]string{},
+					WorkspaceID:   wsID.String,
+					KeyIncomplete: false,
+				}
+				for i, k := range addr.KeyColumns {
+					if !keyVals[i].Valid {
+						sus.KeyIncomplete = true
+						continue
+					}
+					sus.Key[k] = keyVals[i].String
+				}
+				suspects = append(suspects, sus)
+			}
 			continue
 		}
 
@@ -377,7 +454,7 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, e
 		}
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	return out, suspects, rows.Err()
 }
 
 // nulEscapePrefix is the four characters every NUL escape begins with, built
