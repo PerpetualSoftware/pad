@@ -138,8 +138,16 @@
 	 * were.
 	 */
 	function quoteSelection() {
-		const text = selectedText.trim();
-		if (!text || !onComment) return;
+		if (!editor || !onComment) return;
+		// Re-extract with a PARAGRAPH separator. `selectedText` is joined with a
+		// single space (line 77) because Extract uses it as an item TITLE, where
+		// newlines would be wrong — but that join silently flattens a
+		// multi-paragraph selection into one run-on line, and a quote has to
+		// keep the shape of what was quoted. Found by codex round 1; before it,
+		// `toBlockquote`'s blank-line handling could never be reached from this
+		// call site at all, which made that test true and unreachable.
+		const text = editor.state.doc.textBetween(selFrom, selTo, '\n\n').trim();
+		if (!text) return;
 		onComment(toBlockquote(text));
 		hide();
 	}

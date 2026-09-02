@@ -130,6 +130,39 @@ describe('timeline second view — the mirrored feed', () => {
 	});
 });
 
+describe('timeline second view — the mirrored error', () => {
+	it('mirrors a load FAILURE, so the second view can tell empty from broken', async () => {
+		timelineListMock.mockReset();
+		timelineListMock.mockRejectedValue(new Error('network is down'));
+
+		const state = $state<{ feed: TimelineFeed | undefined }>({ feed: undefined });
+		app = mount(ItemTimeline, {
+			target: host,
+			props: {
+				wsSlug: 'ws',
+				itemSlug: 'TASK-1',
+				itemId: 'item-a',
+				collectionId: 'coll-1',
+				currentContent: '',
+				visibleKinds: [...COMMENT_KINDS],
+				get feed() {
+					return state.feed;
+				},
+				set feed(v: TimelineFeed | undefined) {
+					state.feed = v;
+				}
+			}
+		}) as Record<string, unknown>;
+		await settle();
+
+		// Without this, a failed load reaches the Activity tab as zero entries
+		// and renders as "No timeline entries yet." — an unreachable server
+		// wearing an empty timeline's clothes (codex round 1).
+		expect(state.feed?.error).toBeTruthy();
+		expect(state.feed?.entries).toEqual([]);
+	});
+});
+
 describe('timeline second view — kind routing', () => {
 	it('renders only the kinds it is handed', () => {
 		app = mount(TimelineEntryList, {

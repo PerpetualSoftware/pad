@@ -16,9 +16,23 @@ import type { TimelineEntry } from '$lib/types';
 export interface TimelineFeed {
 	entries: TimelineEntry[];
 	loading: boolean;
+	/**
+	 * The owner's load error. Mirrored because a second view that renders only
+	 * entries shows a FAILED load as "No timeline entries yet." — an empty
+	 * timeline and an unreachable server look identical, and the second is the
+	 * one the reader needs to know about (codex round 1).
+	 */
+	error: string;
 	hasMore: boolean;
 	loadingMore: boolean;
-	loadMore: () => void;
+	/**
+	 * Fetch the next page. Returns a promise so a FILTERED view can page until
+	 * its own list grows: the owner's hop loop stops as soon as a page adds any
+	 * entry, of any kind, so a page of pure comments ends the loop having added
+	 * nothing to the changes view (codex round 1). Pre-existing on Versions;
+	 * widened to Activity when comments moved off it.
+	 */
+	loadMore: () => Promise<void>;
 }
 
 /**

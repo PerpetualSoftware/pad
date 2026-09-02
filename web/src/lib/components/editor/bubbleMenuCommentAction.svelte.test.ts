@@ -151,6 +151,28 @@ describe('selection toolbar — Comment action', () => {
 		expect(quoted).toEqual(['> First paragraph here.']);
 	});
 
+	it('keeps paragraph breaks in a multi-paragraph selection', () => {
+		const quoted: string[] = [];
+		mountMenu({
+			onComment: (md) => {
+				quoted.push(md);
+				return true;
+			},
+		});
+		editor.commands.selectAll();
+		flushSync();
+		button('Comment')!.click();
+		flushSync();
+
+		// The menu's own `selectedText` joins blocks with a SINGLE SPACE,
+		// because Extract uses it as an item title where newlines would be
+		// wrong. Quoting through that would flatten two paragraphs into one
+		// run-on line — and `toBlockquote`'s blank-line handling, which has its
+		// own test, could never be reached from production at all. Found by
+		// codex round 1; this is the assertion that makes the two agree.
+		expect(quoted).toEqual(['> First paragraph here.\n>\n> Second paragraph here.']);
+	});
+
 	it('leaves the document untouched — quoting is not Extract', () => {
 		const before = editor.getHTML();
 		mountMenu({ onComment: () => true });

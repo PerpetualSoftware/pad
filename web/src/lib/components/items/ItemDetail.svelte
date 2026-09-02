@@ -718,6 +718,36 @@
 	// composer after a switch.
 	let timelineRef = $state<{ quoteIntoComposer: (markdown: string) => boolean } | undefined>();
 
+	/**
+	 * "Load more" for a FILTERED view (IDEA-2843, codex round 1).
+	 *
+	 * The owner's hop loop stops as soon as a page adds any entry, of ANY kind.
+	 * On a view that renders only some kinds, a page of pure comments therefore
+	 * ends the loop having added nothing here — a button that visibly does
+	 * nothing. So page until THIS view's list actually grows, or the feed runs
+	 * out.
+	 *
+	 * Bounded, and the bound is the point: each call already walks up to
+	 * MAX_EMPTY_HOPS pages inside the owner, so an unbounded loop here could
+	 * walk the whole timeline on one click. Six rounds is a visible amount of
+	 * progress without becoming a "load everything" button by accident.
+	 *
+	 * Not fixed inside the owner deliberately: it would have to know what the
+	 * OTHER view is rendering, and the two disagree by construction.
+	 */
+	const MAX_FILTERED_PAGE_ROUNDS = 6;
+	async function loadMoreForThisView(shownBefore: number) {
+		const feed = timelineFeed;
+		if (!feed) return;
+		for (let round = 0; round < MAX_FILTERED_PAGE_ROUNDS; round++) {
+			await feed.loadMore();
+			const current = timelineFeed;
+			if (!current || !current.hasMore) return;
+			const kinds: readonly string[] = activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS;
+			if (current.entries.filter((e) => kinds.includes(e.kind)).length > shownBefore) return;
+		}
+	}
+
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
 
@@ -6013,6 +6043,21 @@
 		>
 		<div id="item-timeline" class="timeline-section">
 			{#if timelineFeed}
+				<!-- Loading and error are the owner's states, mirrored so this view
+				     does not render a FAILED load as an empty timeline — "no entries
+				     yet" and "the server did not answer" look identical otherwise,
+				     and only one of them is the reader's problem (codex round 1).
+
+				     Text rather than the owner's spinner: that spinner carries its
+				     own @keyframes inside ItemTimeline's scoped styles, and copying
+				     an animation across components to say one word is not worth the
+				     second copy to keep in step. -->
+				{#if timelineFeed.loading && timelineFeed.entries.length === 0}
+					<div class="feed-loading">Loading timeline...</div>
+				{/if}
+				{#if timelineFeed.error}
+					<div class="feed-error">{timelineFeed.error}</div>
+				{/if}
 				{@const kinds: readonly string[] =
 					activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS}
 				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
@@ -6037,7 +6082,7 @@
 						class="load-more-btn"
 						type="button"
 						disabled={timelineFeed.loadingMore}
-						onclick={() => timelineFeed?.loadMore()}
+						onclick={() => loadMoreForThisView(shown.length)}
 					>
 						{timelineFeed.loadingMore ? 'Loading...' : 'Load more'}
 					</button>
@@ -7261,6 +7306,20 @@
 		padding: var(--space-2);
 		color: var(--text-muted);
 		font-size: 0.8rem;
+	}
+
+	.feed-loading {
+		padding: var(--space-4);
+		color: var(--text-muted);
+		font-size: 0.9em;
+	}
+
+	.feed-error {
+		padding: var(--space-3);
+		background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+		border-radius: var(--radius);
+		color: var(--accent-red);
+		font-size: 0.85em;
 	}
 
 	/* Timeline */

@@ -719,7 +719,7 @@
 	// second view that can show older entries but not ask for them is a dead
 	// end, and both tabs page through the same cursor today.
 	$effect(() => {
-		feed = { entries, loading, hasMore, loadingMore, loadMore };
+		feed = { entries, loading, error, hasMore, loadingMore, loadMore };
 	});
 
 	const MAX_EMPTY_HOPS = 5;
