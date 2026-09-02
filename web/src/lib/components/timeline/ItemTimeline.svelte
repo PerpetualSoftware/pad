@@ -1088,6 +1088,23 @@
 		clearTimeout(sseRefreshTimer);
 	});
 
+	let composerRef = $state<{ appendMarkdown: (markdown: string) => boolean } | undefined>();
+
+	/**
+	 * Push a quote into the live composer from the selection toolbar
+	 * (IDEA-2843). Forwards to `CommentEditor.appendMarkdown`, which appends
+	 * after a blank line rather than replacing an in-progress draft.
+	 *
+	 * Returns false when there is no composer to reach — the user cannot
+	 * comment, or the composer is filtered out of this view — so the caller can
+	 * report that instead of appearing to have quoted into nothing. The
+	 * toolbar's Comment action is gated on the same permission, so a false here
+	 * means the two gates have drifted apart.
+	 */
+	export function quoteIntoComposer(markdown: string): boolean {
+		return composerRef?.appendMarkdown(markdown) ?? false;
+	}
+
 	let submitting: boolean = $state(false);
 
 	// Posts a new comment. Throws on failure so CommentEditor preserves the
@@ -1214,6 +1231,7 @@
 	{#if canEdit && showComposer}
 		<div class="compose">
 			<CommentEditor
+				bind:this={composerRef}
 				{wsSlug}
 				{itemId}
 				{hostToken}

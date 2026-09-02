@@ -5,17 +5,38 @@
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { toBlockquote } from '$lib/utils/markdown';
 
 	let {
 		editor,
 		wsSlug,
 		collections,
 		onItemCreated,
+		onComment,
 	}: {
 		editor: Editor | null;
 		wsSlug: string;
 		collections: Collection[];
 		onItemCreated?: (item: Item, ws: string, sinceEpoch?: number) => void;
+		/**
+		 * Quote the selection into the host's comment composer (IDEA-2843).
+		 *
+		 * Supplying this IS the capability — the Comment action renders when a
+		 * host has a composer to quote into and not otherwise. There is no
+		 * separate boolean, deliberately: this menu mounts in one place today,
+		 * and a flag whose value is always `true` beside a callback that is
+		 * always supplied is two ways to say one thing.
+		 *
+		 * It was briefly a peek-INdependent gate of its own, on the theory that
+		 * a peeking master can comment (BUG-2263) but could not act on a
+		 * selection. Measured end to end, that case does not exist: a
+		 * drag-selection in a peeking master RE-ACTIVATES it
+		 * (focus-follows-editing, PLAN-2179 DR-2), so by the time a selection
+		 * exists the master is editable again. See
+		 * `e2e/selection-comment-peek.spec.ts`, which asserts that rather than
+		 * leaving it as folklore.
+		 */
+		onComment?: (markdown: string) => boolean;
 	} = $props();
 
 	let visible = $state(false);
@@ -82,7 +103,9 @@
 		const topY = Math.min(coordsFrom.top, coordsTo.top);
 
 		// Estimate menu dimensions for clamping
-		const menuWidth = showForm ? 340 : 120;
+		// Two buttons when the host wired a composer — the clamp keeps the menu
+		// on screen, so an under-estimate lets it hang off the edge.
+		const menuWidth = showForm ? 340 : (onComment ? 210 : 120);
 		const menuHeight = 40;
 		const padding = 8;
 
@@ -104,6 +127,21 @@
 		title = '';
 		errorMsg = '';
 		creating = false;
+	}
+
+	/**
+	 * Quote the selection into the host's comment composer (IDEA-2843).
+	 *
+	 * The selection is NOT consumed — unlike Extract, which replaces it with a
+	 * wiki-link, quoting leaves the document untouched, so a reader can quote
+	 * the same passage into a second comment or keep reading from where they
+	 * were.
+	 */
+	function quoteSelection() {
+		const text = selectedText.trim();
+		if (!text || !onComment) return;
+		onComment(toBlockquote(text));
+		hide();
 	}
 
 	function openForm() {
@@ -262,6 +300,21 @@
 		<div class="bubble-arrow"></div>
 
 		{#if !showForm}
+			{#if onComment}
+				<!-- The visible label is "Comment" (a bubble menu has no room for
+				     more), but the ACCESSIBLE name says what it acts on: the comment
+				     composer's submit button is also named "Comment", and two
+				     identically-named buttons doing different things is a real
+				     ambiguity for anyone navigating by name rather than by sight. -->
+				<button class="comment-btn" aria-label="Comment on selection" onclick={quoteSelection}>
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+					</svg>
+					Comment
+				</button>
+			{/if}
+		{/if}
+		{#if !showForm}
 			<button class="extract-btn" onclick={openForm}>
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<circle cx="6" cy="6" r="3" />
@@ -344,6 +397,7 @@
 		border-bottom: 1px solid var(--border);
 	}
 
+	.comment-btn,
 	.extract-btn {
 		display: flex;
 		align-items: center;
@@ -357,6 +411,7 @@
 		cursor: pointer;
 	}
 
+	.comment-btn:hover,
 	.extract-btn:hover {
 		background: var(--bg-hover);
 		color: var(--accent-blue);

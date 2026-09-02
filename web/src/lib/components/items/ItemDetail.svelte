@@ -712,6 +712,12 @@
 	// Versions panels render the SAME feed through a second
 	// <TimelineEntryList> — one subscription, one composer, two views.
 	let timelineFeed = $state<TimelineFeed | undefined>(undefined);
+	// The owning <ItemTimeline>, so the selection toolbar can quote into its
+	// composer (IDEA-2843). Rebinds on the comments section's {#key itemSlug}
+	// remount, which is what keeps a quote from landing in the previous item's
+	// composer after a switch.
+	let timelineRef = $state<{ quoteIntoComposer: (markdown: string) => boolean } | undefined>();
+
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
 
@@ -5756,12 +5762,27 @@
 					{/if}
 					{#if mutationsEnabled}
 						<!-- Editor mutation UI — gated on the master-freeze predicate
-						     (TASK-2172): a peeking master shows no bubble/link popover. -->
+						     (TASK-2172): a peeking master shows no bubble/link popover.
+
+						     The Comment action (IDEA-2843) rides the SAME gate, though it
+						     writes nothing to the document. It was briefly gated
+						     peek-independently, on the theory that a peeking master can
+						     comment (BUG-2263) but could not act on a selection. That case
+						     does not exist: a drag-selection in a peeking master
+						     re-activates it (focus-follows-editing, PLAN-2179 DR-2), so
+						     there is no state where a selection exists in a frozen master.
+						     Measured, not reasoned — e2e/selection-comment-peek.spec.ts.
+
+						     Commenting also requires edit permission today, in
+						     ItemTimeline's composer gate and in the server's
+						     handleCreateComment (requireEditPermission), so this gate is
+						     not narrower than the composer's either. -->
 						<EditorBubbleMenu
 							editor={editorInstance}
 							{wsSlug}
 							collections={collectionStore.collections}
 							onItemCreated={(item, ws, epoch) => localIndex.upsert(ws, item, epoch)}
+							onComment={(markdown) => timelineRef?.quoteIntoComposer(markdown) ?? false}
 						/>
 						<EditorLinkPopover
 							editor={editorInstance}
@@ -5798,6 +5819,7 @@
 		{#key itemSlug}
 			<div id="item-comments" class="timeline-section">
 				<ItemTimeline
+					bind:this={timelineRef}
 					bind:feed={timelineFeed}
 					{wsSlug}
 					{username}
