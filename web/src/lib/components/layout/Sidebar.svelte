@@ -1203,10 +1203,36 @@
 		font-size: 0.85em;
 	}
 	.search-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+	/*
+		BUG-2844. The gap and the Settings padding are both one step tighter
+		than the rest of this file's spacing, and that is deliberate rather
+		than taste: this row holds five controls in 235px of usable width, and
+		it did not fit.
+
+		MEASURED, on the desktop sidebar (--sidebar-width: 260px, less the
+		24px of .sidebar-inner padding):
+
+		  before  .settings-btn box 75px, content 51px after its 12px padding;
+		          the label "⚙ Settings" needs 56.3px (measured on the mobile
+		          arm, where it fits on one line). 5.3px short, so the gear and
+		          the word landed on separate lines and the row grew from
+		          33.9px to 51.7px.
+
+		Four 32px controls and four gaps are fixed cost; .settings-btn is the
+		only flex:1 item, so every pixel recovered from the gaps lands in it.
+		space-2 -> space-1 returns 16px and the padding another 8px, giving a
+		75px content box against 56.3px of text — a 33% margin rather than the
+		5% a single change would have left.
+
+		Only the DESKTOP arm was ever broken. Below 768px the sidebar is 280px
+		AND the collapse button is gone, so the row carries four controls in
+		255px and the label had 135px to itself; it measured one line box
+		before this change and still does.
+	*/
 	.footer-row {
 		display: flex;
 		align-items: center;
-		gap: var(--space-2);
+		gap: var(--space-1);
 		margin-top: var(--space-2);
 	}
 	.settings-btn {
@@ -1214,7 +1240,9 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
-		padding: var(--space-2) var(--space-3);
+		/* Horizontal padding matches the icon controls beside it — see the
+		   measurement on .footer-row for why it is not var(--space-3). */
+		padding: var(--space-2);
 		border-radius: var(--radius);
 		color: var(--text-muted);
 		font-size: 0.85em;
@@ -1227,6 +1255,11 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
+		/* flex-shrink: 0 like every other control in this row. It was the only
+		   one without it; harmless today because its automatic minimum size
+		   equals its 32px content box, but it made the row's one shrinkable
+		   item ambiguous, and .settings-btn is meant to be that item. */
+		flex-shrink: 0;
 		padding: var(--space-2);
 		border-radius: var(--radius);
 		color: var(--text-muted);
