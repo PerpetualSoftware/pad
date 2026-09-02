@@ -5,10 +5,6 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
-	import TimelineCommentCard from './TimelineCommentCard.svelte';
-	import TimelineActivityCard from './TimelineActivityCard.svelte';
-	import TimelineVersionCard from './TimelineVersionCard.svelte';
-	import TimelineStructuredCard from './TimelineStructuredCard.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import {
 		fetchAttachmentMetadata,
@@ -25,6 +21,7 @@
 		type LightboxImage
 	} from '$lib/attachments/events';
 	import { viewIdentity, createPaintFence } from '$lib/attachments/viewFence';
+	import TimelineEntryList from './TimelineEntryList.svelte';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	interface Props {
@@ -1168,13 +1165,6 @@
 		}
 	}
 
-	function dotClass(kind: TimelineEntry['kind']): string {
-		if (kind === 'comment') return 'dot-comment';
-		if (kind === 'version') return 'dot-version';
-		if (kind === 'note') return 'dot-note';
-		if (kind === 'decision') return 'dot-decision';
-		return 'dot-activity';
-	}
 </script>
 
 <section class="timeline">
@@ -1219,71 +1209,30 @@
 	{/if}
 
 	{#if !loading || entries.length > 0}
-		<div class="entry-list" bind:this={entryListEl}>
-			{#each visibleEntries as entry (entry.id)}
-				<div class="entry">
-					<div class="entry-rail">
-						<span class="dot {dotClass(entry.kind)}"></span>
-						<span class="line"></span>
-					</div>
-					<div class="entry-content">
-						{#if entry.kind === 'comment' && entry.comment}
-							<TimelineCommentCard
-								comment={entry.comment}
-								{wsSlug}
-								{username}
-								{items}
-								{currentUserId}
-								{canEdit}
-								{frozen}
-								{isAdmin}
-								{hostToken}
-								{attachmentResolver}
-								onDelete={handleDelete}
-								onReply={handleReply}
-								onEdit={handleEdit}
-								onReaction={handleReaction}
-								onRemoveReaction={handleRemoveReaction}
-							/>
-						{:else if entry.kind === 'activity' && entry.activity}
-							<TimelineActivityCard activity={entry.activity} />
-						{:else if entry.kind === 'version' && entry.version}
-							<TimelineVersionCard
-								version={entry.version}
-								{wsSlug}
-								{itemSlug}
-								{currentContent}
-								{onRestore}
-								{flushBeforeRestore}
-								frozen={frozen || restoreFrozen}
-							/>
-						<!-- No `&& entry.note` guard, unlike the kinds above: the card is
-						     null-safe, and a payload-less entry still occupies a rail. Requiring
-						     the payload turns a partial entry into a blank rail with no card at
-						     all, which reads as a rendering fault rather than as a thin entry. -->
-						{:else if entry.kind === 'note'}
-							<TimelineStructuredCard
-								kind="note"
-								note={entry.note}
-								actor={entry.actor}
-								createdAt={entry.created_at}
-							/>
-						{:else if entry.kind === 'decision'}
-							<TimelineStructuredCard
-								kind="decision"
-								decision={entry.decision}
-								actor={entry.actor}
-								createdAt={entry.created_at}
-							/>
-						{/if}
-					</div>
-				</div>
-			{/each}
-
-			{#if entries.length === 0 && !loading}
-				<div class="empty">No timeline entries yet.</div>
-			{/if}
-		</div>
+		<TimelineEntryList
+			bind:listEl={entryListEl}
+			entries={visibleEntries}
+			showEmpty={entries.length === 0 && !loading}
+			{wsSlug}
+			{username}
+			{items}
+			{hostToken}
+			{currentUserId}
+			{canEdit}
+			{frozen}
+			{isAdmin}
+			{attachmentResolver}
+			onDelete={handleDelete}
+			onReply={handleReply}
+			onEdit={handleEdit}
+			onReaction={handleReaction}
+			onRemoveReaction={handleRemoveReaction}
+			{itemSlug}
+			{currentContent}
+			{onRestore}
+			{flushBeforeRestore}
+			{restoreFrozen}
+		/>
 
 		{#if hasMore}
 			<button class="load-more-btn" type="button" disabled={loadingMore} onclick={loadMore}>
@@ -1380,78 +1329,6 @@
 		border-radius: var(--radius);
 		color: var(--accent-red);
 		font-size: 0.85em;
-	}
-
-	/* ── Timeline entries ─────────────────────────────────────────────────── */
-
-	.entry-list {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.entry {
-		display: flex;
-		gap: var(--space-3);
-	}
-
-	.entry-rail {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		flex-shrink: 0;
-		width: 16px;
-		padding-top: var(--space-2);
-	}
-
-	.dot {
-		width: 10px;
-		height: 10px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		z-index: 1;
-	}
-
-	.dot-comment {
-		background: var(--accent-blue);
-	}
-
-	.dot-activity {
-		background: var(--text-muted);
-	}
-
-	.dot-version {
-		background: var(--accent-green);
-	}
-
-	.dot-note {
-		background: var(--accent-cyan);
-	}
-
-	.dot-decision {
-		background: var(--accent-orange);
-	}
-
-	.line {
-		width: 1px;
-		flex: 1;
-		background: var(--border);
-	}
-
-	.entry:last-child .line {
-		display: none;
-	}
-
-	.entry-content {
-		flex: 1;
-		min-width: 0;
-		padding-bottom: var(--space-3);
-	}
-
-	.empty {
-		text-align: center;
-		padding: var(--space-6);
-		color: var(--text-muted);
-		font-size: 0.9em;
 	}
 
 	.load-more-btn {
