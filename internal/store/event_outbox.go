@@ -145,10 +145,10 @@ const maxOutboxHop = 4
 // constant is set by the DIALECT CEILING: SQLite refuses a value over 1 GB
 // with SQLITE_TOOBIG, and Postgres somewhere in (512 MB, 1 GB] with an error
 // that poisons the enclosing transaction (25P02) so the failure surfaces as an
-// unrelated "current transaction is aborted". 64 MiB is ~5.8x the largest
-// legitimate payload the measured instance can produce and two orders below
-// both ceilings, so what a caller hits is always the named refusal below and
-// never the opaque one.
+// unrelated "current transaction is aborted". 64 MiB would already be ~5.8x
+// the largest legitimate payload the measured instance can produce; 128 MiB
+// is ~11.6x it and still 4x under the lowest ceiling, so what a caller hits
+// is always the named refusal below and never the opaque one.
 //
 // IT MUST ALSO CLEAR MaxItemRenameCascadeBytes, which is why it is not simply
 // 64 MiB. That constant (wiki_links.go, BUG-2804) bounds the wiki-title rename
@@ -241,12 +241,12 @@ const (
 // alone costs one pass its batching, once.
 //
 // So a pass retains ~64 MiB in the normal case and at most one row's payload
-// above that in the worst. Two transients sit on top of that, both bounded by
-// it rather than open-ended: outboxEventsClaimedBy scans each payload into a
-// string and then copies it to []byte, and FoldBulkHeader builds one wire
-// payload out of a batch's header plus its members while still holding them.
-// Peak is therefore a small multiple of this number, not a multiple of the
-// queue depth, which is the property that was missing.
+// above that in the worst. One transient sits on top of that, bounded by it
+// rather than open-ended: FoldBulkHeader builds one wire payload out of a
+// batch's header plus its members while still holding them. (The scan itself
+// adds nothing — outboxEventsClaimedBy reads each payload straight into
+// []byte.) Peak is therefore a small multiple of this number, not a multiple
+// of the queue depth, which is the property that was missing.
 const maxOutboxClaimBytes = 64 << 20
 
 // maxOutboxClaimRows bounds how many ROWS one pass claims, alongside the byte
@@ -259,7 +259,7 @@ const maxOutboxClaimBytes = 64 << 20
 // budget alone admits hundreds of megabytes of it.
 //
 // 5,000 is chosen so it binds only on that pathological shape: at the measured
-// payload mean of ~2.4 KB, 5,000 rows is ~12 MiB, well inside the byte budget,
+// payload mean of ~3.5 KB, 5,000 rows is ~17 MiB, well inside the byte budget,
 // which stays the operative bound for real traffic. It is also ~1,000 events
 // per second against the 5s tick, orders above anything measured.
 const maxOutboxClaimRows = 5000
@@ -1204,8 +1204,10 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 		// Charged on the members' own bytes, which the marshal can only GROW
 		// (JSON adds quoting, escaping and key names and removes nothing), so
 		// this never refuses a payload the real check would have accepted. It
-		// is an early-out, not a second rule — the authoritative refusal, and
-		// the numbers the caller is shown, still come from writeOutboxTx.
+		// is an early-out, not a second rule: when it fires, the error says
+		// it measured member bodies rather than a payload (Measured, below),
+		// and when it does not, writeOutboxTx's refusal against the marshalled
+		// and then the stored size is the authoritative one.
 		if n := projectedBulkPayloadBytes(group); n > s.outboxRowCap() {
 			return &OversizedOutboxPayloadError{
 				EventType: kernelevents.ItemBulkUpdated,
@@ -1960,16 +1962,18 @@ type OversizedOutboxRow struct {
 	Bytes     int
 }
 
-// OversizedPendingOutbox lists pending rows over MaxOutboxClaimableBytes.
+// OversizedPendingOutbox lists undispatched rows over MaxOutboxClaimableBytes.
 //
 // THE CLAIM'S CEILING, not the write cap, because the question this answers is
 // "what will the claim refuse to read" rather than "what would the write have
 // rejected". The two differ on purpose; see MaxOutboxClaimableBytes.
 //
 // EXISTS SO THE EXCLUSION IS NOT SILENT. pendingClaimCandidates drops these in
-// the predicate, which is what stops them jamming the queue — but a row that
-// is never claimed, never logged, and eventually reaped by retention is an
-// event that vanishes with nobody told. Since writeOutboxTx refuses on the
+// the predicate, which is what stops them jamming the queue — but a row this
+// binary never claims, never logs, and lets retention reap is an event that
+// vanishes with nobody told. It does not filter on claimed_at: a binary older
+// than the ceiling may hold a claim on such a row, and the alarm is about what
+// THIS binary will do with it, not about who else is touching it. Since writeOutboxTx refuses on the
 // STORED size against this same ceiling, only a row left by a binary older
 // than that check can be here at all, so this is expected to return nothing
 // forever on an instance that never ran one.

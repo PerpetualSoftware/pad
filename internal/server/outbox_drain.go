@@ -237,15 +237,18 @@ func (s *Server) runOutboxDrainTick() {
 	// tick would make a diagnostic the most expensive thing the drain does.
 	//
 	// A diagnostic is what it is, so latency is the cheap thing to spend: the
-	// rows it reports are permanently unclaimable and sit until the 7-day
-	// retention takes them, which makes a five-minute alarm delay
-	// irrelevant to any decision anyone makes about them.
+	// rows it reports are ones this binary will never claim, and they sit
+	// until the 7-day retention takes them, which makes a five-minute alarm
+	// delay irrelevant to any decision anyone makes about them. The log line
+	// says exactly that and no more — the query does not look at claimed_at,
+	// and during a rolling upgrade an older binary may well be holding one
+	// (codex round 6).
 	if s.shouldScanOversizedOutbox() {
 		if oversized, oerr := s.store.OversizedPendingOutbox(5); oerr != nil {
 			slog.Error("outbox drain: oversized scan failed", "error", oerr)
 		} else {
 			for _, row := range oversized {
-				slog.Error("outbox drain: payload over the size limit, not claimed",
+				slog.Error("outbox drain: payload over the claim ceiling; this instance will not claim it",
 					"event_id", row.ID, "event_type", row.EventType,
 					"bytes", row.Bytes, "limit", store.MaxOutboxClaimableBytes)
 			}
