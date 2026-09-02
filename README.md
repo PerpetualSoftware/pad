@@ -489,6 +489,8 @@ pad item deps <ref>                   Show dependencies
 pad item unblock <src> <target>       Remove dependency
 pad item related <ref>                Show direct relationships for an item
 pad item implemented-by <ref>         Show incoming implementers for an item
+pad item claim <ref>                  Atomically claim an item for execution (--holder, --ttl; 409 names the live holder)
+pad item release <ref>                Release your execution lease (idempotent)
 pad item bulk-update --status X       Batch update multiple items
 
 pad collection list                   List collections with item counts

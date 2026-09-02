@@ -1173,6 +1173,24 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: items.last_modified_by must not contain a NUL');
 END;
 
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_lease_holder_ins
+BEFORE INSERT ON items
+FOR EACH ROW WHEN NEW.lease_holder IS NOT NULL AND (
+			instr(NEW.lease_holder, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.lease_holder must not contain a NUL');
+END;
+
+CREATE TRIGGER IF NOT EXISTS pad_nul_items_lease_holder_upd
+BEFORE UPDATE OF lease_holder ON items
+FOR EACH ROW WHEN NEW.lease_holder IS NOT NULL AND (
+			instr(NEW.lease_holder, char(0)) > 0
+)
+BEGIN
+	SELECT RAISE(ABORT, 'pad_nul_invariant: items.lease_holder must not contain a NUL');
+END;
+
 CREATE TRIGGER IF NOT EXISTS pad_nul_items_slug_ins
 BEFORE INSERT ON items
 FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (

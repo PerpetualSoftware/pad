@@ -81,6 +81,22 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 	s.enrichItemsWithParent(workspaceID, result, visibleIDs)
 
+	// Decorate live execution leases (#1221) with ONE workspace query
+	// rather than widening the shared item scan: leases are absent on
+	// most rows, and the map only carries live ones (expiry filtered in
+	// SQL), so unleased items keep their key omitted.
+	if leases, err := s.store.ListItemLeases(workspaceID); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if len(leases) > 0 {
+		for i := range result {
+			if lease, ok := leases[result[i].ID]; ok {
+				leaseCopy := lease
+				result[i].Lease = &leaseCopy
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -918,6 +934,17 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	// caller independently passes a read check on the destination ITEM.
 	// See item_moved_to.go for the disclosure rule.
 	item.MovedTo = s.movedToDestinations(r, item)
+
+	// Live execution lease (#1221). Read here rather than in the shared
+	// scan path: a lease is display/coordination state, absent on most
+	// items, and one point read on the single-item GET keeps the many
+	// item SELECT column lists untouched. Expired leases read as nil.
+	lease, err := s.store.GetItemLease(item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	item.Lease = lease
 
 	writeJSON(w, http.StatusOK, item)
 }

@@ -126,6 +126,8 @@ func itemCmd() *cobra.Command {
 		commentsCmd(),
 		noteCmd(),
 		decideCmd(),
+		itemClaimCmd(),
+		itemReleaseCmd(),
 		blocksCmd(),
 		blockedByCmd(),
 		depsCmd(),

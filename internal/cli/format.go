@@ -105,6 +105,21 @@ func StatusIcon(status string) string {
 }
 
 // RelativeTime returns a human-readable relative time string.
+// LeaseCountdown renders a lease expiry as a short human countdown
+// ("expires in 12m"). Sub-minute leases show seconds; anything longer
+// rounds to whole minutes — a lease TTL is coarse coordination state, so
+// second-level precision past the first minute is noise.
+func LeaseCountdown(expires time.Time) string {
+	d := time.Until(expires)
+	if d <= 0 {
+		return "expired"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("expires in %ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("expires in %dm", int(d.Round(time.Minute).Minutes()))
+}
+
 func RelativeTime(t time.Time) string {
 	d := time.Since(t)
 	switch {
@@ -252,6 +267,7 @@ func renderItemTable(w io.Writer, items []models.Item, maxWidth int) {
 	// title budget), so we stash its raw pieces.
 	type row struct {
 		pin        string // rendered pin marker ("" or "* " in yellow)
+		lease      string // rendered lease marker ("" or "» " in cyan) — live execution lease (#1221)
 		ref        string // raw ref, e.g. "TASK-5" — never truncated
 		title      string // raw title — the only thing we truncate
 		archived   bool
@@ -266,6 +282,13 @@ func renderItemTable(w io.Writer, items []models.Item, maxWidth int) {
 		var r row
 		if item.Pinned {
 			r.pin = color.YellowString("* ")
+		}
+		// A leased row gets a glyph on the ref/title cell rather than its
+		// own column: leases are absent on most rows, and a permanent
+		// column would tax every row's title budget for the empty case.
+		// Holder + expiry detail lives on `item show` and in JSON.
+		if item.Lease != nil {
+			r.lease = color.CyanString("» ")
 		}
 		r.ref = ItemRef(item)
 		// Strip any SGR escapes a title might carry (we apply our own Bold
@@ -347,7 +370,7 @@ func renderItemTable(w io.Writer, items []models.Item, maxWidth int) {
 
 	for _, r := range rows {
 		writeRow(
-			buildRefCell(r.pin, r.ref, r.title, r.archived, titleBudget),
+			buildRefCell(r.pin+r.lease, r.ref, r.title, r.archived, titleBudget),
 			r.status, r.priority, r.collection, r.updated,
 		)
 	}
@@ -506,6 +529,14 @@ func PrintItemMeta(item *models.Item) {
 			assignStr = roleLabel
 		}
 		fmt.Printf("%s %s\n", label.Sprint("Assigned:  "), assignStr)
+	}
+
+	// Live execution lease (#1221) — who is actively executing this item
+	// right now, distinct from Assigned's longer-term ownership. The
+	// server omits expired leases, so presence here means live.
+	if item.Lease != nil {
+		fmt.Printf("%s %s\n", label.Sprint("Lease:     "),
+			fmt.Sprintf("%s (%s)", item.Lease.Holder, LeaseCountdown(item.Lease.ExpiresAt)))
 	}
 
 	tags := item.Tags
