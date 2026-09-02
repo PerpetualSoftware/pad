@@ -242,23 +242,22 @@ const maxOutboxClaimRows = 5000
 //
 // The write cap measures the Go bytes json.Marshal produced. The claim
 // measures what the driver will hand to Scan, which on Postgres is the JSONB
-// — text rendering, and that rendering inserts one space after every colon
-// and comma. So a payload written at EXACTLY the cap comes back over it, and a
-// claim thresholded at the same number would write the row through the guard
-// and then never claim it: delivered to nobody, reported as nothing, reaped by
-// retention seven days later. Found by running the suite against real
-// Postgres, where a 40,000-byte payload read back as 40,001.
+// — text rendering of a reparsed document. Those two numbers differ, and they
+// differ WITHOUT BOUND: whitespace after colons and commas is the small part,
+// while numeric normalization is unbounded (measured on Postgres 16,
+// {"a":1e-3000} is 13 bytes stored as 3009, and the exponent can grow). See
+// writeOutboxTx, which is where that gap is actually closed.
 //
-// 2x, because the expansion is bounded well under that. Every inserted byte
-// follows a colon or comma, so the worst case is a document of single-character
-// keys and values (`{"a":1,"b":2}`) at about 1.4x; our payloads are long string
-// values and expand by a small fraction of a percent. Normalization can also
-// SHRINK a document (existing whitespace stripped, duplicate keys collapsed),
-// so the correction is one-directional only for the compact output
-// encoding/json actually produces.
+// So this constant is NOT a proof that everything writable is claimable — no
+// multiplier could be. That property is established at the write instead:
+// writeOutboxTx measures the row AS STORED, via RETURNING, and refuses against
+// THIS number. The multiplier's only job is to leave ordinary payloads
+// comfortable room above the write cap so the two rules do not fight over
+// rounding; the real payloads measured for this unit expand by well under a
+// percent.
 //
-// What it still excludes is what it is for: rows left by a binary older than
-// the write cap, which can be hundreds of megabytes.
+// What it excludes is what it is for: rows left by a binary older than any of
+// this, which can be hundreds of megabytes.
 const MaxOutboxClaimableBytes = 2 * MaxOutboxPayloadBytes
 
 // outboxRowCap and outboxClaimBudget read the bounds THROUGH the test seams,
@@ -464,12 +463,53 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	}
 	ev.SubjectKind = kind
 
-	_, err := tx.Exec(s.q(`
+	// RETURNING THE STORED SIZE, and then refusing on it, is what makes "a row
+	// this binary wrote is a row this binary can read back" true rather than
+	// hoped for.
+	//
+	// The check above measures the bytes json.Marshal produced. On Postgres
+	// that is NOT what gets stored: payload is JSONB, a parsed representation,
+	// and its text rendering is what the drain will later Scan. The two differ
+	// without limit. Whitespace after colons and commas is the small part;
+	// NUMERIC NORMALIZATION is the unbounded one, because Postgres reparses
+	// JSON numbers as `numeric` and prints them in positional notation.
+	// Measured against Postgres 16:
+	//
+	//	{"a":1,"b":2}     13 bytes ->    16   (whitespace only, ~1.2x)
+	//	{"a":1e-100}      12 bytes ->   109   (~9x)
+	//	{"a":1e-3000}     13 bytes ->  3009   (~231x, and the exponent is free
+	//	                                       to grow, so this has no ceiling)
+	//
+	// A Go-side cap therefore bounds the stored size not at all, and no
+	// multiple of it is a safe claim ceiling either. Reachable rather than
+	// theoretical: item payloads carry `fields` as a JSON *string*, whose
+	// contents are escaped text and immune to this, but a bulk delta is a
+	// map[string]any and a numeric field value decoded from a request body
+	// arrives as a float64 that re-marshals in exponent form.
+	//
+	// So the size that governs is measured where it is true, by the database,
+	// on the row as stored. Refusing here rolls the caller's transaction back
+	// exactly as the pre-marshal check does, and the mutation fails with the
+	// same named error instead of committing an event the drain would then
+	// refuse to read for the rest of its retention window.
+	//
+	// Charged against the CLAIM ceiling, not the write cap: this number is
+	// about what the drain can read, and the drain's predicate is the thing it
+	// has to agree with.
+	var stored int
+	if err := tx.QueryRow(s.q(`
 		INSERT INTO event_outbox (id, workspace_id, event_type, subject_kind, subject_id, payload, hop, occurred_at, batch_id)
 		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''))
-	`), ev.ID, ev.WorkspaceID, ev.EventType, ev.SubjectKind, ev.SubjectID, string(ev.Payload), ev.Hop, ev.OccurredAt, ev.BatchID)
-	if err != nil {
+		RETURNING `+s.dialect.OctetLength("payload")+`
+	`), ev.ID, ev.WorkspaceID, ev.EventType, ev.SubjectKind, ev.SubjectID, string(ev.Payload), ev.Hop, ev.OccurredAt, ev.BatchID).Scan(&stored); err != nil {
 		return fmt.Errorf("outbox: write %s: %w", ev.EventType, err)
+	}
+	if stored > s.outboxClaimableRowCap() {
+		return &OversizedOutboxPayloadError{
+			EventType: ev.EventType,
+			Bytes:     stored,
+			Limit:     s.outboxClaimableRowCap(),
+		}
 	}
 	return nil
 }
@@ -809,6 +849,9 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 		// Advance past the last row READ, not the last row rewritten. A
 		// candidate the Go rewrite left untouched (a LIKE false positive) is
 		// still consumed, so the cursor always moves and the loop terminates.
+		if s.afterOutboxScrubBatch != nil {
+			s.afterOutboxScrubBatch(len(candidates))
+		}
 		cursor = candidates[len(candidates)-1].id
 	}
 

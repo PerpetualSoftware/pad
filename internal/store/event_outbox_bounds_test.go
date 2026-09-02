@@ -76,6 +76,16 @@ func TestOutboxLimitSeamsDefaultToTheProductionConstants(t *testing.T) {
 		t.Errorf("claim budget = %d, want %d", got, maxOutboxClaimBytes)
 	}
 
+	// DIALECT-INDEPENDENT, and the reason it is here rather than only inside
+	// the Postgres round-trip test: the default suite runs on SQLite, where
+	// that test passes trivially, so a claim ceiling collapsed back to the
+	// write cap would go unnoticed in every run without PAD_TEST_POSTGRES_URL
+	// (codex round 2). This assertion fails on either dialect.
+	if MaxOutboxClaimableBytes <= MaxOutboxPayloadBytes {
+		t.Errorf("MaxOutboxClaimableBytes (%d) must exceed MaxOutboxPayloadBytes (%d)",
+			MaxOutboxClaimableBytes, MaxOutboxPayloadBytes)
+	}
+
 	// The row cap must sit ABOVE what MaxItemRenameCascadeBytes can marshal
 	// to, or the vaguer outbox refusal preempts the rename cascade's own,
 	// better-worded one on the very renames that bound describes. ~1.46x is
@@ -544,5 +554,143 @@ func TestBulkEventIsRefusedBeforeItIsMarshalled(t *testing.T) {
 	if want := projectedBulkPayloadBytes(members); typed.Bytes != want {
 		t.Errorf("Bytes = %d, want the projected %d — the refusal came from writeOutboxTx after "+
 			"marshalling, not from the early-out before it", typed.Bytes, want)
+	}
+}
+
+func TestEverythingWrittenIsClaimable(t *testing.T) {
+	s := testStore(t)
+	s.outboxRowCapOverride = 4096 // claimable ceiling 8192
+	ws := createTestWorkspace(t, s, "OutboxWriteReadAgreement")
+
+	// A PAYLOAD THAT IS SMALL IN GO AND HUGE AS STORED. Postgres reparses JSON
+	// numbers as numeric and prints them positionally, so 1e-3000 is 7 bytes
+	// on the way in and about 3,001 on the way out — measured, and unbounded
+	// as the exponent grows. SQLite stores the text verbatim and expands
+	// nothing.
+	//
+	// ASSERTED AS A PROPERTY, not as a dialect-specific outcome, because the
+	// two dialects legitimately differ on whether this is refused: what must
+	// hold on both is that a row the write accepted is a row the claim will
+	// read. Without the stored-size check in writeOutboxTx this row is
+	// accepted on Postgres and then excluded from every claim for the rest of
+	// its retention window — written, undeliverable, and reported only as an
+	// oversized-row log line.
+	var b strings.Builder
+	b.WriteString(`{"n":[`)
+	for i := 0; i < 100; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString("1e-3000")
+	}
+	b.WriteString(`]}`)
+	payload := []byte(b.String())
+	if len(payload) > s.outboxRowCap() {
+		t.Fatalf("fixture is %d bytes, over the %d write cap — it must be refusable only by the "+
+			"STORED size, or it discriminates nothing", len(payload), s.outboxRowCap())
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	writeErr := writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectID:     "numeric",
+		Payload:       payload,
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
+	})
+	if writeErr != nil {
+		var typed *OversizedOutboxPayloadError
+		if !errors.As(writeErr, &typed) {
+			tx.Rollback()
+			t.Fatalf("write failed for an unexpected reason: %v", writeErr)
+		}
+		// Refused on the stored size. The mutation fails, nothing is
+		// committed, and the invariant holds vacuously.
+		tx.Rollback()
+		if typed.Bytes <= len(payload) {
+			t.Errorf("refusal reported %d bytes, not more than the %d written — it was charged "+
+				"against the Go payload, not the stored row", typed.Bytes, len(payload))
+		}
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	events, err := s.ClaimPendingOutboxEvents("drainer", 10, "2026-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("the write was accepted but the claim returned %d rows: a row this binary wrote "+
+			"must be a row this binary can read back", len(events))
+	}
+}
+
+func TestBatchSiblingQueryIsBoundedInSQL(t *testing.T) {
+	s := testStore(t)
+	s.outboxRowCapOverride = 8192
+	s.outboxClaimRowsOverride = 3
+	ws := createTestWorkspace(t, s, "OutboxSiblingSQLBound")
+
+	for i := 0; i < 9; i++ {
+		id := fmt.Sprintf("sq-%02d", i)
+		insertRawOutboxRow(t, s, id, ws.ID, fmt.Sprintf("2026-01-01T00:00:%02dZ", i), jsonPayloadOfSize(t, 40))
+		if _, err := s.db.Exec(s.q(`UPDATE event_outbox SET batch_id = ? WHERE id = ?`), "batch-1", id); err != nil {
+			t.Fatalf("set batch_id: %v", err)
+		}
+	}
+
+	// DRIVEN DIRECTLY, because the caller's row cap would hide the defect this
+	// is about: a sibling query that materialised the whole batch and let the
+	// caller truncate afterwards passes every assertion on the claim's return
+	// value while keeping exactly the unbounded allocation the cap was added
+	// to remove (codex round 2).
+	siblings, err := s.claimableBatchSiblings("batch-1", "2026-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("claimableBatchSiblings: %v", err)
+	}
+	if len(siblings) > s.outboxClaimRows() {
+		t.Fatalf("the sibling query returned %d rows for a 9-row batch with a cap of %d; it is "+
+			"bounded by the caller, not by SQL", len(siblings), s.outboxClaimRows())
+	}
+}
+
+func TestScrubSpendsItsByteBudgetNotJustItsRowLimit(t *testing.T) {
+	s := testStore(t)
+	// Row limit high enough that only the BYTE budget can split the work.
+	s.outboxScrubRowsOverride = 100
+	s.outboxClaimBudgetOverride = 4096
+	deleted, _ := scrubTestUsers(t, s)
+	ws := createTestWorkspace(t, s, "ScrubByteBudget")
+	clearOutbox(t, s)
+
+	var batches []int
+	s.afterOutboxScrubBatch = func(rows int) { batches = append(batches, rows) }
+
+	// Eight rows of ~2 KiB each against a 4 KiB budget: a correct loop runs
+	// several batches, a byte-blind one runs exactly one.
+	const n = 8
+	for i := 0; i < n; i++ {
+		insertRawOutboxRow(t, s, fmt.Sprintf("big-%02d", i), ws.ID,
+			fmt.Sprintf("2026-01-01T00:00:%02dZ", i),
+			[]byte(fmt.Sprintf(`{"body":"%s mentions %s"}`, strings.Repeat("x", 2000), deleted.ID)))
+	}
+
+	if err := scrubInTxErr(s, deleted.ID); err != nil {
+		t.Fatalf("scrub: %v", err)
+	}
+	if len(batches) < 2 {
+		t.Fatalf("the scrub ran %d batch(es) over %d rows of ~2 KiB against a %d-byte budget; the "+
+			"byte budget is not being spent, so peak memory is still the whole match set",
+			len(batches), n, s.outboxScrubBytes())
+	}
+	for i, rows := range batches {
+		if rows > s.outboxScrubRows() {
+			t.Errorf("batch %d carried %d rows, over the %d row limit", i, rows, s.outboxScrubRows())
+		}
 	}
 }

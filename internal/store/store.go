@@ -84,6 +84,16 @@ type Store struct {
 	// outboxClaimRowsOverride lowers maxOutboxClaimRows the same way.
 	outboxClaimRowsOverride int
 
+	// afterOutboxScrubBatch is a TEST-ONLY seam, nil in production. When set,
+	// ScrubOutboxUserRefsTx calls it once per candidate batch with the number
+	// of rows that batch carried.
+	//
+	// It exists because the scrub's BYTE budget is otherwise unobservable: it
+	// changes peak memory and nothing else, so removing it leaves every
+	// outcome assertion green (codex round 2). Counting batches is the one
+	// visible consequence of the budget doing its job.
+	afterOutboxScrubBatch func(rows int)
+
 	// afterItemPreLockRead is a TEST-ONLY seam, nil in production. When set,
 	// updateItemWithParentLinkOnce calls it after its pre-lock GetItem and
 	// before it opens the transaction — the window in which a concurrent
