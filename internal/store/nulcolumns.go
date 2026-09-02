@@ -77,6 +77,13 @@ var nulColumns = []nulColumn{
 	{"items", "last_modified_by", classText},
 	{"items", "source", classText},
 
+	// Execution lease (#1221). The holder is a freeform caller string
+	// (`--holder` / body `holder`), so it carries caller text. decodeJSON's
+	// NUL refusal (BUG-2803) already blocks the API path; the trigger is the
+	// Layer B guarantee for writers that bypass this binary. The two lease
+	// timestamp columns are server-composed RFC3339 — see nulExcluded.
+	{"items", "lease_holder", classText},
+
 	// collections
 	{"collections", "schema", classJSON},
 	{"collections", "settings", classJSON},
@@ -318,6 +325,8 @@ var nulExcluded = map[string]string{
 	"mcp_audit_log.error_kind":            "server enum, mcp_audit.go",
 	"users.recovery_codes":                "newline-joined bcrypt hashes of server-generated codes; looks like JSON, is not",
 	"workspace_members.collection_access": "validated enum all/selected",
+	"items.lease_acquired_at":             "server-composed RFC3339 (store now()/Add); the caller supplies only ttl_seconds, an int",
+	"items.lease_expires_at":              "server-composed RFC3339 (store now()/Add); the caller supplies only ttl_seconds, an int",
 	"item_yjs_updates.update_data":        "BINARY (BLOB/BYTEA), the only such column in either schema. Raw Yjs updates legitimately contain NUL bytes; Layer A exempts it for the same reason and TestBinaryColumnCensus pins that. Surfaced here when the census's type filter was widened to include BLOB affinity, which is correct — the decision to exclude it is a judgement, not an oversight.",
 }
 

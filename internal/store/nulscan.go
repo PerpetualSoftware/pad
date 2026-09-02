@@ -199,8 +199,8 @@ func (r *NULScanReport) ByColumn() map[string]int {
 // the DESTINATION. Nothing about what any layer REFUSES changed.
 //
 // COST, stated because an operator should not be surprised by it: one
-// unindexed scan per protected column — 131 of them today (24 JSON-classed,
-// 107 text), measured from NULProtectedColumns rather than counted by hand.
+// unindexed scan per protected column — 132 of them today (24 JSON-classed,
+// 108 text), measured from NULProtectedColumns rather than counted by hand.
 // There is no index that would help, since the predicate is a substring search
 // over the value. That is cheap next to the migration it guards, which reads
 // every row of every table anyway.
