@@ -553,13 +553,24 @@ Once a user exists, all API requests and web UI access require authentication. C
 
 #### Authenticating with an environment token
 
-Set `PAD_TOKEN` to a Pad API token (minted under **Settings → API tokens** in the web UI) to authenticate without `pad auth login`:
+Set `PAD_TOKEN` to a Pad API token (minted with `pad token create`, or under **Settings → API tokens** in the web UI) to authenticate without `pad auth login`:
 
 ```bash
 PAD_TOKEN=pad_xxxxxxxx pad item list
 ```
 
-`PAD_TOKEN` takes precedence over credentials saved by `pad auth login` — the same convention as `gh`'s `GH_TOKEN`. This is useful for CI, scripts, and machines where several AI agents share one CLI install but should act as different Pad users: give each agent its own token in its process environment, and the credential store is never touched. `pad auth whoami` reports the token's identity (with an `Auth: PAD_TOKEN environment override` line), and `pad auth login`/`logout` warn when the override is active — they manage the stored credentials, which the override bypasses. Deliberately, `pad auth logout` never invalidates the `PAD_TOKEN` session itself: it signs out the *stored* session only, and the env token's lifecycle belongs to wherever it was minted (revoke it under **Settings → API tokens**).
+`PAD_TOKEN` takes precedence over credentials saved by `pad auth login` — the same convention as `gh`'s `GH_TOKEN`. This is useful for CI, scripts, and machines where several AI agents share one CLI install but should act as different Pad users: give each agent its own token in its process environment, and the credential store is never touched. `pad auth whoami` reports the token's identity (with an `Auth: PAD_TOKEN environment override` line), and `pad auth login`/`logout` warn when the override is active — they manage the stored credentials, which the override bypasses. Deliberately, `pad auth logout` never invalidates the `PAD_TOKEN` session itself: it signs out the *stored* session only, and the env token's lifecycle belongs to wherever it was minted (revoke it with `pad token revoke` or under **Settings → API tokens**).
+
+#### Managing API tokens from the CLI
+
+```bash
+pad token create --name ci-agent              # Mint a token (secret shown once)
+pad token create --name cursor --expires-in 30
+pad token list                                # Metadata only — never secrets
+pad token revoke <token-id>                   # Immediate; the id must be exact
+```
+
+Tokens are user-scoped and act as the user who minted them. `create` prints the secret exactly once — the server stores only a hash and cannot show it again — so pair each mint with wherever the token will live (CI secret store, an agent's `PAD_TOKEN`). `revoke` takes the exact id from `pad token list`; revocation is immediate, and anything still authenticating with that token fails on its next call.
 
 ```bash
 pad workspace members               # List workspace members
