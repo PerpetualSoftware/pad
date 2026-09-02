@@ -2191,6 +2191,36 @@ func writeInternalError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "bad_request", reason)
 		return
 	}
+	// The outbox row cap is likewise a decision, not a fault, and is mapped in
+	// the same funnel for the same reason (BUG-2827). 413 with a *_too_large
+	// code follows the house precedent set by rename_cascade_too_large rather
+	// than inventing a second spelling for "this operation produces more than
+	// the server will process in one go".
+	//
+	// The literal reading of 413 is that the REQUEST entity is too large, and
+	// here the request is small while the event it derives is not. Taken
+	// alone that argues for 422. It loses to consistency: an operator watching
+	// for cascade refusals should not have to know which of two size bounds
+	// fired to know which status to grep for, and the message says plainly
+	// what was actually too big.
+	//
+	// Composed from the TYPED fields, never by splicing err.Error(), so no
+	// wrapper the call path added is published to the caller.
+	var oversized *store.OversizedOutboxPayloadError
+	if errors.As(err, &oversized) {
+		slog.Warn("write refused: outbox payload over the size limit",
+			"event_type", oversized.EventType, "bytes", oversized.Bytes, "limit", oversized.Limit)
+		// The message names WHAT was measured, because the store refuses on two
+		// different measurements — the member content before marshalling, and
+		// the row as stored — and a caller told only "%d bytes" for both
+		// cannot reconcile two different numbers for one mutation (codex
+		// round 3).
+		writeError(w, http.StatusRequestEntityTooLarge, "event_payload_too_large",
+			fmt.Sprintf("This change would record a %s event larger than the server will store in one "+
+				"row: %s is %d bytes, and the limit is %d. Split the change into smaller ones and try again.",
+				oversized.EventType, oversized.Measured, oversized.Bytes, oversized.Limit))
+		return
+	}
 	slog.Error("internal server error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 }

@@ -63,6 +63,22 @@ type Dialect interface {
 	// PostgreSQL: STRING_AGG(DISTINCT expr, ',')
 	GroupConcat(expr string, distinct bool) string
 
+	// OctetLength returns SQL for the BYTE length of a text-ish column, as the
+	// driver will hand it to Scan.
+	//
+	// The distinction matters here rather than being pedantry: event_outbox
+	// payload is TEXT on SQLite and JSONB on Postgres, and JSONB is a parsed
+	// representation whose ::text rendering is normalized (whitespace stripped,
+	// object keys reordered, duplicate keys collapsed). So the stored byte count
+	// and the scanned byte count are not the same number on Postgres. This
+	// measures the SCANNED one on both dialects — octet_length of the TEXT for
+	// SQLite, octet_length of the ::text rendering for Postgres — because every
+	// caller of this is deciding whether it can afford to Scan the value, not
+	// how much disk it occupies.
+	//
+	// SQLite's octet_length() requires 3.43+; the bundled library is 3.53.3.
+	OctetLength(column string) string
+
 	// BoolToInt converts a Go bool to a query parameter value.
 	// SQLite: 0/1 (integers)
 	// PostgreSQL: true/false (native booleans)
@@ -168,6 +184,10 @@ func (d *sqliteDialect) GroupConcat(expr string, distinct bool) string {
 	return fmt.Sprintf("GROUP_CONCAT(%s)", expr)
 }
 
+func (d *sqliteDialect) OctetLength(column string) string {
+	return fmt.Sprintf("octet_length(%s)", column)
+}
+
 func (d *sqliteDialect) BoolToInt(b bool) interface{} {
 	if b {
 		return 1
@@ -249,6 +269,12 @@ func (d *postgresDialect) GroupConcat(expr string, distinct bool) string {
 		return fmt.Sprintf("STRING_AGG(DISTINCT %s, ',')", expr)
 	}
 	return fmt.Sprintf("STRING_AGG(%s, ',')", expr)
+}
+
+func (d *postgresDialect) OctetLength(column string) string {
+	// The ::text cast is load-bearing, not defensive: octet_length has no jsonb
+	// overload, so without it this is a type error rather than a wrong number.
+	return fmt.Sprintf("octet_length(%s::text)", column)
 }
 
 func (d *postgresDialect) BoolToInt(b bool) interface{} {

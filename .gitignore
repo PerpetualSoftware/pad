@@ -65,3 +65,6 @@ dist/
 .pad-e2e-*/
 web/playwright-report/
 web/test-results/
+
+# Go build cache the codex review sandbox writes into the checkout (BUG-2827: 5,688 of them once reached a commit)
+.tmp-gocache/

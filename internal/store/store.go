@@ -61,6 +61,39 @@ type Store struct {
 	// every test that sets it does so synchronously and none is parallel).
 	afterDebounceRead func()
 
+	// outboxRowCapOverride and outboxClaimBudgetOverride are TEST-ONLY seams,
+	// zero in production. They lower MaxOutboxPayloadBytes and
+	// maxOutboxClaimBytes so a test can cross those bounds with kilobytes
+	// instead of hundreds of megabytes.
+	//
+	// ZERO MEANS THE PRODUCTION CONSTANT, never "no limit" — read through
+	// outboxRowCap() / outboxClaimBudget(), never directly. A Store built
+	// without the constructor therefore enforces the real bounds rather than
+	// silently enforcing none, which is the failure mode a plain int field
+	// would have had.
+	//
+	// Store fields rather than package vars so parallel tests cannot write
+	// each other's seam, same reasoning as afterDebounceRead above. Set them
+	// only while no request is in flight against this Store.
+	outboxRowCapOverride      int
+	outboxClaimBudgetOverride int
+	// outboxScrubRowsOverride lowers maxOutboxScrubRows the same way. The
+	// scrub's BYTE budget has no seam of its own because maxOutboxScrubBytes
+	// is defined as maxOutboxClaimBytes — one number, so one seam.
+	outboxScrubRowsOverride int
+	// outboxClaimRowsOverride lowers maxOutboxClaimRows the same way.
+	outboxClaimRowsOverride int
+
+	// afterOutboxScrubBatch is a TEST-ONLY seam, nil in production. When set,
+	// ScrubOutboxUserRefsTx calls it once per candidate batch with the number
+	// of rows that batch carried.
+	//
+	// It exists because the scrub's BYTE budget is otherwise unobservable: it
+	// changes peak memory and nothing else, so removing it leaves every
+	// outcome assertion green (codex round 2). Counting batches is the one
+	// visible consequence of the budget doing its job.
+	afterOutboxScrubBatch func(rows int)
+
 	// afterItemPreLockRead is a TEST-ONLY seam, nil in production. When set,
 	// updateItemWithParentLinkOnce calls it after its pre-lock GetItem and
 	// before it opens the transaction — the window in which a concurrent
