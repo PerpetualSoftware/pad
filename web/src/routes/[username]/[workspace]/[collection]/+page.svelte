@@ -2206,6 +2206,31 @@
 		// below, since a timer armed at depth 0 can otherwise fire AFTER a drill
 		// (the R14 late-async-continuation clobber).
 		if (currentPaneState().paneDepth > 0) return;
+
+		// THE TARGET IS CAPTURED HERE, BY IDENTITY, NOT READ BACK LATER
+		// (BUG-2848). The callback used to re-read `filteredItems[focusedIndex]`
+		// when the timer fired, which made the keypress depend on the list
+		// holding still for 140 ms. It does not: this list is SSE-live, and an
+		// item arriving during the debounce shifts every index below it.
+		//
+		// The failure that produced was silent. `focusedIndex` had been advanced
+		// by the keypress; an insert above then shifted the paned item DOWN onto
+		// that very index; the callback read it back, found the focused row was
+		// already the paned item, and returned through the guard below. The
+		// cursor did not move and the pane did not re-target — a discarded
+		// keystroke with nothing to show for it.
+		//
+		// Measured on this branch with e2e/zz-pin2848.spec.ts: 11 of 12 runs lost
+		// the keypress before this change, 0 of 12 after. Suppressing the
+		// snap-back $effect during the debounce was tried first and fixed
+		// NOTHING (12 of 12) — the stale index lands on the paned item on its
+		// own, so there is nothing for the snap-back to be blamed for.
+		const target =
+			focusedIndex >= 0 && focusedIndex < filteredItems.length
+				? filteredItems[focusedIndex]
+				: null;
+		if (!target) return;
+
 		cancelPaneFollow();
 		paneFollowTimer = setTimeout(() => {
 			paneFollowTimer = null;
@@ -2213,13 +2238,15 @@
 			// window (R14 fence-on-continuation).
 			if (!openItemRef) return;
 			if (currentPaneState().paneDepth > 0) return;
-			if (focusedIndex < 0 || focusedIndex >= filteredItems.length) return;
-			const item = filteredItems[focusedIndex];
-			// Skip if the focused row is already the paned item — avoids a
+			// The captured row must still EXIST. Identity, not index: it may
+			// have moved (an insert above), which is fine and is the point; if
+			// it was deleted during the debounce there is nothing to follow to.
+			if (!filteredItems.some((i) => i.id === target.id)) return;
+			// Skip if the captured row is already the paned item — avoids a
 			// redundant replaceState navigation on a same-item settle.
-			if (itemUrlId(item) === openItemRef || item.slug === openItemRef) return;
+			if (itemUrlId(target) === openItemRef || target.slug === openItemRef) return;
 			// Pane is open → openItemPane re-targets via replaceState (no push).
-			openItemPane(item);
+			openItemPane(target);
 		}, PANE_FOLLOW_DEBOUNCE_MS);
 	}
 
