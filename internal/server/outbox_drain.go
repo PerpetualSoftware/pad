@@ -60,6 +60,9 @@ type outboxDrainConfig struct {
 	stop                chan struct{}
 	running             bool
 	drainerID           string
+	// lastOversizedScan throttles the oversized-row diagnostic; see
+	// shouldScanOversizedOutbox.
+	lastOversizedScan time.Time
 	// tick, when non-nil, replaces the interval ticker so a test can pin
 	// assertions to a SPECIFIC pass instead of racing a free-running loop —
 	// the same affordance server.go's other sweepers expose.
@@ -220,13 +223,26 @@ func (s *Server) runOutboxDrainTick() {
 	// keeps that answer honest and hands its lifecycle to the undispatched
 	// retention bound, which already exists for events that can never be
 	// delivered.
-	if oversized, oerr := s.store.OversizedPendingOutbox(5); oerr != nil {
-		slog.Error("outbox drain: oversized scan failed", "error", oerr)
-	} else {
-		for _, row := range oversized {
-			slog.Error("outbox drain: payload over the size limit, not claimed",
-				"event_id", row.ID, "event_type", row.EventType,
-				"bytes", row.Bytes, "limit", store.MaxOutboxClaimableBytes)
+	// THROTTLED, because the query is expensive precisely when it finds
+	// nothing (codex round 3). Its size predicate is non-sargable and there is
+	// no index on payload length, so with no oversized rows it must evaluate
+	// octet_length over every pending row — and on Postgres that means
+	// detoasting and serializing each JSONB payload. Running that every 5s
+	// tick would make a diagnostic the most expensive thing the drain does.
+	//
+	// A diagnostic is what it is, so latency is the cheap thing to spend: the
+	// rows it reports are permanently unclaimable and sit until the 7-day
+	// retention takes them, which makes a five-minute alarm delay
+	// irrelevant to any decision anyone makes about them.
+	if s.shouldScanOversizedOutbox() {
+		if oversized, oerr := s.store.OversizedPendingOutbox(5); oerr != nil {
+			slog.Error("outbox drain: oversized scan failed", "error", oerr)
+		} else {
+			for _, row := range oversized {
+				slog.Error("outbox drain: payload over the size limit, not claimed",
+					"event_id", row.ID, "event_type", row.EventType,
+					"bytes", row.Bytes, "limit", store.MaxOutboxClaimableBytes)
+			}
 		}
 	}
 	for _, unit := range groupOutboxDeliveries(events) {
@@ -236,6 +252,27 @@ func (s *Server) runOutboxDrainTick() {
 	if err := s.runOutboxRetention(settings.dispatchedRetention, settings.undispatchedMaxAge, settings.lease); err != nil {
 		slog.Error("outbox drain: retention pass failed", "error", err)
 	}
+}
+
+// oversizedOutboxScanInterval is how often the drain runs its oversized-row
+// diagnostic. See the call site for why this is not every tick.
+const oversizedOutboxScanInterval = 5 * time.Minute
+
+// shouldScanOversizedOutbox reports whether enough time has passed to run the
+// diagnostic again, and stamps the clock when it says yes.
+//
+// FIRST TICK ALWAYS SCANS: the zero time is far enough in the past, which is
+// what makes a restart report an existing oversized row promptly rather than
+// after the first interval.
+func (s *Server) shouldScanOversizedOutbox() bool {
+	s.outboxDrain.mu.Lock()
+	defer s.outboxDrain.mu.Unlock()
+	now := time.Now()
+	if now.Sub(s.outboxDrain.lastOversizedScan) < oversizedOutboxScanInterval {
+		return false
+	}
+	s.outboxDrain.lastOversizedScan = now
+	return true
 }
 
 // outboxDelivery is one WIRE event and the rows it acks.

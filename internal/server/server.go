@@ -2210,10 +2210,15 @@ func writeInternalError(w http.ResponseWriter, err error) {
 	if errors.As(err, &oversized) {
 		slog.Warn("write refused: outbox payload over the size limit",
 			"event_type", oversized.EventType, "bytes", oversized.Bytes, "limit", oversized.Limit)
+		// The message names WHAT was measured, because the store refuses on two
+		// different measurements — the member content before marshalling, and
+		// the row as stored — and a caller told only "%d bytes" for both
+		// cannot reconcile two different numbers for one mutation (codex
+		// round 3).
 		writeError(w, http.StatusRequestEntityTooLarge, "event_payload_too_large",
 			fmt.Sprintf("This change would record a %s event larger than the server will store in one "+
-				"row: %d bytes, and the limit is %d. Split the change into smaller ones and try again.",
-				oversized.EventType, oversized.Bytes, oversized.Limit))
+				"row: %s is %d bytes, and the limit is %d. Split the change into smaller ones and try again.",
+				oversized.EventType, oversized.Measured, oversized.Bytes, oversized.Limit))
 		return
 	}
 	slog.Error("internal server error", "error", err)

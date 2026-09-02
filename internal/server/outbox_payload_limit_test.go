@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -26,6 +27,7 @@ func TestWriteInternalErrorMapsTheOutboxRowCapRefusal(t *testing.T) {
 		EventType: "item.bulk_updated",
 		Bytes:     200 << 20,
 		Limit:     store.MaxOutboxPayloadBytes,
+		Measured:  "the row as the database stored it",
 	}))
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
@@ -56,6 +58,12 @@ func TestWriteInternalErrorMapsTheOutboxRowCapRefusal(t *testing.T) {
 	if !strings.Contains(body.Error.Message, fmt.Sprint(store.MaxOutboxPayloadBytes)) {
 		t.Errorf("message does not state the limit: %q", body.Error.Message)
 	}
+	// The store refuses on two different measurements against two different
+	// limits, so the message has to say which one this was or a caller cannot
+	// reconcile two numbers for one mutation.
+	if !strings.Contains(body.Error.Message, "the row as the database stored it") {
+		t.Errorf("message does not say what was measured: %q", body.Error.Message)
+	}
 }
 
 // TestWriteInternalErrorStillFallsThroughToFiveHundred is the negative control:
@@ -66,5 +74,58 @@ func TestWriteInternalErrorStillFallsThroughToFiveHundred(t *testing.T) {
 	writeInternalError(rec, fmt.Errorf("some unrelated failure"))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestOversizedOutboxScanIsThrottled pins the diagnostic's cadence.
+//
+// The query it gates is expensive exactly when it finds nothing — a
+// non-sargable size predicate over every pending row, detoasting each JSONB
+// payload on Postgres — so running it per 5s tick would make the drain's
+// cheapest-value work its most expensive. Asserting "true then false" is the
+// whole contract: the first tick after a restart reports promptly, and the
+// interval keeps it off the hot path afterwards.
+func TestOversizedOutboxScanIsThrottled(t *testing.T) {
+	s := &Server{}
+	if !s.shouldScanOversizedOutbox() {
+		t.Fatal("the first call refused to scan; a restart must report an existing oversized row " +
+			"without waiting out an interval first")
+	}
+	if s.shouldScanOversizedOutbox() {
+		t.Fatal("a second call immediately after the first scanned again; the throttle is not applied")
+	}
+
+	// And it recovers once the interval has passed, or the diagnostic reports
+	// once per process and never again.
+	s.outboxDrain.lastOversizedScan = time.Now().Add(-2 * oversizedOutboxScanInterval)
+	if !s.shouldScanOversizedOutbox() {
+		t.Fatal("the scan never resumed after the interval elapsed")
+	}
+}
+
+// TestOutboxDrainTickConsultsTheThrottle covers the CALL SITE, which the test
+// above does not.
+//
+// Found by mutation: replacing `if s.shouldScanOversizedOutbox()` with `if
+// true` left the throttle test green, because that test drives the helper
+// directly and a helper nothing calls is still correct in isolation. The
+// observable that reaches the call site is the stamp — a tick that consulted
+// the throttle has set it, and one that skipped straight to the query has not.
+func TestOutboxDrainTickConsultsTheThrottle(t *testing.T) {
+	srv, _, _ := drainFixture(t)
+
+	if !srv.outboxDrain.lastOversizedScan.IsZero() {
+		t.Fatal("fixture started with the throttle already stamped")
+	}
+	srv.runOutboxDrainTick()
+	first := srv.outboxDrain.lastOversizedScan
+	if first.IsZero() {
+		t.Fatal("a drain tick left the throttle unstamped; the diagnostic is running unthrottled")
+	}
+
+	srv.runOutboxDrainTick()
+	if got := srv.outboxDrain.lastOversizedScan; !got.Equal(first) {
+		t.Fatalf("a second tick restamped the throttle (%v -> %v); the interval is not being honoured",
+			first, got)
 	}
 }

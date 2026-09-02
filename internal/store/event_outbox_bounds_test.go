@@ -694,3 +694,47 @@ func TestScrubSpendsItsByteBudgetNotJustItsRowLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestScrubOnlyEverShrinksAPayload(t *testing.T) {
+	s := testStore(t)
+	deleted, _ := scrubTestUsers(t, s)
+	ws := createTestWorkspace(t, s, "ScrubShrinks")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Commented", "")
+	clearOutbox(t, s)
+
+	// THE CLAIM PATH DEPENDS ON THIS. Sizes are measured when candidates are
+	// selected, and the claim UPDATE rechecks only lease and dispatch state,
+	// so a writer that GREW a payload in between could push a row past the
+	// ceiling after it was judged under it. The reason no revalidation is
+	// needed is that the only writer of payload shrinks it — an invariant
+	// worth a test rather than a sentence, since the next person to add a
+	// payload rewrite will not read the sentence.
+	c := &models.Comment{ID: newID(), ItemID: item.ID, WorkspaceID: ws.ID,
+		Author: "Scrub Me", UserID: deleted.ID, Body: strings.Repeat("y", 500)}
+	emitInTx(t, s, func(tx *sql.Tx) error {
+		return s.emitCommentEventTx(tx, kernelevents.CommentCreated, c)
+	})
+
+	size := func() int {
+		var n int
+		if err := s.db.QueryRow(s.q(`SELECT `+s.dialect.OctetLength("payload")+` FROM event_outbox WHERE subject_id = ?`), c.ID).Scan(&n); err != nil {
+			t.Fatalf("measure payload: %v", err)
+		}
+		return n
+	}
+	before := size()
+	scrubInTx(t, s, deleted.ID)
+	after := size()
+
+	if after > before {
+		t.Fatalf("the scrub grew a payload from %d to %d bytes; the claim measures size at candidate "+
+			"selection and never rechecks it, so a growing rewrite can push a row past the ceiling "+
+			"after it was judged under it", before, after)
+	}
+	// And it really did rewrite the row, or the assertion above is vacuous.
+	if after == before {
+		t.Fatalf("the payload is unchanged at %d bytes; this fixture must actually be scrubbed for "+
+			"the shrink assertion to mean anything", after)
+	}
+}

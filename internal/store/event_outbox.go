@@ -181,12 +181,33 @@ type OversizedOutboxPayloadError struct {
 	EventType string
 	Bytes     int
 	Limit     int
+	// Measured names WHAT Bytes counted, because the two refusal sites count
+	// different things against different limits and saying "a %d-byte
+	// payload" for both was untrue of one of them (codex round 3).
+	//
+	// The early-out charges the members' own bytes, which is a LOWER BOUND on
+	// the payload, against the write cap. The post-insert check charges the
+	// row exactly as the database stored it, against the claim ceiling. A
+	// caller comparing two refusals without this cannot tell why the same
+	// mutation reports different numbers on retry.
+	Measured string
 }
 
 func (e *OversizedOutboxPayloadError) Error() string {
-	return fmt.Sprintf("outbox: event %s has a %d-byte payload, over the %d-byte limit",
-		e.EventType, e.Bytes, e.Limit)
+	measured := e.Measured
+	if measured == "" {
+		measured = "payload"
+	}
+	return fmt.Sprintf("outbox: event %s exceeds the %d-byte limit: %s is %d bytes",
+		e.EventType, e.Limit, measured, e.Bytes)
 }
+
+// The two things OversizedOutboxPayloadError.Measured can name.
+const (
+	measuredMemberBodies = "the member content, a lower bound on the payload it would marshal to"
+	measuredStoredRow    = "the row as the database stored it"
+	measuredGoPayload    = "the marshalled payload"
+)
 
 // maxOutboxClaimBytes is how many payload bytes ONE claim pass may take.
 //
@@ -400,6 +421,7 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 			EventType: ev.EventType,
 			Bytes:     len(ev.Payload),
 			Limit:     s.outboxRowCap(),
+			Measured:  measuredGoPayload,
 		}
 	}
 	if ev.Hop > maxOutboxHop {
@@ -509,6 +531,7 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 			EventType: ev.EventType,
 			Bytes:     stored,
 			Limit:     s.outboxClaimableRowCap(),
+			Measured:  measuredStoredRow,
 		}
 	}
 	return nil
@@ -871,6 +894,17 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 // scrubOutboxRowTx rewrites one candidate row, retrying against concurrent
 // writers.
 //
+// A REWRITE ONLY EVER SHRINKS A ROW, and the claim path depends on it. Sizes
+// are measured when candidates are selected and the claim UPDATE that follows
+// rechecks only lease and dispatch state, so a writer that GREW a payload in
+// between could push a row past the ceiling after it had been judged under it
+// (codex round 3). No such writer exists: this is the only UPDATE of payload in
+// the tree, and it removes keys and re-marshals compactly, so the result is
+// strictly smaller. Shrinking is harmless — a row already judged claimable
+// stays claimable. Stated here rather than left implicit because it is the
+// reason the claim needs no size revalidation, and pinned by
+// TestScrubOnlyEverShrinksAPayload.
+//
 // THE UPDATE IS A COMPARE-AND-SWAP, not a blind write, because two account
 // deletions can hold one payload at once: a bulk payload naming users A and B
 // is a candidate for both, and on Postgres READ COMMITTED both transactions
@@ -1162,6 +1196,7 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 				EventType: kernelevents.ItemBulkUpdated,
 				Bytes:     n,
 				Limit:     s.outboxRowCap(),
+				Measured:  measuredMemberBodies,
 			}
 		}
 		payload, err := marshalEventPayload(bulkItemEventPayload{
