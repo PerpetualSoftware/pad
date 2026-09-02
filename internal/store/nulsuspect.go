@@ -18,8 +18,12 @@ import (
 // duplicate key, because both look identical to a map-model decode — that is
 // textguard.KnownGaps and DOC-2823 forbids closing it in one layer. But the
 // migration has something no layer has: the actual PostgreSQL that is about to
-// refuse the value. Casting it there is not an opinion, it is the oracle, and
-// it is exact in both directions.
+// refuse the value. Casting it there is not an opinion, it is the oracle.
+//
+// It is exact about THE VALUE. It is not a perfect model of the MIGRATION, and
+// the difference is measured rather than hand-waved: one write path normalises
+// before writing, so a value the cast refuses can still import through that
+// column. See the KNOWN OVER-REFUSAL note on CheckJSONBAcceptable.
 
 // ReadNULTargetValue reads back the value at a suspect's address.
 //
@@ -49,6 +53,16 @@ func (s *Store) ReadNULTargetValue(table, column string, key map[string]string) 
 // failed for a NUL reason.
 var ErrNULDestinationRefused = errors.New("store: destination refused the value")
 
+// ErrDestinationCheckUnavailable is the sentinel for a check that did not
+// COMPLETE — a dropped connection, a timeout, anything that is not the
+// database's verdict on the value.
+//
+// It exists so a caller can fail CLOSED. An unverified suspect treated as a
+// pass is the preflight promising a migration it did not check, which is the
+// defect the suspect class was added to correct, arriving by a different route
+// (codex round 5).
+var ErrDestinationCheckUnavailable = errors.New("store: could not ask the destination")
+
 // CheckJSONBAcceptable asks THIS store's database whether a value is a jsonb
 // document it will accept, without writing anything.
 //
@@ -58,11 +72,34 @@ var ErrNULDestinationRefused = errors.New("store: destination refused the value"
 //
 // The verdict is narrow ON PURPOSE. Only the two NUL SQLSTATEs — 22P05 for an
 // escape decoding to NUL inside jsonb, 22021 for a NUL in text — wrap
-// ErrNULDestinationRefused. Any OTHER cast failure comes back as a plain error:
-// it means the destination will reject the row too, but for a reason outside
-// this preflight's remit, and a NUL preflight that silently grew into a general
-// one would refuse migrations that have nothing to do with this bug. The caller
-// reports those instead of refusing on them.
+// ErrNULDestinationRefused. Another cast failure that the SERVER answered comes
+// back as a plain error: the destination will reject the row too, but for a
+// reason outside this preflight's remit, and a NUL preflight that silently grew
+// into a general one would refuse migrations that have nothing to do with this
+// bug. A failure the server did NOT answer wraps
+// ErrDestinationCheckUnavailable, and the caller refuses on those.
+//
+// KNOWN OVER-REFUSAL, measured rather than reasoned about (codex round 5).
+// This casts the value AS STORED, and one write path normalises before writing:
+// CreateWorkspace runs models.NormalizeWorkspaceSettings, a map round-trip, so
+// a shadowed-duplicate in workspaces.settings collapses to its surviving member
+// and imports cleanly. Measured against a real server by importing the same
+// value into three columns:
+//
+//	workspaces.settings  -> import SUCCEEDS, stored as {"a": "clean"}
+//	items.fields         -> import FAILS, SQLSTATE 22P05
+//	collections.schema   -> import FAILS, SQLSTATE 22P05
+//
+// So for that one column the preflight refuses a migration that would have gone
+// through. Left as-is deliberately: the row is a violation of the invariant
+// wherever it sits — Layer B refuses that value on every write today, and it
+// exists only because it predates enforcement — so surviving the migration is
+// an accident of one column's normaliser rather than a property worth
+// preserving, and `pad db repair-nul` clears it in one command. Deriving
+// "would this column's writer normalise it" is a per-column enumeration, which
+// is the shape this cluster keeps proving unmaintainable. Flagged to the lead
+// rather than decided here; the REFUSAL WORDING no longer claims PostgreSQL
+// would reject the row, only that the value carries a NUL jsonb refuses.
 //
 // SQLSTATE by string match rather than a pgconn type assertion, following
 // isDeadlockError in this package: internal/store keeps both drivers behind
@@ -81,7 +118,25 @@ func (s *Store) CheckJSONBAcceptable(value string) error {
 	if isNULSQLState(err) {
 		return fmt.Errorf("%w: %v", ErrNULDestinationRefused, err)
 	}
+	if !hasSQLState(err) {
+		// No SQLSTATE means the server never rendered a verdict: the connection
+		// dropped, the context expired, the pool was closed. That is not "the
+		// value is fine".
+		return fmt.Errorf("%w: %v", ErrDestinationCheckUnavailable, err)
+	}
 	return err
+}
+
+// hasSQLState reports whether err carries a PostgreSQL error code, i.e. whether
+// the SERVER answered at all.
+//
+// Same string-matching approach as isNULSQLState and isDeadlockError, and the
+// same reason: internal/store keeps both drivers behind database/sql, and pgx
+// renders the code into the message for every server-side error.
+// TestDestinationOracleFailsClosedOnAnUnusableConnection pins the distinction
+// against a real closed pool rather than assuming it.
+func hasSQLState(err error) bool {
+	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "SQLSTATE")
 }
 
 // isNULSQLState reports whether err carries one of PostgreSQL's two NUL codes.

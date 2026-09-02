@@ -209,9 +209,8 @@ row.`,
 				for _, f := range report.Failed {
 					fmt.Fprintf(os.Stdout, "  %s\n    %v\n", f.Violation, f.Err)
 				}
-				return fmt.Errorf("%d value(s) could not be repaired", len(report.Failed))
 			}
-			return nil
+			return nulRepairExitError(report)
 		},
 	}
 
@@ -396,4 +395,21 @@ func resolvePathForCompare(p string) string {
 		return real
 	}
 	return filepath.Clean(p)
+}
+
+// nulRepairExitError turns a repair report into the command's exit status.
+//
+// BOTH failure buckets count. The first version printed suspect failures and
+// then returned nil, so a repair that left data unrepaired exited 0 — invisible
+// to any script, and to an operator who trusts the status (codex round 5).
+//
+// Extracted so the decision is testable without a database: the bug was in the
+// decision, not in the repair, and a test that needed a fixture to reach it is
+// a test nobody writes.
+func nulRepairExitError(report *store.NULRepairReport) error {
+	n := len(report.Failed) + len(report.SuspectsFailed)
+	if n == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d value(s) could not be repaired", n)
 }

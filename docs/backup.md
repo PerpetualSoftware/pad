@@ -235,6 +235,17 @@ document that only writes *about* the escape is accepted, as it should be.
 `pad db repair-nul` fixes the fatal shape while leaving the harmless ones byte
 for byte as they were.
 
+Two things to know about that check:
+
+- **It errs toward refusing.** If the destination cannot be reached, or a listed
+  row cannot be read back, the migration is refused rather than attempted — an
+  unchecked value is not a passed one. Re-run once the destination is reachable.
+- **It can refuse a migration that would have worked.** The check casts the
+  value as it is stored, and one column — a workspace's `settings` — is
+  normalised on the way in, which happens to drop the hidden value. Such a row
+  is still a value Pad refuses to write today, so `pad db repair-nul` clears it
+  and the migration proceeds.
+
 ### Importing an export that predates the rule
 
 If you have an export file taken from an affected database, the import still

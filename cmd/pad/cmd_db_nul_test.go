@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -354,5 +355,65 @@ func plantWorkspaceSettings(t *testing.T, dbPath, wsID, blob string) {
 	}
 	if _, err := raw.Exec(`UPDATE workspaces SET settings = ? WHERE id = ?`, blob, wsID); err != nil {
 		t.Fatalf("plant: %v", err)
+	}
+}
+
+// TestRepairExitStatusCountsBothFailureBuckets pins the exit code.
+//
+// A repair that leaves data unrepaired and exits 0 is invisible: a script sees
+// success, and an operator who trusts the status moves on. The first version
+// checked only the violation bucket, so a failed SUSPECT repair — the shape
+// that needs the most attention, since no other check sees those values —
+// exited cleanly (codex round 5).
+func TestRepairExitStatusCountsBothFailureBuckets(t *testing.T) {
+	boom := errors.New("nope")
+
+	cases := []struct {
+		name    string
+		report  store.NULRepairReport
+		wantErr bool
+		why     string
+	}{
+		{
+			name:    "nothing failed",
+			report:  store.NULRepairReport{Repaired: []store.NULViolation{{Table: "items"}}},
+			wantErr: false,
+			why:     "the control: a clean run must not report failure.",
+		},
+		{
+			name: "a violation failed",
+			report: store.NULRepairReport{
+				Failed: []store.NULRepairFailure{{Err: boom}},
+			},
+			wantErr: true,
+			why:     "the case the first version did catch.",
+		},
+		{
+			name: "only a SUSPECT failed",
+			report: store.NULRepairReport{
+				SuspectsFailed: []store.NULSuspectFailure{{Err: boom}},
+			},
+			wantErr: true,
+			why:     "the case it did not. These are the values no other check in Pad can see.",
+		},
+		{
+			name: "skips are not failures",
+			report: store.NULRepairReport{
+				Skipped:       []store.NULRepairSkip{{Reason: "primary key"}},
+				SuspectsClean: []store.NULSuspect{{Table: "items"}},
+			},
+			wantErr: false,
+			why: "a deliberate skip is a reported outcome, not an error; exiting non-zero on it would " +
+				"make every run with an email_optouts row look broken.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := nulRepairExitError(&tc.report)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("%s\n  got err=%v, want error=%v", tc.why, err, tc.wantErr)
+			}
+		})
 	}
 }

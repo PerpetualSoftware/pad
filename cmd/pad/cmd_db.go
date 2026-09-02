@@ -548,7 +548,27 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 				len(report.Suspects))
 		}
 	} else {
-		refusedSuspects, otherFailures = checkSuspectsAgainstDestination(src, dst, report.Suspects)
+		var unverified []suspectFailure
+		refusedSuspects, otherFailures, unverified = checkSuspectsAgainstDestination(src, dst, report.Suspects)
+
+		// FAIL CLOSED. A suspect the destination never rendered a verdict on —
+		// a dropped connection, a timeout, a row that could not be read back —
+		// is not a pass. Letting it through would be the preflight promising a
+		// migration it did not check, which is the defect the suspect class was
+		// added to correct, arriving by a different route (codex round 5).
+		if len(unverified) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"\nPreflight could not check %d suspect value(s) against the destination:\n\n",
+				len(unverified))
+			for _, f := range unverified {
+				fmt.Fprintf(os.Stderr, "  %s\n    %v\n", f.suspect, f.err)
+			}
+			fmt.Fprintln(os.Stderr,
+				"\nNothing has been migrated. These values may or may not be acceptable to the\n"+
+					"destination; the check did not complete, so this refuses rather than guessing.\n"+
+					"Re-run once the destination is reachable.")
+			return fmt.Errorf("%d suspect value(s) could not be checked; nothing was migrated", len(unverified))
+		}
 	}
 
 	// Cast failures for reasons OTHER than a NUL are reported and not refused
@@ -579,9 +599,9 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 		// two differ.
 		fmt.Fprintf(os.Stderr, "  %s (destination refused it; no layer of ours sees this one)\n", sus)
 	}
-	fmt.Fprintf(os.Stderr, "\nEach carries a NUL, which PostgreSQL refuses natively — SQLSTATE 22021 in a text\n"+
-		"column, 22P05 for an escape reaching jsonb. Migrating would fail partway through\n"+
-		"the copy, after some workspaces had already moved.\n\n"+
+	fmt.Fprintf(os.Stderr, "\nEach carries a NUL, which PostgreSQL refuses in a text or jsonb value —\n"+
+		"SQLSTATE 22021 and 22P05. Migrating risks failing partway through the copy, after\n"+
+		"some workspaces have already moved, so it is refused up front.\n\n"+
 		"Nothing has been migrated. Repair them first:\n\n    %s\n\n"+
 		"then re-run this command. To see the same list without migrating: pad db scan-nul\n",
 		repairNULCommandHint)
@@ -607,19 +627,33 @@ type suspectFailure struct {
 //
 // Returns the ones it refused for a NUL reason (which the preflight refuses on)
 // and the ones it refused for any other reason (which it reports).
+// THREE outcomes, not two, and the third is the one codex round 5 found missing:
+//
+//   - refused    — the destination answered, with a NUL code. The preflight
+//     refuses on these.
+//   - other      — the destination answered, with some other complaint about
+//     the value. Reported, not refused on: a NUL preflight that quietly grew
+//     into a general one would block migrations unrelated to this bug.
+//   - unverified — the destination did not answer, or the value could not be
+//     read back. The caller refuses on these, because an unchecked suspect
+//     treated as a pass is exactly what this whole check exists to stop.
 func checkSuspectsAgainstDestination(
 	src *store.Store, dst *store.Store, suspects []store.NULSuspect,
-) (refused []store.NULSuspect, other []suspectFailure) {
+) (refused []store.NULSuspect, other []suspectFailure, unverified []suspectFailure) {
 	for _, sus := range suspects {
 		if sus.KeyIncomplete {
-			other = append(other, suspectFailure{sus, fmt.Errorf("row has a NULL key column and cannot be read back")})
+			unverified = append(unverified, suspectFailure{sus,
+				fmt.Errorf("row has a NULL key column, so its value cannot be read back")})
 			continue
 		}
 		value, rerr := src.ReadNULTargetValue(sus.Table, sus.Column, sus.Key)
 		if rerr != nil {
-			// A row that vanished between the scan and here is not a reason to
-			// refuse a migration.
-			other = append(other, suspectFailure{sus, rerr})
+			// Including "the row no longer exists". The scan and this check are
+			// separate statements, so a row can legitimately vanish between
+			// them — but a row that vanished is also a row whose value nobody
+			// verified, and re-running the preflight costs nothing next to a
+			// half-finished migration.
+			unverified = append(unverified, suspectFailure{sus, rerr})
 			continue
 		}
 		cerr := dst.CheckJSONBAcceptable(value)
@@ -628,9 +662,11 @@ func checkSuspectsAgainstDestination(
 			// The common case: a harmless literal the destination accepts.
 		case errors.Is(cerr, store.ErrNULDestinationRefused):
 			refused = append(refused, sus)
+		case errors.Is(cerr, store.ErrDestinationCheckUnavailable):
+			unverified = append(unverified, suspectFailure{sus, cerr})
 		default:
 			other = append(other, suspectFailure{sus, cerr})
 		}
 	}
-	return refused, other
+	return refused, other, unverified
 }

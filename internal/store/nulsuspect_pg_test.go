@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -83,4 +84,51 @@ func TestDestinationOracleClassifiesRealPostgresErrors(t *testing.T) {
 			t.Errorf("a syntax failure was classified as a NUL refusal: %v", err)
 		}
 	})
+}
+
+// TestDestinationOracleFailsClosedOnAnUnusableConnection is the test
+// hasSQLState's doc comment promises, and it pins the distinction the preflight
+// refuses on.
+//
+// "The server said no" and "the server never answered" must not look alike. The
+// first is a verdict about the value; the second is a check that did not
+// happen, and treating it as a pass would let the preflight promise a migration
+// it never verified — the same defect the suspect class was added to correct,
+// arriving by a different route.
+//
+// A CLOSED POOL rather than a fabricated error string, so what is measured is
+// what pgx actually produces when the database cannot be reached.
+func TestDestinationOracleFailsClosedOnAnUnusableConnection(t *testing.T) {
+	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if dsn == "" {
+		t.Skip("needs a real PostgreSQL (set PAD_TEST_POSTGRES_URL)")
+	}
+
+	dead, err := NewPostgres(dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	// CONTROL FIRST: while it is open, the oracle answers normally. Without
+	// this, a check that returned "unavailable" for everything would pass the
+	// assertion below and refuse every migration.
+	if err := dead.CheckJSONBAcceptable(`{"a":"ordinary"}`); err != nil {
+		t.Fatalf("the control failed before the pool was closed: %v", err)
+	}
+
+	if err := dead.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	err = dead.CheckJSONBAcceptable(`{"a":"ordinary"}`)
+	if err == nil {
+		t.Fatal("a closed pool answered the cast successfully")
+	}
+	if !errors.Is(err, ErrDestinationCheckUnavailable) {
+		t.Fatalf("a connection failure was not classified as an unavailable CHECK, so the preflight "+
+			"would treat an unverified suspect as a pass: %v", err)
+	}
+	if errors.Is(err, ErrNULDestinationRefused) {
+		t.Errorf("a connection failure was classified as a verdict about the value: %v", err)
+	}
 }
