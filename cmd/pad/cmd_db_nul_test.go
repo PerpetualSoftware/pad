@@ -1,0 +1,171 @@
+package main
+
+import (
+	"database/sql"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/textguard"
+)
+
+// TestRepairNULHintNamesARealCommand is the guard the hint's own comment
+// promises.
+//
+// Three surfaces quote this command at an operator — the migrate-to-pg
+// preflight, the workspace import's strict refusal, and scan-nul's help — and
+// each of them is a claim that typing it does something. Walking the real cobra
+// tree is what makes a rename fail here rather than in front of a user, which
+// is the difference between a cited convention and a consulted one.
+func TestRepairNULHintNamesARealCommand(t *testing.T) {
+	root := newRootCmd()
+
+	// The hint is a full command line ("pad db repair-nul"); resolve it as a
+	// path through the tree rather than by string comparison against a second
+	// spelling, which would only prove two constants agree.
+	fields := strings.Fields(repairNULCommandHint)
+	if len(fields) < 2 || fields[0] != "pad" {
+		t.Fatalf("the hint is not a 'pad ...' command line: %q", repairNULCommandHint)
+	}
+	cmd, _, err := root.Find(fields[1:])
+	if err != nil {
+		t.Fatalf("the hint names a command that does not exist: %q (%v)", repairNULCommandHint, err)
+	}
+	// Find falls back to the closest ancestor rather than failing, so the
+	// resolved command must actually BE the leaf named — otherwise "pad db
+	// repair-nonsense" resolves to "db" and passes.
+	if cmd.Name() != fields[len(fields)-1] {
+		t.Fatalf("the hint %q resolves to %q, not to a command of its own name",
+			repairNULCommandHint, cmd.CommandPath())
+	}
+	if cmd.RunE == nil && cmd.Run == nil {
+		t.Errorf("%q exists but does nothing when run", repairNULCommandHint)
+	}
+
+	// And the store's constant — which the SERVER quotes in the import
+	// refusal — is the same string, so all three surfaces move together.
+	if repairNULCommandHint != store.RepairNULCommand {
+		t.Errorf("the CLI hint (%q) and the string the server quotes (%q) have drifted apart",
+			repairNULCommandHint, store.RepairNULCommand)
+	}
+}
+
+// TestMigrateToPgPreflightRefusesAndNamesTheRepair covers the preflight's whole
+// contract: it refuses, it names the rows, it names the command, and — the part
+// that matters most — it does so BEFORE anything has moved.
+func TestMigrateToPgPreflightRefusesAndNamesTheRepair(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "preflight.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Preflight"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+
+	// CONTROL FIRST: a clean database passes the preflight. Without this, a
+	// preflight that refused everything would satisfy the assertion below.
+	if err := preflightNULForMigration(s, dbPath); err != nil {
+		t.Fatalf("preflight refused a clean database: %v", err)
+	}
+
+	plantNULInWorkspaceName(t, dbPath, ws.ID, "bad"+textguard.NUL+"name")
+
+	err = preflightNULForMigration(s, dbPath)
+	if err == nil {
+		t.Fatal("the preflight accepted a database carrying a value PostgreSQL will refuse — the migration " +
+			"would fail partway through the copy, which is the failure this replaces")
+	}
+	if !strings.Contains(err.Error(), "nothing was migrated") {
+		t.Errorf("the refusal does not say the migration did not start: %v", err)
+	}
+}
+
+// TestScanAndRepairAgreeThroughTheCommandPath drives the store API the two
+// commands call, so the CLI's promise — scan-nul is the dry run for
+// repair-nul — is measured rather than asserted in help text.
+func TestScanAndRepairAgreeThroughTheCommandPath(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "scanrepair.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "ScanRepair"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	plantNULInWorkspaceName(t, dbPath, ws.ID, "bad"+textguard.NUL+"name")
+
+	scan, err := s.ScanNUL()
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if scan.Total() != 1 {
+		t.Fatalf("scan found %d violations, want 1: %v", scan.Total(), scan.Violations)
+	}
+
+	report, err := s.RepairNUL()
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	// The dry run's count and the repair's count are the same number, which is
+	// the entire reason scan-nul is offered instead of a --dry-run flag.
+	if len(report.Repaired) != scan.Total() {
+		t.Errorf("scan promised %d change(s), repair made %d", scan.Total(), len(report.Repaired))
+	}
+
+	var name string
+	if err := s.DB().QueryRow(`SELECT name FROM workspaces WHERE id = ?`, ws.ID).Scan(&name); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if want := "bad" + textguard.Replacement + "name"; name != want {
+		t.Errorf("repaired name = %q, want %q", name, want)
+	}
+}
+
+// plantNULInWorkspaceName writes the legacy state through a raw handle with the
+// NUL triggers dropped — which is what a pre-enforcement binary was.
+func plantNULInWorkspaceName(t *testing.T, dbPath, wsID, value string) {
+	t.Helper()
+
+	raw, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(30000)")
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	defer raw.Close()
+
+	rows, err := raw.Query(
+		`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'pad_nul_workspaces_name_*'`)
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, n)
+	}
+	rows.Close()
+	if len(names) == 0 {
+		t.Fatal("no workspaces.name triggers found — the fixture would plant nothing and the test " +
+			"would pass for the wrong reason")
+	}
+	for _, n := range names {
+		if _, err := raw.Exec(`DROP TRIGGER IF EXISTS "` + n + `"`); err != nil {
+			t.Fatalf("drop %s: %v", n, err)
+		}
+	}
+	if _, err := raw.Exec(`UPDATE workspaces SET name = ? WHERE id = ?`, value, wsID); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+}

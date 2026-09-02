@@ -124,7 +124,13 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	newName := r.URL.Query().Get("name")
 	userID := currentUserID(r)
 
-	ws, err := s.importBundle(r.Context(), gz, newName, userID)
+	// The bundle door gets the same --repair-nul treatment as the JSON one:
+	// a gzip import is the same import reached by a different Content-Type,
+	// and BUG-2803's round 3 already learned that giving the two doors
+	// different answers is how one of them keeps being forgotten.
+	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
+
+	ws, err := s.importBundle(r.Context(), gz, newName, userID, repair)
 	if err != nil {
 		// Errors from importBundle are already shaped with status hints —
 		// surface as 400 unless the underlying error wraps an http hint.
@@ -184,6 +190,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 				"workspace_id", ws.ID, "user_id", userID, "error", err)
 		}
 	}
+	repair.SetHeader(w)
 	writeJSON(w, http.StatusCreated, ws)
 }
 
@@ -206,7 +213,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
 // a live HTTP server.
-func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID string) (*models.Workspace, error) {
+func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID string, repair *nulRepairTally) (*models.Workspace, error) {
 	tr := tar.NewReader(r)
 	blobCap := s.effectiveBlobMaxBytes()
 
@@ -280,10 +287,12 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			// the same door as the JSON one, reached by a different
 			// Content-Type, so it gets the same answer rather than a 500
 			// from Postgres further down (codex round 3).
+			buf = repair.Apply(buf)
 			if bodyDecodesNUL(buf) {
 				return nil, &importStatusError{
 					status: http.StatusBadRequest, code: "bad_bundle",
-					message: "Bundle pad-export.json could not be decoded: " + errJSONBodyNUL.Error(),
+					message: "Bundle pad-export.json could not be decoded: " + errJSONBodyNUL.Error() +
+						nulRepairRemedy(repair),
 				}
 			}
 			var export models.WorkspaceExport
@@ -358,8 +367,10 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 			// the bundle-import contract rather than a fix to this bug. The
 			// resulting state is pinned by a test and stated in the release
 			// note instead of being left incidental.
+			buf = repair.Apply(buf)
 			if bodyDecodesNUL(buf) {
-				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)", errJSONBodyNUL)
+				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)%s",
+					errJSONBodyNUL, nulRepairRemedy(repair))
 			}
 			var manifest models.AttachmentManifest
 			if err := json.Unmarshal(buf, &manifest); err != nil {

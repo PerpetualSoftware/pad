@@ -37,6 +37,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 )
@@ -2274,6 +2275,60 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 	if err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
+	return decodeJSONBytes(raw, v)
+}
+
+// decodeJSONRepairingNUL is decodeJSONWithLimit with exactly one difference,
+// and the difference is deliberately NOT a bypass (DOC-2823 S3, BUG-2810).
+//
+// The workspace import's --repair-nul flag exists because a self-hoster whose
+// database predates the enforcement can EXPORT a workspace and then not import
+// it back: the server emits a payload it will refuse. Dave's day-54 ruling
+// ships the flag with the default staying strict.
+//
+// What the flag does is repair the body and then run the SAME gate on the
+// repaired bytes. It does not skip the gate, and it must not: a decode path
+// that does is precisely the door BUG-2803 spent thirty rounds closing, and it
+// would be reachable from the endpoint carrying the largest attacker-controlled
+// body in the product. So a value the repair cannot fix is still refused, by
+// the same function, with the same error.
+//
+// Only the ESCAPE form is repaired, via textguard.RepairJSONDocument. A raw NUL
+// BYTE inside a JSON string makes the document invalid, so replacing one would
+// turn a body the decoder rejects into one it accepts — widening what parses is
+// not this flag's job. Those bodies keep failing where they failed.
+//
+// Returns how many escapes were replaced, which the handler reports.
+func decodeJSONRepairingNUL(r *http.Request, v interface{}, maxBytes int64) (int, error) {
+	raw, err := readBodyForDecode(r, maxBytes)
+	if err != nil {
+		return 0, fmt.Errorf("invalid JSON: %w", err)
+	}
+	repaired, n := repairBodyNULEscapes(raw)
+	return n, decodeJSONBytes(repaired, v)
+}
+
+// repairBodyNULEscapes replaces live NUL escapes in a JSON body, leaving a body
+// that is not valid JSON untouched so its own decode error is what the caller
+// reports.
+func repairBodyNULEscapes(raw []byte) ([]byte, int) {
+	if !json.Valid(raw) {
+		return raw, 0
+	}
+	repaired, n := textguard.RepairJSONDocument(string(raw))
+	if n == 0 {
+		return raw, 0
+	}
+	return []byte(repaired), n
+}
+
+// decodeJSONBytes is everything decodeJSONWithLimit does once the body has been
+// read: the empty-body contract, the NUL gate, and the unmarshal.
+//
+// Extracted so the --repair-nul path can insert a repair between the read and
+// the gate WITHOUT reimplementing any of the three, which is what keeps the
+// gate the single decider.
+func decodeJSONBytes(raw []byte, v interface{}) error {
 	// An EMPTY (or whitespace-only) body must keep returning a wrapped
 	// io.EOF. json.Decoder.Decode answered io.EOF there and at least one
 	// caller depends on it — handlers_playbooks.go treats

@@ -880,8 +880,29 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// the default 2 MiB decodeJSON cap. 64 MiB is well above any realistic
 	// single-workspace backup while still far from the heap-exhaustion
 	// range the default cap protects against.
-	if err := decodeJSONWithLimit(r, &data, 64<<20); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "invalid export data: "+err.Error())
+	//
+	// --repair-nul (DOC-2823 S3 / BUG-2810). The default is strict; the flag
+	// buys the body ONE repair attempt and then runs the same gate on the
+	// repaired bytes, so this is not a decode path that skips the check.
+	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
+	var decodeErr error
+	if repair.Enabled {
+		var replaced int
+		replaced, decodeErr = decodeJSONRepairingNUL(r, &data, 64<<20)
+		repair.Replaced += replaced
+	} else {
+		decodeErr = decodeJSONWithLimit(r, &data, 64<<20)
+	}
+	if decodeErr != nil {
+		msg := "invalid export data: " + decodeErr.Error()
+		if errors.Is(decodeErr, errJSONBodyNUL) {
+			// The strict refusal NAMES the remedy, per Dave's day-54 ruling —
+			// and TestImportStrictRefusalNamesTheWorkingRemedy drives the named
+			// flag against this exact failing body, because a suggested remedy
+			// is an untested contract claim until it has been run (PATTE-135).
+			msg += nulRepairRemedy(repair)
+		}
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
 
@@ -908,5 +929,10 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if repair.Enabled && repair.Replaced > 0 {
+		slog.Info("workspace import repaired NUL escapes on the operator's instruction",
+			"workspace_id", ws.ID, "replaced", repair.Replaced)
+	}
+	repair.SetHeader(w)
 	writeJSON(w, http.StatusCreated, ws)
 }

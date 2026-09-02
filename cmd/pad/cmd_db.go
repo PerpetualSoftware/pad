@@ -408,6 +408,23 @@ Steps:
 			}
 			defer dstStore.Close()
 
+			// PREFLIGHT: refuse BEFORE moving anything (DOC-2823 S3).
+			//
+			// The reason this is a preflight and not an error mid-copy is the
+			// shape of the failure it replaces. A legacy row carrying a NUL
+			// reaches PostgreSQL's jsonb parser during ImportWorkspace and
+			// fails there — at a point where earlier workspaces have already
+			// been written, so the operator is left with a half-moved
+			// database and an error naming a driver, not a cause. The scan is
+			// read-only and cheap next to the copy it guards.
+			//
+			// It does NOT repair. Dave's day-54 ruling: a migration that
+			// rewrites user content decides consent for the operator, so this
+			// prints the exact command that asks for it.
+			if err := preflightNULForMigration(srcStore, fromPath); err != nil {
+				return err
+			}
+
 			// List workspaces from source
 			workspaces, err := srcStore.ListWorkspaces()
 			if err != nil {
@@ -482,3 +499,34 @@ func maskPassword(pgURL string) string {
 }
 
 // --- audit-log ---
+
+// preflightNULForMigration refuses a SQLite-to-PostgreSQL migration whose
+// source carries values PostgreSQL will not accept, listing them and naming the
+// repair command.
+//
+// Nothing has been written to the destination when this runs — it sits above
+// the workspace loop, which is the whole point: the failure it replaces
+// happened partway through the copy.
+func preflightNULForMigration(src *store.Store, fromPath string) error {
+	report, err := src.ScanNUL()
+	if err != nil {
+		return fmt.Errorf("NUL preflight: %w", err)
+	}
+	if !report.Applicable || report.Total() == 0 {
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "\nPreflight found %d stored value(s) in %s that PostgreSQL will not accept:\n\n",
+		report.Total(), fromPath)
+	for _, v := range report.Violations {
+		fmt.Fprintf(os.Stderr, "  %s\n", v)
+	}
+	fmt.Fprintf(os.Stderr, "\nEach carries a NUL, which PostgreSQL refuses natively — SQLSTATE 22021 in a text\n"+
+		"column, 22P05 for an escape reaching jsonb. Migrating would fail partway through\n"+
+		"the copy, after some workspaces had already moved.\n\n"+
+		"Nothing has been migrated. Repair them first:\n\n    %s\n\n"+
+		"then re-run this command. To see the same list without migrating: pad db scan-nul\n",
+		repairNULCommandHint)
+
+	return fmt.Errorf("%d stored value(s) carry a NUL; nothing was migrated", report.Total())
+}
