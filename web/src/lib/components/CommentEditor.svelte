@@ -95,6 +95,55 @@
 		return unescapeDocLinks((editor.storage as any).markdown?.getMarkdown?.() ?? '').trim();
 	}
 
+	/**
+	 * Appends markdown to the composer from OUTSIDE the component, without
+	 * remounting it (IDEA-2843). The selection toolbar's "Comment" action uses
+	 * this to drop a blockquote of the reader's selection into the live
+	 * composer; the blockquote grammar is the CALLER's, so this stays a
+	 * general append.
+	 *
+	 * Why an imperative handle and not the `content` prop: `content` is read
+	 * ONCE, inside `new Editor({...})` in `onMount` below, and this component
+	 * has no `$effect` syncing it afterwards. Writing the prop on a mounted
+	 * composer is a SILENT no-op — no error, no warning, the text is simply
+	 * dropped. A `{#key}` remount would work but would destroy an in-progress
+	 * draft, which is the thing `doSubmit`'s identity capture (PLAN-2105 /
+	 * TASK-2112) exists to protect.
+	 *
+	 * Append, never replace: a draft the user has already typed is kept and the
+	 * addition goes after a blank line, so quoting a second passage into the
+	 * same comment works without losing the first. Returns false when there was
+	 * nothing to insert or no live editor, so a caller can tell the difference
+	 * between "inserted" and "silently did nothing" — the failure mode this
+	 * handle exists to remove.
+	 */
+	export function appendMarkdown(markdown: string): boolean {
+		if (!editor || editor.isDestroyed) return false;
+		const addition = markdown.trim();
+		if (addition === '') return false;
+		const existing = currentMarkdown();
+		const next = existing === '' ? addition : `${existing}\n\n${addition}`;
+		// setContent (not insertContentAt): tiptap-markdown overrides
+		// insertContentAt to parse with `{ inline: true }`, which runs the
+		// parser's inline normalization over the addition. A blockquote
+		// survives that today only incidentally — normalizeInline unwraps the
+		// first child only when it is a <p> — and depending on a library
+		// internal to preserve block structure is how the quote would one day
+		// flatten to a paragraph with nothing failing. setContent parses in
+		// block mode, which is the documented path.
+		//
+		// The round trip through markdown is not new loss: the composer already
+		// parses markdown at mount and serializes it on every submit, so both
+		// directions are the component's existing contract.
+		editor.chain().setContent(next).focus('end').run();
+		// Kept explicit rather than left to onUpdate: setContent's `emitUpdate`
+		// defaults true in @tiptap/core 3.30.2, but the submit button is gated
+		// on `empty`, and a silently-disabled submit is exactly the class of
+		// failure above.
+		empty = editor.isEmpty;
+		return true;
+	}
+
 	async function doSubmit() {
 		if (busy || !editor) return;
 		const md = currentMarkdown();
