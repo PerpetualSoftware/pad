@@ -81,6 +81,8 @@ type Store struct {
 	// scrub's BYTE budget has no seam of its own because maxOutboxScrubBytes
 	// is defined as maxOutboxClaimBytes — one number, so one seam.
 	outboxScrubRowsOverride int
+	// outboxClaimRowsOverride lowers maxOutboxClaimRows the same way.
+	outboxClaimRowsOverride int
 
 	// afterItemPreLockRead is a TEST-ONLY seam, nil in production. When set,
 	// updateItemWithParentLinkOnce calls it after its pre-lock GetItem and

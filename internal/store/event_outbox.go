@@ -221,6 +221,21 @@ func (e *OversizedOutboxPayloadError) Error() string {
 // queue depth, which is the property that was missing.
 const maxOutboxClaimBytes = 64 << 20
 
+// maxOutboxClaimRows bounds how many ROWS one pass claims, alongside the byte
+// budget, because a budget in bytes alone does not bound the per-row cost.
+//
+// The uncapped path is the batch scan: siblings are collected past the row
+// limit by design, so a batch of a million tiny rows fits the byte budget
+// comfortably while its ids, maps, OutboxEvent structs and folded delivery do
+// not (codex round 1). Roughly 200 bytes of overhead per row means the byte
+// budget alone admits hundreds of megabytes of it.
+//
+// 5,000 is chosen so it binds only on that pathological shape: at the measured
+// payload mean of ~2.4 KB, 5,000 rows is ~12 MiB, well inside the byte budget,
+// which stays the operative bound for real traffic. It is also ~1,000 events
+// per second against the 5s tick, orders above anything measured.
+const maxOutboxClaimRows = 5000
+
 // MaxOutboxClaimableBytes is the per-row size above which the claim refuses to
 // read a row at all. It is NOT MaxOutboxPayloadBytes, and the gap between them
 // is a dialect fact rather than slack.
@@ -260,6 +275,13 @@ func (s *Store) outboxRowCap() int {
 // multiple of the write cap under the test seam as it is in production so a
 // lowered seam cannot accidentally test a pairing production never has.
 func (s *Store) outboxClaimableRowCap() int { return 2 * s.outboxRowCap() }
+
+func (s *Store) outboxClaimRows() int {
+	if s.outboxClaimRowsOverride > 0 {
+		return s.outboxClaimRowsOverride
+	}
+	return maxOutboxClaimRows
+}
 
 func (s *Store) outboxClaimBudget() int {
 	if s.outboxClaimBudgetOverride > 0 {
@@ -649,8 +671,13 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // memberEventPayload unmarshals an absent user_id to "", and the drain treats
 // payloads as opaque bytes.
 //
-// Candidate rows are found by `subject_id = ?` (indexed — catches every member
-// row, whose subject IS the user) OR a payload substring prefilter. The CAST
+// Candidate rows are found by `subject_id = ?` (catches every member row,
+// whose subject IS the user) OR a payload substring prefilter. NEITHER arm is
+// indexed — migrations 081/082/083 index (occurred_at,id), dispatched_at,
+// (workspace_id,occurred_at), batch_id and (claimed_at,occurred_at), and
+// nothing on subject_id — so this is a scan over the retention window either
+// way. An earlier version of this note called subject_id indexed; it is not
+// (codex round 1). The CAST
 // is load-bearing: payload is JSONB on Postgres and TEXT on SQLite, and LIKE
 // on jsonb is not a thing. A uuid carries no LIKE metacharacters and is
 // specific enough that false positives are rare — and harmless, because the Go
@@ -700,19 +727,35 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	// locks in opposite orders. Scoped to those per-row updates: any bulk
 	// statement elsewhere in this transaction takes its own locks in its own
 	// order (codex round 6).
-	// BATCHED, because the collect below holds every matching payload in
-	// memory at once and nothing bounded how many that was. The scrub's own
-	// filter is a substring match over the whole retention window, so on an
-	// instance carrying large bulk payloads a single account deletion could
-	// allocate the matched set in one go — the same unbounded-read shape as
-	// the drain's claim (BUG-2827), reached by a different door.
+	// BATCHED, because the collect this replaces held every matching payload
+	// in memory at once and nothing bounded how many that was. The filter is a
+	// substring match over the whole retention window, so on an instance
+	// carrying large bulk payloads one account deletion could allocate the
+	// matched set in a single go — the unbounded-read shape of BUG-2827
+	// reached through a different door.
 	//
-	// The READ FULLY, THEN WRITE precondition is preserved PER BATCH rather
-	// than abandoned: each pass closes its cursor before issuing any Exec, so
-	// the BUG-2409 deadlock shape never appears. The keyset cursor keeps the
-	// per-row UPDATEs in ascending id order across batches too, which is the
-	// lock ordering the note above requires — batching would otherwise be a
-	// quiet way to reintroduce the deadlock it was written to prevent.
+	// WHAT BATCHING DOES TO THE RESIDUAL WINDOW, stated because a reviewer
+	// asked whether keyset paging over random uuids can miss a row (codex
+	// round 1). It cannot miss a row that EXISTED when the scan began: ids are
+	// fixed, the walk is ascending over every matching row above the cursor,
+	// and a row only stops matching once it has been scrubbed. What changes is
+	// concurrent commits, and it changes them in the SAFE direction — the
+	// single query missed every row committed after it, while this one still
+	// catches those that sort above the cursor. Coverage is a superset of what
+	// the unbatched version had, so the note above stays true and gets
+	// narrower rather than wider.
+	//
+	// A SNAPSHOT OF IDS FIRST would make the window describable without
+	// reference to uuid order, and was tried and rejected: it holds every
+	// matching id at once, which is an unbounded allocation of the same shape
+	// this change exists to remove — smaller per row, still O(matches).
+	//
+	// READ FULLY, THEN WRITE holds PER BATCH: each pass closes its cursor
+	// before issuing any Exec, so the BUG-2409 deadlock shape never appears.
+	// The keyset cursor also keeps the per-row UPDATEs in ascending id order
+	// across batches, which is the lock ordering the note above requires —
+	// batching must not become a quiet way to reintroduce the deadlock it was
+	// written to avoid.
 	type candidate struct {
 		id      string
 		payload string
@@ -973,6 +1016,25 @@ type bulkItemEventPayload struct {
 	Members     []*models.Item `json:"members"`
 }
 
+// projectedBulkPayloadBytes is a LOWER BOUND on what marshalling this member
+// set will produce: the bytes the members already carry.
+//
+// A lower bound is the only honest thing to compute without doing the marshal,
+// and it is the right direction: JSON only adds (quoting, escaping, key names,
+// the envelope) and never removes, so a set already over the cap is certainly
+// over it after rendering. A set under this is not necessarily under the cap,
+// which is why writeOutboxTx still checks the real thing.
+func projectedBulkPayloadBytes(members []*models.Item) int {
+	n := 0
+	for _, m := range members {
+		if m == nil {
+			continue
+		}
+		n += len(m.Content) + len(m.Fields) + len(m.Title) + len(m.Slug)
+	}
+	return n
+}
+
 // emitBulkItemEventTx writes one item.bulk_updated event covering every member
 // of a single-transaction bulk mutation.
 //
@@ -1041,6 +1103,24 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 
 	for _, ws := range order {
 		group := byWorkspace[ws]
+		// REFUSE BEFORE MARSHALLING. writeOutboxTx enforces the same cap, but
+		// it can only see the payload once json.Marshal has already built it,
+		// and building it is the expensive allocation: a member set large
+		// enough to be refused is large enough that rendering it to be
+		// refused is its own memory event (codex round 1).
+		//
+		// Charged on the members' own bytes, which the marshal can only GROW
+		// (JSON adds quoting, escaping and key names and removes nothing), so
+		// this never refuses a payload the real check would have accepted. It
+		// is an early-out, not a second rule — the authoritative refusal, and
+		// the numbers the caller is shown, still come from writeOutboxTx.
+		if n := projectedBulkPayloadBytes(group); n > s.outboxRowCap() {
+			return &OversizedOutboxPayloadError{
+				EventType: kernelevents.ItemBulkUpdated,
+				Bytes:     n,
+				Limit:     s.outboxRowCap(),
+			}
+		}
 		payload, err := marshalEventPayload(bulkItemEventPayload{
 			Delta:       delta,
 			MemberCount: len(group),
@@ -1717,7 +1797,7 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 		// than the per-row cap, so a legitimately written row can exceed a whole
 		// pass; refusing it here would starve it in every pass forever. Past the
 		// first, the budget is what stops a pass accumulating.
-		if len(ids) > 0 && bytes > budget {
+		if len(ids) > 0 && (bytes > budget || len(ids) >= s.outboxClaimRows()) {
 			break
 		}
 		budget -= bytes
@@ -1752,6 +1832,9 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 		for _, sib := range siblings {
 			if seen[sib.id] {
 				continue
+			}
+			if len(ids) >= s.outboxClaimRows() {
+				break
 			}
 			if sib.bytes > budget {
 				continue
@@ -1831,7 +1914,8 @@ func (s *Store) claimableBatchSiblings(batchID, leaseCutoff string) ([]claimable
 		  AND (claimed_at IS NULL OR claimed_at < ?)
 		  AND `+size+` <= ?
 		ORDER BY occurred_at, id
-	`), batchID, leaseCutoff, s.outboxClaimableRowCap())
+		LIMIT ?
+	`), batchID, leaseCutoff, s.outboxClaimableRowCap(), s.outboxClaimRows())
 	if err != nil {
 		return nil, fmt.Errorf("list batch siblings: %w", err)
 	}
@@ -1865,12 +1949,14 @@ func (s *Store) outboxEventsClaimedBy(token string) ([]OutboxEvent, error) {
 	var out []OutboxEvent
 	for rows.Next() {
 		var ev OutboxEvent
-		var payload string
+		// STRAIGHT INTO []byte, not into a string that is then converted. The
+		// conversion doubled the transient cost of every row for no gain, and
+		// on the largest single row a pass may take that is the difference
+		// between one copy and two (codex round 1).
 		if err := rows.Scan(&ev.ID, &ev.WorkspaceID, &ev.EventType, &ev.SubjectKind, &ev.SubjectID,
-			&payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError, &ev.BatchID); err != nil {
+			&ev.Payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError, &ev.BatchID); err != nil {
 			return nil, fmt.Errorf("scan claimed outbox event: %w", err)
 		}
-		ev.Payload = []byte(payload)
 		ev.ClaimToken = token
 		out = append(out, ev)
 	}

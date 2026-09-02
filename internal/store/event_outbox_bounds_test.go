@@ -306,6 +306,13 @@ func TestOutboxClaimSpendsTheBudgetOnBatchSiblingsToo(t *testing.T) {
 	if len(events) == 5 {
 		t.Fatalf("the whole batch was claimed; the sibling scan bypassed the byte budget")
 	}
+	// BOTH BOUNDS, because "fewer than five" alone is satisfied by an
+	// implementation that never claims siblings at all (codex round 1). The
+	// limit passed above is 1, so anything past the first row IS a sibling.
+	if len(events) < 2 {
+		t.Fatalf("claimed %d rows with limit=1; siblings are not being claimed at all, which is a "+
+			"different bug wearing this test's passing result", len(events))
+	}
 	// Splitting the batch is defined behaviour, not loss: the rest must still
 	// be claimable on a later pass.
 	rest, err := s.ClaimPendingOutboxEvents("drainer", 1, "2026-01-01T00:00:00Z")
@@ -459,5 +466,83 @@ func TestARowWrittenAtTheCapIsStillClaimable(t *testing.T) {
 		t.Fatalf("OversizedPendingOutbox: %v", err)
 	} else if len(skipped) != 0 {
 		t.Fatalf("a row written at the cap was reported oversized: %+v", skipped)
+	}
+}
+
+func TestOutboxClaimStopsAtTheRowCap(t *testing.T) {
+	s := testStore(t)
+	s.outboxRowCapOverride = 8192
+	s.outboxClaimRowsOverride = 3
+	ws := createTestWorkspace(t, s, "OutboxClaimRows")
+
+	// Tiny payloads, so the BYTE budget is nowhere near spent and only the row
+	// cap can stop the pass. All in one batch, because the sibling scan is the
+	// path that collects past the row limit by design and is therefore the one
+	// a byte-only budget leaves unbounded.
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("tiny-%02d", i)
+		insertRawOutboxRow(t, s, id, ws.ID, fmt.Sprintf("2026-01-01T00:00:%02dZ", i), jsonPayloadOfSize(t, 40))
+		if _, err := s.db.Exec(s.q(`UPDATE event_outbox SET batch_id = ? WHERE id = ?`), "batch-1", id); err != nil {
+			t.Fatalf("set batch_id: %v", err)
+		}
+	}
+
+	events, err := s.ClaimPendingOutboxEvents("drainer", 1, "2026-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(events) > s.outboxClaimRows() {
+		t.Fatalf("claimed %d rows, over the %d row cap — a byte budget alone does not bound the "+
+			"per-row overhead of a large batch", len(events), s.outboxClaimRows())
+	}
+	if len(events) == 0 {
+		t.Fatalf("claimed nothing")
+	}
+}
+
+func TestBulkEventIsRefusedBeforeItIsMarshalled(t *testing.T) {
+	s := testStore(t)
+	s.outboxRowCapOverride = 4096
+	ws := createTestWorkspace(t, s, "BulkPreMarshal")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Member bodies alone exceed the cap, so the refusal is owed before
+	// json.Marshal builds the payload — building a payload only to reject it
+	// is the allocation the cap exists to avoid.
+	members := []*models.Item{}
+	for i := 0; i < 4; i++ {
+		members = append(members, &models.Item{
+			ID:           newID(),
+			WorkspaceID:  ws.ID,
+			CollectionID: col.ID,
+			Title:        fmt.Sprintf("Member %d", i),
+			Content:      strings.Repeat("x", 2000),
+		})
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	err = s.emitBulkItemEventTx(tx, ws.ID, members, map[string]any{"kind": "field_option_renamed"})
+	var typed *OversizedOutboxPayloadError
+	if !errors.As(err, &typed) {
+		t.Fatalf("emitBulkItemEventTx returned %v (%T), want *OversizedOutboxPayloadError", err, err)
+	}
+	if typed.Limit != s.outboxRowCap() {
+		t.Errorf("Limit = %d, want %d", typed.Limit, s.outboxRowCap())
+	}
+	// EXACTLY the projection, which is what makes this test discriminate.
+	// Without the early-out the mutation still fails — writeOutboxTx refuses
+	// the marshalled payload with the same error type — so any assertion that
+	// only checks the type passes against the code this exists to guard. The
+	// marshalled size is strictly larger (quoting, escaping, key names, the
+	// envelope), so equality with the projection can only come from the
+	// pre-marshal check.
+	if want := projectedBulkPayloadBytes(members); typed.Bytes != want {
+		t.Errorf("Bytes = %d, want the projected %d — the refusal came from writeOutboxTx after "+
+			"marshalling, not from the early-out before it", typed.Bytes, want)
 	}
 }
