@@ -42,6 +42,15 @@ const DESKTOP = { width: 1200, height: 900 };
 // Three rounds. One round caught the unfixed build 11 times in 12; three make a
 // false green (~1 in 1700) not worth reasoning about, and the test still runs
 // in a couple of seconds.
+//
+// THE RACE IS PROBABILISTIC AND THE ASYMMETRY IS WHY THAT IS FINE. Nothing here
+// can guarantee the churn row's SSE update lands inside the 140 ms window —
+// there is no seam to hold it at, and adding one would put test machinery in
+// the page. But a round that MISSES the window still passes on a correct build:
+// the cursor moves, the pane follows, and the intended row is where it should
+// be. Missing the window costs POWER, not correctness, so the failure mode is a
+// false green and never a false red. Measured on the fixed build: 0 failures in
+// 12 pin runs and 6 in 6 of this spec.
 const ROUNDS = 3;
 
 function docsUrl(fixture: SuiteFixture, query = ''): string {

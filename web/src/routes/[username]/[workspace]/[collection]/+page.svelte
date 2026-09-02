@@ -2225,11 +2225,11 @@
 		// snap-back $effect during the debounce was tried first and fixed
 		// NOTHING (12 of 12) — the stale index lands on the paned item on its
 		// own, so there is nothing for the snap-back to be blamed for.
-		const target =
+		const targetId =
 			focusedIndex >= 0 && focusedIndex < filteredItems.length
-				? filteredItems[focusedIndex]
+				? filteredItems[focusedIndex].id
 				: null;
-		if (!target) return;
+		if (!targetId) return;
 
 		cancelPaneFollow();
 		paneFollowTimer = setTimeout(() => {
@@ -2238,15 +2238,21 @@
 			// window (R14 fence-on-continuation).
 			if (!openItemRef) return;
 			if (currentPaneState().paneDepth > 0) return;
-			// The captured row must still EXIST. Identity, not index: it may
-			// have moved (an insert above), which is fine and is the point; if
-			// it was deleted during the debounce there is nothing to follow to.
-			if (!filteredItems.some((i) => i.id === target.id)) return;
+			// RE-RESOLVE BY ID, do not reuse the snapshot. What is captured is
+			// the identity; the OBJECT may be stale by the time this fires,
+			// because a rename during the debounce changes the slug and
+			// `openItemPane` builds the URL from it — an id-only existence check
+			// would pass and then navigate to a dead slug (codex round 1).
+			// Re-resolving also covers the row having MOVED, which is the whole
+			// point, while a row DELETED during the debounce has nothing to
+			// follow to and is skipped.
+			const current = filteredItems.find((i) => i.id === targetId);
+			if (!current) return;
 			// Skip if the captured row is already the paned item — avoids a
 			// redundant replaceState navigation on a same-item settle.
-			if (itemUrlId(target) === openItemRef || target.slug === openItemRef) return;
+			if (itemUrlId(current) === openItemRef || current.slug === openItemRef) return;
 			// Pane is open → openItemPane re-targets via replaceState (no push).
-			openItemPane(target);
+			openItemPane(current);
 		}, PANE_FOLLOW_DEBOUNCE_MS);
 	}
 
