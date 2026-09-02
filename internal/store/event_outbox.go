@@ -223,9 +223,11 @@ const (
 // rule can reach retroactively.
 //
 // It is needed because the drain's row limit does not bound bytes and never
-// did: ClaimPendingOutboxEvents takes `limit` oldest rows AND every claimable
-// sibling of any batch they touch, then outboxEventsClaimedBy Scans every one
-// of those payloads into memory. At the default limit of 100 that is 100
+// did: ClaimPendingOutboxEvents took `limit` oldest rows AND every claimable
+// sibling of any batch they touched, then outboxEventsClaimedBy Scanned every
+// one of those payloads into memory. (The sibling half is now capped by this
+// budget and by maxOutboxClaimRows — that is this constant working, not a
+// second mechanism.) At the default limit of 100 that is 100
 // unbounded reads per tick, which is the crash loop BUG-2827 reports — and it
 // is self-sustaining, because runOutboxDrainTick runs retention AFTER the
 // claim, so a pass that dies claiming never reaches the prune that would have
@@ -250,10 +252,10 @@ const maxOutboxClaimBytes = 64 << 20
 // maxOutboxClaimRows bounds how many ROWS one pass claims, alongside the byte
 // budget, because a budget in bytes alone does not bound the per-row cost.
 //
-// The uncapped path is the batch scan: siblings are collected past the row
-// limit by design, so a batch of a million tiny rows fits the byte budget
-// comfortably while its ids, maps, OutboxEvent structs and folded delivery do
-// not (codex round 1). Roughly 200 bytes of overhead per row means the byte
+// The path that made it necessary is the batch scan: siblings are collected
+// past the row limit by design, so a batch of a million tiny rows fits the
+// byte budget comfortably while its ids, maps, OutboxEvent structs and folded
+// delivery do not (codex round 1). Roughly 200 bytes of overhead per row means the byte
 // budget alone admits hundreds of megabytes of it.
 //
 // 5,000 is chosen so it binds only on that pathological shape: at the measured
@@ -407,6 +409,27 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	if !json.Valid(ev.Payload) {
 		return fmt.Errorf("outbox: event %s has a malformed JSON payload", ev.EventType)
 	}
+	if ev.Hop > maxOutboxHop {
+		// Cascade bound reached: drop the event, keep the mutation. No
+		// production caller can reach this today (see maxOutboxHop — nothing
+		// propagates a hop yet); it is here so the bound exists before the
+		// thing that needs it.
+		//
+		// When it does become reachable, a silent drop would make a runaway
+		// binding indistinguishable from one that never fired, so surfacing it
+		// is owed then — via the dispatcher's quota accounting, which is also
+		// still unimplemented. Recorded as an obligation rather than described
+		// as if it were already in place.
+		return nil
+	}
+
+	// AFTER THE HOP DROP, deliberately. An event past the cascade bound is not
+	// written at all, so refusing it for size would fail a mutation over a row
+	// that was never going to exist — and the hop bound's whole disposition is
+	// that the mutation stands. Unreachable today, since nothing propagates a
+	// hop yet, which is exactly why the ordering is worth getting right before
+	// something does (codex round 5).
+	//
 	// SIZE IS CHECKED HERE, at the one choke point every outbox row passes
 	// through, rather than at the bulk emitter that motivated it. The bulk
 	// emitter is the only caller that can currently build a payload this
@@ -428,19 +451,6 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 			Limit:     s.outboxRowCap(),
 			Measured:  measuredGoPayload,
 		}
-	}
-	if ev.Hop > maxOutboxHop {
-		// Cascade bound reached: drop the event, keep the mutation. No
-		// production caller can reach this today (see maxOutboxHop — nothing
-		// propagates a hop yet); it is here so the bound exists before the
-		// thing that needs it.
-		//
-		// When it does become reachable, a silent drop would make a runaway
-		// binding indistinguishable from one that never fired, so surfacing it
-		// is owed then — via the dispatcher's quota accounting, which is also
-		// still unimplemented. Recorded as an obligation rather than described
-		// as if it were already in place.
-		return nil
 	}
 
 	if ev.ID == "" {
@@ -1832,8 +1842,8 @@ func (s *Store) claimOutboxIDs(token string, ids []string, leaseCutoff string) e
 }
 
 // pendingClaimCandidates returns the ids a claim pass should attempt: the
-// oldest claimable pending rows, plus every claimable sibling of any batch
-// they belong to.
+// oldest claimable pending rows, plus as many claimable siblings of any batch
+// they belong to as the byte budget and row cap still allow.
 func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string, error) {
 	size := s.dialect.OctetLength("payload")
 	// OVERSIZED ROWS ARE EXCLUDED IN SQL, not filtered in Go, and that is the
@@ -1950,17 +1960,23 @@ type OversizedOutboxRow struct {
 	Bytes     int
 }
 
-// OversizedPendingOutbox lists pending rows over MaxOutboxPayloadBytes.
+// OversizedPendingOutbox lists pending rows over MaxOutboxClaimableBytes.
+//
+// THE CLAIM'S CEILING, not the write cap, because the question this answers is
+// "what will the claim refuse to read" rather than "what would the write have
+// rejected". The two differ on purpose; see MaxOutboxClaimableBytes.
 //
 // EXISTS SO THE EXCLUSION IS NOT SILENT. pendingClaimCandidates drops these in
 // the predicate, which is what stops them jamming the queue — but a row that
 // is never claimed, never logged, and eventually reaped by retention is an
-// event that vanishes with nobody told. Only rows written by a binary older
-// than MaxOutboxPayloadBytes can be here at all, so this is expected to return
-// nothing forever on an instance that never ran one.
+// event that vanishes with nobody told. Since writeOutboxTx refuses on the
+// STORED size against this same ceiling, only a row left by a binary older
+// than that check can be here at all, so this is expected to return nothing
+// forever on an instance that never ran one.
 //
-// Bounded by `limit` because this runs every drain tick and its purpose is to
-// raise an alarm, not to enumerate a backlog.
+// Bounded by `limit` because its purpose is to raise an alarm, not to
+// enumerate a backlog. The caller additionally throttles how often it runs;
+// see the drain, where the reason lives.
 func (s *Store) OversizedPendingOutbox(limit int) ([]OversizedOutboxRow, error) {
 	if limit <= 0 {
 		limit = 5

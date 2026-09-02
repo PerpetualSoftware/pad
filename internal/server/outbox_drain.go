@@ -31,9 +31,15 @@ import (
 const (
 	defaultOutboxDrainInterval = 5 * time.Second
 
-	// How many pending rows one pass claims. Whole batches are claimed past
-	// this bound (see ClaimPendingOutboxEvents) — it is a throughput knob, not
-	// a statement about what a bulk operation was.
+	// How many pending rows one pass claims. A batch's siblings are collected
+	// past this bound where they fit (see ClaimPendingOutboxEvents) — it is a
+	// throughput knob, not a statement about what a bulk operation was.
+	//
+	// "Where they fit" since BUG-2827: the claim's byte budget and row cap can
+	// stop a sibling scan part-way, so a batch bigger than either is split.
+	// That is what keeps the memory bounds from being bypassable by a single
+	// large batch, and groupOutboxDeliveries below already defines what a
+	// consumer sees when it happens.
 	defaultOutboxDrainLimit = 100
 
 	// How long a claim is honored before another instance may take the row.

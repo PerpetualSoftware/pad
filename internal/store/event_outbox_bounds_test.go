@@ -767,3 +767,48 @@ func TestScrubOnlyEverShrinksAPayload(t *testing.T) {
 			"the shrink assertion to mean anything", after)
 	}
 }
+
+func TestAnOversizedEventPastTheHopBoundIsDroppedNotRefused(t *testing.T) {
+	s := testStore(t)
+	s.outboxRowCapOverride = 4096
+	ws := createTestWorkspace(t, s, "OutboxHopVsSize")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	// TWO REFUSALS THAT DISAGREE ABOUT THE MUTATION. The hop bound drops the
+	// event and lets the mutation stand, because only the cascade it would
+	// extend is illegitimate. The size cap fails the mutation, because there
+	// the mutation and the event are the same fact. An event that trips BOTH
+	// must take the hop bound's disposition: it was never going to be written,
+	// so refusing it for its size fails a mutation over a row that would not
+	// have existed.
+	//
+	// Unreachable in production today — nothing propagates a hop — which is
+	// why the ordering is worth pinning now rather than after something does.
+	err = writeOutboxTx(tx, s, OutboxEvent{
+		WorkspaceID:   ws.ID,
+		EventType:     kernelevents.ItemCreated,
+		SubjectKind:   kernelevents.SubjectItem,
+		SubjectID:     "fat-and-deep",
+		Payload:       jsonPayloadOfSize(t, s.outboxRowCap()+1),
+		Hop:           maxOutboxHop + 1,
+		PayloadFamily: kernelevents.PayloadItemSnapshot,
+	})
+	if err != nil {
+		t.Fatalf("an oversized event past the cascade bound returned %v; the hop bound drops the "+
+			"event and keeps the mutation, and the size cap must not override that for a row that "+
+			"was never going to be written", err)
+	}
+
+	var n int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE subject_id = ?`), "fat-and-deep").Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("rows = %d, want 0 — the event was dropped, not stored", n)
+	}
+}
