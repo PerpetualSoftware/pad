@@ -61,13 +61,7 @@ buildGoModule {
 
   # Update alongside go.sum. Regenerate via:
   #   nix build .#default 2>&1 | grep -A2 'got:'
-  #
-  # PLACEHOLDER — this build is EXPECTED TO FAIL, and the failure is how the
-  # real hash is obtained. There is no nix on the box this was bumped from, so
-  # the value below comes from CI's own mismatch message on the first push of
-  # this branch. Replaced in the following commit; if you are reading this on
-  # main, something went wrong.
-  vendorHash = lib.fakeHash;
+  vendorHash = "sha256-8L7gH7Yy5+Fig3wK2SPLYSJjcY9nF/jumQ7PATJ3RIE=";
 
   subPackages = [ "cmd/pad" ];
 
