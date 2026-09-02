@@ -192,13 +192,15 @@ func agentCmd() *cobra.Command {
 func dbCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "db",
-		Short: "Database backup, restore, and migration tools",
+		Short: "Database backup, restore, repair, and migration tools",
 		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		dbBackupCmd(),
 		dbRestoreCmd(),
 		dbMigrateToPgCmd(),
+		dbScanNULCmd(),
+		dbRepairNULCmd(),
 	)
 	return cmd
 }

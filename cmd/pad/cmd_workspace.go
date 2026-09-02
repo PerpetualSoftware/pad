@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/server"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"golang.org/x/term"
@@ -1032,6 +1035,7 @@ Both formats can be re-imported via 'pad workspace import'.`,
 
 func importCmd() *cobra.Command {
 	var nameFlag string
+	var repairNUL bool
 	cmd := &cobra.Command{
 		Use:   "import <file>",
 		Short: "Import workspace from JSON export or tar.gz bundle",
@@ -1048,9 +1052,16 @@ Format is detected by file extension. Override workspace name with --name.`,
 			client, _ := getClient()
 			filePath := args[0]
 
-			path := "/workspaces/import"
+			q := url.Values{}
 			if nameFlag != "" {
-				path += "?name=" + nameFlag
+				q.Set("name", nameFlag)
+			}
+			if repairNUL {
+				q.Set(server.NULRepairQueryParam, "true")
+			}
+			path := "/workspaces/import"
+			if len(q) > 0 {
+				path += "?" + q.Encode()
 			}
 
 			// Detect bundle by extension. .tar.gz / .tgz route through
@@ -1074,7 +1085,8 @@ Format is detected by file extension. Override workspace name with --name.`,
 			defer f.Close()
 
 			var ws models.Workspace
-			if err := client.PostStreamWithContentType(path, f, contentType, &ws); err != nil {
+			header, err := client.PostStreamWithContentTypeHeaders(path, f, contentType, &ws)
+			if err != nil {
 				return fmt.Errorf("import: %w", err)
 			}
 
@@ -1085,10 +1097,20 @@ Format is detected by file extension. Override workspace name with --name.`,
 				fmt.Printf("  Attachments: rehydrated from bundle\n")
 			}
 			fmt.Printf("  All IDs regenerated\n")
+			if repairNUL {
+				// Report what the consent flag actually did. "Repaired" with no
+				// number is the kind of reassurance an operator cannot check,
+				// and zero is a genuinely useful answer: it means the export was
+				// clean and the flag was not needed.
+				fmt.Printf("  Values repaired (each NUL replaced with U+FFFD): %s\n",
+					repairedNULCount(header))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&nameFlag, "name", "", "override workspace name")
+	cmd.Flags().BoolVar(&repairNUL, "repair-nul", false,
+		"replace NULs carried by the export with U+FFFD instead of refusing it (rewrites content; default is strict)")
 	return cmd
 }
 
@@ -1184,4 +1206,22 @@ func auditLogCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of entries")
 
 	return cmd
+}
+
+// repairedNULCount reads the count the server reports for a --repair-nul
+// import.
+//
+// An ABSENT header is reported as unknown rather than as zero. A server older
+// than this flag ignores the query parameter entirely and imports strictly, so
+// printing "0" there would tell the operator the export was clean when in fact
+// nothing was even asked.
+func repairedNULCount(header http.Header) string {
+	if header == nil {
+		return "unknown (no response headers)"
+	}
+	v := header.Get(server.NULRepairHeader)
+	if v == "" {
+		return "unknown (this server does not report the count; it may predate --repair-nul)"
+	}
+	return v
 }

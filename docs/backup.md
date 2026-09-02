@@ -153,11 +153,13 @@ For portable workspace backups that work across SQLite and PostgreSQL:
 # Export a workspace to JSON
 pad workspace export > my-workspace.json
 
-# Import into any Pad instance (SQLite or PostgreSQL)
-pad workspace import < my-workspace.json
+# Import into any Pad instance (SQLite or PostgreSQL).
+# The file is an ARGUMENT, not stdin — `pad workspace import < file` fails
+# with "accepts 1 arg(s), received 0".
+pad workspace import my-workspace.json
 
 # Import with a new name
-pad workspace import --name "imported-workspace" < my-workspace.json
+pad workspace import --name "imported-workspace" my-workspace.json
 ```
 
 ### One case where an export is not importable
@@ -170,35 +172,99 @@ application rule, not a universal storage fact — PostgreSQL does refuse a NUL
 outright, but SQLite accepts one in a TEXT column, which is why the rule has to
 be enforced rather than assumed, and why the paragraphs below matter.
 
-**The rule lives in the binary, not in the database**, so "before the rule
-existed" is a statement about which build served the write, not about a date.
-On SQLite, any window in which an older binary serves the same database can
-still create such rows: a rollback to the previous version, a staged rollout
-where an old and a new instance share a database, or a second older instance
-pointed at the same file. Once that window closes the guard is back, but the
-rows are already stored, and they behave exactly like genuinely old ones.
+**The rule is now enforced by the database as well as by the binary.** It used
+to live only in the running build, which meant any window where an older binary
+served the same SQLite database could still create such rows — a rollback, a
+staged rollout, a second old instance pointed at the same file. A schema
+migration now installs triggers that refuse the write in the database itself,
+so an older binary writing to an upgraded file is refused too (BUG-2813). The
+window that remains is a SQLite database an upgraded binary has never opened:
+until its migrations run, it has no triggers.
 
-Only SQLite is affected. PostgreSQL refuses a NUL in a text or JSON column
+Only SQLite ever needed this. PostgreSQL refuses a NUL in a text or JSON column
 itself, at every binary version, so a PostgreSQL instance never stored such a
 value regardless of which build wrote it.
 
-If you want the guarantee rather than the guard, drain writes from older
-binaries before the new one starts serving, or roll forward rather than back.
-Enforcing the invariant below the HTTP layer, so the running build stops
-mattering, is tracked as BUG-2813.
+None of that helps a row that was **already** stored, which is what the two
+commands below are for.
 
-The same limitation applies to `pad db migrate-to-pg`, which copies rows
-directly and does not go through the import guard: a row carrying a NUL will
-fail against PostgreSQL's JSONB parser during the copy rather than being
-reported up front.
+### Finding and repairing affected rows
 
-If you hit either, the affected value has to be repaired at the source before
-the import or migration will go through — the export itself succeeds either
-way, as described above. A preflight check and a repair path are tracked as
-BUG-2810. Until then, neither error names the exact row: the import answers
-400 naming the rule it refused on, and `pad db migrate-to-pg` reports which
-workspace's copy failed — locating the offending value inside it is manual
-today.
+`pad db scan-nul` reports every stored value carrying a NUL — which table and
+column, which row, and which workspace — and changes nothing:
+
+```bash
+pad db scan-nul                       # the live database
+pad db scan-nul --from /backups/pad-20260901.db   # or a backup file
+```
+
+`pad db repair-nul` rewrites those values, replacing each NUL with U+FFFD (the
+Unicode replacement character) and leaving the rest of the value byte for byte
+as it was. **It changes stored content**, which is why it is a separate command
+and never part of a migration — running a schema upgrade should not rewrite
+your text on your behalf. Run the scan first; it is the dry run. Running the
+repair twice is safe.
+
+```bash
+pad server stop
+pad db repair-nul                     # lists what it will change, then asks
+pad server start
+```
+
+A row whose **primary key** is the value carrying the NUL is reported and left
+alone: repairing it would change the row's identity and could collide with
+another row. `email_optouts` is the only table where that can happen today.
+
+### Migrating to PostgreSQL
+
+`pad db migrate-to-pg` now runs the same scan as a **preflight**. If the source
+database carries any affected rows it lists them, prints the repair command,
+and exits without moving anything — rather than failing partway through the
+copy against PostgreSQL's JSONB parser, which is what it used to do.
+
+One shape is checked differently, and it is worth knowing why. A JSON value
+with LITERAL duplicate keys — `{"a":"...","a":"..."}` — hides anything in the
+shadowed copy from every check Pad makes, because the JSON decoder keeps only
+the last. PostgreSQL still refuses it. Rather than let such a row through, the
+preflight asks the destination directly: any value that merely *mentions* a NUL
+escape is cast on the target database before anything moves, and the migration
+is refused if PostgreSQL rejects it. That check is exact in both directions — a
+document that only writes *about* the escape is accepted, as it should be.
+
+`pad db scan-nul` lists those values under a separate heading, and
+`pad db repair-nul` fixes the fatal shape while leaving the harmless ones byte
+for byte as they were.
+
+Two things to know about that check:
+
+- **It errs toward refusing.** If the destination cannot be reached, or a listed
+  row cannot be read back, the migration is refused rather than attempted — an
+  unchecked value is not a passed one. Re-run once the destination is reachable.
+- **It can refuse a migration that would have worked.** The check casts the
+  value as it is stored, and one column — a workspace's `settings` — is
+  normalised on the way in, which happens to drop the hidden value. Such a row
+  is still a value Pad refuses to write today, so `pad db repair-nul` clears it
+  and the migration proceeds.
+
+### Importing an export that predates the rule
+
+If you have an export file taken from an affected database, the import still
+refuses it by default and the 400 names the remedy. Passing `--repair-nul`
+applies the same U+FFFD substitution to the payload as it is imported:
+
+```bash
+pad workspace import --repair-nul my-workspace.json
+```
+
+The default stays strict, and the flag is your consent to the rewrite; the
+command reports how many values it changed. It repairs the payload the way the
+server reads it, so it reaches a NUL wherever an export can carry one —
+including inside an item's `fields` blob, which travels through an export as a
+quoted document rather than as plain text.
+
+Repairing the source database with `pad db repair-nul` and re-exporting gives
+the same result without a rewrite at import time, and is the better option when
+you still have the source instance.
 
 
 This format is database-agnostic and can be used to:

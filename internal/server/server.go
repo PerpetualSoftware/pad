@@ -37,6 +37,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 )
@@ -2274,6 +2275,272 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 	if err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
+	return decodeJSONBytes(raw, v)
+}
+
+// decodeJSONRepairingNUL is decodeJSONWithLimit with exactly one difference,
+// and the difference is deliberately NOT a bypass (DOC-2823 S3, BUG-2810).
+//
+// The workspace import's --repair-nul flag exists because a self-hoster whose
+// database predates the enforcement can EXPORT a workspace and then not import
+// it back: the server emits a payload it will refuse. Dave's day-54 ruling
+// ships the flag with the default staying strict.
+//
+// What the flag does is repair the body and then run the SAME gate on the
+// repaired bytes. It does not skip the gate, and it must not: a decode path
+// that does is precisely the door BUG-2803 spent thirty rounds closing, and it
+// would be reachable from the endpoint carrying the largest attacker-controlled
+// body in the product. So a value the repair cannot fix is still refused, by
+// the same function, with the same error.
+//
+// A body that is not valid JSON is left alone, so its own decode error is what
+// the caller reports: a raw NUL BYTE inside a JSON string makes the document
+// invalid, and replacing one would turn a body the decoder rejects into one it
+// accepts. Widening what parses is not this flag's job.
+//
+// The count of rewritten values, and any reason the repair declined to act,
+// are recorded on the tally the caller passes in.
+func decodeJSONRepairingNUL(r *http.Request, v interface{}, maxBytes int64, t *nulRepairTally) error {
+	raw, err := readBodyForDecode(r, maxBytes)
+	if err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	// The tally owns the repair, so the count and the "could not repair, and
+	// why" both come back through one object rather than through a return
+	// value the caller has to remember to record. The first version returned
+	// the count and one caller dropped it, which is how the header reported 0
+	// for an import that had rewritten a value.
+	return decodeJSONBytes(t.Apply(raw), v)
+}
+
+// repairBodyNULEscapes repairs a JSON body the way the GATE reads it, and
+// returns how many values it changed.
+//
+// IT MIRRORS bodyDecodesNUL's WALK, and the first version did not — it scanned
+// the raw bytes for a live escape, which is right for a value the gate reads at
+// the top level and wrong for the one that actually matters. An item's `fields`
+// blob travels through an export as a STRING: the stored text
+// `{"a":"x\u0000y"}` is marshalled into the body as `"{\"a\":\"x\\u0000y\"}"`,
+// with a DOUBLED backslash, which a raw scan must leave alone because at that
+// layer it is literal text. The gate refuses it anyway, because it decodes the
+// body first and re-parses that string as the document it is. So a raw-byte
+// repair left `--repair-nul` unable to fix the single most common carrier in a
+// real export, while passing every test whose fixture put the NUL in `content`
+// (codex round 1).
+//
+// The walk below is therefore the same traversal, with the same classing, one
+// verb changed: where bodyDecodesNUL asks textguard whether a value decodes to
+// a NUL, this asks textguard to repair it. Two walks of one shape in one
+// package is a risk, and the mitigation is that they are measured against the
+// same corpus in both directions rather than reviewed for similarity.
+//
+// A body that is not valid JSON is returned untouched, so its own decode error
+// is what the caller reports and a malformed body cannot be made to parse.
+// A body with nothing to repair is returned BYTE-IDENTICAL — the re-encode
+// happens only when something actually changed.
+func repairBodyNULEscapes(raw []byte) (out []byte, replaced int, declined string) {
+	if !json.Valid(raw) {
+		return raw, 0, ""
+	}
+
+	// DUPLICATE MEMBERS ARE A REFUSAL, NOT A REPAIR (codex round 4).
+	//
+	// The walk below decodes into map[string]any, where a repeated key keeps
+	// only the LAST value. The typed decode that follows does not agree: it
+	// unmarshals members in order into the same struct field, so two
+	// `"workspace"` objects MERGE there and collapse here. Repairing such a
+	// body would therefore change what gets imported, which is outside what
+	// this flag is allowed to do — the contract is "replace the NULs and
+	// nothing else".
+	//
+	// Refusing to act is the safe half of that: the body is returned untouched
+	// and the gate judges it exactly as it would without the flag. A real
+	// export cannot contain duplicate members (json.Marshal does not emit
+	// them), so this costs nothing an operator will meet by accident. Rewriting
+	// such a body faithfully needs a token-preserving pass, which is BUG-2812's
+	// token-walk and not a rider on this.
+	if key, dup := firstDuplicateJSONKey(raw); dup {
+		return raw, 0, "the payload repeats the member " + strconv.Quote(key) +
+			", and repairing it would change which value is imported"
+	}
+
+	// UseNumber, so a number wider than float64 is not silently re-emitted in
+	// scientific notation on its way back out.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var decoded any
+	if err := dec.Decode(&decoded); err != nil {
+		return raw, 0, ""
+	}
+
+	repaired, n := repairDecodedNULs(decoded, false)
+	if n == 0 {
+		return raw, 0, ""
+	}
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(repaired); err != nil {
+		// Re-encoding a value that came out of a decode should not fail. If it
+		// somehow does, returning the ORIGINAL leaves the gate to refuse it,
+		// which is the safe direction.
+		return raw, 0, ""
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), n, ""
+}
+
+// firstDuplicateJSONKey reports the first object member name that appears twice
+// in the same object, at any depth.
+//
+// A token walk rather than a decode, because a decode is exactly what loses the
+// information: by the time there is a map, the duplicate is gone.
+//
+// Malformed input answers false — the caller has already checked json.Valid,
+// and a decode error there is the caller's to report, not this function's to
+// duplicate.
+func firstDuplicateJSONKey(raw []byte) (string, bool) {
+	type frame struct {
+		isObject  bool
+		seen      map[string]bool
+		expectKey bool
+	}
+	var stack []*frame
+	top := func() *frame {
+		if len(stack) == 0 {
+			return nil
+		}
+		return stack[len(stack)-1]
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", false // EOF, or malformed — nothing to report either way.
+		}
+		if d, isDelim := tok.(json.Delim); isDelim {
+			switch d {
+			case '{':
+				stack = append(stack, &frame{isObject: true, seen: map[string]bool{}, expectKey: true})
+			case '[':
+				stack = append(stack, &frame{})
+			case '}', ']':
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				// The container that just closed WAS a value of its parent, so
+				// the parent's next token is a key again.
+				if f := top(); f != nil && f.isObject {
+					f.expectKey = true
+				}
+			}
+			continue
+		}
+		f := top()
+		if f == nil || !f.isObject {
+			continue
+		}
+		if f.expectKey {
+			if name, isString := tok.(string); isString {
+				if f.seen[name] {
+					return name, true
+				}
+				f.seen[name] = true
+			}
+			f.expectKey = false
+			continue
+		}
+		// A scalar value; the next token in this object is a key.
+		f.expectKey = true
+	}
+}
+
+// repairDecodedNULs walks a decoded body, repairing every string the gate would
+// refuse, and counts the VALUES it changed.
+//
+// The count is values rather than escapes because at this layer an escape is
+// not a thing that exists any more — the outer decode has already resolved it,
+// and a nested document may carry several. "Three values were rewritten" is
+// also the sentence an operator can check against the report.
+//
+// inUserData carries the same meaning as in bodyDecodesNUL: below a
+// JSON-encoded field key nothing re-parses the strings, so they are ordinary
+// text and only a raw NUL matters.
+func repairDecodedNULs(v any, inUserData bool) (any, int) {
+	switch t := v.(type) {
+	case string:
+		// Both arms of the gate check exactly ContainsNUL here, so both repair
+		// exactly raw NULs. The escape form is only meaningful one level up,
+		// where a string is re-parsed as a document.
+		repaired := textguard.Repair(t, false)
+		if repaired == t {
+			return t, 0
+		}
+		return repaired, 1
+
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		count := 0
+		for k, sub := range t {
+			// KEYS TOO. The gate refuses a NUL in a key, so a repair that only
+			// touched values would leave the body refused with nothing to show
+			// for it.
+			key := textguard.Repair(k, false)
+			if key != k {
+				count++
+			}
+
+			if !inUserData && isJSONEncodedFieldKey(k) {
+				if str, isString := sub.(string); isString {
+					// The one place the ESCAPE form is repaired: this string is
+					// re-parsed as a document, so it gets both checks, exactly
+					// as the gate gives it both.
+					repaired := textguard.Repair(str, true)
+					if repaired != str {
+						count++
+					}
+					out[key] = repaired
+					continue
+				}
+				// The field's natural shape — an object or array the server
+				// marshals itself. Everything below is caller data.
+				sr, n := repairDecodedNULs(sub, true)
+				out[key] = sr
+				count += n
+				continue
+			}
+
+			sr, n := repairDecodedNULs(sub, inUserData)
+			out[key] = sr
+			count += n
+		}
+		return out, count
+
+	case []any:
+		out := make([]any, len(t))
+		count := 0
+		for i, sub := range t {
+			sr, n := repairDecodedNULs(sub, inUserData)
+			out[i] = sr
+			count += n
+		}
+		return out, count
+
+	default:
+		// Numbers, booleans, null. json.Number is deliberately carried through
+		// untouched so it re-encodes as the literal it arrived as.
+		return v, 0
+	}
+}
+
+// decodeJSONBytes is everything decodeJSONWithLimit does once the body has been
+// read: the empty-body contract, the NUL gate, and the unmarshal.
+//
+// Extracted so the --repair-nul path can insert a repair between the read and
+// the gate WITHOUT reimplementing any of the three, which is what keeps the
+// gate the single decider.
+func decodeJSONBytes(raw []byte, v interface{}) error {
 	// An EMPTY (or whitespace-only) body must keep returning a wrapped
 	// io.EOF. json.Decoder.Decode answered io.EOF there and at least one
 	// caller depends on it — handlers_playbooks.go treats

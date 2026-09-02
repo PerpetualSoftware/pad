@@ -1180,17 +1180,34 @@ func (c *Client) PostRawWithContentType(path string, data []byte, contentType st
 // import path — together they keep import memory bounded by the
 // largest single blob (~25 MiB) rather than the full bundle size.
 func (c *Client) PostStreamWithContentType(path string, body io.Reader, contentType string, result interface{}) error {
+	_, err := c.PostStreamWithContentTypeHeaders(path, body, contentType, result)
+	return err
+}
+
+// PostStreamWithContentTypeHeaders is PostStreamWithContentType, also returning
+// the response headers.
+//
+// The workspace import reports what its --repair-nul flag changed in a response
+// header rather than in the body, because the success body is the created
+// workspace and its shape is a public contract. A caller that does not need the
+// count keeps using the wrapper above.
+//
+// Headers are captured BEFORE handleResponse, which reads and closes the body;
+// on an error path they are returned alongside the error rather than dropped,
+// so a caller can still read a diagnostic header from a failed request.
+func (c *Client) PostStreamWithContentTypeHeaders(path string, body io.Reader, contentType string, result interface{}) (http.Header, error) {
 	req, err := c.newRequest("POST", path, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", contentType)
 	resp, err := c.streamClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	return c.handleResponse(resp, result)
+	header := resp.Header
+	return header, c.handleResponse(resp, result)
 }
 
 // --- Auth API ---
