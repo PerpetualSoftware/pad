@@ -495,6 +495,8 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		fieldMap[k] = v
 	}
 
+	// Coerce strings to their declared types before validating (BUG-2850).
+	fieldMap = items.CoerceFields(fieldMap, schema)
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
@@ -677,6 +679,8 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// against the TARGET schema — MigrateFields validates migrated
 	// values but an override can smuggle in a value the target schema
 	// doesn't allow (e.g. a status not in the target's options).
+	// Coerce strings to their declared types before validating (BUG-2850).
+	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
 	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}

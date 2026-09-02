@@ -1084,6 +1084,11 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 		}
 		migrated.Fields[k] = v
 	}
+	// Coerce strings to their declared types before validating (BUG-2850).
+	// MUST match the preflight (handlers_items_copy_preflight.go) — see the
+	// note there; these two live in different PACKAGES, which is exactly how
+	// they would drift unnoticed.
+	migrated.Fields = items.CoerceFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema))
 	if err := items.ValidateFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, nil, &FieldValidationError{Err: err}
 	}

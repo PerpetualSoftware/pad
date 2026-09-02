@@ -644,6 +644,11 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// ValidateFieldsDetailed injects any remaining schema defaults into
 	// `final` in place, so a key that appears only afterwards has no
 	// origin entry and is reported as "default".
+	// Coerce strings to their declared types before validating (BUG-2850).
+	// MUST match the store-side copy (items_cross_workspace_copy.go): the
+	// preflight exists to PREDICT what the copy does, so a coercion on one
+	// side only would make it report a field as failing that the copy accepts.
+	final = items.CoerceFields(final, items.SchemaForMigratedFields(targetSchema))
 	issues := items.ValidateFieldsDetailed(final, items.SchemaForMigratedFields(targetSchema))
 
 	// DR-12's other half: an override whose VALUE is invalid is rejected,

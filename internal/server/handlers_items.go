@@ -744,6 +744,8 @@ func (e *itemCreateError) Error() string { return e.message }
 // Returns the created item (Ref/Slug populated by the store) or an
 // *itemCreateError with a status hint.
 func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string) (*models.Item, *itemCreateError) {
+	// Coerce strings to their declared types before validating (BUG-2850).
+	fieldMap = items.CoerceFields(fieldMap, schema)
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
 	}
@@ -1184,6 +1186,8 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Coerce strings to their declared types before validating (BUG-2850).
+		fieldMap = items.CoerceFields(fieldMap, schema)
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
@@ -1340,6 +1344,8 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Coerce strings to their declared types before validating (BUG-2850).
+		patchMap = items.CoerceFields(patchMap, schema)
 		if err := items.ValidatePartialFields(patchMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
@@ -2267,6 +2273,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// `missing_required_fields` code and message shape, because CLI and
 	// web callers key off it; genuinely invalid VALUES get their own
 	// `invalid_fields` code rather than being mislabelled as missing.
+	// Coerce strings to their declared types before validating (BUG-2850).
+	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
 	if issues := items.ValidateFieldsDetailed(result.Fields, items.SchemaForMigratedFields(targetSchema)); len(issues) > 0 {
 		var missing, invalid []string
 		for _, iss := range issues {
