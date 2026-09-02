@@ -220,6 +220,16 @@ func TestSQLStateExtractionEdges(t *testing.T) {
 		{"lowercase marker", errors.New("... sqlstate 22p05)"), "22P05",
 			"the search is case-insensitive, so the extraction must be too."},
 		{"nil", nil, "", "boundary."},
+		{
+			// THE OFFSET BUG. U+0131 (dotless i) is two bytes and uppercases to
+			// a one-byte "I", so searching an uppercased copy and slicing the
+			// original takes the wrong five bytes. PostgreSQL renders messages
+			// in lc_messages, so a non-English server is not hypothetical.
+			name: "a message whose case mapping changes byte length",
+			err:  errors.New("HATA: ge\u00e7ersiz \u0131\u0131\u0131 (SQLSTATE 22P05)"),
+			want: "22P05",
+			why:  "the code must survive a localised message; a shifted slice misclassifies a real NUL refusal.",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

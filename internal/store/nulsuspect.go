@@ -186,9 +186,15 @@ func sqlStateOf(err error) string {
 	if err == nil {
 		return ""
 	}
+	// ONE string for both the search and the slice. The first version indexed
+	// into strings.ToUpper(msg) and then sliced the ORIGINAL, which is only
+	// safe while every byte before the marker is ASCII: Unicode case mapping
+	// changes byte LENGTH for some runes, so a localised server message —
+	// lc_messages is a per-server setting — shifts the offset and the five
+	// bytes taken are the wrong five (codex round 7).
 	const marker = "SQLSTATE "
-	msg := err.Error()
-	i := strings.Index(strings.ToUpper(msg), marker)
+	msg := strings.ToUpper(err.Error())
+	i := strings.Index(msg, marker)
 	if i < 0 {
 		return ""
 	}
@@ -196,7 +202,7 @@ func sqlStateOf(err error) string {
 	if len(rest) < 5 {
 		return ""
 	}
-	return strings.ToUpper(rest[:5])
+	return rest[:5]
 }
 
 // RepairSuspectValue rewrites a suspect's NUL escapes with U+FFFD, using the
