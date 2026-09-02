@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -567,9 +568,31 @@ func TestPreflightDoesNotFailClosedOnUnmigratedSuspects(t *testing.T) {
 			scan.Suspects[0].Key)
 	}
 
-	if err := preflightNULForMigration(s, dst, dbPath); err != nil {
+	// The preflight writes its notes to stderr; capture them so the advisory
+	// below is asserted rather than assumed.
+	stderr := os.Stderr
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatalf("pipe: %v", perr)
+	}
+	os.Stderr = w
+	err = preflightNULForMigration(s, dst, dbPath)
+	w.Close()
+	os.Stderr = stderr
+	out, _ := io.ReadAll(r)
+
+	if err != nil {
 		t.Errorf("the preflight failed closed over an unverifiable suspect in a table the migration "+
 			"does not copy: %v", err)
+	}
+
+	// AND it says so. Excluding the row from the destination probe must not
+	// turn into dropping it from the output: a comment that claims these are
+	// reported while the code goes quiet is exactly what the first version of
+	// this filter shipped (codex round 11).
+	if !strings.Contains(string(out), "does not copy") {
+		t.Errorf("the suspect was filtered out of the check AND out of the report; an operator sees "+
+			"nothing about it. stderr was:\n%s", out)
 	}
 }
 

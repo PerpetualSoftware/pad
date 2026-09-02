@@ -545,10 +545,27 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 	// answer cannot matter.
 	migrated := store.MigratedTables()
 	var migratedSuspects []store.NULSuspect
+	var suspectsElsewhere int
 	for _, sus := range report.Suspects {
 		if migrated[sus.Table] {
 			migratedSuspects = append(migratedSuspects, sus)
+			continue
 		}
+		suspectsElsewhere++
+	}
+
+	// COUNTED, NOT PROBED, and not silently dropped either (codex round 11).
+	// Whether one of these is actually fatal can only be answered by the
+	// destination, and asking would put them back inside the fail-closed rule
+	// this filter exists to keep them out of. So they are named, with the
+	// command that examines them properly — the alternative is a comment
+	// claiming they are reported while the code drops them, which is what the
+	// first version of this filter did.
+	if suspectsElsewhere > 0 {
+		fmt.Fprintf(os.Stderr,
+			"  NOTE: %d value(s) mentioning a NUL escape are in tables this migration does not copy;\n"+
+				"  they cannot block it and were not checked. 'pad db scan-nul' lists them.\n",
+			suspectsElsewhere)
 	}
 
 	// A nil destination means the oracle is unavailable. That never happens on
@@ -605,10 +622,11 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 	// one would demand the operator rewrite content unrelated to the migration
 	// they asked for (codex round 9).
 	//
-	// The others are still REPORTED, below. They are real, `pad db scan-nul`
-	// lists them, and staying silent about a broken row because this particular
-	// command does not care about it would be the information-discarding this
-	// preflight already had to be corrected for once.
+	// The others are still REPORTED, below — as are the suspects from those
+	// tables, counted above. They are real, `pad db scan-nul` lists them, and
+	// staying silent about a broken row because this particular command does
+	// not care about it would be the information-discarding this preflight
+	// already had to be corrected for once.
 	var blocking []store.NULViolation
 	var elsewhere []store.NULViolation
 	for _, v := range report.Violations {
