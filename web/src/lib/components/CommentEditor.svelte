@@ -123,24 +123,32 @@
 		if (addition === '') return false;
 		const existing = currentMarkdown();
 		const next = existing === '' ? addition : `${existing}\n\n${addition}`;
-		// setContent (not insertContentAt): tiptap-markdown overrides
-		// insertContentAt to parse with `{ inline: true }`, which runs the
-		// parser's inline normalization over the addition. A blockquote
-		// survives that today only incidentally — normalizeInline unwraps the
-		// first child only when it is a <p> — and depending on a library
-		// internal to preserve block structure is how the quote would one day
-		// flatten to a paragraph with nothing failing. setContent parses in
-		// block mode, which is the documented path.
+		// setContent (block parse) rather than insertContentAt, and the reason
+		// is a PREFERENCE, not a defect avoided: both routes preserve the
+		// blockquote today. That was measured — swapping this line for
+		// insertContentAt leaves the whole suite green. What separates them is
+		// what they depend on. tiptap-markdown overrides insertContentAt to
+		// parse with `{ inline: true }`, and the block structure survives that
+		// only because normalizeInline unwraps the first child when it is a
+		// <p> and a blockquote is not one. setContent parses in block mode and
+		// depends on nothing of the sort.
+		//
+		// Nothing enforces this choice — a source guard for it would be a
+		// scanner with an unbounded tail, which is not worth it here. If a
+		// future edit moves to insertContentAt, the suite will stay green and
+		// this comment is the only warning that the quote's block structure
+		// then rides on a library internal.
 		//
 		// The round trip through markdown is not new loss: the composer already
 		// parses markdown at mount and serializes it on every submit, so both
 		// directions are the component's existing contract.
+		// `empty` (which gates the submit button) is maintained by the editor's
+		// own onUpdate: setContent's `emitUpdate` defaults true in
+		// @tiptap/core 3.30.2. An explicit `empty = editor.isEmpty` here was
+		// removed after a mutation showed it inert — the suite asserts the
+		// button becomes enabled, so if a future bump flips that default the
+		// test goes red and says so, which a defensive line would have hidden.
 		editor.chain().setContent(next).focus('end').run();
-		// Kept explicit rather than left to onUpdate: setContent's `emitUpdate`
-		// defaults true in @tiptap/core 3.30.2, but the submit button is gated
-		// on `empty`, and a silently-disabled submit is exactly the class of
-		// failure above.
-		empty = editor.isEmpty;
 		return true;
 	}
 

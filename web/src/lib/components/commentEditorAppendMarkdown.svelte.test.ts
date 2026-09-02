@@ -13,12 +13,14 @@
 //
 // Two of the assertions are shaped by a mechanism rather than by taste:
 //
-//  - **`blockquote`, not text.** tiptap-markdown overrides `insertContentAt`
-//    to parse with `{ inline: true }`. An implementation that reached for it
-//    would run the addition through inline normalization, where block
-//    structure is preserved only incidentally. Asserting the tag means a
-//    quote that flattens into a paragraph is RED, and the visible text alone
-//    would not have caught it.
+//  - **`blockquote`, not text.** An implementation that inserts the selection
+//    as plain text, or otherwise loses the block, is RED here where an
+//    assertion on the visible text alone would stay green — verified by
+//    mutation. What this does NOT catch, also verified: swapping the
+//    implementation's `setContent` for tiptap-markdown's inline-parsing
+//    `insertContentAt` keeps the whole suite green, because a blockquote
+//    survives inline normalization today. The choice between those two is
+//    argued in the component and is deliberately not test-enforced.
 //  - **Draft first, then quote.** An implementation that replaced the document
 //    instead of appending satisfies every "the quote is present" assertion
 //    ever written. The draft's survival, and its position, are the only things
@@ -93,6 +95,11 @@ describe('CommentEditor.appendMarkdown', () => {
 		expect(quote!.textContent).toContain(QUOTE_TEXT);
 	});
 
+	// This one carries the `empty` flag, which no line in `appendMarkdown`
+	// sets — the editor's own onUpdate does, because setContent emits by
+	// default. That default is the thing under test: if a tiptap bump flips
+	// it, the quote still lands and the user still cannot post it, and this
+	// is what says so.
 	it('enables submit, because the composer gates the button on its own empty flag', () => {
 		const handle = mountComposer();
 		expect(submitButton().disabled).toBe(true);
