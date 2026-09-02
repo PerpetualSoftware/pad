@@ -169,7 +169,21 @@
 			await onSubmit(md);
 			// Composer behaviour: clear on success. In edit/reply mode the host
 			// unmounts this component, so the clear is harmless there.
-			if (editor && !editor.isDestroyed && reqWs === wsSlug && reqItem === itemId) {
+			//
+			// ...but only if the composer still holds what was SENT. Anything
+			// added during the round trip is not part of the submitted comment,
+			// and clearing it destroys it: a quote pushed in through
+			// `appendMarkdown` while the submit was in flight (IDEA-2843, codex
+			// round 5), and — pre-existing, same mechanism — anything the user
+			// typed. This is the same class as the item-identity capture above,
+			// applied to the CONTENT rather than to which item it belongs to.
+			if (
+				editor &&
+				!editor.isDestroyed &&
+				reqWs === wsSlug &&
+				reqItem === itemId &&
+				currentMarkdown() === md
+			) {
 				editor.commands.clearContent();
 			}
 		} catch {

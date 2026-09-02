@@ -151,6 +151,44 @@ describe('CommentEditor.appendMarkdown', () => {
 		expect(quotes[1].textContent).toContain('Second passage');
 	});
 
+	it('survives a quote arriving while a submit is in flight', async () => {
+		// `doSubmit` clears on success. A quote pushed in during the round trip
+		// is not part of what was sent, and an unconditional clear destroys it
+		// (codex round 5). Same class as the item-identity capture that already
+		// guards this path, applied to the content rather than the item.
+		let release: (() => void) | null = null;
+		const inFlight = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+
+		target = document.body.appendChild(document.createElement('div'));
+		const handle = mount(CommentEditor, {
+			target,
+			props: {
+				wsSlug: 'ws',
+				itemId: 'item-A',
+				content: 'the comment being sent',
+				onSubmit: () => inFlight,
+			},
+		}) as unknown as Handle;
+		app = handle;
+		flushSync();
+
+		submitButton().click();
+		flushSync();
+
+		// The quote lands mid-submit.
+		expect(handle.appendMarkdown('> quoted while sending')).toBe(true);
+		flushSync();
+
+		release!();
+		await inFlight;
+		await Promise.resolve();
+		flushSync();
+
+		expect(surface().textContent).toContain('quoted while sending');
+	});
+
 	it('reports false and changes nothing when there is nothing to insert', () => {
 		const handle = mountComposer();
 

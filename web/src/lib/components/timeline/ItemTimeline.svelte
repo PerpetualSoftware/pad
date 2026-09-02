@@ -1285,7 +1285,7 @@
 		<TimelineEntryList
 			bind:listEl={entryListEl}
 			entries={visibleEntries}
-			showEmpty={visibleEntries.length === 0 && !loading && !error}
+			showEmpty={visibleEntries.length === 0 && !loading && !error && !hasMore}
 			{emptyLabel}
 			{wsSlug}
 			{username}

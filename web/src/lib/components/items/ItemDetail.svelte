@@ -6035,7 +6035,10 @@
 				{@const shown = timelineFeed.entries.filter((e) => kinds.includes(e.kind))}
 				<TimelineEntryList
 					entries={shown}
-					showEmpty={shown.length === 0 && !timelineFeed.loading && !timelineFeed.error}
+					showEmpty={shown.length === 0 &&
+						!timelineFeed.loading &&
+						!timelineFeed.error &&
+						!timelineFeed.hasMore}
 					emptyLabel={activeTab === 'versions' ? 'No versions yet.' : 'No changes yet.'}
 					{wsSlug}
 					{username}
