@@ -718,41 +718,6 @@
 	// composer after a switch.
 	let timelineRef = $state<{ quoteIntoComposer: (markdown: string) => boolean } | undefined>();
 
-	/**
-	 * "Load more" for a FILTERED view (IDEA-2843, codex round 1).
-	 *
-	 * The owner's hop loop stops as soon as a page adds any entry, of ANY kind.
-	 * On a view that renders only some kinds, a page of pure comments therefore
-	 * ends the loop having added nothing here — a button that visibly does
-	 * nothing. So page until THIS view's list actually grows, or the feed runs
-	 * out.
-	 *
-	 * Bounded, and the bound is the point: each call already walks up to
-	 * MAX_EMPTY_HOPS pages inside the owner, so an unbounded loop here could
-	 * walk the whole timeline on one click. Six rounds is a visible amount of
-	 * progress without becoming a "load everything" button by accident.
-	 *
-	 * Not fixed inside the owner deliberately: it would have to know what the
-	 * OTHER view is rendering, and the two disagree by construction.
-	 */
-	const MAX_FILTERED_PAGE_ROUNDS = 6;
-	async function loadMoreForThisView(shownBefore: number) {
-		const feed = timelineFeed;
-		if (!feed) return;
-		for (let round = 0; round < MAX_FILTERED_PAGE_ROUNDS; round++) {
-			await feed.loadMore();
-			const current = timelineFeed;
-			if (!current || !current.hasMore) return;
-			// A failed page resolves rather than throwing — the owner catches and
-			// records `error` — and leaves `hasMore` true, so without this the
-			// loop would retry a dead server six times per click, silently
-			// (codex round 2).
-			if (current.error) return;
-			const kinds: readonly string[] = activeTab === 'versions' ? VERSION_KINDS : CHANGE_KINDS;
-			if (current.entries.filter((e) => kinds.includes(e.kind)).length > shownBefore) return;
-		}
-	}
-
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
 
@@ -6090,7 +6055,7 @@
 						class="load-more-btn"
 						type="button"
 						disabled={timelineFeed.loadingMore}
-						onclick={() => loadMoreForThisView(shown.length)}
+						onclick={() => timelineFeed?.loadMore(kinds)}
 					>
 						{timelineFeed.loadingMore ? 'Loading...' : 'Load more'}
 					</button>
@@ -7314,6 +7279,35 @@
 		padding: var(--space-2);
 		color: var(--text-muted);
 		font-size: 0.8rem;
+	}
+
+	/* Copied from ItemTimeline, not shared: Svelte scopes styles per component,
+	   so reusing the class NAME across the boundary gets browser-default
+	   styling and nothing warns — the button just looks wrong (codex round 4).
+	   Kept as a copy rather than promoted to app.css because the button exists
+	   in exactly these two places; if a third appears, promote it. */
+	.load-more-btn {
+		display: block;
+		width: 100%;
+		padding: var(--space-2) var(--space-4);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-muted);
+		font-size: 0.85em;
+		font-weight: 500;
+		cursor: pointer;
+		text-align: center;
+	}
+
+	.load-more-btn:hover:not(:disabled) {
+		color: var(--text-primary);
+		border-color: var(--accent-blue);
+	}
+
+	.load-more-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.feed-loading {

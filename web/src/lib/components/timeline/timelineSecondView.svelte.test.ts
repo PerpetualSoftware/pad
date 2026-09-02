@@ -46,8 +46,17 @@ vi.mock('$lib/api/client', () => ({
 const ItemTimeline = (await import('./ItemTimeline.svelte')).default;
 const TimelineEntryList = (await import('./TimelineEntryList.svelte')).default;
 
+let clock = 0;
+/**
+ * `created_at` descends per entry. The pagination test needs the DERIVED
+ * cursor to move between pages — identical timestamps trip the owner's
+ * "cursor did not move" guard, which ends the hop loop for a reason that has
+ * nothing to do with what the test is about.
+ */
 function entry(kind: TimelineEntry['kind'], id: string): TimelineEntry {
-	const base = { id, kind, created_at: '2026-09-02T10:00:00Z', actor: 'alice' };
+	clock += 1;
+	const ts = new Date(Date.UTC(2026, 8, 2, 10, 0, 0) - clock * 60_000).toISOString();
+	const base = { id, kind, created_at: ts, actor: 'alice' };
 	if (kind === 'comment') {
 		return {
 			...base,
@@ -190,6 +199,53 @@ describe('timeline second view — the mirrored error', () => {
 
 		expect(host.textContent).toContain('network is down');
 		expect(host.textContent).not.toContain('No timeline entries yet');
+	});
+});
+
+describe('timeline second view — filtered pagination', () => {
+	it('keeps paging until a page adds an entry THIS view renders', async () => {
+		// The hop loop used to stop on any new entry of any kind. With one feed
+		// serving views that render different kinds, a page of pure comments
+		// ended it having added nothing to a changes view — a button that
+		// visibly does nothing. Found twice by codex (rounds 1 and 4): the
+		// first fix covered the tabs and left the same class in the owner's own
+		// button, which is why the filter now travels with the request.
+		timelineListMock.mockReset();
+		timelineListMock
+			.mockResolvedValueOnce({ entries: [entry('comment', 'c1')], has_more: true } as unknown as TimelineResponse)
+			.mockResolvedValueOnce({ entries: [entry('comment', 'c2')], has_more: true } as unknown as TimelineResponse)
+			.mockResolvedValueOnce({ entries: [entry('activity', 'a9')], has_more: true } as unknown as TimelineResponse);
+
+		const state = $state<{ feed: TimelineFeed | undefined }>({ feed: undefined });
+		app = mount(ItemTimeline, {
+			target: host,
+			props: {
+				wsSlug: 'ws',
+				itemSlug: 'TASK-1',
+				itemId: 'item-a',
+				collectionId: 'coll-1',
+				currentContent: '',
+				visibleKinds: [...COMMENT_KINDS],
+				get feed() {
+					return state.feed;
+				},
+				set feed(v: TimelineFeed | undefined) {
+					state.feed = v;
+				}
+			}
+		}) as Record<string, unknown>;
+		await settle();
+
+		// A changes view asks for more. Page 2 is comments only — invisible
+		// here — so it must not end the walk.
+		await state.feed!.loadMore(CHANGE_KINDS);
+		await settle();
+
+		const kinds = state.feed!.entries.map((e) => e.kind);
+		expect(kinds).toContain('activity');
+		// Three requests: the initial load, the page that added nothing for
+		// this caller, and the one that did.
+		expect(timelineListMock).toHaveBeenCalledTimes(3);
 	});
 });
 

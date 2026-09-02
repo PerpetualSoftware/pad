@@ -754,7 +754,20 @@
 		});
 	}
 
-	async function loadMore() {
+	/**
+	 * `forKinds` is the CALLER's view filter (IDEA-2843, codex rounds 3-4).
+	 *
+	 * The hop loop below used to stop as soon as a page added any entry of any
+	 * kind. One feed now serves views that render different kinds, so a page of
+	 * pure comments ends the loop having added nothing to a changes view — a
+	 * button that visibly does nothing. Whoever pressed the button says what
+	 * counts as progress; it defaults to this component's own `visibleKinds`,
+	 * which is what its own button wants.
+	 *
+	 * MAX_EMPTY_HOPS still bounds the walk, so a filter that matches nothing
+	 * left in the feed costs a fixed number of pages, not the whole timeline.
+	 */
+	async function loadMore(forKinds?: readonly string[]) {
 		if (loadingMore || !nextCursor) return;
 		// Capture identity before the await so a switch mid-flight can't append
 		// A's older page onto B's entries (TASK-2112).
@@ -797,8 +810,14 @@
 				entries = byNewestFirst([...entries, ...newEntries]);
 				hasMore = resp.has_more;
 				nextCursor = cursorFrom(resp, entries);
-				// Stop as soon as the press produced something to look at.
-				if (newEntries.length > 0) break;
+				// Stop as soon as the press produced something THE CALLER can see.
+				// Counting every kind is what made this a dead button on a
+				// filtered view (codex rounds 3-4).
+				const wanted = forKinds ?? visibleKinds;
+				const newVisible = wanted
+					? newEntries.filter((e) => wanted.includes(e.kind))
+					: newEntries;
+				if (newVisible.length > 0) break;
 				// A cursor that did not move cannot make progress, so asking
 				// again would only repeat this request. Reachable against a
 				// server that predates next_before: the fallback re-derives
@@ -1290,7 +1309,7 @@
 		/>
 
 		{#if hasMore}
-			<button class="load-more-btn" type="button" disabled={loadingMore} onclick={loadMore}>
+			<button class="load-more-btn" type="button" disabled={loadingMore} onclick={() => loadMore()}>
 				{loadingMore ? 'Loading...' : 'Load more'}
 			</button>
 		{/if}

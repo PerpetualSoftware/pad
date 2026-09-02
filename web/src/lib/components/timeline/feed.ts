@@ -26,13 +26,13 @@ export interface TimelineFeed {
 	hasMore: boolean;
 	loadingMore: boolean;
 	/**
-	 * Fetch the next page. Returns a promise so a FILTERED view can page until
-	 * its own list grows: the owner's hop loop stops as soon as a page adds any
-	 * entry, of any kind, so a page of pure comments ends the loop having added
-	 * nothing to the changes view (codex round 1). Pre-existing on Versions;
-	 * widened to Activity when comments moved off it.
+	 * Fetch the next page, telling the owner which kinds count as progress for
+	 * THIS view. Without that the owner's hop loop stops on any new entry of
+	 * any kind, so a page of pure comments ends it having added nothing to a
+	 * changes view — a button that visibly does nothing (codex rounds 1-4).
+	 * Pass the view's kinds; omit them to use the owner's own filter.
 	 */
-	loadMore: () => Promise<void>;
+	loadMore: (forKinds?: readonly string[]) => Promise<void>;
 }
 
 /**
