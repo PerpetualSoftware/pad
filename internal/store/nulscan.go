@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -54,6 +55,12 @@ type NULViolation struct {
 	// pass for each.
 	RawNUL     bool
 	EscapedNUL bool
+	// KeyIncomplete marks a row one of whose key columns is NULL, so Key does
+	// not address it. SQLite permits NULL in a declared PRIMARY KEY that is
+	// neither INTEGER PRIMARY KEY nor NOT NULL, which no other engine does.
+	// The scan still REPORTS such a row — it is real and it is broken — and
+	// the repair skips it rather than issuing a WHERE that matches nothing.
+	KeyIncomplete bool
 }
 
 // String renders a violation the way the CLI reports it.
@@ -301,12 +308,21 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, e
 
 	var out []NULViolation
 	for rows.Next() {
+		// EVERY column is scanned as a NULLABLE string, and that is not
+		// defensive padding — a plain *string fails with "converting NULL to
+		// string is unsupported" on the first row it meets, and the whole scan
+		// (and therefore the repair, and the migrate-to-pg preflight) fails
+		// with it. Two of the three can be NULL on an ordinary database:
+		// workspace_id is nullable on several protected tables, and SQLite —
+		// unlike every other engine — permits NULL in a PRIMARY KEY column
+		// that is not INTEGER PRIMARY KEY or explicitly NOT NULL. Only the
+		// value column is guaranteed non-NULL, by the query's own WHERE.
 		dest := make([]any, 0, len(sel))
-		keyVals := make([]string, len(addr.KeyColumns))
+		keyVals := make([]sql.NullString, len(addr.KeyColumns))
 		for i := range keyVals {
 			dest = append(dest, &keyVals[i])
 		}
-		var wsID string
+		var wsID sql.NullString
 		if addr.HasWorkspace {
 			dest = append(dest, &wsID)
 		}
@@ -330,12 +346,21 @@ func (s *Store) scanColumn(c nulColumn, addr tableAddressing) ([]NULViolation, e
 			Table:       c.Table,
 			Column:      c.Column,
 			Key:         map[string]string{},
-			WorkspaceID: wsID,
+			WorkspaceID: wsID.String,
 			RawNUL:      textguard.ContainsNUL(value),
 		}
 		v.EscapedNUL = isJSON && textguard.DocumentDecodesNULAnyShape(value)
 		for i, k := range addr.KeyColumns {
-			v.Key[k] = keyVals[i]
+			if !keyVals[i].Valid {
+				// A NULL key column cannot address the row for an UPDATE
+				// (`WHERE k = NULL` matches nothing), so the repair must not
+				// be handed one. Reported, with the address it could build, so
+				// the operator sees the row exists rather than having it
+				// vanish from a census.
+				v.KeyIncomplete = true
+				continue
+			}
+			v.Key[k] = keyVals[i].String
 		}
 		out = append(out, v)
 	}

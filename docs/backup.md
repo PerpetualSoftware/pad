@@ -233,11 +233,14 @@ pad workspace import --repair-nul my-workspace.json
 ```
 
 The default stays strict, and the flag is your consent to the rewrite; the
-command reports how many values it changed. It repairs escaped NULs, which is
-what an export from an affected database contains. Repairing the source
-database with `pad db repair-nul` and re-exporting gives the same result
-without a rewrite at import time, and is the better option when you still have
-the source instance.
+command reports how many values it changed. It repairs the payload the way the
+server reads it, so it reaches a NUL wherever an export can carry one —
+including inside an item's `fields` blob, which travels through an export as a
+quoted document rather than as plain text.
+
+Repairing the source database with `pad db repair-nul` and re-exporting gives
+the same result without a rewrite at import time, and is the better option when
+you still have the source instance.
 
 
 This format is database-agnostic and can be used to:

@@ -216,3 +216,148 @@ func TestImportBundle_RepairFlagCoversTheBundleDoorToo(t *testing.T) {
 		t.Errorf("%s = %q, want \"1\"", NULRepairHeader, got)
 	}
 }
+
+// TestImportRepairsANULInsideAFieldsBlob is BUG-2810's actual shape, end to
+// end, and it is the leg the first version of this file did not have.
+//
+// An item's `fields` is stored as JSON TEXT and exported as a STRING, so an
+// affected row arrives in the import body as a doubled-backslash escape inside
+// a quoted document — which the gate refuses (it re-parses that string) and
+// which a raw-byte repair cannot touch (at the body's own layer it is literal
+// text). Every fixture that put the NUL in `content` passed while this did not
+// work, which is how the gap survived to the first review round.
+func TestImportRepairsANULInsideAFieldsBlob(t *testing.T) {
+	// A JSON column has TWO at-rest shapes and they export DIFFERENTLY, which
+	// is the distinction this fixture exists to hold:
+	//
+	//   - a raw NUL byte in the blob text marshals to a SINGLE-backslash
+	//     escape, so the decoded `fields` string contains a real NUL and the
+	//     gate's plain check sees it;
+	//   - a LIVE ESCAPE in the blob text — the 22P05 shape, six characters at
+	//     rest — marshals to a DOUBLED backslash, and only the gate's re-parse
+	//     of that string finds it.
+	//
+	// The second is the one a raw-byte repair cannot reach, so it is the one
+	// under test. Getting this wrong is easy and silent: the first draft of
+	// this fixture used a real NUL and produced the single-backslash form,
+	// which is the case that already worked.
+	storedBlob := `{"note":"x` + textguard.EscNUL + `y"}`
+	body, err := json.Marshal(models.WorkspaceExport{
+		Version:   1,
+		Workspace: models.WorkspaceExportMeta{Name: "Affected", Slug: "affected"},
+		Collections: []models.CollectionExport{{
+			ID: "col-1", Name: "Tasks", Slug: "tasks", Schema: "{}", Settings: "{}",
+		}},
+		Items: []models.ItemExport{{
+			ID: "item-1", CollectionID: "col-1", Title: "Subject", Slug: "subject",
+			Content: "clean", Fields: storedBlob, Tags: "[]", ItemNumber: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal export: %v", err)
+	}
+
+	// The fixture must carry the DOUBLED form, or it is the easy case again.
+	doubled := textguard.EscNUL[:1] + textguard.EscNUL
+	if !bytes.Contains(body, []byte(doubled)) {
+		t.Fatalf("fixture does not carry a doubled-backslash escape; it is not the shape under test: %s", body)
+	}
+
+	t.Run("strict refuses it", func(t *testing.T) {
+		srv := testServer(t)
+		rr := importWithQuery(t, srv, "", body)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("strict import returned %d, want 400: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("the flag repairs it and the stored blob is clean", func(t *testing.T) {
+		srv := testServer(t)
+		rr := importWithQuery(t, srv, "?repair_nul=true", body)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("import with --repair-nul returned %d, want 201: %s", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get(NULRepairHeader); got != "1" {
+			t.Errorf("%s = %q, want \"1\"", NULRepairHeader, got)
+		}
+
+		var ws models.Workspace
+		if err := json.Unmarshal(rr.Body.Bytes(), &ws); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		items, err := srv.store.ListItems(ws.ID, models.ItemListParams{})
+		if err != nil {
+			t.Fatalf("list items: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("imported %d items, want 1", len(items))
+		}
+
+		// The stored blob carries U+FFFD where the NUL was, and is still the
+		// same document otherwise. Asserting the CONTENT is what distinguishes
+		// a repair from a blank.
+		//
+		// As the ESCAPE, not the character: the JSON arm rewrites `\u0000` to
+		// `\ufffd` in place, six characters for six, so nothing around it
+		// shifts. The two decode identically — checked below, because a stored
+		// blob that merely LOOKS right and parses to something else would
+		// satisfy the byte comparison alone.
+		if want := `{"note":"x` + textguard.ReplacementEscape + `y"}`; items[0].Fields != want {
+			t.Errorf("stored fields = %q, want %q", items[0].Fields, want)
+		}
+		var blob map[string]string
+		if err := json.Unmarshal([]byte(items[0].Fields), &blob); err != nil {
+			t.Fatalf("stored blob is not valid JSON: %v", err)
+		}
+		if want := "x" + textguard.Replacement + "y"; blob["note"] != want {
+			t.Errorf("stored blob decodes to %q, want %q", blob["note"], want)
+		}
+	})
+}
+
+// TestImportRepairsARawNULInsideAFieldsBlob is the OTHER at-rest shape of the
+// same column, and it is here because the two are repaired by different passes.
+//
+// A raw NUL byte in the blob marshals to a single-backslash escape, so the
+// decoded `fields` string carries a real NUL and the repair's raw pass fixes
+// it — leaving the character rather than the escape, since there is no escape
+// to rewrite. Without this leg the JSON column would only ever be tested in the
+// shape the document pass handles.
+func TestImportRepairsARawNULInsideAFieldsBlob(t *testing.T) {
+	storedBlob := `{"note":"x` + textguard.NUL + `y"}`
+	body, err := json.Marshal(models.WorkspaceExport{
+		Version:   1,
+		Workspace: models.WorkspaceExportMeta{Name: "RawBlob", Slug: "rawblob"},
+		Collections: []models.CollectionExport{{
+			ID: "col-1", Name: "Tasks", Slug: "tasks", Schema: "{}", Settings: "{}",
+		}},
+		Items: []models.ItemExport{{
+			ID: "item-1", CollectionID: "col-1", Title: "Subject", Slug: "subject",
+			Content: "clean", Fields: storedBlob, Tags: "[]", ItemNumber: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal export: %v", err)
+	}
+
+	srv := testServer(t)
+	rr := importWithQuery(t, srv, "?repair_nul=true", body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("import returned %d, want 201: %s", rr.Code, rr.Body.String())
+	}
+
+	var ws models.Workspace
+	if err := json.Unmarshal(rr.Body.Bytes(), &ws); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	items, err := srv.store.ListItems(ws.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("imported %d items, want 1", len(items))
+	}
+	if want := `{"note":"x` + textguard.Replacement + `y"}`; items[0].Fields != want {
+		t.Errorf("stored fields = %q, want %q", items[0].Fields, want)
+	}
+}

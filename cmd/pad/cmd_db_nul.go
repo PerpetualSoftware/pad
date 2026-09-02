@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -56,12 +57,16 @@ backup file instead of the live database.
 
 Nothing is repaired. Run '` + repairNULCommandHint + `' for that.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := openSQLiteForNULTools(&fromPath)
+			proceed, err := resolveNULToolsTarget(&fromPath)
 			if err != nil {
 				return err
 			}
-			if s == nil {
+			if !proceed {
 				return nil // Postgres: reported and nothing to do.
+			}
+			s, err := openNULToolsStore(fromPath)
+			if err != nil {
+				return err
 			}
 			defer s.Close()
 
@@ -101,26 +106,35 @@ A row whose PRIMARY KEY carries the NUL is reported and left alone, because
 repairing it would change the row's identity and could collide with another
 row.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			proceed, err := resolveNULToolsTarget(&fromPath)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
+			}
+
 			// Refuse while the server is up, on the same reasoning as
 			// 'pad db restore': the report is a claim about a database, and a
 			// database somebody else is concurrently writing makes it a claim
 			// about a moment that has passed.
-			if fromPath == "" {
-				cfg, err := config.Load()
-				if err != nil {
-					return fmt.Errorf("load config: %w", err)
-				}
-				if cli.IsServerRunning(cfg) && !force {
-					return fmt.Errorf("the Pad server appears to be running at %s:%d — stop it first ('pad server stop') so the rows cannot change under the repair, or re-run with --force to override", cfg.Host, cfg.Port)
+			//
+			// The check is on the RESOLVED PATH, not on whether --from was
+			// given. Skipping it whenever --from was passed made the guard
+			// opt-out by accident: `--from` pointing at the live database —
+			// which is exactly what an operator copying the path out of
+			// `pad db scan-nul`'s output would type — repaired underneath a
+			// running server with no warning. A --from that names an unrelated
+			// backup is still unguarded, and should be: nothing is writing it.
+			if !force {
+				if err := refuseIfServerOwns(fromPath); err != nil {
+					return err
 				}
 			}
 
-			s, err := openSQLiteForNULTools(&fromPath)
+			s, err := openNULToolsStore(fromPath)
 			if err != nil {
 				return err
-			}
-			if s == nil {
-				return nil
 			}
 			defer s.Close()
 
@@ -178,32 +192,44 @@ row.`,
 	return cmd
 }
 
-// openSQLiteForNULTools resolves the database both commands work on, and
-// returns (nil, nil) when the deployment is PostgreSQL — where the state these
-// commands exist for cannot be stored at all.
+// resolveNULToolsTarget works out which database file the two commands act on,
+// WITHOUT opening it, and reports whether there is anything to do.
+//
+// Resolution is separated from opening because opening is not free of
+// consequence: store.New runs any pending schema migrations, exactly as
+// starting the server does. The repair must be able to REFUSE — because the
+// server is running and owns this file — before that happens, and an earlier
+// version opened first and checked second, which made the refusal arrive after
+// the thing it was protecting against.
 //
 // It writes the resolved path back through fromPath so the caller can report
 // which database it looked at. A report that does not name its subject is the
 // kind an operator can act on against the wrong instance.
-func openSQLiteForNULTools(fromPath *string) (*store.Store, error) {
+func resolveNULToolsTarget(fromPath *string) (proceed bool, err error) {
 	if *fromPath == "" {
 		if os.Getenv("PAD_DB_DRIVER") == "postgres" || os.Getenv("PAD_DATABASE_URL") != "" {
 			fmt.Fprintln(os.Stderr,
 				"This deployment is PostgreSQL, which refuses these values natively (SQLSTATE 22021 for a\n"+
 					"NUL in text, 22P05 for the escape reaching jsonb), so no stored row can carry one.\n"+
 					"Nothing to scan or repair.")
-			return nil, nil
+			return false, nil
 		}
-		resolved, err := resolveSQLiteDBPath()
-		if err != nil {
-			return nil, err
+		resolved, rerr := resolveSQLiteDBPath()
+		if rerr != nil {
+			return false, rerr
 		}
 		*fromPath = resolved
 	}
-	if _, err := os.Stat(*fromPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("SQLite database not found: %s", *fromPath)
+	if _, serr := os.Stat(*fromPath); os.IsNotExist(serr) {
+		return false, fmt.Errorf("SQLite database not found: %s", *fromPath)
 	}
-	s, err := store.New(*fromPath)
+	return true, nil
+}
+
+// openNULToolsStore opens the resolved database. Opening applies any pending
+// schema migrations, which is why the caller does its refusing first.
+func openNULToolsStore(path string) (*store.Store, error) {
+	s, err := store.New(path)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite: %w", err)
 	}
@@ -264,4 +290,44 @@ func sortedCountKeys(m map[string]int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// refuseIfServerOwns errors when dbPath is the database a running server is
+// serving.
+//
+// Paths are compared after EvalSymlinks and Abs, because "the same file"
+// reached by two spellings is the case the comparison exists for — a symlinked
+// data directory, or a relative --from typed from a different working
+// directory. A path that cannot be resolved falls back to its cleaned absolute
+// form rather than being treated as different, so the guard errs toward
+// refusing.
+func refuseIfServerOwns(dbPath string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if !cli.IsServerRunning(cfg) {
+		return nil
+	}
+	if !sameFilePath(dbPath, cfg.DBPath) {
+		return nil
+	}
+	return fmt.Errorf("the Pad server appears to be running at %s:%d and is serving %s — stop it first "+
+		"('pad server stop') so the rows cannot change under the repair, or re-run with --force to override",
+		cfg.Host, cfg.Port, cfg.DBPath)
+}
+
+// sameFilePath reports whether two paths name the same file.
+func sameFilePath(a, b string) bool {
+	return resolvePathForCompare(a) == resolvePathForCompare(b)
+}
+
+func resolvePathForCompare(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return filepath.Clean(p)
 }

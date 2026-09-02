@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,5 +168,54 @@ func plantNULInWorkspaceName(t *testing.T, dbPath, wsID, value string) {
 	}
 	if _, err := raw.Exec(`UPDATE workspaces SET name = ? WHERE id = ?`, value, wsID); err != nil {
 		t.Fatalf("plant: %v", err)
+	}
+}
+
+// TestSameFilePathIdentifiesTheServersDatabase covers the comparison the
+// running-server guard is built on.
+//
+// The guard used to be skipped whenever --from was given, which made it
+// opt-out by accident: the most natural --from an operator types is the path
+// `pad db scan-nul` just printed, which IS the live database. The fix compares
+// resolved paths, so the cases that matter are the ones where two spellings
+// name one file.
+func TestSameFilePathIdentifiesTheServersDatabase(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "pad.db")
+	if err := os.WriteFile(live, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	other := filepath.Join(dir, "backup.db")
+	if err := os.WriteFile(other, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	link := filepath.Join(dir, "linked.db")
+	if err := os.Symlink(live, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		a, b string
+		want bool
+		why  string
+	}{
+		{"identical paths", live, live, true, "the plain case: --from naming the live database."},
+		{"a symlink to it", link, live, true,
+			"a symlinked data directory is the shape where two spellings name one file, and the one a " +
+				"string comparison misses."},
+		{"an unrelated file", other, live, false,
+			"the control. A guard that answered true for everything would also pass every case above, " +
+				"and would refuse repairing a backup for no reason."},
+		{"a path with redundant segments", filepath.Join(dir, ".", "pad.db"), live, true,
+			"Clean/Abs normalisation, so a path typed from a different working directory still matches."},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameFilePath(tc.a, tc.b); got != tc.want {
+				t.Errorf("sameFilePath(%q, %q) = %v, want %v — %s", tc.a, tc.b, got, tc.want, tc.why)
+			}
+		})
 	}
 }

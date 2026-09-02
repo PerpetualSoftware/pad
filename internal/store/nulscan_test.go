@@ -413,3 +413,69 @@ func TestRepairNULAddressesARowidOnlyTable(t *testing.T) {
 		t.Errorf("the neighbouring row was rewritten too: %q", bystander)
 	}
 }
+
+// TestScanNULSurvivesANullWorkspaceID is a regression test for a scan that
+// could not run on the databases it exists for.
+//
+// Several protected tables carry a NULLABLE workspace_id — activities,
+// api_tokens, mcp_audit_log — and the scan selected it into a plain *string,
+// which fails with "converting NULL to string is unsupported" and takes the
+// whole scan down with it, along with the repair and the migrate-to-pg
+// preflight that call it. The failure needs a VIOLATING row in such a table, so
+// it was invisible to every fixture that planted its rows in items.
+//
+// Verified to fail against the unfixed code: the scan returned
+// `scan activities.actor row: sql: Scan error ... converting NULL to string`.
+func TestScanNULSurvivesANullWorkspaceID(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("SQLite only")
+	}
+
+	plantLegacyRows(t, s, func(raw *sql.DB) {
+		// workspace_id omitted, so it is NULL — the shape an instance-wide
+		// activity row has.
+		mustExec(t, raw,
+			`INSERT INTO activities (id, action, actor, source, metadata, created_at)
+			 VALUES ('act-nul', 'created', ?, 'cli', '{}', '2026-01-01')`,
+			"agent"+textguard.NUL+"name")
+	})
+
+	report, err := s.ScanNUL()
+	if err != nil {
+		t.Fatalf("scan failed on a row with a NULL workspace_id: %v", err)
+	}
+
+	var found *NULViolation
+	for i := range report.Violations {
+		if report.Violations[i].Table == "activities" && report.Violations[i].Column == "actor" {
+			found = &report.Violations[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("activities.actor not reported: %v", report.Violations)
+	}
+	if found.WorkspaceID != "" {
+		t.Errorf("workspace attribution = %q, want empty for a NULL workspace_id", found.WorkspaceID)
+	}
+	if found.Key["id"] != "act-nul" {
+		t.Errorf("row address = %v, want id=act-nul", found.Key)
+	}
+
+	// And it repairs, so the NULL only affected attribution rather than
+	// addressing.
+	rep, err := s.RepairNUL()
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if len(rep.Failed) != 0 {
+		t.Fatalf("repair failures: %+v", rep.Failed)
+	}
+	var actor string
+	if err := s.db.QueryRow(`SELECT actor FROM activities WHERE id = 'act-nul'`).Scan(&actor); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if want := "agent" + textguard.Replacement + "name"; actor != want {
+		t.Errorf("actor = %q, want %q", actor, want)
+	}
+}

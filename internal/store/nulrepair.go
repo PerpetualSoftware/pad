@@ -89,6 +89,15 @@ func (s *Store) RepairNUL() (*NULRepairReport, error) {
 		// It is also mechanically impossible through this handle: Layer A
 		// inspects every bound parameter, so a WHERE clause carrying the
 		// NUL-bearing key would be refused along with the write.
+		if v.KeyIncomplete {
+			report.Skipped = append(report.Skipped, NULRepairSkip{
+				Violation: v,
+				Reason: "one of the row's primary-key columns is NULL, so there is no WHERE clause that " +
+					"selects exactly this row",
+			})
+			continue
+		}
+
 		if _, isKey := v.Key[v.Column]; isKey {
 			report.Skipped = append(report.Skipped, NULRepairSkip{
 				Violation: v,

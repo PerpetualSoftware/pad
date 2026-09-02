@@ -2293,12 +2293,12 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 // body in the product. So a value the repair cannot fix is still refused, by
 // the same function, with the same error.
 //
-// Only the ESCAPE form is repaired, via textguard.RepairJSONDocument. A raw NUL
-// BYTE inside a JSON string makes the document invalid, so replacing one would
-// turn a body the decoder rejects into one it accepts — widening what parses is
-// not this flag's job. Those bodies keep failing where they failed.
+// A body that is not valid JSON is left alone, so its own decode error is what
+// the caller reports: a raw NUL BYTE inside a JSON string makes the document
+// invalid, and replacing one would turn a body the decoder rejects into one it
+// accepts. Widening what parses is not this flag's job.
 //
-// Returns how many escapes were replaced, which the handler reports.
+// Returns how many VALUES were rewritten, which the handler reports.
 func decodeJSONRepairingNUL(r *http.Request, v interface{}, maxBytes int64) (int, error) {
 	raw, err := readBodyForDecode(r, maxBytes)
 	if err != nil {
@@ -2308,18 +2308,138 @@ func decodeJSONRepairingNUL(r *http.Request, v interface{}, maxBytes int64) (int
 	return n, decodeJSONBytes(repaired, v)
 }
 
-// repairBodyNULEscapes replaces live NUL escapes in a JSON body, leaving a body
-// that is not valid JSON untouched so its own decode error is what the caller
-// reports.
+// repairBodyNULEscapes repairs a JSON body the way the GATE reads it, and
+// returns how many values it changed.
+//
+// IT MIRRORS bodyDecodesNUL's WALK, and the first version did not — it scanned
+// the raw bytes for a live escape, which is right for a value the gate reads at
+// the top level and wrong for the one that actually matters. An item's `fields`
+// blob travels through an export as a STRING: the stored text
+// `{"a":"x\u0000y"}` is marshalled into the body as `"{\"a\":\"x\\u0000y\"}"`,
+// with a DOUBLED backslash, which a raw scan must leave alone because at that
+// layer it is literal text. The gate refuses it anyway, because it decodes the
+// body first and re-parses that string as the document it is. So a raw-byte
+// repair left `--repair-nul` unable to fix the single most common carrier in a
+// real export, while passing every test whose fixture put the NUL in `content`
+// (codex round 1).
+//
+// The walk below is therefore the same traversal, with the same classing, one
+// verb changed: where bodyDecodesNUL asks textguard whether a value decodes to
+// a NUL, this asks textguard to repair it. Two walks of one shape in one
+// package is a risk, and the mitigation is that they are measured against the
+// same corpus in both directions rather than reviewed for similarity.
+//
+// A body that is not valid JSON is returned untouched, so its own decode error
+// is what the caller reports and a malformed body cannot be made to parse.
+// A body with nothing to repair is returned BYTE-IDENTICAL — the re-encode
+// happens only when something actually changed.
 func repairBodyNULEscapes(raw []byte) ([]byte, int) {
 	if !json.Valid(raw) {
 		return raw, 0
 	}
-	repaired, n := textguard.RepairJSONDocument(string(raw))
+
+	// UseNumber, so a number wider than float64 is not silently re-emitted in
+	// scientific notation on its way back out.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var decoded any
+	if err := dec.Decode(&decoded); err != nil {
+		return raw, 0
+	}
+
+	repaired, n := repairDecodedNULs(decoded, false)
 	if n == 0 {
 		return raw, 0
 	}
-	return []byte(repaired), n
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(repaired); err != nil {
+		// Re-encoding a value that came out of a decode should not fail. If it
+		// somehow does, returning the ORIGINAL leaves the gate to refuse it,
+		// which is the safe direction.
+		return raw, 0
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), n
+}
+
+// repairDecodedNULs walks a decoded body, repairing every string the gate would
+// refuse, and counts the VALUES it changed.
+//
+// The count is values rather than escapes because at this layer an escape is
+// not a thing that exists any more — the outer decode has already resolved it,
+// and a nested document may carry several. "Three values were rewritten" is
+// also the sentence an operator can check against the report.
+//
+// inUserData carries the same meaning as in bodyDecodesNUL: below a
+// JSON-encoded field key nothing re-parses the strings, so they are ordinary
+// text and only a raw NUL matters.
+func repairDecodedNULs(v any, inUserData bool) (any, int) {
+	switch t := v.(type) {
+	case string:
+		// Both arms of the gate check exactly ContainsNUL here, so both repair
+		// exactly raw NULs. The escape form is only meaningful one level up,
+		// where a string is re-parsed as a document.
+		repaired := textguard.Repair(t, false)
+		if repaired == t {
+			return t, 0
+		}
+		return repaired, 1
+
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		count := 0
+		for k, sub := range t {
+			// KEYS TOO. The gate refuses a NUL in a key, so a repair that only
+			// touched values would leave the body refused with nothing to show
+			// for it.
+			key := textguard.Repair(k, false)
+			if key != k {
+				count++
+			}
+
+			if !inUserData && isJSONEncodedFieldKey(k) {
+				if str, isString := sub.(string); isString {
+					// The one place the ESCAPE form is repaired: this string is
+					// re-parsed as a document, so it gets both checks, exactly
+					// as the gate gives it both.
+					repaired := textguard.Repair(str, true)
+					if repaired != str {
+						count++
+					}
+					out[key] = repaired
+					continue
+				}
+				// The field's natural shape — an object or array the server
+				// marshals itself. Everything below is caller data.
+				sr, n := repairDecodedNULs(sub, true)
+				out[key] = sr
+				count += n
+				continue
+			}
+
+			sr, n := repairDecodedNULs(sub, inUserData)
+			out[key] = sr
+			count += n
+		}
+		return out, count
+
+	case []any:
+		out := make([]any, len(t))
+		count := 0
+		for i, sub := range t {
+			sr, n := repairDecodedNULs(sub, inUserData)
+			out[i] = sr
+			count += n
+		}
+		return out, count
+
+	default:
+		// Numbers, booleans, null. json.Number is deliberately carried through
+		// untouched so it re-encodes as the literal it arrived as.
+		return v, 0
+	}
 }
 
 // decodeJSONBytes is everything decodeJSONWithLimit does once the body has been

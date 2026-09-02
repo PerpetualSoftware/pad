@@ -177,46 +177,200 @@ func TestNULRepairTallyDefaultsToStrict(t *testing.T) {
 	}
 }
 
-// TestRepairFlagDoesNotReachTheObliqueEscape pins the limit the post-flag
-// message now claims, rather than leaving it as prose.
+// TestRepairFlagReachesTheNestedAndObliqueForms is the codex round-1 finding
+// turned into a test, and it is the reason the repair walks the DECODED body
+// rather than scanning raw bytes.
 //
-// A backslash spelled as its OWN escape (u005c) followed by the text u0000
-// decodes to the six-character NUL escape, which a nested document then
-// re-parses into a real NUL — the oblique spelling BUG-2803's round 4 found,
-// and the reason the gate walks the DECODED body rather than searching raw
-// bytes. A document-level rewrite cannot reach it: at the layer the repair
-// scans, those bytes are an escaped backslash followed by ordinary text.
+// Both fixtures are shapes a REAL export carries and a raw scan cannot touch:
 //
-// So the flag must NOT accept this body, and the message it produces must not
-// tell the operator the cause is a raw NUL byte, which it is not.
-func TestRepairFlagDoesNotReachTheObliqueEscape(t *testing.T) {
-	backslash := textguard.EscNUL[:1]
-	oblique := backslash + "u005c" + "u0000"
-	body := []byte(`{"fields":"{\"a\":\"x` + oblique + `y\"}"}`)
+//   - `items.fields` travels as a STRING. The stored blob's live escape is
+//     written into the body with a DOUBLED backslash, which at the body's own
+//     layer is literal text — correctly left alone by a raw scan, and refused
+//     by the gate anyway, because the gate re-parses that string as the
+//     document it is. This is the most common carrier in a real export and the
+//     first version of the flag could not repair it.
+//   - The oblique spelling puts the backslash itself in as an escape, so the
+//     six characters do not appear in the raw bytes at all (BUG-2803 round 4).
+//     The decode resolves it; a scan never sees it.
+//
+// Each leg asserts the gate ACCEPTS the repaired body, which is the property
+// the flag exists to deliver, and that the count is reported.
+func TestRepairFlagReachesTheNestedAndObliqueForms(t *testing.T) {
+	esc := textguard.EscNUL
+	backslash := esc[:1]
 
-	// Precondition: the gate refuses it. If it does not, this test is measuring
-	// a body that was never a problem.
-	if !bodyDecodesNUL(body) {
-		t.Fatalf("the gate does not refuse the oblique fixture; it proves nothing: %s", body)
+	cases := []struct {
+		name string
+		body string
+		why  string
+	}{
+		{
+			name: "a live escape inside a fields blob carried as a string",
+			body: `{"fields":"{\"a\":\"x` + backslash + esc + `y\"}"}`,
+			why:  "what an export of an affected items.fields row actually looks like on the wire.",
+		},
+		{
+			name: "the obliquely spelled escape inside a fields blob",
+			body: `{"fields":"{\"a\":\"x` + backslash + `u005c` + `u0000y\"}"}`,
+			why:  "the backslash written as its own escape; the six characters never appear in the body.",
+		},
+		{
+			name: "a NUL in a KEY of a nested document",
+			body: `{"fields":"{\"k` + backslash + esc + `ey\":\"v\"}"}`,
+			why:  "keys are as fatal as values, and a value-only repair leaves the body refused.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(tc.body)
+
+			// Precondition: the gate refuses it. A fixture the gate accepts
+			// would make every assertion below vacuous.
+			if !bodyDecodesNUL(raw) {
+				t.Fatalf("the gate does not refuse this fixture, so it measures nothing: %s", raw)
+			}
+
+			tally := &nulRepairTally{Enabled: true}
+			repaired := tally.Apply(raw)
+
+			if bodyDecodesNUL(repaired) {
+				t.Fatalf("%s\n  the repair did not make the body acceptable\n  in:  %s\n  out: %s",
+					tc.why, raw, repaired)
+			}
+			if tally.Replaced != 1 {
+				t.Errorf("reported %d repaired value(s), want 1: %s", tally.Replaced, repaired)
+			}
+		})
+	}
+}
+
+// TestRepairFlagLeavesALiteralAlone is the negative half of the test above, and
+// the reason the repair cannot simply rewrite every `\u0000`-shaped run of
+// characters it finds.
+//
+// A doubled backslash in a field the gate does NOT re-parse is six literal
+// characters — corpus case 3 — and an accepted value. Rewriting it would
+// corrupt a document that merely writes ABOUT this bug, which in a
+// documentation tool is not hypothetical.
+func TestRepairFlagLeavesALiteralAlone(t *testing.T) {
+	esc := textguard.EscNUL
+	backslash := esc[:1]
+	body := []byte(`{"content":"x` + backslash + esc + `y"}`)
+
+	if bodyDecodesNUL(body) {
+		t.Fatalf("the gate refuses a literal; the control is broken: %s", body)
 	}
 
 	tally := &nulRepairTally{Enabled: true}
-	repaired := tally.Apply(body)
-	if tally.Replaced != 0 {
-		t.Errorf("the repair claims to have rewritten %d escape(s) in a body that carries none at its "+
-			"own layer: %s", tally.Replaced, repaired)
+	got := tally.Apply(body)
+	if string(got) != string(body) {
+		t.Errorf("an accepted value was rewritten\n  in:  %s\n  out: %s", body, got)
 	}
-	if !bodyDecodesNUL(repaired) {
-		t.Fatalf("the repair made the oblique body acceptable — it must not, since the value it would " +
-			"have to rewrite lives one decode deeper than the document it scans")
+	if tally.Replaced != 0 {
+		t.Errorf("reported %d repaired value(s) for a body with nothing to repair", tally.Replaced)
+	}
+}
+
+// TestBodyRepairMirrorsTheGateOverTheCorpus is the guard on the one risk the
+// decoded walk introduces: repairDecodedNULs and bodyDecodesNUL are two
+// traversals of the same shape with the same classing, and a divergence between
+// them is invisible to review.
+//
+// So it is measured rather than reviewed. Every corpus case is put into a body
+// the way the gate's own leg puts it — classed by KEY — then repaired by the
+// BODY path and handed back to the gate. Refused cases must come back accepted;
+// accepted cases must come back byte-identical, which is what catches a walk
+// that rewrites something nobody complained about.
+func TestBodyRepairMirrorsTheGateOverTheCorpus(t *testing.T) {
+	for _, c := range textguard.Corpus {
+		t.Run(c.Name, func(t *testing.T) {
+			key := "content"
+			if c.IsJSON {
+				key = "fields"
+			}
+			body, err := json.Marshal(map[string]any{key: c.Value})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			// The corpus's own verdict must be what the gate says about this
+			// body, or the case is being measured in the wrong shape.
+			if got := bodyDecodesNUL(body); got != c.Refused {
+				t.Fatalf("gate refused=%t, corpus says %t — the fixture shape is wrong, not the repair",
+					got, c.Refused)
+			}
+
+			repaired, n := repairBodyNULEscapes(body)
+
+			if bodyDecodesNUL(repaired) {
+				t.Errorf("the body repair left a value the gate still refuses\n  in:  %s\n  out: %s\n"+
+					"  why this case exists: %s", body, repaired, c.Why)
+			}
+			if c.Refused {
+				if n == 0 {
+					t.Errorf("a refused body reported no repairs: %s", body)
+				}
+			} else {
+				if n != 0 {
+					t.Errorf("an accepted body reported %d repair(s): %s", n, repaired)
+				}
+				if string(repaired) != string(body) {
+					t.Errorf("an accepted body was rewritten\n  in:  %s\n  out: %s", body, repaired)
+				}
+			}
+		})
+	}
+}
+
+// TestBodyRepairPreservesEverythingElse pins the parts of a body the repair
+// must not disturb when it DOES re-encode.
+//
+// Re-encoding is the cost of walking the decoded body, and it is only paid on
+// bodies that carry a NUL. What it must not cost is the rest of the payload: an
+// import body is full of numbers (item_number, sort_order) and text, and an
+// integer that came back as 1e+06 would be a silent data change nobody asked
+// for. json.Number is why this passes; without UseNumber it does not.
+func TestBodyRepairPreservesEverythingElse(t *testing.T) {
+	body := []byte(`{"version":1,"big":9007199254740993,"ratio":1.5,"flag":true,"nothing":null,` +
+		`"text":"a < b & c > d","list":[1,2,3],"content":"x` + textguard.EscNUL + `y"}`)
+
+	repaired, n := repairBodyNULEscapes(body)
+	if n != 1 {
+		t.Fatalf("repaired %d values, want 1", n)
 	}
 
-	msg := nulRepairRemedy(tally)
-	if strings.Contains(msg, "NUL byte") {
-		t.Errorf("the post-flag message names a cause it cannot know — this value carries an escape, "+
-			"not a raw byte: %q", msg)
+	var got map[string]any
+	dec := json.NewDecoder(strings.NewReader(string(repaired)))
+	dec.UseNumber()
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("repaired body does not decode: %v (%s)", err, repaired)
 	}
-	if !strings.Contains(msg, "pad db repair-nul") {
-		t.Errorf("the post-flag message leaves the operator with no course of action: %q", msg)
+
+	// The integer wider than float64 is the one that fails without UseNumber:
+	// it comes back as 9007199254740992, off by one, with nothing to see.
+	if s, _ := got["big"].(json.Number); s.String() != "9007199254740993" {
+		t.Errorf("big = %v, want 9007199254740993 — the number went through float64", got["big"])
+	}
+	if s, _ := got["ratio"].(json.Number); s.String() != "1.5" {
+		t.Errorf("ratio = %v, want 1.5", got["ratio"])
+	}
+	if got["flag"] != true {
+		t.Errorf("flag = %v, want true", got["flag"])
+	}
+	if v, present := got["nothing"]; !present || v != nil {
+		t.Errorf("nothing = %v (present=%v), want a present null", v, present)
+	}
+	// HTML-ish characters survive as themselves rather than as < escapes.
+	// Both decode the same, but SetEscapeHTML(false) keeps the payload legible
+	// for anyone who looks at it.
+	if got["text"] != "a < b & c > d" {
+		t.Errorf("text = %q, want the original", got["text"])
+	}
+	if !strings.Contains(string(repaired), "a < b & c > d") {
+		t.Errorf("HTML-ish characters were escaped on re-encode: %s", repaired)
+	}
+	if want := "x" + textguard.Replacement + "y"; got["content"] != want {
+		t.Errorf("content = %q, want %q", got["content"], want)
 	}
 }

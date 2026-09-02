@@ -37,21 +37,9 @@ func Repair(value string, isJSON bool) string {
 	// rewriting them there is the false positive the corpus's third case
 	// exists to catch.
 	if isJSON && DocumentDecodesNULAnyShape(out) {
-		out, _ = RepairJSONDocument(out)
+		out, _ = repairJSONNULEscapes(out)
 	}
 	return out
-}
-
-// RepairJSONDocument rewrites every NUL escape a JSON parser would DECODE in
-// an already-valid JSON document, and reports how many it replaced.
-//
-// Exported for the workspace import's --repair-nul path, which needs the count
-// to tell the operator what it changed and cannot use Repair: Repair also
-// rewrites RAW NUL bytes, and a raw NUL inside a JSON string makes the document
-// invalid, so repairing one there would turn a body the decoder rejects into
-// one it accepts. Widening what parses is not this flag's job.
-func RepairJSONDocument(s string) (string, int) {
-	return repairJSONNULEscapes(s)
 }
 
 const (

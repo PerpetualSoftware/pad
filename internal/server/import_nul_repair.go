@@ -34,11 +34,16 @@ import (
 // import simply stops repairing, or stops reporting, with nothing to see.
 const NULRepairQueryParam = "repair_nul"
 
-// NULRepairHeader reports how many escapes were replaced, so the operator is
+// NULRepairHeader reports how many VALUES were rewritten, so the operator is
 // told what changed rather than only that something did. A header rather than a
 // response field because the success body is the created workspace and its
 // shape is a public contract.
-const NULRepairHeader = "X-Pad-Repaired-NUL-Escapes"
+//
+// Values, not escapes: the repair works on the DECODED body, where the escape
+// form has already been resolved and one nested document may have carried
+// several. "Two values were rewritten" is also the sentence an operator can
+// check against the rows they end up with.
+const NULRepairHeader = "X-Pad-Repaired-NUL-Values"
 
 // nulRepairTally carries the flag through an import and counts what it changed.
 type nulRepairTally struct {
@@ -55,7 +60,7 @@ func wantsNULRepair(r *http.Request) bool {
 	return false
 }
 
-// Apply repairs a JSON document's live NUL escapes when the flag is set, and
+// Apply repairs a JSON body's NUL-carrying values when the flag is set, and
 // returns the bytes the gate should judge.
 //
 // A nil tally, or one with the flag unset, returns the input untouched — so a
@@ -87,16 +92,19 @@ func (t *nulRepairTally) SetHeader(w http.ResponseWriter) {
 // the other direction: a remedy that does not work is still a contract claim).
 func nulRepairRemedy(t *nulRepairTally) string {
 	if t != nil && t.Enabled {
-		// DELIBERATELY DOES NOT NAME THE CAUSE. An earlier wording said "the
-		// value carries a NUL byte rather than an escape", which is one of at
-		// least two possibilities and so is a claim this code cannot make: the
-		// other is an escape spelled indirectly (`\u005cu0000` decodes to the
-		// escape TEXT, which a nested document then re-parses into a NUL) —
-		// the oblique form BUG-2803's round 4 found, which the gate catches and
-		// a document-level rewrite does not reach. Naming the wrong one sends
-		// the operator to the wrong fix.
-		return ". --repair-nul could not repair this value: it is not a plain NUL escape in the document." +
-			" Repair the source database with '" + store.RepairNULCommand + "' and export again"
+		// DELIBERATELY DOES NOT NAME A CAUSE, and this branch should now be
+		// unreachable in practice: the repair walks the decoded body with the
+		// same classing the gate uses, so a body the gate refuses afterwards
+		// means the two walks have diverged — which is a defect here, not a
+		// property of the operator's data. Guessing at a cause would send them
+		// to a fix for a problem they do not have.
+		//
+		// (Two earlier wordings named causes that were wrong. The first said
+		// "a raw NUL byte rather than an escape"; the second said "not a plain
+		// NUL escape in the document". Both stopped being true when the repair
+		// moved from scanning raw bytes to walking the decoded body.)
+		return ". The import's NUL repair ran and the value is still refused. Repair the source database" +
+			" with '" + store.RepairNULCommand + "' and export again"
 	}
 	// Worded for BOTH doors. The web UI posts to this same endpoint, and a
 	// browser user has no command line to add a flag to — so the message names

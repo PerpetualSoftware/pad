@@ -1102,7 +1102,7 @@ Format is detected by file extension. Override workspace name with --name.`,
 				// number is the kind of reassurance an operator cannot check,
 				// and zero is a genuinely useful answer: it means the export was
 				// clean and the flag was not needed.
-				fmt.Printf("  NUL escapes repaired (replaced with U+FFFD): %s\n",
+				fmt.Printf("  Values repaired (each NUL replaced with U+FFFD): %s\n",
 					repairedNULCount(header))
 			}
 			return nil
@@ -1110,7 +1110,7 @@ Format is detected by file extension. Override workspace name with --name.`,
 	}
 	cmd.Flags().StringVar(&nameFlag, "name", "", "override workspace name")
 	cmd.Flags().BoolVar(&repairNUL, "repair-nul", false,
-		"replace NUL escapes in the export with U+FFFD instead of refusing it (rewrites content; default is strict)")
+		"replace NULs carried by the export with U+FFFD instead of refusing it (rewrites content; default is strict)")
 	return cmd
 }
 
