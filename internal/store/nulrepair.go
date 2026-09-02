@@ -107,6 +107,26 @@ func (s *Store) RepairNUL() (*NULRepairReport, error) {
 			continue
 		}
 
+		// A NUL in a key column the list does NOT protect, on a row whose
+		// violation is elsewhere. The address is then unusable for a different
+		// reason than the case above: Layer A inspects every bound parameter,
+		// including the ones in a WHERE clause, so the lookup is refused before
+		// SQLite is asked to find the row.
+		//
+		// Detected here rather than left to the driver. Without this the row
+		// lands in Failed carrying "invalid text parameter: parameter 2", which
+		// says nothing an operator can act on — the same information, phrased as
+		// a fault in the repair rather than as a property of the row (codex
+		// round 3).
+		if key, bad := nulBearingKey(v); bad {
+			report.Skipped = append(report.Skipped, NULRepairSkip{
+				Violation: v,
+				Reason: "the row's " + key + " value itself contains a NUL, so no query can address this " +
+					"row; repair or remove it by hand",
+			})
+			continue
+		}
+
 		repaired, err := s.repairOneNUL(v)
 		switch {
 		case err != nil:
@@ -210,4 +230,18 @@ func nulColumnIsJSON(table, column string) bool {
 		}
 	}
 	return false
+}
+
+// nulBearingKey reports the first key column whose VALUE carries a NUL.
+//
+// Such a value cannot be bound: the store's write guard checks every parameter,
+// not only the ones being written, so a WHERE clause carrying one is refused
+// along with the statement it belongs to.
+func nulBearingKey(v NULViolation) (string, bool) {
+	for _, k := range sortedKeys(v.Key) {
+		if textguard.ContainsNUL(v.Key[k]) {
+			return k, true
+		}
+	}
+	return "", false
 }

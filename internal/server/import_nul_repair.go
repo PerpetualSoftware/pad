@@ -45,10 +45,16 @@ const NULRepairQueryParam = "repair_nul"
 // check against the rows they end up with.
 const NULRepairHeader = "X-Pad-Repaired-NUL-Values"
 
-// nulRepairTally carries the flag through an import and counts what it changed.
+// nulRepairTally carries the flag through an import, counts what it changed,
+// and records any reason it declined to act.
 type nulRepairTally struct {
 	Enabled  bool
 	Replaced int
+	// Declined explains why the repair did not run on a body it was asked to
+	// repair — today, only a payload with duplicate object members, where
+	// repairing would change which value is imported. Empty when the repair
+	// ran, whether or not it found anything.
+	Declined string
 }
 
 // wantsNULRepair reports whether the request asked for the repair.
@@ -70,8 +76,11 @@ func (t *nulRepairTally) Apply(raw []byte) []byte {
 	if t == nil || !t.Enabled {
 		return raw
 	}
-	repaired, n := repairBodyNULEscapes(raw)
+	repaired, n, declined := repairBodyNULEscapes(raw)
 	t.Replaced += n
+	if declined != "" {
+		t.Declined = declined
+	}
 	return repaired
 }
 
@@ -91,6 +100,13 @@ func (t *nulRepairTally) SetHeader(w http.ResponseWriter) {
 // re-run with a flag they just used is worse than saying nothing (PATTE-135 in
 // the other direction: a remedy that does not work is still a contract claim).
 func nulRepairRemedy(t *nulRepairTally) string {
+	if t != nil && t.Declined != "" {
+		// The one case where the repair KNOWS why it did nothing, so it says so
+		// rather than falling through to the message below, which would tell an
+		// operator the repair ran when it deliberately did not.
+		return ". The import's NUL repair did not run: " + t.Declined +
+			". Repair the source database with '" + store.RepairNULCommand + "' and export again"
+	}
 	if t != nil && t.Enabled {
 		// DELIBERATELY DOES NOT NAME A CAUSE, and this branch should now be
 		// unreachable in practice: the repair walks the decoded body with the

@@ -222,6 +222,16 @@ database carries any affected rows it lists them, prints the repair command,
 and exits without moving anything — rather than failing partway through the
 copy against PostgreSQL's JSONB parser, which is what it used to do.
 
+One shape gets past it, and it is worth knowing about because the symptom is
+the old one. A JSON value with LITERAL duplicate keys — `{"a":"...","a":"..."}`
+— hides anything in the shadowed copy from every check Pad makes, because the
+JSON decoder keeps only the last. PostgreSQL still refuses it, so such a row
+passes the preflight and then fails during the copy. It is a deliberate,
+recorded blind spot shared by every layer rather than a hole in this one;
+closing it in a single layer is what the design forbids, and it is tracked for
+a fix under BUG-2812. If a migration fails partway through with a JSONB error
+after a clean preflight, this is why.
+
 ### Importing an export that predates the rule
 
 If you have an export file taken from an affected database, the import still

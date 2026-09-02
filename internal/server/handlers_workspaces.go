@@ -887,9 +887,7 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
 	var decodeErr error
 	if repair.Enabled {
-		var replaced int
-		replaced, decodeErr = decodeJSONRepairingNUL(r, &data, 64<<20)
-		repair.Replaced += replaced
+		decodeErr = decodeJSONRepairingNUL(r, &data, 64<<20, repair)
 	} else {
 		decodeErr = decodeJSONWithLimit(r, &data, 64<<20)
 	}

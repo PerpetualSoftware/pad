@@ -479,3 +479,121 @@ func TestScanNULSurvivesANullWorkspaceID(t *testing.T) {
 		t.Errorf("actor = %q, want %q", actor, want)
 	}
 }
+
+// TestRepairNULSkipsARowItCannotAddress covers the second way a row's address
+// can be unusable: a NUL in a key column the LIST does not protect, on a row
+// whose violation is somewhere else.
+//
+// The address is then unbindable — Layer A checks every parameter, including a
+// WHERE clause's — so the repair explains it instead of letting the driver
+// return "invalid text parameter: parameter 2", which is the same information
+// phrased as a fault in the repair rather than a property of the row.
+//
+// platform_settings is the fixture because its key IS its primary key and is
+// NOT in the protected list, while its `value` column is: exactly the shape.
+func TestRepairNULSkipsARowItCannotAddress(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("SQLite only")
+	}
+
+	plantLegacyRows(t, s, func(raw *sql.DB) {
+		mustExec(t, raw,
+			`INSERT INTO platform_settings (key, value, updated_at) VALUES (?, ?, '2026-01-01')`,
+			"branding"+textguard.NUL+"key", "site"+textguard.NUL+"name")
+	})
+
+	report, err := s.RepairNUL()
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+
+	if len(report.Failed) != 0 {
+		t.Errorf("the row was reported as a FAILURE rather than an explained skip: %+v", report.Failed)
+	}
+
+	var skipped *NULRepairSkip
+	for i := range report.Skipped {
+		if report.Skipped[i].Violation.Table == "platform_settings" {
+			skipped = &report.Skipped[i]
+		}
+	}
+	if skipped == nil {
+		t.Fatalf("platform_settings.value not skipped; buckets: repaired=%+v skipped=%+v failed=%+v",
+			report.Repaired, report.Skipped, report.Failed)
+	}
+	if !strings.Contains(skipped.Reason, "contains a NUL") || !strings.Contains(skipped.Reason, "address") {
+		t.Errorf("the skip reason does not explain what an operator is looking at: %q", skipped.Reason)
+	}
+
+	// And it is genuinely untouched, rather than reported as skipped while
+	// having been written anyway.
+	var count int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM platform_settings WHERE instr(value, char(0)) > 0`).Scan(&count); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("the skipped row was modified: %d rows still carry the NUL, want 1", count)
+	}
+}
+
+// TestScanNULInheritsTheRecordedKnownGaps pins a MISS, on purpose.
+//
+// textguard.KnownGaps are values every layer currently answers wrong together —
+// today, a JSON document with LITERAL duplicate keys, where the decode keeps
+// the last one and a NUL in the first is never seen. DOC-2823 requires the
+// layers to share that blind spot rather than diverge, and says Layer A "must
+// NOT quietly fix either gap on its own". The scan shares the same predicate,
+// so it inherits it, and that is the designed behaviour rather than an
+// oversight (raised as a finding in codex round 3).
+//
+// THE CONSEQUENCE IS REAL AND IS STATED WHERE IT MATTERS: PostgreSQL refuses
+// such a value, so a database carrying one passes the migrate-to-pg preflight
+// and then fails during the copy — the exact failure the preflight exists to
+// replace, for this one shape. BUG-2812's token-walk closes it; ScanNUL's doc
+// comment and docs/backup.md name the residual.
+//
+// This test fails when a gap CLOSES, which is the signal that BUG-2812 has
+// landed and this file should move the case into the covered set — the same
+// direction, and the same reason, as textguard's TestKnownGapsStillGap.
+func TestScanNULInheritsTheRecordedKnownGaps(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("SQLite only")
+	}
+	if len(textguard.KnownGaps) == 0 {
+		t.Skip("no recorded gaps")
+	}
+
+	ws := createTestWorkspace(t, s, "GapWS")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	for _, gap := range textguard.KnownGaps {
+		if !gap.IsJSON {
+			continue
+		}
+		t.Run(gap.Name, func(t *testing.T) {
+			item := createTestItem(t, s, ws.ID, col.ID, "gap subject", "")
+			plantLegacyRows(t, s, func(raw *sql.DB) {
+				if _, err := raw.Exec(
+					`UPDATE items SET fields = ? WHERE id = ?`, gap.Value, item.ID); err != nil {
+					t.Skipf("the gap value is not storable in this column: %v", err)
+				}
+			})
+
+			report, err := s.ScanNUL()
+			if err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			for _, v := range report.Violations {
+				if v.Table == "items" && v.Column == "fields" && v.Key["id"] == item.ID {
+					t.Fatalf("the scan now DETECTS a recorded known gap (%s). That is good news and this "+
+						"test is the notification: BUG-2812 has landed, so move this case into the "+
+						"covered set and drop the residual note from ScanNUL's doc comment and "+
+						"docs/backup.md.\n  why the gap exists: %s", gap.Name, gap.Why)
+				}
+			}
+		})
+	}
+}

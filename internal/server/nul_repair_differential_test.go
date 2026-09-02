@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
@@ -88,7 +89,7 @@ func TestImportRepairFlagRepairsExactlyTheEscape(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, n := repairBodyNULEscapes([]byte(tc.body))
+			got, n, _ := repairBodyNULEscapes([]byte(tc.body))
 			changed := string(got) != tc.body
 			if changed != tc.wantChanged {
 				t.Errorf("%s\n  body:     %q\n  repaired: %q\n  changed=%t, want %t",
@@ -301,7 +302,7 @@ func TestBodyRepairMirrorsTheGateOverTheCorpus(t *testing.T) {
 					got, c.Refused)
 			}
 
-			repaired, n := repairBodyNULEscapes(body)
+			repaired, n, _ := repairBodyNULEscapes(body)
 
 			if bodyDecodesNUL(repaired) {
 				t.Errorf("the body repair left a value the gate still refuses\n  in:  %s\n  out: %s\n"+
@@ -335,7 +336,7 @@ func TestBodyRepairPreservesEverythingElse(t *testing.T) {
 	body := []byte(`{"version":1,"big":9007199254740993,"ratio":1.5,"flag":true,"nothing":null,` +
 		`"text":"a < b & c > d","list":[1,2,3],"content":"x` + textguard.EscNUL + `y"}`)
 
-	repaired, n := repairBodyNULEscapes(body)
+	repaired, n, _ := repairBodyNULEscapes(body)
 	if n != 1 {
 		t.Fatalf("repaired %d values, want 1", n)
 	}
@@ -372,5 +373,93 @@ func TestBodyRepairPreservesEverythingElse(t *testing.T) {
 	}
 	if want := "x" + textguard.Replacement + "y"; got["content"] != want {
 		t.Errorf("content = %q, want %q", got["content"], want)
+	}
+}
+
+// TestRepairDeclinesADuplicateMemberBody is codex round 4's finding.
+//
+// The repair decodes into map[string]any, where a repeated member keeps only
+// the LAST value. The TYPED decode that runs next does not agree: it unmarshals
+// members in order into the same struct field, so two `workspace` objects merge
+// there and would collapse here. Repairing such a body would change what gets
+// imported, which is outside what a flag called --repair-nul may do.
+//
+// So it declines, the body is returned untouched, and the refusal says why. A
+// real export cannot contain duplicate members — json.Marshal does not emit
+// them — so this costs nothing an operator meets by accident.
+func TestRepairDeclinesADuplicateMemberBody(t *testing.T) {
+	esc := textguard.EscNUL
+	body := []byte(`{"content":"x` + esc + `y","workspace":{"name":"a"},"workspace":{"slug":"b"}}`)
+
+	// Precondition: without the duplicate this body IS repaired, so the
+	// difference below is the duplicate and not the fixture.
+	plain := []byte(`{"content":"x` + esc + `y","workspace":{"name":"a"}}`)
+	if _, n, declined := repairBodyNULEscapes(plain); n != 1 || declined != "" {
+		t.Fatalf("control: the same body without a duplicate was not repaired (n=%d declined=%q)", n, declined)
+	}
+
+	got, n, declined := repairBodyNULEscapes(body)
+	if declined == "" {
+		t.Fatalf("the repair acted on a duplicate-member body; it must decline")
+	}
+	if !strings.Contains(declined, "workspace") {
+		t.Errorf("the reason does not name the repeated member: %q", declined)
+	}
+	if n != 0 {
+		t.Errorf("reported %d repair(s) while declining", n)
+	}
+	if string(got) != string(body) {
+		t.Errorf("the body was modified while declining\n  in:  %s\n  out: %s", body, got)
+	}
+
+	// And the operator is told THAT, rather than being told the repair ran.
+	tally := &nulRepairTally{Enabled: true}
+	tally.Apply(body)
+	msg := nulRepairRemedy(tally)
+	if !strings.Contains(msg, "did not run") {
+		t.Errorf("the refusal implies the repair ran: %q", msg)
+	}
+	if !strings.Contains(msg, store.RepairNULCommand) {
+		t.Errorf("the refusal leaves no course of action: %q", msg)
+	}
+}
+
+// TestFirstDuplicateJSONKey covers the detector on its own, because the case it
+// exists for is one a decode cannot show you: by the time there is a map, the
+// duplicate is gone.
+func TestFirstDuplicateJSONKey(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		dup  bool
+		why  string
+	}{
+		{"no duplicates", `{"a":1,"b":2}`, "", false, "the control."},
+		{"top-level duplicate", `{"a":1,"a":2}`, "a", true, "the plain case."},
+		{"duplicate nested in an object", `{"x":{"a":1,"a":2}}`, "a", true,
+			"depth matters: a nested fields object is where an import body's real content lives."},
+		{"duplicate nested in an array element", `{"items":[{"id":1},{"a":1,"a":2}]}`, "a", true,
+			"array frames must not reset the object frame's bookkeeping."},
+		{"same name in SIBLING objects is not a duplicate", `{"x":{"a":1},"y":{"a":2}}`, "", false,
+			"the false positive a single shared set of names would produce, which would decline every " +
+				"real export — items all carry `id`, `title`, `slug`.",
+		},
+		{"a name reused as a VALUE is not a key", `{"a":"a","b":"a"}`, "", false,
+			"key/value alternation: counting every string would call this a duplicate."},
+		{"a name after a nested container closes", `{"a":{"z":1},"a":2}`, "a", true,
+			"the parent's key/value alternation has to resume correctly after a nested value ends."},
+		{"array of scalars", `{"a":[1,2,3],"b":4}`, "", false, "arrays of non-objects must not confuse the walk."},
+		{"malformed input", `{"a":`, "", false,
+			"json.Valid runs first, so this answers false rather than duplicating the caller's error."},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, dup := firstDuplicateJSONKey([]byte(tc.in))
+			if dup != tc.dup || got != tc.want {
+				t.Errorf("%s\n  in: %s\n  got (%q, %v), want (%q, %v)", tc.why, tc.in, got, dup, tc.want, tc.dup)
+			}
+		})
 	}
 }

@@ -507,6 +507,14 @@ func maskPassword(pgURL string) string {
 // Nothing has been written to the destination when this runs — it sits above
 // the workspace loop, which is the whole point: the failure it replaces
 // happened partway through the copy.
+//
+// IT IS NOT EXHAUSTIVE, and the gap is inherited rather than introduced. The
+// scan shares the predicate every enforcement layer uses, which does not see a
+// NUL in a value shadowed by a LITERAL duplicate key — a recorded, deliberate
+// blind spot (textguard.KnownGaps) that DOC-2823 forbids closing in one layer
+// alone. PostgreSQL does refuse such a value, so a database carrying one still
+// fails during the copy. BUG-2812's token-walk is what closes it; until then
+// this preflight catches every shape but that one, and docs/backup.md says so.
 func preflightNULForMigration(src *store.Store, fromPath string) error {
 	report, err := src.ScanNUL()
 	if err != nil {

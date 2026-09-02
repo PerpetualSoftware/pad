@@ -133,6 +133,19 @@ func (r *NULScanReport) ByColumn() map[string]int {
 // live server and safe to run repeatedly. `pad db migrate-to-pg` calls it as a
 // preflight for exactly that reason.
 //
+// ONE RESIDUAL, and it is inherited rather than introduced. The decision is
+// textguard's predicate, which shares the HTTP gate's map-model blind spots
+// until BUG-2812's token-walk replaces the decode — today that is a JSON
+// document with LITERAL duplicate keys, where the decode keeps the last one and
+// a NUL in a shadowed value is never seen (textguard.KnownGaps). PostgreSQL
+// refuses such a value, so a database carrying one passes the migrate-to-pg
+// preflight and then fails during the copy: for that one shape the preflight
+// does not deliver what it promises. Closing it HERE is explicitly what
+// DOC-2823 forbids — Layer A "must NOT quietly fix either gap on its own",
+// because layers disagreeing about one value is the defect this whole cluster
+// is made of. TestScanNULInheritsTheRecordedKnownGaps pins the miss and fails
+// when it stops being one.
+//
 // COST, stated because an operator should not be surprised by it: one
 // unindexed scan per protected column — 131 of them today (24 JSON-classed,
 // 107 text), measured from NULProtectedColumns rather than counted by hand.
