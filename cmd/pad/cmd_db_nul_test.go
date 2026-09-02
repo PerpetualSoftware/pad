@@ -417,3 +417,97 @@ func TestRepairExitStatusCountsBothFailureBuckets(t *testing.T) {
 		})
 	}
 }
+
+// TestPreflightIgnoresTablesTheMigrationDoesNotCopy is codex round 9's second
+// finding.
+//
+// `migrate-to-pg` copies workspace content and nothing else — its own help says
+// users, platform settings and auth data are not migrated. A NUL in one of
+// those tables therefore cannot break the copy, and refusing on it demanded the
+// operator rewrite content unrelated to the migration they asked for.
+//
+// The row is still REPORTED. Staying silent about a broken row because this
+// command does not care about it would be the same information-discarding this
+// preflight already had to be corrected for once.
+func TestPreflightIgnoresTablesTheMigrationDoesNotCopy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "src.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("open source: %v", err)
+	}
+	defer s.Close()
+
+	// platform_settings.value is protected and is NOT one of the six tables
+	// ImportWorkspace writes.
+	plantPlatformSetting(t, dbPath, "branding", "site"+textguard.NUL+"name")
+
+	scan, err := s.ScanNUL()
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	// The premise: the SCAN does see it. If it did not, this test would pass
+	// for the wrong reason.
+	if scan.Total() != 1 {
+		t.Fatalf("the scan should still report the row; got %d violations: %v", scan.Total(), scan.Violations)
+	}
+	if store.MigratedTables()["platform_settings"] {
+		t.Fatal("platform_settings is listed as migrated; pick a table the migration really skips")
+	}
+
+	if err := preflightNULForMigration(s, nil, dbPath); err != nil {
+		t.Errorf("the preflight blocked a migration over a table it does not copy: %v", err)
+	}
+
+	// CONTROL: the same value in a table the migration DOES copy must still
+	// refuse. Without this, a preflight that refused nothing would pass above.
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Blocking"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	plantNULInWorkspaceName(t, dbPath, ws.ID, "bad"+textguard.NUL+"name")
+
+	if err := preflightNULForMigration(s, nil, dbPath); err == nil {
+		t.Error("the preflight accepted a NUL in a table the migration DOES copy")
+	}
+}
+
+// plantPlatformSetting writes a settings row through a raw handle with the
+// relevant triggers dropped.
+func plantPlatformSetting(t *testing.T, dbPath, key, value string) {
+	t.Helper()
+
+	raw, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(30000)")
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	defer raw.Close()
+
+	rows, err := raw.Query(
+		`SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'pad_nul_platform_settings_*'`)
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, n)
+	}
+	rows.Close()
+	if len(names) == 0 {
+		t.Fatal("no platform_settings triggers found; the fixture would prove nothing")
+	}
+	for _, n := range names {
+		if _, err := raw.Exec(`DROP TRIGGER IF EXISTS "` + n + `"`); err != nil {
+			t.Fatalf("drop %s: %v", n, err)
+		}
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO platform_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+		key, value); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+}

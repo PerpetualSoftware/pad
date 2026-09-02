@@ -234,7 +234,15 @@ row.`,
 // kind an operator can act on against the wrong instance.
 func resolveNULToolsTarget(fromPath *string) (proceed bool, err error) {
 	if *fromPath == "" {
-		if os.Getenv("PAD_DB_DRIVER") == "postgres" || os.Getenv("PAD_DATABASE_URL") != "" {
+		// PAD_DB_DRIVER ALONE decides, and PAD_DATABASE_URL deliberately does
+		// not (codex round 9). cmd_server.go opens PostgreSQL only when
+		// PAD_DB_DRIVER=postgres; PAD_DATABASE_URL is also migrate-to-pg's
+		// TARGET, and its default at that. Treating the URL as proof of a
+		// PostgreSQL deployment broke the exact flow this unit prescribes: the
+		// preflight refuses, tells the operator to run `pad db repair-nul`,
+		// and — with the target URL still exported in their shell — that
+		// command announced there was nothing to repair and exited 0.
+		if os.Getenv("PAD_DB_DRIVER") == "postgres" {
 			fmt.Fprintln(os.Stderr,
 				"This deployment is PostgreSQL, which refuses these values natively (SQLSTATE 22021 for a\n"+
 					"NUL in text, 22P05 for the escape reaching jsonb), so no stored row can carry one.\n"+

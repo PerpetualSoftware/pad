@@ -582,17 +582,60 @@ func preflightNULForMigration(src *store.Store, dst *store.Store, fromPath strin
 				"not refuse on: %v\n", f.suspect, f.err)
 	}
 
-	if report.Total() == 0 && len(refusedSuspects) == 0 {
+	// REFUSE only on rows the migration will actually copy. It reads six tables
+	// (store.MigratedTables); a NUL in users, platform settings, sessions or the
+	// oauth tables cannot break a copy that never touches them, and blocking on
+	// one would demand the operator rewrite content unrelated to the migration
+	// they asked for (codex round 9).
+	//
+	// The others are still REPORTED, below. They are real, `pad db scan-nul`
+	// lists them, and staying silent about a broken row because this particular
+	// command does not care about it would be the information-discarding this
+	// preflight already had to be corrected for once.
+	migrated := store.MigratedTables()
+	var blocking []store.NULViolation
+	var elsewhere []store.NULViolation
+	for _, v := range report.Violations {
+		if migrated[v.Table] {
+			blocking = append(blocking, v)
+		} else {
+			elsewhere = append(elsewhere, v)
+		}
+	}
+	var blockingSuspects []store.NULSuspect
+	var suspectsElsewhere []store.NULSuspect
+	for _, sus := range refusedSuspects {
+		if migrated[sus.Table] {
+			blockingSuspects = append(blockingSuspects, sus)
+		} else {
+			suspectsElsewhere = append(suspectsElsewhere, sus)
+		}
+	}
+
+	if n := len(elsewhere) + len(suspectsElsewhere); n > 0 {
+		fmt.Fprintf(os.Stderr,
+			"\nNOTE: %d value(s) carrying a NUL are in tables this migration does not copy\n"+
+				"(users, platform settings, auth data). They do not block it, and\n"+
+				"'%s' will repair them:\n\n", n, repairNULCommandHint)
+		for _, v := range elsewhere {
+			fmt.Fprintf(os.Stderr, "  %s\n", v)
+		}
+		for _, sus := range suspectsElsewhere {
+			fmt.Fprintf(os.Stderr, "  %s\n", sus)
+		}
+	}
+
+	if len(blocking) == 0 && len(blockingSuspects) == 0 {
 		return nil
 	}
 
-	total := report.Total() + len(refusedSuspects)
+	total := len(blocking) + len(blockingSuspects)
 	fmt.Fprintf(os.Stderr, "\nPreflight found %d stored value(s) in %s that PostgreSQL will not accept:\n\n",
 		total, fromPath)
-	for _, v := range report.Violations {
+	for _, v := range blocking {
 		fmt.Fprintf(os.Stderr, "  %s\n", v)
 	}
-	for _, sus := range refusedSuspects {
+	for _, sus := range blockingSuspects {
 		// Named apart, because these were found by ASKING the destination
 		// rather than by our own predicate — an operator comparing this list
 		// against `pad db scan-nul`'s violations should be able to see why the
