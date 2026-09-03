@@ -894,3 +894,45 @@ func TestPadItemUpdate_CanonicalEqualDuplicateIsUntouched(t *testing.T) {
 		t.Errorf("--field emitted %d times, want 2: %v", count, disp.gotArgs)
 	}
 }
+
+// --- codex round 8 ---
+
+// TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesCollapse: one canonical
+// entry does not make its padded twin harmless (BUG-2850, codex round 8).
+//
+// Round 7's canonicalization asked whether a canonical entry was PRESENT and
+// left the array alone if one was — so `field:["effort=l", " effort=l"]` kept
+// the padded sibling, and the doors then disagreed: HTTP trims and writes
+// `effort`, the CLI does not and writes an undeclared `" effort"`. Transport
+// divergence from a call both doors accept, which is the shape this whole
+// unit is about.
+//
+// The key is now re-emitted ONCE, canonically. Collapsing the pair is not
+// lossy: parseFieldArray already indexes them to a single value, so two
+// entries for one key were never two writes.
+func TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesCollapse(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"effort=l", " effort=l"},
+		"fields": map[string]any{"effort": "l"},
+	})
+	if isErr {
+		t.Fatalf("expected success: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "effort=l") {
+		t.Errorf("the canonical entry must survive: %v", disp.gotArgs)
+	}
+	if argsContainPair(disp.gotArgs, "--field", " effort=l") {
+		t.Errorf("the padded twin must not survive — stdio would store it as an undeclared %q key: %v", " effort", disp.gotArgs)
+	}
+	count := 0
+	for i := 0; i+1 < len(disp.gotArgs); i++ {
+		if disp.gotArgs[i] == "--field" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("--field emitted %d times, want exactly 1: %v", count, disp.gotArgs)
+	}
+}

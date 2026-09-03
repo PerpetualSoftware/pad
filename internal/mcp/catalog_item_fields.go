@@ -362,7 +362,7 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			//
 			// Only when the raw form actually differs, so a well-formed call
 			// keeps its array untouched and in order.
-			if !containsFieldEntry(fieldEntries, k, sv) {
+			if hasNonCanonicalFieldEntry(fieldEntries, k, sv) {
 				dropFieldKeys[k] = true
 				reEmitFields[k] = sv
 			}
@@ -423,13 +423,28 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 // validation would reject it as an undeclared param if it were.
 const fieldsNativeKey = "__fields_native"
 
-// containsFieldEntry reports whether entries already carries the canonical
-// `key=value` form for this pair. Used to leave a well-formed array untouched
-// instead of dropping and re-appending an identical entry.
-func containsFieldEntry(entries []string, key, value string) bool {
+// hasNonCanonicalFieldEntry reports whether ANY entry for this key is written
+// in something other than the canonical `key=value` form.
+//
+// "Any", not "no canonical entry exists" (codex round 8). The first version
+// asked whether a canonical entry was PRESENT and left the array alone if one
+// was — so `field:["effort=l", " effort=l"]` kept the padded twin, and the
+// doors then disagreed about it: HTTP trims and writes `effort`, the CLI does
+// not and writes an undeclared `" effort"`. One canonical entry does not make
+// its padded sibling harmless; every entry for the key has to be canonical,
+// or the key gets re-emitted once and cleanly.
+//
+// Collapsing duplicates in that re-emission is correct rather than lossy:
+// parseFieldArray already indexes them to a single value, so two entries for
+// one key were never two writes.
+func hasNonCanonicalFieldEntry(entries []string, key, value string) bool {
 	want := key + "=" + value
 	for _, e := range entries {
-		if e == want {
+		k, _, ok := strings.Cut(e, "=")
+		if !ok || strings.TrimSpace(k) != key {
+			continue
+		}
+		if e != want {
 			return true
 		}
 	}
