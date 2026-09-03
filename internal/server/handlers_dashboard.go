@@ -32,6 +32,12 @@ type DashboardResponse struct {
 	// would be a no-op on most installs. On those instances this list is the
 	// entire delivery mechanism.
 	PendingReminders []DashboardReminder `json:"pending_reminders,omitempty"`
+	// PendingRemindersTruncated says the window above was not the whole set.
+	// A BOOLEAN rather than a count, deliberately: a count would have to be
+	// post-visibility-filter to be true for the caller reading it, and the
+	// store cannot compute that — the filter runs per item, up here. "There
+	// are more than you can see" is the strongest honest claim.
+	PendingRemindersTruncated bool `json:"pending_reminders_truncated,omitempty"`
 	// HasAgentActivity is true when any non-deleted item in the workspace
 	// was created via an agent surface — direct CLI or Remote MCP (both
 	// paths persist source='cli'; future MCP-distinct attribution would
@@ -658,9 +664,10 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// armed, fired, unacked, still theirs — while keeping a finished item off
 	// the surface an agent polls. The distinction is observable: the reminder
 	// is absent from here and present in the table.
-	if pending, err := s.store.ListPendingReminders(workspaceID); err != nil {
+	if pending, truncated, err := s.store.ListPendingReminders(workspaceID, 0); err != nil {
 		markDegraded("pending_reminders", err)
 	} else {
+		resp.PendingRemindersTruncated = truncated
 		for _, pr := range pending {
 			if !isCollectionVisible(pr.CollectionID, visibleIDs) {
 				continue
@@ -1114,8 +1121,17 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// agent what to do next. Both derive from the one list built above rather
 	// than each re-querying, so they cannot disagree about what is pending.
 	if len(resp.PendingReminders) > 0 {
-		reminderSuggestions := make([]DashboardSuggestion, 0, len(resp.PendingReminders))
+		// CAPPED SEPARATELY from the pending list. suggested_next is a
+		// recommendation — three entries by construction — and prepending an
+		// unbounded number of reminders turns it into a second inbox, burying
+		// the suggestions it exists to make. The full set stays addressable in
+		// pending_reminders; this is the "what should I do next" view of it.
+		const maxReminderSuggestions = 5
+		reminderSuggestions := make([]DashboardSuggestion, 0, maxReminderSuggestions)
 		for _, pr := range resp.PendingReminders {
+			if len(reminderSuggestions) == maxReminderSuggestions {
+				break
+			}
 			reminderSuggestions = append(reminderSuggestions, DashboardSuggestion{
 				ReminderID: pr.ID,
 				ItemSlug:   pr.ItemSlug,

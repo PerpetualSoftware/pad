@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -320,6 +321,46 @@ func TestFiredReminderSuggestionCarriesItsID(t *testing.T) {
 	}
 	if len(getDashboard(t, srv, slug).PendingReminders) != 0 {
 		t.Error("the reminder survived an ack using the id the surface handed out")
+	}
+}
+
+// TestReminderSuggestionsAreCapped — codex round 3.
+//
+// suggested_next is a recommendation list of three; prepending an unbounded
+// number of reminders turns it into a second inbox and buries the suggestions
+// it exists to make.
+//
+// The fixture needs MORE reminders than the cap, which is the leg the first
+// version of the prepend test lacked: with one reminder, capped and uncapped
+// are the same list. That is the second time a single-item fixture hid an
+// ordering-or-count property in this file.
+//
+// MUTANT: remove the cap and eight suggestions come back.
+func TestReminderSuggestionsAreCapped(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	for i := 0; i < 8; i++ {
+		item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+			"title": fmt.Sprintf("Task %d", i), "fields": `{"status":"open"}`,
+		})
+		armViaAPI(t, srv, slug, item, pastInstant)
+	}
+	srv.runReminderTick()
+
+	resp := getDashboard(t, srv, slug)
+	var reminderSuggestions int
+	for _, sug := range resp.SuggestedNext {
+		if sug.ReminderID != "" {
+			reminderSuggestions++
+		}
+	}
+	if reminderSuggestions != 5 {
+		t.Errorf("suggested_next carries %d reminder entries, want the cap of 5", reminderSuggestions)
+	}
+	// All eight stay addressable in the list that is not a recommendation.
+	if len(resp.PendingReminders) != 8 {
+		t.Errorf("pending_reminders holds %d, want all 8 — the cap is on the recommendation, not the data", len(resp.PendingReminders))
 	}
 }
 

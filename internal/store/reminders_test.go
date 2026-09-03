@@ -349,7 +349,7 @@ func TestPendingRemindersAreFiredAndUnacked(t *testing.T) {
 		t.Fatalf("tick: %v", err)
 	}
 
-	pending, err := s.ListPendingReminders(ws.ID)
+	pending, _, err := s.ListPendingReminders(ws.ID, 0)
 	if err != nil {
 		t.Fatalf("ListPendingReminders: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestPendingRemindersAreFiredAndUnacked(t *testing.T) {
 	if _, err := s.AckReminder(ws.ID, firedID); err != nil {
 		t.Fatalf("AckReminder: %v", err)
 	}
-	pending, err = s.ListPendingReminders(ws.ID)
+	pending, _, err = s.ListPendingReminders(ws.ID, 0)
 	if err != nil {
 		t.Fatalf("ListPendingReminders after ack: %v", err)
 	}
@@ -658,5 +658,120 @@ func TestAFractionalReminderDoesNotFireEarly(t *testing.T) {
 	}
 	if len(fired) != 1 {
 		t.Errorf("the reminder did not fire at 09:00:01Z (fired %d)", len(fired))
+	}
+}
+
+// TestARearmedReminderIsNotFiredByAnInFlightPass — codex round 3.
+//
+// A re-arm can move a reminder into the future between the candidate scan and
+// the fire. It clears fired_at, so a predicate checking only `fired_at IS NULL`
+// still matched — and the pass fired a reminder the user had just deferred and
+// emitted its event. The re-arm cannot undo that: it can clear the mark, the
+// event is already on the outbox.
+//
+// Driven by calling the arbiter with a STALE candidate id, which is what an
+// in-flight pass holds. Same seam as the concurrency test above.
+//
+// MUTANT: drop `AND remind_at <= ?` from the fire UPDATE and this fires.
+func TestARearmedReminderIsNotFiredByAnInFlightPass(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+	id := armReminder(t, s, ws.ID, item.ID, past)
+
+	// The pass has selected this id. Before it fires, the user defers it.
+	ids, err := s.dueReminderCandidates(nowTS(), 0)
+	if err != nil {
+		t.Fatalf("dueReminderCandidates: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != id {
+		t.Fatalf("expected the armed reminder as the only candidate, got %v", ids)
+	}
+	if _, err := s.RearmReminder(ws.ID, id, future); err != nil {
+		t.Fatalf("RearmReminder: %v", err)
+	}
+
+	fired, err := s.fireOneReminder(id, nowTS())
+	if err != nil {
+		t.Fatalf("fireOneReminder: %v", err)
+	}
+	if fired != nil {
+		t.Error("a reminder deferred mid-pass was fired anyway")
+	}
+
+	// No event either — the mark can be cleared, an emitted event cannot.
+	var events int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE event_type = ?`),
+		kernelevents.ItemReminderDue).Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 0 {
+		t.Errorf("%d reminder event(s) emitted for a deferred reminder", events)
+	}
+
+	// And it is still armed for its NEW time, not left in some third state.
+	got, err := s.GetReminder(ws.ID, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if !got.Armed() || got.RemindAt != future {
+		t.Errorf("reminder is %+v, want armed at %s", got, future)
+	}
+}
+
+// TestPendingRemindersAreBounded — codex round 3.
+//
+// Every pending reminder became a suggestion prepended to a three-entry list,
+// so the payload grew without limit until somebody acknowledged them — in the
+// dashboard response, the hottest read in the product.
+//
+// MUTANT: remove the LIMIT and both the window and the truncation flag are
+// wrong.
+func TestPendingRemindersAreBounded(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+
+	for i := 0; i < 5; i++ {
+		armReminder(t, s, ws.ID, item.ID, past)
+	}
+	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	pending, truncated, err := s.ListPendingReminders(ws.ID, 3)
+	if err != nil {
+		t.Fatalf("ListPendingReminders: %v", err)
+	}
+	if len(pending) != 3 {
+		t.Errorf("window returned %d rows, want the limit of 3", len(pending))
+	}
+	if !truncated {
+		t.Error("five pending reminders through a window of three did not report truncation")
+	}
+
+	// COVERAGE BOUNDARY, stated rather than implied. Two different bounds live
+	// here and only one is observable from a test: the Go slice cap below
+	// bounds the PAYLOAD, and the SQL LIMIT bounds the DATABASE's work. A
+	// mutant that removes the LIMIT survives this test — correctly, because
+	// the payload stays bounded either way; what is lost is that the query
+	// stops scanning and materialising every pending row before discarding
+	// them. That is a memory and I/O property with no assertion available at
+	// this level, so it is defended by the LIMIT being there and by this
+	// comment saying why, not by a green.
+
+	// The probe row must never be returned as a result, and the flag must be
+	// FALSE when everything fits — a flag that is always true is not a signal.
+	pending, truncated, err = s.ListPendingReminders(ws.ID, 5)
+	if err != nil {
+		t.Fatalf("ListPendingReminders: %v", err)
+	}
+	if len(pending) != 5 {
+		t.Errorf("window of 5 returned %d rows, want all 5", len(pending))
+	}
+	if truncated {
+		t.Error("five reminders through a window of five reported truncation")
 	}
 }

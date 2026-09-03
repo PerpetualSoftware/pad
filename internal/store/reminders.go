@@ -25,6 +25,17 @@ const reminderColumns = `id, workspace_id, item_id, remind_at, fired_at, acked_a
 // batch, oldest first.
 const defaultReminderFireLimit = 100
 
+// defaultPendingReminderLimit bounds the poll surface's window.
+//
+// THE RECEIPT: this is a NOTIFICATION list a human or an agent reads at a
+// glance, not a queue to drain, so the bound is set by what is worth showing
+// rather than by what the database can return. Fifty unacknowledged reminders
+// already means the surface is not being used as intended; showing five
+// hundred would not help, and the payload is embedded in every dashboard
+// response, which is the hottest read in the product. The truncation is
+// REPORTED rather than silent, so a caller that genuinely has more can tell.
+const defaultPendingReminderLimit = 50
+
 func scanReminder(row interface{ Scan(...any) error }) (*models.Reminder, error) {
 	var r models.Reminder
 	var firedAt, ackedAt sql.NullString
@@ -203,7 +214,22 @@ func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
 // is schema-defined (a collection's terminal_options) and lives in JSON the
 // SQL layer would have to parse. The caller already builds that context for
 // the dashboard; ItemFields and CollectionID are carried for it.
-func (s *Store) ListPendingReminders(workspaceID string) ([]*models.PendingReminder, error) {
+// The window is BOUNDED because this list feeds a payload that is otherwise
+// capped: every pending reminder became a suggestion prepended to a
+// three-entry list, so a workspace with five hundred unacknowledged reminders
+// returned five hundred suggestions and grew without limit until somebody
+// acknowledged them (codex round 3). Oldest-fired first, so the window holds
+// the reminders that have been waiting longest rather than an arbitrary slice.
+//
+// The caller is told when the window was not the whole set — but as a BOOLEAN,
+// not a count. A count would have to be stated post-visibility-filter to be
+// true for the caller reading it, and this query cannot compute that: the
+// filter runs above, per item. "There are more than you can see here" is the
+// strongest claim the data supports, so it is the one made.
+func (s *Store) ListPendingReminders(workspaceID string, limit int) ([]*models.PendingReminder, bool, error) {
+	if limit <= 0 {
+		limit = defaultPendingReminderLimit
+	}
 	rows, err := s.db.Query(s.q(`
 		SELECT r.id, r.workspace_id, r.item_id, r.remind_at, r.fired_at, r.acked_at, r.created_at, r.updated_at,
 		       i.slug, i.title, i.fields, i.collection_id, c.slug, c.prefix, i.item_number
@@ -215,9 +241,10 @@ func (s *Store) ListPendingReminders(workspaceID string) ([]*models.PendingRemin
 		  AND r.acked_at IS NULL
 		  AND i.deleted_at IS NULL
 		ORDER BY r.fired_at, r.id
-	`), workspaceID)
+		LIMIT ?
+	`), workspaceID, limit+1)
 	if err != nil {
-		return nil, fmt.Errorf("list pending reminders: %w", err)
+		return nil, false, fmt.Errorf("list pending reminders: %w", err)
 	}
 	defer rows.Close()
 
@@ -231,7 +258,7 @@ func (s *Store) ListPendingReminders(workspaceID string) ([]*models.PendingRemin
 			&p.ID, &p.WorkspaceID, &p.ItemID, &p.RemindAt, &firedAt, &ackedAt, &p.CreatedAt, &p.UpdatedAt,
 			&p.ItemSlug, &p.ItemTitle, &p.ItemFields, &p.CollectionID, &p.CollectionSlug, &prefix, &number,
 		); err != nil {
-			return nil, fmt.Errorf("scan pending reminder: %w", err)
+			return nil, false, fmt.Errorf("scan pending reminder: %w", err)
 		}
 		if firedAt.Valid {
 			p.FiredAt = &firedAt.String
@@ -243,9 +270,13 @@ func (s *Store) ListPendingReminders(workspaceID string) ([]*models.PendingRemin
 		out = append(out, &p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending reminders: %w", err)
+		return nil, false, fmt.Errorf("iterate pending reminders: %w", err)
 	}
-	return out, nil
+	// The extra row is the probe, never a result.
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
 }
 
 // dueReminderCandidates returns the ids of armed reminders whose instant has
@@ -364,10 +395,20 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	}
 	defer tx.Rollback()
 
+	// THE INSTANT IS REVALIDATED HERE, not just the fire mark (codex round 3).
+	// A re-arm can move this reminder into the future between the candidate
+	// scan and this UPDATE — it clears fired_at, so a predicate that checked
+	// only `fired_at IS NULL` still matched, and the pass fired a reminder the
+	// user had just deferred and emitted its event. The re-arm cannot undo
+	// that: it can clear the mark, but the event is already on the outbox.
+	//
+	// Same nowTS the candidate scan used, deliberately: the arbiter and the
+	// scan must agree about when this pass is, or a reminder could pass one
+	// and fail the other for no reason but clock drift within the pass.
 	res, err := tx.Exec(s.q(`
 		UPDATE item_reminders SET fired_at = ?, updated_at = ?
-		WHERE id = ? AND fired_at IS NULL
-	`), nowTS, now(), id)
+		WHERE id = ? AND fired_at IS NULL AND remind_at <= ?
+	`), nowTS, now(), id, nowTS)
 	if err != nil {
 		return nil, fmt.Errorf("fire reminder %s: %w", id, err)
 	}
