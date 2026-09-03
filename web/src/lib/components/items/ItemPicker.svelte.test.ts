@@ -34,6 +34,7 @@ vi.mock('$lib/stores/localIndex.svelte', () => ({ localIndex: localIndexMock }))
 vi.mock('$lib/stores/localSearch.svelte', () => ({ localSearch: localSearchMock }));
 
 import ItemPicker from './ItemPicker.svelte';
+import ItemPickerProbe from './ItemPickerProbe.svelte';
 
 interface Row {
 	id: string;
@@ -280,6 +281,98 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 
 		expect(options()).toHaveLength(4);
 		expect(cursors.get('ws')).toBeUndefined(); // the cursor never moved
+	});
+
+	it('re-filters when the exclusion set arrives late', async () => {
+		// codex round 4 P2. `ItemDetail` loads `itemLinks` asynchronously, so a
+		// picker opened before that resolves was offering items already linked to
+		// the source — clicking one is a duplicate-link write the user did not
+		// know they were making.
+		//
+		// Driven through `ItemPickerProbe` rather than testing-library's
+		// `rerender`, on purpose: `rerender` replaces the whole props object,
+		// which re-runs the refresh effect whether or not it tracks `excludeIds`.
+		// The mutant that drops that dependency SURVIVES a rerender-driven
+		// version of this test while breaking the real parent, which changes one
+		// prop at a time. The probe changes one prop.
+		loadIndex(makeRows(4));
+		const probe = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors' },
+		});
+		await tick();
+		expect(options()).toHaveLength(4);
+
+		probe.component.setExcludeIds(['id-2', 'id-3']);
+		await tick();
+
+		const labels = options().map((o) => o.textContent ?? '');
+		expect(options()).toHaveLength(2);
+		expect(labels.join('|')).not.toContain('Colour 2');
+		expect(labels.join('|')).not.toContain('Colour 3');
+	});
+
+	it('drops everything it was showing when the workspace state is reset', async () => {
+		// codex round 4 P1: `localIndex.reset()` — sign-out, a 403 membership
+		// purge, a deleted workspace — bumps the search epoch on its way out, so
+		// this effect runs. Returning early there left rows the viewer may no
+		// longer be allowed to see listed AND selectable.
+		loadIndex(makeRows(3));
+		render(ItemPicker, { props: { ...baseProps } });
+		await tick();
+		expect(options()).toHaveLength(3);
+
+		// What reset() does, in order: drop the state (so bootstrapStateFor falls
+		// back to 'cold') and reset the search index (which bumps the epoch).
+		localIndexMock.getByCollection.mockReturnValue([]);
+		setBootstrapState('cold');
+		bumpEpoch();
+		await tick();
+
+		expect(options()).toHaveLength(0);
+		expect(document.body.textContent).not.toContain('Colour 1');
+	});
+
+	it('does not let a cold response land after the workspace state is reset', async () => {
+		vi.useFakeTimers();
+		setBootstrapState('cold');
+
+		let release!: (v: unknown) => void;
+		searchApi.mockReturnValueOnce(new Promise((res) => (release = res)));
+
+		render(ItemPicker, { props: { ...baseProps } });
+		await type('aa');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(searchApi).toHaveBeenCalledTimes(1);
+
+		// Reset arrives while the request is open.
+		bumpEpoch();
+		await tick();
+
+		release({
+			results: [{ item: { id: 'id-1', title: 'Revoked row', item_number: 1, collection_prefix: 'COLO' } }],
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		await tick();
+
+		expect(document.body.textContent).not.toContain('Revoked row');
+	});
+
+	it('CONTROL: an ordinary cold mount is not torn down by the same effect', async () => {
+		// The reset teardown is gated on already showing or awaiting something.
+		// Without that gate it would fire on every cold mount and cancel the cold
+		// path's own in-flight search — so this leg has to stay green.
+		vi.useFakeTimers();
+		setBootstrapState('cold');
+		searchApi.mockResolvedValue({
+			results: [{ item: { id: 'id-7', title: 'Cold row', item_number: 7, collection_prefix: 'COLO' } }],
+		});
+
+		render(ItemPicker, { props: { ...baseProps } });
+		await type('aa');
+		await vi.advanceTimersByTimeAsync(250);
+		await tick();
+
+		expect(document.body.textContent).toContain('Cold row');
 	});
 
 	it('keeps the selected row across a delta, and drops the highlight when that row goes away', async () => {

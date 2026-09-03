@@ -278,17 +278,19 @@
 
 	// Keep an OPEN picker current with the local index.
 	//
-	// Three ways it went stale, all found by codex review, all the same missing
+	// Four ways it went stale, all found by codex review, all the same missing
 	// dependency. A picker can open BEFORE the workspace index has hydrated, and
 	// a scoped one then has nothing to list — `recent()` returns [] while cold,
 	// and nothing re-ran it (round 1). Once open it holds a COPY of the rows, so
 	// a delta landing while it is on screen left it showing what the workspace
-	// used to contain (round 2). And the first fix for that tracked the wrong
-	// signal, missing every mutation that does not advance the cursor
-	// (round 3).
+	// used to contain (round 2). The first fix for that tracked the wrong
+	// signal, missing every mutation that does not advance the cursor (round 3).
+	// And `excludeIds` arriving late — `ItemDetail` loads `itemLinks`
+	// asynchronously, so a picker opened before that resolves was offering items
+	// that are already linked (round 4).
 	//
-	// Tracked reads are the two signals that say the index changed: the
-	// bootstrap state, and `localSearch.epoch(ws)`.
+	// Tracked reads are the three signals that say the list is out of date: the
+	// bootstrap state, `localSearch.epoch(ws)`, and the exclusion set.
 	//
 	// The epoch, NOT the workspace cursor. Round 2 used the cursor and round 3
 	// caught that it misses every cursorless mutation — `localIndex.upsert()` /
@@ -314,10 +316,34 @@
 	// pointing at whatever slid into that position.
 	$effect(() => {
 		const state = localIndex.bootstrapStateFor(wsSlug);
-		// Read for its dependency; the value itself carries no meaning here.
+		// Read for their dependency; the values carry no meaning here.
 		localSearch.epoch(wsSlug);
+		void excluded;
 		untrack(() => {
-			if (state !== 'ready') return;
+			if (state !== 'ready') {
+				// The workspace's state was DROPPED — `localIndex.reset()` on
+				// sign-out, a 403 membership purge, or a workspace deletion. It
+				// bumps the search epoch on its way out, so this effect runs, and
+				// leaving early would strand rows the viewer may no longer be
+				// allowed to see: still listed, still selectable, and a late cold
+				// response still able to add more (codex round 4 P1).
+				//
+				// Unconditional, after measuring that a guard on "actually showing
+				// or awaiting something" was dead: on the ordinary cold mount this
+				// runs once with nothing to clear, and every other non-ready run
+				// reaches it with state worth dropping either way. A mutant that
+				// removed the guard could not be killed, so the guard went instead
+				// of acquiring a comment claiming it protects something.
+				//
+				// `seq++` is what stops an in-flight response landing after the
+				// reset; `clearTimeout` stops one that has not been sent yet.
+				seq++;
+				clearTimeout(debounceTimer);
+				results = [];
+				activeIndex = -1;
+				loading = false;
+				return;
+			}
 			const keep = activeIndex >= 0 ? results[activeIndex]?.id : undefined;
 			runQuery();
 			activeIndex = keep ? results.findIndex((r) => r.id === keep) : -1;
