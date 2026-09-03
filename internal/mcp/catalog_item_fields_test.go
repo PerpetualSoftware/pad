@@ -473,3 +473,52 @@ func TestPadItemUpdate_StringHierarchyKeyStillAccepted(t *testing.T) {
 		t.Fatal("expected the update to dispatch")
 	}
 }
+
+// The guards must apply to PROMOTED keys too (BUG-2850, codex round 4).
+//
+// `tags`, `parent`, `status` and friends are handled by an earlier branch that
+// promotes them onto dedicated top-level params. The null and hierarchy guards
+// were written below that branch, so every promoted key walked around both:
+// `tags: null` became a silent no-op instead of the documented refusal, and
+// `parent: 42` was accepted here and dropped later by the handler. A guard a
+// whole class of keys bypasses is not a guard, which is why these cases are
+// pinned separately from the generic-path ones above.
+func TestPadItemUpdate_GuardsApplyToPromotedKeys(t *testing.T) {
+	cases := map[string]map[string]any{
+		"null tags":      {"tags": nil},
+		"null status":    {"status": nil},
+		"numeric parent": {"parent": float64(42)},
+		"bool parent":    {"parent": true},
+	}
+	for name, fields := range cases {
+		t.Run(name, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				"fields": fields,
+			})
+			if !isErr {
+				t.Fatalf("expected refusal, got success: %s", msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...and the promoted keys still work with well-formed values, so hoisting the
+// guards did not break promotion itself.
+func TestPadItemUpdate_PromotedKeysStillPromote(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"status": "done", "tags": []any{"a", "b"}},
+	})
+	if isErr {
+		t.Fatalf("well-formed promoted keys must still be accepted: %s", msg)
+	}
+	if len(disp.gotPath) == 0 {
+		t.Fatal("expected the update to dispatch")
+	}
+}

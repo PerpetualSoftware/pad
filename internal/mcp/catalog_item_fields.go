@@ -173,6 +173,40 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		if strings.Contains(k, "=") {
 			return nil, errStructured(prefix, fmt.Errorf("fields.%q: field keys cannot contain '='", k))
 		}
+		// THESE TWO GUARDS RUN BEFORE THE PROMOTED BRANCH, and that ordering
+		// is the fix, not a detail (codex round 4). They were below it, so
+		// `tags: null` and `parent: 42` reached the promoted path and skipped
+		// both: the null was converted into a silent no-op, and a numeric
+		// parent was dropped later by the handler. A guard that a whole class
+		// of keys walks around is not a guard.
+		// NULL stays refused (BUG-2850 lifts objects and arrays, not this).
+		// A null in a fields map has no agreed meaning — "store JSON null" and
+		// "clear this field" are both readable from it, and Pad already has an
+		// explicit clear vocabulary (clear_parent, clear_assigned_user). Giving
+		// null a silent meaning here would be inventing semantics inside a bug
+		// fix; if a clear-by-null is ever wanted it should be ruled and named.
+		if v == nil {
+			return nil, errStructured(prefix, fmt.Errorf(
+				"fields.%s: null has no defined write semantics — omit the key to leave it unchanged", k))
+		}
+
+		// HIERARCHY PSEUDO-KEYS TAKE A STRING REF, ALWAYS (BUG-2850, codex
+		// round 3). `plan` is not in padItemPromotedFieldKeys, so before this
+		// it fell to the generic path and — once structures stopped being
+		// refused — a `fields:{"plan":{…}}` reached the server natively. There
+		// `extractParentLink` reads any PRESENT non-string plan/parent as a
+		// hierarchy directive, drops the key, and on update CLEARS the item's
+		// existing parent link. So lifting the nested refusal quietly opened a
+		// path where a malformed value silently detaches an item from its
+		// parent. A structure has no meaning here at all: the only value these
+		// keys take is a ref.
+		if hierarchyPseudoFieldKeys[k] {
+			if _, isString := v.(string); !isString {
+				return nil, errStructured(prefix, fmt.Errorf(
+					"fields.%s must be a string ref (e.g. %q) — a %T here would be read as a hierarchy directive and could detach the item", k, "PLAN-12", v))
+			}
+		}
+
 		if padItemPromotedFieldKeys[k] {
 			existing, has := out[k]
 			if has {
@@ -191,34 +225,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			out[k] = v
 			continue
 		}
-		// HIERARCHY PSEUDO-KEYS TAKE A STRING REF, ALWAYS (BUG-2850, codex
-		// round 3). `plan` is not in padItemPromotedFieldKeys, so before this
-		// it fell to the generic path and — once structures stopped being
-		// refused — a `fields:{"plan":{…}}` reached the server natively. There
-		// `extractParentLink` reads any PRESENT non-string plan/parent as a
-		// hierarchy directive, drops the key, and on update CLEARS the item's
-		// existing parent link. So lifting the nested refusal quietly opened a
-		// path where a malformed value silently detaches an item from its
-		// parent. A structure has no meaning here at all: the only value these
-		// keys take is a ref.
-		if hierarchyPseudoFieldKeys[k] {
-			if _, isString := v.(string); !isString {
-				return nil, errStructured(prefix, fmt.Errorf(
-					"fields.%s must be a string ref (e.g. %q) — a %T here would be read as a hierarchy directive and could detach the item", k, "PLAN-12", v))
-			}
-		}
-
-		// NULL stays refused (BUG-2850 lifts objects and arrays, not this).
-		// A null in a fields map has no agreed meaning — "store JSON null" and
-		// "clear this field" are both readable from it, and Pad already has an
-		// explicit clear vocabulary (clear_parent, clear_assigned_user). Giving
-		// null a silent meaning here would be inventing semantics inside a bug
-		// fix; if a clear-by-null is ever wanted it should be ruled and named.
-		if v == nil {
-			return nil, errStructured(prefix, fmt.Errorf(
-				"fields.%s: null has no defined write semantics — omit the key to leave it unchanged", k))
-		}
-
 		// NATIVE FORM, ALWAYS (BUG-2850). The value goes into fieldsNative
 		// with its JSON type intact — a number stays a number, an object stays
 		// an object. Whether a door can USE that depends on the door, which is
