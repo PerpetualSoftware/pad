@@ -193,11 +193,19 @@
 	/**
 	 * Whether to offer the create row, for the query as it stands.
 	 *
-	 * "Matches nothing, or nothing EXACTLY" — the exact-title test is against
-	 * `rawResults`, the source's answer BEFORE exclusion and the row bound.
-	 * Presented rows would be the wrong population twice over: an exact match
-	 * pushed past `limit`, or one the caller excluded, would both read as "no
-	 * such item" and offer to mint a duplicate of a row that exists.
+	 * "Matches nothing, or nothing EXACTLY" — and the exact-title question is
+	 * asked of the INDEX, not of the ranking.
+	 *
+	 * `rawResults` is checked first because it is free and is the only answer
+	 * available while the index is cold. But it is a RANKED, WINDOWED answer:
+	 * `warmSearch` asks for `limit + excluded.size` hits, so an exact row that
+	 * the ranker placed outside that window is simply absent, and resting the
+	 * no-duplicate guarantee on a relevance score rests it on the wrong thing
+	 * (codex round 1 P2). "Does an item with this exact title exist in this
+	 * collection" has an authoritative answer in `localIndex`, already in RAM,
+	 * so the warm path asks it directly. `getByCollection` excludes
+	 * soft-deleted rows, which is right: a deleted "Purple" should not stop the
+	 * user minting a live one.
 	 *
 	 * This suppression IS the no-duplicate half of U8's proving test. There is
 	 * no create-time uniqueness check anywhere below, and deliberately so: the
@@ -209,10 +217,18 @@
 	 * known, and a create row there invites a duplicate of a row about to land.
 	 */
 	let createTitle = $derived(query.trim());
+	function titleIs(row: ItemIndexRow, wanted: string): boolean {
+		return (row.title ?? '').trim().toLowerCase() === wanted;
+	}
 	let showCreate = $derived.by((): boolean => {
 		if (!oncreate || !collection || !createTitle || loading) return false;
 		const wanted = createTitle.toLowerCase();
-		return !rawResults.some((r) => (r.title ?? '').trim().toLowerCase() === wanted);
+		if (rawResults.some((r) => titleIs(r, wanted))) return false;
+		// Cold: no authoritative set to consult, so the ranked answer above is
+		// all there is. Offering create is the right call — refusing it because
+		// the index has not hydrated would strand the user.
+		if (!isWarm()) return true;
+		return !localIndex.getByCollection(wsSlug, collection).some((r) => titleIs(r, wanted));
 	});
 
 	/**

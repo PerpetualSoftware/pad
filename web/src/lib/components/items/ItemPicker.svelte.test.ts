@@ -936,6 +936,65 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		expect(oncreate).toHaveBeenCalledWith('Purple');
 	});
 
+	it('withholds create for an exact title the SEARCH RANKING did not return', async () => {
+		// codex round 1 P2. `warmSearch` asks `localSearch` for `limit +
+		// excluded.size` hits, so the exact match is only in `rawResults` if the
+		// RANKER put it there. Resting the no-duplicate guarantee on a relevance
+		// score is resting it on the wrong thing: the question "does an item with
+		// this exact title exist in this collection" has an authoritative answer
+		// in the index itself, and the index is already in RAM.
+		//
+		// The scenario is the ranker returning a full page of near-misses with
+		// the exact row outside the window.
+		loadIndex([
+			{ id: 'id-1', title: 'Purple Rain', item_number: 1, collection_prefix: 'COLO' },
+			{ id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' },
+		]);
+		// The ranker returns ONLY the near-miss; the exact row is off the window.
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn(), limit: 1 } });
+		await tick();
+
+		await type('Purple');
+
+		expect(options().map((o) => o.textContent)).toHaveLength(1);
+		expect(createRow()).toBeNull();
+	});
+
+	it('withholds create when the COLD path returns an exact title', async () => {
+		// The `rawResults` check is not redundant with the collection scan, and
+		// this is the case that proves it: while the index is cold there is no
+		// collection to scan, and the server's answer is the only evidence that
+		// the row exists. A build relying on the scan alone offers to create a
+		// duplicate of a row `/search` just returned.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockResolvedValue({
+			results: [{ item: { id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' } }],
+		});
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(options()).toHaveLength(1));
+		expect(createRow()).toBeNull();
+	});
+
+	it('CONTROL: a cold index falls back to the returned rows and still offers create', async () => {
+		// The collection scan needs a hydrated index. While cold there is no
+		// authoritative answer to fall back ON, so the behaviour is the
+		// rawResults check alone — which is the pre-fix behaviour, and correct
+		// here because refusing to offer create while cold would strand the user.
+		setBootstrapState('cold');
+		loadIndex([{ id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' }]);
+		searchApi.mockResolvedValue({ results: [] });
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+	});
+
 	it('does not fire a second create while the first is still in flight', async () => {
 		// The duplicate this guards is not the same-text-twice case the exact
 		// match covers — it is one impatient user and two Enters inside a single

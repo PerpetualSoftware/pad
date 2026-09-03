@@ -508,16 +508,111 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		expect(document.querySelector<HTMLInputElement>('.picker-input')!.value).toBe('Purple');
 	});
 
-	it('offers no create row when the target collection is unknown to the store', async () => {
-		// A renamed target already renders read-only (`relationEditable`), but
-		// the permission question has no answer without a collection ID, and
-		// "no answer" must not read as "allowed".
+	it('a create that lands after the user picked another row does not overwrite it', async () => {
+		// codex round 1 P1. The create is a round trip and the picker stays open
+		// through it, so the user can settle on a different row before it
+		// resolves. Last write wins is the WRONG rule here: the later write is
+		// the user's explicit choice and the earlier one is a promise they have
+		// already moved past.
+		let release!: (v: unknown) => void;
+		createApi.mockReturnValue(new Promise((r) => { release = r; }));
+		const picked = {
+			id: 'uuid-picked', title: 'Teal', item_number: 5, collection_prefix: 'COLO',
+			collection_slug: 'colors', slug: 'teal', deleted_at: null,
+		};
+		rows.set(picked.id, picked);
+		localIndexMock.getByCollection.mockReturnValue([picked]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		// The user settles on an existing row while the create is in flight.
+		localSearchMock.search.mockReturnValue([{ id: picked.id, score: 1 }]);
+		await typeQuery('Teal');
+		document.querySelector<HTMLElement>('.picker-result')!.click();
+		await tick();
+		expect(onchange).toHaveBeenCalledWith('uuid-picked');
+
+		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		await tick();
+		await tick();
+
+		// The created item is REAL and belongs in the index either way — it just
+		// must not become the field's value.
+		expect(localIndexMock.upsert).toHaveBeenCalled();
+		expect(onchange).toHaveBeenCalledTimes(1);
+		expect(onchange).not.toHaveBeenCalledWith('uuid-new');
+	});
+
+	it('a create that lands after this editor is destroyed writes nothing', async () => {
+		// codex round 1 P1, the other half. ItemDetail's fields section is
+		// `{#key itemSlug}`-remounted on an item switch, so a switch DESTROYS
+		// this component — but not the in-flight promise, and `onchange` calls
+		// into the persistent parent, whose `updateField` builds its PATCH
+		// against whatever item is current at CALL time. An unfenced completion
+		// therefore writes the new colour onto a DIFFERENT car.
+		let release!: (v: unknown) => void;
+		createApi.mockReturnValue(new Promise((r) => { release = r; }));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		cleanup(); // the {#key itemSlug} remount
+		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		await tick();
+		await tick();
+
+		expect(onchange).not.toHaveBeenCalled();
+	});
+
+	it('offers no create row while the collection list is not fresh for this workspace', async () => {
+		// codex round 1 P2. `collectionStore.collections` is a single global
+		// list, so during a workspace switch it still holds the PREVIOUS
+		// workspace's rows. A slug match against those yields another
+		// workspace's collection ID, and gating permission on it is asking the
+		// wrong question — the same freshness gate `relationTarget` already
+		// applies, which this derivation was missing.
+		collectionStoreMock.collectionsAreFreshFor.mockReturnValue(false);
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: editableProps });
+		await tick();
+		// A query is required or this asserts nothing: an EMPTY query never
+		// offers a create row, so the leg would pass against the ungated build.
+		await typeQuery('Purple');
+
+		expect(createRow()).toBeNull();
+	});
+
+	it('a target the collection list does not name renders read-only — there is no picker to create from', async () => {
+		// Worth stating rather than asserting a bare absence. When the declared
+		// target is absent from a FRESH list it is a renamed collection, and
+		// `relationEditable` already refuses to mount a picker at all (a picker
+		// scoped to a slug nothing matches would list nothing, forever). So the
+		// create row is unreachable one layer ABOVE the permission gate, and a
+		// test that typed a query here would fail on a missing input rather than
+		// on the behaviour it names.
+		//
+		// The permission gate's own "no collection ID" branch is exercised by
+		// the not-fresh leg above, where the picker DOES mount.
 		collectionStoreMock.collections = [{ id: 'coll-tasks', slug: 'tasks', name: 'Tasks' }];
 		localIndexMock.getByCollection.mockReturnValue([]);
 		localSearchMock.search.mockReturnValue([]);
 		render(FieldEditor, { props: editableProps });
 		await tick();
 
+		expect(document.querySelector('.picker-input')).toBeNull();
 		expect(createRow()).toBeNull();
 	});
 });

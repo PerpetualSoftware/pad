@@ -15,6 +15,7 @@ visual language as the editor but with no inputs, dropdowns, or mutation
 handlers — onchange is never called.
 -->
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -193,14 +194,27 @@ handlers — onchange is never called.
 	let editingRelation = $state(false);
 
 	function pickRelation(row: ItemIndexRow) {
+		relationWrite++;
 		editingRelation = false;
 		onchange(row.id);
 	}
 
 	function clearRelation() {
+		relationWrite++;
 		editingRelation = false;
 		onchange('');
 	}
+
+	/**
+	 * Fences for the in-flight create (see `createRelationTarget`). Plain `let`
+	 * per CONVE-1688 — written and read only in handlers and lifecycle, never
+	 * rendered, so neither belongs in the effect graph.
+	 */
+	let relationWrite = 0;
+	let destroyed = false;
+	onDestroy(() => {
+		destroyed = true;
+	});
 
 	// ── Inline create from the picker (PLAN-2857 U8) ─────────────────────
 	//
@@ -213,8 +227,16 @@ handlers — onchange is never called.
 	// collection's ID, which only the loaded collection list has; a target the
 	// list does not know yields `null` here and therefore no create row, because
 	// "no answer" must not read as "allowed".
+	// FRESHNESS, for the same reason `knownCollectionSlugs` has it (codex round
+	// 1 P2): `collectionStore.collections` is one global list, so during a
+	// workspace switch it still holds the PREVIOUS workspace's rows. A slug
+	// match against those yields another workspace's collection ID, and asking
+	// `canEditCollection` about that ID is asking the wrong question — it can
+	// answer yes and put a create row on a field whose target is not that
+	// collection at all.
 	let targetCollection = $derived.by(() => {
-		if (!isRelation || !field.collection) return null;
+		if (!isRelation || !field.collection || !wsSlug) return null;
+		if (!collectionStore.collectionsAreFreshFor(wsSlug)) return null;
 		return (collectionStore.collections ?? []).find((c) => c.slug === field.collection) ?? null;
 	});
 	let canCreateInTarget = $derived(
@@ -245,10 +267,29 @@ handlers — onchange is never called.
 		const ws = wsSlug;
 		const collSlug = field.collection;
 		if (!ws || !collSlug) return;
+		// Two fences on the completion, both found by codex round 1 P1, both
+		// about the same gap: the create is a round trip and the picker stays
+		// open across it, so the world can move before it lands.
+		//
+		//   * DESTROYED. `ItemDetail` wraps its fields section in
+		//     `{#key itemSlug}`, so an item switch destroys this component — but
+		//     not this promise, and `onchange` calls into the PERSISTENT parent,
+		//     whose `updateField` builds its PATCH against whatever item is
+		//     current at CALL time. Unfenced, a create started on car A writes
+		//     its colour onto car B.
+		//   * SUPERSEDED. The user can settle on another row (or clear the
+		//     field) while this is in flight. Last-write-wins is the wrong rule:
+		//     the later write is an explicit choice and this one is a promise
+		//     they have moved past.
+		const mySeq = ++relationWrite;
 		const epoch = localIndex.scopeEpochFor(ws);
 		try {
 			const item = await api.items.create(ws, collSlug, { title, source: 'web' });
+			// Upserted UNCONDITIONALLY, ahead of the fences: the row exists on
+			// the server whatever happened here, and withholding it from the
+			// index would leave a picker offering to create it a second time.
 			localIndex.upsert(ws, item, epoch);
+			if (destroyed || mySeq !== relationWrite) return;
 			editingRelation = false;
 			onchange(item.id);
 		} catch (e: any) {
