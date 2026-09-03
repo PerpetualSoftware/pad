@@ -208,6 +208,37 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		}
 
 		if padItemPromotedFieldKeys[k] {
+			// THE `field: ["k=v"]` CONFLICT GUARD RUNS HERE TOO (codex round
+			// 5). It lives on the generic path below, which a promoted key
+			// never reaches — so `fields.status` vs `field:["status=…"]` was
+			// the one ambiguity in this function that did NOT refuse. And it
+			// did not fail closed either: the promoted branch writes the
+			// top-level param while the array stays in out["field"], and both
+			// the HTTP mappers and the CLI overlay --field entries AFTER the
+			// named flags, so the array silently won. On `status` that
+			// cancels an item you asked to mark done; on `parent` it relinks
+			// or detaches it.
+			//
+			// Fourth round running that a guard was written on the generic
+			// path only. The top-level check below is not a substitute:
+			// `field` and the dedicated param are different doors, and
+			// covering one says nothing about the other.
+			if prev, inArray := fieldByKey[k]; inArray {
+				sv, err := stringifyFieldValue(v)
+				if err != nil {
+					// tags is the promoted key that takes a structure; the
+					// generic path refuses this same shape for the same
+					// reason, one key cannot be both.
+					return nil, errStructured(prefix, fmt.Errorf(
+						"fields.%s conflicts with the field array entry %q — one key cannot be both a structured value and a string", k, k+"="+prev))
+				}
+				if sv != prev {
+					return nil, errStructured(prefix, fmt.Errorf(
+						"fields.%s conflicts with the field array entry %q (%s vs %s) — pass one of them, or the same value in both", k, k+"="+prev, sv, prev))
+				}
+				// Equal duplicate: unambiguous. Fall through and promote, so
+				// the value still reaches its dedicated param.
+			}
 			existing, has := out[k]
 			if has {
 				if !scalarEqual(existing, v) {

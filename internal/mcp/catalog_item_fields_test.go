@@ -522,3 +522,74 @@ func TestPadItemUpdate_PromotedKeysStillPromote(t *testing.T) {
 		t.Fatal("expected the update to dispatch")
 	}
 }
+
+// TestPadItemUpdate_FieldArrayConflictAppliesToPromotedKeys: the
+// `fields` vs `field: ["k=v"]` conflict guard has to cover PROMOTED keys
+// too (codex round 5, BUG-2850).
+//
+// TestPadItemUpdate_FieldsConflictInFieldArrayRefused above proves the
+// guard for `effort` — a key that takes the GENERIC path, where the
+// fieldByKey check lives. Every promoted key (`status`, `parent`, `role`,
+// …) returns from the promoted branch before reaching it, so the guard
+// that test vouches for was never on their path. That is CONVE-19 in the
+// same unit for the fourth round running: the earlier test binds the
+// generic path, not the class of keys that skips it.
+//
+// Unrefused, the ambiguity does not fail closed — it silently picks the
+// `field` entry, because the promoted branch writes the top-level param
+// (`out["status"]`) while the array stays in `out["field"]`, and both
+// mapItemCreate/mapItemUpdate and the CLI overlay `--field` entries AFTER
+// the named flags. So `fields:{"status":"done"}` with
+// `field:["status=cancelled"]` cancels the item. On `parent` the same
+// shape relinks or detaches it.
+func TestPadItemUpdate_FieldArrayConflictAppliesToPromotedKeys(t *testing.T) {
+	cases := map[string]struct {
+		field  []any
+		fields map[string]any
+		key    string
+	}{
+		"status": {[]any{"status=cancelled"}, map[string]any{"status": "done"}, "status"},
+		"parent": {[]any{"parent=PLAN-9"}, map[string]any{"parent": "PLAN-12"}, "parent"},
+		"role":   {[]any{"role=reviewer"}, map[string]any{"role": "implementer"}, "role"},
+		// tags is the structured promoted key: one key cannot be both an
+		// array and a string, which is a conflict for the same reason.
+		"tags": {[]any{"tags=a"}, map[string]any{"tags": []any{"b"}}, "tags"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				"field":  tc.field,
+				"fields": tc.fields,
+			})
+			if !isErr {
+				t.Fatalf("expected structured refusal, got success: %s", msg)
+			}
+			if !strings.Contains(msg, tc.key) {
+				t.Errorf("error should name the conflicting key %q: %s", tc.key, msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("conflicting call must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...and the equal-duplicate half, so the fix refuses ambiguity rather
+// than refusing agreement. A promoted key with the SAME value in both
+// places is unambiguous and must still apply, exactly once.
+func TestPadItemUpdate_FieldArrayEqualDuplicateOnPromotedKeyAllowed(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"status=done"},
+		"fields": map[string]any{"status": "done"},
+	})
+	if isErr {
+		t.Fatalf("expected success for equal duplicate, got error: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--status", "done") {
+		t.Errorf("status lost: %v", disp.gotArgs)
+	}
+}
