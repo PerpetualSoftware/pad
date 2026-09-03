@@ -5261,6 +5261,9 @@
 									value={rawFieldValue}
 									onchange={(v) => updateField(field.key, v)}
 									readonly={!canEdit}
+									{wsSlug}
+									{username}
+									onOpenTarget={paneOpenTarget}
 								/>
 							</div>
 						</div>
