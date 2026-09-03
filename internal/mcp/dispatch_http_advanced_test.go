@@ -925,3 +925,108 @@ func (c *requestCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = w.Write([]byte(`{}`))
 }
+
+// TestDispatchItemUpdate_NonStringPromotedValueIsNotDropped: a promoted param
+// that arrives as a NUMBER must reach the PATCH, not be silently discarded
+// (BUG-2850, codex round 6).
+//
+// reshapeItemFields promotes `fields:{"priority":3}` onto the top-level
+// `priority` input with its JSON type intact, so the dispatcher sees a
+// float64. Both places that read these params asserted `.(string)`:
+// hasFieldChanges then reported nothing to change, the whole fields_patch
+// branch was skipped, and the call answered SUCCESS having sent no PATCH at
+// all — a silent no-op reintroduced by the fix for silent no-ops, and
+// asymmetric with create, where mapItemCreate has always passed non-strings
+// through.
+//
+// The assertion is that a PATCH HAPPENED and carries the value with its type.
+// Unfixed, requestCount is 0, which is why counting the request matters more
+// here than reading the body.
+func TestDispatchItemUpdate_NonStringPromotedValueIsNotDropped(t *testing.T) {
+	captured := newRequestCapture()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{}"}`))
+		case http.MethodPatch:
+			captured.ServeHTTP(w, r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp",
+		"ref":       "TASK-5",
+		// Exactly what reshapeItemFields emits for fields:{"priority":3}:
+		// the promoted key at the top level, still a JSON number.
+		"priority": float64(3),
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	if captured.requestCount != 1 {
+		t.Fatalf("expected 1 PATCH, got %d — a numeric promoted value was dropped and the update wrote nothing", captured.requestCount)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(captured.lastBody), &body); err != nil {
+		t.Fatalf("decode body: %v\n%s", err, captured.lastBody)
+	}
+	patch, ok := body["fields_patch"].(map[string]any)
+	if !ok {
+		t.Fatalf("fields_patch not an object in body: %v", body)
+	}
+	got, isNumber := patch["priority"].(float64)
+	if !isNumber {
+		t.Fatalf("priority: want a JSON number, got %[1]T(%[1]v) — patch: %v", patch["priority"], patch)
+	}
+	if got != 3 {
+		t.Errorf("priority = %v, want 3", got)
+	}
+}
+
+// ...and an empty string still means "not supplied", so widening the type
+// check did not turn a no-op param into a write. Same invariant every other
+// declared string param on this tool holds.
+func TestDispatchItemUpdate_EmptyPromotedStringIsStillNotAChange(t *testing.T) {
+	captured := newRequestCapture()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5","fields":"{}"}`))
+		case http.MethodPatch:
+			captured.ServeHTTP(w, r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ref":"TASK-5"}`))
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "caller"})}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "docapp",
+		"ref":       "TASK-5",
+		"comment":   "note only",
+		"status":    "",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(captured.lastBody), &body); err != nil {
+		t.Fatalf("decode body: %v\n%s", err, captured.lastBody)
+	}
+	if _, present := body["fields_patch"]; present {
+		t.Errorf("an empty status must not produce a fields_patch: %v", body)
+	}
+}

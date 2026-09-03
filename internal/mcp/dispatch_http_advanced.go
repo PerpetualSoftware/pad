@@ -435,7 +435,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if hasFieldChanges(input) {
 		patch := map[string]any{}
 		for _, key := range []string{"status", "priority", "category", "parent"} {
-			if v, ok := input[key].(string); ok && v != "" {
+			if v, ok := promotedParamValue(input[key]); ok {
 				patch[key] = v
 			}
 		}
@@ -641,6 +641,42 @@ func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
 	return "", nil
 }
 
+// promotedParamValue reads one of the promoted item params (status, priority,
+// category, parent) off the dispatch input, reporting whether it was actually
+// supplied.
+//
+// A NON-STRING SCALAR COUNTS (codex round 6). Both call sites used to read
+// `input[key].(string)`, which was right while these params could only arrive
+// as CLI-shaped strings — but reshapeItemFields now promotes `fields:{…}`
+// values with their JSON types intact, so `fields:{"priority":3}` arrives as a
+// float64. The type assertion dropped it at BOTH sites: hasFieldChanges said
+// there was nothing to change, so the dispatcher skipped the fields_patch
+// branch entirely and answered SUCCESS having written nothing. A silent
+// no-op — the exact failure mode BUG-2850 exists to remove — reintroduced by
+// the fix for it, and asymmetric with create, where mapItemCreate has always
+// passed non-strings through for the handler to validate.
+//
+// Empty string stays "not supplied", which is the invariant every other
+// declared string param on this tool holds; a non-string is always supplied,
+// since no zero value can be confused with absence. The server still
+// validates the value against the collection schema — this decides whether it
+// is SENT, not whether it is correct.
+func promotedParamValue(raw any) (any, bool) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, false
+	case string:
+		return v, v != ""
+	case bool, float64, int, int64, json.Number:
+		return v, true
+	default:
+		// Structures never reach here: reshapeItemFields refuses a non-string
+		// for the hierarchy keys and stringifies the rest, and a caller
+		// sending one directly is refused by strict input validation.
+		return nil, false
+	}
+}
+
 // hasFieldChanges reports whether the input has any value that
 // should trigger field-merging on update. Mirrors the CLI's check
 // at cmd/pad/main.go itemUpdateCmd around the `hasFieldChanges`
@@ -657,7 +693,7 @@ func hasFieldChanges(input map[string]any) bool {
 		return true
 	}
 	for _, key := range []string{"status", "priority", "category", "parent"} {
-		if v, ok := input[key].(string); ok && v != "" {
+		if _, ok := promotedParamValue(input[key]); ok {
 			return true
 		}
 	}

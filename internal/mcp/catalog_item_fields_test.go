@@ -593,3 +593,162 @@ func TestPadItemUpdate_FieldArrayEqualDuplicateOnPromotedKeyAllowed(t *testing.T
 		t.Errorf("status lost: %v", disp.gotArgs)
 	}
 }
+
+// --- codex round 6 ---
+
+// TestPadItemUpdate_HierarchyAliasConflictRefused: `parent` and `plan` are
+// ONE directive, so a conflict between them has to refuse even though the key
+// names differ (BUG-2850, codex round 6).
+//
+// extractParentLink (handlers_items.go) resolves the link with
+// `for _, key := range []string{"parent", "plan"}` and no early exit, so when
+// both arrive the LATER key wins. Every conflict guard in reshapeItemFields
+// matched on the SAME key name, so `fields:{"parent":"PLAN-12"}` with
+// `field:["plan=PLAN-9"]` passed every check and then relinked the item to
+// PLAN-9. Same alias bypass BUG-2078's round-1 review found on clear_parent,
+// reached through a different door — which is why this pins both directions
+// and the top-level param as well.
+func TestPadItemUpdate_HierarchyAliasConflictRefused(t *testing.T) {
+	cases := map[string]map[string]any{
+		"fields.parent vs field[plan]": {
+			"field":  []any{"plan=PLAN-9"},
+			"fields": map[string]any{"parent": "PLAN-12"},
+		},
+		"fields.plan vs field[parent]": {
+			"field":  []any{"parent=PLAN-9"},
+			"fields": map[string]any{"plan": "PLAN-12"},
+		},
+		"fields.plan vs top-level parent": {
+			"parent": "PLAN-9",
+			"fields": map[string]any{"plan": "PLAN-12"},
+		},
+		// Equal values are refused too: two hierarchy directives in one call
+		// are ambiguous by construction, and v0.19 already refuses this shape
+		// for parent + clear_parent "including via the plan alias".
+		"equal values still refused": {
+			"field":  []any{"plan=PLAN-12"},
+			"fields": map[string]any{"parent": "PLAN-12"},
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			input := map[string]any{"action": "update", "ref": "TASK-5"}
+			for k, v := range extra {
+				input[k] = v
+			}
+			disp, msg, isErr := dispatchPadItem(t, input)
+			if !isErr {
+				t.Fatalf("expected structured refusal, got success: %s", msg)
+			}
+			if !strings.Contains(msg, "parent") || !strings.Contains(msg, "plan") {
+				t.Errorf("error should name both hierarchy keys: %s", msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("conflicting call must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...and a lone hierarchy key still works, so the alias guard did not make
+// the ordinary case unreachable.
+func TestPadItemUpdate_LoneHierarchyKeyStillAccepted(t *testing.T) {
+	for _, key := range []string{"parent", "plan"} {
+		t.Run(key, func(t *testing.T) {
+			_, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				"fields": map[string]any{key: "PLAN-12"},
+			})
+			if isErr {
+				t.Fatalf("a lone %s must still be accepted: %s", key, msg)
+			}
+		})
+	}
+}
+
+// TestPadItemUpdate_FieldArrayKeysNormalizedForConflicts: the conflict index
+// must be normalized the way the DOOR normalizes (BUG-2850, codex round 6).
+//
+// ingestFieldKVP (dispatch_http.go) TrimSpaces both halves of a `key=value`
+// entry before writing it. parseFieldArray indexed the raw halves, so the
+// index described something the remote door was never going to write:
+// `field:[" status=cancelled"]` sat under " status", missed the guard against
+// `fields:{"status":"done"}`, and then won. The mirror-image case is the
+// control leg — a value that differs only by padding is the SAME value, and
+// refusing it would be refusing a call that agrees with itself.
+func TestPadItemUpdate_FieldArrayKeysNormalizedForConflicts(t *testing.T) {
+	t.Run("padded key still conflicts", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update",
+			"ref":    "TASK-5",
+			"field":  []any{" status=cancelled"},
+			"fields": map[string]any{"status": "done"},
+		})
+		if !isErr {
+			t.Fatalf("expected structured refusal, got success: %s", msg)
+		}
+		if len(disp.gotPath) != 0 {
+			t.Errorf("conflicting call must not dispatch; dispatched %v", disp.gotPath)
+		}
+	})
+	t.Run("padded value is not a conflict", func(t *testing.T) {
+		_, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update",
+			"ref":    "TASK-5",
+			"field":  []any{"status= done"},
+			"fields": map[string]any{"status": "done"},
+		})
+		if isErr {
+			t.Fatalf("padding is not a disagreement; expected success, got: %s", msg)
+		}
+	})
+}
+
+// TestPadItemUpdate_EqualPromotedDuplicateAppliesOnce: an equal duplicate on a
+// promoted key must be written ONCE, through its dedicated param — the array
+// entry has to be removed (BUG-2850, codex round 6).
+//
+// Leaving it produced two writes of one value by two mechanisms: `role` was
+// resolved to agent_role_id AND written as a literal `role` key into the
+// fields blob, which no schema declares — so an equal-duplicate call silently
+// created an undeclared field and (since dc3fc2d5) a warning naming it. The
+// assertion is on the ABSENCE of the --field pair, because that is the half
+// that was wrong; a status-code check would pass either way.
+func TestPadItemUpdate_EqualPromotedDuplicateAppliesOnce(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"status=done"},
+		"fields": map[string]any{"status": "done"},
+	})
+	if isErr {
+		t.Fatalf("equal duplicate must be accepted: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--status", "done") {
+		t.Errorf("the value must still be applied through its param: %v", disp.gotArgs)
+	}
+	if argsContainPair(disp.gotArgs, "--field", "status=done") {
+		t.Errorf("the duplicate --field entry must be dropped, not sent alongside: %v", disp.gotArgs)
+	}
+}
+
+// ...and an unrelated `field` entry alongside an equal duplicate survives, so
+// the drop removes exactly the duplicate and not the array.
+func TestPadItemUpdate_EqualDuplicateDropKeepsOtherFieldEntries(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"status=done", "effort=l"},
+		"fields": map[string]any{"status": "done"},
+	})
+	if isErr {
+		t.Fatalf("expected success: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "effort=l") {
+		t.Errorf("unrelated field entry lost: %v", disp.gotArgs)
+	}
+	if argsContainPair(disp.gotArgs, "--field", "status=done") {
+		t.Errorf("duplicate entry survived: %v", disp.gotArgs)
+	}
+}

@@ -76,6 +76,12 @@ var hierarchyPseudoFieldKeys = map[string]bool{
 	"plan":   true,
 }
 
+// hierarchyAliasKeys is the same set in the order extractParentLink reads it
+// (handlers_items.go: `for _, key := range []string{"parent", "plan"}`, no
+// early exit, so the LATER key wins). Kept as a slice for deterministic error
+// text when one alias conflicts with the other.
+var hierarchyAliasKeys = []string{"parent", "plan"}
+
 var padItemPromotedFieldKeys = map[string]bool{
 	"status":   true,
 	"priority": true,
@@ -155,6 +161,11 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 	// The same values with their JSON types intact (BUG-2850).
 	fieldsNative := map[string]any{}
 
+	// Promoted keys whose array entry is an equal duplicate and is therefore
+	// removed from `field` before dispatch, so the value is written once
+	// through its dedicated param (codex round 6).
+	dropFieldKeys := map[string]bool{}
+
 	// Deterministic processing (and error ordering) across runs.
 	keys := make([]string, 0, len(obj))
 	for k := range obj {
@@ -205,6 +216,35 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 				return nil, errStructured(prefix, fmt.Errorf(
 					"fields.%s must be a string ref (e.g. %q) — a %T here would be read as a hierarchy directive and could detach the item", k, "PLAN-12", v))
 			}
+			// ...AND `parent` AND `plan` ARE THE SAME DIRECTIVE, so the
+			// same-name conflict guards below do not cover them (codex round
+			// 6). `extractParentLink` (handlers_items.go) resolves the link
+			// with `for _, key := range []string{"parent", "plan"}` and NO
+			// early exit, so when both arrive the LATER key wins — the exact
+			// alias bypass BUG-2078's round-1 review found for clear_parent,
+			// arriving here through a different door. `fields:{"parent":"A"}`
+			// with `field:["plan=B"]` therefore relinks the item to B while
+			// reporting success for A.
+			//
+			// Refused rather than resolved, even when the two values are
+			// EQUAL. Two hierarchy directives in one call are ambiguous by
+			// construction, and this catalog already refuses the same shape
+			// for parent + clear_parent "including via the plan alias"
+			// (v0.19). Consistency with that ruling matters more than
+			// accepting a pair that happens to agree today.
+			for _, alias := range hierarchyAliasKeys {
+				if alias == k {
+					continue // same-name conflicts fall to the guards below
+				}
+				if prev, has := fieldByKey[alias]; has {
+					return nil, errStructured(prefix, fmt.Errorf(
+						"fields.%s conflicts with the field array entry %q — %q and %q are the same hierarchy directive and the server applies whichever it reads last; pass one of them", k, alias+"="+prev, "parent", "plan"))
+				}
+				if existing, has := out[alias]; has {
+					return nil, errStructured(prefix, fmt.Errorf(
+						"fields.%s conflicts with the top-level %s param (%v vs %v) — %q and %q are the same hierarchy directive; pass one of them", k, alias, v, existing, "parent", "plan"))
+				}
+			}
 		}
 
 		if padItemPromotedFieldKeys[k] {
@@ -236,8 +276,21 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 					return nil, errStructured(prefix, fmt.Errorf(
 						"fields.%s conflicts with the field array entry %q (%s vs %s) — pass one of them, or the same value in both", k, k+"="+prev, sv, prev))
 				}
-				// Equal duplicate: unambiguous. Fall through and promote, so
-				// the value still reaches its dedicated param.
+				// Equal duplicate: unambiguous, so it applies — ONCE, through
+				// the dedicated param, which means the array entry has to GO
+				// (codex round 6). Leaving it produced two writes of one
+				// value through two different mechanisms: `role` was resolved
+				// to agent_role_id AND written as a literal `role` key in the
+				// fields blob, where no schema declares it — so an
+				// equal-duplicate call silently created an undeclared field
+				// (and, since dc3fc2d5, a warning naming it). Same for
+				// `assign` and `tags`.
+				//
+				// Deleting from fieldByKey too, so a later key in this loop
+				// sees the entry as gone rather than conflicting with
+				// something no longer being sent.
+				dropFieldKeys[k] = true
+				delete(fieldByKey, k)
 			}
 			existing, has := out[k]
 			if has {
@@ -290,8 +343,27 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		fieldByKey[k] = sv
 	}
 
+	// Remove the equal-duplicate entries the promoted branch claimed. Matched
+	// on the NORMALIZED key, the same form parseFieldArray indexed on, so
+	// `field:[" role=implementer"]` is dropped by the same rule that let it
+	// be recognized as a duplicate in the first place.
+	if len(dropFieldKeys) > 0 {
+		kept := fieldEntries[:0]
+		for _, e := range fieldEntries {
+			if key, _, ok := strings.Cut(e, "="); ok && dropFieldKeys[strings.TrimSpace(key)] {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		fieldEntries = kept
+	}
 	if len(fieldEntries) > 0 {
 		out["field"] = fieldEntries
+	} else {
+		// An entry set emptied by the drop above must not leave the caller's
+		// original `field` array in place — that is the value we just decided
+		// not to send twice.
+		delete(out, "field")
 	}
 	// Emitted under a distinct key so each transport takes what it can use:
 	// the HTTP mapper prefers these (types intact), BuildCLIArgs consults them
@@ -339,7 +411,23 @@ func parseFieldArray(prefix string, raw any) ([]string, map[string]string, *mcp.
 	}
 	for _, e := range entries {
 		if k, val, ok := strings.Cut(e, "="); ok {
-			byKey[k] = val
+			// NORMALIZED THE WAY THE DOOR WILL NORMALIZE (codex round 6).
+			// ingestFieldKVP (dispatch_http.go) TrimSpaces both halves before
+			// storing them, so an un-trimmed index here does not describe what
+			// the remote door is about to write: `field:[" status=cancelled"]`
+			// indexed under " status" missed every conflict check against
+			// `fields:{"status":…}` and then silently overrode it. Trimming
+			// the value closes the mirror-image false refusal, where
+			// `field:["status= done"]` looked different from "done" and was
+			// refused as a conflict with a call that agrees.
+			//
+			// Only the INDEX is normalized. `entries` stays verbatim so every
+			// door still parses exactly what the caller sent — the CLI door
+			// does not trim (cmd/pad/cmd_item.go), and this must not quietly
+			// change what it receives. The effect is a conflict check that is
+			// conservative on both doors, which is the correct direction for
+			// a guard whose disposition is refuse-on-ambiguity.
+			byKey[strings.TrimSpace(k)] = strings.TrimSpace(val)
 		}
 	}
 	return entries, byKey, nil
