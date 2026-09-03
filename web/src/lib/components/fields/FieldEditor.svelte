@@ -308,8 +308,34 @@ handlers — onchange is never called.
 		// meant to catch (codex round 6, correcting the residual round 5
 		// dismissed as needing a coincidence; it needs none).
 		const indexStillOurs = () => localIndex.resetGenerationFor(ws) === resetGen;
-		// Typing a new query is deliberately NOT one of these, and it has been
-		// raised twice. The three that ARE fences each stand for an act meaning
+		// THREE things are deliberately NOT fenced here, each raised by review
+		// and each declined for a reason that belongs next to the code rather
+		// than in a commit message nobody downstream reads.
+		//
+		// 1. A CONCURRENT CHANGE TO THE FIELD (SSE, another tab) landing while
+		//    the POST is pending. Overwriting it is ordinary last-write-wins on
+		//    a field the user is actively editing, and it is what every other
+		//    type in this component already does — a text field blurred after a
+		//    remote change overwrites it too. The server, not this component, is
+		//    where that race is adjudicated: `ItemDetail.updateField` sends
+		//    `expected_updated_at` and refetch-retries a 409 (BUG-2273 /
+		//    IDEA-1480). Fencing it HERE would make relation fields alone behave
+		//    differently from every other field, on a rule the item's own
+		//    optimistic-concurrency check already enforces.
+		//
+		// 2. A LOST RESPONSE on a create that actually committed. Real, and not
+		//    fixable here: `item create` has no idempotency key, and titles are
+		//    not unique (colliding slugs just get `-2` suffixes,
+		//    `store.uniqueSlug`). Nothing auto-retries — the retry would be a
+		//    person clicking Create again, seeing the picker's current state —
+		//    and the repo's standing rule for the same shape is exactly that
+		//    (`item copy` "NEVER retry it automatically"). Filed as IDEA-2880
+		//    rather than papered over with a client-side guess — checking for a
+		//    same-title item before retrying would rest on the same ranked,
+		//    paged, possibly-stale evidence the create row itself rests on, and
+		//    would look like a guarantee the client cannot make.
+		//
+		// 3. Typing a new query, which has been raised twice. The three that ARE fences each stand for an act meaning
 		// "not this one": escaping out, choosing a different row, and landing on
 		// a different item or workspace. Typing is none of those — it is
 		// mid-thought, and the user did explicitly ask for the item now being
