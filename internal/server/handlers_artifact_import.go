@@ -207,6 +207,25 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// item.Warnings is deliberately NOT merged into `warnings` here, and this
+	// note exists so the omission is not re-found as a defect (codex round 10
+	// raised it; the claim was checked and does not hold on this path).
+	//
+	// createItemChecked names undeclared field keys in item.Warnings, and this
+	// handler does build its own response shape — so on a code reading, the
+	// warnings look dropped. They cannot occur. artifact.Decode populates
+	// Fields exclusively from FieldKeysForKind via a closed switch over a
+	// typed frontmatter struct (internal/artifact/decode.go), so a key outside
+	// that per-kind list never enters the map, whatever bytes arrive. Verified
+	// both ways before removing the merge: Encode drops extra keys, and Decode
+	// of a HAND-WRITTEN artifact carrying extra frontmatter keys drops them
+	// too — the import door takes raw bytes, so the hand-written case is the
+	// one that mattered.
+	//
+	// Merging would therefore add a branch nothing can enter, and a test for
+	// it cannot pass through the public door. If artifact ever grows
+	// passthrough fields, this is the line to revisit.
+
 	writeJSON(w, http.StatusCreated, artifactImportResponse{
 		Ref:      item.Ref,
 		Slug:     item.Slug,

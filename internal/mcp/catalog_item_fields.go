@@ -190,9 +190,29 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 	// top-level message honest.
 	origHierarchyParams := map[string]any{}
 	for _, alias := range hierarchyAliasKeys {
-		if v, ok := input[alias]; ok {
-			origHierarchyParams[alias] = v
+		v, ok := input[alias]
+		if !ok {
+			continue
 		}
+		// AN EMPTY STRING IS NOT PROVIDED (codex round 10). Every declared
+		// string param on this tool follows that convention — it is why
+		// promotedParamValue treats "" as absent and why `assign: ""` is
+		// deliberately inert. Counting it here made `parent: ""` collide with
+		// a perfectly good `fields.plan`, refusing a call that asks for one
+		// hierarchy directive and passes the other as a padded-out zero
+		// value, which is exactly what a client that fills every declared
+		// optional param does.
+		//
+		// NOT the same as an empty value in the `field` ARRAY or in `fields`:
+		// `field:["parent="]` and `fields:{"parent":""}` are the documented
+		// CLEAR signal (BUG-2013 / BUG-2078), so they are semantically
+		// effective and stay conflicts. The asymmetry is real and load-
+		// bearing: one is a param left blank, the other is an explicit
+		// instruction that happens to look like one.
+		if str, isString := v.(string); isString && str == "" {
+			continue
+		}
+		origHierarchyParams[alias] = v
 	}
 
 	// The same values with their JSON types intact (BUG-2850).

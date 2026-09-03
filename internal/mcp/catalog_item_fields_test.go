@@ -1063,3 +1063,64 @@ func TestPadItemUpdate_StringIdentityRefStillAccepted(t *testing.T) {
 		t.Errorf("identity refs lost: %v", disp.gotArgs)
 	}
 }
+
+// --- codex round 10 ---
+
+// TestPadItemUpdate_EmptyParentParamIsNotAnAliasConflict: an empty top-level
+// `parent` is NOT PROVIDED, so it must not collide with `fields.plan`
+// (BUG-2850, codex round 10).
+//
+// Every declared string param on this tool follows that convention — it is
+// why promotedParamValue treats "" as absent and why `assign: ""` is
+// deliberately inert. Counting it as a hierarchy directive refused a
+// perfectly good call from any client that fills declared optional params
+// with their zero value rather than omitting them, which is a common client
+// shape and exactly who this would have hit.
+func TestPadItemUpdate_EmptyParentParamIsNotAnAliasConflict(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"parent": "",
+		"fields": map[string]any{"plan": "PLAN-12"},
+	})
+	if isErr {
+		t.Fatalf("an empty parent param is not a directive; expected success, got: %s", msg)
+	}
+	if len(disp.gotPath) == 0 {
+		t.Fatal("expected the update to dispatch")
+	}
+}
+
+// ...and the EFFECTIVE empty forms still conflict, because they are not the
+// same thing. `field:["parent="]` and `fields:{"parent":""}` are the
+// documented CLEAR signal (BUG-2013 / BUG-2078) — an explicit instruction
+// that happens to look like a blank param. If this ever goes green, the
+// round-10 fix has been over-applied and a clear-plus-set pair is resolving
+// silently instead of refusing.
+func TestPadItemUpdate_EmptyClearFormsStillConflictWithTheAlias(t *testing.T) {
+	cases := map[string]map[string]any{
+		"field array clear vs fields.plan": {
+			"field":  []any{"parent="},
+			"fields": map[string]any{"plan": "PLAN-12"},
+		},
+		"fields.parent clear vs field array plan": {
+			"field":  []any{"plan=PLAN-12"},
+			"fields": map[string]any{"parent": ""},
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			input := map[string]any{"action": "update", "ref": "TASK-5"}
+			for k, v := range extra {
+				input[k] = v
+			}
+			disp, msg, isErr := dispatchPadItem(t, input)
+			if !isErr {
+				t.Fatalf("an explicit clear is a directive and must still conflict; got success: %s", msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
