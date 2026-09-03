@@ -176,11 +176,38 @@ func topLevelConflictKeys() []string {
 // ONLY place a conflict is decided; the emission code below runs knowing the
 // input is unambiguous.
 //
-// SCOPE: this runs only when a `fields` object is present, because
-// reshapeItemFields does. A top-level param colliding with a `field:[]` entry
-// and no `fields` object is OUTSIDE it and keeps its documented
-// last-write-wins resolution — deliberately, per the round-7 boundary the
-// lead confirmed, and pinned on both doors by the SameNameDuplicate tests.
+// SCOPE: it runs from BOTH action entry points (create and update) on every
+// call, whether or not a `fields` object is present. It used to run only from
+// inside reshapeItemFields, which returns early without one — codex round 14
+// found the alias pair that slipped through that gap, and the body below
+// carries the detail.
+//
+// Two halves, with different reach:
+//
+//   - ALIAS collisions (parent/plan, assign/assigned_user_id,
+//     role/agent_role_id) are adjudicated ALWAYS, through any combination of
+//     sources, and refuse even when the values match. Two names for one
+//     target address it through different vocabularies — a slug and a UUID —
+//     so "equal" is not a question this layer can answer.
+//
+//   - SAME-NAME collisions are adjudicated only when something will
+//     arbitrate them, which is a PER-KEY question: does the `fields` object
+//     carry THIS key (rounds 17 and 19 were each a per-request predicate
+//     standing in for it). Otherwise the doors resolve it themselves and the
+//     round-7 exemption applies — the array overlays the named param,
+//     identically on both, so last-write-wins is a resolution the caller can
+//     predict. Pinned per door by the SameNameDuplicate tests.
+//
+// The exemption is NARROWER than "same name". It holds only for keys the CLI
+// can express: the v0.16 compat IDs have no flag behind them, so BuildCLIArgs
+// drops the top-level value while HTTP reads it, and those refuse instead
+// (round 15) — but only when a top-level compat value is actually present,
+// which is the asymmetry's source (round 20). A padded entry is outside it
+// too, since the doors then receive different writes (round 16).
+//
+// If you are about to add a condition here, say its QUANTIFIER out loud
+// first. Per-key or per-request, this key class or all of them: rounds 15,
+// 16, 17, 19, 20 and 21 were each that question answered by assumption.
 func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResult {
 	// Parsed here rather than passed in, so this pass sees the same inputs
 	// whether or not a `fields` object exists (codex round 14). It used to
