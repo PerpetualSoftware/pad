@@ -411,7 +411,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// target's SLUG and is the only pointer a relation has — there is no id
 	// beside it — so a rename leaves every field aimed here pointing at a name
 	// that no longer resolves.
-	var renamedFrom, renamedTo string
+	var renamedTo string
 
 	if input.Name != nil {
 		sets = append(sets, "name = ?")
@@ -430,9 +430,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 		sets = append(sets, "slug = ?")
 		args = append(args, newSlug)
-		if newSlug != existing.Slug {
-			renamedFrom, renamedTo = existing.Slug, newSlug
-		}
+		renamedTo = newSlug
 	}
 	if input.Prefix != nil {
 		sets = append(sets, "prefix = ?")
@@ -541,12 +539,23 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 	}
 
-	reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
+	// `slug` is re-read alongside the token, not taken from the pre-tx
+	// `existing` snapshot (codex round 1 P1). Two tokenless concurrent renames
+	// both read the ORIGINAL slug outside the lock; the second would then
+	// retarget relations from a slug the first already migrated away from,
+	// missing them entirely and stranding them at an intermediate name. The
+	// value under the lock is the only one that describes what the relations
+	// currently point at.
+	//
+	// This is the READ of the old slug. ALLOCATION of the new one is still
+	// outside the transaction and deliberately left alone here — IDEA-2874.
+	reread := "SELECT updated_at, slug FROM collections WHERE id = ? AND deleted_at IS NULL"
 	if s.dialect.Driver() == DriverPostgres {
 		reread += " FOR UPDATE"
 	}
 	var currentUpdatedAt string
-	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
+	var lockedSlug string
+	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt, &lockedSlug)
 	if rerr == sql.ErrNoRows {
 		// Deleted between the pre-tx GetCollection and here — treat as not-found.
 		return nil, nil
@@ -600,8 +609,8 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// the same reason the field migrations are: a failure must roll the rename
 	// back rather than leave committed collections pointing at a slug that no
 	// longer exists.
-	if renamedTo != "" {
-		if err := s.retargetRelationFieldsTx(tx, existing.WorkspaceID, renamedFrom, renamedTo); err != nil {
+	if renamedTo != "" && lockedSlug != renamedTo {
+		if err := s.retargetRelationFieldsTx(tx, existing.WorkspaceID, lockedSlug, renamedTo, args[0]); err != nil {
 			return nil, fmt.Errorf("retarget relation fields: %w", err)
 		}
 	}
@@ -1108,33 +1117,56 @@ func isReservedCollectionSlug(slug string) bool {
 }
 
 // retargetRelationFieldsTx re-points every `relation` field in the workspace
-// from `oldSlug` to `newSlug` after a collection rename (BUG-2873).
+// from `oldSlug` to `newSlug` after a collection rename (BUG-2873), stamping
+// each rewritten row's `updated_at` with the same token as the rename itself.
 //
-// WHY THIS EXISTS. `models.FieldDef.Collection` stores the target's SLUG, and
-// it is the only pointer a relation field carries — there is no id beside it to
+// WHY THIS EXISTS. `models.FieldDef.Collection` stores the target's SLUG, and it
+// is the only pointer a relation field carries — there is no id beside it to
 // fall back on. `UpdateCollection` re-slugifies on rename, so without this every
 // relation field aimed at the renamed collection is stranded: the picker filters
 // on a slug that resolves to nothing, and the field silently stops being
 // fillable. See IDEA-2874 for the related, deliberately SEPARATE question of the
-// slug being allocated outside this transaction.
+// new slug being ALLOCATED outside this transaction.
 //
-// WHY IT PARSES INSTEAD OF STRING-REPLACING. A collection's schema JSON contains
-// the old slug in places that must NOT move: a text field's `default`, a
-// select's `options`, a label. Only `FieldDef.Collection` on a `relation` field
-// is a reference to the collection. Export's `remapFieldIDs` gets away with a
-// blind replace because it substitutes UUIDs, which cannot collide with prose;
-// a slug is a word.
+// THREE THINGS IT DOES THAT AN OBVIOUS VERSION DOES NOT, each from codex review:
 //
-// The renamed collection is included deliberately — a collection whose relation
-// field targets ITSELF needs the same rewrite, and it is reached through the same
-// UPDATE as any sibling. That write lands AFTER the caller's own `schema` write
-// in this transaction, so it composes with a simultaneous schema edit rather than
-// reverting it.
-func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSlug string) error {
-	rows, err := tx.Query(
-		s.q("SELECT id, schema FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id"),
-		workspaceID,
-	)
+//  1. It LOCKS the rows it will rewrite (`FOR UPDATE`, ordered by id, on
+//     Postgres). Without that a concurrent schema update to a sibling can commit
+//     between the scan and the rewrite, and this transaction then overwrites the
+//     newer schema with its own stale copy. Ordering by id keeps the multi-row
+//     acquisition deterministic; renames additionally serialize on the workspace
+//     lock taken before the row lock in the caller.
+//
+//  2. It ADVANCES `updated_at` on every row it rewrites. `collections.updated_at`
+//     doubles as the optimistic-concurrency token (BUG-2265), so leaving it
+//     unchanged would let a client still holding the pre-rename schema — and a
+//     token that still matches — write it straight back and undo the migration.
+//     The rename's own token is reused so the whole rename shares one instant.
+//
+//  3. It mutates the RAW JSON rather than round-tripping through
+//     `models.CollectionSchema`. That struct has fixed fields, so unmarshal +
+//     marshal silently drops any property it does not know about — a rename
+//     would quietly erase forward-compatible metadata from every
+//     relation-containing schema in the workspace. Editing the decoded map
+//     touches `fields[i].collection` and leaves everything else byte-intact
+//     (key ORDER is not preserved, which JSON does not make meaningful).
+//
+// WHY IT PARSES AT ALL, rather than string-replacing: a schema's JSON contains
+// the old slug in places that must NOT move — a text field's `default`, a
+// select's `options`, a label. Only `collection` on a `relation` field is a
+// reference to the collection. Export's `remapFieldIDs` gets away with a blind
+// replace because it substitutes UUIDs, which cannot collide with prose; a slug
+// is a word.
+//
+// The renamed collection is included deliberately — a relation targeting ITSELF
+// needs the same rewrite — and this runs AFTER the caller's own `schema` write in
+// the transaction, so a simultaneous schema edit composes rather than reverting.
+func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSlug string, updatedAt interface{}) error {
+	listQ := "SELECT id, schema FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id"
+	if s.dialect.Driver() == DriverPostgres {
+		listQ += " FOR UPDATE"
+	}
+	rows, err := tx.Query(s.q(listQ), workspaceID)
 	if err != nil {
 		return fmt.Errorf("list collections: %w", err)
 	}
@@ -1151,32 +1183,17 @@ func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSl
 			rows.Close()
 			return fmt.Errorf("scan collection: %w", err)
 		}
-		if raw == "" {
-			continue
-		}
-		var sch models.CollectionSchema
-		if err := json.Unmarshal([]byte(raw), &sch); err != nil {
+		rewritten, changed, err := retargetRelationsInSchemaJSON(raw, oldSlug, newSlug)
+		if err != nil {
 			// A schema this store cannot parse is not one this migration can
 			// safely rewrite. Skipping leaves it exactly as it was — stranded,
 			// but not corrupted by a guess.
 			continue
 		}
-		changed := false
-		for i := range sch.Fields {
-			if sch.Fields[i].Type == "relation" && sch.Fields[i].Collection == oldSlug {
-				sch.Fields[i].Collection = newSlug
-				changed = true
-			}
-		}
 		if !changed {
 			continue
 		}
-		encoded, err := json.Marshal(sch)
-		if err != nil {
-			rows.Close()
-			return fmt.Errorf("encode schema for %s: %w", id, err)
-		}
-		updates = append(updates, pending{id: id, schema: string(encoded)})
+		updates = append(updates, pending{id: id, schema: rewritten})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -1189,11 +1206,51 @@ func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSl
 	// BackfillWikiLinks documents.
 	for _, u := range updates {
 		if _, err := tx.Exec(
-			s.q("UPDATE collections SET schema = ? WHERE id = ?"),
-			u.schema, u.id,
+			s.q("UPDATE collections SET schema = ?, updated_at = ? WHERE id = ?"),
+			u.schema, updatedAt, u.id,
 		); err != nil {
 			return fmt.Errorf("rewrite schema for %s: %w", u.id, err)
 		}
 	}
 	return nil
+}
+
+// retargetRelationsInSchemaJSON rewrites `collection` on every `relation` field
+// in a raw schema document, preserving every other property including ones this
+// binary does not know about. Returns the new JSON and whether anything changed.
+func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return raw, false, nil
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return raw, false, err
+	}
+	fields, ok := doc["fields"].([]interface{})
+	if !ok {
+		return raw, false, nil
+	}
+	changed := false
+	for _, entry := range fields {
+		f, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := f["type"].(string); t != "relation" {
+			continue
+		}
+		if c, _ := f["collection"].(string); c != oldSlug {
+			continue
+		}
+		f["collection"] = newSlug
+		changed = true
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		return raw, false, err
+	}
+	return string(encoded), true, nil
 }

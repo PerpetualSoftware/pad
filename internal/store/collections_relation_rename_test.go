@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -270,6 +271,154 @@ func TestConcurrentRenamesOfMutuallyReferencingCollectionsDoNotDeadlock(t *testi
 			if err != nil {
 				t.Fatalf("round %d: concurrent rename failed: %v", round, err)
 			}
+		}
+	}
+}
+
+func TestRenameAdvancesTheMigratedSiblingsConcurrencyToken(t *testing.T) {
+	// codex round 1 P1. `collections.updated_at` doubles as the OCC token
+	// (BUG-2265). Rewriting a sibling's schema without advancing it lets a
+	// client still holding the PRE-rename schema — and a token that still
+	// matches — write it straight back and undo the migration.
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "RelRenameToken")
+
+	target, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Colors", Slug: "colors"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	cars, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Cars", Slug: "cars", Schema: relationSchema(t, "color", "colors"),
+	})
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+	before, err := s.GetCollection(cars.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+
+	name := "Palette"
+	if _, err := s.UpdateCollection(target.ID, models.CollectionUpdate{Name: &name}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	after, err := s.GetCollection(cars.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	if !after.UpdatedAt.After(before.UpdatedAt) {
+		t.Fatalf("migrated sibling token did not advance: before=%v after=%v", before.UpdatedAt, after.UpdatedAt)
+	}
+
+	// And the stale token is now refused, which is the property the advance buys.
+	stale := before.UpdatedAt.Format(time.RFC3339)
+	revert := relationSchema(t, "color", "colors")
+	_, err = s.UpdateCollection(cars.ID, models.CollectionUpdate{
+		Schema: &revert, ExpectedUpdatedAt: stale,
+	})
+	var conflict *CollectionUpdateConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("a write with the pre-rename token should 409, got err=%v", err)
+	}
+}
+
+func TestRenamePreservesSchemaPropertiesItDoesNotUnderstand(t *testing.T) {
+	// codex round 1 P2. Round-tripping through `models.CollectionSchema` drops
+	// every property that struct does not declare, so a rename would silently
+	// erase forward-compatible metadata from any relation-bearing schema.
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "RelRenameUnknownKeys")
+
+	target, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Colors", Slug: "colors"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	exotic := `{"fields":[{"key":"color","label":"Rel","type":"relation","collection":"colors","future_prop":{"nested":[1,2]}}],"schema_level_extra":"keep me"}`
+	cars, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Cars", Slug: "cars", Schema: exotic,
+	})
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+
+	name := "Palette"
+	renamed, err := s.UpdateCollection(target.ID, models.CollectionUpdate{Name: &name})
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	after, err := s.GetCollection(cars.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(after.Schema), &doc); err != nil {
+		t.Fatalf("unmarshal rewritten schema: %v", err)
+	}
+	if doc["schema_level_extra"] != "keep me" {
+		t.Errorf("schema-level unknown property lost: %s", after.Schema)
+	}
+	fields, _ := doc["fields"].([]interface{})
+	if len(fields) != 1 {
+		t.Fatalf("expected 1 field, got %s", after.Schema)
+	}
+	f, _ := fields[0].(map[string]interface{})
+	if f["future_prop"] == nil {
+		t.Errorf("field-level unknown property lost: %s", after.Schema)
+	}
+	if f["collection"] != renamed.Slug {
+		t.Errorf("target not migrated: got %v want %q", f["collection"], renamed.Slug)
+	}
+}
+
+func TestConcurrentRenamesOfTheSameCollectionLeaveRelationsPointingAtIt(t *testing.T) {
+	// codex round 1 P1 (the third one). Both racers read the collection's slug
+	// via the pre-transaction GetCollection. If the retarget uses THAT value
+	// rather than the one re-read under the row lock, the loser migrates
+	// `original -> its own new slug` while the relations already say the
+	// WINNER's slug — so it matches nothing, and the relation is stranded at a
+	// name no collection holds.
+	//
+	// The invariant is end-state and therefore honest under any interleaving:
+	// whatever slug the collection ends up with, every relation aimed at it
+	// points there.
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "RelRenameSameColl")
+
+	target, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Colors", Slug: "colors"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	cars, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Cars", Slug: "cars", Schema: relationSchema(t, "color", "colors"),
+	})
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+
+	const rounds = 40
+	for round := 0; round < rounds; round++ {
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func(n int) {
+				defer wg.Done()
+				name := fmt.Sprintf("Palette %d-%d", round, n)
+				<-start
+				_, _ = s.UpdateCollection(target.ID, models.CollectionUpdate{Name: &name})
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		final, err := s.GetCollection(target.ID)
+		if err != nil {
+			t.Fatalf("round %d: GetCollection: %v", round, err)
+		}
+		if got := relationTargetOf(t, s, cars.ID, "color"); got != final.Slug {
+			t.Fatalf("round %d: relation points at %q but the collection is %q", round, got, final.Slug)
 		}
 	}
 }
