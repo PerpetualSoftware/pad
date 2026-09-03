@@ -780,6 +780,17 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 
 	const createProps = { ...baseProps, createLabel: 'Colors' };
 
+	/**
+	 * A COMPLETE `/search` page, in the shape the server actually returns.
+	 *
+	 * `total`, `limit` and `offset` are non-optional on `SearchResponse` and the
+	 * Go handler always sends them, so a fixture omitting them is not a smaller
+	 * version of a real response — it is one that cannot occur, and it was
+	 * quietly deciding the completeness question these tests are about.
+	 */
+	const page = (results: unknown[]) => ({ results, total: results.length, limit: 50, offset: 0 });
+	const emptyPage = () => page([]);
+
 	it('offers no create row when the host passes no oncreate — the Relationships-tab caller', async () => {
 		loadIndex(makeRows(3));
 		localSearchMock.search.mockReturnValue([]);
@@ -903,7 +914,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		expect(createRow()).toBeNull();
 		expect(input().getAttribute('aria-expanded')).toBe('false');
 
-		release({ results: [] });
+		release(emptyPage());
 		await vi.waitFor(() => expect(createRow()).not.toBeNull());
 		expect(input().getAttribute('aria-expanded')).toBe('true');
 		vi.useRealTimers();
@@ -980,9 +991,9 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		// duplicate of a row `/search` just returned.
 		setBootstrapState('cold');
 		loadIndex([]);
-		searchApi.mockResolvedValue({
-			results: [{ item: { id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' } }],
-		});
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' } }]),
+		);
 		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
 		await tick();
 
@@ -1009,7 +1020,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		expect(createRow()).toBeNull();
 
 		// And it must not latch: the next query gets a fresh verdict.
-		searchApi.mockResolvedValue({ results: [] });
+		searchApi.mockResolvedValue(emptyPage());
 		await type('Purple Haze');
 		await vi.waitFor(() => expect(createRow()).not.toBeNull());
 	});
@@ -1069,7 +1080,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		vi.useFakeTimers();
 		setBootstrapState('cold');
 		loadIndex([]);
-		searchApi.mockResolvedValue({ results: [] });
+		searchApi.mockResolvedValue(emptyPage());
 		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
 		await tick();
 
@@ -1091,7 +1102,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		expect(input().getAttribute('aria-expanded')).toBe('false');
 		expect(createRow()).toBeNull();
 
-		release({ results: [] });
+		release(emptyPage());
 		await vi.waitFor(() => expect(createRow()).not.toBeNull());
 		vi.useRealTimers();
 	});
@@ -1101,14 +1112,19 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		// exact title is not evidence the title is unused — the row may be on a
 		// page nobody fetched. Same defect as trusting the local ranker's
 		// window, arriving from the server side.
+		//
+		// Completeness is the PAGE LENGTH against the echoed limit, not `total`
+		// (codex round 8): a failed count query floors `total` up to
+		// `len(results)` server-side, so it cannot distinguish a complete page
+		// from a broken count.
 		setBootstrapState('cold');
 		loadIndex([]);
-		searchApi.mockResolvedValue({
-			results: [{ item: { id: 'id-9', title: 'Purple Haze', item_number: 9, collection_prefix: 'COLO' } }],
-			total: 84,
-			limit: 50,
-			offset: 0,
+		// A FULL page — as many rows as the limit — which is what truncation
+		// actually looks like on the wire.
+		const row = (n: number) => ({
+			item: { id: `id-${n}`, title: `Purple ${n}`, item_number: n, collection_prefix: 'COLO' },
 		});
+		searchApi.mockResolvedValue({ results: [row(1), row(2)], total: 84, limit: 2, offset: 0 });
 		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
 		await tick();
 
@@ -1116,14 +1132,20 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		await vi.waitFor(() => expect(options().length).toBeGreaterThan(0));
 		expect(createRow()).toBeNull();
 
-		// CONTROL: the identical shape with a COMPLETE page does offer it, so
-		// this leg is measuring truncation and not the query.
-		searchApi.mockResolvedValue({
-			results: [{ item: { id: 'id-9', title: 'Purple Haze', item_number: 9, collection_prefix: 'COLO' } }],
-			total: 1,
-			limit: 50,
-			offset: 0,
-		});
+		// The shape that discriminates PAGE LENGTH from `total`: a full page
+		// whose count query FAILED. `store.search` sets total = -1 on a count
+		// error, floors it to 0, then floors it again to len(results)
+		// (search.go:604-608) — so the wire says total === 2 with a page size of
+		// 2 and 84 rows really matching. Reading completeness off `total` calls
+		// that complete; reading it off the page length does not.
+		searchApi.mockResolvedValue({ results: [row(1), row(2)], total: 2, limit: 2, offset: 0 });
+		await type('Purple r');
+		await vi.waitFor(() => expect(options().length).toBeGreaterThan(0));
+		expect(createRow()).toBeNull();
+
+		// CONTROL: a page SHORTER than the limit is a complete answer and does
+		// offer it, so this leg measures truncation and not the query.
+		searchApi.mockResolvedValue({ results: [row(1)], total: 1, limit: 50, offset: 0 });
 		await type('Purpl');
 		await vi.waitFor(() => expect(createRow()).not.toBeNull());
 	});
@@ -1137,7 +1159,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		// longer see anything in.
 		setBootstrapState('cold');
 		loadIndex([]);
-		searchApi.mockResolvedValue({ results: [] });
+		searchApi.mockResolvedValue(emptyPage());
 		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
 		await tick();
 
@@ -1160,7 +1182,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		// here because refusing to offer create while cold would strand the user.
 		setBootstrapState('cold');
 		loadIndex([{ id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' }]);
-		searchApi.mockResolvedValue({ results: [] });
+		searchApi.mockResolvedValue(emptyPage());
 		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
 		await tick();
 

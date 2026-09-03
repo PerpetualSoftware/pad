@@ -354,8 +354,19 @@
 			// A TRUNCATED page is not an answer to "does this exact title
 			// exist" — the row could be on a page we never fetched (codex round
 			// 7). Same defect as trusting the local ranker's window, arriving
-			// from the server side; `total` is what distinguishes them.
-			coldAnswered = (res.total ?? rows.length) <= rows.length;
+			// from the server side.
+			//
+			// Completeness is read from the PAGE LENGTH, not from `total`
+			// (codex round 8). `total` cannot answer it: when the count query
+			// fails, `store.search` sets total = -1, floors it to 0, and then
+			// floors it again to `len(results)` — "Ensure total is never less
+			// than actual results", search.go:604-608 — so a failed count is
+			// indistinguishable on the wire from an exact-fit page. A page
+			// SHORTER than the limit the server echoes back is proof there is no
+			// next page, and it holds whatever the count did. A full page is not
+			// proof either way, so it does not count as an answer.
+			const pageLimit = res.limit ?? 0;
+			coldAnswered = pageLimit > 0 && rows.length < pageLimit;
 			activeId = null;
 		} catch {
 			if (mySeq !== seq) return;
