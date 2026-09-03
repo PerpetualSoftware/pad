@@ -430,6 +430,107 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 });
 
+describe('ItemPicker — source: the two callers want different models', () => {
+	// Lead ruling on PR #1241: the Relationships tab keeps the server FTS, which
+	// indexes item BODY CONTENT. `localIndex` strips `content` by design, so the
+	// warm path can never answer "the item that mentioned that phrase" — losing
+	// it silently is a regression regardless of how consistent the other pickers
+	// are. A relation field wants the index's model and takes the default.
+
+	it('source="server" queries /search even with a hydrated index', async () => {
+		vi.useFakeTimers();
+		loadIndex(makeRows(3));
+		setBootstrapState('ready'); // warm — the default source would stay local
+		searchApi.mockResolvedValue({
+			results: [{ item: { id: 'id-9', title: 'Body match', item_number: 9, collection_prefix: 'COLO' } }],
+		});
+
+		render(ItemPicker, { props: { ...baseProps, source: 'server' } });
+		await type('phrase from the body');
+		await vi.advanceTimersByTimeAsync(250);
+		await tick();
+
+		expect(searchApi).toHaveBeenCalledTimes(1);
+		expect(searchApi).toHaveBeenCalledWith('phrase from the body', {
+			workspace: 'ws',
+			collection: 'colors',
+		});
+		expect(localSearchMock.search).not.toHaveBeenCalled();
+		expect(document.body.textContent).toContain('Body match');
+	});
+
+	it('CONTROL: the default source, same warm index, never reaches the network', async () => {
+		vi.useFakeTimers();
+		loadIndex(makeRows(3));
+		setBootstrapState('ready');
+		localSearchMock.search.mockReturnValue([{ id: 'id-2', score: 1 }]);
+
+		render(ItemPicker, { props: { ...baseProps } });
+		await type('phrase from the body');
+		await vi.advanceTimersByTimeAsync(250);
+		await tick();
+
+		expect(localSearchMock.search).toHaveBeenCalledTimes(1);
+		expect(searchApi).not.toHaveBeenCalled();
+	});
+
+	it('source="server" still opens with the collection listed from the index', async () => {
+		// An empty-query LISTING is not a search, and `/search` cannot answer one
+		// (it requires a `q`). Only QUERIES go to the server.
+		loadIndex(makeRows(3));
+		render(ItemPicker, { props: { ...baseProps, source: 'server' } });
+		await tick();
+
+		expect(options()).toHaveLength(3);
+		expect(searchApi).not.toHaveBeenCalled();
+	});
+
+	it('source="server" honours a late exclusion set without re-issuing the request', async () => {
+		vi.useFakeTimers();
+		loadIndex(makeRows(4));
+		searchApi.mockResolvedValue({
+			results: makeRows(4).map((r) => ({ item: r })),
+		});
+		const probe = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', source: 'server' as const },
+		});
+		await type('col');
+		await vi.advanceTimersByTimeAsync(250);
+		await tick();
+		expect(options()).toHaveLength(4);
+		expect(searchApi).toHaveBeenCalledTimes(1);
+
+		probe.component.setExcludeIds(['id-2']);
+		await tick();
+
+		expect(options()).toHaveLength(3);
+		expect(options().map((o) => o.textContent ?? '').join('|')).not.toContain('Colour 2');
+		// The whole point of deriving the filter: no second request.
+		expect(searchApi).toHaveBeenCalledTimes(1);
+	});
+
+	it('source="server" does not re-query on an index delta', async () => {
+		// A request per applied delta is exactly the rate-limiter pressure the
+		// debounce exists to avoid, and the index is not this list's source of
+		// truth anyway.
+		vi.useFakeTimers();
+		loadIndex(makeRows(3));
+		searchApi.mockResolvedValue({ results: makeRows(3).map((r) => ({ item: r })) });
+
+		render(ItemPicker, { props: { ...baseProps, source: 'server' } });
+		await type('col');
+		await vi.advanceTimersByTimeAsync(250);
+		await tick();
+		expect(searchApi).toHaveBeenCalledTimes(1);
+
+		bumpEpoch();
+		await tick();
+		await vi.advanceTimersByTimeAsync(250);
+
+		expect(searchApi).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe('ItemPicker — cold path (the control leg for "no network call")', () => {
 	it('calls the server search, collection-scoped, while the local index is cold', async () => {
 		vi.useFakeTimers();

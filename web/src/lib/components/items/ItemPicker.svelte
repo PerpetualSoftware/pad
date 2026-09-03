@@ -57,6 +57,24 @@
 		collection?: string;
 		/** Item ids to hide — the item being edited, anything already linked. */
 		excludeIds?: string[];
+		/**
+		 * Where matches come from. This is a MODEL choice, not a performance
+		 * one, and the two callers want different models:
+		 *
+		 *   `'index'` (default) — the in-RAM workspace index, ranked by
+		 *   `localSearch` over title / ref / tags / parent / field values. No
+		 *   network call. Falls back to the server only while the index has not
+		 *   hydrated. Right for a RELATION field, where you are choosing a row
+		 *   from a known collection and know what it is called.
+		 *
+		 *   `'server'` — always `/search`, whose FTS also indexes item BODY
+		 *   CONTENT. `localIndex` strips `content` by design, so the index can
+		 *   never answer "the item that mentioned that phrase". Right for the
+		 *   Relationships tab, where you are finding an item you remember
+		 *   rather than one you can name — and what it did before this
+		 *   component existed.
+		 */
+		source?: 'index' | 'server';
 		/** Max rows rendered. Bounded so DOM cost is O(1) in collection size. */
 		limit?: number;
 		placeholder?: string;
@@ -85,6 +103,7 @@
 		wsSlug,
 		collection,
 		excludeIds = [],
+		source = 'index',
 		limit = 10,
 		placeholder = 'Search items...',
 		label = 'Search items',
@@ -96,10 +115,23 @@
 	const COLD_SEARCH_DEBOUNCE_MS = 250;
 
 	let query = $state('');
-	let results = $state<ItemIndexRow[]>([]);
+	/**
+	 * What the source last returned, BEFORE exclusions. Kept separate so
+	 * `results` can re-filter reactively when `excludeIds` changes — which it
+	 * does late, since `ItemDetail` loads `itemLinks` asynchronously (codex
+	 * round 4 P2). Deriving that filter is what lets the server-backed caller
+	 * honour a late exclusion without re-issuing a request per change.
+	 */
+	let rawResults = $state<ItemIndexRow[]>([]);
 	let loading = $state(false);
-	/** Index into `results` of the keyboard-highlighted row; -1 = none. */
-	let activeIndex = $state(-1);
+	/**
+	 * The highlighted row's ID, not its index. Identity survives the list
+	 * changing under it — a delta landing, a late exclusion arriving — where an
+	 * index silently moves the highlight onto whatever slid into that position.
+	 * `activeIndex` is derived from it, so nothing has to remember to re-resolve
+	 * it at each site that can change the list.
+	 */
+	let activeId = $state<string | null>(null);
 
 	/**
 	 * Plain `let`, not `$state`, per CONVE-1688: both are read and written
@@ -113,6 +145,8 @@
 	const uid = $props.id();
 
 	let excluded = $derived(new Set(excludeIds));
+	let results = $derived(present(rawResults));
+	let activeIndex = $derived(activeId ? results.findIndex((r) => r.id === activeId) : -1);
 
 	function isWarm(): boolean {
 		return localIndex.bootstrapStateFor(wsSlug) === 'ready';
@@ -136,14 +170,20 @@
 	 * workspace, newest first" is not a useful prompt.
 	 */
 	function recent(): ItemIndexRow[] {
+		// Deliberately independent of `source`: an empty-query LISTING is not a
+		// search, `/search` cannot answer one (it requires a `q`), and the index
+		// holds the rows either way. A server-backed picker therefore still opens
+		// with its collection listed, and only its QUERIES go to the server.
 		if (!collection || !isWarm()) return [];
-		return present(localIndex.getByCollection(wsSlug, collection));
+		return localIndex.getByCollection(wsSlug, collection);
 	}
 
 	function warmSearch(q: string): ItemIndexRow[] {
 		const hits = localSearch.search(wsSlug, q, {
 			collection,
-			// Over-ask so exclusions can't empty a full page of results.
+			// Over-ask so exclusions can't empty a full page of results. Sized
+			// against the exclusion set the caller has RIGHT NOW; a later one is
+			// handled by `results` re-filtering, which can only shrink the list.
 			limit: limit + excluded.size,
 		});
 		const rows: ItemIndexRow[] = [];
@@ -151,7 +191,7 @@
 			const row = localIndex.findByIdOrSlug(wsSlug, hit.id);
 			if (row) rows.push(row);
 		}
-		return present(rows);
+		return rows;
 	}
 
 	async function coldSearch(q: string, mySeq: number) {
@@ -159,12 +199,12 @@
 		try {
 			const res = await api.search(q, { workspace: wsSlug, collection });
 			if (mySeq !== seq) return;
-			results = present((res.results ?? []).map((r) => r.item));
-			activeIndex = -1;
+			rawResults = (res.results ?? []).map((r) => r.item);
+			activeId = null;
 		} catch {
 			if (mySeq !== seq) return;
-			results = [];
-			activeIndex = -1;
+			rawResults = [];
+			activeId = null;
 		} finally {
 			if (mySeq === seq) loading = false;
 		}
@@ -181,20 +221,23 @@
 
 		if (!q) {
 			loading = false;
-			results = recent();
-			activeIndex = -1;
+			rawResults = recent();
+			activeId = null;
 			return;
 		}
 
-		if (isWarm()) {
+		// `source: 'server'` skips the warm branch entirely — not as a fallback
+		// but as the caller's declared model, since only the server's FTS can
+		// match item body content.
+		if (source === 'index' && isWarm()) {
 			loading = false;
-			results = warmSearch(q);
-			activeIndex = -1;
+			rawResults = warmSearch(q);
+			activeId = null;
 			return;
 		}
 
-		results = [];
-		activeIndex = -1;
+		rawResults = [];
+		activeId = null;
 		loading = true;
 		debounceTimer = setTimeout(() => coldSearch(q, mySeq), COLD_SEARCH_DEBOUNCE_MS);
 	}
@@ -207,13 +250,15 @@
 		if (e.key === 'ArrowDown') {
 			if (results.length === 0) return;
 			e.preventDefault();
-			activeIndex = activeIndex < results.length - 1 ? activeIndex + 1 : results.length - 1;
+			const next = activeIndex < results.length - 1 ? activeIndex + 1 : results.length - 1;
+			activeId = results[next]?.id ?? null;
 			return;
 		}
 		if (e.key === 'ArrowUp') {
 			if (results.length === 0) return;
 			e.preventDefault();
-			activeIndex = activeIndex > 0 ? activeIndex - 1 : -1;
+			const next = activeIndex - 1;
+			activeId = next >= 0 ? (results[next]?.id ?? null) : null;
 			return;
 		}
 		if (e.key === 'Enter') {
@@ -289,8 +334,11 @@
 	// asynchronously, so a picker opened before that resolves was offering items
 	// that are already linked (round 4).
 	//
-	// Tracked reads are the three signals that say the list is out of date: the
-	// bootstrap state, `localSearch.epoch(ws)`, and the exclusion set.
+	// Tracked reads are the two signals that say the INDEX changed: the bootstrap
+	// state and `localSearch.epoch(ws)`. The exclusion set is not one of them —
+	// `results` derives through `present()`, so a late `excludeIds` re-filters on
+	// its own, without a re-query and therefore without a request on the
+	// server-backed caller.
 	//
 	// The epoch, NOT the workspace cursor. Round 2 used the cursor and round 3
 	// caught that it misses every cursorless mutation — `localIndex.upsert()` /
@@ -316,9 +364,8 @@
 	// pointing at whatever slid into that position.
 	$effect(() => {
 		const state = localIndex.bootstrapStateFor(wsSlug);
-		// Read for their dependency; the values carry no meaning here.
+		// Read for its dependency; the value carries no meaning here.
 		localSearch.epoch(wsSlug);
-		void excluded;
 		untrack(() => {
 			if (state !== 'ready') {
 				// The workspace's state was DROPPED — `localIndex.reset()` on
@@ -339,14 +386,19 @@
 				// reset; `clearTimeout` stops one that has not been sent yet.
 				seq++;
 				clearTimeout(debounceTimer);
-				results = [];
-				activeIndex = -1;
+				rawResults = [];
+				activeId = null;
 				loading = false;
 				return;
 			}
-			const keep = activeIndex >= 0 ? results[activeIndex]?.id : undefined;
+			// Server-sourced QUERIES are not re-issued on an index change: the
+			// index is not their source of truth, and a request per delta is
+			// exactly the rate-limiter pressure the debounce exists to avoid. The
+			// empty-query LISTING still comes from the index, so it does refresh.
+			if (source === 'server' && query.trim()) return;
+			const keep = activeId;
 			runQuery();
-			activeIndex = keep ? results.findIndex((r) => r.id === keep) : -1;
+			activeId = keep;
 		});
 	});
 </script>

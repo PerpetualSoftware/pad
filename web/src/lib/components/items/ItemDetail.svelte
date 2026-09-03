@@ -5872,10 +5872,17 @@
 							</select>
 							<div class="add-link-picker">
 								<!-- Unscoped: a relationship can target any collection. A
-								     relation FIELD passes `collection` here instead. -->
+								     relation FIELD passes `collection` here instead.
+								     `source="server"` keeps this box on `/search`, whose FTS
+								     also matches item BODY CONTENT — how you find the item
+								     you remember a phrase from rather than one you can name.
+								     The local index strips `content`, so it can never answer
+								     that; a relation field wants the index's model instead
+								     and takes the default. -->
 								<ItemPicker
 									{wsSlug}
 									excludeIds={addLinkExcludeIds}
+									source="server"
 									label="Search items to link"
 									autofocus
 									onselect={handleCreateLink}

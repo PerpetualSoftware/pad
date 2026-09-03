@@ -19,10 +19,11 @@
 	interface Props {
 		wsSlug: string;
 		collection?: string;
+		source?: 'index' | 'server';
 		onselect?: (item: ItemIndexRow) => void;
 	}
 
-	let { wsSlug, collection, onselect = () => {} }: Props = $props();
+	let { wsSlug, collection, source = 'index', onselect = () => {} }: Props = $props();
 
 	// Starts empty and is only ever changed through `setExcludeIds` — seeding
 	// it from a prop would capture the initial value and warn.
@@ -34,4 +35,4 @@
 	}
 </script>
 
-<ItemPicker {wsSlug} {collection} {excludeIds} {onselect} />
+<ItemPicker {wsSlug} {collection} {source} {excludeIds} {onselect} />

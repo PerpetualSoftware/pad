@@ -41,6 +41,18 @@ describe('ItemDetail consumes ItemPicker', () => {
 		expect(markupSource).toMatch(/<ItemPicker\b/);
 	});
 
+	it('keeps the Relationships tab on the SERVER search', () => {
+		// Lead ruling on PR #1241. `/search`'s FTS indexes item BODY CONTENT;
+		// `localIndex` strips `content` by design, so the warm path can never
+		// answer "the item that mentioned that phrase". Dropping `source` here
+		// would silently take that away from this caller — the regression is
+		// invisible from the component's own tests, which is why the assertion
+		// lives at the call site.
+		const tag = markupSource.match(/<ItemPicker\b[\s\S]*?\/>/);
+		expect(tag).not.toBeNull();
+		expect(tag![0]).toMatch(/source="server"/);
+	});
+
 	it('passes it the workspace and the exclusion set, and handles its selection', () => {
 		const tag = markupSource.match(/<ItemPicker\b[\s\S]*?\/>/);
 		expect(tag).not.toBeNull();
