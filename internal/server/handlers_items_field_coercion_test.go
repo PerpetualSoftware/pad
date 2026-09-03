@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -490,5 +491,227 @@ func TestFieldsPatchDeleteIsNotReportedAsUndeclared(t *testing.T) {
 	}
 	if _, still := stored["stray"]; still {
 		t.Fatalf("the key should have been deleted: %s", updated.Fields)
+	}
+}
+
+// The three remaining coercion call sites, pinned (BUG-2850, lead ruling at
+// the day-11 boot).
+//
+// The PR's claim is "typed on every door". Five of the eight `CoerceFields`
+// sites had a test that goes red if that site alone is dropped; move, bulk
+// move and bulk update did not, so the claim rested on reading the code. That
+// is CONVE-19 and PATTE-128's exact shape, and it is what rounds 2-5 of this
+// unit kept finding: wiring is a claim.
+//
+// WHAT MAKES THE MOVE PINS FAITHFUL — this is the part worth reading before
+// trusting them. It would be easy to write a move test that passes for the
+// wrong reason, because `migrateValue` already handles a text→number move
+// (migrate.go:190). But look at what it returns on success: `value`, the
+// ORIGINAL — not the parsed float. So a text field holding "42" lands in a
+// number-typed destination as the STRING "42", and it is `CoerceFields` at
+// the move site, and only that, which turns it into a JSON number before
+// `ValidateFieldsDetailed` sees it. Drop the call and the move 400s with
+// `invalid_fields`. The assertion is on the STORED NATIVE TYPE rather than on
+// the status code, so an implementation that answered 200 and stored the
+// string would still be red.
+
+// Single-item move: POST /items/{slug}/move (handlers_items.go, the
+// SchemaForMigratedFields site).
+func TestItemFieldsCoercedOnMove(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Move"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	// Source declares cost as TEXT, destination as NUMBER. The move migrates
+	// the value across (text→number is a permitted conversion) but carries the
+	// string verbatim.
+	src := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Drafts",
+		`{"fields":[{"key":"cost","type":"text"}]}`)
+	dst := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Jobs",
+		`{"fields":[{"key":"cost","type":"number"}]}`)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+src.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"cost":"42"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{"target_collection": dst.Slug},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	assertStoredNumber(t, srv, sessionToken, ws.Slug, item.Slug, "cost", 42)
+}
+
+// Bulk move: POST /items/bulk op=move with a target collection
+// (handlers_items_bulk.go, the second SchemaForMigratedFields site). A
+// separate function from the single move — bulkMoveCollection — which is why
+// the test above says nothing about it.
+func TestItemFieldsCoercedOnBulkMove(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Bulk Move"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	src := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Drafts",
+		`{"fields":[{"key":"cost","type":"text"}]}`)
+	dst := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Jobs",
+		`{"fields":[{"key":"cost","type":"number"}]}`)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+src.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"cost":"42"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/items/bulk",
+		map[string]interface{}{"op": "move", "ids": []string{item.ID}, "collection": dst.Slug},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	// A bulk op answers 200 and reports per-item failures in the envelope, so
+	// the status code alone proves nothing — read the envelope.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertBulkAllSucceeded(t, rr)
+
+	assertStoredNumber(t, srv, sessionToken, ws.Slug, item.Slug, "cost", 42)
+}
+
+// Bulk update: POST /items/bulk op=set-priority (handlers_items_bulk.go's
+// bulkFieldUpdate — a third site, reached by set-priority and by status
+// moves).
+//
+// The change values this site merges are request STRINGS, so it is observable
+// only where the schema declares one of those keys as a non-string type. A
+// collection declaring `priority` as a number is unusual but entirely legal —
+// numeric priorities are a real convention — and it is the honest way to
+// exercise this site. With coercion dropped, ValidateFields refuses the string
+// and the item lands in the envelope's `failed` list.
+func TestItemFieldsCoercedOnBulkFieldUpdate(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Bulk Update"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	coll := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Jobs",
+		`{"fields":[{"key":"priority","type":"number"}]}`)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/items/bulk",
+		map[string]interface{}{"op": "set-priority", "ids": []string{item.ID}, "priority": "3"},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk set-priority: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertBulkAllSucceeded(t, rr)
+
+	assertStoredNumber(t, srv, sessionToken, ws.Slug, item.Slug, "priority", 3)
+}
+
+func createCollectionForCoercion(t *testing.T, srv *Server, token, wsSlug, name, schema string) models.Collection {
+	t.Helper()
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/collections",
+		map[string]interface{}{"name": name, "schema": schema}, token)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection %q: expected 201, got %d: %s", name, rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+	return coll
+}
+
+// assertBulkAllSucceeded fails if any item landed in the envelope's `failed`
+// list. Without this a dropped coercion reads as a passing 200.
+func assertBulkAllSucceeded(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	var resp struct {
+		Updated []struct {
+			Ref string `json:"ref"`
+		} `json:"updated"`
+		Failed []struct {
+			Ref   string `json:"ref"`
+			Error string `json:"error"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bulk response is not JSON: %v (%s)", err, rr.Body.String())
+	}
+	if len(resp.Failed) > 0 {
+		t.Fatalf("bulk op reported %d failure(s): %+v", len(resp.Failed), resp.Failed)
+	}
+	if len(resp.Updated) == 0 {
+		t.Fatalf("bulk op updated nothing: %s", rr.Body.String())
+	}
+}
+
+// assertStoredNumber re-reads the item and asserts the field is stored as a
+// JSON NUMBER with the expected value. Re-reading rather than trusting the
+// mutation's own response body, so the pin covers what was persisted.
+func assertStoredNumber(t *testing.T, srv *Server, token, wsSlug, itemSlug, key string, want float64) {
+	t.Helper()
+	rr := doRequestWithHeaders(srv, "GET",
+		"/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug, nil,
+		map[string]string{"Authorization": "Bearer " + token})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("re-read item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(item.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v (%s)", err, item.Fields)
+	}
+	got, ok := stored[key].(float64)
+	if !ok {
+		t.Fatalf("%s: want a JSON number, got %[2]T(%[2]v) — stored blob: %s", key, stored[key], item.Fields)
+	}
+	if got != want {
+		t.Fatalf("%s: want %v, got %v", key, want, got)
 	}
 }
