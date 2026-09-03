@@ -26,7 +26,7 @@ const { searchApi, localIndexMock, localSearchMock } = vi.hoisted(() => ({
 		getByCollection: vi.fn(),
 		findByIdOrSlug: vi.fn(),
 	},
-	localSearchMock: { search: vi.fn() },
+	localSearchMock: { search: vi.fn(), epoch: vi.fn() },
 }));
 
 vi.mock('$lib/api/client', () => ({ api: { search: (...a: unknown[]) => searchApi(...a) } }));
@@ -53,16 +53,28 @@ let rowsById = new Map<string, Row>();
  * set that the real store gets from `$state`.
  */
 const bootstrapState = new SvelteMap<string, string>();
-/** Same story for the workspace cursor, which every applied delta bumps. */
+/**
+ * Same story for `localSearch.epoch`, which every write to the search index
+ * bumps — including the cursorless optimistic paths (`localIndex.upsert` /
+ * `remove`) that an applied-delta cursor never sees.
+ */
+const epochs = new SvelteMap<string, number>();
+/**
+ * The workspace cursor is kept in the double — and deliberately never bumped by
+ * `bumpEpoch` — so that a component wired to it instead would still RUN and
+ * simply fail to refresh. Deleting it from the mock would make such a build
+ * throw instead, and a mutant that dies of a TypeError proves nothing about
+ * which signal is correct.
+ */
 const cursors = new SvelteMap<string, string>();
 
 function setBootstrapState(value: string) {
 	bootstrapState.set('ws', value);
 }
 
-/** Stand-in for an SSE delta batch landing in the local index. */
-function bumpCursor() {
-	cursors.set('ws', String(Number(cursors.get('ws') ?? '0') + 1));
+/** Stand-in for anything that mutates the local index. */
+function bumpEpoch() {
+	epochs.set('ws', (epochs.get('ws') ?? 0) + 1);
 }
 
 function makeRows(n: number, prefix = 'COLO'): Row[] {
@@ -106,11 +118,15 @@ beforeEach(() => {
 	searchApi.mockReset();
 	searchApi.mockResolvedValue({ results: [] });
 	bootstrapState.clear();
+	epochs.clear();
 	cursors.clear();
 	setBootstrapState('ready');
 	localIndexMock.bootstrapStateFor
 		.mockReset()
 		.mockImplementation((ws: string) => bootstrapState.get(ws) ?? 'cold');
+	localSearchMock.epoch
+		.mockReset()
+		.mockImplementation((ws: string) => epochs.get(ws) ?? 0);
 	localIndexMock.cursorFor
 		.mockReset()
 		.mockImplementation((ws: string) => cursors.get(ws) ?? '0');
@@ -228,20 +244,42 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 		expect(input().getAttribute('aria-activedescendant')).toBe(selected);
 	});
 
-	it('picks up a delta that lands while it is open', async () => {
-		// codex round 2 P2: the picker holds a COPY of the rows, so an SSE delta
+	it('picks up an index mutation that lands while it is open', async () => {
+		// codex round 2 P2: the picker holds a COPY of the rows, so a change
 		// arriving while it is on screen left it listing what the workspace used
-		// to contain until the query changed or it remounted.
+		// to contain until the query changed or it remounted. Driven through the
+		// search epoch rather than the workspace cursor — round 3 P2: the cursor
+		// misses every optimistic `localIndex.upsert` / `remove`, which mutate
+		// the rows without advancing it.
 		loadIndex(makeRows(2));
 		render(ItemPicker, { props: { ...baseProps } });
 		await tick();
 		expect(options()).toHaveLength(2);
 
 		loadIndex(makeRows(5));
-		bumpCursor();
+		bumpEpoch();
 		await tick();
 
 		expect(options()).toHaveLength(5);
+	});
+
+	it('refreshes on a mutation that never advances the workspace cursor', async () => {
+		// codex round 3 P2, and the whole reason the dependency is the search
+		// epoch. `localIndex.upsert()` / `remove()` — optimistic creates and
+		// edits, the 403 purge — mutate the rows and mirror to `localSearch`
+		// WITHOUT touching `state.cursor`. This leg bumps only the epoch, so a
+		// picker wired to the cursor sees nothing and stays stale.
+		loadIndex(makeRows(2));
+		render(ItemPicker, { props: { ...baseProps } });
+		await tick();
+		expect(options()).toHaveLength(2);
+
+		loadIndex(makeRows(4));
+		bumpEpoch();
+		await tick();
+
+		expect(options()).toHaveLength(4);
+		expect(cursors.get('ws')).toBeUndefined(); // the cursor never moved
 	});
 
 	it('keeps the selected row across a delta, and drops the highlight when that row goes away', async () => {
@@ -258,7 +296,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 		// A delta that removes the rows ABOVE the selection: a blind re-list would
 		// leave the highlight on index 2, which is now a different item.
 		loadIndex(makeRows(5).filter((r) => r.id !== 'id-1'));
-		bumpCursor();
+		bumpEpoch();
 		await tick();
 		const stillSelected = options().findIndex((o) => o.getAttribute('aria-selected') === 'true');
 		expect(options()[stillSelected].textContent).toContain('Colour 3');
@@ -267,7 +305,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 		// Now the selected row itself disappears — the highlight clears rather
 		// than pointing at whatever slid into that position.
 		loadIndex(makeRows(5).filter((r) => r.id !== 'id-1' && r.id !== 'id-3'));
-		bumpCursor();
+		bumpEpoch();
 		await tick();
 		expect(input().hasAttribute('aria-activedescendant')).toBe(false);
 	});

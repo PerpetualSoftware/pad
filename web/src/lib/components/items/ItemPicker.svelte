@@ -278,20 +278,33 @@
 
 	// Keep an OPEN picker current with the local index.
 	//
-	// Two ways it went stale, both found by codex review. A picker can open
-	// BEFORE the workspace index has hydrated, and a scoped one then has nothing
-	// to list — `recent()` returns [] while cold, and nothing re-ran it (round 1
-	// P2). And once open it holds a COPY of the rows, so an SSE delta landing
-	// while it is on screen left it showing what the workspace used to contain
-	// (round 2 P2). Both are the same missing dependency.
+	// Three ways it went stale, all found by codex review, all the same missing
+	// dependency. A picker can open BEFORE the workspace index has hydrated, and
+	// a scoped one then has nothing to list — `recent()` returns [] while cold,
+	// and nothing re-ran it (round 1). Once open it holds a COPY of the rows, so
+	// a delta landing while it is on screen left it showing what the workspace
+	// used to contain (round 2). And the first fix for that tracked the wrong
+	// signal, missing every mutation that does not advance the cursor
+	// (round 3).
 	//
 	// Tracked reads are the two signals that say the index changed: the
-	// bootstrap state, and the workspace cursor (`$state` on WorkspaceState,
-	// bumped by every applied delta batch). Everything else is read inside
-	// `untrack` — reading `query` or `results` reactively would re-run this on
-	// every keystroke, racing `oninput` and bumping `seq` twice per character,
-	// which is also why `onMount` rather than an effect owns the first run
-	// (CONVE-1688's neighbourhood).
+	// bootstrap state, and `localSearch.epoch(ws)`.
+	//
+	// The epoch, NOT the workspace cursor. Round 2 used the cursor and round 3
+	// caught that it misses every cursorless mutation — `localIndex.upsert()` /
+	// `remove()` (optimistic creates, edits, the 403 purge) update the rows and
+	// mirror to `localSearch` without advancing it. The epoch is bumped by every
+	// `localSearch` write, and EVERY `localIndex` path that touches `state.items`
+	// mirrors there — `applyDelta`, `upsert`, `remove`, `removeByCollection`,
+	// `applyRetag`, `reset` — so it strictly dominates the cursor as a
+	// "something changed" signal. It exists for exactly this consumer shape:
+	// its own doc comment describes an `$effect` re-deriving search results,
+	// added for the identical staleness bug in TASK-1364.
+	//
+	// Everything else is read inside `untrack` — reading `query` or `results`
+	// reactively would re-run this on every keystroke, racing `oninput` and
+	// bumping `seq` twice per character, which is also why `onMount` rather than
+	// an effect owns the first run (CONVE-1688's neighbourhood).
 	//
 	// The re-list PRESERVES the highlighted row by id rather than skipping when
 	// the user has typed. Recomputing the index is what makes the refresh safe:
@@ -302,7 +315,7 @@
 	$effect(() => {
 		const state = localIndex.bootstrapStateFor(wsSlug);
 		// Read for its dependency; the value itself carries no meaning here.
-		localIndex.cursorFor(wsSlug);
+		localSearch.epoch(wsSlug);
 		untrack(() => {
 			if (state !== 'ready') return;
 			const keep = activeIndex >= 0 ? results[activeIndex]?.id : undefined;
