@@ -144,7 +144,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export. NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export, remind. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},

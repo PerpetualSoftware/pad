@@ -592,3 +592,71 @@ func TestSkippedRemindersAreNotErrors(t *testing.T) {
 		t.Errorf("fired = %v, want just b", fired)
 	}
 }
+
+// TestFractionalSecondsRoundUp — codex round 2.
+//
+// The column is compared as a string against a whole-second clock, so seconds
+// are the stored resolution. Truncating resolved that the wrong way:
+// 09:00:00.900Z became 09:00:00Z and fired 900ms BEFORE the moment the caller
+// named, silently, having rewritten their value on the way in. Late is a
+// reminder; early is a wrong answer.
+//
+// MUTANT: replace NormalizeInstant's round-up with Truncate and the first case
+// stores ...00Z.
+func TestFractionalSecondsRoundUp(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+
+	for _, tc := range []struct{ in, want string }{
+		{"2026-08-01T09:00:00.900Z", "2026-08-01T09:00:01Z"},
+		{"2026-08-01T09:00:00.001Z", "2026-08-01T09:00:01Z"},
+		// A whole second must round-trip EXACTLY. Without this leg an
+		// implementation that added a second unconditionally would pass.
+		{"2026-08-01T09:00:00Z", "2026-08-01T09:00:00Z"},
+		// The offset case still normalizes to UTC, and rounding must not
+		// disturb that.
+		{"2026-08-01T09:00:00.500+09:00", "2026-08-01T00:00:01Z"},
+	} {
+		r, err := s.CreateReminder(ws.ID, item.ID, tc.in)
+		if err != nil {
+			t.Fatalf("CreateReminder(%q): %v", tc.in, err)
+		}
+		if r.RemindAt != tc.want {
+			t.Errorf("CreateReminder(%q) stored %q, want %q", tc.in, r.RemindAt, tc.want)
+		}
+	}
+}
+
+// TestAFractionalReminderDoesNotFireEarly is the behavioural half — the stored
+// STRING being right is only interesting because of what the tick does with
+// it. Asserting the column alone would not catch a comparison that ignored it.
+func TestAFractionalReminderDoesNotFireEarly(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+
+	// Armed for 09:00:00.900Z. A tick at 09:00:00Z is BEFORE that moment and
+	// must not fire it; a tick at 09:00:01Z is after and must.
+	if _, err := s.CreateReminder(ws.ID, item.ID, "2026-08-01T09:00:00.900Z"); err != nil {
+		t.Fatalf("CreateReminder: %v", err)
+	}
+
+	fired, err := s.FireDueReminders("2026-08-01T09:00:00Z", 0)
+	if err != nil {
+		t.Fatalf("early tick: %v", err)
+	}
+	if len(fired) != 0 {
+		t.Errorf("a reminder set for 09:00:00.900Z fired at 09:00:00Z")
+	}
+
+	fired, err = s.FireDueReminders("2026-08-01T09:00:01Z", 0)
+	if err != nil {
+		t.Fatalf("later tick: %v", err)
+	}
+	if len(fired) != 1 {
+		t.Errorf("the reminder did not fire at 09:00:01Z (fired %d)", len(fired))
+	}
+}

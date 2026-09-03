@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -41,7 +42,7 @@ func parseRemindAt(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return t.UTC().Format(time.RFC3339), nil
+	return store.NormalizeInstant(t), nil
 }
 
 func writeRemindAtError(w http.ResponseWriter) {

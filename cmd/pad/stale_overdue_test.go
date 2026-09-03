@@ -39,3 +39,25 @@ func TestStaleKeepsOverdueAttention(t *testing.T) {
 		t.Error("`pad project stale` dropped the overdue entry; deadlines never reach the CLI surface")
 	}
 }
+
+// TestRemindArgsAcceptRearmWithoutARef — codex round 2.
+//
+// `--rearm` addresses a reminder by id and needs no item ref, but ExactArgs(1)
+// forced one and the rearm branch then ignored it — so the flag could not be
+// used at all, and the ref a user supplied to satisfy cobra was silently
+// discarded.
+//
+// MUTANT: restore ExactArgs(1) and the zero-arg case fails; drop the
+// ref-with-rearm refusal and the ambiguous case stops failing.
+func TestRemindArgsAcceptRearmWithoutARef(t *testing.T) {
+	cmd := remindCmd()
+	if err := cmd.Args(cmd, []string{}); err != nil {
+		t.Errorf("remind must accept zero args so --rearm is usable: %v", err)
+	}
+	if err := cmd.Args(cmd, []string{"TASK-1"}); err != nil {
+		t.Errorf("remind must still accept an item ref: %v", err)
+	}
+	if err := cmd.Args(cmd, []string{"TASK-1", "TASK-2"}); err == nil {
+		t.Error("remind accepted two positional args")
+	}
+}

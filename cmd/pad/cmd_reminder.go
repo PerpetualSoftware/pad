@@ -37,7 +37,13 @@ When the reminder fires it appears in 'pad project next' and 'pad project
 ready' until you acknowledge it with 'pad item ack', and it emits an
 item.reminder_due webhook event. The poll surface is not optional: an instance
 with no webhook configured delivers reminders that way and only that way.`,
-		Args: cobra.ExactArgs(1),
+		// MaximumNArgs, not ExactArgs: --rearm addresses a REMINDER by id and
+		// needs no item ref, so requiring one made the flag unusable (codex
+		// round 2). The two modes are checked below rather than merged,
+		// because a ref supplied alongside --rearm is ambiguous — it names an
+		// item the reminder may not even belong to — and silently ignoring it
+		// is how a user learns nothing about the reminder they just moved.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -47,6 +53,9 @@ with no webhook configured delivers reminders that way and only that way.`,
 			}
 
 			if remindRearmID != "" {
+				if len(args) > 0 {
+					return fmt.Errorf("--rearm addresses a reminder by id, so it takes no item ref (got %q)", args[0])
+				}
 				r, err := client.RearmReminder(ws, remindRearmID, remindAtFlag)
 				if err != nil {
 					return err
@@ -58,6 +67,9 @@ with no webhook configured delivers reminders that way and only that way.`,
 				return nil
 			}
 
+			if len(args) == 0 {
+				return fmt.Errorf("an item ref is required (e.g. pad item remind TASK-5 --remind-at 2026-08-01T09:00:00Z), or use --rearm <id> to move an existing reminder")
+			}
 			item, err := client.GetItem(ws, args[0])
 			if err != nil {
 				return err
@@ -168,6 +180,9 @@ reminder and an absent one are indistinguishable to everything that reads them.`
 
 			if err := client.DeleteReminder(ws, args[0]); err != nil {
 				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{"id": args[0], "deleted": true})
 			}
 			fmt.Printf("Removed reminder %s\n", args[0])
 			return nil

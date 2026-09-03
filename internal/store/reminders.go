@@ -56,7 +56,7 @@ func normalizeRemindAt(remindAt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("remind_at must be an RFC3339 instant: %w", err)
 	}
-	return t.UTC().Format(time.RFC3339), nil
+	return NormalizeInstant(t), nil
 }
 
 // CreateReminder arms a reminder on an item.
@@ -440,4 +440,28 @@ func (s *Store) emitReminderEventTx(tx *sql.Tx, r *models.Reminder, item *models
 		Payload:       payload,
 		PayloadFamily: kernelevents.PayloadReminder,
 	})
+}
+
+// NormalizeInstant renders a parsed time as the RFC3339 second it must not
+// fire before, in UTC.
+//
+// SECONDS ARE THE STORED RESOLUTION: the column is compared as a string
+// against a whole-second clock, and the tick runs on a 30s interval, so
+// sub-second precision is not a thing this system can honour. The question is
+// only which way to resolve it, and truncating was wrong (codex round 2):
+// `09:00:00.900Z` truncated to `09:00:00Z` fires 900ms BEFORE the moment the
+// caller named, and it does so silently, having rewritten their value on the
+// way in.
+//
+// Rounding UP costs at most a second of lateness and makes the guarantee
+// stateable: a reminder never fires before the instant it was set for. Late is
+// a reminder; early is a wrong answer.
+//
+// Whole seconds are unchanged, so the ordinary case round-trips exactly.
+func NormalizeInstant(t time.Time) string {
+	u := t.UTC()
+	if trunc := u.Truncate(time.Second); !trunc.Equal(u) {
+		u = trunc.Add(time.Second)
+	}
+	return u.Format(time.RFC3339)
 }
