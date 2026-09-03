@@ -85,6 +85,36 @@
 		/** Chosen row. The picker does not clear itself — the caller decides. */
 		onselect: (item: ItemIndexRow) => void;
 		/**
+		 * Inline create (PLAN-2857 U8). Passing this adds a trailing
+		 * "Create \"<query>\" in <collection>" row; omitting it is how a caller
+		 * declines the affordance, and the ONLY way to decline it.
+		 *
+		 * That opt-in shape is deliberate. Both rules in U8's scope are the
+		 * caller's to know and neither is this component's:
+		 *
+		 *   * *Relation fields only.* The Relationships tab links items that
+		 *     already exist, so it passes nothing and renders exactly as before.
+		 *   * *Permission.* "Can this user create in the TARGET collection" is
+		 *     the collection-level `canEditCollection` cascade — the same
+		 *     predicate behind "+ New" — which lives in the workspace store. A
+		 *     picker that consulted it here would be a second copy of an answer
+		 *     the server also enforces.
+		 *
+		 * Awaited, and re-entrant calls are dropped while one is in flight, so
+		 * two Enters inside one round trip cannot mint two items. Rejections are
+		 * swallowed HERE and belong to the caller: it owns the API call, so it
+		 * owns the error surface (a toast) and the decision to leave the query in
+		 * place for a retry.
+		 */
+		oncreate?: (title: string) => void | Promise<void>;
+		/**
+		 * Display name of the target collection for the create row. Falls back to
+		 * the slug, which is the wrong register ("in colors" vs "in Colors") but
+		 * never wrong about WHERE the item would land — the fact the row exists
+		 * to convey.
+		 */
+		createLabel?: string;
+		/**
 		 * Escape on an already-empty box.
 		 *
 		 * Pass one if Escape should close the surface hosting the picker.
@@ -109,6 +139,8 @@
 		label = 'Search items',
 		autofocus = false,
 		onselect,
+		oncreate,
+		createLabel,
 		oncancel,
 	}: Props = $props();
 
@@ -144,9 +176,56 @@
 
 	const uid = $props.id();
 
+	/**
+	 * Identifier for the create row in the same namespace as the result rows'
+	 * ids, so ONE `activeId` addresses either. A NUL-prefixed sentinel because
+	 * item ids are UUIDs and can never collide with it.
+	 */
+	const CREATE_OPTION_ID = '\u0000create';
+
+	type PickerOption =
+		| { kind: 'item'; id: string; row: ItemIndexRow }
+		| { kind: 'create'; id: string };
+
 	let excluded = $derived(new Set(excludeIds));
 	let results = $derived(present(rawResults));
-	let activeIndex = $derived(activeId ? results.findIndex((r) => r.id === activeId) : -1);
+
+	/**
+	 * Whether to offer the create row, for the query as it stands.
+	 *
+	 * "Matches nothing, or nothing EXACTLY" — the exact-title test is against
+	 * `rawResults`, the source's answer BEFORE exclusion and the row bound.
+	 * Presented rows would be the wrong population twice over: an exact match
+	 * pushed past `limit`, or one the caller excluded, would both read as "no
+	 * such item" and offer to mint a duplicate of a row that exists.
+	 *
+	 * This suppression IS the no-duplicate half of U8's proving test. There is
+	 * no create-time uniqueness check anywhere below, and deliberately so: the
+	 * second invocation with the same text never reaches a create, because by
+	 * then the row exists and this returns false. What makes that true on the
+	 * next keystroke is the caller upserting the new item into `localIndex`.
+	 *
+	 * Not offered while `loading`: mid-flight, "nothing matched" is not yet
+	 * known, and a create row there invites a duplicate of a row about to land.
+	 */
+	let createTitle = $derived(query.trim());
+	let showCreate = $derived.by((): boolean => {
+		if (!oncreate || !collection || !createTitle || loading) return false;
+		const wanted = createTitle.toLowerCase();
+		return !rawResults.some((r) => (r.title ?? '').trim().toLowerCase() === wanted);
+	});
+
+	/**
+	 * Result rows plus the create row, in render AND keyboard order — one list,
+	 * so arrowing onto the create row needs no special case and cannot fall out
+	 * of step with what is on screen.
+	 */
+	let options = $derived.by((): PickerOption[] => {
+		const out: PickerOption[] = results.map((row) => ({ kind: 'item', id: row.id, row }));
+		if (showCreate) out.push({ kind: 'create', id: CREATE_OPTION_ID });
+		return out;
+	});
+	let activeIndex = $derived(activeId ? options.findIndex((o) => o.id === activeId) : -1);
 
 	function isWarm(): boolean {
 		return localIndex.bootstrapStateFor(wsSlug) === 'ready';
@@ -246,25 +325,57 @@
 		onselect(row);
 	}
 
+	/**
+	 * Plain `let` for the same reason `seq` is (CONVE-1688): written in a
+	 * handler, read in a handler, never rendered. Making it `$state` would put a
+	 * write inside the effect graph for a value nothing displays.
+	 */
+	let creating = false;
+
+	async function invokeCreate() {
+		if (creating || !oncreate) return;
+		const title = createTitle;
+		if (!title) return;
+		creating = true;
+		try {
+			await oncreate(title);
+		} catch {
+			// The caller owns the error surface — see the `oncreate` prop doc.
+			// Swallowed rather than rethrown so an unhandled rejection cannot
+			// escape a keydown handler.
+		} finally {
+			// A write to a destroyed instance is a no-op, so this needs no fence.
+			creating = false;
+		}
+	}
+
+	function activate(option: PickerOption) {
+		if (option.kind === 'create') {
+			void invokeCreate();
+			return;
+		}
+		choose(option.row);
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key === 'ArrowDown') {
-			if (results.length === 0) return;
+			if (options.length === 0) return;
 			e.preventDefault();
-			const next = activeIndex < results.length - 1 ? activeIndex + 1 : results.length - 1;
-			activeId = results[next]?.id ?? null;
+			const next = activeIndex < options.length - 1 ? activeIndex + 1 : options.length - 1;
+			activeId = options[next]?.id ?? null;
 			return;
 		}
 		if (e.key === 'ArrowUp') {
-			if (results.length === 0) return;
+			if (options.length === 0) return;
 			e.preventDefault();
 			const next = activeIndex - 1;
-			activeId = next >= 0 ? (results[next]?.id ?? null) : null;
+			activeId = next >= 0 ? (options[next]?.id ?? null) : null;
 			return;
 		}
 		if (e.key === 'Enter') {
-			if (activeIndex < 0 || activeIndex >= results.length) return;
+			if (activeIndex < 0 || activeIndex >= options.length) return;
 			e.preventDefault();
-			choose(results[activeIndex]);
+			activate(options[activeIndex]);
 			return;
 		}
 		if (e.key === 'Escape') {
@@ -409,7 +520,7 @@
 		class="picker-input"
 		role="combobox"
 		aria-label={label}
-		aria-expanded={results.length > 0}
+		aria-expanded={options.length > 0}
 		aria-controls="picker-results-{uid}"
 		aria-autocomplete="list"
 		aria-activedescendant={activeIndex >= 0 ? `picker-option-${uid}-${activeIndex}` : undefined}
@@ -422,23 +533,40 @@
 
 	{#if loading}
 		<div class="picker-status">Searching...</div>
-	{:else if results.length > 0}
+	{:else if options.length > 0}
 		<div class="picker-results" role="listbox" id="picker-results-{uid}" aria-label={label}>
-			{#each results as result, i (result.id)}
-				<button
-					type="button"
-					class="picker-result"
-					class:active={i === activeIndex}
-					role="option"
-					id="picker-option-{uid}-{i}"
-					aria-selected={i === activeIndex}
-					onclick={() => choose(result)}
-				>
-					{#if formatItemRef(result)}
-						<span class="picker-ref">{formatItemRef(result)}</span>
-					{/if}
-					<span class="picker-title">{result.title}</span>
-				</button>
+			{#each options as option, i (option.id)}
+				{#if option.kind === 'create'}
+					<button
+						type="button"
+						class="picker-result picker-create"
+						class:active={i === activeIndex}
+						role="option"
+						id="picker-option-{uid}-{i}"
+						aria-selected={i === activeIndex}
+						onclick={() => void invokeCreate()}
+					>
+						<span class="picker-create-mark" aria-hidden="true">+</span>
+						<span class="picker-title">
+							Create "{createTitle}" in {createLabel ?? collection}
+						</span>
+					</button>
+				{:else}
+					<button
+						type="button"
+						class="picker-result"
+						class:active={i === activeIndex}
+						role="option"
+						id="picker-option-{uid}-{i}"
+						aria-selected={i === activeIndex}
+						onclick={() => choose(option.row)}
+					>
+						{#if formatItemRef(option.row)}
+							<span class="picker-ref">{formatItemRef(option.row)}</span>
+						{/if}
+						<span class="picker-title">{option.row.title}</span>
+					</button>
+				{/if}
 			{/each}
 		</div>
 	{:else if query.trim().length > 0}
@@ -520,5 +648,21 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/*
+	 * The create row reads as an action, not as another item — it is the one
+	 * row that mints something. Muted until it is the active/hovered row, which
+	 * `.picker-result`'s own rule already handles.
+	 */
+	.picker-create {
+		color: var(--text-secondary, var(--text-muted));
+	}
+
+	.picker-create-mark {
+		flex-shrink: 0;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 0.94em;
 	}
 </style>

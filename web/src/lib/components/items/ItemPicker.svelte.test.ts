@@ -743,3 +743,217 @@ describe('ItemPicker — Escape only consumes what it closes', () => {
 		expect(seen.mock.calls[0][0].defaultPrevented).toBe(false);
 	});
 });
+
+// ── U8: inline create from the picker (TASK-2877) ────────────────────────
+//
+// Pins written BEFORE the affordance exists, per team CONVE-29.
+//
+// The whole affordance is OPT-IN at the call site: the picker offers a create
+// row only when the host passes `oncreate`. That is not decoration — it is
+// where the two rules in the unit's scope live. "Relation-field pickers only"
+// is the Relationships tab simply not passing it, and "no create row unless the
+// user can create in the target collection" is `FieldEditor` withholding it
+// (pinned separately in `FieldEditor.relation.svelte.test.ts`, since the
+// permission cascade is not this component's to know).
+//
+// The no-duplicate half of the proving test lives here rather than in the
+// caller: it is EXACT-TITLE SUPPRESSION, not a create-time check. Once the
+// item exists, a picker asked for the same text again offers the row and
+// withholds the create affordance, so a second invocation cannot be a create
+// at all. `FieldEditor` upserting the new row into `localIndex` is what makes
+// that true on the very next keystroke; the mechanism is pinned there.
+describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
+	function createRow(): HTMLElement | null {
+		return document.querySelector<HTMLElement>('.picker-create');
+	}
+
+	const createProps = { ...baseProps, createLabel: 'Colors' };
+
+	it('offers no create row when the host passes no oncreate — the Relationships-tab caller', async () => {
+		loadIndex(makeRows(3));
+		localSearchMock.search.mockReturnValue([]);
+		render(ItemPicker, { props: { ...baseProps } });
+		await tick();
+
+		await type('Purple');
+
+		expect(createRow()).toBeNull();
+		// CONTROL: the same query DOES produce the row when a host opts in, so
+		// this leg is measuring the opt-in and not a query that never renders.
+		cleanup();
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+		await type('Purple');
+		expect(createRow()).not.toBeNull();
+	});
+
+	it('offers the create row, naming the query and the TARGET collection, when nothing matches', async () => {
+		loadIndex(makeRows(3));
+		localSearchMock.search.mockReturnValue([]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+
+		expect(createRow()).not.toBeNull();
+		expect(createRow()!.textContent).toContain('Purple');
+		// The collection is named so the row cannot be read as "create it here".
+		// U8 creates in the field's declared target, which is frequently NOT the
+		// collection the user is looking at.
+		expect(createRow()!.textContent).toContain('Colors');
+	});
+
+	it('still offers create when matches exist but none is EXACT — the "or nothing exactly" half', async () => {
+		loadIndex([
+			{ id: 'id-1', title: 'Purple Rain', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+
+		expect(options()).toHaveLength(2);
+		// Trailing, per the unit: the matches are what the user most likely wants.
+		expect(options()[1]).toBe(createRow());
+	});
+
+	it('withholds create when an exact title already exists — the no-duplicate mechanism', async () => {
+		loadIndex([
+			{ id: 'id-1', title: 'Purple', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+
+		expect(createRow()).toBeNull();
+		expect(options()).toHaveLength(1);
+	});
+
+	it('matches an existing title case- and whitespace-insensitively', async () => {
+		// A user who typed "purple " must not mint a second "Purple". Exactness
+		// here is about the user's INTENT to name an existing row, and neither
+		// case nor a trailing space changes that intent.
+		loadIndex([
+			{ id: 'id-1', title: 'Purple', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('  purple ');
+
+		expect(createRow()).toBeNull();
+	});
+
+	it('offers nothing to create on an empty query, or without a target collection', async () => {
+		loadIndex(makeRows(3));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+		// Empty query: the scoped picker is LISTING, and "Create ''" is not a
+		// thing the user asked for.
+		expect(createRow()).toBeNull();
+
+		cleanup();
+		// Unscoped: there is no target collection to create into, so the row
+		// would have to guess. A host that passes `oncreate` without a
+		// `collection` gets nothing rather than a wrong destination.
+		localSearchMock.search.mockReturnValue([]);
+		render(ItemPicker, {
+			props: { wsSlug: 'ws', onselect: () => {}, oncreate: vi.fn(), createLabel: 'Colors' },
+		});
+		await tick();
+		await type('Purple');
+		expect(createRow()).toBeNull();
+	});
+
+	it('offers nothing to create while a cold search is still in flight', async () => {
+		// "Nothing matched" is not yet known while the server is answering. A
+		// create row here would invite a duplicate of a row about to arrive.
+		//
+		// `aria-expanded` is the assertion that can actually FAIL, and the
+		// reason this leg is worth having. The markup renders the loading
+		// branch INSTEAD of the listbox, so a build that offered the create row
+		// mid-flight would still show no `.picker-create` — the row would exist
+		// in the options list and merely be off screen, which is trap #1 from
+		// this plan's false-green note. What leaks is the combobox announcing
+		// itself expanded while no listbox is rendered.
+		vi.useFakeTimers();
+		setBootstrapState('cold');
+		let release!: (v: unknown) => void;
+		searchApi.mockReturnValue(new Promise((r) => { release = r; }));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.advanceTimersByTimeAsync(300);
+		expect(createRow()).toBeNull();
+		expect(input().getAttribute('aria-expanded')).toBe('false');
+
+		release({ results: [] });
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+		expect(input().getAttribute('aria-expanded')).toBe('true');
+		vi.useRealTimers();
+	});
+
+	it('is keyboard-reachable as the last row, and Enter invokes it with the trimmed query', async () => {
+		loadIndex([
+			{ id: 'id-1', title: 'Purple Rain', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		const oncreate = vi.fn();
+		const onselect = vi.fn();
+		render(ItemPicker, { props: { ...createProps, oncreate, onselect } });
+		await tick();
+
+		await type('  Purple  ');
+		await press('ArrowDown');
+		expect(options()[0].getAttribute('aria-selected')).toBe('true');
+		await press('ArrowDown');
+		expect(createRow()!.getAttribute('aria-selected')).toBe('true');
+		expect(input().getAttribute('aria-activedescendant')).toBe(createRow()!.id);
+
+		await press('Enter');
+		expect(oncreate).toHaveBeenCalledTimes(1);
+		expect(oncreate).toHaveBeenCalledWith('Purple');
+		// Enter on the create row must not ALSO select whatever row it replaced.
+		expect(onselect).not.toHaveBeenCalled();
+	});
+
+	it('clicking the create row invokes it', async () => {
+		loadIndex([]);
+		localSearchMock.search.mockReturnValue([]);
+		const oncreate = vi.fn();
+		render(ItemPicker, { props: { ...createProps, oncreate } });
+		await tick();
+
+		await type('Purple');
+		createRow()!.click();
+
+		expect(oncreate).toHaveBeenCalledTimes(1);
+		expect(oncreate).toHaveBeenCalledWith('Purple');
+	});
+
+	it('does not fire a second create while the first is still in flight', async () => {
+		// The duplicate this guards is not the same-text-twice case the exact
+		// match covers — it is one impatient user and two Enters inside a single
+		// round trip, when no row exists yet to suppress anything.
+		loadIndex([]);
+		localSearchMock.search.mockReturnValue([]);
+		let release!: () => void;
+		const oncreate = vi.fn(() => new Promise<void>((r) => { release = () => r(); }));
+		render(ItemPicker, { props: { ...createProps, oncreate } });
+		await tick();
+
+		await type('Purple');
+		await press('ArrowDown');
+		await press('Enter');
+		await press('Enter');
+		expect(oncreate).toHaveBeenCalledTimes(1);
+
+		release();
+		await tick();
+	});
+});
