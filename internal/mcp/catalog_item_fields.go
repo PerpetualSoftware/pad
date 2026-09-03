@@ -301,7 +301,30 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// and it changes what every CLI caller receives. Here the caller has
 		// supplied one key twice and one of the forms is malformed, which is
 		// a narrower and locally-answerable question.
-		if !fieldsPresent {
+		// WHETHER THIS KEY GETS CANONICALIZED IS A PER-KEY QUESTION, not a
+		// per-request one (codex round 17).
+		//
+		// Round 16 gated this on `!fieldsPresent`, reasoning that with a
+		// `fields` object present reshapeItemFields re-emits the entry
+		// canonically. True — for keys that are IN that object. With
+		// `fields:{}`, or a `fields` carrying some OTHER key, nothing
+		// canonicalizes `field:["status = done"]` and it reaches the doors
+		// padded exactly as it does with no `fields` at all.
+		//
+		// Third round running that I generalized a property verified on one
+		// subset to the whole: round 15 (a premise true of declared params,
+		// applied to the compat IDs), round 16's first draft (a check placed
+		// below the exemption so it covered one key class), and now a
+		// per-key property read as per-request. The predicate is now the
+		// actual question — will anything canonicalize THIS key.
+		canonicalized := false
+		for _, c := range contribs {
+			if _, inObj := obj[c.key]; inObj {
+				canonicalized = true
+				break
+			}
+		}
+		if !canonicalized {
 			for i := 1; i < len(contribs); i++ {
 				a, b := contribs[0], contribs[i]
 				if a.nonCanonical || b.nonCanonical {

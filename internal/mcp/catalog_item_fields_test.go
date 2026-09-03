@@ -1805,3 +1805,56 @@ func TestPadItemUpdate_CanonicalCompatDuplicateStillCollapses(t *testing.T) {
 		t.Fatal("expected the update to dispatch")
 	}
 }
+
+// --- codex round 17 ---
+
+// TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey: whether an
+// entry gets canonicalized is a PER-KEY question (BUG-2850, codex round 17).
+//
+// Round 16 gated the padded-entry refusal on "no `fields` object", reasoning
+// that a `fields` object causes reshapeItemFields to re-emit the entry
+// canonically. That holds for keys IN the object. With `fields:{}` or a
+// `fields` carrying some other key, nothing canonicalizes
+// `field:["status = done"]` and it reaches the doors padded exactly as it
+// does with no `fields` at all — HTTP writes `status`, the CLI writes a junk
+// `"status "` beside it.
+//
+// The last leg is the control that makes the distinction real: with the key
+// present in `fields`, the entry IS canonicalized, so the call must still
+// succeed. A fix that simply refused whenever anything was padded would pass
+// the first two legs and fail this one.
+func TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey(t *testing.T) {
+	t.Run("fields empty", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"status": "done", "field": []any{"status = done"},
+			"fields": map[string]any{},
+		})
+		if !isErr {
+			t.Fatalf("nothing canonicalizes this entry; expected refusal, got: %s (args %v)", msg, disp.gotArgs)
+		}
+	})
+	t.Run("fields carries another key", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"status": "done", "field": []any{"status = done"},
+			"fields": map[string]any{"effort": "l"},
+		})
+		if !isErr {
+			t.Fatalf("a fields object covering a DIFFERENT key does not canonicalize this one; got: %s (args %v)", msg, disp.gotArgs)
+		}
+	})
+	t.Run("fields carries the key — canonicalized, so accepted", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"status": "done", "field": []any{"status = done"},
+			"fields": map[string]any{"status": "done"},
+		})
+		if isErr {
+			t.Fatalf("this key IS canonicalized, so the call must succeed: %s", msg)
+		}
+		if argsContainPair(disp.gotArgs, "--field", "status = done") {
+			t.Errorf("the padded entry must not survive canonicalization: %v", disp.gotArgs)
+		}
+	})
+}
