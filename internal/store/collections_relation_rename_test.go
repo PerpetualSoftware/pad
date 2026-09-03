@@ -505,3 +505,50 @@ func TestRenamePreservesLargeIntegersInUnknownSchemaProperties(t *testing.T) {
 		t.Errorf("large integer corrupted by the rewrite: %s", after.Schema)
 	}
 }
+
+func TestRenameLeavesASchemaWithTrailingJunkUntouched(t *testing.T) {
+	// codex round 3 P2. `json.Decoder.Decode` stops at the end of the first
+	// value and ignores the rest, where `json.Unmarshal` refuses it — so
+	// re-marshaling such a document would silently discard the trailing bytes.
+	// Better to leave the row exactly as it is: stranded, but not quietly
+	// truncated by a migration that was only meant to rename a target.
+	s := testStore(t)
+	// SQLite only, and that is the finding rather than a limitation of the test:
+	// `collections.schema` is TEXT on SQLite (`005_collections.sql:10`) and JSONB
+	// on Postgres (`pgmigrations/001_initial.sql:114`), so a value with trailing
+	// content after the object cannot be STORED on Postgres at all — seeding it
+	// fails at the driver with `invalid input syntax for type json (22P02)`.
+	// The guard this pins is therefore defensive on one dialect and unreachable
+	// on the other. Skipping is honest; asserting would be asserting about a
+	// state that cannot exist.
+	if s.dialect.Driver() == DriverPostgres {
+		t.Skip("collections.schema is JSONB on Postgres: trailing content cannot be stored")
+	}
+	ws := createTestWorkspace(t, s, "RelRenameTrailing")
+
+	target, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Colors", Slug: "colors"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	cars, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Cars", Slug: "cars"})
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+	junk := `{"fields":[{"key":"color","label":"Rel","type":"relation","collection":"colors"}]} trailing-junk`
+	if _, err := s.db.Exec(s.q("UPDATE collections SET schema = ? WHERE id = ?"), junk, cars.ID); err != nil {
+		t.Fatalf("seed trailing junk: %v", err)
+	}
+
+	name := "Palette"
+	if _, err := s.UpdateCollection(target.ID, models.CollectionUpdate{Name: &name}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	after, err := s.GetCollection(cars.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	if after.Schema != junk {
+		t.Errorf("schema with trailing content was rewritten:\n got %q\nwant %q", after.Schema, junk)
+	}
+}

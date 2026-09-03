@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -1245,6 +1246,14 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 	var doc map[string]interface{}
 	if err := dec.Decode(&doc); err != nil {
 		return raw, false, err
+	}
+	// `Decode` stops at the end of the FIRST value and ignores whatever follows,
+	// where `json.Unmarshal` would have refused it. Re-marshaling such a document
+	// would silently drop the trailing bytes, so treat it as unparseable and
+	// leave the row alone — the same posture as any other schema this migration
+	// cannot faithfully rewrite (codex round 3 P2).
+	if _, err := dec.Token(); err != io.EOF {
+		return raw, false, fmt.Errorf("trailing content after schema object")
 	}
 	fields, ok := doc["fields"].([]interface{})
 	if !ok {
