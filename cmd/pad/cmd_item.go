@@ -327,6 +327,12 @@ Run with --help-collections to see available collections and their status values
 				return err
 			}
 
+			// Before the JSON early-return, and outside the ref branch below:
+			// the warning goes to STDERR, so it reaches a caller piping stdout
+			// into a parser — which is exactly the caller most likely to have
+			// sent a mistyped key and least likely to notice (codex round 2).
+			warnUndeclaredFields(item)
+
 			if formatFlag == "json" {
 				return cli.PrintJSON(item)
 			}
@@ -337,7 +343,6 @@ Run with --help-collections to see available collections and their status values
 			}
 			ref := cli.ItemRef(*item)
 			if ref != "" {
-				warnUndeclaredFields(item)
 				fmt.Printf("Created %s %s %s: %q\n", icon, item.CollectionName, ref, item.Title)
 			} else {
 				fmt.Printf("Created %s %s: %q (%s)\n", icon, item.CollectionName, item.Title, item.Slug)
@@ -1254,13 +1259,16 @@ Examples:
 				return err
 			}
 
+			// Stderr, before the JSON early-return — see the note on the
+			// create path (codex round 2).
+			warnUndeclaredFields(updated)
+
 			if formatFlag == "json" {
 				return cli.PrintJSON(updated)
 			}
 
 			ref := cli.ItemRef(*updated)
 			if ref != "" {
-				warnUndeclaredFields(updated)
 				fmt.Printf("Updated %s %q\n", ref, updated.Title)
 			} else {
 				fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)
@@ -3240,9 +3248,10 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 				return err
 			}
 
+			warnUndeclaredFields(updated)
+
 			ref := cli.ItemRef(*updated)
 			if ref != "" {
-				warnUndeclaredFields(updated)
 				fmt.Printf("Updated %s %q\n", ref, updated.Title)
 			} else {
 				fmt.Printf("Updated %q (%s)\n", updated.Title, updated.Slug)

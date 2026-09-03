@@ -433,3 +433,62 @@ func TestNoWarningsWhenEveryFieldIsDeclared(t *testing.T) {
 		t.Fatalf("a clean write must carry no warnings element: %s", rr.Body.String())
 	}
 }
+
+// A nil value in fields_patch DELETES the key, so it must not be reported as
+// an undeclared field that was stored (BUG-2850, codex round 2). The warning
+// would otherwise tell the caller a field exists that the same request removed.
+func TestFieldsPatchDeleteIsNotReportedAsUndeclared(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Patch Delete"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	schema := `{"fields":[{"key":"status","type":"text"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"stray":"value"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	// Now DELETE that key via fields_patch.
+	rr = doRequestWithHeaders(srv, "PATCH",
+		"/api/v1/workspaces/"+ws.Slug+"/items/"+item.Slug,
+		map[string]interface{}{"fields_patch": map[string]any{"stray": nil}},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch delete: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+
+	if updated.Warnings != nil && len(updated.Warnings.UndeclaredFields) > 0 {
+		t.Fatalf("a DELETE must not be reported as a stored undeclared field: %v",
+			updated.Warnings.UndeclaredFields)
+	}
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(updated.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v", err)
+	}
+	if _, still := stored["stray"]; still {
+		t.Fatalf("the key should have been deleted: %s", updated.Fields)
+	}
+}

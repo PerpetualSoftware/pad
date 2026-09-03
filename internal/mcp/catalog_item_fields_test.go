@@ -248,22 +248,22 @@ func TestPadItemUpdate_FieldsNullRefused(t *testing.T) {
 	}
 }
 
-// TestPadItemUpdate_FieldsNestedValuesRefusedOnStdioOnly: a nested object or
-// array is refused HERE — and the reason it is refused has changed, which is
-// the point of the assertion on the message (BUG-2850).
+// TestPadItemUpdate_FieldsNestedValuesReachTheDispatcher: a nested object or
+// array is no longer refused on the way to the dispatcher (BUG-2850).
 //
-// PR #1159 refused nested values in the CATALOG, for every transport, on the
-// grounds that they had no defined write semantics. They do now: the merge
-// carries them natively and the remote /mcp door writes them, which is what
-// makes a json-typed field (a playbook's `arguments`) writable at all. What
-// remains is a TRANSPORT limit — this harness builds `--field key=value`
-// arguments, and a structure has no such encoding — so the refusal moved to
-// BuildCLIArgs and now names the transport instead of the value.
+// PR #1159 refused these in the CATALOG, for every transport, on the grounds
+// that they had no defined write semantics. They do now — the merge carries
+// them natively and the remote /mcp door writes them, which is what makes a
+// json-typed field (a playbook's `arguments`) writable at all.
 //
-// Refused LOUDLY rather than dropped: BuildCLIArgs discards keys it does not
-// recognize, and a silently discarded field is the exact failure this bug is
-// about.
-func TestPadItemUpdate_FieldsNestedValuesRefusedOnStdioOnly(t *testing.T) {
+// THIS TEST EXISTS BECAUSE THE FIRST FIX PUT THE REFUSAL IN THE WRONG PLACE.
+// It went into BuildCLIArgs, which env.Dispatch runs for BOTH transports, so
+// it blocked the remote door too and the native handling was never reached —
+// codex round 2 [P1], and a binding I had tested at the component (mapItemCreate
+// directly) rather than through dispatch. The refusal now lives in
+// ExecDispatcher, the door that actually cannot encode a structure, and this
+// asserts that everything else gets through.
+func TestPadItemUpdate_FieldsNestedValuesReachTheDispatcher(t *testing.T) {
 	for name, nested := range map[string]any{
 		"nested object": map[string]any{"meta": map[string]any{"a": 1}},
 		"nested array":  map[string]any{"meta": []any{"a"}},
@@ -274,23 +274,46 @@ func TestPadItemUpdate_FieldsNestedValuesRefusedOnStdioOnly(t *testing.T) {
 				"ref":    "TASK-5",
 				"fields": nested,
 			})
-			if !isErr {
-				t.Fatalf("stdio cannot encode a structured value; expected refusal, got: %s", msg)
+			if isErr {
+				t.Fatalf("nested values must reach the dispatcher since BUG-2850: %s", msg)
 			}
-			if !strings.Contains(msg, "meta") {
-				t.Errorf("error should name the offending key: %s", msg)
-			}
-			// The refusal must explain that this is a transport limit, not a
-			// verdict on the value — otherwise an agent reads it as "Pad
-			// cannot store this" and rewrites its data, which is what the
-			// reporter's agent did to seven playbooks.
-			if !strings.Contains(msg, "stdio") {
-				t.Errorf("error should name the transport limit, not the value: %s", msg)
-			}
-			if len(disp.gotPath) != 0 {
-				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			if len(disp.gotPath) == 0 {
+				t.Fatal("expected the update to dispatch")
 			}
 		})
+	}
+}
+
+// The stdio door's own refusal, at the door (BUG-2850). Named separately from
+// the dispatch test above because they are different claims: one is that the
+// remote transport is unblocked, the other that the CLI transport still says
+// no — and the first fix conflated them.
+func TestRefuseStructuredFieldsOverCLI(t *testing.T) {
+	err := refuseStructuredFieldsOverCLI(map[string]any{
+		fieldsNativeKey: map[string]any{
+			"scalar": "fine",
+			"obj":    map[string]any{"a": 1},
+			"arr":    []any{"a"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected a refusal for structured values over the CLI transport")
+	}
+	for _, want := range []string{"obj", "arr", "stdio"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal should mention %q: %v", want, err)
+		}
+	}
+	// The message must not read as a verdict on the data — the reporter's
+	// agent rewrote seven playbooks after taking the old one that way.
+	if strings.Contains(err.Error(), "no defined write semantics") {
+		t.Errorf("refusal should name the transport limit, not the value: %v", err)
+	}
+	// A scalar-only native map is not a refusal.
+	if err := refuseStructuredFieldsOverCLI(map[string]any{
+		fieldsNativeKey: map[string]any{"scalar": "fine"},
+	}); err != nil {
+		t.Errorf("scalars are encodable as key=value; got refusal: %v", err)
 	}
 }
 

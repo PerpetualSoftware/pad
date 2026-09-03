@@ -1363,7 +1363,21 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Only the PATCHED keys are reported. A stray key already on the item
 		// is not something this write introduced, and naming it every time
 		// anyone touches the item would train the reader to ignore the field.
-		undeclaredFields = items.UndeclaredFieldKeys(patchMap, schema)
+		//
+		// And only keys the patch STORES. A nil value in fields_patch is a
+		// DELETE — internal/store/items.go removes the key — so reporting it as
+		// an undeclared field would tell the caller a field was stored that the
+		// same request just removed (codex round 2). Filtered here rather than
+		// inside UndeclaredFieldKeys because nil means "store JSON null" on the
+		// full-fields path, where reporting it IS correct.
+		stored := make(map[string]any, len(patchMap))
+		for k, v := range patchMap {
+			if v == nil {
+				continue
+			}
+			stored[k] = v
+		}
+		undeclaredFields = items.UndeclaredFieldKeys(stored, schema)
 		if err := items.ValidatePartialFields(patchMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
