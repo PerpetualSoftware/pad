@@ -77,7 +77,26 @@ handlers — onchange is never called.
 		if (!isRelation || !wsSlug) return null;
 		const raw = typeof value === 'string' ? value.trim() : '';
 		if (!raw) return null;
-		return localIndex.findByIdOrSlug(wsSlug, raw);
+		const row = localIndex.findByIdOrSlug(wsSlug, raw);
+		if (!row) return null;
+		// TWO narrowings on what `findByIdOrSlug` will happily return, both
+		// found by driving this in a real browser.
+		//
+		// 1. ID ONLY. That helper resolves by id OR SLUG, so a legacy free-text
+		//    value like "red" — exactly what the old text fallback wrote — RESOLVES
+		//    to the item whose slug is "red" and renders as a working reference.
+		//    The field's contract is that it stores an item ID; displaying a slug
+		//    match makes the chip lie about what is stored, and slugs are mutable,
+		//    so the same value could point somewhere else tomorrow.
+		// 2. TARGET COLLECTION. The helper is workspace-wide, so without this a
+		//    relation declared against `colors` could render an item from `tasks`
+		//    that happens to share the identifier. This is the same defect
+		//    PLAN-2857's recon recorded against the SERVER's `ResolveItem`
+		//    (workspace-wide, not collection-scoped); I wrote that finding down and
+		//    then reproduced it here.
+		if (row.id !== raw) return null;
+		if (field.collection && row.collection_slug !== field.collection) return null;
+		return row;
 	});
 	let relationState = $derived.by((): 'empty' | 'live' | 'deleted' | 'unresolved' => {
 		if (!isRelation) return 'empty';
@@ -105,8 +124,22 @@ handlers — onchange is never called.
 		});
 	}
 
+	// A relation field shows its VALUE, not a permanently-open search box. The
+	// first browser pass rendered the chip, the picker input still holding the
+	// query, and the result list still listing the row just chosen — the same
+	// item three times, under every relation field on the page. The picker is
+	// for CHANGING the value, so it appears when there is nothing to show or
+	// when the user asks for it, and closes once a choice is made.
+	let editingRelation = $state(false);
+
 	function pickRelation(row: ItemIndexRow) {
+		editingRelation = false;
 		onchange(row.id);
+	}
+
+	function clearRelation() {
+		editingRelation = false;
+		onchange('');
 	}
 
 	// ── Viewport detection ───────────────────────────────────────────────
@@ -663,14 +696,25 @@ handlers — onchange is never called.
 
 {:else if isRelation && relationEditable}
 	<div class="relation-editor">
-		{@render relationChip()}
-		<ItemPicker
-			wsSlug={wsSlug!}
-			collection={field.collection}
-			label={ariaLabel ?? `Search ${field.label || field.key}`}
-			placeholder="Search…"
-			onselect={pickRelation}
-		/>
+		{#if relationState !== 'empty' && !editingRelation}
+			<div class="relation-row">
+				{@render relationChip()}
+				<button type="button" class="relation-action" onclick={() => (editingRelation = true)}>
+					Change
+				</button>
+				<button type="button" class="relation-action" onclick={clearRelation}>Clear</button>
+			</div>
+		{:else}
+			<ItemPicker
+				wsSlug={wsSlug!}
+				collection={field.collection}
+				label={ariaLabel ?? `Search ${field.label || field.key}`}
+				placeholder="Search…"
+				autofocus={editingRelation}
+				onselect={pickRelation}
+				oncancel={relationState === 'empty' ? undefined : () => (editingRelation = false)}
+			/>
+		{/if}
 	</div>
 
 {:else if isRelation}
@@ -738,6 +782,28 @@ handlers — onchange is never called.
 		gap: var(--space-2);
 		min-width: 0;
 		font-size: 0.88em;
+	}
+
+	.relation-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+
+	.relation-action {
+		flex-shrink: 0;
+		padding: 0;
+		border: none;
+		background: none;
+		color: var(--text-muted);
+		font-size: 0.82em;
+		cursor: pointer;
+	}
+
+	.relation-action:hover {
+		color: var(--text-primary);
+		text-decoration: underline;
 	}
 
 	.relation-chip {

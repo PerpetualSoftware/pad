@@ -97,6 +97,38 @@ describe('FieldEditor — relation, three render states', () => {
 	});
 });
 
+describe('FieldEditor — relation resolves by ID, in the declared collection', () => {
+	// Both legs found by driving this in a real browser, not by reading the code.
+
+	it('a legacy free-text value that matches an item SLUG is unresolved, not a chip', async () => {
+		// `localIndex.findByIdOrSlug` resolves by id OR slug, so the string "red"
+		// — exactly what the old text fallback wrote into these fields — otherwise
+		// renders as a working reference to the item slugged "red". The field
+		// stores an ID; a slug match makes the chip lie about what is stored, and
+		// slugs are mutable, so the same value could point elsewhere tomorrow.
+		rows.set('red', { ...LIVE, id: 'uuid-live' });
+		localIndexMock.findByIdOrSlug.mockImplementation((_ws: string, k: string) =>
+			k === 'red' ? LIVE : (rows.get(k) ?? null)
+		);
+		render(FieldEditor, { props: { field, value: 'red', wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
+		await tick();
+		expect(document.body.textContent).toMatch(/unresolved/i);
+		expect(document.body.textContent).not.toContain('Red');
+	});
+
+	it('an id resolving into a DIFFERENT collection is unresolved', async () => {
+		// The helper is workspace-wide. Without the collection check a relation
+		// declared against `colors` renders an item from `tasks`. Same defect the
+		// design pass recorded against the server's `ResolveItem`.
+		const foreign = { ...LIVE, id: 'uuid-foreign', title: 'A Task', collection_slug: 'tasks', collection_prefix: 'TASK' };
+		rows.set(foreign.id, foreign);
+		render(FieldEditor, { props: { field, value: foreign.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
+		await tick();
+		expect(document.body.textContent).toMatch(/unresolved/i);
+		expect(document.body.textContent).not.toContain('A Task');
+	});
+});
+
 describe('FieldEditor — relation, the gate', () => {
 	it('renders no picker without a wsSlug — the CopyItemDialog call site', async () => {
 		render(FieldEditor, { props: { field, value: '', readonly: false, onchange: () => {} } });
@@ -109,6 +141,51 @@ describe('FieldEditor — relation, the gate', () => {
 		render(FieldEditor, { props: { field: untargeted, value: '', wsSlug: 'ws', readonly: false, onchange: () => {} } });
 		await tick();
 		expect(document.querySelector('.picker-input')).toBeNull();
+	});
+
+	it('a set relation shows the value, not a permanently-open search box', async () => {
+		// The first browser pass rendered the chip, the picker input still holding
+		// the query, and the result list still showing the row just chosen — the
+		// same item three times, under every relation field on the page.
+		render(FieldEditor, { props: { field, value: LIVE.id, wsSlug: 'ws', username: 'dave', readonly: false, onchange: () => {} } });
+		await tick();
+		expect(document.querySelector('.relation-chip')).not.toBeNull();
+		expect(document.querySelector('.picker-input')).toBeNull();
+	});
+
+	it('Change reopens the picker; choosing closes it and emits the new id', async () => {
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { field, value: LIVE.id, wsSlug: 'ws', username: 'dave', readonly: false, onchange } });
+		await tick();
+
+		const change = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Change');
+		expect(change, 'no Change control').toBeDefined();
+		change!.click();
+		await tick();
+		expect(document.querySelector('.picker-input')).not.toBeNull();
+
+		const option = document.querySelector<HTMLElement>('[role="option"]');
+		expect(option, 'picker listed nothing to choose').not.toBeNull();
+		option!.click();
+		await tick();
+
+		expect(onchange).toHaveBeenCalledTimes(1);
+		expect(onchange.mock.calls[0][0]).toBe(LIVE.id);
+		// And it CLOSES. Without this the mutant that drops the reset survives:
+		// emitting the value while leaving the search box open is the behaviour
+		// the browser pass rejected, and asserting only the emit misses it.
+		expect(document.querySelector('.picker-input')).toBeNull();
+		expect(document.querySelector('.relation-chip')).not.toBeNull();
+	});
+
+	it('Clear empties the field', async () => {
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { field, value: LIVE.id, wsSlug: 'ws', username: 'dave', readonly: false, onchange } });
+		await tick();
+		const clear = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Clear');
+		expect(clear, 'no Clear control').toBeDefined();
+		clear!.click();
+		expect(onchange).toHaveBeenCalledWith('');
 	});
 
 	it('CONTROL: with both, the editable branch mounts the picker scoped to the target', async () => {
