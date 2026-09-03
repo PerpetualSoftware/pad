@@ -25,6 +25,7 @@ const { searchApi, localIndexMock, localSearchMock } = vi.hoisted(() => ({
 		cursorFor: vi.fn(),
 		getByCollection: vi.fn(),
 		findByIdOrSlug: vi.fn(),
+		pendingResyncFor: vi.fn(),
 	},
 	localSearchMock: { search: vi.fn(), epoch: vi.fn() },
 }));
@@ -68,6 +69,12 @@ const epochs = new SvelteMap<string, number>();
  * which signal is correct.
  */
 const cursors = new SvelteMap<string, string>();
+/**
+ * `pendingResync` — true while the index is serving IDB-cached rows that
+ * delta-sync has not reconciled. Reactive for the same reason
+ * `bootstrapState` is: the create row must reappear when it settles.
+ */
+const resyncing = new SvelteMap<string, boolean>();
 
 function setBootstrapState(value: string) {
 	bootstrapState.set('ws', value);
@@ -121,6 +128,7 @@ beforeEach(() => {
 	bootstrapState.clear();
 	epochs.clear();
 	cursors.clear();
+	resyncing.clear();
 	setBootstrapState('ready');
 	localIndexMock.bootstrapStateFor
 		.mockReset()
@@ -132,6 +140,9 @@ beforeEach(() => {
 		.mockReset()
 		.mockImplementation((ws: string) => cursors.get(ws) ?? '0');
 	localIndexMock.getByCollection.mockReset().mockReturnValue([]);
+	localIndexMock.pendingResyncFor
+		.mockReset()
+		.mockImplementation((ws: string) => resyncing.get(ws) ?? false);
 	localIndexMock.findByIdOrSlug.mockReset().mockImplementation((_ws: string, id: string) => rowsById.get(id) ?? null);
 	localSearchMock.search.mockReset().mockReturnValue([]);
 	rowsById = new Map();
@@ -1024,6 +1035,29 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		await tick();
 		await tick();
 
+		expect(createRow()).not.toBeNull();
+	});
+
+	it('offers nothing to create while the index is ready but still resyncing', async () => {
+		// codex round 4 P1. `ready` coexists with `pendingResync`: the rows on
+		// screen came from the IDB cache and delta-sync has not reconciled them,
+		// so an item that EXISTS can be missing from the snapshot. Presence
+		// would still be evidence; absence is not, and absence is what the
+		// create row is derived from.
+		loadIndex([]);
+		localSearchMock.search.mockReturnValue([]);
+		resyncing.set('ws', true);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		expect(createRow()).toBeNull();
+
+		// It must come back once the snapshot is reconciled, without retyping.
+		resyncing.set('ws', false);
+		bumpEpoch();
+		await tick();
+		await tick();
 		expect(createRow()).not.toBeNull();
 	});
 

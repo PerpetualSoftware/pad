@@ -236,10 +236,21 @@
 		if (coldFailed) return false;
 		const wanted = createTitle.toLowerCase();
 		if (rawResults.some((r) => titleIs(r, wanted))) return false;
-		// Cold: no authoritative set to consult, so the ranked answer above is
-		// all there is. Offering create is the right call — refusing it because
-		// the index has not hydrated would strand the user.
+		// Offer only where SOMETHING authoritative has answered "no such item",
+		// which is the same rule the permission gate and `coldFailed` follow: no
+		// evidence must not read as permission.
+		//
+		//   * COLD — `rawResults` came from `/search`, which is the server and
+		//     therefore authoritative. Its empty answer is real evidence, so
+		//     offer. (Refusing here would strand every user whose index has not
+		//     hydrated.)
+		//   * READY, settled — the in-RAM collection is authoritative; scan it.
+		//   * READY, resyncing — the rows are a cache snapshot that delta-sync
+		//     has not reconciled, and `rawResults` came from THAT, so nothing in
+		//     reach can support the inference. Withhold until it settles; the
+		//     window is seconds and a duplicate outlives it.
 		if (!isWarm()) return true;
+		if (!indexCanProveAbsence()) return false;
 		return !localIndex.getByCollection(wsSlug, collection).some((r) => titleIs(r, wanted));
 	});
 
@@ -257,6 +268,24 @@
 
 	function isWarm(): boolean {
 		return localIndex.bootstrapStateFor(wsSlug) === 'ready';
+	}
+
+	/**
+	 * Is the local index a source we may reason about ABSENCE from?
+	 *
+	 * `ready` is not enough (codex round 4). It coexists with `pendingResync`:
+	 * `localIndex` hydrates from the IDB cache and serves those rows while
+	 * delta-sync catches up, so during that window a row that EXISTS can be
+	 * missing from the snapshot. Presence in the index is still evidence — the
+	 * row was real when it was cached — but absence is not, and absence is
+	 * exactly what the create row is derived from.
+	 *
+	 * Only `showCreate` asks this. Search and listing deliberately keep using
+	 * `isWarm`: showing cached rows during a resync is right, and it is only
+	 * the inference "therefore no such item exists" that the cache cannot bear.
+	 */
+	function indexCanProveAbsence(): boolean {
+		return isWarm() && !localIndex.pendingResyncFor(wsSlug);
 	}
 
 	/** Hide excluded rows, then bound the list. Applied to every path. */

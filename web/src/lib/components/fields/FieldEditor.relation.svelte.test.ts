@@ -27,6 +27,7 @@ const {
 		cursorFor: vi.fn(),
 		upsert: vi.fn(),
 		scopeEpochFor: vi.fn(),
+		pendingResyncFor: vi.fn(),
 	},
 	localSearchMock: { search: vi.fn(), epoch: vi.fn() },
 	searchApi: vi.fn(),
@@ -69,6 +70,7 @@ beforeEach(() => {
 	localIndexMock.findByIdOrSlug.mockReset().mockImplementation((_ws: string, id: string) => rows.get(id) ?? null);
 	localIndexMock.getByCollection.mockReset().mockReturnValue([LIVE]);
 	localIndexMock.cursorFor.mockReset().mockReturnValue('0');
+	localIndexMock.pendingResyncFor.mockReset().mockReturnValue(false);
 	localSearchMock.search.mockReset().mockReturnValue([]);
 	localSearchMock.epoch.mockReset().mockImplementation((ws: string) => epochs.get(ws) ?? 0);
 	searchApi.mockReset().mockResolvedValue({ results: [] });
@@ -642,6 +644,36 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		// The row still belongs in the workspace it was created in — the fence
 		// is about where the VALUE is written, not about hiding a real item.
 		expect(localIndexMock.upsert).toHaveBeenCalledWith('ws', expect.anything(), 7);
+	});
+
+	it('a failed create the user already escaped out of surfaces no toast', async () => {
+		// codex round 4 P2. The success path was fenced and the failure path was
+		// not, so a create the user backed out of still threw an error over
+		// whatever they moved on to.
+		let reject!: (e: unknown) => void;
+		createApi.mockReturnValue(new Promise((_r, rj) => { reject = rj; }));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: { ...editableProps, value: LIVE.id } });
+		await tick();
+		document.querySelector<HTMLButtonElement>('.relation-action')!.click();
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		const el = document.querySelector<HTMLInputElement>('.picker-input')!;
+		el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+		await tick();
+		el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+		await tick();
+
+		reject(new Error('field "shade" is required'));
+		await tick();
+		await tick();
+
+		expect(toastMock.show).not.toHaveBeenCalled();
 	});
 
 	it('offers no create row while the collection list is not fresh for this workspace', async () => {

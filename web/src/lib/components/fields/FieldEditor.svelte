@@ -306,8 +306,16 @@ handlers — onchange is never called.
 			editingRelation = false;
 			onchange(item.id);
 		} catch (e: any) {
-			// The picker keeps the query, so the user can retry or pick something
-			// else; nothing about the field's value has moved.
+			// Fenced exactly like the success path (codex round 4): a create the
+			// user escaped out of, or one belonging to a workspace they have
+			// left, must not surface its failure over whatever they are looking
+			// at now. Same three conditions, same reasoning — the difference
+			// between reporting and not is whether they are still waiting on it.
+			if (destroyed || mySeq !== relationWrite) return;
+			if (ws !== wsSlug || collSlug !== field.collection) return;
+			// Still here and still waiting: the picker keeps the query, so the
+			// user can retry or pick something else; the field's value has not
+			// moved.
 			toastStore.show(e?.message || 'Failed to create item', 'error');
 		}
 	}
