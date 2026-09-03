@@ -1,0 +1,380 @@
+<script lang="ts">
+	/**
+	 * ItemPicker — the shared search-and-choose-an-item control (PLAN-2857 U3 /
+	 * TASK-2862).
+	 *
+	 * Extracted from `ItemDetail`'s inline add-relationship search so the
+	 * relation-field editor (U2) and the Relationships tab share ONE picker
+	 * rather than a copy each. `ItemDetail` is its first caller, in unscoped
+	 * mode; a relation field passes `collection` to scope it to the field's
+	 * declared target.
+	 *
+	 * WHERE THE CANDIDATES COME FROM, and why there is no threshold.
+	 *
+	 * `localIndex` is a workspace-wide in-RAM read model of every item
+	 * (`/workspaces/{ws}/items-index` takes no limit parameter — see
+	 * `api.items.listIndex`), and `localSearch` is a MiniSearch index built
+	 * over it. So the candidate rows for ANY collection are already in memory,
+	 * already ranked, and cost no network call. PLAN-2857's Q1 was framed as
+	 * "plain dropdown under N items, search above it"; that threshold was
+	 * pricing a round-trip that does not happen. One control, always
+	 * filter-shaped, correct at three items and at three thousand.
+	 *
+	 * The server `/search` endpoint is the COLD path only — used while the
+	 * workspace's local index has not finished hydrating
+	 * (`bootstrapStateFor(ws) !== 'ready'`), which is also the pre-extraction
+	 * behaviour every caller had. It is not a mode the user can observe or
+	 * select.
+	 *
+	 * DEBOUNCE. Only the cold path is debounced, and that is deliberate: the
+	 * debounce exists to keep per-keystroke requests off the rate limiter
+	 * (BUG-1367 lineage), and the warm path issues no requests to limit. Local
+	 * search is synchronous and sub-millisecond, so debouncing it would only
+	 * add latency to the common case.
+	 *
+	 * FENCES. A per-query `seq` invalidates an in-flight cold search when the
+	 * query changes, is emptied, or the picker unmounts — a late response can
+	 * never repopulate a box the user has moved on from. The ITEM-SWITCH fence
+	 * is structural rather than a second counter: every caller mounts this
+	 * inside a `{#key}` on the item identity (PLAN-2105 / TASK-2112), so a
+	 * switch destroys the instance and its continuation with it.
+	 */
+	import { onDestroy, onMount } from 'svelte';
+	import { api } from '$lib/api/client';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { localSearch } from '$lib/stores/localSearch.svelte';
+	import { formatItemRef, type ItemIndexRow } from '$lib/types';
+
+	interface Props {
+		/** Workspace slug the picker searches within. */
+		wsSlug: string;
+		/**
+		 * Target collection slug. Omitted = the whole workspace (the
+		 * Relationships tab's mode); set = a relation field's declared target.
+		 * When set, an EMPTY query lists the collection's most recently
+		 * updated items, so the picker opens with something to choose.
+		 */
+		collection?: string;
+		/** Item ids to hide — the item being edited, anything already linked. */
+		excludeIds?: string[];
+		/** Max rows rendered. Bounded so DOM cost is O(1) in collection size. */
+		limit?: number;
+		placeholder?: string;
+		/** Accessible name for the input. */
+		label?: string;
+		/** Focus the input on mount. */
+		autofocus?: boolean;
+		/** Chosen row. The picker does not clear itself — the caller decides. */
+		onselect: (item: ItemIndexRow) => void;
+		/**
+		 * Escape with an already-empty box. Omit to let Escape fall through to
+		 * the surrounding layer (the pane's own Escape handling) instead.
+		 */
+		oncancel?: () => void;
+	}
+
+	let {
+		wsSlug,
+		collection,
+		excludeIds = [],
+		limit = 10,
+		placeholder = 'Search items...',
+		label = 'Search items',
+		autofocus = false,
+		onselect,
+		oncancel,
+	}: Props = $props();
+
+	const COLD_SEARCH_DEBOUNCE_MS = 250;
+
+	let query = $state('');
+	let results = $state<ItemIndexRow[]>([]);
+	let loading = $state(false);
+	/** Index into `results` of the keyboard-highlighted row; -1 = none. */
+	let activeIndex = $state(-1);
+
+	/**
+	 * Plain `let`, not `$state`, per CONVE-1688: both are read and written
+	 * only inside handlers, never rendered. A `$state` that an `$effect` also
+	 * read would silently wedge the production effect scheduler.
+	 */
+	let seq = 0;
+	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+	let inputEl = $state<HTMLInputElement>();
+
+	const uid = $props.id();
+
+	let excluded = $derived(new Set(excludeIds));
+
+	function isWarm(): boolean {
+		return localIndex.bootstrapStateFor(wsSlug) === 'ready';
+	}
+
+	/** Hide excluded rows, then bound the list. Applied to every path. */
+	function present(rows: ItemIndexRow[]): ItemIndexRow[] {
+		const out: ItemIndexRow[] = [];
+		for (const row of rows) {
+			if (excluded.has(row.id)) continue;
+			out.push(row);
+			if (out.length >= limit) break;
+		}
+		return out;
+	}
+
+	/**
+	 * Empty-query listing. Scoped pickers show the target collection
+	 * most-recently-updated first (`getByCollection` already returns that
+	 * order); an unscoped picker shows nothing, because "every item in the
+	 * workspace, newest first" is not a useful prompt.
+	 */
+	function recent(): ItemIndexRow[] {
+		if (!collection || !isWarm()) return [];
+		return present(localIndex.getByCollection(wsSlug, collection));
+	}
+
+	function warmSearch(q: string): ItemIndexRow[] {
+		const hits = localSearch.search(wsSlug, q, {
+			collection,
+			// Over-ask so exclusions can't empty a full page of results.
+			limit: limit + excluded.size,
+		});
+		const rows: ItemIndexRow[] = [];
+		for (const hit of hits) {
+			const row = localIndex.findByIdOrSlug(wsSlug, hit.id);
+			if (row) rows.push(row);
+		}
+		return present(rows);
+	}
+
+	async function coldSearch(q: string, mySeq: number) {
+		loading = true;
+		try {
+			const res = await api.search(q, { workspace: wsSlug, collection });
+			if (mySeq !== seq) return;
+			results = present((res.results ?? []).map((r) => r.item));
+			activeIndex = -1;
+		} catch {
+			if (mySeq !== seq) return;
+			results = [];
+			activeIndex = -1;
+		} finally {
+			if (mySeq === seq) loading = false;
+		}
+	}
+
+	/**
+	 * One entry point for every query change. Invalidates whatever was in
+	 * flight FIRST, so no branch below can be repopulated by its predecessor.
+	 */
+	function runQuery() {
+		clearTimeout(debounceTimer);
+		const mySeq = ++seq;
+		const q = query.trim();
+
+		if (!q) {
+			loading = false;
+			results = recent();
+			activeIndex = -1;
+			return;
+		}
+
+		if (isWarm()) {
+			loading = false;
+			results = warmSearch(q);
+			activeIndex = -1;
+			return;
+		}
+
+		results = [];
+		activeIndex = -1;
+		loading = true;
+		debounceTimer = setTimeout(() => coldSearch(q, mySeq), COLD_SEARCH_DEBOUNCE_MS);
+	}
+
+	function choose(row: ItemIndexRow) {
+		onselect(row);
+	}
+
+	function onKeydown(e: KeyboardEvent) {
+		if (e.key === 'ArrowDown') {
+			if (results.length === 0) return;
+			e.preventDefault();
+			activeIndex = activeIndex < results.length - 1 ? activeIndex + 1 : results.length - 1;
+			return;
+		}
+		if (e.key === 'ArrowUp') {
+			if (results.length === 0) return;
+			e.preventDefault();
+			activeIndex = activeIndex > 0 ? activeIndex - 1 : -1;
+			return;
+		}
+		if (e.key === 'Enter') {
+			if (activeIndex < 0 || activeIndex >= results.length) return;
+			e.preventDefault();
+			choose(results[activeIndex]);
+			return;
+		}
+		if (e.key === 'Escape') {
+			// Consume ONLY what this picker actually closes, and say so to the
+			// layer above by stopping propagation. The page's Escape driver is a
+			// bubble-phase `<svelte:window onkeydown>` feeding `runTopEscape`, so
+			// declining here (no stopPropagation) correctly lets Escape reach the
+			// pane when the picker has nothing of its own to dismiss.
+			if (query) {
+				e.preventDefault();
+				e.stopPropagation();
+				query = '';
+				runQuery();
+				return;
+			}
+			if (oncancel) {
+				e.preventDefault();
+				e.stopPropagation();
+				oncancel();
+			}
+		}
+	}
+
+	onDestroy(() => {
+		// Invalidate any in-flight cold search as well as cancelling the timer:
+		// the fetch is already dispatched by the time the timer has fired, and
+		// only the seq bump can stop its continuation writing to a dead
+		// instance's state.
+		seq++;
+		clearTimeout(debounceTimer);
+	});
+
+	// Open a scoped picker with its recent list already populated, and focus the
+	// input when the caller asked for it.
+	//
+	// `onMount`, deliberately, not `$effect`: `runQuery` reads `query` and
+	// writes `results`, so as an effect it would re-run on every keystroke in
+	// addition to `oninput` — two dispatches per character, each bumping `seq`
+	// and cancelling the other's cold search. CONVE-1688's neighbourhood; the
+	// lifecycle hook says "once, at open" without relying on that reasoning
+	// holding as the body grows.
+	onMount(() => {
+		runQuery();
+		if (autofocus) inputEl?.focus();
+	});
+</script>
+
+<div class="item-picker">
+	<input
+		type="text"
+		class="picker-input"
+		role="combobox"
+		aria-label={label}
+		aria-expanded={results.length > 0}
+		aria-controls="picker-results-{uid}"
+		aria-autocomplete="list"
+		aria-activedescendant={activeIndex >= 0 ? `picker-option-${uid}-${activeIndex}` : undefined}
+		{placeholder}
+		bind:this={inputEl}
+		bind:value={query}
+		oninput={runQuery}
+		onkeydown={onKeydown}
+	/>
+
+	{#if loading}
+		<div class="picker-status">Searching...</div>
+	{:else if results.length > 0}
+		<div class="picker-results" role="listbox" id="picker-results-{uid}" aria-label={label}>
+			{#each results as result, i (result.id)}
+				<button
+					type="button"
+					class="picker-result"
+					class:active={i === activeIndex}
+					role="option"
+					id="picker-option-{uid}-{i}"
+					aria-selected={i === activeIndex}
+					onclick={() => choose(result)}
+				>
+					{#if formatItemRef(result)}
+						<span class="picker-ref">{formatItemRef(result)}</span>
+					{/if}
+					<span class="picker-title">{result.title}</span>
+				</button>
+			{/each}
+		</div>
+	{:else if query.trim().length > 0}
+		<div class="picker-status">No results</div>
+	{/if}
+</div>
+
+<style>
+	/*
+	 * Self-contained by necessity, not by preference: Svelte scopes styles per
+	 * component, so a shared class NAME would silently render unstyled in every
+	 * host (the note on ItemDetail's `.timeline-*` copy records that lesson).
+	 *
+	 * Sized in `em` throughout so a host sets the picker's scale once on its own
+	 * wrapper — ItemDetail's relationships form wants 0.8rem, the properties
+	 * panel (U2) wants its own — and every part scales together.
+	 */
+	.item-picker {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+
+	.picker-input {
+		width: 100%;
+		padding: var(--space-1) var(--space-2);
+		border: 1px solid var(--border-color);
+		border-radius: var(--radius-sm);
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		font-size: 1em;
+		font-family: inherit;
+	}
+
+	.picker-status {
+		padding: var(--space-2);
+		color: var(--text-muted);
+		font-size: 1em;
+	}
+
+	.picker-results {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		max-height: 200px;
+		overflow-y: auto;
+	}
+
+	.picker-result {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2);
+		background: var(--bg-primary);
+		border: none;
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+		text-align: left;
+		cursor: pointer;
+		font-size: 1em;
+		font-family: inherit;
+		min-width: 0;
+	}
+
+	.picker-result:hover,
+	.picker-result.active {
+		background: var(--bg-hover);
+	}
+
+	.picker-ref {
+		flex-shrink: 0;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 0.94em;
+	}
+
+	.picker-title {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+</style>

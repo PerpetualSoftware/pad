@@ -39,7 +39,8 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
-	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions } from '$lib/types';
+	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions, type ItemIndexRow } from '$lib/types';
+	import ItemPicker from './ItemPicker.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
@@ -680,16 +681,6 @@
 	// suppression is out of this task's scope.
 	let localDirty = $state(false);
 	let localLastSaveTime = $state(0);
-	// Debounce the add-relationship search so typing doesn't fire one /search
-	// request per keystroke (rate-limit relief). Cleared on the item-scoped
-	// reset + onDestroy so a pending fetch never fires after teardown/switch.
-	const ADD_LINK_SEARCH_DEBOUNCE_MS = 250;
-	let addLinkDebounceTimer: ReturnType<typeof setTimeout> | undefined;
-	// Per-query fence for the add-relationship search. loadGeneration only bumps
-	// on an item switch, so it can't invalidate an in-flight search when the box
-	// is merely emptied or closed on the SAME item — this seq does (Codex review
-	// P2). Plain `let` (CONVE-1688): read/written in handlers only.
-	let addLinkSearchSeq = 0;
 	let deleting = $state(false);
 	let restoring = $state(false);
 	let rawMode = $state(false);
@@ -1563,9 +1554,6 @@
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
-		// Cancel a pending add-relationship search so it can't fire a wasted
-		// /search request after this instance is torn down.
-		clearTimeout(addLinkDebounceTimer);
 		// Invalidate any in-flight loadData so a request that resolves AFTER
 		// this instance is torn down (pane closed mid-load) can't reach its
 		// global-store writes — collectionStore.setActiveItem / editorStore —
@@ -1705,11 +1693,9 @@
 		editingTitle = false;
 		paneMenuOpen = false;
 		paneMenuView = 'root';
+		// Closing the form unmounts the picker; its query/results/timer go with
+		// it, so this flag is the whole reset.
 		showAddLink = false;
-		clearTimeout(addLinkDebounceTimer);
-		addLinkSearch = '';
-		addLinkResults = [];
-		addLinkLoading = false;
 		shareDialogOpen = false;
 		// The copy dialog is {#key itemSlug}-remounted, but `open` is owned
 		// HERE — leaving it true would tear down A's dialog and immediately
@@ -4344,70 +4330,25 @@
 	}
 
 	// ── Add Relationship ─────────────────────────────────────────────────────
+	//
+	// The search box is `ItemPicker` (PLAN-2857 U3 / TASK-2862). It owns the
+	// query state, the debounce, the per-query fence and the result rendering
+	// that used to live here inline; this component keeps only what is its own
+	// — which link type to create, and the write itself. The item-switch fence
+	// is unchanged and structural: the picker mounts inside the
+	// `{#key itemSlug}` block below (PLAN-2105 / TASK-2112), so a switch
+	// destroys it and any continuation it holds.
 	let showAddLink = $state(false);
 	let addLinkType = $state('related');
-	let addLinkSearch = $state('');
-	let addLinkResults = $state<Item[]>([]);
-	let addLinkLoading = $state(false);
 
-	// Cancel any pending debounce AND invalidate an in-flight add-relationship
-	// search so its late result can't repopulate the (now emptied/closed) box,
-	// and drop the loading flag. Used on empty, close, and after a link lands.
-	function cancelAddLinkSearch() {
-		clearTimeout(addLinkDebounceTimer);
-		addLinkSearchSeq++;
-		addLinkLoading = false;
-	}
+	// Rows the picker must not offer: this item, and anything already linked to
+	// it in either direction. Same exclusion the inline search applied.
+	let addLinkExcludeIds = $derived([
+		...(item ? [item.id] : []),
+		...itemLinks.flatMap((l) => [l.source_id, l.target_id]),
+	]);
 
-	// Debounced input handler. Emptying the box clears results + cancels any
-	// pending/in-flight request immediately; a non-empty query fires
-	// searchItemsForLink() only after the user pauses for the debounce window.
-	function onAddLinkInput() {
-		if (!addLinkSearch.trim()) {
-			cancelAddLinkSearch();
-			addLinkResults = [];
-			return;
-		}
-		clearTimeout(addLinkDebounceTimer);
-		// Query changed: invalidate any in-flight search and drop stale results
-		// so an old-query result can't appear or be selected during the debounce
-		// window; show loading until the new search lands (Codex review P2).
-		addLinkSearchSeq++;
-		addLinkResults = [];
-		addLinkLoading = true;
-		addLinkDebounceTimer = setTimeout(() => searchItemsForLink(), ADD_LINK_SEARCH_DEBOUNCE_MS);
-	}
-
-	async function searchItemsForLink() {
-		if (!addLinkSearch.trim()) {
-			addLinkResults = [];
-			return;
-		}
-		// Fence the async search so a result can't repopulate the panel after
-		// an item switch (loadGeneration) OR after the box was emptied/closed on
-		// the same item (addLinkSearchSeq) — Codex.
-		const gen = loadGeneration;
-		const seq = ++addLinkSearchSeq;
-		const stale = () => gen !== loadGeneration || seq !== addLinkSearchSeq;
-		addLinkLoading = true;
-		try {
-			const results = await api.search(addLinkSearch, { workspace: wsSlug });
-			if (stale()) return;
-			// Filter out self and items already linked
-			const linkedIds = new Set(itemLinks.flatMap(l => [l.source_id, l.target_id]));
-			addLinkResults = (results.results || [])
-				.map((r) => r.item)
-				.filter((i: Item) => i.id !== item?.id && !linkedIds.has(i.id))
-				.slice(0, 10);
-		} catch {
-			if (stale()) return;
-			addLinkResults = [];
-		} finally {
-			if (!stale()) addLinkLoading = false;
-		}
-	}
-
-	async function handleCreateLink(target: Item) {
+	async function handleCreateLink(target: ItemIndexRow) {
 		if (!item || !canEdit) return;
 		// Capture the SOURCE item (the one being edited) + generation before the
 		// awaits. `target` is the link target chosen from search; `sourceItem`
@@ -4425,12 +4366,9 @@
 			});
 			if (switchedAway(sourceItem, gen)) return;
 			itemLinks = [...itemLinks, newLink];
-			// Cancel any pending/in-flight search before closing the form so a
-			// stale debounced query can't fire after it's gone (Codex review P2).
-			cancelAddLinkSearch();
+			// Closing the form unmounts the picker, which cancels its own
+			// pending/in-flight search in onDestroy — nothing to clear here.
 			showAddLink = false;
-			addLinkSearch = '';
-			addLinkResults = [];
 			// Refresh item to update parent info
 			const refreshed = await api.items.get(targetWs, targetSlug);
 			if (switchedAway(sourceItem, gen) || !item) return;
@@ -5921,7 +5859,7 @@
 					<div class="add-link-form">
 						<div class="add-link-header">
 							<h4>Add Relationship</h4>
-							<button class="add-link-close" onclick={() => { cancelAddLinkSearch(); showAddLink = false; addLinkSearch = ''; addLinkResults = []; }}>×</button>
+							<button class="add-link-close" onclick={() => { showAddLink = false; }}>×</button>
 						</div>
 						<div class="add-link-controls">
 							<select bind:value={addLinkType} class="add-link-type-select">
@@ -5932,30 +5870,19 @@
 								<option value="supersedes">Supersedes</option>
 								<option value="parent">Parent</option>
 							</select>
-							<input
-								type="text"
-								class="add-link-search"
-								placeholder="Search items..."
-								bind:value={addLinkSearch}
-								oninput={onAddLinkInput}
-							/>
-						</div>
-						{#if addLinkLoading}
-							<div class="add-link-loading">Searching...</div>
-						{:else if addLinkResults.length > 0}
-							<div class="add-link-results">
-								{#each addLinkResults as result (result.id)}
-									<button class="add-link-result" onclick={() => handleCreateLink(result)}>
-										{#if formatItemRef(result)}
-											<span class="add-link-ref">{formatItemRef(result)}</span>
-										{/if}
-										<span class="add-link-title">{result.title}</span>
-									</button>
-								{/each}
+							<div class="add-link-picker">
+								<!-- Unscoped: a relationship can target any collection. A
+								     relation FIELD passes `collection` here instead. -->
+								<ItemPicker
+									{wsSlug}
+									excludeIds={addLinkExcludeIds}
+									label="Search items to link"
+									autofocus
+									onselect={handleCreateLink}
+									oncancel={() => { showAddLink = false; }}
+								/>
 							</div>
-						{:else if addLinkSearch.trim().length > 0}
-							<div class="add-link-loading">No results</div>
-						{/if}
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -7249,52 +7176,15 @@
 		font-size: 0.8rem;
 		min-width: 120px;
 	}
-	.add-link-search {
+	/* Wrapper for the extracted ItemPicker (TASK-2862). Sets the picker's
+	   scale for this host — the component sizes everything in `em` — and gives
+	   it the flex row's remaining width, which is what `.add-link-search` used
+	   to hold. The result-list rules that lived here moved into the picker,
+	   because Svelte scopes styles per component and a class name does not
+	   cross the boundary (see the note just below). */
+	.add-link-picker {
 		flex: 1;
-		padding: var(--space-1) var(--space-2);
-		border: 1px solid var(--border-color);
-		border-radius: var(--radius-sm);
-		background: var(--bg-primary);
-		color: var(--text-primary);
-		font-size: 0.8rem;
-	}
-	.add-link-results {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-		max-height: 200px;
-		overflow-y: auto;
-	}
-	.add-link-result {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		padding: var(--space-2);
-		background: var(--bg-primary);
-		border: none;
-		border-radius: var(--radius-sm);
-		cursor: pointer;
-		text-align: left;
-		color: var(--text-primary);
-		font-size: 0.8rem;
-	}
-	.add-link-result:hover {
-		background: var(--bg-hover);
-	}
-	.add-link-ref {
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-		font-size: 0.75rem;
-		flex-shrink: 0;
-	}
-	.add-link-title {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.add-link-loading {
-		padding: var(--space-2);
-		color: var(--text-muted);
+		min-width: 0;
 		font-size: 0.8rem;
 	}
 
