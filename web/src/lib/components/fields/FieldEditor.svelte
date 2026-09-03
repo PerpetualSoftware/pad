@@ -303,6 +303,21 @@ handlers — onchange is never called.
 			localIndex.upsert(ws, item, epoch);
 			if (destroyed || mySeq !== relationWrite) return;
 			if (ws !== wsSlug || collSlug !== field.collection) return;
+			// The workspace's index must still be the one this create was
+			// authorized against (codex round 5). `upsert`'s own guard is
+			// ONE-SIDED — it refuses a captured epoch BELOW the current one, so
+			// it catches a resync — but `localIndex.reset()` on a sign-out or a
+			// 403 purge DELETES the state, and the next bootstrap starts a fresh
+			// one at epoch 0. A captured 7 is not below 0, so the write sails
+			// through and links a row minted under an identity that no longer
+			// holds. Equality catches both directions.
+			//
+			// Residual, stated rather than papered over: a reset followed by
+			// resyncs that land the epoch back on exactly the captured number
+			// would compare equal. An exposed reset generation would be exact;
+			// this needs no new store surface and the coincidence requires the
+			// purge and N resyncs to complete inside one create round trip.
+			if (localIndex.scopeEpochFor(ws) !== epoch) return;
 			editingRelation = false;
 			onchange(item.id);
 		} catch (e: any) {

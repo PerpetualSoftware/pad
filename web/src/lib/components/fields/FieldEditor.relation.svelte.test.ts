@@ -676,6 +676,33 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		expect(toastMock.show).not.toHaveBeenCalled();
 	});
 
+	it('a create that lands after the workspace index was reset writes nothing', async () => {
+		// codex round 5 P1. `localIndex.reset()` DELETES the workspace state and
+		// the next bootstrap starts a fresh one at `scopeEpoch` 0, so a captured
+		// epoch of 7 is NOT below the current 0 and sails through `upsert`'s
+		// one-sided guard — linking a row minted under an identity that no
+		// longer holds. Equality is what catches the downward jump.
+		let release!: (v: unknown) => void;
+		createApi.mockReturnValue(new Promise((r) => { release = r; }));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		// The purge: state deleted, re-bootstrapped, epoch back to 0.
+		localIndexMock.scopeEpochFor.mockReturnValue(0);
+		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		await tick();
+		await tick();
+
+		expect(onchange).not.toHaveBeenCalled();
+	});
+
 	it('offers no create row while the collection list is not fresh for this workspace', async () => {
 		// codex round 1 P2. `collectionStore.collections` is a single global
 		// list, so during a workspace switch it still holds the PREVIOUS

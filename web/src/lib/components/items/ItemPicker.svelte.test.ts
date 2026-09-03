@@ -1061,6 +1061,66 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		expect(createRow()).not.toBeNull();
 	});
 
+	it('does not carry one query\u2019s answer onto the next', async () => {
+		// `coldAnswered` has to mean "answered for what is in the box NOW".
+		// Without the per-query reset, typing a second query offers a create row
+		// immediately, on the strength of the first query's answer and against
+		// an empty result list that describes nothing.
+		vi.useFakeTimers();
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockResolvedValue({ results: [] });
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.advanceTimersByTimeAsync(300);
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+
+		// Second query, still in flight — nothing has answered for it yet.
+		let release!: (v: unknown) => void;
+		searchApi.mockReturnValue(new Promise((r) => { release = r; }));
+		await type('Teal');
+		await vi.advanceTimersByTimeAsync(300);
+		// `aria-expanded`, not the row's absence — the markup renders the
+		// loading branch INSTEAD of the listbox, so `.picker-create` is missing
+		// either way and asserting on it measures the branch rather than the
+		// rule. Same trap this suite hit on the `loading` guard; it is the
+		// options list, and therefore the combobox's expanded state, that
+		// carries the stale answer.
+		expect(input().getAttribute('aria-expanded')).toBe('false');
+		expect(createRow()).toBeNull();
+
+		release({ results: [] });
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+		vi.useRealTimers();
+	});
+
+	it('offers nothing to create after the workspace state is dropped', async () => {
+		// codex round 5 P1. `localIndex.reset()` — sign-out, a 403 membership
+		// purge, a deleted workspace — drops every row, and the picker's own
+		// effect clears what it was showing. The query is still in the box, so
+		// with a negative "did it fail" flag the picker read that silence as a
+		// clean empty answer and offered to create over a workspace it can no
+		// longer see anything in.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockResolvedValue({ results: [] });
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+
+		// The drop.
+		setBootstrapState('reset');
+		bumpEpoch();
+		await tick();
+		await tick();
+
+		expect(createRow()).toBeNull();
+	});
+
 	it('CONTROL: a cold index falls back to the returned rows and still offers create', async () => {
 		// The collection scan needs a hydrated index. While cold there is no
 		// authoritative answer to fall back ON, so the behaviour is the

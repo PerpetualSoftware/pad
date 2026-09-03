@@ -157,16 +157,21 @@
 	let rawResults = $state<ItemIndexRow[]>([]);
 	let loading = $state(false);
 	/**
-	 * The last cold search FAILED, as opposed to returning nothing.
+	 * A cold search ANSWERED, and `rawResults` is that answer.
 	 *
-	 * Both leave `rawResults` empty and `loading` false, and for the result
-	 * list that is the same picture — "No results" either way. It is not the
-	 * same picture for the create row: an empty answer is evidence that no such
-	 * item exists, and a failed one is no evidence at all (codex round 3).
-	 * Offering to create on no evidence is how a duplicate gets minted while
-	 * the index is cold and the network is unhappy.
+	 * Stated positively on purpose (codex rounds 3 and 5). The negative form
+	 * — "the last search failed" — was false in three different states that
+	 * are not answers at all: before the first request, after a failure, and
+	 * after `localIndex.reset()` drops everything on a sign-out or 403 purge.
+	 * Each left the flag reading "fine" and put a create row on screen backed
+	 * by no evidence. A flag that must be cleared everywhere is a flag that
+	 * will be missed somewhere; this one is set in exactly one place, by the
+	 * event that earns it.
+	 *
+	 * Only the COLD path needs it. A settled warm index is authoritative by
+	 * itself, and `indexCanProveAbsence` is what asks that question.
 	 */
-	let coldFailed = $state(false);
+	let coldAnswered = $state(false);
 	/**
 	 * The highlighted row's ID, not its index. Identity survives the list
 	 * changing under it — a delta landing, a late exclusion arriving — where an
@@ -232,24 +237,33 @@
 		return (row.title ?? '').trim().toLowerCase() === wanted;
 	}
 	let showCreate = $derived.by((): boolean => {
-		if (!oncreate || !collection || !createTitle || loading) return false;
-		if (coldFailed) return false;
+		// No `loading` term. It and the per-query `coldAnswered` reset below are
+		// a redundant PAIR — either alone suppresses the row for the whole
+		// in-flight window, and a mutant removing either one survived while the
+		// other stood. That is not defence in depth, it is one guard and one
+		// line that looks like a guard. `coldAnswered` is the one kept, because
+		// it states the actual rule (something authoritative has answered FOR
+		// THIS QUERY) where `loading` is a UI state that merely correlates with
+		// it, and only the warm path can be settled while nothing is loading.
+		if (!oncreate || !collection || !createTitle) return false;
 		const wanted = createTitle.toLowerCase();
 		if (rawResults.some((r) => titleIs(r, wanted))) return false;
 		// Offer only where SOMETHING authoritative has answered "no such item",
 		// which is the same rule the permission gate and `coldFailed` follow: no
 		// evidence must not read as permission.
 		//
-		//   * COLD — `rawResults` came from `/search`, which is the server and
-		//     therefore authoritative. Its empty answer is real evidence, so
-		//     offer. (Refusing here would strand every user whose index has not
-		//     hydrated.)
+		//   * COLD — offer only once `/search` has actually ANSWERED. The server
+		//     is authoritative and its empty answer is real evidence; not having
+		//     asked yet, a failed request, and a workspace whose state was just
+		//     dropped are all silence, and silence is not evidence. (Refusing
+		//     outright would strand every user whose index has not hydrated,
+		//     which is why this waits for the answer rather than the index.)
 		//   * READY, settled — the in-RAM collection is authoritative; scan it.
 		//   * READY, resyncing — the rows are a cache snapshot that delta-sync
 		//     has not reconciled, and `rawResults` came from THAT, so nothing in
 		//     reach can support the inference. Withhold until it settles; the
 		//     window is seconds and a duplicate outlives it.
-		if (!isWarm()) return true;
+		if (!isWarm()) return coldAnswered;
 		if (!indexCanProveAbsence()) return false;
 		return !localIndex.getByCollection(wsSlug, collection).some((r) => titleIs(r, wanted));
 	});
@@ -336,12 +350,12 @@
 			const res = await api.search(q, { workspace: wsSlug, collection });
 			if (mySeq !== seq) return;
 			rawResults = (res.results ?? []).map((r) => r.item);
-			coldFailed = false;
+			coldAnswered = true;
 			activeId = null;
 		} catch {
 			if (mySeq !== seq) return;
 			rawResults = [];
-			coldFailed = true;
+			coldAnswered = false;
 			activeId = null;
 		} finally {
 			if (mySeq === seq) loading = false;
@@ -370,22 +384,17 @@
 		if (source === 'index' && isWarm()) {
 			loading = false;
 			rawResults = warmSearch(q);
-			coldFailed = false;
 			activeId = null;
 			return;
 		}
 
 		rawResults = [];
-		// NO `coldFailed` reset here, measured rather than assumed: mutants
-		// removing one here, on the empty-query branch, and in the
-		// workspace-reset effect all SURVIVED, so all three went. `loading` is
-		// true for the whole window this would cover and already suppresses the
-		// create row; when the request settles, both `coldSearch` branches
-		// assign `coldFailed` outright. The empty-query branch is covered
-		// twice over, since an empty query offers no create row at all. The
-		// ONE reachable reset is the warm branch above — the only path that
-		// produces a fresh verdict without going through `coldSearch`, so
-		// without it a single blip suppresses the affordance past hydration.
+		// The previous answer described the PREVIOUS query. This is the line
+		// that makes `coldAnswered` mean "answered for what is in the box now",
+		// and with the `loading` term gone it is load-bearing on its own: drop
+		// it and query B offers a create row on the strength of query A's
+		// answer, while B is still in flight.
+		coldAnswered = false;
 		activeId = null;
 		loading = true;
 		debounceTimer = setTimeout(() => coldSearch(q, mySeq), COLD_SEARCH_DEBOUNCE_MS);
@@ -568,6 +577,10 @@
 				seq++;
 				clearTimeout(debounceTimer);
 				rawResults = [];
+				// The rows this answer described were just dropped, so it
+				// describes nothing (codex round 5). Without this the picker
+				// offers to create over a purged workspace.
+				coldAnswered = false;
 				activeId = null;
 				loading = false;
 				return;
