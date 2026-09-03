@@ -15,7 +15,10 @@ visual language as the editor but with no inputs, dropdowns, or mutation
 handlers — onchange is never called.
 -->
 <script lang="ts">
-	import type { FieldDef } from '$lib/types';
+	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import ItemPicker from '$lib/components/items/ItemPicker.svelte';
+	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { statusColor, priorityColor, hasCanonicalStatus, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
@@ -35,9 +38,76 @@ handlers — onchange is never called.
 		 * input/trigger is not announced as an unnamed edit field or button.
 		 */
 		ariaLabel?: string;
+		/**
+		 * Link context for `relation` fields. All three are optional because the
+		 * OTHER call site — `CopyItemDialog`'s needs-a-value rows — has no item
+		 * page to link into and, more importantly, no target collection to scope
+		 * a picker to: its `FieldDef` is built from a preflight row whose shape
+		 * carries no `collection` (TASK-2869 / U2b fixes that end).
+		 *
+		 * So the relation branch is GATED on `wsSlug` AND `field.collection`, and
+		 * renders read-only without them. That is deliberate: an unscoped picker
+		 * in the cross-workspace copy dialog would offer SOURCE-workspace items
+		 * as the value for a DESTINATION-workspace field and look authoritative
+		 * doing it. A field the user cannot fill is the honest state until U2b.
+		 */
+		wsSlug?: string;
+		username?: string;
+		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { field, value, onchange, readonly = false, ariaLabel }: Props = $props();
+	let { field, value, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget }: Props = $props();
+
+	// ── Relation resolution ───────────────────────────────────────────────
+	//
+	// THREE states, not two, and the third is the common one on existing data:
+	// `internal/items/validate.go` accepts ANY string for a relation, and this
+	// component's own text fallback has been writing arbitrary strings into
+	// these fields, so a value that resolves to nothing is what most legacy
+	// relation values ARE. It has to be distinguishable from a value whose
+	// target was deleted — those are different facts about the item.
+	//
+	// All three resolve locally: `localIndex` is a workspace-wide read model
+	// that holds soft-deleted rows alongside live ones (`getByCollection`
+	// filters them out by default rather than dropping them), so a dangling
+	// target is a row carrying `deleted_at`. No fetch, and no loading state.
+	let isRelation = $derived(field.type === 'relation');
+	let relationEditable = $derived(isRelation && !!wsSlug && !!field.collection);
+	let relationRow = $derived.by((): ItemIndexRow | null => {
+		if (!isRelation || !wsSlug) return null;
+		const raw = typeof value === 'string' ? value.trim() : '';
+		if (!raw) return null;
+		return localIndex.findByIdOrSlug(wsSlug, raw);
+	});
+	let relationState = $derived.by((): 'empty' | 'live' | 'deleted' | 'unresolved' => {
+		if (!isRelation) return 'empty';
+		const raw = typeof value === 'string' ? value.trim() : '';
+		if (!raw) return 'empty';
+		if (!relationRow) return 'unresolved';
+		return relationRow.deleted_at ? 'deleted' : 'live';
+	});
+	let relationRef = $derived(relationRow ? formatItemRef(relationRow) : null);
+	let relationHref = $derived.by(() => {
+		if (!relationRow || !wsSlug || !username) return null;
+		const seg = relationRef ?? relationRow.slug;
+		if (!relationRow.collection_slug || !seg) return null;
+		return `/${username}/${wsSlug}/${relationRow.collection_slug}/${seg}`;
+	});
+
+	function handleRelationClick(e: MouseEvent) {
+		if (!relationRow || !shouldOpenInPane(e, !!onOpenTarget)) return;
+		e.preventDefault();
+		onOpenTarget?.({
+			ref: relationRef ?? undefined,
+			slug: relationRow.slug,
+			href: relationHref ?? undefined,
+			collectionSlug: relationRow.collection_slug,
+		});
+	}
+
+	function pickRelation(row: ItemIndexRow) {
+		onchange(row.id);
+	}
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// On mobile the absolute-positioned select dropdown can clip at the
@@ -298,6 +368,48 @@ handlers — onchange is never called.
 
 <svelte:window onclick={handleWindowClick} />
 
+{#snippet relationChip()}
+	<!--
+		One chip, four states. The invariant across all of them: a raw item ID
+		never reaches the user. Before this branch existed, the readonly arm was
+		`{value ?? '—'}`, which rendered the UUID verbatim.
+	-->
+	{#if relationState === 'empty'}
+		<span class="relation-empty">—</span>
+	{:else if relationState === 'live' && relationHref}
+		<a
+			class="relation-chip link-target"
+			href={relationHref}
+			onclick={handleRelationClick}
+		>
+			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
+			<span class="relation-title">{relationRow?.title}</span>
+		</a>
+	{:else if relationState === 'live'}
+		<!-- Resolved, but no route to build (no `username`): still never the id. -->
+		<span class="relation-chip">
+			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
+			<span class="relation-title">{relationRow?.title}</span>
+		</span>
+	{:else if relationState === 'deleted'}
+		<span class="relation-chip is-deleted" title="This item has been deleted.">
+			{#if relationRef}<span class="relation-ref">{relationRef}</span>{/if}
+			<span class="relation-title">{relationRow?.title}</span>
+			<span class="relation-note">(deleted)</span>
+		</span>
+	{:else}
+		<!--
+			The value is not an item this workspace knows. Says so, rather than
+			showing the stored string as though it were a name — it is usually a
+			free-text value the old fallback wrote, and the user needs to know it
+			does not point at anything.
+		-->
+		<span class="relation-chip is-unresolved" title="This value does not match any item in this workspace.">
+			<span class="relation-note">Unresolved reference</span>
+		</span>
+	{/if}
+{/snippet}
+
 {#if readonly}
 	<!--
 		Display-only mode (PLAN-1100 / TASK-1105). No inputs, no dropdowns,
@@ -337,6 +449,8 @@ handlers — onchange is never called.
 		<div class="readonly-display">
 			<span>{value === undefined || value === null ? '—' : JSON.stringify(value)}</span>
 		</div>
+	{:else if isRelation}
+		<div class="readonly-display">{@render relationChip()}</div>
 	{:else}
 		<div class="readonly-display">
 			<span>{value ?? '—'}</span>
@@ -547,6 +661,29 @@ handlers — onchange is never called.
 		{/if}
 	</div>
 
+{:else if isRelation && relationEditable}
+	<div class="relation-editor">
+		{@render relationChip()}
+		<ItemPicker
+			wsSlug={wsSlug!}
+			collection={field.collection}
+			label={ariaLabel ?? `Search ${field.label || field.key}`}
+			placeholder="Search…"
+			onselect={pickRelation}
+		/>
+	</div>
+
+{:else if isRelation}
+	<!--
+		Editable in principle, but not here: no workspace slug or no target
+		collection. See the `wsSlug` prop doc — an unscoped picker in the
+		cross-workspace copy dialog would offer the wrong workspace's items and
+		look authoritative. Read-only is the honest state until TASK-2869.
+	-->
+	<div class="readonly-display" title="This relation can't be set from here yet.">
+		{@render relationChip()}
+	</div>
+
 {:else if field.type === 'json'}
 	<!-- JSON fields need a structured editor; the generic FieldEditor
 	     intentionally exposes only a read-only summary so a plain text
@@ -591,6 +728,62 @@ handlers — onchange is never called.
 
 	.url-readonly:hover {
 		text-decoration: underline;
+	}
+
+	/* ── Relation chip (TASK-2868) ────────────────────────────────────── */
+
+	.relation-editor {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		min-width: 0;
+		font-size: 0.88em;
+	}
+
+	.relation-chip {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-2);
+		min-width: 0;
+		padding: 2px var(--space-2);
+		border-radius: var(--radius-sm);
+		background: var(--bg-hover);
+		color: var(--text-primary);
+		text-decoration: none;
+		font-size: 0.88em;
+	}
+
+	a.relation-chip:hover {
+		text-decoration: underline;
+	}
+
+	.relation-ref {
+		flex-shrink: 0;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 0.94em;
+	}
+
+	.relation-title {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	/* Both non-live states read as muted rather than alarming: a dangling
+	   reference is information, not an error the user caused. */
+	.relation-chip.is-deleted,
+	.relation-chip.is-unresolved {
+		color: var(--text-muted);
+	}
+
+	.relation-note {
+		flex-shrink: 0;
+		font-style: italic;
+	}
+
+	.relation-empty {
+		color: var(--text-muted);
 	}
 
 	/* ── Shared input styles ──────────────────────────────────────────── */
