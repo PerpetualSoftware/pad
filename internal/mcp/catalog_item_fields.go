@@ -141,6 +141,11 @@ type fieldContribution struct {
 	// than its canonical `key=value` form (padding around either half). It
 	// matters because the two doors then receive DIFFERENT writes.
 	nonCanonical bool
+
+	// topLevel marks a contribution that arrived as a top-level param rather
+	// than through `field` or `fields`. It is what the compat-ID exception
+	// actually turns on — see the gate below.
+	topLevel bool
 }
 
 // topLevelConflictKeys are the top-level params that can collide with a
@@ -266,7 +271,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		}
 		sv, err := stringifyFieldValue(v)
 		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "the top-level " + k + " param", value: sv, nested: err != nil, raw: v,
+			key: k, source: "the top-level " + k + " param", value: sv, nested: err != nil, raw: v, topLevel: true,
 		})
 	}
 
@@ -394,7 +399,24 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		//
 		// `canonicalized` is exactly the right question and is already
 		// computed above: is THIS key carried by the `fields` object.
-		if !canonicalized && !compatIDFieldKeys[canonical] && !compatIDFieldKeys[contribs[0].key] {
+		// THE COMPAT EXCEPTION TURNS ON A TOP-LEVEL VALUE BEING PRESENT, not
+		// on the key being a compat one (codex round 20).
+		//
+		// Round 15's reason was specific: a top-level compat param has no CLI
+		// flag, so BuildCLIArgs DROPS it while HTTP reads it, and the doors
+		// receive different writes. That asymmetry exists only for the
+		// top-level form. Two `field` entries naming a compat key carry no
+		// such thing — both doors keep the last and lift the same column — so
+		// refusing them was a false refusal, the reason applied past the
+		// source it was verified on.
+		compatTopLevel := false
+		for _, c := range contribs {
+			if c.topLevel && compatIDFieldKeys[c.key] {
+				compatTopLevel = true
+				break
+			}
+		}
+		if !canonicalized && !compatTopLevel {
 			continue
 		}
 		for i := 1; i < len(contribs); i++ {

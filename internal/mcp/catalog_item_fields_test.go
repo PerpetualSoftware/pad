@@ -2031,3 +2031,46 @@ func TestPadItemUpdate_TrimmedComparisonStillCatchesRealDifferences(t *testing.T
 		t.Fatalf("x and y are different values however they are padded: %s", msg)
 	}
 }
+
+// --- codex round 20 ---
+
+// TestPadItemUpdate_CompatExceptionNeedsATopLevelValue: the compat-ID
+// exception turns on a TOP-LEVEL value being present, not on the key being a
+// compat one (BUG-2850, codex round 20).
+//
+// Round 15's reason was specific: a top-level compat param has no CLI flag,
+// so BuildCLIArgs DROPS it while HTTP reads it, and the doors receive
+// different writes. That asymmetry exists only for the top-level form. Two
+// `field` entries naming a compat key carry no such thing — both doors keep
+// the last and lift the same column — so refusing them applied the reason
+// past the source it was verified on.
+//
+// The second leg is round 15's own case, which must still refuse. Without it
+// this test would pass on a build that dropped the compat exception
+// altogether, which is the defect round 15 existed to fix.
+func TestPadItemUpdate_CompatExceptionNeedsATopLevelValue(t *testing.T) {
+	for _, key := range []string{"assigned_user_id", "agent_role_id"} {
+		t.Run(key+": two entries, no top-level — resolves", func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update", "ref": "TASK-5",
+				"field": []any{key + "=A", key + "=B"},
+			})
+			if isErr {
+				t.Fatalf("both doors keep the last entry and lift the same column: %s", msg)
+			}
+			if !argsContainPair(disp.gotArgs, "--field", key+"=B") {
+				t.Errorf("the last entry must reach the door: %v", disp.gotArgs)
+			}
+		})
+		t.Run(key+": top-level present — still refuses", func(t *testing.T) {
+			_, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update", "ref": "TASK-5",
+				key:     "A",
+				"field": []any{key + "=B"},
+			})
+			if !isErr {
+				t.Fatalf("the top-level form is dropped by stdio and read by HTTP; this must refuse: %s", msg)
+			}
+		})
+	}
+}
