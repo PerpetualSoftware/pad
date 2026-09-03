@@ -116,7 +116,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Querying:**
 - "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
-- "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad item remind` (IDEA-2641). The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack`; **finishing the item does not acknowledge it**, because a reminder is often armed precisely to fire after the work is done
+- "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad item remind` (IDEA-2641). The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack <reminder-id>` — `next` prints the exact ack command under the entry, so you never have to go looking for the id; **finishing the item does not acknowledge it**, because a reminder is often armed precisely to fire after the work is done
 - "what should I work on?" / "what's ready?" → `pad project ready` (actionable backlog); "what's stuck?" / "what needs attention?" → `pad project stale`
 - "show me status" / "how are we doing?" → `pad project dashboard`
 - "show me all tasks" / "list bugs" → `pad item list <collection>`
