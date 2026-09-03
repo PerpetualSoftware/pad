@@ -2218,7 +2218,7 @@ export function isTerminalStatusDefault(status: string): boolean {
 	return DEFAULT_TERMINAL_STATUSES.includes(status);
 }
 
-export function formatItemRef(item: Item): string | null {
+export function formatItemRef(item: Pick<Item, 'item_number' | 'collection_prefix'>): string | null {
 	if (!item.item_number) return null;
 	const prefix = item.collection_prefix || '';
 	return prefix ? `${prefix}-${item.item_number}` : `#${item.item_number}`;
