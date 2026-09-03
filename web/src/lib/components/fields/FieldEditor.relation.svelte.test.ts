@@ -11,16 +11,44 @@ import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 
-const { localIndexMock, localSearchMock, searchApi, collectionStoreMock } = vi.hoisted(() => ({
-	localIndexMock: { bootstrapStateFor: vi.fn(), findByIdOrSlug: vi.fn(), getByCollection: vi.fn(), cursorFor: vi.fn() },
+const {
+	localIndexMock,
+	localSearchMock,
+	searchApi,
+	createApi,
+	collectionStoreMock,
+	workspaceStoreMock,
+	toastMock,
+} = vi.hoisted(() => ({
+	localIndexMock: {
+		bootstrapStateFor: vi.fn(),
+		findByIdOrSlug: vi.fn(),
+		getByCollection: vi.fn(),
+		cursorFor: vi.fn(),
+		upsert: vi.fn(),
+		scopeEpochFor: vi.fn(),
+	},
 	localSearchMock: { search: vi.fn(), epoch: vi.fn() },
 	searchApi: vi.fn(),
-	collectionStoreMock: { collections: [] as { slug: string }[], collectionsAreFreshFor: vi.fn() },
+	createApi: vi.fn(),
+	collectionStoreMock: {
+		collections: [] as { id: string; slug: string; name?: string }[],
+		collectionsAreFreshFor: vi.fn(),
+	},
+	workspaceStoreMock: { canEditCollection: vi.fn() },
+	toastMock: { show: vi.fn() },
 }));
-vi.mock('$lib/api/client', () => ({ api: { search: (...a: unknown[]) => searchApi(...a) } }));
+vi.mock('$lib/api/client', () => ({
+	api: {
+		search: (...a: unknown[]) => searchApi(...a),
+		items: { create: (...a: unknown[]) => createApi(...a) },
+	},
+}));
 vi.mock('$lib/stores/localIndex.svelte', () => ({ localIndex: localIndexMock }));
 vi.mock('$lib/stores/localSearch.svelte', () => ({ localSearch: localSearchMock }));
 vi.mock('$lib/stores/collections.svelte', () => ({ collectionStore: collectionStoreMock }));
+vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: workspaceStoreMock }));
+vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: toastMock }));
 
 import FieldEditor from './FieldEditor.svelte';
 
@@ -44,9 +72,19 @@ beforeEach(() => {
 	localSearchMock.search.mockReset().mockReturnValue([]);
 	localSearchMock.epoch.mockReset().mockImplementation((ws: string) => epochs.get(ws) ?? 0);
 	searchApi.mockReset().mockResolvedValue({ results: [] });
-	// Default: the target collection is loaded and live.
-	collectionStoreMock.collections = [{ slug: 'colors' }, { slug: 'tasks' }];
+	// Default: the target collection is loaded and live. `tasks` is here so a
+	// build that reached for "some collection" rather than the DECLARED target
+	// has something wrong to reach for.
+	collectionStoreMock.collections = [
+		{ id: 'coll-colors', slug: 'colors', name: 'Colors' },
+		{ id: 'coll-tasks', slug: 'tasks', name: 'Tasks' },
+	];
 	collectionStoreMock.collectionsAreFreshFor.mockReset().mockReturnValue(true);
+	workspaceStoreMock.canEditCollection.mockReset().mockReturnValue(true);
+	createApi.mockReset();
+	toastMock.show.mockReset();
+	localIndexMock.upsert.mockReset();
+	localIndexMock.scopeEpochFor.mockReset().mockReturnValue(7);
 });
 afterEach(() => { cleanup(); document.body.innerHTML = ''; });
 
@@ -271,5 +309,215 @@ describe('FieldEditor — relation, the gate', () => {
 		await tick();
 		expect(document.querySelector('.picker-input')).not.toBeNull();
 		expect(localIndexMock.getByCollection).toHaveBeenCalledWith('ws', 'colors');
+	});
+});
+
+
+// ── U8: inline create from the relation picker (TASK-2877) ───────────────
+//
+// Pins written before the wiring exists, per team CONVE-29.
+//
+// `ItemPicker` owns the ROW (suite in ItemPicker.svelte.test.ts). What is
+// pinned here is everything the picker deliberately does not know: which
+// collection the item lands in, whether this user may put one there, and the
+// upsert that makes the no-duplicate suppression true on the next keystroke.
+describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
+	const editableProps = {
+		field,
+		value: '',
+		wsSlug: 'ws',
+		username: 'dave',
+		onchange: () => {},
+	};
+
+	function createRow(): HTMLElement | null {
+		return document.querySelector<HTMLElement>('.picker-create');
+	}
+
+	async function typeQuery(value: string) {
+		const el = document.querySelector<HTMLInputElement>('.picker-input');
+		if (!el) throw new Error('.picker-input not found');
+		el.value = value;
+		el.dispatchEvent(new Event('input', { bubbles: true }));
+		await tick();
+	}
+
+	it('offers no create row to a user who cannot create in the TARGET collection', async () => {
+		// The gate is collection-level `canEditCollection` — the "+ New"
+		// predicate — asked about the target, NOT about wherever the item being
+		// edited lives. A viewer with edit rights on this item and none on
+		// `colors` still gets no create row.
+		workspaceStoreMock.canEditCollection.mockReturnValue(false);
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: editableProps });
+		await tick();
+
+		await typeQuery('Purple');
+
+		expect(createRow()).toBeNull();
+		expect(workspaceStoreMock.canEditCollection).toHaveBeenCalledWith('coll-colors');
+	});
+
+	it('CONTROL: the same query offers the row when the user CAN create there', async () => {
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: editableProps });
+		await tick();
+
+		await typeQuery('Purple');
+
+		expect(createRow()).not.toBeNull();
+		// Named by its display name, not its slug.
+		expect(createRow()!.textContent).toContain('Colors');
+	});
+
+	it('creates in the TARGET collection and sets the field to the new id', async () => {
+		// The unit's proving test, first leg. The mutant it kills is creating in
+		// any collection other than the field's declared target — `tasks` is in
+		// the store precisely so that mutant has somewhere to land.
+		const created = {
+			id: 'uuid-new',
+			title: 'Purple',
+			item_number: 9,
+			collection_prefix: 'COLO',
+			collection_slug: 'colors',
+			slug: 'purple',
+			deleted_at: null,
+		};
+		createApi.mockResolvedValue(created);
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await vi.waitFor(() => expect(onchange).toHaveBeenCalled());
+
+		expect(createApi).toHaveBeenCalledTimes(1);
+		const [ws, coll, body] = createApi.mock.calls[0] as [string, string, { title: string }];
+		expect(ws).toBe('ws');
+		expect(coll).toBe('colors');
+		expect(body.title).toBe('Purple');
+		expect(onchange).toHaveBeenCalledWith('uuid-new');
+	});
+
+	it('sends no field values, so the server applies the collection schema defaults', async () => {
+		// `items.ValidateFields` fills every missing key that declares a
+		// `Default` and the create handler marshals the DEFAULTED map back
+		// (internal/server/handlers_items.go, "Marshal validated/defaulted
+		// fields back"). Guessing a status here — e.g. the first `options`
+		// entry, as the collection page's "+ New" does — would override that
+		// answer with a worse one, and would be wrong for any schema whose
+		// default is not its first option.
+		createApi.mockResolvedValue({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: editableProps });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await vi.waitFor(() => expect(createApi).toHaveBeenCalled());
+
+		const body = (createApi.mock.calls[0] as [string, string, Record<string, unknown>])[2];
+		expect(body.fields).toBeUndefined();
+	});
+
+	it('upserts the new row into the local index, under the epoch captured before the call', async () => {
+		// This is what makes U8's second leg true: the picker suppresses its
+		// create row when an exact title is already in `rawResults`, and
+		// `rawResults` comes from the index. Without this upsert the row is
+		// invisible to the very next keystroke and the same text offers to
+		// create a SECOND item.
+		//
+		// The epoch is BUG-2098's guard, and it has to be read before the
+		// request, not after: a projection resync landing mid-flight means the
+		// response was authorized under a scope that no longer applies.
+		const created = { id: 'uuid-new', title: 'Purple', collection_slug: 'colors' };
+		createApi.mockImplementation(async () => {
+			localIndexMock.scopeEpochFor.mockReturnValue(99);
+			return created;
+		});
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: editableProps });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await vi.waitFor(() => expect(localIndexMock.upsert).toHaveBeenCalled());
+
+		expect(localIndexMock.upsert).toHaveBeenCalledWith('ws', created, 7);
+	});
+
+	it('a second pass at the same text offers the existing row and no create', async () => {
+		// The proving test's second leg, driven through the state the first one
+		// leaves behind: the created row is now in the index, so the picker
+		// answers with it and withholds the affordance entirely. There is no
+		// create-time uniqueness check to rely on, and this is why one is not
+		// needed.
+		const created = {
+			id: 'uuid-new',
+			title: 'Purple',
+			item_number: 9,
+			collection_prefix: 'COLO',
+			collection_slug: 'colors',
+			slug: 'purple',
+			deleted_at: null,
+		};
+		rows.set(created.id, created);
+		localIndexMock.getByCollection.mockReturnValue([created]);
+		localSearchMock.search.mockReturnValue([{ id: created.id, score: 1 }]);
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+
+		expect(createRow()).toBeNull();
+		const row = document.querySelector<HTMLElement>('.picker-result');
+		expect(row).not.toBeNull();
+		row!.click();
+		await tick();
+		expect(createApi).not.toHaveBeenCalled();
+		expect(onchange).toHaveBeenCalledWith('uuid-new');
+	});
+
+	it('a failed create surfaces the error and leaves the field alone', async () => {
+		// A required field with no schema default makes the server 400 here, so
+		// this is a reachable path and not a hypothetical. The value must not
+		// move, and the query must survive so the user can retry or pick
+		// something else.
+		createApi.mockRejectedValue(new Error('field "shade" is required'));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await vi.waitFor(() => expect(toastMock.show).toHaveBeenCalled());
+
+		expect(toastMock.show.mock.calls[0][0]).toContain('shade');
+		expect(onchange).not.toHaveBeenCalled();
+		expect(localIndexMock.upsert).not.toHaveBeenCalled();
+		expect(document.querySelector<HTMLInputElement>('.picker-input')!.value).toBe('Purple');
+	});
+
+	it('offers no create row when the target collection is unknown to the store', async () => {
+		// A renamed target already renders read-only (`relationEditable`), but
+		// the permission question has no answer without a collection ID, and
+		// "no answer" must not read as "allowed".
+		collectionStoreMock.collections = [{ id: 'coll-tasks', slug: 'tasks', name: 'Tasks' }];
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: editableProps });
+		await tick();
+
+		expect(createRow()).toBeNull();
 	});
 });

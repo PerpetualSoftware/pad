@@ -18,6 +18,9 @@ handlers — onchange is never called.
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import { api } from '$lib/api/client';
 	import ItemPicker from '$lib/components/items/ItemPicker.svelte';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -197,6 +200,62 @@ handlers — onchange is never called.
 	function clearRelation() {
 		editingRelation = false;
 		onchange('');
+	}
+
+	// ── Inline create from the picker (PLAN-2857 U8) ─────────────────────
+	//
+	// The picker offers a create row only when handed an `oncreate`, so this
+	// component decides BOTH of U8's gates by deciding whether to pass one.
+	//
+	// The permission gate is `canEditCollection` on the TARGET collection — the
+	// same predicate behind the collection page's "+ New", asked about where the
+	// item would LAND rather than about where the user is standing. It needs the
+	// collection's ID, which only the loaded collection list has; a target the
+	// list does not know yields `null` here and therefore no create row, because
+	// "no answer" must not read as "allowed".
+	let targetCollection = $derived.by(() => {
+		if (!isRelation || !field.collection) return null;
+		return (collectionStore.collections ?? []).find((c) => c.slug === field.collection) ?? null;
+	});
+	let canCreateInTarget = $derived(
+		!!targetCollection && workspaceStore.canEditCollection(targetCollection.id),
+	);
+
+	/**
+	 * Create the item the user just described, then select it.
+	 *
+	 * NO field values are sent. The server fills every missing key that declares
+	 * a `Default` and stores the defaulted map (`items.ValidateFields`, then
+	 * "Marshal validated/defaulted fields back" in `createItemChecked`), so the
+	 * schema's own answer is already the right one. Guessing here — the
+	 * collection page's "+ New" uses `status.options[0]` — would override it,
+	 * and would be wrong for any schema whose default is not its first option.
+	 * The cost is that a target with a REQUIRED field carrying no default
+	 * refuses the create; that surfaces as a toast naming the field, which is
+	 * the honest outcome for a row this picker cannot fill in.
+	 *
+	 * The epoch is read BEFORE the request (BUG-2098): a projection resync while
+	 * it is in flight means the response was authorized under a scope that no
+	 * longer applies, and `upsert` refuses it rather than resurrecting a row no
+	 * delta will evict. Upserting at all is what makes the picker's
+	 * exact-title suppression true on the NEXT keystroke — without it the same
+	 * text would offer to create a second item.
+	 */
+	async function createRelationTarget(title: string) {
+		const ws = wsSlug;
+		const collSlug = field.collection;
+		if (!ws || !collSlug) return;
+		const epoch = localIndex.scopeEpochFor(ws);
+		try {
+			const item = await api.items.create(ws, collSlug, { title, source: 'web' });
+			localIndex.upsert(ws, item, epoch);
+			editingRelation = false;
+			onchange(item.id);
+		} catch (e: any) {
+			// The picker keeps the query, so the user can retry or pick something
+			// else; nothing about the field's value has moved.
+			toastStore.show(e?.message || 'Failed to create item', 'error');
+		}
 	}
 
 	// ── Viewport detection ───────────────────────────────────────────────
@@ -769,6 +828,8 @@ handlers — onchange is never called.
 				placeholder="Search…"
 				autofocus={editingRelation}
 				onselect={pickRelation}
+				oncreate={canCreateInTarget ? createRelationTarget : undefined}
+				createLabel={targetCollection?.name}
 				oncancel={relationState === 'empty' ? undefined : () => (editingRelation = false)}
 			/>
 		{/if}
