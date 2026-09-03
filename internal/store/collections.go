@@ -406,6 +406,13 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{ts}
 
+	// Set when this update actually changes the slug, which is what strands
+	// relation fields (BUG-2873): `models.FieldDef.Collection` holds the
+	// target's SLUG and is the only pointer a relation has — there is no id
+	// beside it — so a rename leaves every field aimed here pointing at a name
+	// that no longer resolves.
+	var renamedFrom, renamedTo string
+
 	if input.Name != nil {
 		sets = append(sets, "name = ?")
 		args = append(args, *input.Name)
@@ -423,6 +430,9 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 		sets = append(sets, "slug = ?")
 		args = append(args, newSlug)
+		if newSlug != existing.Slug {
+			renamedFrom, renamedTo = existing.Slug, newSlug
+		}
 	}
 	if input.Prefix != nil {
 		sets = append(sets, "prefix = ?")
@@ -516,7 +526,16 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// migration path (the only path that touches the workspace seq lock); a
 	// plain update just takes the row lock and can't deadlock. On SQLite both
 	// are no-ops under the single BEGIN IMMEDIATE write lock.
-	if len(input.Migrations) > 0 {
+	// The comment above orders the workspace lock against ONE collection row
+	// lock, because until BUG-2873 nothing took more than one. Migrating relation
+	// targets writes SIBLING collection rows, so two concurrent renames of
+	// mutually-referencing collections would take those row locks in opposite
+	// orders and ABBA-deadlock — a hazard the existing comment reads as though it
+	// had already settled. Serializing renames under the workspace lock closes it
+	// without inventing a second ordering rule to keep in sync with the first,
+	// and it is taken BEFORE the row lock, preserving the order this comment
+	// exists to protect.
+	if len(input.Migrations) > 0 || renamedTo != "" {
 		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
 			return nil, err
 		}
@@ -574,6 +593,16 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	if len(input.Migrations) > 0 {
 		if _, err := s.applyFieldMigrationsTx(tx, id, existing.WorkspaceID, input.Migrations); err != nil {
 			return nil, fmt.Errorf("apply field migrations: %w", err)
+		}
+	}
+
+	// Re-point relation fields at the new slug, in the SAME tx as the rename for
+	// the same reason the field migrations are: a failure must roll the rename
+	// back rather than leave committed collections pointing at a slug that no
+	// longer exists.
+	if renamedTo != "" {
+		if err := s.retargetRelationFieldsTx(tx, existing.WorkspaceID, renamedFrom, renamedTo); err != nil {
+			return nil, fmt.Errorf("retarget relation fields: %w", err)
 		}
 	}
 
@@ -1076,4 +1105,95 @@ var reservedCollectionSlugs = map[string]bool{
 // workspace-level UI route.
 func isReservedCollectionSlug(slug string) bool {
 	return reservedCollectionSlugs[strings.ToLower(slug)]
+}
+
+// retargetRelationFieldsTx re-points every `relation` field in the workspace
+// from `oldSlug` to `newSlug` after a collection rename (BUG-2873).
+//
+// WHY THIS EXISTS. `models.FieldDef.Collection` stores the target's SLUG, and
+// it is the only pointer a relation field carries — there is no id beside it to
+// fall back on. `UpdateCollection` re-slugifies on rename, so without this every
+// relation field aimed at the renamed collection is stranded: the picker filters
+// on a slug that resolves to nothing, and the field silently stops being
+// fillable. See IDEA-2874 for the related, deliberately SEPARATE question of the
+// slug being allocated outside this transaction.
+//
+// WHY IT PARSES INSTEAD OF STRING-REPLACING. A collection's schema JSON contains
+// the old slug in places that must NOT move: a text field's `default`, a
+// select's `options`, a label. Only `FieldDef.Collection` on a `relation` field
+// is a reference to the collection. Export's `remapFieldIDs` gets away with a
+// blind replace because it substitutes UUIDs, which cannot collide with prose;
+// a slug is a word.
+//
+// The renamed collection is included deliberately — a collection whose relation
+// field targets ITSELF needs the same rewrite, and it is reached through the same
+// UPDATE as any sibling. That write lands AFTER the caller's own `schema` write
+// in this transaction, so it composes with a simultaneous schema edit rather than
+// reverting it.
+func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSlug string) error {
+	rows, err := tx.Query(
+		s.q("SELECT id, schema FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id"),
+		workspaceID,
+	)
+	if err != nil {
+		return fmt.Errorf("list collections: %w", err)
+	}
+
+	type pending struct {
+		id     string
+		schema string
+	}
+	var updates []pending
+
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan collection: %w", err)
+		}
+		if raw == "" {
+			continue
+		}
+		var sch models.CollectionSchema
+		if err := json.Unmarshal([]byte(raw), &sch); err != nil {
+			// A schema this store cannot parse is not one this migration can
+			// safely rewrite. Skipping leaves it exactly as it was — stranded,
+			// but not corrupted by a guess.
+			continue
+		}
+		changed := false
+		for i := range sch.Fields {
+			if sch.Fields[i].Type == "relation" && sch.Fields[i].Collection == oldSlug {
+				sch.Fields[i].Collection = newSlug
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		encoded, err := json.Marshal(sch)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("encode schema for %s: %w", id, err)
+		}
+		updates = append(updates, pending{id: id, schema: string(encoded)})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate collections: %w", err)
+	}
+	rows.Close()
+
+	// Writes happen after the cursor is closed: SQLite will not accept an UPDATE
+	// on a table with an open SELECT cursor over it, the same caution
+	// BackfillWikiLinks documents.
+	for _, u := range updates {
+		if _, err := tx.Exec(
+			s.q("UPDATE collections SET schema = ? WHERE id = ?"),
+			u.schema, u.id,
+		); err != nil {
+			return fmt.Errorf("rewrite schema for %s: %w", u.id, err)
+		}
+	}
+	return nil
 }
