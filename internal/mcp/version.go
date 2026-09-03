@@ -715,66 +715,80 @@ const CmdhelpVersion = "0.1"
 //     (the key never did anything), so the break is the fix. Single
 //     bump covers both halves; they are one contract change.
 //
-//	0.27 — BUG-2850. Field values are TYPED SERVER-SIDE, the `fields`
-//	    object reaches the remote door with its JSON types intact, and
-//	    the fields/field merge refuses several ambiguities it used to
-//	    resolve silently.
+//     0.27 — BUG-2850. Field values are TYPED SERVER-SIDE, the `fields`
+//     object reaches the remote door with its JSON types intact, and
+//     the fields/field merge refuses several ambiguities it used to
+//     resolve silently.
 //
-//	    (1) Coercion. A string arriving for a declared number/json field
-//	    is coerced against the collection schema before validation, at
-//	    all eight Validate* call sites. The remote /mcp transport builds
-//	    its field map in ingestFieldKVP, so EVERY value reached the
-//	    server as a string and a declared number or json field was
-//	    unwritable from that transport — a 400 on a correct value in the
-//	    wrong clothes. Uncoercible values are still refused with the
-//	    validator's existing message.
+//     (1) Coercion. A string arriving for a declared number/json field
+//     is coerced against the collection schema before validation, at
+//     all eight Validate* call sites. The remote /mcp transport builds
+//     its field map in ingestFieldKVP, so EVERY value reached the
+//     server as a string and a declared number or json field was
+//     unwritable from that transport — a 400 on a correct value in the
+//     wrong clothes. Uncoercible values are still refused with the
+//     validator's existing message.
 //
-//	    (2) The `fields` OBJECT carries native types. The catalog no
-//	    longer stringifies it; the HTTP mappers apply it last so the
-//	    types survive. The key=value doors (CLI --field, stdio MCP via
-//	    the CLI, remote field:[…]) are string-by-construction and
-//	    unchanged — the fidelity is available wherever the encoding
-//	    carries it, not everywhere.
+//     (2) The `fields` OBJECT carries native types. The catalog no
+//     longer stringifies it; the HTTP mappers apply it last so the
+//     types survive. The key=value doors (CLI --field, stdio MCP via
+//     the CLI, remote field:[…]) are string-by-construction and
+//     unchanged — the fidelity is available wherever the encoding
+//     carries it, not everywhere.
 //
-//	    (3) Undeclared keys are NAMED. Item create/update responses may
-//	    carry `warnings.undeclared_fields`; the CLI prints the same list
-//	    to stderr, never stdout. Additive and omitempty, so a clean
-//	    write is byte-identical to before. Keys are ACCEPTED, not
-//	    refused: a census of 1012 items found 14 undeclared keys across
-//	    168 live values (priority alone at 127), so refusing would have
-//	    broken read-modify-write on items nobody had edited wrongly.
+//     (3) Undeclared keys are NAMED. Item create/update responses may
+//     carry `warnings.undeclared_fields`; the CLI prints the same list
+//     to stderr, never stdout. Additive and omitempty, so a clean
+//     write is byte-identical to before. Keys are ACCEPTED, not
+//     refused: a census of 1012 items found 14 undeclared keys across
+//     168 live values (priority alone at 127), so refusing would have
+//     broken read-modify-write on items nobody had edited wrongly.
 //
-//	    (4) ONE conflict check over a canonical view of every source.
-//	    The `fields` object, the `field:[]` entries, the promoted named
-//	    params and the v0.16 compat IDs are resolved to a canonical key
-//	    and adjudicated once. What this REFUSES that 0.26 permitted:
-//	      - two names for one target in a single call — parent/plan,
-//	        assign/assigned_user_id, role/agent_role_id — refused even
-//	        when the values match, because the names address one thing
-//	        through different vocabularies (a slug and a UUID are not
-//	        comparable), and the doors resolved them differently;
-//	      - the same key supplied through the `fields` object and
-//	        another source with DIFFERING values (equal ones collapse to
-//	        one write);
-//	      - a non-string `assign` / `role`, which one door silently
-//	        dropped and the other rejected;
-//	      - an empty hierarchy value inside `fields`, which promoted
-//	        onto a param both doors read as "not supplied" and so
-//	        reported success having detached nothing. Use clear_parent.
+//     (4) ONE conflict check over a canonical view of every source.
+//     The `fields` object, the `field:[]` entries, the promoted named
+//     params and the v0.16 compat IDs are resolved to a canonical key
+//     and adjudicated once. What this REFUSES that 0.26 permitted:
 //
-//	    NOT refused, deliberately: a top-level param colliding with a
-//	    `field:[]` entry under the SAME name and no `fields` object.
-//	    Both doors resolve that identically (the array overlays the
-//	    named param) and it is visibly a duplicate, so last-write-wins
-//	    is a resolution the caller can predict. Pinned on both doors so
-//	    they cannot drift apart.
+//   - two names for one target in a single call — parent/plan,
+//     assign/assigned_user_id, role/agent_role_id — refused even
+//     when the values match, because the names address one thing
+//     through different vocabularies (a slug and a UUID are not
+//     comparable), and the doors resolved them differently;
 //
-//	    Bump rationale: (1)-(3) are additive or fix outright breakage,
-//	    but (4) refuses calls 0.26 accepted. Same grounds as 0.26, 0.25,
-//	    0.16, 0.10 and 0.9 — no tool name, action enum or parameter
-//	    shape changed, and the behaviour did. Every refusal added here
-//	    replaced a call that SUCCEEDED while doing something other than
-//	    what it said, so the break is the fix in each case.
+//   - the same key supplied through the `fields` object and
+//     another source with DIFFERING values (equal ones collapse to
+//     one write);
+//
+//   - a non-string `assign` / `role`, which one door silently
+//     dropped and the other rejected;
+//
+//   - an empty hierarchy value inside `fields`, which promoted
+//     onto a param both doors read as "not supplied" and so
+//     reported success having detached nothing. Use clear_parent.
+//
+//     NOT refused, deliberately — but NARROWER than it first reads. A
+//     SCHEMA-DECLARED param colliding with a `field:[]` entry under the
+//     same name, with no `fields` object, still resolves: the CLI has a
+//     real flag for such a param, so stdio receives BOTH forms and its
+//     overlay order resolves them exactly as the HTTP mapper does. It
+//     is visibly a duplicate, so last-write-wins is a resolution the
+//     caller can predict. Pinned per door so they cannot drift apart.
+//
+//     The v0.16 compat IDs are NOT exempt, and being undeclared is
+//     precisely why. BuildCLIArgs emits the CLI's real flags and there
+//     is none behind `assigned_user_id`, so the top-level value is
+//     DROPPED: stdio sees only the field entry while HTTP reads the
+//     param. Two different people assigned from one call, with no
+//     `fields` object anywhere. Last-write-wins cannot be the answer
+//     when the doors do not receive the same writes, so that pair
+//     refuses.
+//
+//     Bump rationale: (1)-(3) are additive or fix outright breakage,
+//     but (4) refuses calls 0.26 accepted. Same grounds as 0.26, 0.25,
+//     0.16, 0.10 and 0.9 — no tool name, action enum or parameter
+//     shape changed, and the behaviour did. Every refusal added here
+//     replaced a call that SUCCEEDED while doing something other than
+//     what it said, so the break is the fix in each case.
 const ToolSurfaceVersion = "0.27"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

@@ -264,7 +264,26 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// the SameNameDuplicate tests. Alias collisions above are NOT gated:
 		// last-write-wins is only defensible when both sources name the same
 		// key, and two names for one target have incomparable value spaces.
-		if !fieldsPresent {
+		// ...and the exemption holds only where the doors PROVABLY agree,
+		// which is not everywhere (codex round 15).
+		//
+		// For a schema-declared param the CLI has a real flag, so stdio
+		// receives BOTH forms (`--status open --field status=done`) and its
+		// overlay order resolves them exactly as the HTTP mapper does — the
+		// premise the round-7 boundary rests on, pinned per door.
+		//
+		// The v0.16 compat IDs are the exception, and being undeclared is
+		// precisely why: BuildCLIArgs emits the CLI's real flags, and there
+		// is no flag behind `assigned_user_id`, so the top-level value is
+		// DROPPED and stdio sees only the field entry — while HTTP reads the
+		// top-level param. Same call, two different people assigned, with no
+		// `fields` object anywhere. Last-write-wins cannot be the answer when
+		// the two doors do not receive the same writes.
+		//
+		// I generalised the round-7 premise from the params I had verified to
+		// the two whose whole nature is being unverifiable that way. This is
+		// the narrowing.
+		if !fieldsPresent && !compatIDFieldKeys[canonical] && !compatIDFieldKeys[contribs[0].key] {
 			continue
 		}
 		for i := 1; i < len(contribs); i++ {

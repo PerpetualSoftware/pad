@@ -1673,3 +1673,56 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 			"the schema lost a param", k)
 	}
 }
+
+// --- codex round 15 ---
+
+// TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields: the
+// round-7 same-name exemption holds only where the doors provably agree, and
+// the compat IDs are where they do not (BUG-2850, codex round 15).
+//
+// For a schema-declared param the CLI has a real flag, so stdio receives BOTH
+// forms and its overlay order resolves them exactly as the HTTP mapper does.
+// That is the premise the exemption rests on, and it is pinned per door by
+// the SameNameDuplicate tests.
+//
+// `assigned_user_id` / `agent_role_id` are deliberately never
+// schema-declared, so BuildCLIArgs — which emits the CLI's real flags — has
+// nothing to emit for the top-level form and DROPS it. stdio then sees only
+// the field entry while HTTP reads the top-level param: same call, two
+// different people assigned, with no `fields` object anywhere.
+//
+// The control leg is the declared param, which must STILL resolve rather than
+// refuse. Without it this test would pass on a build that abandoned the
+// round-7 boundary altogether.
+func TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields(t *testing.T) {
+	for _, key := range []string{"assigned_user_id", "agent_role_id"} {
+		t.Run(key+" refuses", func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				key:      "value-A",
+				"field":  []any{key + "=value-B"},
+			})
+			if !isErr {
+				t.Fatalf("the doors cannot agree on this; expected refusal, got success: %s (args %v)", msg, disp.gotArgs)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+	t.Run("declared param still resolves", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update",
+			"ref":    "TASK-5",
+			"status": "open",
+			"field":  []any{"status=done"},
+		})
+		if isErr {
+			t.Fatalf("the round-7 boundary must survive: %s", msg)
+		}
+		if !argsContainPair(disp.gotArgs, "--field", "status=done") {
+			t.Errorf("both forms must still reach the CLI, which resolves them: %v", disp.gotArgs)
+		}
+	})
+}
