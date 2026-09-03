@@ -63,6 +63,19 @@ import (
 // top-level param it promotes onto. Mirrors the "the dispatcher rolls
 // those into the fields JSON automatically" list in the `field` param
 // description — keep the two in sync.
+// hierarchyPseudoFieldKeys are `fields` keys the SERVER reads as parent-link
+// directives rather than as ordinary field values (extractParentLink, in
+// internal/server/handlers_items.go). They take a string ref and nothing else.
+//
+// `parent` is also in padItemPromotedFieldKeys below and gets a scalar check
+// there; `plan` is not, which is how a structured value reached the server
+// once BUG-2850 stopped refusing structures. Both are listed here so the
+// guard does not depend on which other set a key happens to belong to.
+var hierarchyPseudoFieldKeys = map[string]bool{
+	"parent": true,
+	"plan":   true,
+}
+
 var padItemPromotedFieldKeys = map[string]bool{
 	"status":   true,
 	"priority": true,
@@ -178,6 +191,23 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			out[k] = v
 			continue
 		}
+		// HIERARCHY PSEUDO-KEYS TAKE A STRING REF, ALWAYS (BUG-2850, codex
+		// round 3). `plan` is not in padItemPromotedFieldKeys, so before this
+		// it fell to the generic path and — once structures stopped being
+		// refused — a `fields:{"plan":{…}}` reached the server natively. There
+		// `extractParentLink` reads any PRESENT non-string plan/parent as a
+		// hierarchy directive, drops the key, and on update CLEARS the item's
+		// existing parent link. So lifting the nested refusal quietly opened a
+		// path where a malformed value silently detaches an item from its
+		// parent. A structure has no meaning here at all: the only value these
+		// keys take is a ref.
+		if hierarchyPseudoFieldKeys[k] {
+			if _, isString := v.(string); !isString {
+				return nil, errStructured(prefix, fmt.Errorf(
+					"fields.%s must be a string ref (e.g. %q) — a %T here would be read as a hierarchy directive and could detach the item", k, "PLAN-12", v))
+			}
+		}
+
 		// NULL stays refused (BUG-2850 lifts objects and arrays, not this).
 		// A null in a fields map has no agreed meaning — "store JSON null" and
 		// "clear this field" are both readable from it, and Pad already has an

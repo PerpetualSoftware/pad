@@ -427,3 +427,49 @@ func TestPadItemUpdate_FieldsEmptyKeyRefused(t *testing.T) {
 		t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
 	}
 }
+
+// A structured `plan` or `parent` must be refused before dispatch (BUG-2850,
+// codex round 3).
+//
+// These keys are hierarchy DIRECTIVES to the server, not ordinary fields:
+// extractParentLink reads any present non-string value as one, drops the key,
+// and on update clears the item's existing parent link. Lifting the nested
+// refusal opened that path — a malformed value would silently detach an item
+// from its parent — so the guard is specific to these keys rather than a
+// return to refusing structures everywhere.
+func TestPadItemUpdate_StructuredHierarchyKeyRefused(t *testing.T) {
+	for _, key := range []string{"plan", "parent"} {
+		t.Run(key, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				"fields": map[string]any{key: map[string]any{"id": "PLAN-12"}},
+			})
+			if !isErr {
+				t.Fatalf("a structured %s must be refused, got success: %s", key, msg)
+			}
+			if !strings.Contains(msg, key) {
+				t.Errorf("refusal should name the key: %s", msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...but a string ref still works, so the guard did not re-refuse the normal
+// case while closing the structured one.
+func TestPadItemUpdate_StringHierarchyKeyStillAccepted(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"plan": "PLAN-12"},
+	})
+	if isErr {
+		t.Fatalf("a string plan ref must still be accepted: %s", msg)
+	}
+	if len(disp.gotPath) == 0 {
+		t.Fatal("expected the update to dispatch")
+	}
+}
