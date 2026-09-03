@@ -192,7 +192,9 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// asked for; this is it.
 	obj, _ := input["fields"].(map[string]any) // nil when absent; shape errors belong to reshapeItemFields
 	fieldsPresent := obj != nil
-	fieldEntries, fieldByKey, errRes := parseFieldArray(prefix, input["field"])
+	// The INDEX is deliberately discarded here — this pass walks the raw
+	// entries so two entries naming one key stay two contributions (round 18).
+	fieldEntries, _, errRes := parseFieldArray(prefix, input["field"])
 	if errRes != nil {
 		return nil // the caller parses for real and owns this error surface
 	}
@@ -214,18 +216,33 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		})
 	}
 
-	arrayKeys := make([]string, 0, len(fieldByKey))
-	for k := range fieldByKey {
-		arrayKeys = append(arrayKeys, k)
-	}
-	sort.Strings(arrayKeys)
-	for _, k := range arrayKeys {
-		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "the field array entry " + strconv.Quote(k+"="+fieldByKey[k]), value: fieldByKey[k], raw: fieldByKey[k],
-			// Whether the entry as WRITTEN matches its normalized form. The
+	// ONE CONTRIBUTION PER ENTRY, not per indexed key (codex round 18).
+	//
+	// parseFieldArray indexes by NORMALIZED key, so two entries naming one
+	// key collapse to a single index slot — and iterating that index made
+	// this pass's own input lossy. `field:["effort=l", " effort=l"]` arrived
+	// as ONE contribution, fell under the len < 2 early exit, and passed
+	// unchecked: HTTP trims both to `effort` while stdio writes `effort` AND
+	// a junk `" effort"`. The pass claims to adjudicate one canonical key
+	// offered by multiple sources; two array entries ARE multiple sources,
+	// and it could not see them.
+	//
+	// Walking the raw entries keeps the multiplicity, so the existing rules
+	// apply unchanged: equal canonical duplicates collapse, and a padded twin
+	// is refused by the non-canonical check like any other.
+	for _, entry := range fieldEntries {
+		k, v, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue // no '=' — the CLI owns that error surface, not this pass
+		}
+		key := strings.TrimSpace(k)
+		val := strings.TrimSpace(v)
+		add(canonicalFieldKey(key), fieldContribution{
+			key: key, source: "the field array entry " + strconv.Quote(entry), value: val, raw: val,
+			// Whether the entry as WRITTEN matches its canonical form. The
 			// index is normalized so a padded entry can be recognized at all;
 			// this remembers that the doors will not receive it identically.
-			nonCanonical: hasNonCanonicalFieldEntry(fieldEntries, k, fieldByKey[k]),
+			nonCanonical: entry != key+"="+val,
 		})
 	}
 

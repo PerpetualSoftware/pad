@@ -1858,3 +1858,77 @@ func TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey(t *testing
 		}
 	})
 }
+
+// --- codex round 18 ---
+
+// TestPadItemUpdate_DuplicateFieldEntriesKeepTheirMultiplicity: two `field`
+// entries naming one key are two sources, and the conflict pass must see both
+// (BUG-2850, codex round 18).
+//
+// parseFieldArray indexes by NORMALIZED key, so `["effort=l", " effort=l"]`
+// collapsed into a single index slot. Iterating that index made the pass's own
+// input lossy: the pair arrived as ONE contribution, fell under the len < 2
+// early exit, and passed unchecked — HTTP trims both to `effort` while stdio
+// writes `effort` AND a junk `" effort"`. The pass claims to adjudicate one
+// canonical key offered by multiple sources; two array entries ARE multiple
+// sources, and it could not see them.
+//
+// The fix is upstream of the rules rather than another rule: walk the raw
+// entries, and the existing non-canonical check applies unchanged.
+func TestPadItemUpdate_DuplicateFieldEntriesKeepTheirMultiplicity(t *testing.T) {
+	t.Run("padded twin is refused", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"field": []any{"effort=l", " effort=l"},
+		})
+		if !isErr {
+			t.Fatalf("the doors write different key sets for this; expected refusal, got: %s (args %v)", msg, disp.gotArgs)
+		}
+		if len(disp.gotPath) != 0 {
+			t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+		}
+	})
+
+	// Two IDENTICAL canonical entries are one unambiguous write stated twice —
+	// both doors receive the same thing, so this must still succeed. Without
+	// this leg the fix above could refuse every repeated key and still look
+	// correct.
+	t.Run("identical canonical entries still pass", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"field": []any{"effort=l", "effort=l"},
+		})
+		if isErr {
+			t.Fatalf("identical entries are not a conflict: %s", msg)
+		}
+		if len(disp.gotPath) == 0 {
+			t.Fatal("expected the update to dispatch")
+		}
+	})
+
+	// ...and two CANONICAL entries for one key with differing values are NOT
+	// refused — they resolve, last-write-wins, on both doors.
+	//
+	// I first wrote this leg asserting a refusal, and the code disagreed.
+	// The code was right: ingestFieldKVP (HTTP) and the --field loop in
+	// cmd_item.go (CLI) both do `map[key] = val` in entry order, so each door
+	// keeps the LAST entry and they agree. That is the round-7 boundary
+	// exactly — a visible duplicate with a resolution the caller can predict
+	// — and refusing it here would have contradicted the boundary the lead
+	// confirmed, on two doors that are pinned to agree.
+	//
+	// Kept as a leg rather than deleted, because it is the one that stops a
+	// future "refuse every repeated key" simplification from looking correct.
+	t.Run("differing canonical values resolve, not refuse", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"field": []any{"effort=l", "effort=s"},
+		})
+		if isErr {
+			t.Fatalf("both doors keep the last entry, so this resolves rather than refusing: %s", msg)
+		}
+		if !argsContainPair(disp.gotArgs, "--field", "effort=s") {
+			t.Errorf("the last entry must reach the door: %v", disp.gotArgs)
+		}
+	})
+}
