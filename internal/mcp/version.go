@@ -620,7 +620,7 @@ const CmdhelpVersion = "0.1"
 //     condition would stop matching. That client was retrying a
 //     permanent failure.
 
-//   - "0.26" — current. IDEA-2756: `pad_workspace.action=create` is now
+//   - "0.26" — IDEA-2756: `pad_workspace.action=create` is now
 //     REFUSED with a 403 when the calling OAuth connection's grant has
 //     `may_create_workspaces=false`. Previously that flag gated only the
 //     post-creation auto-add, so the create succeeded — and on a
@@ -789,7 +789,36 @@ const CmdhelpVersion = "0.1"
 //     shape changed, and the behaviour did. Every refusal added here
 //     replaced a call that SUCCEEDED while doing something other than
 //     what it said, so the break is the fix in each case.
-const ToolSurfaceVersion = "0.27"
+//
+//     0.28 — IDEA-2641 / GitHub #1010. Two ADDITIVE actions on
+//     `pad_item`: `remind` arms a one-shot reminder at an RFC3339
+//     instant (`remind_at`), and `ack-reminder` acknowledges a fired
+//     one by id (`reminder_id`). Two new params, both optional, both
+//     ignored by every other action. Purely additive — no existing
+//     name, enum or shape moved, and a 0.27 consumer that enumerates
+//     neither action is unaffected. Same disposition as v0.13, v0.11
+//     and v0.8, which likewise wired existing CLI verbs onto the
+//     catalog.
+//
+//     WHY AN AGENT NEEDS THIS AT ALL, since agents already RECEIVE
+//     reminders without it: the poll surface is `pad_project.action:
+//     next` / `ready`, which were already exposed, so a reminder was
+//     already reaching agents. What was missing is the other half —
+//     deferring a piece of work is exactly the moment an agent knows
+//     when it wants to be asked again, and it had no way to say so.
+//
+//     `remind_at` REFUSES a bare date rather than reading it as
+//     midnight. That is a refusal at the edge of a brand-new param, so
+//     it breaks nothing, but it is stated here because the `date`
+//     schema type accepts `YYYY-MM-DD` and a caller will reasonably
+//     try it: a bare date names a 24-hour span, and choosing an hour
+//     inside it would be the server firing at a time nobody picked.
+//
+//     Re-arm and disarm are deliberately CLI-ONLY for now. Both address
+//     a reminder by an id the agent would have to list first, and no
+//     listing action exists on this surface — a door with no handle.
+//     Adding them later is additive.
+const ToolSurfaceVersion = "0.28"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

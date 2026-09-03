@@ -2033,3 +2033,44 @@ func parseErrorBody(status int, body []byte) error {
 	}
 	return fmt.Errorf("API error: %d %s", status, string(body))
 }
+
+// --- Item reminders (IDEA-2641) ---
+
+// ListItemReminders returns every reminder on an item, armed or fired.
+func (c *Client) ListItemReminders(wsSlug, itemSlug string) ([]models.Reminder, error) {
+	var result struct {
+		Reminders []models.Reminder `json:"reminders"`
+	}
+	if err := c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/reminders", &result); err != nil {
+		return nil, err
+	}
+	return result.Reminders, nil
+}
+
+// CreateItemReminder arms a reminder. remindAt must be an RFC3339 instant —
+// the server refuses a bare date rather than assuming a time of day, and the
+// CLI passes the user's string through so that refusal reaches them with the
+// server's wording rather than a second, differently-worded local one.
+func (c *Client) CreateItemReminder(wsSlug, itemSlug, remindAt string) (*models.Reminder, error) {
+	var result models.Reminder
+	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/reminders",
+		map[string]string{"remind_at": remindAt}, &result)
+}
+
+// RearmReminder moves a reminder's instant, clearing its fire marks.
+func (c *Client) RearmReminder(wsSlug, reminderID, remindAt string) (*models.Reminder, error) {
+	var result models.Reminder
+	return &result, c.patch("/workspaces/"+wsSlug+"/reminders/"+reminderID,
+		map[string]string{"remind_at": remindAt}, &result)
+}
+
+// AckReminder acknowledges a fired reminder.
+func (c *Client) AckReminder(wsSlug, reminderID string) (*models.Reminder, error) {
+	var result models.Reminder
+	return &result, c.post("/workspaces/"+wsSlug+"/reminders/"+reminderID+"/ack", nil, &result)
+}
+
+// DeleteReminder disarms a reminder by removing it.
+func (c *Client) DeleteReminder(wsSlug, reminderID string) error {
+	return c.delete("/workspaces/" + wsSlug + "/reminders/" + reminderID)
+}

@@ -116,6 +116,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Querying:**
 - "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
+- "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad item remind` (IDEA-2641). The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack`; **finishing the item does not acknowledge it**, because a reminder is often armed precisely to fire after the work is done
 - "what should I work on?" / "what's ready?" → `pad project ready` (actionable backlog); "what's stuck?" / "what needs attention?" → `pad project stale`
 - "show me status" / "how are we doing?" → `pad project dashboard`
 - "show me all tasks" / "list bugs" → `pad item list <collection>`
@@ -193,6 +194,10 @@ pad item update TASK-5 [--status X] [--role X] [--assign X] [--comment "..."] [-
 pad item delete TASK-5
 pad item search "query"
 pad item comment TASK-5 "..." [--reply-to <comment-id>]
+pad item remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # arm a one-shot reminder (RFC3339 INSTANT; a bare date is refused)
+pad item reminders TASK-5                                  # armed / fired / acknowledged
+pad item ack <reminder-id>                                 # acknowledge a fired reminder
+pad item unremind <reminder-id>
 pad item comments TASK-5
 pad item note TASK-5 "what you did" [--details "..." | --stdin]
 pad item decide TASK-5 "what you chose" [--rationale "..." | --stdin]

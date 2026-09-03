@@ -71,6 +71,20 @@ var padItemTool = ToolDef{
 		"unlink": actionItemUnlink,
 		"deps":   passThrough([]string{"item", "deps"}),
 
+		// Reminders (IDEA-2641 / GitHub #1010). An agent that can RECEIVE a
+		// reminder but not set one has half the primitive: deferring a piece
+		// of work is exactly the moment an agent knows when it wants to be
+		// asked again. `remind` arms; `ack-reminder` acknowledges a fired one
+		// so it leaves pad_project's next/ready surface.
+		//
+		// Re-arm and disarm are deliberately CLI-only for now: both address a
+		// reminder the agent would have had to list first, and the listing
+		// action does not exist on this surface yet. Adding them later is
+		// additive; shipping them without a way to discover an id would be
+		// advertising a door with no handle.
+		"remind":       passThrough([]string{"item", "remind"}),
+		"ack-reminder": passThrough([]string{"item", "ack"}),
+
 		// Stars
 		"star":    passThrough([]string{"item", "star"}),
 		"unstar":  passThrough([]string{"item", "unstar"}),
@@ -147,6 +161,10 @@ var padItemSchemaParams = []ParamDef{
 	// artifact carries the frontmatter the server needs to reconstruct
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
+	// ── Reminders ── (IDEA-2641)
+	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to mean midnight — it names a 24-hour span, and choosing an hour inside it would fire at a time nobody picked."},
+	{Name: "reminder_id", Type: "string", Description: "A reminder's id, as returned when it was armed. Required for: ack-reminder. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
+
 	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
 
 	// ── Status / priority / scheduling ──

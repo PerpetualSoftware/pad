@@ -123,6 +123,8 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "move"}:          {"item", "move"},
 		{"pad_item", "restore"}:       {"item", "restore"},
 		{"pad_item", "deps"}:          {"item", "deps"},
+		{"pad_item", "remind"}:        {"item", "remind"},
+		{"pad_item", "ack-reminder"}:  {"item", "ack"},
 		{"pad_item", "star"}:          {"item", "star"},
 		{"pad_item", "unstar"}:        {"item", "unstar"},
 		{"pad_item", "starred"}:       {"item", "starred"},
@@ -278,6 +280,8 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "move"}:          {"item", "move"},
 		{"pad_item", "restore"}:       {"item", "restore"},
 		{"pad_item", "deps"}:          {"item", "deps"},
+		{"pad_item", "remind"}:        {"item", "remind"},
+		{"pad_item", "ack-reminder"}:  {"item", "ack"},
 		{"pad_item", "star"}:          {"item", "star"},
 		{"pad_item", "unstar"}:        {"item", "unstar"},
 		{"pad_item", "starred"}:       {"item", "starred"},
@@ -319,6 +323,10 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		"code": "123456",
 		// pad_attachment.show needs an attachment_id positional.
 		"attachment_id": "att-1",
+		// pad_item.ack-reminder addresses a REMINDER, not an item — an item
+		// can carry several, so `ref` cannot name one (IDEA-2641).
+		"reminder_id": "rem-1",
+		"remind_at":   "2026-08-01T09:00:00Z",
 	}
 
 	for _, def := range Catalog {
@@ -643,6 +651,16 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item deps": {
 				Summary: "show deps",
 				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item remind": {
+				Summary: "arm a reminder",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace", "remind-at", "rearm"),
+			},
+			"item ack": {
+				Summary: "acknowledge a fired reminder",
+				Args:    mkArgs("reminder-id"),
 				Flags:   mkFlags("workspace"),
 			},
 			"item star": {
