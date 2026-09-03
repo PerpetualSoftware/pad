@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1307,4 +1308,159 @@ func TestPadItemUpdate_BlankCompatIDIsAClearAndStillConflicts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- codex round 13 + the restructure ---
+
+// TestPadItemUpdate_SemanticAliasPairsRefused: `assign`/`assigned_user_id`
+// and `role`/`agent_role_id` are two names for one target, exactly like
+// `parent`/`plan` (BUG-2850, codex round 13).
+//
+// None of the five guards that existed at round 12 compared them: the alias
+// guard knew only about hierarchy, the compat guard only about same-name
+// collisions. So `assigned_user_id:"B"` with `fields:{"assign":"A"}` was
+// accepted and the doors then disagreed — resolveAssignName gives the
+// explicit ID precedence over HTTP, while BuildCLIArgs drops the compat ID
+// and emits `--assign A`. One call, two different people assigned.
+//
+// This drove the finding's POPULATION rather than its example: both
+// directions of both pairs, plus the both-inside-`fields` and
+// field-array-vs-`fields` shapes.
+func TestPadItemUpdate_SemanticAliasPairsRefused(t *testing.T) {
+	cases := map[string]map[string]any{
+		"compat id param vs fields alias": {
+			"assigned_user_id": "user-B", "fields": map[string]any{"assign": "dave"},
+		},
+		"alias param vs fields compat id": {
+			"assign": "dave", "fields": map[string]any{"assigned_user_id": "user-B"},
+		},
+		"role compat id param vs fields alias": {
+			"agent_role_id": "role-B", "fields": map[string]any{"role": "implementer"},
+		},
+		"role alias param vs fields compat id": {
+			"role": "implementer", "fields": map[string]any{"agent_role_id": "role-B"},
+		},
+		"both aliases inside one fields object": {
+			"fields": map[string]any{"assign": "dave", "assigned_user_id": "user-B"},
+		},
+		"field array alias vs fields compat id": {
+			"field": []any{"assign=dave"}, "fields": map[string]any{"assigned_user_id": "user-B"},
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			input := map[string]any{"action": "update", "ref": "TASK-5"}
+			for k, v := range extra {
+				input[k] = v
+			}
+			disp, msg, isErr := dispatchPadItem(t, input)
+			if !isErr {
+				t.Fatalf("expected structured refusal, got success: %s (args %v)", msg, disp.gotArgs)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("ambiguous call must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// TestFieldConflictProperty_AliasGroupsRefuseAcrossEverySourcePair is the
+// PROPERTY the case tests above are instances of (lead ruling after round 13).
+//
+// The case tests are kept as regressions, but they are examples, and every
+// round of this unit found the example that nobody had written. The property
+// is the thing that generalizes: for EVERY alias group, and EVERY ordered
+// pair of distinct member names, offering the two names through any two
+// sources is ambiguous and must refuse. It is derived from fieldAliasGroups
+// itself, so adding a future alias pair to that map extends this test with
+// no edit — which is the whole point of replacing the guards with one map.
+func TestFieldConflictProperty_AliasGroupsRefuseAcrossEverySourcePair(t *testing.T) {
+	// Group the alias map back into its equivalence classes.
+	classes := map[string][]string{}
+	for key, canonical := range fieldAliasGroups {
+		classes[canonical] = append(classes[canonical], key)
+	}
+
+	// The three ways a value can enter, as functions writing into the input.
+	sources := map[string]func(in map[string]any, key, val string){
+		"top-level param": func(in map[string]any, key, val string) { in[key] = val },
+		"field array":     func(in map[string]any, key, val string) { in["field"] = []any{key + "=" + val} },
+		"fields object": func(in map[string]any, key, val string) {
+			f, _ := in["fields"].(map[string]any)
+			if f == nil {
+				f = map[string]any{}
+				in["fields"] = f
+			}
+			f[key] = val
+		},
+	}
+
+	tried := 0
+	for canonical, members := range classes {
+		sort.Strings(members)
+		if len(members) < 2 {
+			t.Fatalf("alias class %q has one member; the map is the source of truth for this property", canonical)
+		}
+		for _, a := range members {
+			for _, b := range members {
+				if a == b {
+					continue
+				}
+				for sa, writeA := range sources {
+					for sb, writeB := range sources {
+						// One `fields` object cannot hold the same key twice,
+						// and one `field` array write would overwrite itself,
+						// so skip same-source pairs.
+						if sa == sb {
+							continue
+						}
+						// reshapeItemFields only runs when `fields` is
+						// present — that is its documented scope, and the
+						// param-vs-array case keeps last-write-wins by design
+						// (round-7 boundary). Skip pairs with no `fields`.
+						if sa != "fields object" && sb != "fields object" {
+							continue
+						}
+						// BOTH value shapes, and the EQUAL one is the load-
+						// bearing half. With differing values the ordinary
+						// same-canonical-key comparison refuses too, so a
+						// build that had lost alias detection entirely would
+						// still pass — verified: deleting the alias branch
+						// left this property green until this leg existed
+						// (CONVE-28, on a mutant that survived).
+						//
+						// Equal values are the case only alias detection
+						// catches, and refusing them is the ruling: two names
+						// address one target through different vocabularies
+						// (a slug vs a UUID), so "equal" is not a question
+						// this layer can answer, and matching strings do not
+						// make it answerable.
+						for _, values := range []struct{ label, a, b string }{
+							{"differing", "value-A", "value-B"},
+							{"equal", "same-value", "same-value"},
+						} {
+							name := a + "/" + sa + " vs " + b + "/" + sb + " (" + values.label + ")"
+							t.Run(name, func(t *testing.T) {
+								in := map[string]any{"action": "update", "ref": "TASK-5"}
+								writeA(in, a, values.a)
+								writeB(in, b, values.b)
+								disp, msg, isErr := dispatchPadItem(t, in)
+								if !isErr {
+									t.Fatalf("two names for %q offered at once must refuse; got success: %s (args %v)", canonical, msg, disp.gotArgs)
+								}
+								if len(disp.gotPath) != 0 {
+									t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+								}
+							})
+							tried++
+						}
+					}
+				}
+			}
+		}
+	}
+	if tried == 0 {
+		t.Fatal("the property exercised nothing — the source/class enumeration is broken")
+	}
+	t.Logf("property held over %d source×alias combinations", tried)
 }

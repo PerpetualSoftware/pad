@@ -91,6 +91,166 @@ var identityRefFieldKeys = map[string]bool{
 	"role":   true,
 }
 
+// ─── ONE CANONICAL VIEW, ONE CONFLICT CHECK (BUG-2850, lead ruling after
+// codex round 13) ───────────────────────────────────────────────────────────
+//
+// Rounds 5, 7, 11, 12 and 13 each found a defect in the PREVIOUS round's fix,
+// and every one was the same shape: conflict handling had accreted a separate
+// guard at each site that noticed a problem — the generic path, the promoted
+// block, the alias check, the compat-ID block, the canonicalization predicate
+// — and each guard only covered the sources its author happened to think
+// about. Round 13's finding is the proof: `assign` and `assigned_user_id` are
+// two names for one target, exactly like `parent`/`plan`, and NO guard
+// compared them, because the alias guard knew only about hierarchy and the
+// compat guard knew only about same-name collisions.
+//
+// So the guards are replaced by one pass that resolves EVERY source to a
+// canonical key and refuses on the resulting map. A new alias pair is now one
+// line in fieldAliasGroups rather than a sixth guard with its own edges.
+
+// fieldAliasGroups maps a key to the canonical name of the thing it WRITES.
+// Members of a group are different names for one target, so two of them in
+// one call is ambiguous by construction — their value spaces are not even
+// comparable (`assign` takes a slug or email, `assigned_user_id` a UUID),
+// which is why co-occurrence refuses rather than trying to decide equality.
+var fieldAliasGroups = map[string]string{
+	"parent":           "parent",
+	"plan":             "parent",
+	"assign":           "assign",
+	"assigned_user_id": "assign",
+	"role":             "role",
+	"agent_role_id":    "role",
+}
+
+func canonicalFieldKey(k string) string {
+	if g, ok := fieldAliasGroups[k]; ok {
+		return g
+	}
+	return k
+}
+
+// fieldContribution is one source offering one value for one canonical key.
+type fieldContribution struct {
+	key    string // as the caller wrote it
+	source string // human-readable, for the refusal
+	value  string // normalized for comparison; "" when unstringifiable
+	nested bool   // a structure, which compares equal to nothing
+}
+
+// topLevelConflictKeys are the top-level params that can collide with a
+// `fields` entry. Built from the three sets so adding a key to any of them
+// cannot leave this pass behind.
+func topLevelConflictKeys() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, set := range []map[string]bool{padItemPromotedFieldKeys, compatIDFieldKeys} {
+		for k := range set {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	for k := range hierarchyPseudoFieldKeys {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// detectFieldConflicts builds the canonical map and refuses on it. It is the
+// ONLY place a conflict is decided; the emission code below runs knowing the
+// input is unambiguous.
+//
+// SCOPE: this runs only when a `fields` object is present, because
+// reshapeItemFields does. A top-level param colliding with a `field:[]` entry
+// and no `fields` object is OUTSIDE it and keeps its documented
+// last-write-wins resolution — deliberately, per the round-7 boundary the
+// lead confirmed, and pinned on both doors by the SameNameDuplicate tests.
+func detectFieldConflicts(prefix string, input, obj map[string]any, fieldByKey map[string]string) *mcp.CallToolResult {
+	groups := map[string][]fieldContribution{}
+	add := func(canonical string, c fieldContribution) {
+		groups[canonical] = append(groups[canonical], c)
+	}
+
+	objKeys := make([]string, 0, len(obj))
+	for k := range obj {
+		objKeys = append(objKeys, k)
+	}
+	sort.Strings(objKeys) // deterministic refusal text across runs
+	for _, k := range objKeys {
+		sv, err := stringifyFieldValue(obj[k])
+		add(canonicalFieldKey(k), fieldContribution{
+			key: k, source: "fields." + k, value: sv, nested: err != nil,
+		})
+	}
+
+	arrayKeys := make([]string, 0, len(fieldByKey))
+	for k := range fieldByKey {
+		arrayKeys = append(arrayKeys, k)
+	}
+	sort.Strings(arrayKeys)
+	for _, k := range arrayKeys {
+		add(canonicalFieldKey(k), fieldContribution{
+			key: k, source: "the field array entry " + strconv.Quote(k+"="+fieldByKey[k]), value: fieldByKey[k],
+		})
+	}
+
+	for _, k := range topLevelConflictKeys() {
+		v, present := input[k]
+		if !present || !topLevelValueProvided(k, v) {
+			continue
+		}
+		sv, err := stringifyFieldValue(v)
+		add(canonicalFieldKey(k), fieldContribution{
+			key: k, source: "the top-level " + k + " param", value: sv, nested: err != nil,
+		})
+	}
+
+	canonicals := make([]string, 0, len(groups))
+	for k := range groups {
+		canonicals = append(canonicals, k)
+	}
+	sort.Strings(canonicals)
+
+	for _, canonical := range canonicals {
+		contribs := groups[canonical]
+		if len(contribs) < 2 {
+			continue
+		}
+		// ALIAS COLLISION: two different NAMES for one target. Refused even
+		// when the values look equal — the names address the same thing
+		// through different vocabularies, so "equal" is not a question this
+		// layer can answer.
+		for i := range contribs {
+			if contribs[i].key == contribs[0].key {
+				continue
+			}
+			a, b := contribs[0], contribs[i]
+			return errStructured(prefix, fmt.Errorf(
+				"%s conflicts with %s — %q and %q are two names for the same thing and the doors resolve them differently; pass one of them",
+				a.source, b.source, a.key, b.key))
+		}
+		// SAME NAME, different sources: equal collapses, differing refuses.
+		for i := 1; i < len(contribs); i++ {
+			a, b := contribs[0], contribs[i]
+			if a.nested || b.nested {
+				return errStructured(prefix, fmt.Errorf(
+					"%s conflicts with %s — one key cannot be both a structured value and a string", a.source, b.source))
+			}
+			if a.value != b.value {
+				return errStructured(prefix, fmt.Errorf(
+					"%s conflicts with %s (%s vs %s) — pass one of them, or the same value in both",
+					a.source, b.source, a.value, b.value))
+			}
+		}
+	}
+	return nil
+}
+
 // topLevelValueProvided reports whether a top-level param VALUE counts as
 // supplied for the duplicate checks below (codex round 12).
 //
@@ -222,6 +382,14 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		return nil, errRes
 	}
 
+	// ONE conflict decision, over the canonical view of every source (lead
+	// ruling after codex round 13). Everything below this line runs knowing
+	// the input is unambiguous, which is why the per-key branches no longer
+	// carry guards of their own.
+	if errRes := detectFieldConflicts(prefix, input, obj, fieldByKey); errRes != nil {
+		return nil, errRes
+	}
+
 	// The ORIGINAL top-level hierarchy params, snapshotted before the loop
 	// starts writing promoted keys into `out` (codex round 9).
 	//
@@ -346,42 +514,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 				return nil, errStructured(prefix, fmt.Errorf(
 					"fields.%s must be a string ref (e.g. %q) — a %T here would be read as a hierarchy directive and could detach the item", k, "PLAN-12", v))
 			}
-			// ...AND `parent` AND `plan` ARE THE SAME DIRECTIVE, so the
-			// same-name conflict guards below do not cover them (codex round
-			// 6). `extractParentLink` (handlers_items.go) resolves the link
-			// with `for _, key := range []string{"parent", "plan"}` and NO
-			// early exit, so when both arrive the LATER key wins — the exact
-			// alias bypass BUG-2078's round-1 review found for clear_parent,
-			// arriving here through a different door. `fields:{"parent":"A"}`
-			// with `field:["plan=B"]` therefore relinks the item to B while
-			// reporting success for A.
-			//
-			// Refused rather than resolved, even when the two values are
-			// EQUAL. Two hierarchy directives in one call are ambiguous by
-			// construction, and this catalog already refuses the same shape
-			// for parent + clear_parent "including via the plan alias"
-			// (v0.19). Consistency with that ruling matters more than
-			// accepting a pair that happens to agree today.
-			for _, alias := range hierarchyAliasKeys {
-				if alias == k {
-					continue // same-name conflicts fall to the guards below
-				}
-				// Both aliases inside ONE `fields` object. Checked against
-				// `obj` directly so the refusal does not depend on which key
-				// sorts first or on `parent` happening to be a promoted key.
-				if other, has := obj[alias]; has {
-					return nil, errStructured(prefix, fmt.Errorf(
-						"fields.%s and fields.%s are the same hierarchy directive (%v vs %v) and the server applies whichever it reads last; pass one of them", k, alias, v, other))
-				}
-				if prev, has := fieldByKey[alias]; has {
-					return nil, errStructured(prefix, fmt.Errorf(
-						"fields.%s conflicts with the field array entry %q — %q and %q are the same hierarchy directive and the server applies whichever it reads last; pass one of them", k, alias+"="+prev, "parent", "plan"))
-				}
-				if existing, has := origHierarchyParams[alias]; has {
-					return nil, errStructured(prefix, fmt.Errorf(
-						"fields.%s conflicts with the top-level %s param (%v vs %v) — %q and %q are the same hierarchy directive; pass one of them", k, alias, v, existing, "parent", "plan"))
-				}
-			}
 		}
 
 		// IDENTITY-REFERENCE KEYS TAKE A STRING, ALWAYS (codex round 9).
@@ -410,26 +542,9 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		// because the top-level form has no CLI flag behind it. One call,
 		// two different people assigned.
 		if compatIDFieldKeys[k] {
-			// Routed through the SAME predicate as the promoted keys, so the
-			// "is this top-level value actually supplied?" rule has one home.
-			//
-			// It returns true for these keys — "" is a clear, not an absence
-			// — so behaviour here is unchanged. Writing it as a call rather
-			// than relying on that is deliberate: with the carve-out sitting
-			// in a helper this block never consulted, the carve-out was DEAD
-			// CODE and a mutant deleting it survived. My comment on it
-			// claimed it was load-bearing; the surviving mutant is what
-			// showed the claim was false (CONVE-28 — on SURVIVED, ask
-			// whether the mutant is faithful before blaming the test; here
-			// the mutant was faithful and the code was redundant).
+			// Conflicts are already decided; an equal duplicate just collapses
+			// so exactly one form reaches dispatch.
 			if existing, has := out[k]; has && topLevelValueProvided(k, existing) {
-				if !scalarEqual(existing, v) {
-					return nil, errStructured(prefix, fmt.Errorf(
-						"fields.%s conflicts with the top-level %s param (%v vs %v) — pass one of them, or the same value in both", k, k, v, existing))
-				}
-				// Equal duplicate: drop the top-level copy so exactly one
-				// form reaches dispatch, matching how the promoted keys
-				// collapse their duplicates.
 				delete(out, k)
 			}
 		}
@@ -442,63 +557,17 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		}
 
 		if padItemPromotedFieldKeys[k] {
-			// THE `field: ["k=v"]` CONFLICT GUARD RUNS HERE TOO (codex round
-			// 5). It lives on the generic path below, which a promoted key
-			// never reaches — so `fields.status` vs `field:["status=…"]` was
-			// the one ambiguity in this function that did NOT refuse. And it
-			// did not fail closed either: the promoted branch writes the
-			// top-level param while the array stays in out["field"], and both
-			// the HTTP mappers and the CLI overlay --field entries AFTER the
-			// named flags, so the array silently won. On `status` that
-			// cancels an item you asked to mark done; on `parent` it relinks
-			// or detaches it.
-			//
-			// Fourth round running that a guard was written on the generic
-			// path only. The top-level check below is not a substitute:
-			// `field` and the dedicated param are different doors, and
-			// covering one says nothing about the other.
-			if prev, inArray := fieldByKey[k]; inArray {
-				sv, err := stringifyFieldValue(v)
-				if err != nil {
-					// tags is the promoted key that takes a structure; the
-					// generic path refuses this same shape for the same
-					// reason, one key cannot be both.
-					return nil, errStructured(prefix, fmt.Errorf(
-						"fields.%s conflicts with the field array entry %q — one key cannot be both a structured value and a string", k, k+"="+prev))
-				}
-				if sv != prev {
-					return nil, errStructured(prefix, fmt.Errorf(
-						"fields.%s conflicts with the field array entry %q (%s vs %s) — pass one of them, or the same value in both", k, k+"="+prev, sv, prev))
-				}
-				// Equal duplicate: unambiguous, so it applies — ONCE, through
-				// the dedicated param, which means the array entry has to GO
-				// (codex round 6). Leaving it produced two writes of one
-				// value through two different mechanisms: `role` was resolved
-				// to agent_role_id AND written as a literal `role` key in the
-				// fields blob, where no schema declares it — so an
-				// equal-duplicate call silently created an undeclared field
-				// (and, since dc3fc2d5, a warning naming it). Same for
-				// `assign` and `tags`.
-				//
-				// Deleting from fieldByKey too, so a later key in this loop
-				// sees the entry as gone rather than conflicting with
-				// something no longer being sent.
+			// Conflicts are decided; what is left here is EMISSION. An equal
+			// duplicate in the field array is dropped so the value is written
+			// once, through the dedicated param.
+			if _, inArray := fieldByKey[k]; inArray {
 				dropFieldKeys[k] = true
 				delete(fieldByKey, k)
 			}
-			existing, has := out[k]
-			if has && !topLevelValueProvided(k, existing) {
-				// A blank top-level param is not a competing value; drop it
-				// so `fields` is simply the answer (codex round 12).
+			if existing, has := out[k]; has && !topLevelValueProvided(k, existing) {
 				delete(out, k)
-				has = false
-			}
-			if has {
-				if !scalarEqual(existing, v) {
-					return nil, errStructured(prefix, fmt.Errorf(
-						"fields.%s conflicts with the top-level %s param (%v vs %v) — pass one of them, or the same value in both", k, k, v, existing))
-				}
-				continue // equal duplicate: unambiguous, already applied
+			} else if has {
+				continue // equal duplicate, already applied
 			}
 			// tags promotes the native array; everything else is scalar.
 			if k != "tags" {
@@ -526,28 +595,13 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			// server-side coercion exists). A conflict with an existing
 			// `field` entry is still a conflict: one key cannot be both a
 			// string and a structure.
-			if prev, has := fieldByKey[k]; has {
-				return nil, errStructured(prefix, fmt.Errorf(
-					"fields.%s conflicts with the field array entry %q — one key cannot be both a structured value and a string", k, k+"="+prev))
-			}
+			// A structure has no key=value encoding; the native map carries it.
 			continue
 		}
-		if prev, has := fieldByKey[k]; has {
-			if prev != sv {
-				return nil, errStructured(prefix, fmt.Errorf(
-					"fields.%s conflicts with the field array entry %q (%s vs %s) — pass one of them, or the same value in both", k, k+"="+prev, sv, prev))
-			}
-			// EQUAL DUPLICATE — but the RETAINED entry may be the padded one
-			// (codex round 7). The index is normalized so ` effort=l` matches
-			// `fields:{"effort":"l"}`, yet the raw entry stayed in `field`
-			// and the CLI door does not trim: stdio would store an undeclared
-			// `" effort"` key and leave `effort` untouched — a silent
-			// mis-write created by the very normalization that let the
-			// duplicate be recognized. Re-emit the entry in canonical form so
-			// every door writes the key the caller meant.
-			//
-			// Only when the raw form actually differs, so a well-formed call
-			// keeps its array untouched and in order.
+		if _, has := fieldByKey[k]; has {
+			// Known equal (the pass above refused anything else). Re-emit
+			// canonically when the retained entry is padded, so every door
+			// writes the key the caller meant.
 			if hasNonCanonicalFieldEntry(fieldEntries, k, sv) {
 				dropFieldKeys[k] = true
 				reEmitFields[k] = sv
