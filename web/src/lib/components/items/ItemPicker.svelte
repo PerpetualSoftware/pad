@@ -157,6 +157,17 @@
 	let rawResults = $state<ItemIndexRow[]>([]);
 	let loading = $state(false);
 	/**
+	 * The last cold search FAILED, as opposed to returning nothing.
+	 *
+	 * Both leave `rawResults` empty and `loading` false, and for the result
+	 * list that is the same picture — "No results" either way. It is not the
+	 * same picture for the create row: an empty answer is evidence that no such
+	 * item exists, and a failed one is no evidence at all (codex round 3).
+	 * Offering to create on no evidence is how a duplicate gets minted while
+	 * the index is cold and the network is unhappy.
+	 */
+	let coldFailed = $state(false);
+	/**
 	 * The highlighted row's ID, not its index. Identity survives the list
 	 * changing under it — a delta landing, a late exclusion arriving — where an
 	 * index silently moves the highlight onto whatever slid into that position.
@@ -222,6 +233,7 @@
 	}
 	let showCreate = $derived.by((): boolean => {
 		if (!oncreate || !collection || !createTitle || loading) return false;
+		if (coldFailed) return false;
 		const wanted = createTitle.toLowerCase();
 		if (rawResults.some((r) => titleIs(r, wanted))) return false;
 		// Cold: no authoritative set to consult, so the ranked answer above is
@@ -295,10 +307,12 @@
 			const res = await api.search(q, { workspace: wsSlug, collection });
 			if (mySeq !== seq) return;
 			rawResults = (res.results ?? []).map((r) => r.item);
+			coldFailed = false;
 			activeId = null;
 		} catch {
 			if (mySeq !== seq) return;
 			rawResults = [];
+			coldFailed = true;
 			activeId = null;
 		} finally {
 			if (mySeq === seq) loading = false;
@@ -327,11 +341,22 @@
 		if (source === 'index' && isWarm()) {
 			loading = false;
 			rawResults = warmSearch(q);
+			coldFailed = false;
 			activeId = null;
 			return;
 		}
 
 		rawResults = [];
+		// NO `coldFailed` reset here, measured rather than assumed: mutants
+		// removing one here, on the empty-query branch, and in the
+		// workspace-reset effect all SURVIVED, so all three went. `loading` is
+		// true for the whole window this would cover and already suppresses the
+		// create row; when the request settles, both `coldSearch` branches
+		// assign `coldFailed` outright. The empty-query branch is covered
+		// twice over, since an empty query offers no create row at all. The
+		// ONE reachable reset is the warm branch above — the only path that
+		// produces a fresh verdict without going through `coldSearch`, so
+		// without it a single blip suppresses the affordance past hydration.
 		activeId = null;
 		loading = true;
 		debounceTimer = setTimeout(() => coldSearch(q, mySeq), COLD_SEARCH_DEBOUNCE_MS);

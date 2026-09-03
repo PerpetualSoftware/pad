@@ -980,6 +980,53 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		expect(createRow()).toBeNull();
 	});
 
+	it('offers nothing to create when the cold search FAILED', async () => {
+		// codex round 3 P2. A failed search and an empty one leave identical
+		// state — no rows, not loading — and the result list is right to render
+		// both as "No results". The create row is not: an empty answer says no
+		// such item exists, a failed one says nothing at all, and offering to
+		// create on no evidence is how the duplicate gets minted. Same rule the
+		// permission gate follows: no answer must not read as permission.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockRejectedValue(new Error('network'));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(document.body.textContent).toContain('No results'));
+		expect(createRow()).toBeNull();
+
+		// And it must not latch: the next query gets a fresh verdict.
+		searchApi.mockResolvedValue({ results: [] });
+		await type('Purple Haze');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+	});
+
+	it('a cold failure does not outlive hydration — the warm answer supersedes it', async () => {
+		// The reachable half of "must not latch". The failure flag is cleared by
+		// whatever produces the NEXT verdict, and the warm branch never reaches
+		// `coldSearch` to clear it on the way through — so without its own reset
+		// a single network blip suppresses the create row for the rest of the
+		// session, even once the authoritative in-RAM answer is available.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockRejectedValue(new Error('network'));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(document.body.textContent).toContain('No results'));
+		expect(createRow()).toBeNull();
+
+		setBootstrapState('ready');
+		bumpEpoch();
+		await tick();
+		await tick();
+
+		expect(createRow()).not.toBeNull();
+	});
+
 	it('CONTROL: a cold index falls back to the returned rows and still offers create', async () => {
 		// The collection scan needs a hydrated index. While cold there is no
 		// authoritative answer to fall back ON, so the behaviour is the
