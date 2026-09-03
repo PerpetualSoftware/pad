@@ -191,7 +191,12 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// TWO alias mechanisms with different reach. One is what the ruling
 	// asked for; this is it.
 	obj, _ := input["fields"].(map[string]any) // nil when absent; shape errors belong to reshapeItemFields
-	fieldsPresent := obj != nil
+	// NOTE: there is deliberately no `fieldsPresent` here any more. Both
+	// gates below ask the per-KEY question — is THIS key carried by the
+	// object — and rounds 17 and 19 were each a per-request predicate
+	// standing in for it. The variable's absence is the fix's shape: if a
+	// future gate wants "does the request have a fields object", that is
+	// almost certainly the same mistake a third time.
 	// The INDEX is deliberately discarded here — this pass walks the raw
 	// entries so two entries naming one key stay two contributions (round 18).
 	fieldEntries, _, errRes := parseFieldArray(prefix, input["field"])
@@ -211,8 +216,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	sort.Strings(objKeys) // deterministic refusal text across runs
 	for _, k := range objKeys {
 		sv, err := stringifyFieldValue(obj[k])
+		// COMPARED TRIMMED, EMITTED RAW (codex round 19). Entry values are
+		// trimmed for comparison because ingestFieldKVP trims them, so
+		// comparing a trimmed entry against an untrimmed `fields` value was
+		// apples to oranges: `fields:{"note":" x "}` with `field:["note= x "]`
+		// read as " x " vs "x" and refused, though both doors write " x ".
+		// Only `value` (the comparison key) is trimmed; `raw` keeps the
+		// original, and the canonical re-emission still carries the untrimmed
+		// value to the wire.
 		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "fields." + k, value: sv, nested: err != nil, raw: obj[k],
+			key: k, source: "fields." + k, value: strings.TrimSpace(sv), nested: err != nil, raw: obj[k],
 		})
 	}
 
@@ -371,7 +384,17 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// I generalised the round-7 premise from the params I had verified to
 		// the two whose whole nature is being unverifiable that way. This is
 		// the narrowing.
-		if !fieldsPresent && !compatIDFieldKeys[canonical] && !compatIDFieldKeys[contribs[0].key] {
+		// PER-KEY HERE TOO (codex round 19). Round 17 made the padded gate
+		// per-key and left this one per-request — the same mistake in the
+		// sibling gate, one round later. With `fields:{"other":"x"}` and
+		// `field:["effort=l","effort=s"]`, `effort` is not in the object,
+		// nothing arbitrates it but the doors themselves, and both keep the
+		// last entry — so refusing it was a false refusal on a call that
+		// resolves deterministically.
+		//
+		// `canonicalized` is exactly the right question and is already
+		// computed above: is THIS key carried by the `fields` object.
+		if !canonicalized && !compatIDFieldKeys[canonical] && !compatIDFieldKeys[contribs[0].key] {
 			continue
 		}
 		for i := 1; i < len(contribs); i++ {

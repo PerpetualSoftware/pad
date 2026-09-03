@@ -1932,3 +1932,102 @@ func TestPadItemUpdate_DuplicateFieldEntriesKeepTheirMultiplicity(t *testing.T) 
 		}
 	})
 }
+
+// --- codex round 19 ---
+
+// TestPadItemUpdate_UnrelatedFieldsObjectDoesNotForceRefusal: a `fields`
+// object carrying some OTHER key must not drag an unrelated duplicate into
+// conflict resolution (BUG-2850, codex round 19).
+//
+// Round 17 made the padded gate per-key and left the SAME-NAME gate
+// per-request — the same mistake in the sibling gate, one round later. With
+// `fields:{"other":"x"}` and `field:["effort=l","effort=s"]`, `effort` is not
+// in the object, nothing arbitrates it but the doors themselves, and both keep
+// the last entry. Refusing it was a false refusal on a call that resolves
+// deterministically.
+//
+// The second leg is the control: when the object DOES carry the key it is a
+// genuine third source, and differing values must still refuse.
+func TestPadItemUpdate_UnrelatedFieldsObjectDoesNotForceRefusal(t *testing.T) {
+	t.Run("fields carries another key — resolves", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"field":  []any{"effort=l", "effort=s"},
+			"fields": map[string]any{"other": "x"},
+		})
+		if isErr {
+			t.Fatalf("nothing arbitrates effort but the doors, which agree: %s", msg)
+		}
+		if !argsContainPair(disp.gotArgs, "--field", "effort=s") {
+			t.Errorf("the last entry must reach the door: %v", disp.gotArgs)
+		}
+	})
+	t.Run("fields carries THE key — still refuses", func(t *testing.T) {
+		_, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"field":  []any{"effort=l"},
+			"fields": map[string]any{"effort": "s"},
+		})
+		if !isErr {
+			t.Fatalf("the object is a genuine third source; differing values must refuse: %s", msg)
+		}
+	})
+}
+
+// TestPadItemUpdate_WhitespacePreservingValuesCompareLikeWithLike: entry
+// values are trimmed for COMPARISON because ingestFieldKVP trims them, so
+// comparing them against an untrimmed `fields` value was apples to oranges
+// (BUG-2850, codex round 19).
+//
+// `fields:{"note":" x "}` with `field:["note= x "]` read as " x " vs "x" and
+// refused, though both doors write " x ". The assertion is on what reaches
+// the door, not merely on success: trimming for comparison must not trim what
+// is WRITTEN, or the fix would silently retype the caller's value.
+func TestPadItemUpdate_WhitespacePreservingValuesCompareLikeWithLike(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update", "ref": "TASK-5",
+		"fields": map[string]any{"note": " x "},
+		"field":  []any{"note= x "},
+	})
+	if isErr {
+		t.Fatalf("both doors write \" x \"; this is one value stated twice: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "note= x ") {
+		t.Errorf("the untrimmed value must survive to the wire; comparison-trimming must not become write-trimming: %v", disp.gotArgs)
+	}
+}
+
+// ...and the same value through a NON-canonical entry, which forces the
+// re-emission path to run. Without this leg the assertion above is
+// unreachable for that path: its entry is already canonical, so nothing is
+// re-emitted and a mutant that trimmed the EMITTED value survived untouched
+// (CONVE-28 — the mutant was faithful, the test could not see it).
+//
+// Here the KEY is padded, so the entry is re-emitted, and the value it
+// carries must still be the untrimmed one the caller sent.
+func TestPadItemUpdate_ReEmittedValueKeepsItsWhitespace(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update", "ref": "TASK-5",
+		"fields": map[string]any{"note": " x "},
+		"field":  []any{"note = x "},
+	})
+	if isErr {
+		t.Fatalf("padding around the KEY is canonicalized, not a conflict: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "note= x ") {
+		t.Errorf("the re-emitted entry must carry the caller's untrimmed VALUE with the canonical key: %v", disp.gotArgs)
+	}
+}
+
+// ...and genuinely different values are still refused, so trimming for
+// comparison did not turn into "any two values agree".
+func TestPadItemUpdate_TrimmedComparisonStillCatchesRealDifferences(t *testing.T) {
+	_, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update", "ref": "TASK-5",
+		"fields": map[string]any{"note": " x "},
+		"field":  []any{"note= y "},
+	})
+	if !isErr {
+		t.Fatalf("x and y are different values however they are padded: %s", msg)
+	}
+}
