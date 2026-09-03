@@ -91,6 +91,43 @@ var identityRefFieldKeys = map[string]bool{
 	"role":   true,
 }
 
+// topLevelValueProvided reports whether a top-level param VALUE counts as
+// supplied for the duplicate checks below (codex round 12).
+//
+// An empty string does not. That is the convention every schema-declared
+// string on this tool follows — promotedParamValue treats "" as absent, the
+// CLI's `status != ""` guards do, and `assign: ""` is documented as inert —
+// so a client that zero-fills its optional params was being REFUSED for
+// asking one question, on every promoted key at once.
+//
+// Round 10 fixed exactly this for the hierarchy keys and I never asked
+// whether the same reasoning covered their siblings; it did, for all six.
+// CONVE-18: the reviewer names an instance, the fix owes the population. The
+// probe that drove all eight keys is what turned one named key into six —
+// and, below, into the two that are NOT part of the class.
+//
+// THE COMPAT ID KEYS ARE EXCLUDED. For `assigned_user_id` / `agent_role_id`
+// an empty string is not absence — it is a CLEAR to NULL, the deliberate
+// v0.16 semantics (see dispatch_http_advanced.go, which forwards "" verbatim
+// for exactly these two). So a blank there IS an effective directive and DOES
+// conflict with a non-empty `fields` value, the same way `field:["parent="]`
+// does. Applying the round-12 finding uniformly would have discarded a clear
+// in favour of the `fields` value — a spurious refusal traded for a silent
+// wrong write, which is the worse half of the trade.
+//
+// Both call sites consult this, including the compat block that the carve-out
+// is FOR. That is not decoration: when only the promoted block called it, the
+// carve-out was unreachable and a mutant deleting it survived every test.
+func topLevelValueProvided(key string, v any) bool {
+	if compatIDFieldKeys[key] {
+		return true // "" is a clear here, not an absence
+	}
+	if str, isString := v.(string); isString && str == "" {
+		return false
+	}
+	return true
+}
+
 // compatIDFieldKeys are the v0.16 remote-transport compat params. They are
 // deliberately never schema-declared (see version.go), which is exactly why
 // they need naming here: nothing else in this file knows they can arrive at
@@ -218,7 +255,7 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		// effective and stay conflicts. The asymmetry is real and load-
 		// bearing: one is a param left blank, the other is an explicit
 		// instruction that happens to look like one.
-		if str, isString := v.(string); isString && str == "" {
+		if !topLevelValueProvided(alias, v) {
 			continue
 		}
 		origHierarchyParams[alias] = v
@@ -373,7 +410,19 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		// because the top-level form has no CLI flag behind it. One call,
 		// two different people assigned.
 		if compatIDFieldKeys[k] {
-			if existing, has := out[k]; has {
+			// Routed through the SAME predicate as the promoted keys, so the
+			// "is this top-level value actually supplied?" rule has one home.
+			//
+			// It returns true for these keys — "" is a clear, not an absence
+			// — so behaviour here is unchanged. Writing it as a call rather
+			// than relying on that is deliberate: with the carve-out sitting
+			// in a helper this block never consulted, the carve-out was DEAD
+			// CODE and a mutant deleting it survived. My comment on it
+			// claimed it was load-bearing; the surviving mutant is what
+			// showed the claim was false (CONVE-28 — on SURVIVED, ask
+			// whether the mutant is faithful before blaming the test; here
+			// the mutant was faithful and the code was redundant).
+			if existing, has := out[k]; has && topLevelValueProvided(k, existing) {
 				if !scalarEqual(existing, v) {
 					return nil, errStructured(prefix, fmt.Errorf(
 						"fields.%s conflicts with the top-level %s param (%v vs %v) — pass one of them, or the same value in both", k, k, v, existing))
@@ -438,6 +487,12 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 				delete(fieldByKey, k)
 			}
 			existing, has := out[k]
+			if has && !topLevelValueProvided(k, existing) {
+				// A blank top-level param is not a competing value; drop it
+				// so `fields` is simply the answer (codex round 12).
+				delete(out, k)
+				has = false
+			}
 			if has {
 				if !scalarEqual(existing, v) {
 					return nil, errStructured(prefix, fmt.Errorf(

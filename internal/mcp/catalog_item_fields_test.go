@@ -1234,3 +1234,77 @@ func TestPadItemUpdate_CompatIDEqualDuplicateCollapses(t *testing.T) {
 		t.Errorf("the value must still reach dispatch exactly once: %v", disp.gotArgs)
 	}
 }
+
+// --- codex round 12 ---
+
+// TestPadItemUpdate_BlankTopLevelParamDoesNotBlockFields: a zero-filled
+// optional param must not refuse the `fields` answer to the same question
+// (BUG-2850, codex round 12).
+//
+// The reviewer named `status`. The probe drove every key that can arrive at
+// the top level and all six promoted ones behaved identically, so this is the
+// POPULATION rather than the instance (CONVE-18). Round 10 fixed exactly this
+// for the hierarchy keys and I did not ask whether the same reasoning covered
+// their siblings — it did.
+//
+// `""` is "not supplied" everywhere else on this surface: promotedParamValue
+// treats it as absent, the CLI's `status != ""` guards do, `assign: ""` is
+// documented inert. A client that fills declared optional params with their
+// zero value was therefore refused on every promoted key at once.
+func TestPadItemUpdate_BlankTopLevelParamDoesNotBlockFields(t *testing.T) {
+	cases := map[string]string{
+		"status":   "done",
+		"priority": "high",
+		"category": "infra",
+		"parent":   "PLAN-12",
+		"role":     "implementer",
+		"assign":   "dave",
+	}
+	for key, val := range cases {
+		t.Run(key, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				key:      "",
+				"fields": map[string]any{key: val},
+			})
+			if isErr {
+				t.Fatalf("a blank %s is not a competing value; expected success, got: %s", key, msg)
+			}
+			if len(disp.gotPath) == 0 {
+				t.Fatal("expected the update to dispatch")
+			}
+			if !argsContainPair(disp.gotArgs, "--"+key, val) {
+				t.Errorf("the fields value must reach dispatch: %v", disp.gotArgs)
+			}
+		})
+	}
+}
+
+// ...and the COMPAT ID KEYS are excluded from that rule, because for them an
+// empty string is not absence — it is a CLEAR to NULL, the deliberate v0.16
+// semantics (dispatch_http_advanced.go forwards "" verbatim for exactly these
+// two). So a blank there IS an effective directive and still conflicts.
+//
+// This is the leg that stops the round-12 fix being applied uniformly. Had I
+// taken the finding at face value across every top-level key, a clear would
+// have been silently discarded in favour of the `fields` value — turning a
+// spurious refusal into a silent wrong write, which is the worse trade.
+func TestPadItemUpdate_BlankCompatIDIsAClearAndStillConflicts(t *testing.T) {
+	for _, key := range []string{"assigned_user_id", "agent_role_id"} {
+		t.Run(key, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				key:      "",
+				"fields": map[string]any{key: "user-B"},
+			})
+			if !isErr {
+				t.Fatalf("a blank %s is a CLEAR, so it conflicts with a set; got success: %s (args %v)", key, msg, disp.gotArgs)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
