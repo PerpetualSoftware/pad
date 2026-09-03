@@ -89,12 +89,15 @@ handlers — onchange is never called.
 	 * read as a stale target, since that would flash every relation field into a
 	 * broken state on first paint.
 	 */
+	let knownCollectionSlugs = $derived.by((): Set<string> | null => {
+		if (!wsSlug || !collectionStore.collectionsAreFreshFor(wsSlug)) return null;
+		return new Set((collectionStore.collections ?? []).map((c) => c.slug));
+	});
+
 	let relationTarget = $derived.by((): 'live' | 'stale' | 'unknown' => {
 		if (!isRelation || !wsSlug || !field.collection) return 'unknown';
-		if (!collectionStore.collectionsAreFreshFor(wsSlug)) return 'unknown';
-		return (collectionStore.collections ?? []).some((c) => c.slug === field.collection)
-			? 'live'
-			: 'stale';
+		if (!knownCollectionSlugs) return 'unknown';
+		return knownCollectionSlugs.has(field.collection) ? 'live' : 'stale';
 	});
 
 	// A picker aimed at a renamed collection would list NOTHING — `getByCollection`
@@ -125,11 +128,31 @@ handlers — onchange is never called.
 		//    (workspace-wide, not collection-scoped); I wrote that finding down and
 		//    then reproduced it here.
 		if (row.id !== raw) return null;
-		// The collection check applies only while the declared target is one that
-		// still EXISTS. After a rename it names nothing, and enforcing it then
-		// would report every stored value as unresolved — turning a schema
-		// problem into apparent data loss on data that is completely fine.
-		if (relationTarget === 'live' && row.collection_slug !== field.collection) return null;
+		// The collection mismatch is only EVIDENCE that the value is wrong when
+		// the collection list and the item index agree about the world — that is,
+		// when both the declared target and the row's own collection are slugs
+		// the current list knows.
+		//
+		// Two ways they disagree, and neither is the value's fault:
+		//   * the target was renamed, so it names nothing (`relationTarget`
+		//     'stale');
+		//   * the rename has been applied to the INDEX but not yet to the
+		//     collection list — `retagCollection` moves the rows immediately and
+		//     `loadCollections` is fired without being awaited (and with its
+		//     rejection swallowed by `void`), so the row's new slug is unknown to
+		//     a list that still lists the old one. That window is brief when the
+		//     refetch succeeds and PERMANENT when it fails (codex round 2 P1).
+		//
+		// Requiring both to be known collapses both cases to "don't judge", while
+		// a genuine cross-collection value — target `colors`, row `tasks`, both
+		// live — still resolves to null.
+		if (
+			relationTarget === 'live' &&
+			knownCollectionSlugs?.has(row.collection_slug ?? '') &&
+			row.collection_slug !== field.collection
+		) {
+			return null;
+		}
 		return row;
 	});
 	let relationState = $derived.by((): 'empty' | 'live' | 'deleted' | 'unresolved' => {

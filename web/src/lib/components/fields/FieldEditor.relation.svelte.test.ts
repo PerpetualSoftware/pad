@@ -158,6 +158,35 @@ describe('FieldEditor — a renamed target collection must not look like data lo
 		expect(document.body.textContent).not.toMatch(/unresolved/i);
 	});
 
+	it('survives the window where the index is retagged but the collection list is not', async () => {
+		// codex round 2 P1. `retagCollection` moves the ROWS immediately;
+		// `loadCollections` is fired with `void` — not awaited, rejection
+		// swallowed. So there is a window where the list still holds the OLD slug
+		// (so the target reads 'live') while the row already carries the NEW one.
+		// Judging the mismatch there reports the value as unresolved, and if that
+		// refetch FAILS the state is permanent, not transient.
+		collectionStoreMock.collections = [{ slug: 'colors' }]; // stale list: pre-rename
+		const retagged = { ...LIVE, collection_slug: 'colours-renamed' };
+		rows.set(retagged.id, retagged);
+		render(FieldEditor, { props: { field, value: retagged.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
+		await tick();
+		expect(document.body.textContent).toContain('Red');
+		expect(document.body.textContent).not.toMatch(/unresolved/i);
+	});
+
+	it('CONTROL: a genuine cross-collection value is still rejected when both slugs are known', async () => {
+		// The leg that stops the two guards above from being "never judge". Both
+		// `colors` and `tasks` are live, so the list and the index agree and the
+		// mismatch IS evidence.
+		collectionStoreMock.collections = [{ slug: 'colors' }, { slug: 'tasks' }];
+		const foreign = { ...LIVE, id: 'uuid-foreign2', title: 'A Task', collection_slug: 'tasks' };
+		rows.set(foreign.id, foreign);
+		render(FieldEditor, { props: { field, value: foreign.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
+		await tick();
+		expect(document.body.textContent).toMatch(/unresolved/i);
+		expect(document.body.textContent).not.toContain('A Task');
+	});
+
 	it('goes read-only rather than offering a picker that can never match', async () => {
 		collectionStoreMock.collections = [{ slug: 'colours-renamed' }];
 		render(FieldEditor, { props: { field, value: '', wsSlug: 'ws', username: 'dave', readonly: false, onchange: () => {} } });
