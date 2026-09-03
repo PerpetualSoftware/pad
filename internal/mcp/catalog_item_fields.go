@@ -82,6 +82,15 @@ var hierarchyPseudoFieldKeys = map[string]bool{
 // text when one alias conflicts with the other.
 var hierarchyAliasKeys = []string{"parent", "plan"}
 
+// identityRefFieldKeys are promoted keys whose value NAMES something (a user,
+// a role) rather than being a value in its own right. They take a string and
+// nothing else — see the refusal in reshapeItemFields for why a number is
+// worse than useless here.
+var identityRefFieldKeys = map[string]bool{
+	"assign": true,
+	"role":   true,
+}
+
 var padItemPromotedFieldKeys = map[string]bool{
 	"status":   true,
 	"priority": true,
@@ -167,6 +176,25 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		return nil, errRes
 	}
 
+	// The ORIGINAL top-level hierarchy params, snapshotted before the loop
+	// starts writing promoted keys into `out` (codex round 9).
+	//
+	// The alias check below reads this rather than `out`. Reading `out` made
+	// the guard work by ACCIDENT for a pair arriving wholly inside `fields`:
+	// keys are processed in sorted order, so `parent` was promoted into
+	// out["parent"] and `plan` then collided with it. Right answer, wrong
+	// mechanism — it says "conflicts with the top-level parent param" to a
+	// caller who passed no such param, and it would evaporate the day
+	// `parent` left padItemPromotedFieldKeys. The fields-vs-fields case is
+	// now checked directly against `obj`, and this snapshot keeps the
+	// top-level message honest.
+	origHierarchyParams := map[string]any{}
+	for _, alias := range hierarchyAliasKeys {
+		if v, ok := input[alias]; ok {
+			origHierarchyParams[alias] = v
+		}
+	}
+
 	// The same values with their JSON types intact (BUG-2850).
 	fieldsNative := map[string]any{}
 
@@ -250,14 +278,43 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 				if alias == k {
 					continue // same-name conflicts fall to the guards below
 				}
+				// Both aliases inside ONE `fields` object. Checked against
+				// `obj` directly so the refusal does not depend on which key
+				// sorts first or on `parent` happening to be a promoted key.
+				if other, has := obj[alias]; has {
+					return nil, errStructured(prefix, fmt.Errorf(
+						"fields.%s and fields.%s are the same hierarchy directive (%v vs %v) and the server applies whichever it reads last; pass one of them", k, alias, v, other))
+				}
 				if prev, has := fieldByKey[alias]; has {
 					return nil, errStructured(prefix, fmt.Errorf(
 						"fields.%s conflicts with the field array entry %q — %q and %q are the same hierarchy directive and the server applies whichever it reads last; pass one of them", k, alias+"="+prev, "parent", "plan"))
 				}
-				if existing, has := out[alias]; has {
+				if existing, has := origHierarchyParams[alias]; has {
 					return nil, errStructured(prefix, fmt.Errorf(
 						"fields.%s conflicts with the top-level %s param (%v vs %v) — %q and %q are the same hierarchy directive; pass one of them", k, alias, v, existing, "parent", "plan"))
 				}
+			}
+		}
+
+		// IDENTITY-REFERENCE KEYS TAKE A STRING, ALWAYS (codex round 9).
+		// `assign` and `role` name a person or a role — a slug, an email, a
+		// UUID. A number has no meaning for either, and the two doors
+		// disagreed about what to do with one: the HTTP dispatcher's
+		// `rawAssign.(string)` turns it into "" and treats it as NOT
+		// PROVIDED, silently dropping the write, while stdio emits
+		// `--assign 123` and the CLI fails loudly on the lookup. Same call,
+		// one door silent and one door red.
+		//
+		// Refused here, at the door-independent layer, rather than taught to
+		// each dispatcher — that is what stops them drifting again. Note this
+		// does NOT walk back round 6's decision to accept non-string promoted
+		// values generally: `priority` may legitimately be a number in a
+		// custom schema, and create has always passed such values through.
+		// These two keys are references, not values.
+		if identityRefFieldKeys[k] {
+			if _, isString := v.(string); !isString {
+				return nil, errStructured(prefix, fmt.Errorf(
+					"fields.%s must be a string (a slug, email, or id) — a %T is silently dropped by one transport and rejected by the other", k, v))
 			}
 		}
 

@@ -936,3 +936,130 @@ func TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesCollapse(t *testing.T) {
 		t.Errorf("--field emitted %d times, want exactly 1: %v", count, disp.gotArgs)
 	}
 }
+
+// --- codex round 9 ---
+
+// TestPadItemUpdate_BothAliasesInOneFieldsObject: the round-9 P1 was REFUTED —
+// this pair was already refused — but it was refused by ACCIDENT, and the
+// accident is what this pins against.
+//
+// Keys are processed in sorted order, so `parent` was promoted into
+// out["parent"] and `plan` then collided with it one iteration later. Right
+// answer, wrong mechanism: the refusal depended on `parent` sorting before
+// `plan` AND on `parent` being a promoted key, and it told the caller their
+// value conflicted with "the top-level parent param" when they had passed no
+// such param. The check now reads the `fields` object directly.
+//
+// Both orderings are driven because a map literal's order says nothing about
+// iteration order, and the error text is asserted because a refusal that
+// names a param the caller never sent is a debugging cost even when the
+// verdict is right.
+func TestPadItemUpdate_BothAliasesInOneFieldsObject(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"parent": "PLAN-A", "plan": "PLAN-B"},
+	})
+	if !isErr {
+		t.Fatalf("expected structured refusal, got success: %s", msg)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Errorf("ambiguous call must not dispatch; dispatched %v", disp.gotPath)
+	}
+	if !strings.Contains(msg, "fields.parent") || !strings.Contains(msg, "fields.plan") {
+		t.Errorf("error should name BOTH as fields keys: %s", msg)
+	}
+	if strings.Contains(msg, "top-level") {
+		t.Errorf("no top-level param was passed; the error must not blame one: %s", msg)
+	}
+}
+
+// ...and the guard must not depend on `parent` being a promoted key. This is
+// the mutation the round-9 finding would have become real through: drop
+// `parent` from padItemPromotedFieldKeys and the old out[]-based check goes
+// silent, because nothing writes out["parent"] any more.
+func TestPadItemUpdate_AliasGuardDoesNotDependOnPromotion(t *testing.T) {
+	if !padItemPromotedFieldKeys["parent"] {
+		t.Skip("parent is no longer promoted; this test's premise has changed")
+	}
+	// `plan` is NOT a promoted key, so a pair where the non-promoted alias is
+	// the only one that could have populated `out` exercises the direct check.
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"plan": "PLAN-B", "parent": "PLAN-A"},
+	})
+	if !isErr {
+		t.Fatalf("expected structured refusal, got success: %s", msg)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+	}
+}
+
+// TestPadItemUpdate_NonStringIdentityRefRefused: `assign` and `role` name a
+// person or a role, so a number is refused at the door-independent layer
+// (BUG-2850, codex round 9 P2).
+//
+// The two doors disagreed about a numeric value: the HTTP dispatcher's
+// `rawAssign.(string)` turns it into "" and treats it as NOT PROVIDED —
+// silently dropping the write — while stdio emits `--assign 123` and the CLI
+// fails loudly on the lookup. Same call, one door silent and one red.
+//
+// This does NOT walk back round 6's decision to accept non-string promoted
+// values in general; the control leg below is that decision, still standing.
+func TestPadItemUpdate_NonStringIdentityRefRefused(t *testing.T) {
+	for _, key := range []string{"assign", "role"} {
+		t.Run(key, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				"fields": map[string]any{key: float64(123)},
+			})
+			if !isErr {
+				t.Fatalf("expected structured refusal, got success: %s (args %v)", msg, disp.gotArgs)
+			}
+			if !strings.Contains(msg, key) {
+				t.Errorf("error should name the key: %s", msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...and a numeric value on a NON-identity promoted key is still accepted —
+// round 6's fix, which a blanket "promoted keys must be strings" rule would
+// have silently undone. `priority` can legitimately be a number in a custom
+// schema, and create has always passed such values through.
+func TestPadItemUpdate_NonStringPriorityStillAccepted(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"priority": float64(3)},
+	})
+	if isErr {
+		t.Fatalf("a numeric priority must still be accepted: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--priority", "3") {
+		t.Errorf("priority lost: %v", disp.gotArgs)
+	}
+}
+
+// ...and a STRING assign/role is untouched, so the refusal is about the type
+// and not about the keys.
+func TestPadItemUpdate_StringIdentityRefStillAccepted(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"assign": "dave", "role": "implementer"},
+	})
+	if isErr {
+		t.Fatalf("string identity refs must still be accepted: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--assign", "dave") ||
+		!argsContainPair(disp.gotArgs, "--role", "implementer") {
+		t.Errorf("identity refs lost: %v", disp.gotArgs)
+	}
+}
