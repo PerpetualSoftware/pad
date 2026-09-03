@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -420,5 +421,87 @@ func TestConcurrentRenamesOfTheSameCollectionLeaveRelationsPointingAtIt(t *testi
 		if got := relationTargetOf(t, s, cars.ID, "color"); got != final.Slug {
 			t.Fatalf("round %d: relation points at %q but the collection is %q", round, got, final.Slug)
 		}
+	}
+}
+
+func TestRenameNeverRegressesAMigratedSiblingsToken(t *testing.T) {
+	// codex round 2 P1. A sibling updated between the rename's timestamp and
+	// the scan already holds a NEWER token; stamping the rename's value on it
+	// moves the OCC token BACKWARDS, breaking the strictly-increasing invariant
+	// and re-validating a token the client should have lost.
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "RelRenameNoRegress")
+
+	target, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Colors", Slug: "colors"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	cars, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Cars", Slug: "cars", Schema: relationSchema(t, "color", "colors"),
+	})
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+
+	// Push the sibling's token well past anything this rename will compute.
+	future := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(s.q("UPDATE collections SET updated_at = ? WHERE id = ?"), future, cars.ID); err != nil {
+		t.Fatalf("seed future token: %v", err)
+	}
+	before, err := s.GetCollection(cars.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+
+	name := "Palette"
+	renamed, err := s.UpdateCollection(target.ID, models.CollectionUpdate{Name: &name})
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	after, err := s.GetCollection(cars.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	if !after.UpdatedAt.After(before.UpdatedAt) {
+		t.Errorf("token regressed or stalled: before=%v after=%v", before.UpdatedAt, after.UpdatedAt)
+	}
+	// The migration itself still has to have happened.
+	if got := relationTargetOf(t, s, cars.ID, "color"); got != renamed.Slug {
+		t.Errorf("target = %q, want %q", got, renamed.Slug)
+	}
+}
+
+func TestRenamePreservesLargeIntegersInUnknownSchemaProperties(t *testing.T) {
+	// codex round 2 P2. Decoding into `interface{}` turns every JSON number
+	// into float64, so an integer past 2^53 comes back CHANGED and the rename
+	// silently corrupts a property it was only meant to carry through.
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "RelRenameBigInt")
+
+	target, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Colors", Slug: "colors"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	const big = "9007199254740993" // 2^53 + 1: not representable as float64
+	cars, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Cars", Slug: "cars",
+		Schema: `{"fields":[{"key":"color","label":"Rel","type":"relation","collection":"colors","future_id":` + big + `}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+
+	name := "Palette"
+	if _, err := s.UpdateCollection(target.ID, models.CollectionUpdate{Name: &name}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	after, err := s.GetCollection(cars.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	if !strings.Contains(after.Schema, big) {
+		t.Errorf("large integer corrupted by the rewrite: %s", after.Schema)
 	}
 }

@@ -1162,7 +1162,7 @@ func isReservedCollectionSlug(slug string) bool {
 // needs the same rewrite — and this runs AFTER the caller's own `schema` write in
 // the transaction, so a simultaneous schema edit composes rather than reverting.
 func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSlug string, updatedAt interface{}) error {
-	listQ := "SELECT id, schema FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id"
+	listQ := "SELECT id, schema, updated_at FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY id"
 	if s.dialect.Driver() == DriverPostgres {
 		listQ += " FOR UPDATE"
 	}
@@ -1172,14 +1172,17 @@ func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSl
 	}
 
 	type pending struct {
-		id     string
-		schema string
+		id      string
+		schema  string
+		stampAt string
 	}
 	var updates []pending
 
+	renameToken := parseTime(fmt.Sprint(updatedAt))
+
 	for rows.Next() {
-		var id, raw string
-		if err := rows.Scan(&id, &raw); err != nil {
+		var id, raw, rowUpdatedAt string
+		if err := rows.Scan(&id, &raw, &rowUpdatedAt); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan collection: %w", err)
 		}
@@ -1193,7 +1196,17 @@ func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSl
 		if !changed {
 			continue
 		}
-		updates = append(updates, pending{id: id, schema: rewritten})
+		// Never REGRESS a token. A sibling updated between this rename's
+		// timestamp and the scan already holds a NEWER one, and stamping the
+		// rename's value on it would move the optimistic-concurrency token
+		// backwards — breaking the strictly-increasing invariant the guard above
+		// this transaction exists to maintain, and re-validating a token a
+		// client should have lost (codex round 2 P1).
+		stamp := fmt.Sprint(updatedAt)
+		if cur := parseTime(rowUpdatedAt); !renameToken.After(cur) {
+			stamp = cur.Add(time.Nanosecond).UTC().Format(time.RFC3339Nano)
+		}
+		updates = append(updates, pending{id: id, schema: rewritten, stampAt: stamp})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -1207,7 +1220,7 @@ func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSl
 	for _, u := range updates {
 		if _, err := tx.Exec(
 			s.q("UPDATE collections SET schema = ?, updated_at = ? WHERE id = ?"),
-			u.schema, updatedAt, u.id,
+			u.schema, u.stampAt, u.id,
 		); err != nil {
 			return fmt.Errorf("rewrite schema for %s: %w", u.id, err)
 		}
@@ -1222,8 +1235,15 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 	if strings.TrimSpace(raw) == "" {
 		return raw, false, nil
 	}
+	// `UseNumber` keeps integers as their literal text. A plain unmarshal into
+	// `interface{}` decodes every number as float64, so a large integer in a
+	// property this binary does not know about would come back CHANGED —
+	// 9007199254740993 is not representable — and a rename would silently
+	// corrupt it (codex round 2 P2).
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
 	var doc map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		return raw, false, err
 	}
 	fields, ok := doc["fields"].([]interface{})
