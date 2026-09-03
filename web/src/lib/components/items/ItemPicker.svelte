@@ -276,20 +276,38 @@
 		if (autofocus) inputEl?.focus();
 	});
 
-	// A picker can open BEFORE the workspace's local index has hydrated, and a
-	// scoped one then has nothing to list — `recent()` returns [] while cold,
-	// and nothing re-ran it, so the list stayed empty until the user typed
-	// (codex round 1 P2). Re-run once hydration lands.
+	// Keep an OPEN picker current with the local index.
 	//
-	// Tracked reads are the bootstrap state ONLY. `query` is read inside
-	// `untrack` on purpose: reading it reactively would re-run this on every
-	// keystroke, racing `oninput` and bumping `seq` twice per character — the
-	// same reason `onMount` owns the initial run (CONVE-1688's neighbourhood).
-	// The `query` guard means a user who has already typed keeps their results.
+	// Two ways it went stale, both found by codex review. A picker can open
+	// BEFORE the workspace index has hydrated, and a scoped one then has nothing
+	// to list — `recent()` returns [] while cold, and nothing re-ran it (round 1
+	// P2). And once open it holds a COPY of the rows, so an SSE delta landing
+	// while it is on screen left it showing what the workspace used to contain
+	// (round 2 P2). Both are the same missing dependency.
+	//
+	// Tracked reads are the two signals that say the index changed: the
+	// bootstrap state, and the workspace cursor (`$state` on WorkspaceState,
+	// bumped by every applied delta batch). Everything else is read inside
+	// `untrack` — reading `query` or `results` reactively would re-run this on
+	// every keystroke, racing `oninput` and bumping `seq` twice per character,
+	// which is also why `onMount` rather than an effect owns the first run
+	// (CONVE-1688's neighbourhood).
+	//
+	// The re-list PRESERVES the highlighted row by id rather than skipping when
+	// the user has typed. Recomputing the index is what makes the refresh safe:
+	// re-running blind would take back a row the user had arrowed down to, at a
+	// moment they cannot predict — a keystroke they never made. If the row is
+	// gone from the new results, the highlight clears rather than silently
+	// pointing at whatever slid into that position.
 	$effect(() => {
 		const state = localIndex.bootstrapStateFor(wsSlug);
+		// Read for its dependency; the value itself carries no meaning here.
+		localIndex.cursorFor(wsSlug);
 		untrack(() => {
-			if (state === 'ready' && !query.trim()) runQuery();
+			if (state !== 'ready') return;
+			const keep = activeIndex >= 0 ? results[activeIndex]?.id : undefined;
+			runQuery();
+			activeIndex = keep ? results.findIndex((r) => r.id === keep) : -1;
 		});
 	});
 </script>

@@ -22,6 +22,7 @@ const { searchApi, localIndexMock, localSearchMock } = vi.hoisted(() => ({
 	searchApi: vi.fn(),
 	localIndexMock: {
 		bootstrapStateFor: vi.fn(),
+		cursorFor: vi.fn(),
 		getByCollection: vi.fn(),
 		findByIdOrSlug: vi.fn(),
 	},
@@ -52,9 +53,16 @@ let rowsById = new Map<string, Row>();
  * set that the real store gets from `$state`.
  */
 const bootstrapState = new SvelteMap<string, string>();
+/** Same story for the workspace cursor, which every applied delta bumps. */
+const cursors = new SvelteMap<string, string>();
 
 function setBootstrapState(value: string) {
 	bootstrapState.set('ws', value);
+}
+
+/** Stand-in for an SSE delta batch landing in the local index. */
+function bumpCursor() {
+	cursors.set('ws', String(Number(cursors.get('ws') ?? '0') + 1));
 }
 
 function makeRows(n: number, prefix = 'COLO'): Row[] {
@@ -98,10 +106,14 @@ beforeEach(() => {
 	searchApi.mockReset();
 	searchApi.mockResolvedValue({ results: [] });
 	bootstrapState.clear();
+	cursors.clear();
 	setBootstrapState('ready');
 	localIndexMock.bootstrapStateFor
 		.mockReset()
 		.mockImplementation((ws: string) => bootstrapState.get(ws) ?? 'cold');
+	localIndexMock.cursorFor
+		.mockReset()
+		.mockImplementation((ws: string) => cursors.get(ws) ?? '0');
 	localIndexMock.getByCollection.mockReset().mockReturnValue([]);
 	localIndexMock.findByIdOrSlug.mockReset().mockImplementation((_ws: string, id: string) => rowsById.get(id) ?? null);
 	localSearchMock.search.mockReset().mockReturnValue([]);
@@ -183,16 +195,20 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 
 	it('hydrating mid-session does not reset a selection the user has already made', async () => {
-		// The `!query.trim()` guard on the hydration effect. Without it the
-		// re-list runs unconditionally and resets `activeIndex` to -1, so a user
-		// who has arrowed down to a row loses it the moment the index finishes
-		// loading — a keystroke they never made, at a moment they cannot predict.
+		// The re-list recomputes `activeIndex` from the selected row's ID. Without
+		// that, it resets to -1 and a user who has arrowed down to a row loses it
+		// the moment the index finishes loading — a keystroke they never made, at
+		// a moment they cannot predict.
 		vi.useFakeTimers();
 		loadIndex(makeRows(3));
 		setBootstrapState('loading');
 		searchApi.mockResolvedValue({
 			results: makeRows(3).map((r) => ({ item: r })),
 		});
+		// Once warm the same query is answered by the local index.
+		localSearchMock.search.mockReturnValue(
+			makeRows(3).map((r) => ({ id: r.id, score: 1 }))
+		);
 
 		render(ItemPicker, { props: { ...baseProps } });
 		await type('col');
@@ -210,6 +226,50 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 		await tick();
 
 		expect(input().getAttribute('aria-activedescendant')).toBe(selected);
+	});
+
+	it('picks up a delta that lands while it is open', async () => {
+		// codex round 2 P2: the picker holds a COPY of the rows, so an SSE delta
+		// arriving while it is on screen left it listing what the workspace used
+		// to contain until the query changed or it remounted.
+		loadIndex(makeRows(2));
+		render(ItemPicker, { props: { ...baseProps } });
+		await tick();
+		expect(options()).toHaveLength(2);
+
+		loadIndex(makeRows(5));
+		bumpCursor();
+		await tick();
+
+		expect(options()).toHaveLength(5);
+	});
+
+	it('keeps the selected row across a delta, and drops the highlight when that row goes away', async () => {
+		loadIndex(makeRows(5));
+		render(ItemPicker, { props: { ...baseProps } });
+		await tick();
+
+		await press('ArrowDown');
+		await press('ArrowDown');
+		await press('ArrowDown');
+		const selectedId = 'id-3';
+		expect(input().getAttribute('aria-activedescendant')).toBe(options()[2].id);
+
+		// A delta that removes the rows ABOVE the selection: a blind re-list would
+		// leave the highlight on index 2, which is now a different item.
+		loadIndex(makeRows(5).filter((r) => r.id !== 'id-1'));
+		bumpCursor();
+		await tick();
+		const stillSelected = options().findIndex((o) => o.getAttribute('aria-selected') === 'true');
+		expect(options()[stillSelected].textContent).toContain('Colour 3');
+		expect(rowsById.get(selectedId)).toBeDefined();
+
+		// Now the selected row itself disappears — the highlight clears rather
+		// than pointing at whatever slid into that position.
+		loadIndex(makeRows(5).filter((r) => r.id !== 'id-1' && r.id !== 'id-3'));
+		bumpCursor();
+		await tick();
+		expect(input().hasAttribute('aria-activedescendant')).toBe(false);
 	});
 
 	it('shows nothing on an empty query when unscoped — the Relationships-tab mode', async () => {
