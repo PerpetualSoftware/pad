@@ -236,10 +236,15 @@
 	}
 
 	onDestroy(() => {
-		// Invalidate any in-flight cold search as well as cancelling the timer:
-		// the fetch is already dispatched by the time the timer has fired, and
-		// only the seq bump can stop its continuation writing to a dead
-		// instance's state.
+		// `clearTimeout` is the part that matters and the part that is testable:
+		// closing the picker inside the debounce window means the request is
+		// never sent at all.
+		//
+		// The `seq` bump is belt-and-braces for a request already in flight, and
+		// deliberately kept even though NO test can kill its removal — a
+		// destroyed instance renders nothing, so a late write to its state is
+		// unobservable by construction. Said plainly here rather than defended by
+		// a test that would pass either way.
 		seq++;
 		clearTimeout(debounceTimer);
 	});

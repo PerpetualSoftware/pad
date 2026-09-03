@@ -194,25 +194,39 @@ describe('ItemPicker — cold path (the control leg for "no network call")', () 
 		expect(localSearchMock.search).not.toHaveBeenCalled();
 	});
 
+	const STALE = {
+		results: [{ item: { id: 'id-1', title: 'Stale row', item_number: 1, collection_prefix: 'COLO' } }],
+	};
+
 	it('does not let a superseded in-flight response repopulate the box', async () => {
+		// The SECOND request is allowed to land first, deliberately. An earlier
+		// draft of this test released the stale response while the picker was
+		// still `loading`, and it passed against a build with the staleness check
+		// DELETED — because the loading branch renders instead of the result
+		// list, so the stale row was in `results` and merely not on screen. The
+		// mutant survived; the fix is to end the scenario with loading FALSE, so
+		// the only thing standing between the stale row and the DOM is the fence.
 		vi.useFakeTimers();
 		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
 
 		let releaseFirst!: (v: unknown) => void;
-		const first = new Promise((res) => (releaseFirst = res));
-		searchApi.mockReturnValueOnce(first).mockResolvedValue({ results: [] });
+		searchApi
+			.mockReturnValueOnce(new Promise((res) => (releaseFirst = res)))
+			.mockResolvedValue({ results: [] });
 
 		render(ItemPicker, { props: { ...baseProps } });
 		await type('aa');
 		await vi.advanceTimersByTimeAsync(250);
 		expect(searchApi).toHaveBeenCalledTimes(1);
 
-		// The user keeps typing while the first request is still open.
+		// The user keeps typing while the first request is still open; the second
+		// one resolves empty and settles the picker.
 		await type('bb');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(searchApi).toHaveBeenCalledTimes(2);
+		expect(document.body.textContent).not.toContain('Searching...');
 
-		releaseFirst({
-			results: [{ item: { id: 'id-1', title: 'Stale row', item_number: 1, collection_prefix: 'COLO' } }],
-		});
+		releaseFirst(STALE);
 		await vi.advanceTimersByTimeAsync(0);
 		await tick();
 
@@ -220,7 +234,7 @@ describe('ItemPicker — cold path (the control leg for "no network call")', () 
 		expect(options()).toHaveLength(0);
 	});
 
-	it('CONTROL: the same response DOES populate when nothing superseded it', async () => {
+	it('CONTROL: that exact response DOES reach the DOM when nothing superseded it', async () => {
 		// Without this leg the fence test above would pass against a picker that
 		// never renders a server result at all.
 		vi.useFakeTimers();
@@ -233,14 +247,30 @@ describe('ItemPicker — cold path (the control leg for "no network call")', () 
 		await type('aa');
 		await vi.advanceTimersByTimeAsync(250);
 
-		release({
-			results: [{ item: { id: 'id-1', title: 'Stale row', item_number: 1, collection_prefix: 'COLO' } }],
-		});
+		release(STALE);
 		await vi.advanceTimersByTimeAsync(0);
 		await tick();
 
 		expect(document.body.textContent).toContain('Stale row');
 		expect(options()).toHaveLength(1);
+	});
+
+	it('never fires a request the user closed the picker before earning', async () => {
+		// This asserts the onDestroy `clearTimeout`, and it is deliberately about
+		// the REQUEST rather than the rendered result. The tempting version —
+		// unmount, then resolve an in-flight response, then assert the stale row
+		// is not in the DOM — cannot fail: an unmounted component renders nothing
+		// either way, so it passes with every teardown guard deleted. A test that
+		// no mutant can kill is not evidence, so it is not here.
+		vi.useFakeTimers();
+		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
+
+		const { unmount } = render(ItemPicker, { props: { ...baseProps } });
+		await type('aa');
+		unmount();
+		await vi.advanceTimersByTimeAsync(250);
+
+		expect(searchApi).not.toHaveBeenCalled();
 	});
 });
 

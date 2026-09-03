@@ -22,17 +22,27 @@ const source = readFileSync(
 	'utf8'
 );
 
+/**
+ * Markup with HTML comments stripped. A mount assertion has to run against
+ * this, not the raw text: `<!-- <ItemPicker ... -->` still matches
+ * `/<ItemPicker\b/`, so a guard on the raw source passes against the exact
+ * regression it exists to catch (verified — that mutant survived until this
+ * was added). Comments are stripped rather than the regex made cleverer
+ * because the same hazard applies to every match below.
+ */
+const markupSource = source.replace(/<!--[\s\S]*?-->/g, '');
+
 describe('ItemDetail consumes ItemPicker', () => {
 	it('imports it', () => {
 		expect(source).toMatch(/import\s+ItemPicker\s+from\s+'\.\/ItemPicker\.svelte'/);
 	});
 
 	it('mounts it in the add-relationship form', () => {
-		expect(source).toMatch(/<ItemPicker\b/);
+		expect(markupSource).toMatch(/<ItemPicker\b/);
 	});
 
 	it('passes it the workspace and the exclusion set, and handles its selection', () => {
-		const tag = source.match(/<ItemPicker\b[\s\S]*?\/>/);
+		const tag = markupSource.match(/<ItemPicker\b[\s\S]*?\/>/);
 		expect(tag).not.toBeNull();
 		const markup = tag![0];
 		expect(markup).toMatch(/\{wsSlug\}/);
@@ -64,10 +74,10 @@ describe('ItemDetail consumes ItemPicker', () => {
 		// picker" would pass even if the picker sat outside all of them — the
 		// nearest preceding key must also still be OPEN at the picker, i.e. no
 		// `{/key}` in between.
-		const picker = source.indexOf('<ItemPicker');
+		const picker = markupSource.indexOf('<ItemPicker');
 		expect(picker).toBeGreaterThan(-1);
 
-		const before = source.slice(0, picker);
+		const before = markupSource.slice(0, picker);
 		const keyStart = before.lastIndexOf('{#key itemSlug}');
 		expect(keyStart, 'no {#key itemSlug} precedes the picker').toBeGreaterThan(-1);
 		expect(
