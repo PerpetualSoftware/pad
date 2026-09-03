@@ -172,6 +172,14 @@ type DashboardSuggestion struct {
 	ItemTitle  string `json:"item_title"`
 	Collection string `json:"collection"`
 	Reason     string `json:"reason"`
+
+	// ReminderID is set only on suggestions produced by a fired reminder
+	// (IDEA-2641). It is the id an acknowledgement addresses — without it a
+	// poller reading this surface can SEE the reminder and has no way to
+	// retire it, which was the shape codex round 1 caught: the docs told
+	// agents to ack what they saw here, and the payload did not carry the
+	// handle.
+	ReminderID string `json:"reminder_id,omitempty"`
 }
 
 // DashboardReminder is one fired-and-unacknowledged reminder, rendered with
@@ -657,6 +665,16 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			if !isCollectionVisible(pr.CollectionID, visibleIDs) {
 				continue
 			}
+			// PER-ITEM visibility, not just per-collection (codex round 1).
+			// Every other section here reads `allItems`, which the store
+			// already scoped to the caller's collections AND granted item ids;
+			// this list is a direct workspace-wide query, so it inherits none
+			// of that. Without this check a guest holding a grant on ONE item
+			// would read the refs and titles of every other item in the
+			// collection through its reminders.
+			if !s.isItemVisibleToGuest(r, workspaceID, &models.Item{ID: pr.ItemID, CollectionID: pr.CollectionID}, dashFullCollIDs, dashGrantedItemIDs) {
+				continue
+			}
 			if isItemDone(pr.ItemFields, pr.CollectionID, ctxMap) {
 				continue
 			}
@@ -1099,6 +1117,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		reminderSuggestions := make([]DashboardSuggestion, 0, len(resp.PendingReminders))
 		for _, pr := range resp.PendingReminders {
 			reminderSuggestions = append(reminderSuggestions, DashboardSuggestion{
+				ReminderID: pr.ID,
 				ItemSlug:   pr.ItemSlug,
 				ItemRef:    pr.ItemRef,
 				ItemTitle:  pr.ItemTitle,

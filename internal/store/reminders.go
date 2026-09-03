@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -259,10 +260,20 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	if limit <= 0 {
 		limit = defaultReminderFireLimit
 	}
+	// SOFT-DELETED ITEMS ARE EXCLUDED HERE, not merely skipped downstream
+	// (codex round 1). fireOneReminder rolls back when it finds the item gone,
+	// which leaves the reminder ARMED and therefore a candidate again on the
+	// next pass — so a batch bounded at `limit` and ordered oldest-first can be
+	// filled entirely by archived items, and no live reminder ever fires. The
+	// starvation is permanent and silent: the tick reports zero fired and looks
+	// idle. Filtering in the candidate query means those rows never occupy a
+	// slot, while the reminders themselves are kept, so restoring the item
+	// restores its reminder with it.
 	rows, err := s.db.Query(s.q(`
-		SELECT id FROM item_reminders
-		WHERE fired_at IS NULL AND remind_at <= ?
-		ORDER BY remind_at, id
+		SELECT r.id FROM item_reminders r
+		JOIN items i ON i.id = r.item_id
+		WHERE r.fired_at IS NULL AND r.remind_at <= ? AND i.deleted_at IS NULL
+		ORDER BY r.remind_at, r.id
 		LIMIT ?
 	`), nowTS, limit)
 	if err != nil {
@@ -311,17 +322,37 @@ func (s *Store) FireDueReminders(nowTS string, limit int) ([]*models.Reminder, e
 		return nil, nil
 	}
 
+	// ONE FAILURE DOES NOT END THE PASS (codex round 1). The per-reminder
+	// transaction above exists precisely so that one unfireable row cannot
+	// hold back the rest — and returning on the first error made that comment
+	// false, since candidates are ordered oldest-first and a persistently
+	// broken old reminder would then block every newer one forever. The errors
+	// are collected rather than dropped: a pass that failed on three rows and
+	// fired seven must report both halves, or the tick's log reads like a
+	// clean pass.
+	return fireEachReminder(ids, nowTS, s.fireOneReminder)
+}
+
+// fireEachReminder is the pass's isolation property, split out so a test can
+// inject a failing fire for one id and observe that the ids after it still
+// run. Through the public entry point that is not reachable: making a real
+// reminder fail mid-transaction requires corrupting a row the database
+// refuses to store corrupt. Same split, and the same reason, as
+// dueReminderCandidates / fireOneReminder.
+func fireEachReminder(ids []string, nowTS string, fire func(id, nowTS string) (*models.Reminder, error)) ([]*models.Reminder, error) {
 	var fired []*models.Reminder
+	var errs []error
 	for _, id := range ids {
-		r, err := s.fireOneReminder(id, nowTS)
+		r, err := fire(id, nowTS)
 		if err != nil {
-			return fired, err
+			errs = append(errs, err)
+			continue
 		}
 		if r != nil {
 			fired = append(fired, r)
 		}
 	}
-	return fired, nil
+	return fired, errors.Join(errs...)
 }
 
 // fireOneReminder is the arbiter plus the emission, in one transaction.

@@ -2,10 +2,12 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // Reminder lifecycle tests (IDEA-2641).
@@ -463,5 +465,130 @@ func TestReminderCascadesWithItsItem(t *testing.T) {
 	}
 	if got != nil {
 		t.Error("a reminder must not outlive the item it is about")
+	}
+}
+
+// TestSoftDeletedItemsDoNotOccupyTheBatch — codex round 1, P1.
+//
+// fireOneReminder rolls back when it finds the item gone, which leaves the
+// reminder ARMED and therefore a candidate again on every later pass. With
+// candidates ordered oldest-first and bounded by `limit`, enough archived
+// reminders fill the batch and NO live reminder ever fires — permanently, and
+// silently, since the tick then reports zero fired and looks idle.
+//
+// The fixture uses a limit of 2 with 2 archived reminders older than the live
+// one, which is the smallest shape that starves. A test with a generous limit
+// would pass against the unfixed code: everything fits in one batch, so the
+// live reminder fires anyway and the bug is invisible.
+//
+// MUTANT: dropping `AND i.deleted_at IS NULL` from the candidate query starves
+// the live reminder and this fails.
+func TestSoftDeletedItemsDoNotOccupyTheBatch(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Two archived items whose reminders are OLDER than the live one, so they
+	// sort ahead of it in the candidate query.
+	for i, at := range []string{"2019-01-01T00:00:00Z", "2019-06-01T00:00:00Z"} {
+		gone := createTestItem(t, s, ws.ID, col.ID, "Archived", "")
+		armReminder(t, s, ws.ID, gone.ID, at)
+		if _, err := s.db.Exec(s.q(`UPDATE items SET deleted_at = ? WHERE id = ?`), now(), gone.ID); err != nil {
+			t.Fatalf("soft delete %d: %v", i, err)
+		}
+	}
+
+	live := createTestItem(t, s, ws.ID, col.ID, "Still here", "")
+	liveID := armReminder(t, s, ws.ID, live.ID, past)
+
+	fired, err := s.FireDueReminders(nowTS(), 2)
+	if err != nil {
+		t.Fatalf("FireDueReminders: %v", err)
+	}
+	if len(fired) != 1 || fired[0].ID != liveID {
+		t.Fatalf("the live reminder was starved by archived ones: fired %d", len(fired))
+	}
+
+	// The archived reminders are KEPT, not reaped — restoring the item should
+	// restore its reminder with it. Asserting only the starvation fix would
+	// pass against an implementation that deleted them.
+	var armed int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM item_reminders WHERE fired_at IS NULL`)).Scan(&armed); err != nil {
+		t.Fatalf("count armed: %v", err)
+	}
+	if armed != 2 {
+		t.Errorf("archived items' reminders should stay armed and intact, got %d armed", armed)
+	}
+}
+
+// TestOneBrokenReminderDoesNotBlockTheRest — codex round 1, P2.
+//
+// The per-reminder transaction exists so one unfireable row cannot hold back
+// the pass, and returning on the first error made that comment false:
+// candidates are ordered oldest-first, so a persistently broken OLD reminder
+// would block every newer one forever.
+//
+// Driven through the injected seam because a real mid-transaction failure is
+// not reachable from outside — the database refuses the corrupt rows that
+// would cause one (verified while writing this: writing invalid JSON into
+// items.fields is rejected by the schema itself). Testing the loop directly is
+// the honest shape rather than a contrived fixture that proves something else.
+//
+// MUTANT: `continue` back to `return fired, err` and the third id never runs.
+func TestOneBrokenReminderDoesNotBlockTheRest(t *testing.T) {
+	var attempted []string
+	fired, err := fireEachReminder([]string{"a", "b", "c"}, nowTS(),
+		func(id, _ string) (*models.Reminder, error) {
+			attempted = append(attempted, id)
+			if id == "b" {
+				return nil, errors.New("boom")
+			}
+			return &models.Reminder{ID: id}, nil
+		})
+
+	if len(attempted) != 3 {
+		t.Fatalf("the pass stopped early: attempted %v, want all three", attempted)
+	}
+	if len(fired) != 2 || fired[0].ID != "a" || fired[1].ID != "c" {
+		t.Errorf("fired = %d reminders, want a and c", len(fired))
+	}
+	// The failure must still be REPORTED. Continuing past an error and
+	// returning nil would make a pass that failed on half its rows log as a
+	// clean one, which is the silent-failure shape this whole file avoids.
+	if err == nil {
+		t.Error("a failing reminder was swallowed; the pass reported success")
+	}
+}
+
+// TestEveryReminderFailingIsStillReported is the negative control for the
+// aggregation: with nothing fired, the error is the only signal there was one.
+func TestEveryReminderFailingIsStillReported(t *testing.T) {
+	fired, err := fireEachReminder([]string{"a", "b"}, nowTS(),
+		func(string, string) (*models.Reminder, error) { return nil, errors.New("boom") })
+	if len(fired) != 0 {
+		t.Errorf("fired %d reminders when every attempt failed", len(fired))
+	}
+	if err == nil {
+		t.Error("a pass that fired nothing and failed twice reported success")
+	}
+}
+
+// TestSkippedRemindersAreNotErrors: a reminder another instance won returns
+// (nil, nil), which must not count as a failure — the winner emits, and
+// reporting the loser as an error would make every multi-instance tick log
+// spurious failures.
+func TestSkippedRemindersAreNotErrors(t *testing.T) {
+	fired, err := fireEachReminder([]string{"a", "b"}, nowTS(),
+		func(id, _ string) (*models.Reminder, error) {
+			if id == "a" {
+				return nil, nil
+			}
+			return &models.Reminder{ID: id}, nil
+		})
+	if err != nil {
+		t.Errorf("a skipped reminder was reported as an error: %v", err)
+	}
+	if len(fired) != 1 || fired[0].ID != "b" {
+		t.Errorf("fired = %v, want just b", fired)
 	}
 }

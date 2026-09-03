@@ -147,13 +147,17 @@ func (s *Server) runReminderTick() {
 	s.reminderTick.mu.Unlock()
 
 	nowTS := time.Now().UTC().Format(time.RFC3339)
+	// A pass can BOTH fire and fail: the store continues past a broken row
+	// rather than letting it block newer reminders, so it returns the
+	// reminders it fired alongside the joined errors. Both halves are
+	// reported — logging only the error would hide work that happened, and
+	// logging only the count would hide work that did not.
 	fired, err := s.store.FireDueReminders(nowTS, limit)
 	if err != nil {
 		// LOUD ON FAILURE, and never silent: a tick that fails quietly looks
 		// exactly like a tick that found nothing, which is the shape that let
 		// a broken watcher sit for thirty minutes reading as "still running".
-		slog.Error("reminder tick: fire failed", "error", err, "fired_before_error", len(fired))
-		return
+		slog.Error("reminder tick: some reminders could not be fired", "error", err, "fired", len(fired))
 	}
 	if len(fired) > 0 {
 		slog.Info("reminder tick: fired reminders", "count", len(fired))

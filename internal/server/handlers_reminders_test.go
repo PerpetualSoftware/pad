@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -212,5 +213,133 @@ func TestTickIsQuietWhenNothingIsDue(t *testing.T) {
 
 	if got := len(getDashboard(t, srv, slug).PendingReminders); got != 0 {
 		t.Errorf("a tick fired %d reminder(s) whose instant has not arrived", got)
+	}
+}
+
+// TestPendingRemindersRespectItemGrants — codex round 1, P1.
+//
+// Every other dashboard section reads `allItems`, which the store already
+// scoped to the caller's collections AND their granted item ids. The pending-
+// reminder list is a direct workspace-wide query, so it inherited none of that:
+// a guest holding a grant on ONE item could read the refs and titles of every
+// other item in the collection through its reminders — an item-level leak
+// wearing a notification's clothes.
+//
+// The two items live in the SAME collection deliberately. A collection-level
+// filter is already applied, so putting them in different collections would
+// make the test pass against the unfixed code and prove nothing.
+//
+// MUTANT: remove the isItemVisibleToGuest call and the guest sees both.
+func TestPendingRemindersRespectItemGrants(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	owner := mustUser(t, srv, "reminder-owner@example.com", "reminderowner", "")
+	ws := mustWorkspace(t, srv, "Reminders", owner.ID)
+	coll := mustCollection(t, srv, ws.ID, "Tasks")
+
+	granted := mustItem(t, srv, ws.ID, coll.ID, "Granted item")
+	secret := mustItem(t, srv, ws.ID, coll.ID, "Not for the guest")
+
+	guest := mustUser(t, srv, "reminder-guest@example.com", "reminderguest", "")
+	if _, err := srv.store.CreateItemGrant(ws.ID, granted.ID, guest.ID, "edit", owner.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+
+	for _, it := range []*models.Item{granted, secret} {
+		if _, err := srv.store.CreateReminder(ws.ID, it.ID, pastInstant); err != nil {
+			t.Fatalf("CreateReminder: %v", err)
+		}
+	}
+	srv.runReminderTick()
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", nil)
+	ctx := WithCurrentUser(req.Context(), guest)
+	ctx = contextWithWorkspaceRoleForTest(ctx, "guest")
+	ctx = contextWithResolvedWorkspaceIDForTest(ctx, ws.ID)
+	req = req.WithContext(ctx)
+
+	resp, err := srv.buildDashboardResponse(ws.ID, req)
+	if err != nil {
+		t.Fatalf("buildDashboardResponse: %v", err)
+	}
+
+	// The guest must see their own item's reminder — without this leg a build
+	// that filtered EVERYTHING would pass the leak assertion below.
+	var sawGranted bool
+	for _, pr := range resp.PendingReminders {
+		if pr.ItemTitle == "Not for the guest" {
+			t.Error("a guest read another item's reminder; the pending list is not item-filtered")
+		}
+		if pr.ItemTitle == "Granted item" {
+			sawGranted = true
+		}
+	}
+	if !sawGranted {
+		t.Error("the guest cannot see the reminder on the item they were granted")
+	}
+	for _, sug := range resp.SuggestedNext {
+		if sug.ItemTitle == "Not for the guest" {
+			t.Error("the leak reaches suggested_next as well")
+		}
+	}
+}
+
+// TestFiredReminderSuggestionCarriesItsID — codex round 1, P2.
+//
+// The docs tell an agent to acknowledge what it sees in next/ready, and the
+// payload did not carry the handle: a stateless poller could read the reminder
+// and had no way to retire it, so it would be shown the same item forever.
+//
+// MUTANT: drop the ReminderID assignment and this fails while every other
+// reminder test stays green — the id is invisible to all of them.
+func TestFiredReminderSuggestionCarriesItsID(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Revisit the schema", "fields": `{"status":"open"}`,
+	})
+	armed := armViaAPI(t, srv, slug, item, pastInstant)
+	srv.runReminderTick()
+
+	resp := getDashboard(t, srv, slug)
+	if len(resp.SuggestedNext) == 0 {
+		t.Fatal("no suggestions")
+	}
+	if resp.SuggestedNext[0].ReminderID != armed.ID {
+		t.Fatalf("suggestion carries reminder_id %q, want %q — an agent reading this surface cannot ack",
+			resp.SuggestedNext[0].ReminderID, armed.ID)
+	}
+
+	// And the id it carries actually works, rather than merely being present:
+	// a wrong-but-populated id would satisfy an equality check against itself.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/reminders/"+resp.SuggestedNext[0].ReminderID+"/ack", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("acking the id from the suggestion failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if len(getDashboard(t, srv, slug).PendingReminders) != 0 {
+		t.Error("the reminder survived an ack using the id the surface handed out")
+	}
+}
+
+// TestOrdinarySuggestionsCarryNoReminderID is the negative control: the field
+// is omitempty and must stay empty on a plain task suggestion, or a consumer
+// switching on its presence would try to ack a task.
+func TestOrdinarySuggestionsCarryNoReminderID(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Just a task", "fields": `{"status":"in-progress","priority":"high"}`,
+	})
+
+	resp := getDashboard(t, srv, slug)
+	if len(resp.SuggestedNext) == 0 {
+		t.Fatal("no suggestions")
+	}
+	for _, sug := range resp.SuggestedNext {
+		if sug.ReminderID != "" {
+			t.Errorf("a plain task suggestion carries reminder_id %q", sug.ReminderID)
+		}
 	}
 }
