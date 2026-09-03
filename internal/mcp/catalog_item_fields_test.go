@@ -1098,14 +1098,18 @@ func TestPadItemUpdate_EmptyParentParamIsNotAnAliasConflict(t *testing.T) {
 // round-10 fix has been over-applied and a clear-plus-set pair is resolving
 // silently instead of refusing.
 func TestPadItemUpdate_EmptyClearFormsStillConflictWithTheAlias(t *testing.T) {
+	// NOTE (round 11): the `fields:{"parent":""}` half of this case moved out
+	// to TestPadItemUpdate_EmptyHierarchyValueInFieldsRefused, because it now
+	// refuses for a DIFFERENT reason — an empty hierarchy value inside
+	// `fields` is refused outright as a silent no-op, before any alias check
+	// runs. Leaving it here would have kept a passing test whose stated
+	// reason had become false (CONVE-23). What remains is the case this test
+	// is actually about: the `field` ARRAY clear, which IS an effective
+	// directive and must still collide with the alias.
 	cases := map[string]map[string]any{
 		"field array clear vs fields.plan": {
 			"field":  []any{"parent="},
 			"fields": map[string]any{"plan": "PLAN-12"},
-		},
-		"fields.parent clear vs field array plan": {
-			"field":  []any{"plan=PLAN-12"},
-			"fields": map[string]any{"parent": ""},
 		},
 	}
 	for name, extra := range cases {
@@ -1122,5 +1126,111 @@ func TestPadItemUpdate_EmptyClearFormsStillConflictWithTheAlias(t *testing.T) {
 				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
 			}
 		})
+	}
+}
+
+// --- codex round 11 ---
+
+// TestPadItemUpdate_EmptyHierarchyValueInFieldsRefused: an empty hierarchy
+// value inside `fields` was a SILENT NO-OP, so it is refused (BUG-2850,
+// codex round 11).
+//
+// `fields:{"parent":""}` promotes onto the top-level `parent` param, where
+// both doors treat empty as NOT PROVIDED — promotedParamValue remotely, the
+// `parentRef != ""` guard in cmd_item.go on the CLI. The call reported
+// success and detached nothing, which is worse here than elsewhere because
+// the caller's intent is unambiguous.
+//
+// Refused rather than promoted to a clear: giving this door clear semantics
+// decides what `fields` MEANS, and v0.19 already made clear_parent the
+// canonical detach so an empty string would not have to carry it. The
+// refusal names both working forms, so the assertion covers that too — a
+// refusal that leaves the caller with no route is a worse bug than the no-op.
+func TestPadItemUpdate_EmptyHierarchyValueInFieldsRefused(t *testing.T) {
+	for _, key := range []string{"parent", "plan"} {
+		t.Run(key, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				"fields": map[string]any{key: ""},
+			})
+			if !isErr {
+				t.Fatalf("an empty %s must not report success having done nothing; got: %s (args %v)", key, msg, disp.gotArgs)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+			if !strings.Contains(msg, "clear_parent") {
+				t.Errorf("the refusal must point at the working form: %s", msg)
+			}
+		})
+	}
+}
+
+// ...and the `field` ARRAY clear still works, because that form does reach
+// the server's present-but-empty detach (BUG-2013). The refusal above is
+// about the `fields` door only, and this is the leg that proves it did not
+// over-reach into a form callers depend on.
+func TestPadItemUpdate_FieldArrayClearStillDispatches(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"parent="},
+	})
+	if isErr {
+		t.Fatalf("the field-array clear must still work: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "parent=") {
+		t.Errorf("clear entry lost: %v", disp.gotArgs)
+	}
+}
+
+// TestPadItemUpdate_CompatIDConflictRefused: the v0.16 compat ID params
+// conflict with `fields` like any other key (BUG-2850, codex round 11).
+//
+// `assigned_user_id` / `agent_role_id` are accepted at the top level as a
+// documented, never-schema-declared compat form — which is exactly why they
+// slipped the guard: invisible to padItemPromotedFieldKeys, they took the
+// generic path, where the conflict check only consults the `field` array.
+// With `assigned_user_id:"A"` plus `fields:{"assigned_user_id":"B"}` the
+// doors disagreed outright — the remote mapper reads the top-level A while
+// stdio emits only `--field assigned_user_id=B`, since the top-level form has
+// no CLI flag behind it. One call, two different people assigned.
+func TestPadItemUpdate_CompatIDConflictRefused(t *testing.T) {
+	for _, key := range []string{"assigned_user_id", "agent_role_id"} {
+		t.Run(key, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				key:      "user-A",
+				"fields": map[string]any{key: "user-B"},
+			})
+			if !isErr {
+				t.Fatalf("expected structured refusal, got success: %s (args %v)", msg, disp.gotArgs)
+			}
+			if !strings.Contains(msg, key) {
+				t.Errorf("error should name the conflicting key: %s", msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...and an EQUAL compat duplicate collapses to one form rather than being
+// refused or sent twice — same disposition as the promoted keys.
+func TestPadItemUpdate_CompatIDEqualDuplicateCollapses(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action":           "update",
+		"ref":              "TASK-5",
+		"assigned_user_id": "user-A",
+		"fields":           map[string]any{"assigned_user_id": "user-A"},
+	})
+	if isErr {
+		t.Fatalf("an equal duplicate is unambiguous and must be accepted: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "assigned_user_id=user-A") {
+		t.Errorf("the value must still reach dispatch exactly once: %v", disp.gotArgs)
 	}
 }

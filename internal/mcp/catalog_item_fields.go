@@ -91,6 +91,15 @@ var identityRefFieldKeys = map[string]bool{
 	"role":   true,
 }
 
+// compatIDFieldKeys are the v0.16 remote-transport compat params. They are
+// deliberately never schema-declared (see version.go), which is exactly why
+// they need naming here: nothing else in this file knows they can arrive at
+// the top level.
+var compatIDFieldKeys = map[string]bool{
+	"assigned_user_id": true,
+	"agent_role_id":    true,
+}
+
 var padItemPromotedFieldKeys = map[string]bool{
 	"status":   true,
 	"priority": true,
@@ -274,6 +283,28 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		// parent. A structure has no meaning here at all: the only value these
 		// keys take is a ref.
 		if hierarchyPseudoFieldKeys[k] {
+			// AN EMPTY HIERARCHY VALUE HERE IS A SILENT NO-OP, so it is
+			// refused rather than accepted (codex round 11).
+			//
+			// `fields:{"parent":""}` promotes onto the top-level `parent`
+			// param, where BOTH doors then treat empty as NOT PROVIDED —
+			// promotedParamValue on the remote side, the `parentRef != ""`
+			// guard in cmd_item.go on the CLI side. So the call reported
+			// success and detached nothing. That is the exact failure mode
+			// this bug exists to remove, and it is worse here than elsewhere
+			// because the caller's intent (detach) is unambiguous.
+			//
+			// Refused, not silently promoted to a clear: giving this door
+			// clear semantics is a decision about what `fields` MEANS, and
+			// v0.19 already made clear_parent the canonical detach precisely
+			// so that an empty string would not have to carry it. Inventing
+			// the semantics inside a bug fix is what the `null` refusal above
+			// declines to do, for the same reason. The message names both
+			// working forms so the caller is not merely blocked.
+			if str, isString := v.(string); isString && str == "" {
+				return nil, errStructured(prefix, fmt.Errorf(
+					"fields.%s: an empty value here is silently ignored, not a detach — use clear_parent: true, or field: [\"%s=\"] if you want the raw fields_patch form", k, k))
+			}
 			if _, isString := v.(string); !isString {
 				return nil, errStructured(prefix, fmt.Errorf(
 					"fields.%s must be a string ref (e.g. %q) — a %T here would be read as a hierarchy directive and could detach the item", k, "PLAN-12", v))
@@ -331,6 +362,29 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		// values generally: `priority` may legitimately be a number in a
 		// custom schema, and create has always passed such values through.
 		// These two keys are references, not values.
+		// THE v0.16 COMPAT ID PARAMS CONFLICT LIKE ANY OTHER KEY (codex
+		// round 11). `assigned_user_id` / `agent_role_id` are accepted at the
+		// top level as a documented, never-schema-declared compat form, so
+		// they are invisible to padItemPromotedFieldKeys and took the generic
+		// path — where the conflict check only looks at the `field` array.
+		// With `assigned_user_id:"A"` plus `fields:{"assigned_user_id":"B"}`
+		// the doors then disagreed outright: the remote mapper reads the
+		// top-level A while stdio emits only `--field assigned_user_id=B`,
+		// because the top-level form has no CLI flag behind it. One call,
+		// two different people assigned.
+		if compatIDFieldKeys[k] {
+			if existing, has := out[k]; has {
+				if !scalarEqual(existing, v) {
+					return nil, errStructured(prefix, fmt.Errorf(
+						"fields.%s conflicts with the top-level %s param (%v vs %v) — pass one of them, or the same value in both", k, k, v, existing))
+				}
+				// Equal duplicate: drop the top-level copy so exactly one
+				// form reaches dispatch, matching how the promoted keys
+				// collapse their duplicates.
+				delete(out, k)
+			}
+		}
+
 		if identityRefFieldKeys[k] {
 			if _, isString := v.(string); !isString {
 				return nil, errStructured(prefix, fmt.Errorf(
