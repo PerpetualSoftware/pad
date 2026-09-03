@@ -793,6 +793,16 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 			fields[k] = v
 		}
 	}
+	// The `fields` object with its JSON types intact, applied LAST so it wins
+	// over the stringified copy of itself in `field` (BUG-2850). This is the
+	// only door where those types survive the trip — parseFieldKVP above turns
+	// every entry into a string, which is what made a number field unwritable
+	// and an undeclared number land as "42". The two forms carry the same
+	// input, so last-write-wins here is a fidelity choice, not a precedence
+	// one; genuine key conflicts were already refused in the catalog merge.
+	for k, v := range nativeFields(input) {
+		fields[k] = v
+	}
 
 	payload := map[string]any{}
 	for _, key := range []string{"title", "content", "slug"} {
@@ -945,6 +955,13 @@ func liftFieldsToColumns(fields, payload map[string]any) {
 // (single string, []string, []any) into a `key→value` map. Empty /
 // invalid entries are skipped silently to match the CLI's permissive
 // behaviour.
+// nativeFields returns the `fields` object the catalog merge preserved with
+// its JSON types intact, or nil. See fieldsNativeKey (BUG-2850).
+func nativeFields(input map[string]any) map[string]any {
+	m, _ := input[fieldsNativeKey].(map[string]any)
+	return m
+}
+
 func parseFieldKVP(raw any) (map[string]any, error) {
 	out := map[string]any{}
 	switch v := raw.(type) {

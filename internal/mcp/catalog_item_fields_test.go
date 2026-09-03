@@ -223,26 +223,69 @@ func TestPadItemUpdate_FieldsNonObjectRefused(t *testing.T) {
 	}
 }
 
-// TestPadItemUpdate_FieldsNestedOrNullValueRefused: field values are
-// scalars; a nested object/array or an explicit null has no defined
-// write semantics and is refused with the offending key named.
-func TestPadItemUpdate_FieldsNestedOrNullValueRefused(t *testing.T) {
-	for name, bad := range map[string]any{
+// TestPadItemUpdate_FieldsNullRefused: a null field value still has no
+// defined write semantics and is refused with the key named.
+//
+// BUG-2850 lifted PR #1159's refusal for nested OBJECTS and ARRAYS — see the
+// test below — but deliberately NOT for null. "Store JSON null" and "clear
+// this field" are both readable from it, and Pad has an explicit clear
+// vocabulary already (clear_parent, clear_assigned_user). Giving null a silent
+// meaning inside a bug fix would be inventing semantics.
+func TestPadItemUpdate_FieldsNullRefused(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"fields": map[string]any{"meta": nil},
+	})
+	if !isErr {
+		t.Fatalf("expected refusal, got success: %s", msg)
+	}
+	if !strings.Contains(msg, "meta") {
+		t.Errorf("error should name the offending key: %s", msg)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+	}
+}
+
+// TestPadItemUpdate_FieldsNestedValuesRefusedOnStdioOnly: a nested object or
+// array is refused HERE — and the reason it is refused has changed, which is
+// the point of the assertion on the message (BUG-2850).
+//
+// PR #1159 refused nested values in the CATALOG, for every transport, on the
+// grounds that they had no defined write semantics. They do now: the merge
+// carries them natively and the remote /mcp door writes them, which is what
+// makes a json-typed field (a playbook's `arguments`) writable at all. What
+// remains is a TRANSPORT limit — this harness builds `--field key=value`
+// arguments, and a structure has no such encoding — so the refusal moved to
+// BuildCLIArgs and now names the transport instead of the value.
+//
+// Refused LOUDLY rather than dropped: BuildCLIArgs discards keys it does not
+// recognize, and a silently discarded field is the exact failure this bug is
+// about.
+func TestPadItemUpdate_FieldsNestedValuesRefusedOnStdioOnly(t *testing.T) {
+	for name, nested := range map[string]any{
 		"nested object": map[string]any{"meta": map[string]any{"a": 1}},
 		"nested array":  map[string]any{"meta": []any{"a"}},
-		"null value":    map[string]any{"meta": nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			disp, msg, isErr := dispatchPadItem(t, map[string]any{
 				"action": "update",
 				"ref":    "TASK-5",
-				"fields": bad,
+				"fields": nested,
 			})
 			if !isErr {
-				t.Fatalf("expected refusal, got success: %s", msg)
+				t.Fatalf("stdio cannot encode a structured value; expected refusal, got: %s", msg)
 			}
 			if !strings.Contains(msg, "meta") {
 				t.Errorf("error should name the offending key: %s", msg)
+			}
+			// The refusal must explain that this is a transport limit, not a
+			// verdict on the value — otherwise an agent reads it as "Pad
+			// cannot store this" and rewrites its data, which is what the
+			// reporter's agent did to seven playbooks.
+			if !strings.Contains(msg, "stdio") {
+				t.Errorf("error should name the transport limit, not the value: %s", msg)
 			}
 			if len(disp.gotPath) != 0 {
 				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)

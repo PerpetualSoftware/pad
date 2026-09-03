@@ -139,6 +139,9 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 		return nil, errRes
 	}
 
+	// The same values with their JSON types intact (BUG-2850).
+	fieldsNative := map[string]any{}
+
 	// Deterministic processing (and error ordering) across runs.
 	keys := make([]string, 0, len(obj))
 	for k := range obj {
@@ -175,9 +178,39 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			out[k] = v
 			continue
 		}
+		// NULL stays refused (BUG-2850 lifts objects and arrays, not this).
+		// A null in a fields map has no agreed meaning — "store JSON null" and
+		// "clear this field" are both readable from it, and Pad already has an
+		// explicit clear vocabulary (clear_parent, clear_assigned_user). Giving
+		// null a silent meaning here would be inventing semantics inside a bug
+		// fix; if a clear-by-null is ever wanted it should be ruled and named.
+		if v == nil {
+			return nil, errStructured(prefix, fmt.Errorf(
+				"fields.%s: null has no defined write semantics — omit the key to leave it unchanged", k))
+		}
+
+		// NATIVE FORM, ALWAYS (BUG-2850). The value goes into fieldsNative
+		// with its JSON type intact — a number stays a number, an object stays
+		// an object. Whether a door can USE that depends on the door, which is
+		// why the string form below is still emitted alongside it rather than
+		// replaced.
+		fieldsNative[k] = v
+
 		sv, err := stringifyFieldValue(v)
 		if err != nil {
-			return nil, errStructured(prefix, fmt.Errorf("fields.%s: %s", k, err))
+			// A nested value (object/array/null). It has no `key=value`
+			// encoding, so it cannot join fieldEntries — but it is no longer
+			// refused here: the native map above carries it for doors that can
+			// express it, and BuildCLIArgs refuses it for the stdio door that
+			// cannot (BUG-2850, lifting PR #1159's blanket refusal now that
+			// server-side coercion exists). A conflict with an existing
+			// `field` entry is still a conflict: one key cannot be both a
+			// string and a structure.
+			if prev, has := fieldByKey[k]; has {
+				return nil, errStructured(prefix, fmt.Errorf(
+					"fields.%s conflicts with the field array entry %q — one key cannot be both a structured value and a string", k, k+"="+prev))
+			}
+			continue
 		}
 		if prev, has := fieldByKey[k]; has {
 			if prev != sv {
@@ -193,8 +226,22 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 	if len(fieldEntries) > 0 {
 		out["field"] = fieldEntries
 	}
+	// Emitted under a distinct key so each transport takes what it can use:
+	// the HTTP mapper prefers these (types intact), BuildCLIArgs consults them
+	// only to refuse the nested values the CLI cannot express. Both forms
+	// describe the same input, so a door reading either is correct — they
+	// differ only in fidelity.
+	if len(fieldsNative) > 0 {
+		out[fieldsNativeKey] = fieldsNative
+	}
 	return out, nil
 }
+
+// fieldsNativeKey is the dispatch-input key carrying the `fields` object with
+// JSON types intact (BUG-2850). Deliberately not a name a caller could send:
+// it is produced by this merge, never accepted from the wire, and strict input
+// validation would reject it as an undeclared param if it were.
+const fieldsNativeKey = "__fields_native"
 
 // parseFieldArray normalizes an existing `field` param into a []string
 // plus a key→value index. Entries the CLI would reject anyway (no '=')

@@ -369,6 +369,30 @@ func BuildCLIArgs(
 		input = map[string]any{}
 	}
 
+	// The stdio door cannot express a structured field value: it builds
+	// `--field key=value` arguments, and a nested object or array has no such
+	// encoding (BUG-2850). The catalog merge no longer refuses those — the
+	// HTTP door carries them natively now — so the refusal has to live at the
+	// door that still cannot. Refuse LOUDLY rather than dropping: an unknown
+	// key would otherwise be silently discarded here, which is the failure
+	// mode this whole bug is about.
+	if native, ok := input[fieldsNativeKey].(map[string]any); ok {
+		keys := make([]string, 0, len(native))
+		for k, v := range native {
+			switch v.(type) {
+			case map[string]any, []any:
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) > 0 {
+			sort.Strings(keys)
+			return nil, fmt.Errorf(
+				"fields.%s: a structured value cannot be written over the stdio transport, which sends --field key=value; "+
+					"use the remote transport, or write the field with the CLI directly",
+				strings.Join(keys, ", fields."))
+		}
+	}
+
 	var positionals []string
 	for _, arg := range cmdInfo.Args {
 		// MCP property names are snake_case (TASK-964) — look up the

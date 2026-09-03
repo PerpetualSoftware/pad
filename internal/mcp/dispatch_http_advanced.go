@@ -449,6 +449,13 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 				patch[k] = v
 			}
 		}
+		// The `fields` object with its JSON types intact, applied LAST so it
+		// wins over the stringified copy of itself in `field` — same reasoning
+		// as mapItemCreate (BUG-2850). Without this an update through the
+		// object param stringifies exactly as a create did.
+		for k, v := range nativeFields(input) {
+			patch[k] = v
+		}
 		// Lift recognized column keys (agent_role_id, assigned_user_id)
 		// out of the patch onto the top-level payload so the handler writes
 		// the column instead of stuffing the value inert in the JSON. Same
@@ -641,6 +648,14 @@ func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
 // --content "x"` would do an unnecessary GET-merge-PATCH of
 // fields, churning the audit log entry for no reason.
 func hasFieldChanges(input map[string]any) bool {
+	// The native `fields` map counts as a change on its own (BUG-2850). A
+	// NESTED-only update — fields:{"spec":[…]} — emits no `field` entry at
+	// all, because a structure has no key=value encoding, so without this the
+	// update reports success and writes nothing. That is the silent-drop shape
+	// this bug is about, arriving through the fix for it.
+	if len(nativeFields(input)) > 0 {
+		return true
+	}
 	for _, key := range []string{"status", "priority", "category", "parent"} {
 		if v, ok := input[key].(string); ok && v != "" {
 			return true
