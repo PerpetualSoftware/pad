@@ -97,6 +97,12 @@ var padItemPromotedFieldKeys = map[string]bool{
 // into the dedicated-param + `field`-array paths, then dispatch as
 // before. Calls without `fields` are byte-for-byte unchanged.
 func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	// Runs regardless of whether `fields` is present — reshapeItemFields
+	// returns early without it, and the ambiguity is reachable through the
+	// `field` array alone (codex round 7).
+	if errRes := checkHierarchyAliasAmbiguity("pad_item.create", input); errRes != nil {
+		return errRes, nil
+	}
 	out, errRes := reshapeItemFields("pad_item.create", input)
 	if errRes != nil {
 		return errRes, nil
@@ -105,6 +111,9 @@ func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) 
 }
 
 func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	if errRes := checkHierarchyAliasAmbiguity("pad_item.update", input); errRes != nil {
+		return errRes, nil
+	}
 	out, errRes := reshapeItemFields("pad_item.update", input)
 	if errRes != nil {
 		return errRes, nil
@@ -165,6 +174,11 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 	// removed from `field` before dispatch, so the value is written once
 	// through its dedicated param (codex round 6).
 	dropFieldKeys := map[string]bool{}
+
+	// Generic keys whose array entry was a PADDED equal duplicate: the raw
+	// entry is dropped and re-emitted in canonical `key=value` form, so the
+	// doors that do not trim write the key the caller meant (codex round 7).
+	reEmitFields := map[string]string{}
 
 	// Deterministic processing (and error ordering) across runs.
 	keys := make([]string, 0, len(obj))
@@ -337,6 +351,21 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 				return nil, errStructured(prefix, fmt.Errorf(
 					"fields.%s conflicts with the field array entry %q (%s vs %s) — pass one of them, or the same value in both", k, k+"="+prev, sv, prev))
 			}
+			// EQUAL DUPLICATE — but the RETAINED entry may be the padded one
+			// (codex round 7). The index is normalized so ` effort=l` matches
+			// `fields:{"effort":"l"}`, yet the raw entry stayed in `field`
+			// and the CLI door does not trim: stdio would store an undeclared
+			// `" effort"` key and leave `effort` untouched — a silent
+			// mis-write created by the very normalization that let the
+			// duplicate be recognized. Re-emit the entry in canonical form so
+			// every door writes the key the caller meant.
+			//
+			// Only when the raw form actually differs, so a well-formed call
+			// keeps its array untouched and in order.
+			if !containsFieldEntry(fieldEntries, k, sv) {
+				dropFieldKeys[k] = true
+				reEmitFields[k] = sv
+			}
 			continue
 		}
 		fieldEntries = append(fieldEntries, k+"="+sv)
@@ -356,6 +385,18 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			kept = append(kept, e)
 		}
 		fieldEntries = kept
+	}
+	// Canonical re-emissions go on AFTER the filter, or the filter would
+	// remove them again — they carry the same key it just matched on.
+	if len(reEmitFields) > 0 {
+		reKeys := make([]string, 0, len(reEmitFields))
+		for k := range reEmitFields {
+			reKeys = append(reKeys, k)
+		}
+		sort.Strings(reKeys) // deterministic arg order across runs
+		for _, k := range reKeys {
+			fieldEntries = append(fieldEntries, k+"="+reEmitFields[k])
+		}
 	}
 	if len(fieldEntries) > 0 {
 		out["field"] = fieldEntries
@@ -381,6 +422,68 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 // it is produced by this merge, never accepted from the wire, and strict input
 // validation would reject it as an undeclared param if it were.
 const fieldsNativeKey = "__fields_native"
+
+// containsFieldEntry reports whether entries already carries the canonical
+// `key=value` form for this pair. Used to leave a well-formed array untouched
+// instead of dropping and re-appending an identical entry.
+func containsFieldEntry(entries []string, key, value string) bool {
+	want := key + "=" + value
+	for _, e := range entries {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+// checkHierarchyAliasAmbiguity refuses a call that names BOTH hierarchy
+// aliases, whichever doors they arrive through (codex round 7).
+//
+// The alias guard added in round 6 lives inside reshapeItemFields' per-key
+// loop, so it only fires when the `fields` OBJECT carries a hierarchy key —
+// and reshapeItemFields returns early when there is no `fields` at all. That
+// left the ambiguity fully reachable through the array alone:
+// `field:["parent=A","plan=B"]` was accepted, and extractParentLink's
+// no-early-exit loop applied `plan` while the caller had every reason to
+// believe `parent` was what they set. A guard a caller can step around by
+// moving the same two values into a different param is not a guard — the
+// lesson this unit has now produced at four consecutive rounds.
+//
+// SCOPE, stated plainly because it widens what this tool refuses: the
+// pure-`field` form was accepted before BUG-2850 too, so this is not a
+// regression being closed but a pre-existing silent mis-write. It is fixed
+// here rather than filed because shipping the round-6 guard without it would
+// advertise a refusal that any caller can bypass in one edit. Refusing is
+// consistent with v0.19, which already refuses parent + clear_parent
+// "including via the plan alias".
+//
+// Deliberately NOT extended to same-name duplicates (a top-level `parent`
+// param plus `field:["parent=B"]`). Those resolve last-write-wins
+// identically on both doors — documented behaviour, not an ambiguity — and
+// widening the refusal to cover them is a policy change, not a defect fix.
+func checkHierarchyAliasAmbiguity(prefix string, input map[string]any) *mcp.CallToolResult {
+	_, byKey, errRes := parseFieldArray(prefix, input["field"])
+	if errRes != nil {
+		// Shape errors belong to the caller that parses for real; staying
+		// silent here keeps a single error surface for them.
+		return nil
+	}
+	planVal, hasPlan := byKey["plan"]
+	if !hasPlan {
+		return nil
+	}
+	if parentVal, hasParent := byKey["parent"]; hasParent {
+		return errStructured(prefix, fmt.Errorf(
+			"field entries %q and %q are the same hierarchy directive and the server applies whichever it reads last; pass one of them",
+			"parent="+parentVal, "plan="+planVal))
+	}
+	if v, ok := input["parent"].(string); ok && v != "" {
+		return errStructured(prefix, fmt.Errorf(
+			"the parent param (%s) conflicts with the field array entry %q — %q and %q are the same hierarchy directive; pass one of them",
+			v, "plan="+planVal, "parent", "plan"))
+	}
+	return nil
+}
 
 // parseFieldArray normalizes an existing `field` param into a []string
 // plus a key→value index. Entries the CLI would reject anyway (no '=')

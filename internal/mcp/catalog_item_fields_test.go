@@ -752,3 +752,145 @@ func TestPadItemUpdate_EqualDuplicateDropKeepsOtherFieldEntries(t *testing.T) {
 		t.Errorf("duplicate entry survived: %v", disp.gotArgs)
 	}
 }
+
+// --- codex round 7 ---
+
+// TestPadItemUpdate_HierarchyAliasAmbiguityRefusedWithoutFieldsObject: the
+// alias guard must fire whichever doors the two hierarchy keys arrive
+// through, INCLUDING when no `fields` object is involved at all (BUG-2850,
+// codex round 7).
+//
+// Round 6 put the guard inside reshapeItemFields' per-key loop, and
+// reshapeItemFields returns early when `fields` is absent — so
+// `field:["parent=A","plan=B"]` walked straight past it and
+// extractParentLink's no-early-exit loop applied `plan` while the caller had
+// every reason to think `parent` was what they set. A guard a caller can step
+// around by moving the same two values into a different param is not a guard,
+// which is this unit's recurring finding stated once more.
+//
+// The pure-`field` form predates BUG-2850, so this closes a pre-existing
+// silent mis-write rather than a regression — see the note on
+// checkHierarchyAliasAmbiguity for why it is fixed here rather than filed.
+func TestPadItemUpdate_HierarchyAliasAmbiguityRefusedWithoutFieldsObject(t *testing.T) {
+	cases := map[string]map[string]any{
+		"both aliases in the field array, no fields object": {
+			"field": []any{"parent=PLAN-9", "plan=PLAN-12"},
+		},
+		"both aliases in the field array, unrelated fields object": {
+			"field":  []any{"parent=PLAN-9", "plan=PLAN-12"},
+			"fields": map[string]any{"effort": "l"},
+		},
+		"top-level parent param vs field[plan], no fields object": {
+			"parent": "PLAN-9",
+			"field":  []any{"plan=PLAN-12"},
+		},
+		"padded entries still caught": {
+			"field": []any{" parent=PLAN-9", "plan =PLAN-12"},
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			input := map[string]any{"action": "update", "ref": "TASK-5"}
+			for k, v := range extra {
+				input[k] = v
+			}
+			disp, msg, isErr := dispatchPadItem(t, input)
+			if !isErr {
+				t.Fatalf("expected structured refusal, got success: %s", msg)
+			}
+			if !strings.Contains(msg, "parent") || !strings.Contains(msg, "plan") {
+				t.Errorf("error should name both hierarchy keys: %s", msg)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("ambiguous call must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...and ONE hierarchy key through the array is still an ordinary call. The
+// guard refuses ambiguity, not the feature.
+func TestPadItemUpdate_SingleHierarchyKeyInFieldArrayStillAccepted(t *testing.T) {
+	for _, entry := range []string{"parent=PLAN-12", "plan=PLAN-12"} {
+		t.Run(entry, func(t *testing.T) {
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update",
+				"ref":    "TASK-5",
+				"field":  []any{entry},
+			})
+			if isErr {
+				t.Fatalf("a lone %q must still be accepted: %s", entry, msg)
+			}
+			if !argsContainPair(disp.gotArgs, "--field", entry) {
+				t.Errorf("entry lost: %v", disp.gotArgs)
+			}
+		})
+	}
+}
+
+// TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized: a padded equal
+// duplicate must be re-emitted in canonical form, not retained raw
+// (BUG-2850, codex round 7).
+//
+// Round 6 normalized the conflict INDEX so ` effort=l` matches
+// `fields:{"effort":"l"}` — correct, and it stopped the padded-key bypass.
+// But the raw entry stayed in `field`, and the CLI door does not trim: stdio
+// would store an undeclared `" effort"` key and leave `effort` untouched. The
+// normalization that made the duplicate visible is what made the retained
+// entry wrong, so the fix belongs at the same place.
+//
+// Asserted on the emitted args rather than on success, because the call
+// succeeded before the fix too — it just wrote the wrong key.
+func TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{" effort=l"},
+		"fields": map[string]any{"effort": "l"},
+	})
+	if isErr {
+		t.Fatalf("padding is not a disagreement; expected success, got: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "effort=l") {
+		t.Errorf("the entry must be re-emitted canonically: %v", disp.gotArgs)
+	}
+	if argsContainPair(disp.gotArgs, "--field", " effort=l") {
+		t.Errorf("the padded entry must not survive — the CLI door does not trim it: %v", disp.gotArgs)
+	}
+	count := 0
+	for i := 0; i+1 < len(disp.gotArgs); i++ {
+		if disp.gotArgs[i] == "--field" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("--field emitted %d times, want exactly 1: %v", count, disp.gotArgs)
+	}
+}
+
+// ...and an already-canonical equal duplicate is left exactly as it was, so
+// the re-emission does not churn a well-formed array.
+func TestPadItemUpdate_CanonicalEqualDuplicateIsUntouched(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"effort=l", "cost=3"},
+		"fields": map[string]any{"effort": "l"},
+	})
+	if isErr {
+		t.Fatalf("expected success: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--field", "effort=l") ||
+		!argsContainPair(disp.gotArgs, "--field", "cost=3") {
+		t.Errorf("both entries must survive unchanged: %v", disp.gotArgs)
+	}
+	count := 0
+	for i := 0; i+1 < len(disp.gotArgs); i++ {
+		if disp.gotArgs[i] == "--field" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("--field emitted %d times, want 2: %v", count, disp.gotArgs)
+	}
+}
