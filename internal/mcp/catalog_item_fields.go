@@ -136,6 +136,11 @@ type fieldContribution struct {
 	value  string // normalized for comparison; "" when unstringifiable
 	nested bool   // a structure, with no key=value encoding
 	raw    any    // the value as supplied, for comparing two structures
+
+	// nonCanonical marks a `field` array entry written in something other
+	// than its canonical `key=value` form (padding around either half). It
+	// matters because the two doors then receive DIFFERENT writes.
+	nonCanonical bool
 }
 
 // topLevelConflictKeys are the top-level params that can collide with a
@@ -187,7 +192,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// asked for; this is it.
 	obj, _ := input["fields"].(map[string]any) // nil when absent; shape errors belong to reshapeItemFields
 	fieldsPresent := obj != nil
-	_, fieldByKey, errRes := parseFieldArray(prefix, input["field"])
+	fieldEntries, fieldByKey, errRes := parseFieldArray(prefix, input["field"])
 	if errRes != nil {
 		return nil // the caller parses for real and owns this error surface
 	}
@@ -217,6 +222,10 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	for _, k := range arrayKeys {
 		add(canonicalFieldKey(k), fieldContribution{
 			key: k, source: "the field array entry " + strconv.Quote(k+"="+fieldByKey[k]), value: fieldByKey[k], raw: fieldByKey[k],
+			// Whether the entry as WRITTEN matches its normalized form. The
+			// index is normalized so a padded entry can be recognized at all;
+			// this remembers that the doors will not receive it identically.
+			nonCanonical: hasNonCanonicalFieldEntry(fieldEntries, k, fieldByKey[k]),
 		})
 	}
 
@@ -264,6 +273,45 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// the SameNameDuplicate tests. Alias collisions above are NOT gated:
 		// last-write-wins is only defensible when both sources name the same
 		// key, and two names for one target have incomparable value spaces.
+		// EQUALITY ONLY LICENSES A COLLAPSE WHEN BOTH DOORS RECEIVE THE SAME
+		// WRITE — and this runs BEFORE the exemption below, deliberately
+		// (codex round 16).
+		//
+		// The conflict index is normalized, so `field:["k = A"]` compares
+		// EQUAL to a top-level `k:"A"` and the pair was accepted while the
+		// entry stayed padded on the wire. HTTP trims it and writes `k`; the
+		// CLI does not, and writes a junk `"k "` key instead. The
+		// normalization that lets the collision be SEEN is exactly what made
+		// accepting it wrong.
+		//
+		// It sits above the exemption because padding breaks the exemption's
+		// own premise — that both doors resolve the duplicate identically —
+		// for EVERY key class, not just the compat IDs. Round 15 was this
+		// same mistake (a premise verified for declared params, generalized
+		// to keys it did not hold for); putting this check below the
+		// exemption would have repeated it one round later, and my first
+		// draft did exactly that.
+		//
+		// Only when nothing will canonicalize the entry, i.e. no `fields`
+		// object — with one present, reshapeItemFields re-emits it
+		// canonically and equality is safe again.
+		//
+		// Deliberately NOT extended to a padded entry standing ALONE with no
+		// colliding param: that is BUG-2870, ruled out of this PR's scope,
+		// and it changes what every CLI caller receives. Here the caller has
+		// supplied one key twice and one of the forms is malformed, which is
+		// a narrower and locally-answerable question.
+		if !fieldsPresent {
+			for i := 1; i < len(contribs); i++ {
+				a, b := contribs[0], contribs[i]
+				if a.nonCanonical || b.nonCanonical {
+					return errStructured(prefix, fmt.Errorf(
+						"%s conflicts with %s — the field entry is not in canonical key=value form, so the transports would write different keys; remove the padding or pass only one of them",
+						a.source, b.source))
+				}
+			}
+		}
+
 		// ...and the exemption holds only where the doors PROVABLY agree,
 		// which is not everywhere (codex round 15).
 		//

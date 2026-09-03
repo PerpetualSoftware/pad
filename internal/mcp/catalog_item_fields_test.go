@@ -1726,3 +1726,82 @@ func TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields(t *testing.
 		}
 	})
 }
+
+// --- codex round 16 ---
+
+// TestPadItemUpdate_PaddedEntryCollidingWithAParamRefused: equality only
+// licenses a collapse when both doors receive the SAME write (BUG-2850,
+// codex round 16).
+//
+// The conflict index is normalized — that is what lets a padded entry be
+// recognized as a collision at all — so `field:["k = A"]` compared EQUAL to a
+// top-level `k:"A"` and the pair was accepted while the entry stayed padded
+// on the wire. HTTP trims it and writes `k`; the CLI does not, and writes a
+// junk `"k "` key instead. The normalization that made the collision VISIBLE
+// is exactly what made accepting it wrong.
+//
+// Both key classes are driven, because the divergence is not compat-specific:
+// a declared param picks up a junk key alongside its correct write, a compat
+// ID loses its value entirely.
+func TestPadItemUpdate_PaddedEntryCollidingWithAParamRefused(t *testing.T) {
+	cases := map[string]map[string]any{
+		"compat id vs padded entry": {
+			"assigned_user_id": "user-A", "field": []any{"assigned_user_id = user-A"},
+		},
+		"declared param vs padded entry": {
+			"status": "done", "field": []any{"status = done"},
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			input := map[string]any{"action": "update", "ref": "TASK-5"}
+			for k, v := range extra {
+				input[k] = v
+			}
+			disp, msg, isErr := dispatchPadItem(t, input)
+			if !isErr {
+				t.Fatalf("a padded entry and a param do not reach the doors alike; expected refusal, got success: %s (args %v)", msg, disp.gotArgs)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// ...and a padded entry standing ALONE is untouched. That is BUG-2870 — ruled
+// out of this PR's scope because fixing it changes what every CLI caller
+// receives, not just callers who supplied the same key twice.
+//
+// This leg is the scope boundary made executable: if it ever goes red, the
+// round-16 refusal has grown into BUG-2870's territory without a ruling.
+func TestPadItemUpdate_PaddedEntryAloneIsUntouched(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"assigned_user_id = user-A"},
+	})
+	if isErr {
+		t.Fatalf("a lone padded entry is BUG-2870's business, not this PR's: %s", msg)
+	}
+	if len(disp.gotPath) == 0 {
+		t.Fatal("expected the update to dispatch")
+	}
+}
+
+// ...and a CANONICAL equal duplicate still collapses, so the refusal is about
+// the padding and not about the collision.
+func TestPadItemUpdate_CanonicalCompatDuplicateStillCollapses(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action":           "update",
+		"ref":              "TASK-5",
+		"assigned_user_id": "user-A",
+		"field":            []any{"assigned_user_id=user-A"},
+	})
+	if isErr {
+		t.Fatalf("an equal canonical duplicate is unambiguous: %s", msg)
+	}
+	if len(disp.gotPath) == 0 {
+		t.Fatal("expected the update to dispatch")
+	}
+}
