@@ -17,6 +17,7 @@ handlers — onchange is never called.
 <script lang="ts">
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import ItemPicker from '$lib/components/items/ItemPicker.svelte';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -72,7 +73,36 @@ handlers — onchange is never called.
 	// filters them out by default rather than dropping them), so a dangling
 	// target is a row carrying `deleted_at`. No fetch, and no loading state.
 	let isRelation = $derived(field.type === 'relation');
-	let relationEditable = $derived(isRelation && !!wsSlug && !!field.collection);
+
+	/**
+	 * Whether the field's declared target still names a live collection.
+	 *
+	 * `FieldDef.collection` holds a SLUG (the schema editor binds
+	 * `<option value={c.slug}>`), and renaming a collection changes its slug
+	 * WITHOUT migrating the relation definitions that point at it — nothing in
+	 * `store.UpdateCollection` touches them. So a rename silently strands every
+	 * relation field aimed at that collection. Filed separately; this component
+	 * only has to behave sanely in the meantime.
+	 *
+	 * Three-valued on purpose. `'unknown'` is when the collection list has not
+	 * loaded for this workspace yet — the absence of evidence, which must not be
+	 * read as a stale target, since that would flash every relation field into a
+	 * broken state on first paint.
+	 */
+	let relationTarget = $derived.by((): 'live' | 'stale' | 'unknown' => {
+		if (!isRelation || !wsSlug || !field.collection) return 'unknown';
+		if (!collectionStore.collectionsAreFreshFor(wsSlug)) return 'unknown';
+		return (collectionStore.collections ?? []).some((c) => c.slug === field.collection)
+			? 'live'
+			: 'stale';
+	});
+
+	// A picker aimed at a renamed collection would list NOTHING — `getByCollection`
+	// and `localSearch` both filter on that slug. Read-only with the value still
+	// legible beats a search box that silently never matches.
+	let relationEditable = $derived(
+		isRelation && !!wsSlug && !!field.collection && relationTarget !== 'stale',
+	);
 	let relationRow = $derived.by((): ItemIndexRow | null => {
 		if (!isRelation || !wsSlug) return null;
 		const raw = typeof value === 'string' ? value.trim() : '';
@@ -95,7 +125,11 @@ handlers — onchange is never called.
 		//    (workspace-wide, not collection-scoped); I wrote that finding down and
 		//    then reproduced it here.
 		if (row.id !== raw) return null;
-		if (field.collection && row.collection_slug !== field.collection) return null;
+		// The collection check applies only while the declared target is one that
+		// still EXISTS. After a rename it names nothing, and enforcing it then
+		// would report every stored value as unresolved — turning a schema
+		// problem into apparent data loss on data that is completely fine.
+		if (relationTarget === 'live' && row.collection_slug !== field.collection) return null;
 		return row;
 	});
 	let relationState = $derived.by((): 'empty' | 'live' | 'deleted' | 'unresolved' => {

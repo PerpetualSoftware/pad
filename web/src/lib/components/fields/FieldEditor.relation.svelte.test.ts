@@ -11,14 +11,16 @@ import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 
-const { localIndexMock, localSearchMock, searchApi } = vi.hoisted(() => ({
+const { localIndexMock, localSearchMock, searchApi, collectionStoreMock } = vi.hoisted(() => ({
 	localIndexMock: { bootstrapStateFor: vi.fn(), findByIdOrSlug: vi.fn(), getByCollection: vi.fn(), cursorFor: vi.fn() },
 	localSearchMock: { search: vi.fn(), epoch: vi.fn() },
 	searchApi: vi.fn(),
+	collectionStoreMock: { collections: [] as { slug: string }[], collectionsAreFreshFor: vi.fn() },
 }));
 vi.mock('$lib/api/client', () => ({ api: { search: (...a: unknown[]) => searchApi(...a) } }));
 vi.mock('$lib/stores/localIndex.svelte', () => ({ localIndex: localIndexMock }));
 vi.mock('$lib/stores/localSearch.svelte', () => ({ localSearch: localSearchMock }));
+vi.mock('$lib/stores/collections.svelte', () => ({ collectionStore: collectionStoreMock }));
 
 import FieldEditor from './FieldEditor.svelte';
 
@@ -42,6 +44,9 @@ beforeEach(() => {
 	localSearchMock.search.mockReset().mockReturnValue([]);
 	localSearchMock.epoch.mockReset().mockImplementation((ws: string) => epochs.get(ws) ?? 0);
 	searchApi.mockReset().mockResolvedValue({ results: [] });
+	// Default: the target collection is loaded and live.
+	collectionStoreMock.collections = [{ slug: 'colors' }, { slug: 'tasks' }];
+	collectionStoreMock.collectionsAreFreshFor.mockReset().mockReturnValue(true);
 });
 afterEach(() => { cleanup(); document.body.innerHTML = ''; });
 
@@ -126,6 +131,50 @@ describe('FieldEditor — relation resolves by ID, in the declared collection', 
 		await tick();
 		expect(document.body.textContent).toMatch(/unresolved/i);
 		expect(document.body.textContent).not.toContain('A Task');
+	});
+});
+
+describe('FieldEditor — a renamed target collection must not look like data loss', () => {
+	// `FieldDef.collection` holds a SLUG, and renaming a collection changes its
+	// slug without migrating the relation definitions pointing at it — nothing
+	// in `store.UpdateCollection` touches them (codex round 1 P1 on this unit).
+	// The collection check added for cross-collection resolution would then
+	// report EVERY stored value as unresolved, which is a schema problem
+	// presenting as lost data.
+
+	it('still renders the chip when the declared target no longer exists', async () => {
+		// Faithful to what a rename actually does: `localIndex.applyRetag` moves
+		// the indexed ROWS onto the new slug, while `field.collection` keeps
+		// pointing at the old one. The row and the field therefore DISAGREE — and
+		// modelling only the store's collection list (as a first draft of this
+		// test did) leaves them agreeing, so the mutant that makes the collection
+		// check unconditional survives.
+		collectionStoreMock.collections = [{ slug: 'colours-renamed' }]; // `colors` is gone
+		const retagged = { ...LIVE, collection_slug: 'colours-renamed', collection_prefix: 'COLO' };
+		rows.set(retagged.id, retagged);
+		render(FieldEditor, { props: { field, value: retagged.id, wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} } });
+		await tick();
+		expect(document.body.textContent).toContain('Red');
+		expect(document.body.textContent).not.toMatch(/unresolved/i);
+	});
+
+	it('goes read-only rather than offering a picker that can never match', async () => {
+		collectionStoreMock.collections = [{ slug: 'colours-renamed' }];
+		render(FieldEditor, { props: { field, value: '', wsSlug: 'ws', username: 'dave', readonly: false, onchange: () => {} } });
+		await tick();
+		expect(document.querySelector('.picker-input')).toBeNull();
+	});
+
+	it('treats a not-yet-loaded collection list as unknown, not as stale', async () => {
+		// Absence of evidence. Reading it as stale would flash every relation
+		// field into read-only on first paint, before the collection list lands.
+		//
+		// Asserted on EDITABILITY, not on the chip: a stale target also renders
+		// the chip, so a chip assertion cannot tell the two apart.
+		collectionStoreMock.collectionsAreFreshFor.mockReturnValue(false);
+		render(FieldEditor, { props: { field, value: '', wsSlug: 'ws', username: 'dave', readonly: false, onchange: () => {} } });
+		await tick();
+		expect(document.querySelector('.picker-input')).not.toBeNull();
 	});
 });
 
