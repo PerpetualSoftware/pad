@@ -327,6 +327,12 @@ Run with --help-collections to see available collections and their status values
 				return err
 			}
 
+			// Before the JSON early-return, and outside the ref branch below:
+			// the warning goes to STDERR, so it reaches a caller piping stdout
+			// into a parser — which is exactly the caller most likely to have
+			// sent a mistyped key and least likely to notice (codex round 2).
+			warnUndeclaredFields(item)
+
 			if formatFlag == "json" {
 				return cli.PrintJSON(item)
 			}
@@ -1252,6 +1258,10 @@ Examples:
 				}
 				return err
 			}
+
+			// Stderr, before the JSON early-return — see the note on the
+			// create path (codex round 2).
+			warnUndeclaredFields(updated)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(updated)
@@ -3238,6 +3248,8 @@ Set EDITOR or VISUAL env var to choose your editor (default: vi).`,
 				return err
 			}
 
+			warnUndeclaredFields(updated)
+
 			ref := cli.ItemRef(*updated)
 			if ref != "" {
 				fmt.Printf("Updated %s %q\n", ref, updated.Title)
@@ -3540,4 +3552,21 @@ func starredCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&all, "all", false, "include completed/terminal items")
 
 	return cmd
+}
+
+// warnUndeclaredFields prints one line to STDERR naming field keys the
+// collection's schema does not declare (BUG-2850).
+//
+// Stderr, never stdout: `pad item create --format json` output is piped into
+// scripts, and a warning on stdout would corrupt the JSON they parse. The
+// keys are stored either way — this is the trace that makes a typo findable,
+// since once written a mistyped key and a deliberate extra field look the
+// same.
+func warnUndeclaredFields(item *models.Item) {
+	if item == nil || item.Warnings == nil || len(item.Warnings.UndeclaredFields) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s not declared by this collection's schema — stored as-is: %s\n",
+		pluralize(len(item.Warnings.UndeclaredFields), "field", "fields"),
+		strings.Join(item.Warnings.UndeclaredFields, ", "))
 }

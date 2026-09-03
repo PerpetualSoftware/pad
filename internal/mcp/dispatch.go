@@ -128,6 +128,19 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	if d.Binary == "" {
 		return mcp.NewToolResultError("dispatcher: binary path not configured"), nil
 	}
+	// THIS dispatcher is the stdio door, and it cannot express a structured
+	// field value: it runs the CLI with `--field key=value` arguments, and a
+	// nested object or array has no such encoding (BUG-2850).
+	//
+	// The check lives HERE, not in BuildCLIArgs, because BuildCLIArgs runs for
+	// BOTH transports — env.Dispatch calls it before handing off to whichever
+	// Dispatcher is configured — so a refusal there also blocked the remote
+	// door, whose whole point in this change is that it CAN carry structures
+	// (codex round 2 [P1]). Refuse loudly rather than dropping: cliArgs simply
+	// would not contain the key, which is the silent discard this bug is about.
+	if err := refuseStructuredFieldsOverCLI(DispatchInputFromContext(ctx)); err != nil {
+		return validationFailedFromBuildErr(strings.Join(cmdPath, " "), err), nil
+	}
 	full := append(append([]string{}, cmdPath...), cliArgs...)
 	cmd := exec.CommandContext(ctx, d.Binary, full...)
 	var stdout, stderr strings.Builder
@@ -359,6 +372,37 @@ func parseWorkspaceListJSON(body string) ([]WorkspaceHint, error) {
 //     values in rootFlags are skipped.
 //   - `--format json` is appended unless the input explicitly sets a
 //     format flag (e.g. an agent specifically requests markdown).
+//
+// refuseStructuredFieldsOverCLI reports an error naming any `fields` keys whose
+// value is a nested object or array — values the `--field key=value` CLI
+// encoding cannot carry (BUG-2850).
+//
+// The message names the TRANSPORT rather than the value on purpose: the
+// reporter's agent read PR #1159's "no defined write semantics" as a verdict
+// on its data and rewrote seven playbooks' argument specs. This door cannot
+// express the value; Pad can store it.
+func refuseStructuredFieldsOverCLI(input map[string]any) error {
+	native, ok := input[fieldsNativeKey].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var keys []string
+	for k, v := range native {
+		switch v.(type) {
+		case map[string]any, []any:
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+	return fmt.Errorf(
+		"fields.%s: a structured value cannot be written over the stdio transport, which sends --field key=value; "+
+			"use the remote transport, or write the field with the CLI directly",
+		strings.Join(keys, ", fields."))
+}
+
 func BuildCLIArgs(
 	cmdInfo cmdhelp.Command,
 	input map[string]any,

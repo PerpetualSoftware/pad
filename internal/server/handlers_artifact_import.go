@@ -207,6 +207,34 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Carry the create's own warnings into the import response (BUG-2850).
+	//
+	// CORRECTION. Round 10 removed this merge as unreachable, on the grounds
+	// that artifact.Decode populates Fields only from FieldKeysForKind, so no
+	// undeclared key could arrive. That check was real but it was the WRONG
+	// SIDE of the comparison: UndeclaredFieldKeys compares the field map
+	// against the DESTINATION COLLECTION'S SCHEMA, not against the artifact
+	// format's key list. The destination schema is editable, so a canonical
+	// artifact key can be undeclared THERE while being perfectly legal in the
+	// artifact.
+	//
+	// Reachable and verified (round 11, and pinned by
+	// TestImportArtifactReportsUndeclaredFieldsAgainstANarrowedSchema):
+	// narrow the conventions collection's schema to declare only `status`,
+	// import a convention carrying trigger/scope/priority — all three are
+	// stored in the blob and UndeclaredFieldKeys names all three, so
+	// createItemChecked sets item.Warnings and this handler dropped them.
+	//
+	// An import is exactly where that matters: the forgiving preprocessing
+	// above exists because a foreign artifact's vocabulary may not match the
+	// destination, and a key that survived into the blob unrecognized is the
+	// same class of news as the values this handler already reports.
+	if item.Warnings != nil {
+		for _, key := range item.Warnings.UndeclaredFields {
+			warnings = append(warnings, fmt.Sprintf("field %q is not declared by the destination collection's schema; stored as-is", key))
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, artifactImportResponse{
 		Ref:      item.Ref,
 		Slug:     item.Slug,

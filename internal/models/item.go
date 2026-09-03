@@ -58,6 +58,19 @@ var reservedItemFieldKeys = map[string]struct{}{
 	ItemFieldConvention:          {},
 }
 
+// ItemWriteWarnings carries advisory notes about a write that succeeded
+// (BUG-2850). Nothing here is an error: every field named has been stored.
+//
+// UndeclaredFields lists keys written into the item's fields blob that the
+// collection's schema does not declare. Those keys are ACCEPTED — a census of
+// this deployment found 168 live values under 14 such keys, and refusing them
+// would have broken read-modify-write on items nobody edited wrongly — but a
+// typo and a deliberate extra field are indistinguishable once stored, so the
+// write says which keys it did not recognize instead of staying silent.
+type ItemWriteWarnings struct {
+	UndeclaredFields []string `json:"undeclared_fields,omitempty"`
+}
+
 // IsReservedItemField reports whether key is system-written metadata rather than
 // a user-facing schema field. Callers that filter, migrate, or render an item's
 // fields map should consult this rather than enumerating the constants.
@@ -162,6 +175,17 @@ type Item struct {
 	ParentTitle          string `json:"parent_title,omitempty"`
 	ParentSlug           string `json:"parent_slug,omitempty"`
 	ParentCollectionSlug string `json:"parent_collection_slug,omitempty"`
+
+	// Warnings is populated on WRITE responses only (create / update), never
+	// on reads, and is never stored. It carries things the write did that the
+	// caller might not have meant — today, field keys the collection's schema
+	// does not declare (BUG-2850).
+	//
+	// Additive and omitempty: a client that does not know the key ignores it,
+	// and a write with nothing to report is byte-identical to before. The
+	// alternative — wrapping the response as {item, warnings} — would have
+	// broken every existing parser of the item write response.
+	Warnings *ItemWriteWarnings `json:"warnings,omitempty"`
 
 	// HasChildren is true if this item has child items linked to it.
 	// Populated by enrichment, not stored in the DB.

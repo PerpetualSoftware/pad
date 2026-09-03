@@ -1,0 +1,717 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// BUG-2850 at the HTTP door — the door that was broken.
+//
+// The remote /mcp transport builds its field map in ingestFieldKVP with
+// `dst[key] = val`, so every value reaches this handler as a STRING. Before
+// the fix, validateFieldType then refused a string for a declared number or
+// json field and the write 400'd: an MCP agent on that transport could not
+// write those fields at all. The CLI and local stdio MCP were unaffected —
+// they coerce by schema before the request is built — which is why this
+// reproduced only against Pad Cloud.
+//
+// These assert the stored NATIVE TYPE, not that the request succeeded. A test
+// that only checked for 201 would pass on an implementation that stored the
+// string, which is the shape the reporter described.
+func TestItemFieldsCoercedFromStringsAtTheHTTPDoor(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Test"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	// A collection whose schema declares the two types the bug made unwritable.
+	schema := `{"fields":[{"key":"cost","type":"number"},{"key":"spec","type":"json"},{"key":"note","type":"text"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	// Exactly what ingestFieldKVP produces: every value a string.
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{
+			"title":  "from the remote mcp door",
+			"fields": `{"cost":"42","spec":"[{\"name\":\"a\"}]","note":"42"}`,
+		},
+		map[string]string{"Authorization": "Bearer " + sessionToken},
+	)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(created.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v (%s)", err, created.Fields)
+	}
+
+	if got, ok := stored["cost"].(float64); !ok || got != 42 {
+		t.Fatalf("cost: want a JSON number, got %[1]T(%[1]v) — stored blob: %s", stored["cost"], created.Fields)
+	}
+	if _, ok := stored["spec"].([]any); !ok {
+		t.Fatalf("spec: want a JSON array, got %[1]T(%[1]v) — stored blob: %s", stored["spec"], created.Fields)
+	}
+	// The text field holding "42" must STAY a string. Fixing the bug by
+	// coercing anything that parses would silently retype real data.
+	if got, ok := stored["note"].(string); !ok || got != "42" {
+		t.Fatalf("note: want the string \"42\" untouched, got %[1]T(%[1]v)", stored["note"])
+	}
+}
+
+// The same door on UPDATE, which is a separate call site and would not have
+// been covered by the create test above (BUG-2850 wires eight sites).
+func TestItemFieldsCoercedFromStringsOnUpdate(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Update"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	schema := `{"fields":[{"key":"cost","type":"number"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "PATCH",
+		"/api/v1/workspaces/"+ws.Slug+"/items/"+item.Slug,
+		map[string]interface{}{"fields": `{"cost":"99.5"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(updated.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v (%s)", err, updated.Fields)
+	}
+	if got, ok := stored["cost"].(float64); !ok || got != 99.5 {
+		t.Fatalf("cost: want a JSON number, got %[1]T(%[1]v) — stored blob: %s", stored["cost"], updated.Fields)
+	}
+}
+
+// fields_patch is a THIRD call site (the field-level merge from IDEA-1480),
+// separate from the full-fields update above. CONVE-19: wiring is a claim, so
+// each site that threads CoerceFields needs a test that fails if that site
+// alone is missed — this one caught nothing when written, which is the point:
+// it exists so a future edit that drops the call here is red.
+func TestItemFieldsCoercedOnFieldsPatch(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Patch"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	schema := `{"fields":[{"key":"cost","type":"number"},{"key":"note","type":"text"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"note":"keep me"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "PATCH",
+		"/api/v1/workspaces/"+ws.Slug+"/items/"+item.Slug,
+		map[string]interface{}{"fields_patch": map[string]any{"cost": "7"}},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("fields_patch: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(updated.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v (%s)", err, updated.Fields)
+	}
+	if got, ok := stored["cost"].(float64); !ok || got != 7 {
+		t.Fatalf("cost: want a JSON number, got %[1]T(%[1]v) — stored blob: %s", stored["cost"], updated.Fields)
+	}
+	// The merge must not have eaten the untouched field.
+	if got, ok := stored["note"].(string); !ok || got != "keep me" {
+		t.Fatalf("note: want it preserved by the merge, got %[1]T(%[1]v)", stored["note"])
+	}
+}
+
+// A value that will not coerce must still be REFUSED, with the validator's
+// existing message. Coercion removes the cases where a correct value arrived
+// in the wrong clothes; it must not start accepting wrong values.
+func TestUncoercibleFieldValueStillRefused(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Refusal"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	schema := `{"fields":[{"key":"cost","type":"number"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "bad", "fields": `{"cost":"not-a-number"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an un-coercible number, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The preflight and the copy must coerce IDENTICALLY (BUG-2850).
+//
+// They validate in different PACKAGES — the preflight in
+// handlers_items_copy_preflight.go, the copy in
+// internal/store/items_cross_workspace_copy.go — which is exactly how they
+// would drift unnoticed. The preflight exists to PREDICT what the copy does,
+// so coercion on one side only makes it report a field as failing that the
+// copy accepts, which is worse than either behaviour alone.
+//
+// Both files carry a comment saying they must match. This is the test that
+// makes that comment more than a wish.
+func TestCopyAndPreflightCoerceIdentically(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	mkWS := func(name string) models.Workspace {
+		rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+			map[string]string{"name": name}, sessionToken)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create ws %s: expected 201, got %d: %s", name, rr.Code, rr.Body.String())
+		}
+		var ws models.Workspace
+		parseJSON(t, rr, &ws)
+		return ws
+	}
+	mkColl := func(ws models.Workspace, name, schema string) models.Collection {
+		rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+			map[string]interface{}{"name": name, "schema": schema}, sessionToken)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create collection %s: expected 201, got %d: %s", name, rr.Code, rr.Body.String())
+		}
+		var c models.Collection
+		parseJSON(t, rr, &c)
+		return c
+	}
+
+	src := mkWS("Coercion Copy Src")
+	dst := mkWS("Coercion Copy Dst")
+	schema := `{"fields":[{"key":"cost","type":"number"}]}`
+	srcColl := mkColl(src, "Jobs", schema)
+	dstColl := mkColl(dst, "Jobs", schema)
+
+	rr := doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+src.Slug+"/collections/"+srcColl.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"cost":1}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	// A STRING override for a number field — what the remote MCP door sends.
+	body := map[string]interface{}{
+		"target_workspace":  dst.Slug,
+		"target_collection": dstColl.Slug,
+		"field_overrides":   map[string]any{"cost": "42"},
+	}
+
+	pre := doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+src.Slug+"/items/"+item.Slug+"/copy/preflight",
+		body, map[string]string{"Authorization": "Bearer " + sessionToken})
+	cp := doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+src.Slug+"/items/"+item.Slug+"/copy",
+		body, map[string]string{"Authorization": "Bearer " + sessionToken})
+
+	// The agreement itself: whatever they do, they must do the same thing. A
+	// preflight that previews success against a copy that refuses (or the
+	// reverse) is the failure this guards, independent of which is "right".
+	preOK := pre.Code >= 200 && pre.Code < 300
+	cpOK := cp.Code >= 200 && cp.Code < 300
+	if preOK != cpOK {
+		t.Fatalf("preflight and copy disagreed on a string override for a number field:\n"+
+			" preflight: %d %s\n copy:      %d %s",
+			pre.Code, pre.Body.String(), cp.Code, cp.Body.String())
+	}
+
+	// And with coercion in place, both accept and the copy stores a NUMBER.
+	if !cpOK {
+		t.Fatalf("copy refused a coercible override: %d %s", cp.Code, cp.Body.String())
+	}
+	// The copy answers with a wrapper, not a bare item.
+	var result struct {
+		Item *models.Item `json:"item"`
+	}
+	parseJSON(t, cp, &result)
+	if result.Item == nil {
+		t.Fatalf("copy response carried no item: %s", cp.Body.String())
+	}
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Item.Fields), &stored); err != nil {
+		t.Fatalf("copied fields are not JSON: %v (%s)", err, result.Item.Fields)
+	}
+	if got, ok := stored["cost"].(float64); !ok || got != 42 {
+		t.Fatalf("copied cost: want a JSON number 42, got %[1]T(%[1]v) — blob: %s", stored["cost"], result.Item.Fields)
+	}
+}
+
+// The parity pin the ruling asked for: an UNDECLARED number and an UNDECLARED
+// object, asserting the stored native type (BUG-2850).
+//
+// Undeclared keys are accepted — a census found 168 live values under 14 such
+// keys in this deployment, and refusing them would have broken read-modify-
+// write on items nobody edited wrongly. What changed is that their JSON type
+// survives where the encoding carries one. This is the HTTP door, which
+// carries it; the key=value doors are string-by-construction and their row is
+// the string, asserted in the MCP package.
+//
+// It also pins the WARNING: the write names the keys it did not recognize, so
+// a typo leaves a trace. Both halves in one test because they describe one
+// write.
+func TestUndeclaredFieldsKeepTheirTypeAndAreNamed(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Undeclared Pin"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	// The schema declares NOTHING but status — every key below is undeclared.
+	schema := `{"fields":[{"key":"status","type":"text"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{
+			"title":  "undeclared pin",
+			"fields": `{"materials_cost":42,"spec":{"a":[1,2]}}`,
+		},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201 — undeclared keys are ACCEPTED, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(created.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v (%s)", err, created.Fields)
+	}
+	if got, ok := stored["materials_cost"].(float64); !ok || got != 42 {
+		t.Fatalf("undeclared number: want a JSON number, got %[1]T(%[1]v) — blob: %s", stored["materials_cost"], created.Fields)
+	}
+	obj, ok := stored["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("undeclared object: want a JSON object, got %[1]T(%[1]v) — blob: %s", stored["spec"], created.Fields)
+	}
+	if _, ok := obj["a"].([]any); !ok {
+		t.Fatalf("undeclared object: nested array lost, got %[1]T(%[1]v)", obj["a"])
+	}
+
+	// And the write says which keys it did not recognize.
+	if created.Warnings == nil {
+		t.Fatalf("expected warnings naming the undeclared keys, got none: %s", rr.Body.String())
+	}
+	got := created.Warnings.UndeclaredFields
+	if len(got) != 2 || got[0] != "materials_cost" || got[1] != "spec" {
+		t.Fatalf("undeclared_fields = %v, want [materials_cost spec] (sorted)", got)
+	}
+}
+
+// A write with nothing to report carries NO warnings element, so the response
+// stays byte-identical to before for every well-formed write (BUG-2850).
+func TestNoWarningsWhenEveryFieldIsDeclared(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "No Warnings"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	schema := `{"fields":[{"key":"cost","type":"number"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "clean", "fields": `{"cost":"5"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "warnings") {
+		t.Fatalf("a clean write must carry no warnings element: %s", rr.Body.String())
+	}
+}
+
+// A nil value in fields_patch DELETES the key, so it must not be reported as
+// an undeclared field that was stored (BUG-2850, codex round 2). The warning
+// would otherwise tell the caller a field exists that the same request removed.
+func TestFieldsPatchDeleteIsNotReportedAsUndeclared(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Patch Delete"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	schema := `{"fields":[{"key":"status","type":"text"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"stray":"value"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	// Now DELETE that key via fields_patch.
+	rr = doRequestWithHeaders(srv, "PATCH",
+		"/api/v1/workspaces/"+ws.Slug+"/items/"+item.Slug,
+		map[string]interface{}{"fields_patch": map[string]any{"stray": nil}},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch delete: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+
+	if updated.Warnings != nil && len(updated.Warnings.UndeclaredFields) > 0 {
+		t.Fatalf("a DELETE must not be reported as a stored undeclared field: %v",
+			updated.Warnings.UndeclaredFields)
+	}
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(updated.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v", err)
+	}
+	if _, still := stored["stray"]; still {
+		t.Fatalf("the key should have been deleted: %s", updated.Fields)
+	}
+}
+
+// The three remaining coercion call sites, pinned (BUG-2850, lead ruling at
+// the day-11 boot).
+//
+// The PR's claim is "typed on every door". Five of the eight `CoerceFields`
+// sites had a test that goes red if that site alone is dropped; move, bulk
+// move and bulk update did not, so the claim rested on reading the code. That
+// is CONVE-19 and PATTE-128's exact shape, and it is what rounds 2-5 of this
+// unit kept finding: wiring is a claim.
+//
+// WHAT MAKES THE MOVE PINS FAITHFUL — this is the part worth reading before
+// trusting them. It would be easy to write a move test that passes for the
+// wrong reason, because `migrateValue` already handles a text→number move
+// (migrate.go:190). But look at what it returns on success: `value`, the
+// ORIGINAL — not the parsed float. So a text field holding "42" lands in a
+// number-typed destination as the STRING "42", and it is `CoerceFields` at
+// the move site, and only that, which turns it into a JSON number before
+// `ValidateFieldsDetailed` sees it. Drop the call and the move 400s with
+// `invalid_fields`. The assertion is on the STORED NATIVE TYPE rather than on
+// the status code, so an implementation that answered 200 and stored the
+// string would still be red.
+
+// Single-item move: POST /items/{slug}/move (handlers_items.go, the
+// SchemaForMigratedFields site).
+func TestItemFieldsCoercedOnMove(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Move"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	// Source declares cost as TEXT, destination as NUMBER. The move migrates
+	// the value across (text→number is a permitted conversion) but carries the
+	// string verbatim.
+	src := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Drafts",
+		`{"fields":[{"key":"cost","type":"text"}]}`)
+	dst := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Jobs",
+		`{"fields":[{"key":"cost","type":"number"}]}`)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+src.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"cost":"42"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{"target_collection": dst.Slug},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	assertStoredNumber(t, srv, sessionToken, ws.Slug, item.Slug, "cost", 42)
+}
+
+// Bulk move: POST /items/bulk op=move with a target collection
+// (handlers_items_bulk.go, the second SchemaForMigratedFields site). A
+// separate function from the single move — bulkMoveCollection — which is why
+// the test above says nothing about it.
+func TestItemFieldsCoercedOnBulkMove(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Bulk Move"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	src := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Drafts",
+		`{"fields":[{"key":"cost","type":"text"}]}`)
+	dst := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Jobs",
+		`{"fields":[{"key":"cost","type":"number"}]}`)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+src.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{"cost":"42"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/items/bulk",
+		map[string]interface{}{"op": "move", "ids": []string{item.ID}, "collection": dst.Slug},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	// A bulk op answers 200 and reports per-item failures in the envelope, so
+	// the status code alone proves nothing — read the envelope.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertBulkAllSucceeded(t, rr)
+
+	assertStoredNumber(t, srv, sessionToken, ws.Slug, item.Slug, "cost", 42)
+}
+
+// Bulk update: POST /items/bulk op=set-priority (handlers_items_bulk.go's
+// bulkFieldUpdate — a third site, reached by set-priority and by status
+// moves).
+//
+// The change values this site merges are request STRINGS, so it is observable
+// only where the schema declares one of those keys as a non-string type. A
+// collection declaring `priority` as a number is unusual but entirely legal —
+// numeric priorities are a real convention — and it is the honest way to
+// exercise this site. With coercion dropped, ValidateFields refuses the string
+// and the item lands in the envelope's `failed` list.
+func TestItemFieldsCoercedOnBulkFieldUpdate(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Coercion Bulk Update"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	coll := createCollectionForCoercion(t, srv, sessionToken, ws.Slug, "Jobs",
+		`{"fields":[{"key":"priority","type":"number"}]}`)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "job", "fields": `{}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/items/bulk",
+		map[string]interface{}{"op": "set-priority", "ids": []string{item.ID}, "priority": "3"},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk set-priority: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertBulkAllSucceeded(t, rr)
+
+	assertStoredNumber(t, srv, sessionToken, ws.Slug, item.Slug, "priority", 3)
+}
+
+func createCollectionForCoercion(t *testing.T, srv *Server, token, wsSlug, name, schema string) models.Collection {
+	t.Helper()
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/collections",
+		map[string]interface{}{"name": name, "schema": schema}, token)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection %q: expected 201, got %d: %s", name, rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+	return coll
+}
+
+// assertBulkAllSucceeded fails if any item landed in the envelope's `failed`
+// list. Without this a dropped coercion reads as a passing 200.
+func assertBulkAllSucceeded(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	var resp struct {
+		Updated []struct {
+			Ref string `json:"ref"`
+		} `json:"updated"`
+		Failed []struct {
+			Ref   string `json:"ref"`
+			Error string `json:"error"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bulk response is not JSON: %v (%s)", err, rr.Body.String())
+	}
+	if len(resp.Failed) > 0 {
+		t.Fatalf("bulk op reported %d failure(s): %+v", len(resp.Failed), resp.Failed)
+	}
+	if len(resp.Updated) == 0 {
+		t.Fatalf("bulk op updated nothing: %s", rr.Body.String())
+	}
+}
+
+// assertStoredNumber re-reads the item and asserts the field is stored as a
+// JSON NUMBER with the expected value. Re-reading rather than trusting the
+// mutation's own response body, so the pin covers what was persisted.
+func assertStoredNumber(t *testing.T, srv *Server, token, wsSlug, itemSlug, key string, want float64) {
+	t.Helper()
+	rr := doRequestWithHeaders(srv, "GET",
+		"/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug, nil,
+		map[string]string{"Authorization": "Bearer " + token})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("re-read item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(item.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v (%s)", err, item.Fields)
+	}
+	got, ok := stored[key].(float64)
+	if !ok {
+		t.Fatalf("%s: want a JSON number, got %[2]T(%[2]v) — stored blob: %s", key, stored[key], item.Fields)
+	}
+	if got != want {
+		t.Fatalf("%s: want %v, got %v", key, want, got)
+	}
+}

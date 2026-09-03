@@ -76,6 +76,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/POST /workspaces/{ws}/collections` — collection CRUD
 - `GET/POST /workspaces/{ws}/collections/{coll}/items` — item CRUD
 - `GET/PATCH/DELETE /workspaces/{ws}/items/{slug}` — item by slug
+  - **Write responses (create/update) may carry `warnings.undeclared_fields`** (BUG-2850) — field keys stored in the item's `fields` blob that the collection's schema does not declare. They are ACCEPTED, not refused: a census found 168 live values under 14 such keys, and refusing them would break read-modify-write on items nobody edited wrongly. The element is additive and `omitempty`, so a clean write is byte-identical to before; system-written metadata (`implementation_notes`, `decision_log`, `github_pr`, `convention`) is excluded. The CLI prints the same list to **stderr**, never stdout, so `--format json` stays parseable
 - `POST /workspaces/{ws}/items/{slug}/copy/preflight` — cross-workspace copy dry run: what would carry / drop / need a value, plus the full warning set. Read-only and safe to call repeatedly (PLAN-2357)
 - `POST /workspaces/{ws}/items/{slug}/copy` — cross-workspace copy; with `archive_source` it is the move. Same request shape as the preflight. **Never retry it automatically** — there is no idempotency key, so a retry duplicates the item
 - `GET /workspaces/{ws}/dashboard` — computed project overview (active items, plans, attention, blockers)

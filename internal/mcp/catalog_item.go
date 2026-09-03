@@ -222,7 +222,7 @@ var padItemSchemaParams = []ParamDef{
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
 	// dropped. See catalog_item_fields.go for the merge contract.
-	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values must be scalars (tags may be an array) — non-scalar field types (multi_select, json) are refused, not written; pass those via a supported path until array/JSON encoding lands."},
+	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number, and an object or array is written as-is to multi_select / json fields (BUG-2850). Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref. Structured values require the REMOTE transport — the local stdio server shells out to the CLI, whose --field key=value encoding cannot carry them, and refuses with a message naming the transport."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
