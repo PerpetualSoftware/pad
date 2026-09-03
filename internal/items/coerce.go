@@ -3,6 +3,7 @@ package items
 import (
 	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -99,4 +100,37 @@ func coerceValue(def models.FieldDef, v any) any {
 	// text, url, select, date, relation — a string is already the right type.
 	// Anything that did not parse above also lands here, on purpose.
 	return s
+}
+
+// UndeclaredFieldKeys returns the keys of fields the schema does not declare,
+// sorted, excluding system-written metadata (BUG-2850).
+//
+// These keys are stored, not refused — see ItemWriteWarnings for why. The
+// caller reports them so a typo leaves a trace: once written, a mistyped key
+// and a deliberate extra field look identical, and the reporter's case was an
+// agent that could not tell its own data had gone somewhere unintended.
+//
+// Reserved keys are excluded via models.IsReservedItemField rather than a
+// second list here — that set exists precisely so callers ask instead of
+// re-listing, and its own doc comment records what re-listing cost last time.
+func UndeclaredFieldKeys(fields map[string]any, schema models.CollectionSchema) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	declared := make(map[string]struct{}, len(schema.Fields))
+	for i := range schema.Fields {
+		declared[schema.Fields[i].Key] = struct{}{}
+	}
+	var out []string
+	for k := range fields {
+		if _, ok := declared[k]; ok {
+			continue
+		}
+		if models.IsReservedItemField(k) {
+			continue
+		}
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

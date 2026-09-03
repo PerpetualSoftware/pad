@@ -136,3 +136,38 @@ func TestCoerceFieldsDoesNotMutateItsInput(t *testing.T) {
 		t.Fatalf("input was mutated: cost is now %[1]T(%[1]v)", in["cost"])
 	}
 }
+
+// Reserved keys are system-written metadata, not a user's stray field, so
+// naming them as "undeclared" on every write that carries one would be noise
+// the reader learns to ignore (BUG-2850).
+//
+// Excluded via models.IsReservedItemField rather than a second list here: that
+// set exists so callers ask instead of re-listing, and its doc comment records
+// what re-listing cost the last time someone did it.
+func TestUndeclaredFieldKeysExcludesReservedMetadata(t *testing.T) {
+	got := UndeclaredFieldKeys(map[string]any{
+		"implementation_notes": "written by pad item note",
+		"decision_log":         "written by pad item decide",
+		"github_pr":            "written by pad github link",
+		"convention":           "system",
+		"materials_cost":       42,
+	}, coerceSchema())
+
+	if len(got) != 1 || got[0] != "materials_cost" {
+		t.Fatalf("undeclared = %v, want only [materials_cost] — reserved metadata must not be reported", got)
+	}
+}
+
+// Declared keys are never reported, and the result is sorted so the warning
+// text is stable across runs (map iteration order is not).
+func TestUndeclaredFieldKeysIsSortedAndSkipsDeclared(t *testing.T) {
+	got := UndeclaredFieldKeys(map[string]any{
+		"cost":  1,
+		"zebra": 1,
+		"alpha": 1,
+	}, coerceSchema())
+
+	if len(got) != 2 || got[0] != "alpha" || got[1] != "zebra" {
+		t.Fatalf("undeclared = %v, want [alpha zebra] sorted, with the declared 'cost' absent", got)
+	}
+}

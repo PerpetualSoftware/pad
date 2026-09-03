@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -320,5 +321,115 @@ func TestCopyAndPreflightCoerceIdentically(t *testing.T) {
 	}
 	if got, ok := stored["cost"].(float64); !ok || got != 42 {
 		t.Fatalf("copied cost: want a JSON number 42, got %[1]T(%[1]v) — blob: %s", stored["cost"], result.Item.Fields)
+	}
+}
+
+// The parity pin the ruling asked for: an UNDECLARED number and an UNDECLARED
+// object, asserting the stored native type (BUG-2850).
+//
+// Undeclared keys are accepted — a census found 168 live values under 14 such
+// keys in this deployment, and refusing them would have broken read-modify-
+// write on items nobody edited wrongly. What changed is that their JSON type
+// survives where the encoding carries one. This is the HTTP door, which
+// carries it; the key=value doors are string-by-construction and their row is
+// the string, asserted in the MCP package.
+//
+// It also pins the WARNING: the write names the keys it did not recognize, so
+// a typo leaves a trace. Both halves in one test because they describe one
+// write.
+func TestUndeclaredFieldsKeepTheirTypeAndAreNamed(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "Undeclared Pin"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	// The schema declares NOTHING but status — every key below is undeclared.
+	schema := `{"fields":[{"key":"status","type":"text"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{
+			"title":  "undeclared pin",
+			"fields": `{"materials_cost":42,"spec":{"a":[1,2]}}`,
+		},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201 — undeclared keys are ACCEPTED, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	stored := map[string]any{}
+	if err := json.Unmarshal([]byte(created.Fields), &stored); err != nil {
+		t.Fatalf("stored fields are not JSON: %v (%s)", err, created.Fields)
+	}
+	if got, ok := stored["materials_cost"].(float64); !ok || got != 42 {
+		t.Fatalf("undeclared number: want a JSON number, got %[1]T(%[1]v) — blob: %s", stored["materials_cost"], created.Fields)
+	}
+	obj, ok := stored["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("undeclared object: want a JSON object, got %[1]T(%[1]v) — blob: %s", stored["spec"], created.Fields)
+	}
+	if _, ok := obj["a"].([]any); !ok {
+		t.Fatalf("undeclared object: nested array lost, got %[1]T(%[1]v)", obj["a"])
+	}
+
+	// And the write says which keys it did not recognize.
+	if created.Warnings == nil {
+		t.Fatalf("expected warnings naming the undeclared keys, got none: %s", rr.Body.String())
+	}
+	got := created.Warnings.UndeclaredFields
+	if len(got) != 2 || got[0] != "materials_cost" || got[1] != "spec" {
+		t.Fatalf("undeclared_fields = %v, want [materials_cost spec] (sorted)", got)
+	}
+}
+
+// A write with nothing to report carries NO warnings element, so the response
+// stays byte-identical to before for every well-formed write (BUG-2850).
+func TestNoWarningsWhenEveryFieldIsDeclared(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+		map[string]string{"name": "No Warnings"}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	schema := `{"fields":[{"key":"cost","type":"number"}]}`
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections",
+		map[string]interface{}{"name": "Jobs", "schema": schema}, sessionToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, rr, &coll)
+
+	rr = doRequestWithHeaders(srv, "POST",
+		"/api/v1/workspaces/"+ws.Slug+"/collections/"+coll.Slug+"/items",
+		map[string]interface{}{"title": "clean", "fields": `{"cost":"5"}`},
+		map[string]string{"Authorization": "Bearer " + sessionToken})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "warnings") {
+		t.Fatalf("a clean write must carry no warnings element: %s", rr.Body.String())
 	}
 }

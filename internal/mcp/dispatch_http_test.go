@@ -1015,3 +1015,51 @@ func TestHTTPHandlerDispatcher_PassesNonDefaultCollectionSlugThrough(t *testing.
 			"shadow a real collection (BUG-2630)", rec.gotPath, wantPath)
 	}
 }
+
+// The remote /mcp door must carry the `fields` object's JSON types through to
+// the request body (BUG-2850).
+//
+// This is the door the bug was reported against. The catalog merge used to
+// flatten every value into `field: ["key=value"]` before dispatch, so a
+// number arrived as "42" and the server — correctly — refused it for a
+// declared number field, making that field unwritable. An UNDECLARED number
+// was worse: accepted, and silently stored as a string.
+//
+// The assertion is on the TYPE in the outgoing body, not on the request
+// succeeding, because a string "42" is exactly what the broken version sent.
+func TestMapItemCreate_FieldsObjectKeepsJSONTypes(t *testing.T) {
+	// What the catalog merge produces for fields:{cost:42, spec:{a:[1,2]}}.
+	// Both forms are present by design — the string copy is what the stdio
+	// door consumes; this door must prefer the native one.
+	input := map[string]any{
+		"workspace": "ws", "collection": "tasks", "title": "x",
+		"field": []any{"cost=42"},
+		fieldsNativeKey: map[string]any{
+			"cost": float64(42),
+			"spec": map[string]any{"a": []any{float64(1), float64(2)}},
+		},
+	}
+	_, _, body, err := mapItemCreate(input)
+	if err != nil {
+		t.Fatalf("mapItemCreate: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(payload["fields"].(string)), &fields); err != nil {
+		t.Fatalf("decode fields: %v", err)
+	}
+
+	if got, ok := fields["cost"].(float64); !ok || got != 42 {
+		t.Fatalf("fields.cost = %[1]T(%[1]v), want a JSON number — the native form must win over the stringified copy", fields["cost"])
+	}
+	spec, ok := fields["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("fields.spec = %[1]T(%[1]v), want a JSON object", fields["spec"])
+	}
+	if _, ok := spec["a"].([]any); !ok {
+		t.Fatalf("fields.spec.a = %[1]T(%[1]v), want a JSON array", spec["a"])
+	}
+}

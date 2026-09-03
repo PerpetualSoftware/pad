@@ -749,6 +749,10 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
 	}
+	// Keys the schema does not declare are STORED, not refused — but the write
+	// says which ones, so a typo leaves a trace (BUG-2850). Computed before the
+	// store call because fieldMap is what gets written.
+	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
 
 	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
 		return nil, &itemCreateError{http.StatusConflict, "conflict", err.Error()}
@@ -864,6 +868,12 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 			Summary:        fmt.Sprintf("assigned to %s on creation", name),
 			AssignedUserID: *item.AssignedUserID,
 		})
+	}
+
+	// Attach after the write succeeded: these are advisory notes about a
+	// stored item, not a reason to refuse one (BUG-2850).
+	if len(undeclared) > 0 {
+		item.Warnings = &models.ItemWriteWarnings{UndeclaredFields: undeclared}
 	}
 
 	return item, nil
@@ -986,6 +996,9 @@ func writeInvalidItemTitle(w http.ResponseWriter, err error) bool {
 }
 
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
+	// Keys this write puts in the fields blob that the schema does not
+	// declare. Stored, not refused; reported on the response (BUG-2850).
+	var undeclaredFields []string
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -1192,6 +1205,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
+		undeclaredFields = items.UndeclaredFieldKeys(fieldMap, schema)
 
 		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 			writeError(w, http.StatusConflict, "conflict", err.Error())
@@ -1346,6 +1360,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		// Coerce strings to their declared types before validating (BUG-2850).
 		patchMap = items.CoerceFields(patchMap, schema)
+		// Only the PATCHED keys are reported. A stray key already on the item
+		// is not something this write introduced, and naming it every time
+		// anyone touches the item would train the reader to ignore the field.
+		undeclaredFields = items.UndeclaredFieldKeys(patchMap, schema)
 		if err := items.ValidatePartialFields(patchMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
@@ -2022,6 +2040,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if err := s.enrichItemForResponse(updated, updateVisIDs); err != nil {
 		writeInternalError(w, err)
 		return
+	}
+
+	// Advisory, post-write, same as create (BUG-2850).
+	if len(undeclaredFields) > 0 {
+		updated.Warnings = &models.ItemWriteWarnings{UndeclaredFields: undeclaredFields}
 	}
 
 	writeJSON(w, http.StatusOK, updated)
