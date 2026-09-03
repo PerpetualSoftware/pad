@@ -161,6 +161,12 @@ const workspaces = new SvelteMap<string, WorkspaceState>();
 // In-flight bootstrap promises live outside the reactive state — there
 // is no reason to proxy a Promise, and keeping it separate makes the
 // reactive-vs-internal split explicit.
+/**
+ * Per-workspace count of `reset()` calls, outliving the state it drops. See
+ * `resetGenerationFor` for why this cannot live on the state object.
+ */
+const resetGenerations = new Map<string, number>();
+
 const inflight = new Map<string, Promise<void>>();
 const projectionResyncs = new Map<string, Promise<void>>();
 
@@ -1304,6 +1310,28 @@ export const localIndex = {
 	},
 
 	/**
+	 * How many times this workspace's state has been DROPPED — sign-out, a
+	 * 403 membership purge, a workspace deletion.
+	 *
+	 * Deliberately kept OUTSIDE `workspaces`, unlike `scopeEpoch` and the
+	 * internal `generation`, because `reset()` deletes that entry: a counter
+	 * living on the state object restarts at 0 with the replacement, so
+	 * comparing it across a reset compares two different identities that
+	 * happen to agree. Those two are safe only because their readers hold a
+	 * REFERENCE to the state object; a caller outside this module cannot.
+	 *
+	 * For such a caller — one holding an in-flight request issued against this
+	 * workspace — capturing this before the request and requiring it unchanged
+	 * afterwards is what distinguishes "still the state I was authorized
+	 * against" from "a fresh state that has coincidentally reached the same
+	 * numbers". `scopeEpochFor` answers the resync question and this answers
+	 * the identity one; a write-back needs both (TASK-2877).
+	 */
+	resetGenerationFor(ws: string): number {
+		return resetGenerations.get(ws) ?? 0;
+	},
+
+	/**
 	 * Current bootstrap state. Used by route loaders to decide whether
 	 * to render a spinner, the items, or an error. Returns `'cold'`
 	 * for unknown workspaces so first-visit consumers see a sane
@@ -1320,6 +1348,11 @@ export const localIndex = {
 	 * user's cache. After reset, `bootstrap(ws)` from cold.
 	 */
 	reset(ws: string): void {
+		// Bumped for EVERY reset, including one for a workspace with no state
+		// yet: a caller's captured value has to change even when the drop found
+		// nothing to drop, or a purge racing a first bootstrap reads as no
+		// purge at all.
+		resetGenerations.set(ws, (resetGenerations.get(ws) ?? 0) + 1);
 		const prior = workspaces.get(ws);
 		// Bump generation on the prior state object BEFORE deleting
 		// it from the map. Any in-flight bootstrap promise still holds

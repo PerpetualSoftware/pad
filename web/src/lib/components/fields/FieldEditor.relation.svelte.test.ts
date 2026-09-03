@@ -28,6 +28,7 @@ const {
 		upsert: vi.fn(),
 		scopeEpochFor: vi.fn(),
 		pendingResyncFor: vi.fn(),
+		resetGenerationFor: vi.fn(),
 	},
 	localSearchMock: { search: vi.fn(), epoch: vi.fn() },
 	searchApi: vi.fn(),
@@ -87,6 +88,7 @@ beforeEach(() => {
 	toastMock.show.mockReset();
 	localIndexMock.upsert.mockReset();
 	localIndexMock.scopeEpochFor.mockReset().mockReturnValue(7);
+	localIndexMock.resetGenerationFor.mockReset().mockReturnValue(3);
 });
 afterEach(() => { cleanup(); document.body.innerHTML = ''; });
 
@@ -670,6 +672,64 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		await tick();
 
 		reject(new Error('field "shade" is required'));
+		await tick();
+		await tick();
+
+		expect(toastMock.show).not.toHaveBeenCalled();
+	});
+
+	it('a create that lands after the workspace was PURGED writes nothing and upserts nothing', async () => {
+		// codex round 6. The epoch check alone cannot see a drop: `reset()`
+		// deletes the state and the replacement starts at `scopeEpoch` 0 — which
+		// is also the value whenever no resync has ever happened, i.e. almost
+		// always. So equality passes across exactly the event it was meant to
+		// catch. `resetGenerationFor` is the identity signal, and it outlives
+		// the state it counts.
+		//
+		// The upsert matters as much as the link here: a brand-new id was never
+		// in `upsert`'s fenced set (nothing to fence — the row did not exist
+		// when the purge ran), so without this the purged workspace gets a row
+		// written back into it and persisted to IDB.
+		let release!: (v: unknown) => void;
+		createApi.mockReturnValue(new Promise((r) => { release = r; }));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		// The purge, with the epoch landing back where it started — the common
+		// case, not a coincidence.
+		localIndexMock.resetGenerationFor.mockReturnValue(4);
+		localIndexMock.scopeEpochFor.mockReturnValue(7);
+		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		await tick();
+		await tick();
+
+		expect(onchange).not.toHaveBeenCalled();
+		expect(localIndexMock.upsert).not.toHaveBeenCalled();
+	});
+
+	it('a failed create whose workspace was purged surfaces no toast', async () => {
+		// codex round 6 P2: the failure path carried a copy of SOME of the
+		// success path's conditions and had drifted. Both now ask one predicate.
+		let reject!: (e: unknown) => void;
+		createApi.mockReturnValue(new Promise((_r, rj) => { reject = rj; }));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		render(FieldEditor, { props: editableProps });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		localIndexMock.resetGenerationFor.mockReturnValue(4);
+		reject(new Error('boom'));
 		await tick();
 		await tick();
 

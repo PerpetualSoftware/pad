@@ -295,39 +295,49 @@ handlers — onchange is never called.
 		//     to the current props is what catches that (codex round 2).
 		const mySeq = ++relationWrite;
 		const epoch = localIndex.scopeEpochFor(ws);
+		const resetGen = localIndex.resetGenerationFor(ws);
+
+		// Is the index still the one this request was authorized against?
+		//
+		// Both halves are needed and neither substitutes for the other.
+		// `scopeEpoch` moves on a projection RESYNC; `resetGeneration` moves on
+		// a DROP. Epoch alone cannot see a drop, because `reset()` deletes the
+		// state and the replacement starts at 0 — and 0 is also the value in the
+		// overwhelmingly common case where no resync ever happened, so an
+		// equality check on it passes trivially across exactly the event it was
+		// meant to catch (codex round 6, correcting the residual round 5
+		// dismissed as needing a coincidence; it needs none).
+		const indexStillOurs = () => localIndex.resetGenerationFor(ws) === resetGen;
+		// Is the USER still waiting on this specific create?
+		const stillWaiting = () =>
+			!destroyed &&
+			mySeq === relationWrite &&
+			ws === wsSlug &&
+			collSlug === field.collection &&
+			indexStillOurs() &&
+			localIndex.scopeEpochFor(ws) === epoch;
 		try {
 			const item = await api.items.create(ws, collSlug, { title, source: 'web' });
-			// Upserted UNCONDITIONALLY, ahead of the fences: the row exists on
-			// the server whatever happened here, and withholding it from the
-			// index would leave a picker offering to create it a second time.
-			localIndex.upsert(ws, item, epoch);
-			if (destroyed || mySeq !== relationWrite) return;
-			if (ws !== wsSlug || collSlug !== field.collection) return;
-			// The workspace's index must still be the one this create was
-			// authorized against (codex round 5). `upsert`'s own guard is
-			// ONE-SIDED — it refuses a captured epoch BELOW the current one, so
-			// it catches a resync — but `localIndex.reset()` on a sign-out or a
-			// 403 purge DELETES the state, and the next bootstrap starts a fresh
-			// one at epoch 0. A captured 7 is not below 0, so the write sails
-			// through and links a row minted under an identity that no longer
-			// holds. Equality catches both directions.
-			//
-			// Residual, stated rather than papered over: a reset followed by
-			// resyncs that land the epoch back on exactly the captured number
-			// would compare equal. An exposed reset generation would be exact;
-			// this needs no new store surface and the coincidence requires the
-			// purge and N resyncs to complete inside one create round trip.
-			if (localIndex.scopeEpochFor(ws) !== epoch) return;
+			// The upsert is gated on INDEX IDENTITY only — not on whether the
+			// user is still waiting. Those are different questions: a create the
+			// user navigated away from still produced a real row that belongs in
+			// the index (it is what stops the picker offering to create it
+			// again), whereas a create whose workspace was PURGED must not write
+			// anything back. `upsert`'s own fenced-id guard cannot help there,
+			// because a brand-new id was never in the map to be fenced — the
+			// exact gap BUG-2098's comment describes.
+			if (indexStillOurs()) localIndex.upsert(ws, item, epoch);
+			if (!stillWaiting()) return;
 			editingRelation = false;
 			onchange(item.id);
 		} catch (e: any) {
-			// Fenced exactly like the success path (codex round 4): a create the
-			// user escaped out of, or one belonging to a workspace they have
-			// left, must not surface its failure over whatever they are looking
-			// at now. Same three conditions, same reasoning — the difference
-			// between reporting and not is whether they are still waiting on it.
-			if (destroyed || mySeq !== relationWrite) return;
-			if (ws !== wsSlug || collSlug !== field.collection) return;
+			// The SAME predicate as the success path, not a copy of some of it
+			// (codex rounds 4 and 6). A create the user escaped out of, or one
+			// belonging to a workspace they have since left or been purged from,
+			// must not throw its error over whatever they are looking at now —
+			// and the reset half was missing here while the success path had it.
+			// One predicate means the two paths cannot drift again.
+			if (!stillWaiting()) return;
 			// Still here and still waiting: the picker keeps the query, so the
 			// user can retry or pick something else; the field's value has not
 			// moved.
