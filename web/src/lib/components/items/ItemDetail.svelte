@@ -7164,6 +7164,11 @@
 	}
 	.add-link-controls {
 		display: flex;
+		/* The picker is a COLUMN (input, then its result list), so the row's
+		   default `stretch` made the type-select as tall as the whole picker
+		   once the results opened. Before the extraction the results were a
+		   sibling of this row and the question never arose. */
+		align-items: flex-start;
 		gap: var(--space-2);
 		margin-bottom: var(--space-2);
 	}
