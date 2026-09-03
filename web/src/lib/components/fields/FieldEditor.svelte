@@ -308,6 +308,15 @@ handlers — onchange is never called.
 		// meant to catch (codex round 6, correcting the residual round 5
 		// dismissed as needing a coincidence; it needs none).
 		const indexStillOurs = () => localIndex.resetGenerationFor(ws) === resetGen;
+		// Typing a new query is deliberately NOT one of these, and it has been
+		// raised twice. The three that ARE fences each stand for an act meaning
+		// "not this one": escaping out, choosing a different row, and landing on
+		// a different item or workspace. Typing is none of those — it is
+		// mid-thought, and the user did explicitly ask for the item now being
+		// created. Treating it as a cancel would leave that row orphaned in the
+		// target collection with the field still empty, which is worse than a
+		// field holding exactly what was asked for.
+		//
 		// Is the USER still waiting on this specific create?
 		const stillWaiting = () =>
 			!destroyed &&

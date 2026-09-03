@@ -167,6 +167,18 @@ const workspaces = new SvelteMap<string, WorkspaceState>();
  */
 const resetGenerations = new Map<string, number>();
 
+/**
+ * Record that a workspace's rows are gone. EVERY path that drops them calls
+ * this — `reset()`, which deletes the whole state entry, and `bootstrap()`'s
+ * 401/403 branch, which clears the rows in place. Two call sites rather than
+ * one because the operations genuinely differ; the shared helper is what makes
+ * the pairing greppable, and `localIndexResetGeneration.svelte.test.ts` fails
+ * if a third site starts clearing rows without it.
+ */
+function markWorkspaceDropped(ws: string): void {
+	resetGenerations.set(ws, (resetGenerations.get(ws) ?? 0) + 1);
+}
+
 const inflight = new Map<string, Promise<void>>();
 const projectionResyncs = new Map<string, Promise<void>>();
 
@@ -677,6 +689,19 @@ export const localIndex = {
 							state.pendingResync = false;
 							state.items.clear();
 							state.cursor = '0';
+							// This IS a drop, so it counts as one
+							// (TASK-2877). `resetGenerationFor`'s
+							// contract is "the state you captured is
+							// gone", and an in-flight write-back that
+							// resolves after this would otherwise
+							// resurrect rows into a workspace whose
+							// access was just revoked — the case the
+							// accessor exists for. Bumped here rather
+							// than by funnelling through `reset()`,
+							// which also deletes the state entry and
+							// would change what the caller's redirect
+							// handler finds.
+							markWorkspaceDropped(ws);
 							// Drop the MiniSearch index in lockstep with
 							// the cleared in-RAM rows so a stale search
 							// result can't navigate the user to a
@@ -1352,7 +1377,7 @@ export const localIndex = {
 		// yet: a caller's captured value has to change even when the drop found
 		// nothing to drop, or a purge racing a first bootstrap reads as no
 		// purge at all.
-		resetGenerations.set(ws, (resetGenerations.get(ws) ?? 0) + 1);
+		markWorkspaceDropped(ws);
 		const prior = workspaces.get(ws);
 		// Bump generation on the prior state object BEFORE deleting
 		// it from the map. Any in-flight bootstrap promise still holds

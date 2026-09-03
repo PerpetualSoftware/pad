@@ -9,6 +9,8 @@
 // resync has ever run, i.e. the ordinary case. Comparing it across a reset
 // therefore compares two different identities that agree by default.
 import { afterEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { localIndex } from './localIndex.svelte';
 import type { ItemIndexRow } from '$lib/types';
 
@@ -57,6 +59,47 @@ describe('localIndex.resetGenerationFor', () => {
 		const before = localIndex.resetGenerationFor(fresh);
 		localIndex.reset(fresh);
 		expect(localIndex.resetGenerationFor(fresh)).toBe(before + 1);
+	});
+
+	it('every path that drops a workspace\u2019s rows counts as a drop', () => {
+		// codex round 7: `bootstrap()`'s unauthorized/forbidden branch clears
+		// `items`, resets the search index and wipes the persisted cache — every
+		// bit a drop — but does NOT go through `reset()`. A generation bumped
+		// only there misses exactly the revocation case the fence exists for.
+		//
+		// Asserted STRUCTURALLY rather than by driving that branch. Reaching it
+		// through the front door needs a warm cache plus a pending resync plus a
+		// 401 from /items-changes, which is a fixture larger than the invariant
+		// it would check; and the invariant — "clearing rows and counting the
+		// drop travel together" — is what actually has to hold. The site-count
+		// assertion is the part that keeps this honest: a NEW clear site fails
+		// this test loudly instead of being silently unexamined, which is how an
+		// enumeration instrument usually rots.
+		// Resolved from the vitest root (`web/`) rather than `import.meta.url`:
+		// in this project's jsdom environment that is not a file: URL.
+		const src = readFileSync(
+			resolve(process.cwd(), 'src/lib/stores/localIndex.svelte.ts'),
+			'utf8',
+		);
+
+		const clearSites = [...src.matchAll(/state\.items\.clear\(\)/g)].map((m) => m.index ?? 0);
+		expect(
+			clearSites.length,
+			'a new site clears the row map — does it call markWorkspaceDropped?',
+		).toBe(1);
+
+		for (const at of clearSites) {
+			const window = src.slice(at, at + 1200);
+			expect(window, 'rows cleared without counting the drop').toContain('markWorkspaceDropped(ws)');
+		}
+
+		// And the helper is the only writer, so the two cannot drift apart by
+		// someone bumping the counter inline somewhere new.
+		const writes = [...src.matchAll(/resetGenerations\.set\(/g)];
+		expect(writes.length).toBe(1);
+		expect(src).toMatch(/function markWorkspaceDropped/);
+		// Both known droppers go through it.
+		expect([...src.matchAll(/markWorkspaceDropped\(ws\)/g)].length).toBe(2);
 	});
 
 	it('CONTROL: scopeEpochFor cannot answer this question', () => {

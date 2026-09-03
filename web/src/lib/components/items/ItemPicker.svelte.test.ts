@@ -1096,6 +1096,38 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 		vi.useRealTimers();
 	});
 
+	it('offers nothing to create when the cold answer was TRUNCATED', async () => {
+		// codex round 7. `/search` pages, so a page that does not contain the
+		// exact title is not evidence the title is unused — the row may be on a
+		// page nobody fetched. Same defect as trusting the local ranker's
+		// window, arriving from the server side.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockResolvedValue({
+			results: [{ item: { id: 'id-9', title: 'Purple Haze', item_number: 9, collection_prefix: 'COLO' } }],
+			total: 84,
+			limit: 50,
+			offset: 0,
+		});
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(options().length).toBeGreaterThan(0));
+		expect(createRow()).toBeNull();
+
+		// CONTROL: the identical shape with a COMPLETE page does offer it, so
+		// this leg is measuring truncation and not the query.
+		searchApi.mockResolvedValue({
+			results: [{ item: { id: 'id-9', title: 'Purple Haze', item_number: 9, collection_prefix: 'COLO' } }],
+			total: 1,
+			limit: 50,
+			offset: 0,
+		});
+		await type('Purpl');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+	});
+
 	it('offers nothing to create after the workspace state is dropped', async () => {
 		// codex round 5 P1. `localIndex.reset()` — sign-out, a 403 membership
 		// purge, a deleted workspace — drops every row, and the picker's own

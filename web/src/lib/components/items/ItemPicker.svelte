@@ -349,8 +349,13 @@
 		try {
 			const res = await api.search(q, { workspace: wsSlug, collection });
 			if (mySeq !== seq) return;
-			rawResults = (res.results ?? []).map((r) => r.item);
-			coldAnswered = true;
+			const rows = (res.results ?? []).map((r) => r.item);
+			rawResults = rows;
+			// A TRUNCATED page is not an answer to "does this exact title
+			// exist" — the row could be on a page we never fetched (codex round
+			// 7). Same defect as trusting the local ranker's window, arriving
+			// from the server side; `total` is what distinguishes them.
+			coldAnswered = (res.total ?? rows.length) <= rows.length;
 			activeId = null;
 		} catch {
 			if (mySeq !== seq) return;
