@@ -24,6 +24,14 @@ type DashboardResponse struct {
 	Attention      []DashboardAttention  `json:"attention"`
 	RecentActivity []DashboardActivity   `json:"recent_activity"`
 	SuggestedNext  []DashboardSuggestion `json:"suggested_next"`
+	// PendingReminders are fired-but-unacknowledged reminders (IDEA-2641).
+	//
+	// THIS IS THE MANDATORY SURFACE, not a convenience: the outbox drain acks
+	// an event immediately when no webhook dispatcher is configured, which is
+	// the common self-hosted shape, so a reminder delivered only by webhook
+	// would be a no-op on most installs. On those instances this list is the
+	// entire delivery mechanism.
+	PendingReminders []DashboardReminder `json:"pending_reminders,omitempty"`
 	// HasAgentActivity is true when any non-deleted item in the workspace
 	// was created via an agent surface — direct CLI or Remote MCP (both
 	// paths persist source='cli'; future MCP-distinct attribution would
@@ -164,6 +172,18 @@ type DashboardSuggestion struct {
 	ItemTitle  string `json:"item_title"`
 	Collection string `json:"collection"`
 	Reason     string `json:"reason"`
+}
+
+// DashboardReminder is one fired-and-unacknowledged reminder, rendered with
+// the item it is about.
+type DashboardReminder struct {
+	ID         string `json:"id"`
+	ItemSlug   string `json:"item_slug"`
+	ItemRef    string `json:"item_ref"`
+	ItemTitle  string `json:"item_title"`
+	Collection string `json:"collection"`
+	RemindAt   string `json:"remind_at"`
+	FiredAt    string `json:"fired_at"`
 }
 
 // Blocked-item resolution (both the attention-blocked section and the
@@ -597,30 +617,62 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
-	// (b) Overdue: items with a due_date or end_date in the past whose
-	// done field isn't in a terminal state.
-	todayStr := now.Format("2006-01-02")
+	// (b) Overdue: items past a deadline whose done field isn't terminal.
+	//
+	// The rule itself lives in overdue.go now, and this is one of four
+	// surfaces that call it — the others being `pad project stale` (which
+	// filters this very list) and `ready` / `next` (which rank on it below).
+	// Before IDEA-2641 the rule WAS this loop, so the recommendation surface
+	// had no deadline awareness at all.
+	todayStr := overdueToday(now)
 	for _, item := range allItems {
 		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 			continue
 		}
-		for _, dateField := range []string{"due_date", "end_date"} {
-			dateVal := extractFieldValue(item.Fields, dateField)
-			if dateVal == "" {
+		if field, value, ok := itemOverdue(item.Fields, todayStr); ok {
+			resp.Attention = append(resp.Attention, DashboardAttention{
+				Type:       "overdue",
+				ItemSlug:   item.Slug,
+				ItemRef:    item.Ref,
+				ItemTitle:  item.Title,
+				Collection: item.CollectionSlug,
+				Reason:     overdueReason(field, value),
+			})
+		}
+	}
+
+	// (b2) Fired-but-unacknowledged reminders (IDEA-2641).
+	//
+	// TERMINAL-ITEM REMINDERS ARE FILTERED, NOT ACKED. Acking on terminal
+	// status would make every status write a reminder mutation, and it would
+	// consume a reminder a user may have armed precisely to fire after the
+	// work was done. Filtering leaves the row exactly as the user left it —
+	// armed, fired, unacked, still theirs — while keeping a finished item off
+	// the surface an agent polls. The distinction is observable: the reminder
+	// is absent from here and present in the table.
+	if pending, err := s.store.ListPendingReminders(workspaceID); err != nil {
+		markDegraded("pending_reminders", err)
+	} else {
+		for _, pr := range pending {
+			if !isCollectionVisible(pr.CollectionID, visibleIDs) {
 				continue
 			}
-			// Compare date strings lexicographically (YYYY-MM-DD format)
-			if dateVal < todayStr {
-				resp.Attention = append(resp.Attention, DashboardAttention{
-					Type:       "overdue",
-					ItemSlug:   item.Slug,
-					ItemRef:    item.Ref,
-					ItemTitle:  item.Title,
-					Collection: item.CollectionSlug,
-					Reason:     strings.ReplaceAll(dateField, "_", " ") + " was " + dateVal,
-				})
-				break // only report once per item even if both fields are overdue
+			if isItemDone(pr.ItemFields, pr.CollectionID, ctxMap) {
+				continue
 			}
+			firedAt := ""
+			if pr.FiredAt != nil {
+				firedAt = *pr.FiredAt
+			}
+			resp.PendingReminders = append(resp.PendingReminders, DashboardReminder{
+				ID:         pr.ID,
+				ItemSlug:   pr.ItemSlug,
+				ItemRef:    pr.ItemRef,
+				ItemTitle:  pr.ItemTitle,
+				Collection: pr.CollectionSlug,
+				RemindAt:   pr.RemindAt,
+				FiredAt:    firedAt,
+			})
 		}
 	}
 
@@ -843,6 +895,12 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		status     string
 		priority   int
 		inProgress bool
+		// overdue and overdueReason carry the deadline verdict from the
+		// shared helper so the sort and the reason text read the same
+		// judgement — recomputing it at render time is how the attention
+		// entry and the suggestion would drift.
+		overdue       bool
+		overdueReason string
 	}
 	var candidates []suggestion
 
@@ -875,12 +933,15 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				continue
 			}
 			pri := extractFieldValue(task.Fields, "priority")
+			odField, odValue, isOverdue := itemOverdue(task.Fields, todayStr)
 			candidates = append(candidates, suggestion{
-				item:       task,
-				plan:       dp.Title,
-				status:     taskStatus,
-				priority:   priorityRank(pri),
-				inProgress: isInProgress,
+				item:          task,
+				plan:          dp.Title,
+				status:        taskStatus,
+				priority:      priorityRank(pri),
+				inProgress:    isInProgress,
+				overdue:       isOverdue,
+				overdueReason: overdueReasonOrEmpty(odField, odValue, isOverdue),
 			})
 		}
 	}
@@ -929,21 +990,31 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			continue
 		}
 		pri := extractFieldValue(item.Fields, "priority")
+		odField, odValue, isOverdue := itemOverdue(item.Fields, todayStr)
 		// Open orphans must be high or critical to surface — open
 		// in-progress items always do (continuing-work signal beats
 		// priority gating).
-		if !isInProgress && pri != "high" && pri != "critical" {
+		//
+		// AN OVERDUE ITEM BYPASSES THAT GATE (IDEA-2641). A deadline that has
+		// already passed is a stronger actionability signal than the priority
+		// someone typed when they filed it, and without this the gate is
+		// where the deadline would quietly stop: a low-priority orphan three
+		// weeks late would be reported by `stale` and never suggested by
+		// `next`, which is the exact split GitHub #1010 is about.
+		if !isInProgress && !isOverdue && pri != "high" && pri != "critical" {
 			continue
 		}
 		if _, blocked := firstActiveBlocker[item.ID]; blocked {
 			continue
 		}
 		candidates = append(candidates, suggestion{
-			item:       item,
-			plan:       "", // empty plan name signals orphan in the reason text below
-			status:     taskStatus,
-			priority:   priorityRank(pri),
-			inProgress: isInProgress,
+			item:          item,
+			plan:          "", // empty plan name signals orphan in the reason text below
+			status:        taskStatus,
+			priority:      priorityRank(pri),
+			inProgress:    isInProgress,
+			overdue:       isOverdue,
+			overdueReason: overdueReasonOrEmpty(odField, odValue, isOverdue),
 		})
 	}
 
@@ -952,6 +1023,14 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// "active-plan continuation" suggestion stays at the top when
 	// both are present. Lower rank = higher priority.
 	sort.Slice(candidates, func(i, j int) bool {
+		// OVERDUE FIRST, above in-progress (IDEA-2641). The list is capped at
+		// three, so a rank below in-progress would not merely order the
+		// deadline lower — on any workspace with three things in flight it
+		// would keep an overdue item off the surface entirely, which is
+		// indistinguishable from not implementing this at all.
+		if candidates[i].overdue != candidates[j].overdue {
+			return candidates[i].overdue
+		}
 		if candidates[i].inProgress != candidates[j].inProgress {
 			return candidates[i].inProgress
 		}
@@ -987,6 +1066,12 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		if pri != "" {
 			reason += " (" + pri + " priority)"
 		}
+		if c.overdue {
+			// Prefixed rather than appended: the deadline is why this is at
+			// the top of the list, and a reason that leads with "Open task"
+			// buries the part that changed the ranking.
+			reason = "OVERDUE — " + c.overdueReason + "; " + reason
+		}
 		resp.SuggestedNext = append(resp.SuggestedNext, DashboardSuggestion{
 			ItemSlug:   c.item.Slug,
 			ItemRef:    c.item.Ref,
@@ -994,6 +1079,34 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			Collection: "tasks",
 			Reason:     reason,
 		})
+	}
+
+	// Fired reminders lead the recommendation list (IDEA-2641).
+	//
+	// THEY ARE PREPENDED AFTER THE CAP, not entered as ranking candidates,
+	// and that is deliberate. A reminder is not a task competing on priority —
+	// it is an instruction the user left for this moment, and it should not be
+	// possible for three high-priority tasks to push it off a list capped at
+	// three. Entering the ranking would have made "did my reminder show up"
+	// depend on how busy the workspace is.
+	//
+	// The same filtered set feeds resp.PendingReminders, which is the
+	// ADDRESSABLE form — it carries the reminder id an acknowledgement needs.
+	// This is the rendered form, for the surfaces that show a human or an
+	// agent what to do next. Both derive from the one list built above rather
+	// than each re-querying, so they cannot disagree about what is pending.
+	if len(resp.PendingReminders) > 0 {
+		reminderSuggestions := make([]DashboardSuggestion, 0, len(resp.PendingReminders))
+		for _, pr := range resp.PendingReminders {
+			reminderSuggestions = append(reminderSuggestions, DashboardSuggestion{
+				ItemSlug:   pr.ItemSlug,
+				ItemRef:    pr.ItemRef,
+				ItemTitle:  pr.ItemTitle,
+				Collection: pr.Collection,
+				Reason:     "REMINDER due — armed for " + pr.RemindAt,
+			})
+		}
+		resp.SuggestedNext = append(reminderSuggestions, resp.SuggestedNext...)
 	}
 
 	// Role breakdown: items per role with assigned users.

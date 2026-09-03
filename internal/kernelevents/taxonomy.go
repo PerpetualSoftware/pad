@@ -32,14 +32,14 @@
 // contract's shape, not running code.
 package kernelevents
 
-// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.2).
+// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.7).
 //
 // item.restored and item.bulk_updated were admitted in v1.1 during TASK-2658
 // recon: restore is a live first-class mutation whose silence would let an
 // item reappear unobserved, and the batch event preserves TASK-1668's
 // anti-flood decision for lane-wide mutations.
 //
-// item.reminder_due was admitted in v1.2 with the reminder primitive
+// item.reminder_due was admitted in v1.7 with the reminder primitive
 // (IDEA-2641): it is the first canonical event with no user mutation behind
 // it — a scheduler tick produces it — which is why it needed a version to be
 // admitted in rather than arriving as a side effect of the feature.
@@ -139,7 +139,7 @@ const (
 	PackDisabled  = "pack.disabled"
 
 	// ItemReminderDue fires when a reminder's instant arrives and the
-	// scheduler tick claims it (IDEA-2641, GitHub #1010). Admitted in v1.2.
+	// scheduler tick claims it (IDEA-2641, GitHub #1010). Admitted in v1.7.
 	//
 	// The SUBJECT IS THE REMINDER, not the item it is about, and that is the
 	// one surprising thing here given the name. Two reminders can be armed on

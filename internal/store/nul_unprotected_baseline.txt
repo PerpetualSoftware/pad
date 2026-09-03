@@ -99,6 +99,14 @@ item_links.source_id
 item_links.target_id
 item_links.user_id
 item_links.workspace_id
+item_reminders.acked_at
+item_reminders.created_at
+item_reminders.fired_at
+item_reminders.id
+item_reminders.item_id
+item_reminders.remind_at
+item_reminders.updated_at
+item_reminders.workspace_id
 item_stars.created_at
 item_stars.item_id
 item_stars.user_id

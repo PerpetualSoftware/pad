@@ -112,6 +112,21 @@ func TestNULColumnCensus(t *testing.T) {
 	//
 	// Regenerate with GEN_NUL_BASELINE=1 only AFTER deciding each new column's
 	// class; the file is evidence of a judgement, not a snapshot to refresh.
+	// The regeneration path the comment above promises. It lived only in
+	// prose until IDEA-2641 hit the guard and found the flag did nothing —
+	// an instruction naming a mechanism that does not exist sends the next
+	// reader to hand-edit the file, which is the one form of "regeneration"
+	// that can silently drop an entry it did not mean to. It writes the
+	// CURRENT unaccounted set, so it records the judgement the developer just
+	// made rather than merging into whatever was there before.
+	if os.Getenv("GEN_NUL_BASELINE") == "1" {
+		if err := os.WriteFile("nul_unprotected_baseline.txt", []byte(strings.Join(unaccounted, "\n")+"\n"), 0o644); err != nil {
+			t.Fatalf("write baseline: %v", err)
+		}
+		t.Logf("regenerated nul_unprotected_baseline.txt with %d entries — review the diff before committing", len(unaccounted))
+		return
+	}
+
 	baseline, err := os.ReadFile("nul_unprotected_baseline.txt")
 	if err != nil {
 		t.Fatalf("read baseline: %v", err)

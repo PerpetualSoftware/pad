@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -38,16 +39,34 @@ func scanReminder(row interface{ Scan(...any) error }) (*models.Reminder, error)
 	return &r, nil
 }
 
-// CreateReminder arms a reminder on an item.
+// normalizeRemindAt re-parses and re-formats an instant, and REFUSES anything
+// that is not RFC3339.
 //
-// remindAt is stored exactly as given: the caller normalizes it to an RFC3339
-// UTC instant, because the timezone decision belongs where the user's input is
-// parsed, not in the store. A store that re-interpreted the string would be a
-// second place that decides what an instant means.
+// The HTTP edge already normalizes, so on that path this is a second check of
+// a value that is already correct — and it is here anyway, because the
+// alternative was a doc comment saying "the caller normalizes", which protects
+// nothing: the store is callable from anywhere in the process and a doc
+// comment does not travel with the argument. Enforcing it means the stored
+// value is always machine-produced from a parsed time, so no caller bytes
+// reach the column at all. That is what lets remind_at sit outside the NUL
+// census's protected set on a positive argument rather than an assumption.
+func normalizeRemindAt(remindAt string) (string, error) {
+	t, err := time.Parse(time.RFC3339, remindAt)
+	if err != nil {
+		return "", fmt.Errorf("remind_at must be an RFC3339 instant: %w", err)
+	}
+	return t.UTC().Format(time.RFC3339), nil
+}
+
+// CreateReminder arms a reminder on an item.
 func (s *Store) CreateReminder(workspaceID, itemID, remindAt string) (*models.Reminder, error) {
+	remindAt, err := normalizeRemindAt(remindAt)
+	if err != nil {
+		return nil, err
+	}
 	id := newID()
 	ts := now()
-	_, err := s.db.Exec(s.q(`
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
 	`), id, workspaceID, itemID, remindAt, ts, ts)
@@ -110,6 +129,10 @@ func (s *Store) ListRemindersForItem(itemID string) ([]*models.Reminder, error) 
 // where a re-arm leaves a stale acked_at behind on a row that is armed —
 // a state models.Reminder's lifecycle does not have a name for.
 func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminder, error) {
+	remindAt, err := normalizeRemindAt(remindAt)
+	if err != nil {
+		return nil, err
+	}
 	res, err := s.db.Exec(s.q(`
 		UPDATE item_reminders
 		SET remind_at = ?, fired_at = NULL, acked_at = NULL, updated_at = ?

@@ -1827,6 +1827,15 @@ func (s *Server) setupRouter() {
 						// bus/stream — no durable row, see handlePushToItem's
 						// doc comment. `pad push <ref> -m "message"`.
 						r.Post("/push", s.handlePushToItem)
+						// Reminders (IDEA-2641 / GitHub #1010): the
+						// fire-at-an-instant primitive. Arming lives under
+						// the item because a reminder is meaningless without
+						// one; the lifecycle verbs live at the workspace
+						// level below, addressed by reminder id, because an
+						// acknowledgement is about the reminder rather than
+						// about the item it names.
+						r.Get("/reminders", s.handleListItemReminders)
+						r.Post("/reminders", s.handleCreateItemReminder)
 					})
 
 					// Links (v2)
@@ -1918,6 +1927,13 @@ func (s *Server) setupRouter() {
 					r.Get("/me", s.handleGetMe)
 
 					// Dashboard (v2)
+					// Reminder lifecycle, addressed by reminder id rather
+					// than by item: an acknowledgement is about the reminder,
+					// and an item can carry several. Permission is still the
+					// ITEM's — see resolveReminderForWrite.
+					r.Patch("/reminders/{reminderID}", s.handleRearmReminder)
+					r.Post("/reminders/{reminderID}/ack", s.handleAckReminder)
+					r.Delete("/reminders/{reminderID}", s.handleDeleteReminder)
 					r.Get("/dashboard", s.handleGetDashboard)
 
 					// Workspace graph — {nodes, edges} for the 3D
