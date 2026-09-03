@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -342,4 +343,64 @@ func TestOrdinarySuggestionsCarryNoReminderID(t *testing.T) {
 			t.Errorf("a plain task suggestion carries reminder_id %q", sug.ReminderID)
 		}
 	}
+}
+
+// TestStartReminderTickFiresOnATick binds the LOOP to the work (CONVE-19).
+//
+// Every other test here calls runReminderTick directly, which vouches for the
+// component and says nothing about whether anything ever calls it. That is the
+// exact gap this convention names, and it is the one I keep falling into: a
+// tick that is never started is indistinguishable, from those tests, from one
+// that is.
+//
+// Driven through the injectable tick channel so the assertion is pinned to a
+// SPECIFIC pass rather than racing a free-running 30-second ticker.
+//
+// MUTANT: make StartReminderTick's goroutine ignore its channel (or drop the
+// runReminderTick call from the select) and this fails while every direct-call
+// test stays green.
+func TestStartReminderTickFiresOnATick(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Wake me", "fields": `{"status":"open"}`,
+	})
+	armViaAPI(t, srv, slug, item, pastInstant)
+
+	ticks := make(chan time.Time, 1)
+	srv.SetReminderTickChannel(ticks)
+	srv.StartReminderTick()
+	defer srv.stopReminderTick()
+
+	ticks <- time.Now()
+
+	// Poll rather than sleep a fixed interval: the pass is asynchronous, and a
+	// fixed sleep is either flaky or slow. Bounded so a tick that never runs
+	// fails rather than hanging the suite.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if len(getDashboard(t, srv, slug).PendingReminders) == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the started tick never fired an armed reminder — the loop is not bound to the work")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestStartReminderTickIsIdempotent: a second Start must not spawn a second
+// loop, or Stop() would leave one running and the BUG-842 drain invariant
+// would be false for this sweeper.
+func TestStartReminderTickIsIdempotent(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	ticks := make(chan time.Time, 1)
+	srv.SetReminderTickChannel(ticks)
+	srv.StartReminderTick()
+	srv.StartReminderTick()
+	srv.stopReminderTick()
+	// A second stop must be safe too — Stop() runs unconditionally.
+	srv.stopReminderTick()
 }
