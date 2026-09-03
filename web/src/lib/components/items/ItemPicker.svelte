@@ -39,7 +39,7 @@
 	 * inside a `{#key}` on the item identity (PLAN-2105 / TASK-2112), so a
 	 * switch destroys the instance and its continuation with it.
 	 */
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch } from '$lib/stores/localSearch.svelte';
@@ -67,8 +67,16 @@
 		/** Chosen row. The picker does not clear itself — the caller decides. */
 		onselect: (item: ItemIndexRow) => void;
 		/**
-		 * Escape with an already-empty box. Omit to let Escape fall through to
-		 * the surrounding layer (the pane's own Escape handling) instead.
+		 * Escape on an already-empty box.
+		 *
+		 * Pass one if Escape should close the surface hosting the picker.
+		 * Omitting it does NOT hand Escape to the layer above: both pane hosts'
+		 * keydown handlers bail on text-entry targets before they reach the
+		 * escape stack (`isTextEntryTarget` in `[collection]/+page.svelte` and
+		 * `[collection]/[slug]/+page.svelte`), on the deliberate rule that a
+		 * text field owns Escape locally. So with no `oncancel`, Escape on an
+		 * empty picker does nothing at all — which is what the inline search
+		 * this replaces did too.
 		 */
 		oncancel?: () => void;
 	}
@@ -215,11 +223,16 @@
 			return;
 		}
 		if (e.key === 'Escape') {
-			// Consume ONLY what this picker actually closes, and say so to the
-			// layer above by stopping propagation. The page's Escape driver is a
-			// bubble-phase `<svelte:window onkeydown>` feeding `runTopEscape`, so
-			// declining here (no stopPropagation) correctly lets Escape reach the
-			// pane when the picker has nothing of its own to dismiss.
+			// Consume ONLY what this picker actually closes.
+			//
+			// The stopPropagation is belt-and-braces rather than load-bearing:
+			// the page's Escape driver is a bubble-phase
+			// `<svelte:window onkeydown>`, so it WOULD see the key — but it
+			// returns early for text-entry targets before running the escape
+			// stack, and this is a text input. Keeping it means the picker's
+			// behaviour does not depend on that bail staying in place, and
+			// declining still leaves the key untouched for anything that does
+			// look at it.
 			if (query) {
 				e.preventDefault();
 				e.stopPropagation();
@@ -261,6 +274,23 @@
 	onMount(() => {
 		runQuery();
 		if (autofocus) inputEl?.focus();
+	});
+
+	// A picker can open BEFORE the workspace's local index has hydrated, and a
+	// scoped one then has nothing to list — `recent()` returns [] while cold,
+	// and nothing re-ran it, so the list stayed empty until the user typed
+	// (codex round 1 P2). Re-run once hydration lands.
+	//
+	// Tracked reads are the bootstrap state ONLY. `query` is read inside
+	// `untrack` on purpose: reading it reactively would re-run this on every
+	// keystroke, racing `oninput` and bumping `seq` twice per character — the
+	// same reason `onMount` owns the initial run (CONVE-1688's neighbourhood).
+	// The `query` guard means a user who has already typed keeps their results.
+	$effect(() => {
+		const state = localIndex.bootstrapStateFor(wsSlug);
+		untrack(() => {
+			if (state === 'ready' && !query.trim()) runQuery();
+		});
 	});
 </script>
 

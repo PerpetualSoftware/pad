@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 
 // `vi.mock` factories are hoisted above every other statement in the file, so
 // the doubles they close over have to be hoisted with them.
@@ -41,6 +42,20 @@ interface Row {
 }
 
 let rowsById = new Map<string, Row>();
+
+/**
+ * Reactive backing for `bootstrapStateFor`. The component tracks that read so
+ * it can re-list a scoped collection when hydration lands, and a bare `vi.fn`
+ * return value is not reactive — a test driving it that way cannot tell a
+ * working refresh from a missing one. `SvelteMap` is a plain runtime class
+ * (no compiler step), so it gives this `.ts` file the tracked get / triggering
+ * set that the real store gets from `$state`.
+ */
+const bootstrapState = new SvelteMap<string, string>();
+
+function setBootstrapState(value: string) {
+	bootstrapState.set('ws', value);
+}
 
 function makeRows(n: number, prefix = 'COLO'): Row[] {
 	const rows: Row[] = [];
@@ -82,7 +97,11 @@ const baseProps = { wsSlug: 'ws', collection: 'colors', onselect: () => {} };
 beforeEach(() => {
 	searchApi.mockReset();
 	searchApi.mockResolvedValue({ results: [] });
-	localIndexMock.bootstrapStateFor.mockReset().mockReturnValue('ready');
+	bootstrapState.clear();
+	setBootstrapState('ready');
+	localIndexMock.bootstrapStateFor
+		.mockReset()
+		.mockImplementation((ws: string) => bootstrapState.get(ws) ?? 'cold');
 	localIndexMock.getByCollection.mockReset().mockReturnValue([]);
 	localIndexMock.findByIdOrSlug.mockReset().mockImplementation((_ws: string, id: string) => rowsById.get(id) ?? null);
 	localSearchMock.search.mockReset().mockReturnValue([]);
@@ -146,6 +165,53 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 		expect(labels.join('|')).not.toContain('Colour 4');
 	});
 
+	it('lists the collection once the local index finishes hydrating, without the user typing', async () => {
+		// codex round 1 P2: a scoped picker opened while the index was cold had
+		// nothing to list and nothing re-ran the listing, so it stayed empty
+		// until the user typed.
+		loadIndex(makeRows(3));
+		setBootstrapState('loading');
+		render(ItemPicker, { props: { ...baseProps } });
+		await tick();
+		expect(options()).toHaveLength(0);
+
+		setBootstrapState('ready');
+		await tick();
+
+		expect(options().length).toBeGreaterThan(0);
+		expect(searchApi).not.toHaveBeenCalled();
+	});
+
+	it('hydrating mid-session does not reset a selection the user has already made', async () => {
+		// The `!query.trim()` guard on the hydration effect. Without it the
+		// re-list runs unconditionally and resets `activeIndex` to -1, so a user
+		// who has arrowed down to a row loses it the moment the index finishes
+		// loading — a keystroke they never made, at a moment they cannot predict.
+		vi.useFakeTimers();
+		loadIndex(makeRows(3));
+		setBootstrapState('loading');
+		searchApi.mockResolvedValue({
+			results: makeRows(3).map((r) => ({ item: r })),
+		});
+
+		render(ItemPicker, { props: { ...baseProps } });
+		await type('col');
+		await vi.advanceTimersByTimeAsync(250);
+		await tick();
+		expect(options()).toHaveLength(3);
+
+		await press('ArrowDown');
+		await press('ArrowDown');
+		const selected = input().getAttribute('aria-activedescendant');
+		expect(selected).toBe(options()[1].id);
+
+		setBootstrapState('ready');
+		await vi.advanceTimersByTimeAsync(0);
+		await tick();
+
+		expect(input().getAttribute('aria-activedescendant')).toBe(selected);
+	});
+
 	it('shows nothing on an empty query when unscoped — the Relationships-tab mode', async () => {
 		loadIndex(makeRows(5));
 		render(ItemPicker, { props: { wsSlug: 'ws', onselect: () => {} } });
@@ -176,7 +242,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 describe('ItemPicker — cold path (the control leg for "no network call")', () => {
 	it('calls the server search, collection-scoped, while the local index is cold', async () => {
 		vi.useFakeTimers();
-		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
+		setBootstrapState('cold');
 		searchApi.mockResolvedValue({
 			results: [{ item: { id: 'id-9', title: 'Server row', item_number: 9, collection_prefix: 'COLO' } }],
 		});
@@ -207,7 +273,7 @@ describe('ItemPicker — cold path (the control leg for "no network call")', () 
 		// mutant survived; the fix is to end the scenario with loading FALSE, so
 		// the only thing standing between the stale row and the DOM is the fence.
 		vi.useFakeTimers();
-		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
+		setBootstrapState('cold');
 
 		let releaseFirst!: (v: unknown) => void;
 		searchApi
@@ -238,7 +304,7 @@ describe('ItemPicker — cold path (the control leg for "no network call")', () 
 		// Without this leg the fence test above would pass against a picker that
 		// never renders a server result at all.
 		vi.useFakeTimers();
-		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
+		setBootstrapState('cold');
 
 		let release!: (v: unknown) => void;
 		searchApi.mockReturnValueOnce(new Promise((res) => (release = res)));
@@ -263,7 +329,7 @@ describe('ItemPicker — cold path (the control leg for "no network call")', () 
 		// either way, so it passes with every teardown guard deleted. A test that
 		// no mutant can kill is not evidence, so it is not here.
 		vi.useFakeTimers();
-		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
+		setBootstrapState('cold');
 
 		const { unmount } = render(ItemPicker, { props: { ...baseProps } });
 		await type('aa');
@@ -323,9 +389,16 @@ describe('ItemPicker — keyboard', () => {
 });
 
 describe('ItemPicker — Escape only consumes what it closes', () => {
-	// The page's Escape driver is a bubble-phase window listener feeding
-	// `runTopEscape` (escapeStack). A late-registered window listener stands in
-	// for it here: whether it SEES the key is the whole contract.
+	// The page's Escape driver is a bubble-phase window listener; a
+	// late-registered window listener stands in for it here.
+	//
+	// What that driver DOES with the key is deliberately not modelled: both pane
+	// hosts return early for text-entry targets before they reach the escape
+	// stack, so a picker with no `oncancel` leaves Escape with no owner rather
+	// than handing it upward (codex round 1 P2 — the first version of this file
+	// claimed otherwise in its own comment, without having read the handler).
+	// These legs assert only what this component does: consume the key when it
+	// has something to close, and leave it untouched when it does not.
 	function windowEscapeSpy() {
 		const seen = vi.fn();
 		const handler = (e: Event) => seen(e);
@@ -363,10 +436,9 @@ describe('ItemPicker — Escape only consumes what it closes', () => {
 		expect(seen).not.toHaveBeenCalled();
 	});
 
-	it('CONTROL: with no oncancel and an empty box, Escape falls through to the layer above', async () => {
-		// The pane must still close on Escape when the picker has nothing of its
-		// own to dismiss — a picker that swallowed every Escape would pass both
-		// tests above and break the pane.
+	it('CONTROL: with no oncancel and an empty box, the picker leaves the key alone', async () => {
+		// Without this leg the two above would pass against a picker that
+		// swallowed EVERY Escape unconditionally.
 		loadIndex(makeRows(3));
 		render(ItemPicker, { props: { ...baseProps } });
 		await tick();
@@ -376,5 +448,6 @@ describe('ItemPicker — Escape only consumes what it closes', () => {
 		off();
 
 		expect(seen).toHaveBeenCalledTimes(1);
+		expect(seen.mock.calls[0][0].defaultPrevented).toBe(false);
 	});
 });
