@@ -475,6 +475,23 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 // is FOR. That is not decoration: when only the promoted block called it, the
 // carve-out was unreachable and a mutant deleting it survived every test.
 func topLevelValueProvided(key string, v any) bool {
+	// NIL IS ABSENCE ON EVERY DOOR AND FOR EVERY KEY (codex round 21).
+	//
+	// Checked BEFORE the compat carve-out, which returned true
+	// unconditionally and so counted `assigned_user_id: null` as a supplied
+	// value. Nothing writes a nil: the HTTP mapper's `.(string)` assertion
+	// fails and drops it, and BuildCLIArgs has no flag value to emit. So a
+	// nil beside a `fields` entry for the same key was a false refusal on a
+	// call both doors resolve to the `fields` value.
+	//
+	// The finding named the compat pair; the probe found all five top-level
+	// keys behaving identically, because the non-compat path fell through to
+	// `return true` as well. Fixing only the named pair would have left
+	// `status: null` refusing — the same instance-versus-population trap this
+	// unit keeps setting.
+	if v == nil {
+		return false
+	}
 	if compatIDFieldKeys[key] {
 		return true // "" is a clear here, not an absence
 	}

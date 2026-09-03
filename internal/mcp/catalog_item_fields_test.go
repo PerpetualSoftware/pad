@@ -2074,3 +2074,52 @@ func TestPadItemUpdate_CompatExceptionNeedsATopLevelValue(t *testing.T) {
 		})
 	}
 }
+
+// --- codex round 21 ---
+
+// TestPadItemUpdate_NilTopLevelIsAbsentForEveryKey: a nil top-level value is
+// absence on every door and for every key (BUG-2850, codex round 21).
+//
+// topLevelValueProvided returned true unconditionally for the compat IDs and
+// fell through to true for everything else, so a nil counted as a supplied
+// value and refused against a `fields` entry for the same key. Nothing writes
+// a nil: the HTTP mapper's `.(string)` assertion drops it and BuildCLIArgs has
+// no flag value to emit, so both doors resolve to the `fields` value.
+//
+// The finding named `assigned_user_id` / `agent_role_id`. The probe found all
+// five top-level keys behaving identically, so the fix and this pin cover the
+// population rather than the instance.
+func TestPadItemUpdate_NilTopLevelIsAbsentForEveryKey(t *testing.T) {
+	for _, key := range []string{"assigned_user_id", "agent_role_id", "status", "priority", "parent"} {
+		t.Run(key, func(t *testing.T) {
+			val := "B"
+			if key == "parent" {
+				val = "PLAN-12"
+			}
+			disp, msg, isErr := dispatchPadItem(t, map[string]any{
+				"action": "update", "ref": "TASK-5",
+				key:      nil,
+				"fields": map[string]any{key: val},
+			})
+			if isErr {
+				t.Fatalf("a nil %s is not a competing value; expected success, got: %s", key, msg)
+			}
+			if len(disp.gotPath) == 0 {
+				t.Fatal("expected the update to dispatch")
+			}
+		})
+	}
+}
+
+// ...and an empty-string compat ID is STILL a clear, so treating nil as
+// absence did not swallow the v0.16 semantics that carve-out exists for.
+func TestPadItemUpdate_EmptyCompatIDIsStillAClearAfterTheNilFix(t *testing.T) {
+	_, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update", "ref": "TASK-5",
+		"assigned_user_id": "",
+		"fields":           map[string]any{"assigned_user_id": "user-B"},
+	})
+	if !isErr {
+		t.Fatalf("an empty compat ID is a CLEAR and still conflicts with a set: %s", msg)
+	}
+}
