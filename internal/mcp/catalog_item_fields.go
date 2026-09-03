@@ -134,7 +134,8 @@ type fieldContribution struct {
 	key    string // as the caller wrote it
 	source string // human-readable, for the refusal
 	value  string // normalized for comparison; "" when unstringifiable
-	nested bool   // a structure, which compares equal to nothing
+	nested bool   // a structure, with no key=value encoding
+	raw    any    // the value as supplied, for comparing two structures
 }
 
 // topLevelConflictKeys are the top-level params that can collide with a
@@ -170,7 +171,27 @@ func topLevelConflictKeys() []string {
 // and no `fields` object is OUTSIDE it and keeps its documented
 // last-write-wins resolution — deliberately, per the round-7 boundary the
 // lead confirmed, and pinned on both doors by the SameNameDuplicate tests.
-func detectFieldConflicts(prefix string, input, obj map[string]any, fieldByKey map[string]string) *mcp.CallToolResult {
+func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResult {
+	// Parsed here rather than passed in, so this pass sees the same inputs
+	// whether or not a `fields` object exists (codex round 14). It used to
+	// run only from inside reshapeItemFields, which returns early without
+	// `fields` — so an ALIAS pair arriving through the top level and the
+	// `field` array alone slipped past it, and the doors diverged:
+	// `assigned_user_id:"B"` with `field:["assign=dave"]` applies the compat
+	// ID over HTTP while stdio drops it and sends only the generic field.
+	//
+	// Round 7 had already built exactly this always-run guard, for the
+	// hierarchy pair only (checkHierarchyAliasAmbiguity, now deleted). So the
+	// restructure that was supposed to end guard accretion had itself left
+	// TWO alias mechanisms with different reach. One is what the ruling
+	// asked for; this is it.
+	obj, _ := input["fields"].(map[string]any) // nil when absent; shape errors belong to reshapeItemFields
+	fieldsPresent := obj != nil
+	_, fieldByKey, errRes := parseFieldArray(prefix, input["field"])
+	if errRes != nil {
+		return nil // the caller parses for real and owns this error surface
+	}
+
 	groups := map[string][]fieldContribution{}
 	add := func(canonical string, c fieldContribution) {
 		groups[canonical] = append(groups[canonical], c)
@@ -184,7 +205,7 @@ func detectFieldConflicts(prefix string, input, obj map[string]any, fieldByKey m
 	for _, k := range objKeys {
 		sv, err := stringifyFieldValue(obj[k])
 		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "fields." + k, value: sv, nested: err != nil,
+			key: k, source: "fields." + k, value: sv, nested: err != nil, raw: obj[k],
 		})
 	}
 
@@ -195,7 +216,7 @@ func detectFieldConflicts(prefix string, input, obj map[string]any, fieldByKey m
 	sort.Strings(arrayKeys)
 	for _, k := range arrayKeys {
 		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "the field array entry " + strconv.Quote(k+"="+fieldByKey[k]), value: fieldByKey[k],
+			key: k, source: "the field array entry " + strconv.Quote(k+"="+fieldByKey[k]), value: fieldByKey[k], raw: fieldByKey[k],
 		})
 	}
 
@@ -206,7 +227,7 @@ func detectFieldConflicts(prefix string, input, obj map[string]any, fieldByKey m
 		}
 		sv, err := stringifyFieldValue(v)
 		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "the top-level " + k + " param", value: sv, nested: err != nil,
+			key: k, source: "the top-level " + k + " param", value: sv, nested: err != nil, raw: v,
 		})
 	}
 
@@ -235,8 +256,31 @@ func detectFieldConflicts(prefix string, input, obj map[string]any, fieldByKey m
 				a.source, b.source, a.key, b.key))
 		}
 		// SAME NAME, different sources: equal collapses, differing refuses.
+		//
+		// Gated on `fields` being present, because that is this merge's
+		// scope. A top-level param colliding with a `field:[]` entry and no
+		// `fields` object keeps its documented last-write-wins resolution —
+		// the round-7 boundary the lead confirmed, pinned on both doors by
+		// the SameNameDuplicate tests. Alias collisions above are NOT gated:
+		// last-write-wins is only defensible when both sources name the same
+		// key, and two names for one target have incomparable value spaces.
+		if !fieldsPresent {
+			continue
+		}
 		for i := 1; i < len(contribs); i++ {
 			a, b := contribs[0], contribs[i]
+			if a.nested && b.nested {
+				// TWO STRUCTURES: equal ones collapse like any other equal
+				// duplicate (codex round 14). Refusing them unconditionally
+				// was a regression the restructure introduced — `tags:["a"]`
+				// plus `fields:{"tags":["a"]}` is one unambiguous value, and
+				// scalarEqual had always collapsed it before.
+				if !scalarEqual(a.raw, b.raw) {
+					return errStructured(prefix, fmt.Errorf(
+						"%s conflicts with %s — pass one of them, or the same value in both", a.source, b.source))
+				}
+				continue
+			}
 			if a.nested || b.nested {
 				return errStructured(prefix, fmt.Errorf(
 					"%s conflicts with %s — one key cannot be both a structured value and a string", a.source, b.source))
@@ -312,10 +356,10 @@ var padItemPromotedFieldKeys = map[string]bool{
 // into the dedicated-param + `field`-array paths, then dispatch as
 // before. Calls without `fields` are byte-for-byte unchanged.
 func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
-	// Runs regardless of whether `fields` is present — reshapeItemFields
-	// returns early without it, and the ambiguity is reachable through the
-	// `field` array alone (codex round 7).
-	if errRes := checkHierarchyAliasAmbiguity("pad_item.create", input); errRes != nil {
+	// ONE conflict decision, over the canonical view of every source, run
+	// whether or not a `fields` object is present (lead ruling after round
+	// 13; reach corrected after round 14).
+	if errRes := detectFieldConflicts("pad_item.create", input); errRes != nil {
 		return errRes, nil
 	}
 	out, errRes := reshapeItemFields("pad_item.create", input)
@@ -326,7 +370,10 @@ func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) 
 }
 
 func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
-	if errRes := checkHierarchyAliasAmbiguity("pad_item.update", input); errRes != nil {
+	// ONE conflict decision, over the canonical view of every source, run
+	// whether or not a `fields` object is present (lead ruling after round
+	// 13; reach corrected after round 14).
+	if errRes := detectFieldConflicts("pad_item.update", input); errRes != nil {
 		return errRes, nil
 	}
 	out, errRes := reshapeItemFields("pad_item.update", input)
@@ -379,14 +426,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 	// key coming in via `fields` can be conflict-checked against them.
 	fieldEntries, fieldByKey, errRes := parseFieldArray(prefix, out["field"])
 	if errRes != nil {
-		return nil, errRes
-	}
-
-	// ONE conflict decision, over the canonical view of every source (lead
-	// ruling after codex round 13). Everything below this line runs knowing
-	// the input is unambiguous, which is why the per-key branches no longer
-	// carry guards of their own.
-	if errRes := detectFieldConflicts(prefix, input, obj, fieldByKey); errRes != nil {
 		return nil, errRes
 	}
 
@@ -689,55 +728,6 @@ func hasNonCanonicalFieldEntry(entries []string, key, value string) bool {
 		}
 	}
 	return false
-}
-
-// checkHierarchyAliasAmbiguity refuses a call that names BOTH hierarchy
-// aliases, whichever doors they arrive through (codex round 7).
-//
-// The alias guard added in round 6 lives inside reshapeItemFields' per-key
-// loop, so it only fires when the `fields` OBJECT carries a hierarchy key —
-// and reshapeItemFields returns early when there is no `fields` at all. That
-// left the ambiguity fully reachable through the array alone:
-// `field:["parent=A","plan=B"]` was accepted, and extractParentLink's
-// no-early-exit loop applied `plan` while the caller had every reason to
-// believe `parent` was what they set. A guard a caller can step around by
-// moving the same two values into a different param is not a guard — the
-// lesson this unit has now produced at four consecutive rounds.
-//
-// SCOPE, stated plainly because it widens what this tool refuses: the
-// pure-`field` form was accepted before BUG-2850 too, so this is not a
-// regression being closed but a pre-existing silent mis-write. It is fixed
-// here rather than filed because shipping the round-6 guard without it would
-// advertise a refusal that any caller can bypass in one edit. Refusing is
-// consistent with v0.19, which already refuses parent + clear_parent
-// "including via the plan alias".
-//
-// Deliberately NOT extended to same-name duplicates (a top-level `parent`
-// param plus `field:["parent=B"]`). Those resolve last-write-wins
-// identically on both doors — documented behaviour, not an ambiguity — and
-// widening the refusal to cover them is a policy change, not a defect fix.
-func checkHierarchyAliasAmbiguity(prefix string, input map[string]any) *mcp.CallToolResult {
-	_, byKey, errRes := parseFieldArray(prefix, input["field"])
-	if errRes != nil {
-		// Shape errors belong to the caller that parses for real; staying
-		// silent here keeps a single error surface for them.
-		return nil
-	}
-	planVal, hasPlan := byKey["plan"]
-	if !hasPlan {
-		return nil
-	}
-	if parentVal, hasParent := byKey["parent"]; hasParent {
-		return errStructured(prefix, fmt.Errorf(
-			"field entries %q and %q are the same hierarchy directive and the server applies whichever it reads last; pass one of them",
-			"parent="+parentVal, "plan="+planVal))
-	}
-	if v, ok := input["parent"].(string); ok && v != "" {
-		return errStructured(prefix, fmt.Errorf(
-			"the parent param (%s) conflicts with the field array entry %q — %q and %q are the same hierarchy directive; pass one of them",
-			v, "plan="+planVal, "parent", "plan"))
-	}
-	return nil
 }
 
 // parseFieldArray normalizes an existing `field` param into a []string

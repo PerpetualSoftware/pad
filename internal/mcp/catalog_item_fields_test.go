@@ -1414,13 +1414,21 @@ func TestFieldConflictProperty_AliasGroupsRefuseAcrossEverySourcePair(t *testing
 						if sa == sb {
 							continue
 						}
-						// reshapeItemFields only runs when `fields` is
-						// present — that is its documented scope, and the
-						// param-vs-array case keeps last-write-wins by design
-						// (round-7 boundary). Skip pairs with no `fields`.
-						if sa != "fields object" && sb != "fields object" {
-							continue
-						}
+						// NO SKIP for the no-`fields` pairs any more (codex
+						// round 14). The property was written when the
+						// canonical pass ran only from inside
+						// reshapeItemFields, so param-vs-array combinations
+						// were excluded as out of scope — and that exclusion
+						// is exactly where the round-14 defect lived. Alias
+						// collisions now refuse whatever the sources, so the
+						// property covers every pair.
+						//
+						// The round-7 boundary is untouched and is about
+						// SAME-NAME duplicates, which this property never
+						// drives: last-write-wins is defensible when both
+						// sources name one key, and indefensible when two
+						// names address one target through different
+						// vocabularies.
 						// BOTH value shapes, and the EQUAL one is the load-
 						// bearing half. With differing values the ordinary
 						// same-canonical-key comparison refuses too, so a
@@ -1463,4 +1471,89 @@ func TestFieldConflictProperty_AliasGroupsRefuseAcrossEverySourcePair(t *testing
 		t.Fatal("the property exercised nothing — the source/class enumeration is broken")
 	}
 	t.Logf("property held over %d source×alias combinations", tried)
+}
+
+// --- codex round 14 ---
+
+// TestPadItemUpdate_AliasPairsRefusedWithoutFieldsObject: alias detection must
+// reach the no-`fields` case too (BUG-2850, codex round 14).
+//
+// The round-13 restructure ran its canonical pass from inside
+// reshapeItemFields, which returns early without a `fields` object — so an
+// alias pair arriving through the top level and the `field` array alone
+// slipped past it. Round 7 had already built exactly this always-run guard
+// for the hierarchy pair, which is the tell: the restructure that was meant
+// to end guard accretion had itself left TWO alias mechanisms with different
+// reach. There is now one.
+//
+// The hierarchy leg is included deliberately, as the CONTROL that used to
+// pass: it is the one pair the old always-run guard covered, so a fix that
+// merely moved the gap would keep it green while the other two go red.
+func TestPadItemUpdate_AliasPairsRefusedWithoutFieldsObject(t *testing.T) {
+	cases := map[string]map[string]any{
+		"assign pair, no fields object": {
+			"assigned_user_id": "user-B", "field": []any{"assign=dave"},
+		},
+		"role pair, no fields object": {
+			"agent_role_id": "role-B", "field": []any{"role=implementer"},
+		},
+		"hierarchy pair, no fields object (was already covered)": {
+			"parent": "PLAN-A", "field": []any{"plan=PLAN-B"},
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			input := map[string]any{"action": "update", "ref": "TASK-5"}
+			for k, v := range extra {
+				input[k] = v
+			}
+			disp, msg, isErr := dispatchPadItem(t, input)
+			if !isErr {
+				t.Fatalf("expected structured refusal, got success: %s (args %v)", msg, disp.gotArgs)
+			}
+			if len(disp.gotPath) != 0 {
+				t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+			}
+		})
+	}
+}
+
+// TestPadItemUpdate_EqualStructuredDuplicateCollapses: two equal STRUCTURES
+// are one unambiguous value, not a conflict (BUG-2850, codex round 14).
+//
+// A regression the round-13 restructure introduced: the new pass refused
+// whenever either side was structured, where scalarEqual had always collapsed
+// equal ones. Nothing in the suite caught it — the existing tags tests pass a
+// structure on one side only — which is why this pin exists in both
+// directions.
+func TestPadItemUpdate_EqualStructuredDuplicateCollapses(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"tags":   []any{"a", "b"},
+		"fields": map[string]any{"tags": []any{"a", "b"}},
+	})
+	if isErr {
+		t.Fatalf("equal structured duplicates are one value, not a conflict: %s", msg)
+	}
+	if len(disp.gotPath) == 0 {
+		t.Fatal("expected the update to dispatch")
+	}
+}
+
+// ...and DIFFERING structures still refuse, so the collapse did not turn into
+// "any two structures agree".
+func TestPadItemUpdate_DifferingStructuredDuplicateRefused(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"tags":   []any{"a"},
+		"fields": map[string]any{"tags": []any{"b"}},
+	})
+	if !isErr {
+		t.Fatalf("differing structures must still refuse; got success: %s (args %v)", msg, disp.gotArgs)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
+	}
 }
