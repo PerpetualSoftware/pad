@@ -199,6 +199,13 @@ handlers — onchange is never called.
 		onchange(row.id);
 	}
 
+	// Backing out is a decision, so it supersedes an in-flight create exactly as
+	// picking another row does (codex round 2).
+	function cancelRelationEdit() {
+		relationWrite++;
+		editingRelation = false;
+	}
+
 	function clearRelation() {
 		relationWrite++;
 		editingRelation = false;
@@ -277,10 +284,15 @@ handlers — onchange is never called.
 		//     whose `updateField` builds its PATCH against whatever item is
 		//     current at CALL time. Unfenced, a create started on car A writes
 		//     its colour onto car B.
-		//   * SUPERSEDED. The user can settle on another row (or clear the
-		//     field) while this is in flight. Last-write-wins is the wrong rule:
-		//     the later write is an explicit choice and this one is a promise
-		//     they have moved past.
+		//   * SUPERSEDED. The user can settle on another row, clear the field, or
+		//     back out of the picker entirely while this is in flight.
+		//     Last-write-wins is the wrong rule: each of those is an explicit
+		//     choice and this one is a promise they have moved past.
+		//   * RETARGETED. The `{#key itemSlug}` above keys on the SLUG ONLY, so
+		//     switching workspaces to an item carrying the same ref — every
+		//     workspace has a TASK-5 — reuses this instance and never sets
+		//     `destroyed`. Comparing the captured workspace and target collection
+		//     to the current props is what catches that (codex round 2).
 		const mySeq = ++relationWrite;
 		const epoch = localIndex.scopeEpochFor(ws);
 		try {
@@ -290,6 +302,7 @@ handlers — onchange is never called.
 			// index would leave a picker offering to create it a second time.
 			localIndex.upsert(ws, item, epoch);
 			if (destroyed || mySeq !== relationWrite) return;
+			if (ws !== wsSlug || collSlug !== field.collection) return;
 			editingRelation = false;
 			onchange(item.id);
 		} catch (e: any) {
@@ -871,7 +884,7 @@ handlers — onchange is never called.
 				onselect={pickRelation}
 				oncreate={canCreateInTarget ? createRelationTarget : undefined}
 				createLabel={targetCollection?.name}
-				oncancel={relationState === 'empty' ? undefined : () => (editingRelation = false)}
+				oncancel={relationState === 'empty' ? undefined : cancelRelationEdit}
 			/>
 		{/if}
 	</div>

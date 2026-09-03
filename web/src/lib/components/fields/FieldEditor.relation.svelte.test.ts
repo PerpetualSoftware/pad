@@ -576,6 +576,74 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 		expect(onchange).not.toHaveBeenCalled();
 	});
 
+	it('a create that lands after the user escaped out of the picker writes nothing', async () => {
+		// codex round 2 P1. Backing out is as explicit a choice as picking a
+		// different row, and it was not fenced: `oncancel` only closed the
+		// picker. The pending create then resolved and selected an item the user
+		// had just declined.
+		let release!: (v: unknown) => void;
+		createApi.mockReturnValue(new Promise((r) => { release = r; }));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		// An EXISTING value, because that is when the picker is given an
+		// `oncancel` at all — with an empty relation there is nothing to cancel
+		// back to.
+		render(FieldEditor, { props: { ...editableProps, value: LIVE.id, onchange } });
+		await tick();
+		document.querySelector<HTMLButtonElement>('.relation-action')!.click(); // "Change"
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		// Escape clears the query, then escapes the picker.
+		const el = document.querySelector<HTMLInputElement>('.picker-input')!;
+		el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+		await tick();
+		el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+		await tick();
+
+		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		await tick();
+		await tick();
+
+		expect(onchange).not.toHaveBeenCalled();
+	});
+
+	it('a create that lands after a workspace switch writes nothing', async () => {
+		// codex round 2 P1. `ItemDetail`'s fields subtree is keyed on `itemSlug`
+		// ALONE, so switching workspaces to an item carrying the SAME ref —
+		// every workspace has a TASK-5 — does not remount this component and
+		// leaves `destroyed` false. Without comparing the captured workspace to
+		// the current one, the completion writes an item ID from the previous
+		// workspace into the new workspace's item.
+		let release!: (v: unknown) => void;
+		createApi.mockReturnValue(new Promise((r) => { release = r; }));
+		localIndexMock.getByCollection.mockReturnValue([]);
+		localSearchMock.search.mockReturnValue([]);
+		const onchange = vi.fn();
+		const { rerender } = render(FieldEditor, { props: { ...editableProps, onchange } });
+		await tick();
+
+		await typeQuery('Purple');
+		createRow()!.click();
+		await tick();
+
+		await rerender({ ...editableProps, wsSlug: 'other-ws', onchange });
+		await tick();
+
+		release({ id: 'uuid-new', title: 'Purple', collection_slug: 'colors' });
+		await tick();
+		await tick();
+
+		expect(onchange).not.toHaveBeenCalled();
+		// The row still belongs in the workspace it was created in — the fence
+		// is about where the VALUE is written, not about hiding a real item.
+		expect(localIndexMock.upsert).toHaveBeenCalledWith('ws', expect.anything(), 7);
+	});
+
 	it('offers no create row while the collection list is not fresh for this workspace', async () => {
 		// codex round 1 P2. `collectionStore.collections` is a single global
 		// list, so during a workspace switch it still holds the PREVIOUS
