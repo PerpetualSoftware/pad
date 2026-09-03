@@ -1557,3 +1557,119 @@ func TestPadItemUpdate_DifferingStructuredDuplicateRefused(t *testing.T) {
 		t.Errorf("must not dispatch; dispatched %v", disp.gotPath)
 	}
 }
+
+// TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema closes the
+// gap the lead named after round 14: the property above enumerates its
+// sources by hand, and that hand-written list came from the same head as
+// detectFieldConflicts. A property whose input list mirrors the code cannot
+// see a source the code forgot — which is exactly how the round-14 defect
+// (param-vs-array pairs excluded as "out of scope") survived a property test
+// that was supposed to generalize.
+//
+// So this derives the population from the DOOR'S DECLARED CONTRACT — the live
+// pad_item ToolDef's parameter list, which is what agents read and what the
+// tool advertises — and asserts that every declared param capable of writing
+// a field value is CLASSIFIED by the conflict machinery. Adding a writable
+// param to the catalog without teaching detectFieldConflicts about it fails
+// here, naming the param, rather than silently creating a source no guard
+// visits.
+//
+// The two lists have genuinely different origins: one is the tool schema, the
+// other is the three key sets. That independence is the whole point — if this
+// test ever starts deriving its expectations from the same sets it checks, it
+// stops being able to fail.
+func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T) {
+	def := padItemDef(t)
+
+	// Params that carry a field VALUE into an item write. Everything else on
+	// the tool addresses the call (ref, workspace, action), controls the
+	// response (limit, format, full), or is a documented non-field flag.
+	// Each entry carries WHY it cannot collide with a `fields` key. The
+	// reasons are the point — a bare list would let a future field-writing
+	// param be silenced by adding one word to it, which is how the round-14
+	// exclusion happened in the first place.
+	notFieldWriters := map[string]bool{
+		// Address the call rather than the item's fields.
+		"action": true, "ref": true, "workspace": true, "collection": true,
+		"refs":              true, // bulk-update's target list
+		"target":            true, // link/unlink's other end
+		"target_collection": true, // move's destination
+		"link_type":         true, // the relationship kind, not a field
+
+		// Item COLUMNS, not entries in the fields blob.
+		"title": true, "content": true, "slug": true, "pinned": true,
+
+		// Shape the response or the query.
+		"limit": true, "offset": true, "full": true, "sort": true, "query": true,
+		"group_by": true, "all": true, "archived": true, "include_archived": true,
+		"unparented": true, "since": true, "days": true, "actor": true,
+		"category_filter": true, "parent_ref": true,
+
+		// Control the write without naming a field value.
+		"expected_updated_at": true, "force": true, "allow_draft": true,
+		"clear_parent": true, "clear_assigned_user": true, "clear_agent_role": true,
+		"artifact": true, "raw_args": true,
+
+		// SYSTEM-METADATA WRITERS — these DO change item state, so the
+		// exclusion is a real claim rather than a shrug. They write
+		// implementation_notes / decision_log through their own actions
+		// (note, decide), and those exact keys are REFUSED through `field`
+		// and `fields` (BUG-2627 / BUG-2675). So they cannot reach the same
+		// key by two routes, which is the only thing this pass adjudicates.
+		"summary": true, "details": true, // action=note
+		"decision": true, "rationale": true, // action=decide
+		"message": true, "reply_to": true, // action=comment
+		"comment": true, // the audit note on update
+
+		// The two SOURCES themselves, not keys within them.
+		"fields": true,
+		"field":  true,
+	}
+
+	// What the conflict machinery knows how to classify.
+	classified := map[string]bool{}
+	for _, set := range []map[string]bool{padItemPromotedFieldKeys, compatIDFieldKeys, hierarchyPseudoFieldKeys, identityRefFieldKeys} {
+		for k := range set {
+			classified[k] = true
+		}
+	}
+
+	var unclassified []string
+	for _, p := range def.Schema.Params {
+		if notFieldWriters[p.Name] || classified[p.Name] {
+			continue
+		}
+		unclassified = append(unclassified, p.Name)
+	}
+	sort.Strings(unclassified)
+
+	if len(unclassified) > 0 {
+		t.Errorf("declared pad_item params that neither the conflict machinery classifies "+
+			"nor this test excludes as non-field-writing: %v\n"+
+			"If one of these can write a field value, add it to the appropriate key set so "+
+			"detectFieldConflicts visits it — a source no guard visits is the round-14 defect. "+
+			"If it cannot, add it to notFieldWriters with that reason.", unclassified)
+	}
+
+	// The independence check: every classified key must actually be reachable
+	// through the declared schema OR be a documented undeclared compat form.
+	// This is what fails if a key set grows a name the door cannot carry.
+	declared := map[string]bool{}
+	for _, p := range def.Schema.Params {
+		declared[p.Name] = true
+	}
+	for k := range classified {
+		if declared[k] {
+			continue
+		}
+		if compatIDFieldKeys[k] {
+			continue // v0.16 compat: deliberately never schema-declared
+		}
+		if k == "plan" {
+			continue // a fields_patch pseudo-key the server reads; no top-level param
+		}
+		t.Errorf("the conflict machinery classifies %q, but the pad_item schema declares no such "+
+			"param and it is not a documented undeclared form — either the key set is stale or "+
+			"the schema lost a param", k)
+	}
+}
