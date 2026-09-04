@@ -572,6 +572,17 @@
 		const state = localIndex.bootstrapStateFor(wsSlug);
 		// Read for its dependency; the value carries no meaning here.
 		localSearch.epoch(wsSlug);
+		// TRACKED (codex round 10): the scope itself. Every other read below is
+		// untracked to keep this off the keystroke path, and `collection` was
+		// swept up in that — but it is not a per-keystroke value, it is the
+		// question the results answer. `ItemDetail` can change a relation
+		// field's declared target (a schema edit, or an SSE-driven refresh)
+		// without remounting this picker, and the rows then on screen belong to
+		// the collection it USED to point at while remaining selectable under
+		// the new one. Predates U8 (it arrived with the extraction in
+		// TASK-2862); fixed here because U8 makes `collection` load-bearing —
+		// it is now the destination an inline create writes to.
+		void collection;
 		untrack(() => {
 			if (state !== 'ready') {
 				// The workspace's state was DROPPED — `localIndex.reset()` on

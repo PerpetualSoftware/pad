@@ -441,6 +441,39 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 });
 
+describe('ItemPicker — the collection scope is a tracked input', () => {
+	it('re-lists when the target collection changes under an open picker', async () => {
+		// codex round 10. A relation field's declared target can change while
+		// this picker is mounted — a schema edit, or an SSE-driven collection
+		// refresh — and `ItemDetail` does not remount it for that. Rows from the
+		// OLD collection must not stay on screen and selectable under the new
+		// scope.
+		const colours = [{ id: 'c-1', title: 'Red', item_number: 1, collection_prefix: 'COLO' }];
+		const sizes = [{ id: 's-1', title: 'Large', item_number: 1, collection_prefix: 'SIZE' }];
+		rowsById = new Map([...colours, ...sizes].map((r) => [r.id, r]));
+		localIndexMock.getByCollection.mockImplementation((_ws: string, coll: string) =>
+			coll === 'colors' ? colours : sizes,
+		);
+
+		// Driven through the probe's single-prop setter, NOT `rerender`: that
+		// replaces the whole props object and re-runs the picker's effect
+		// whether or not it tracks the scope, so a rerender-driven version of
+		// this test passes against the untracked build. The identical trap this
+		// host was created for.
+		const { component } = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', onselect: () => {} },
+		});
+		await tick();
+		expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Red')]);
+
+		(component as unknown as { setCollection: (c: string) => void }).setCollection('sizes');
+		await tick();
+		await tick();
+
+		expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Large')]);
+	});
+});
+
 describe('ItemPicker — source: the two callers want different models', () => {
 	// Lead ruling on PR #1241: the Relationships tab keeps the server FTS, which
 	// indexes item BODY CONTENT. `localIndex` strips `content` by design, so the
