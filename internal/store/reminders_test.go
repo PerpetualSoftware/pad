@@ -319,14 +319,88 @@ func TestAckRequiresAFiredReminder(t *testing.T) {
 		t.Fatal("acking a fired reminder must record the acknowledgement")
 	}
 
-	// A second ack is a no-op rather than a re-stamp: it must not move the
-	// recorded moment of acknowledgement.
+	// A second ack is idempotent rather than a re-stamp: it answers with the
+	// row (the ack "happened", from the caller's side) and moves neither the
+	// recorded moment of acknowledgement nor updated_at. Both are asserted,
+	// because COALESCE alone would keep acked_at while a naive SET rewrote
+	// updated_at on every repeat.
+	//
+	// MUTANT: dropping the CASE on updated_at moves it here; dropping COALESCE
+	// re-stamps acked_at.
 	again, err := s.AckReminder(ws.ID, id)
 	if err != nil {
 		t.Fatalf("second AckReminder: %v", err)
 	}
-	if again != nil {
-		t.Error("a second acknowledgement must change nothing")
+	if again == nil {
+		t.Fatal("a second acknowledgement of a fired reminder must still answer with the row")
+	}
+	if again.AckedAt == nil || *again.AckedAt != *acked.AckedAt {
+		t.Errorf("acked_at moved on a repeat ack: %v -> %v", *acked.AckedAt, again.AckedAt)
+	}
+	if again.UpdatedAt != acked.UpdatedAt {
+		t.Errorf("updated_at moved on a repeat ack: %v -> %v", acked.UpdatedAt, again.UpdatedAt)
+	}
+}
+
+// TestCreateReminderRefusesAnotherWorkspacesItem — codex round 12, P2, the one
+// finding of that round that needs no timing to bite.
+//
+// item_reminders.item_id carries an FK to items and no same-workspace
+// constraint, so without the INSERT's own predicate a (workspace B, item of A)
+// pair is accepted, and B's pending-reminder surface — which scopes by
+// r.workspace_id and joins the item — then carries A's ref and title into B's
+// dashboard and B's webhooks.
+//
+// MUTANT: dropping `i.workspace_id = ?` from the INSERT's SELECT accepts the
+// row and both halves of this test fail.
+func TestCreateReminderRefusesAnotherWorkspacesItem(t *testing.T) {
+	s := testStore(t)
+	wsA := createTestWorkspace(t, s, "A")
+	wsB := createTestWorkspace(t, s, "B")
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	itemA := createTestItem(t, s, wsA.ID, colA.ID, "A's item", "")
+
+	r, err := s.CreateReminder(wsB.ID, itemA.ID, future)
+	if !errors.Is(err, ErrReminderItemGone) {
+		t.Fatalf("err = %v, want ErrReminderItemGone", err)
+	}
+	if r != nil {
+		t.Fatal("a refused arm must not return a reminder")
+	}
+	var n int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM item_reminders WHERE item_id = ?`), itemA.ID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("%d reminder row(s) written for a cross-workspace arm, want 0", n)
+	}
+
+	// Positive control for the predicate: the same item through its own
+	// workspace arms normally, so the refusal above is the workspace half
+	// and not a broken INSERT.
+	armReminder(t, s, wsA.ID, itemA.ID, future)
+}
+
+// TestCreateReminderRefusesASoftDeletedItem. An armed reminder on an archived
+// item is a row the candidate scan excludes forever — to the caller, a
+// reminder that was accepted and silently never fires. Refuse at the door.
+//
+// MUTANT: dropping `i.deleted_at IS NULL` from the INSERT accepts it.
+func TestCreateReminderRefusesASoftDeletedItem(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Archived", "")
+	if _, err := s.db.Exec(s.q(`UPDATE items SET deleted_at = ? WHERE id = ?`), now(), item.ID); err != nil {
+		t.Fatalf("soft delete item: %v", err)
+	}
+
+	_, err := s.CreateReminder(ws.ID, item.ID, future)
+	if !errors.Is(err, ErrReminderItemGone) {
+		t.Fatalf("err = %v, want ErrReminderItemGone", err)
+	}
+	if _, err := s.CreateReminder(ws.ID, "no-such-item", future); !errors.Is(err, ErrReminderItemGone) {
+		t.Fatalf("missing item: err = %v, want ErrReminderItemGone", err)
 	}
 }
 

@@ -139,8 +139,8 @@ func waitForLockWait(t *testing.T, s *Store, needle string, done <-chan error) {
 	for {
 		select {
 		case err := <-done:
-			t.Fatalf("the insert completed (err = %v) instead of blocking on the "+
-				"item row held by an uncommitted archival — it read around the lock", err)
+			t.Fatalf("the statement completed (err = %v) instead of blocking on the "+
+				"row held by an uncommitted archival — it read around the lock", err)
 		default:
 		}
 

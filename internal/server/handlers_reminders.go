@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -100,6 +101,13 @@ func (s *Server) handleCreateItemReminder(w http.ResponseWriter, r *http.Request
 	}
 
 	reminder, err := s.store.CreateReminder(workspaceID, item.ID, remindAt)
+	if errors.Is(err, store.ErrReminderItemGone) {
+		// resolveVisibleItem saw a live item in this workspace a moment ago;
+		// the store's own predicate did not. The item was archived in the
+		// window, and the answer is the one the resolver would have given.
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -160,17 +168,25 @@ func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if acked == nil {
-		// The row exists — resolveReminderForWrite just read it — so a
-		// no-op ack means it was not in the fired-unacked state. Report
-		// WHICH, because "nothing happened" is the same response for an
-		// armed reminder (too early) and an already-acked one (already
-		// done), and those need opposite reactions from the caller.
-		if reminder.FiredAt == nil {
-			writeError(w, http.StatusConflict, "reminder_not_fired",
-				"This reminder has not fired yet, so there is nothing to acknowledge.")
+		// THE PRE-READ IS NOT CONSULTED HERE (codex round 12). AckReminder
+		// matches every fired row, acknowledged or not, so a nil answer means
+		// exactly "not fired at the instant of the ack" — or "gone", which a
+		// fresh read tells apart. The earlier form decided 409-vs-200 from the
+		// row resolveReminderForWrite read before the UPDATE, and a fire or
+		// re-arm landing in between made it answer for a state that had
+		// already stopped holding. The variable is still called `reminder`
+		// above only because the resolver's permission checks need it.
+		current, err := s.store.GetReminder(workspaceID, reminder.ID)
+		if err != nil {
+			writeInternalError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, reminder)
+		if current == nil {
+			writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
+			return
+		}
+		writeError(w, http.StatusConflict, "reminder_not_fired",
+			"This reminder has not fired yet, so there is nothing to acknowledge.")
 		return
 	}
 	writeJSON(w, http.StatusOK, acked)

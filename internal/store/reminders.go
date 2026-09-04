@@ -97,7 +97,29 @@ func normalizeRemindAt(remindAt string) (string, error) {
 	return NormalizeInstant(t), nil
 }
 
+// ErrReminderItemGone is CreateReminder's answer when the item is not a live
+// item of the given workspace. Missing, soft-deleted, and belonging to another
+// workspace are indistinguishable on purpose: telling them apart would make the
+// store answer "does this item id exist somewhere on the instance", which is
+// the existence-oracle shape GetReminder already refuses to be.
+var ErrReminderItemGone = errors.New("reminder item is not live in this workspace")
+
 // CreateReminder arms a reminder on an item.
+//
+// THE ITEM MUST BE A LIVE ITEM OF THIS WORKSPACE, and that is asserted by the
+// INSERT itself rather than by a read before it (codex round 12). The table
+// has a foreign key to items but no same-workspace constraint, so a plain
+// INSERT accepts a (workspace, item) pair that names another workspace's item
+// — and every reader then scopes by r.workspace_id and joins the item, which
+// hands the first workspace's dashboard and webhooks the second one's title.
+// The HTTP door resolves the item inside the workspace before calling here;
+// the store refuses regardless, because a door is not the only caller the
+// process can grow and a doc comment does not travel with the argument (the
+// same argument normalizeRemindAt makes one function up).
+//
+// Liveness is part of the same predicate: arming a reminder on an archived
+// item would write a row the scan filters out forever, which reads to the
+// caller as a reminder that silently never fires.
 func (s *Store) CreateReminder(workspaceID, itemID, remindAt string) (*models.Reminder, error) {
 	remindAt, err := normalizeRemindAt(remindAt)
 	if err != nil {
@@ -105,12 +127,21 @@ func (s *Store) CreateReminder(workspaceID, itemID, remindAt string) (*models.Re
 	}
 	id := newID()
 	ts := now()
-	_, err = s.db.Exec(s.q(`
+	res, err := s.db.Exec(s.q(`
 		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
-	`), id, workspaceID, itemID, remindAt, ts, ts)
+		SELECT ?, i.workspace_id, i.id, ?, NULL, NULL, ?, ?
+		FROM items i
+		WHERE i.id = ? AND i.workspace_id = ? AND i.deleted_at IS NULL
+	`), id, remindAt, ts, ts, itemID, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("create reminder: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("create reminder: %w", err)
+	}
+	if n == 0 {
+		return nil, ErrReminderItemGone
 	}
 	return s.GetReminder(workspaceID, id)
 }
@@ -192,18 +223,30 @@ func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminde
 // impossible rather than merely discouraged: an acked-but-never-fired row
 // would sit in a state the lifecycle has no name for, and it would be
 // invisible — the poll surface reads fired-unacked, so the row would simply
-// never appear again. Returns (nil, nil) when nothing matched, which the
-// handler distinguishes from a missing reminder by re-reading.
+// never appear again.
 //
-// The ack is IDEMPOTENT by leaving acked_at alone once set: a second ack finds
-// no matching row and reports nothing changed, rather than moving the
-// timestamp and rewriting when the acknowledgement happened.
+// THE STATEMENT MATCHES EVERY FIRED ROW, acknowledged or not, so that a
+// non-match means exactly one thing: at the instant of the ack, the reminder
+// had not fired (or does not exist, which the handler tells apart by
+// re-reading). The previous form also excluded already-acked rows, which left
+// a no-match ambiguous — "too early" and "already done" need opposite
+// reactions from a caller — and the handler resolved the ambiguity from a row
+// it had read BEFORE the ack. A fire or re-arm landing between that read and
+// the UPDATE made it answer 409 for a reminder it had just acknowledged, or
+// 200 for one it had not (codex round 12). Folding the distinction into the
+// statement removes the read the race needed.
+//
+// IDEMPOTENT by construction: COALESCE keeps the first acknowledgement's
+// instant, and updated_at moves only when acked_at does, so a second ack
+// matches, returns the row, and rewrites nothing.
 func (s *Store) AckReminder(workspaceID, id string) (*models.Reminder, error) {
+	ts := now()
 	res, err := s.db.Exec(s.q(`
 		UPDATE item_reminders
-		SET acked_at = ?, updated_at = ?
-		WHERE id = ? AND workspace_id = ? AND fired_at IS NOT NULL AND acked_at IS NULL
-	`), now(), now(), id, workspaceID)
+		SET updated_at = CASE WHEN acked_at IS NULL THEN ? ELSE updated_at END,
+		    acked_at = COALESCE(acked_at, ?)
+		WHERE id = ? AND workspace_id = ? AND fired_at IS NOT NULL
+	`), ts, ts, id, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("ack reminder: %w", err)
 	}
@@ -471,8 +514,25 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 // means the row never matches, so no write happens at all, where the load
 // means a write happens and is undone. The load is needed regardless — the
 // payload carries an item snapshot — so the redundancy costs nothing beyond
-// this paragraph. Workspace liveness has no such second line, which is why
+// this paragraph. Workspace liveness has no such second READ, which is why
 // dropping ITS half of the predicate does fail the pin.
+//
+// A READ IS NOT A HOLD (codex round 12, found independently by two runs on
+// the same line). Everything above re-asserts liveness at the instant the
+// predicate is evaluated; nothing above keeps it true until the transaction
+// commits. On SQLite that gap does not exist — the DSN's _txlock=immediate
+// makes every db.Begin() a BEGIN IMMEDIATE, so an archival cannot even open
+// its transaction while a fire is in flight. On Postgres under READ COMMITTED
+// the UPDATE locks only the reminder row: DeleteItem or DeleteWorkspace can
+// commit its deleted_at after the predicate passed and before the outbox
+// write commits, and the event then leaves the process describing a resource
+// that was archived before the event existed. fireOneReminder therefore pins
+// the item and workspace rows (FOR NO KEY UPDATE) as its first statement on
+// Postgres, so the archival waits for the fire to commit — delayed, never
+// lost — or, having committed first, makes the pin's re-read miss and the
+// fire return without emitting. "At that instant" in the invariant means the
+// commit instant, and the pin is what makes the predicate's instant and the
+// commit instant the same one.
 //
 // Emission happens after the predicate passed and inside the same transaction,
 // so an event cannot describe a state that no longer held when it was written.
@@ -554,6 +614,47 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 		return nil, fmt.Errorf("fire reminder: %w", err)
 	}
 	defer tx.Rollback()
+
+	// PIN THE ITEM AND WORKSPACE ROWS FOR THE REST OF THE TRANSACTION on
+	// Postgres (codex round 12). The predicate below READS liveness, and a read
+	// is not a hold: under READ COMMITTED the UPDATE locks only the reminder
+	// row, so DeleteItem / DeleteWorkspace can commit deleted_at between the
+	// predicate's evaluation and this transaction's commit, and the event goes
+	// out about a resource archived before the event existed — a webhook to a
+	// deleted workspace's endpoint is the one failure here that reaches outside
+	// the process. See the invariant paragraph on FireDueReminders.
+	//
+	// FOR NO KEY UPDATE, as CreateAttachmentForLiveItem: both archival UPDATEs
+	// touch no key column, so they take FOR NO KEY UPDATE and conflict with
+	// this holder — the archival blocks until the fire commits and then
+	// proceeds, delayed but never lost. In the other interleaving the archival
+	// commits first; the locked re-read is re-evaluated after the wait, no
+	// longer matches deleted_at IS NULL, and this call returns without firing.
+	// FK-share readers on the item (comments, the Yjs op-log) are not blocked.
+	// The workspace join goes through the ITEM's workspace_id, exactly as
+	// reminderFireable does, so the two cannot disagree about which row.
+	//
+	// SQLite skips the pin: its DSN sets _txlock=immediate, so db.Begin() is a
+	// BEGIN IMMEDIATE and writers already serialize — the interleaving is
+	// unrepresentable there, and the locking clause is a syntax error.
+	if s.dialect.Driver() == DriverPostgres {
+		var pinned string
+		err := tx.QueryRow(s.q(`
+			SELECT i.id FROM item_reminders r
+			JOIN items i ON i.id = r.item_id
+			JOIN workspaces w ON w.id = i.workspace_id
+			WHERE r.id = ? AND i.deleted_at IS NULL AND w.deleted_at IS NULL
+			FOR NO KEY UPDATE OF i, w
+		`), id).Scan(&pinned)
+		switch {
+		case err == sql.ErrNoRows:
+			// Archived, or gone, since the scan. Leave the reminder as it is
+			// and emit nothing — the same outcome the predicate produces.
+			return nil, nil
+		case err != nil:
+			return nil, fmt.Errorf("pin reminder %s item and workspace: %w", id, err)
+		}
+	}
 
 	// THE INSTANT IS REVALIDATED HERE, not just the fire mark (codex round 3).
 	// A re-arm can move this reminder into the future between the candidate
