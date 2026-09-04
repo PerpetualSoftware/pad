@@ -746,6 +746,12 @@ func (e *itemCreateError) Error() string { return e.message }
 func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string) (*models.Item, *itemCreateError) {
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
+	// Snapshot before validation, which INJECTS schema defaults without
+	// type-checking them (codex round 7). The resolver below skips a
+	// non-string, so an injected `default: 42` on a relation field reached the
+	// blob unchallenged — the same hole the migrate doors had, by the same
+	// route, and closed with the same pass.
+	relBefore := store.RelationKeysPresent(schema, fieldMap)
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
 	}
@@ -762,6 +768,17 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// Keys the schema does not declare are STORED, not refused — but the write
 	// says which ones, so a typo leaves a trace (BUG-2850). Computed before the
 	// store call because fieldMap is what gets written.
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
+	if lateErr != nil {
+		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", lateErr.Error()}
+	}
+	if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
+		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(req)}
+	}
+	var droppedDefaults []string
+	for _, ri := range lateDropped {
+		droppedDefaults = append(droppedDefaults, ri.Key)
+	}
 	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
 
 	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
@@ -882,8 +899,11 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	// Attach after the write succeeded: these are advisory notes about a
 	// stored item, not a reason to refuse one (BUG-2850).
-	if len(undeclared) > 0 {
-		item.Warnings = &models.ItemWriteWarnings{UndeclaredFields: undeclared}
+	if len(undeclared) > 0 || len(droppedDefaults) > 0 {
+		item.Warnings = &models.ItemWriteWarnings{
+			UndeclaredFields: undeclared,
+			DroppedFields:    droppedDefaults,
+		}
 	}
 
 	return item, nil
@@ -1009,6 +1029,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// Keys this write puts in the fields blob that the schema does not
 	// declare. Stored, not refused; reported on the response (BUG-2850).
 	var undeclaredFields []string
+	// Schema-declared keys this write discarded (TASK-2878) — see
+	// models.ItemWriteWarnings.DroppedFields.
+	var droppedDefaults []string
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -1211,6 +1234,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		// Coerce strings to their declared types before validating (BUG-2850).
 		fieldMap = items.CoerceFields(fieldMap, schema)
+		// Snapshot before validation injects untyped schema defaults — see
+		// createItemChecked for the route (codex round 7).
+		relBefore := store.RelationKeysPresent(schema, fieldMap)
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
@@ -1223,6 +1249,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if refuseRelationIssues(w, relIssues) {
 			return
+		}
+		lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
+		if lateErr != nil {
+			writeInternalError(w, lateErr)
+			return
+		}
+		if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
+			writeError(w, http.StatusBadRequest, "validation_error", relationIssuesMessage(req))
+			return
+		}
+		for _, ri := range lateDropped {
+			droppedDefaults = append(droppedDefaults, ri.Key)
 		}
 		undeclaredFields = items.UndeclaredFieldKeys(fieldMap, schema)
 
@@ -2090,8 +2128,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Advisory, post-write, same as create (BUG-2850).
-	if len(undeclaredFields) > 0 {
-		updated.Warnings = &models.ItemWriteWarnings{UndeclaredFields: undeclaredFields}
+	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 {
+		updated.Warnings = &models.ItemWriteWarnings{
+			UndeclaredFields: undeclaredFields,
+			DroppedFields:    droppedDefaults,
+		}
 	}
 
 	writeJSON(w, http.StatusOK, updated)

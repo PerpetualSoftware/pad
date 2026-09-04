@@ -67,8 +67,18 @@ var reservedItemFieldKeys = map[string]struct{}{
 // would have broken read-modify-write on items nobody edited wrongly — but a
 // typo and a deliberate extra field are indistinguishable once stored, so the
 // write says which keys it did not recognize instead of staying silent.
+// DroppedFields lists schema-declared keys the write DISCARDED. Today that is
+// one case (TASK-2878): a relation field whose destination-schema DEFAULT is
+// not a reference at all. `ValidateFields` assigns a default and `continue`s
+// past its own type check, so an injected default is the only route by which a
+// non-string reaches a relation field unchallenged — a value the caller
+// supplied is type-checked and refused like any other. Dropping rather than
+// refusing, because nobody in the request typed it and refusing would make
+// every write into that collection fail on a schema defect its author must fix
+// elsewhere. Additive and omitempty, so a clean write is byte-identical.
 type ItemWriteWarnings struct {
 	UndeclaredFields []string `json:"undeclared_fields,omitempty"`
+	DroppedFields    []string `json:"dropped_fields,omitempty"`
 }
 
 // IsReservedItemField reports whether key is system-written metadata rather than

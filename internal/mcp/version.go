@@ -858,6 +858,19 @@ const CmdhelpVersion = "0.1"
 //     `pad_item.action=copy` therefore returns a `dropped_fields`
 //     entry where 0.28 silently landed a dangling reference.
 //
+//     Item write responses may additionally carry
+//     `warnings.dropped_fields`, naming schema-declared keys the write
+//     DISCARDED. Today that is one case: a relation field whose schema
+//     DEFAULT is not a reference at all. `ValidateFields` assigns a
+//     default and skips its own type check, so an injected default is
+//     the only route by which a non-string reaches a relation field —
+//     a caller-supplied one is type-checked and refused. Dropped
+//     rather than refused because nobody in the request typed it, and
+//     refusing would make every write into that collection fail on a
+//     schema defect its author must fix elsewhere. Additive and
+//     omitempty, exactly like 0.27's `undeclared_fields`, so a clean
+//     write is byte-identical.
+//
 //     Bump rationale: a BEHAVIOR bump on the 0.27 / 0.26 / 0.16 / 0.10
 //     / 0.9 grounds — NOT on 0.28's, which was purely additive. No tool name, action enum or parameter shape
 //     changed. A caller that was writing a resolvable value sees no

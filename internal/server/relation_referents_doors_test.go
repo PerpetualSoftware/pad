@@ -742,3 +742,67 @@ func TestRelationDoors_WhitespaceOnlyRelationIsNotRefused(t *testing.T) {
 			"at all: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// The write doors have the same injected-default hole the migrate doors had
+// (codex round 7).
+//
+// `ValidateFields` assigns a schema default and `continue`s past its own type
+// check, and the resolver skips a non-string — so `default: 42` on a relation
+// field reached the blob unchallenged at create and at a full `fields` update.
+// A value the CALLER supplies is type-checked and refused like any other; only
+// the default escapes.
+//
+// Dropped rather than refused, because nobody in the request typed it: refusing
+// would make every write into that collection fail on a schema defect its
+// author has to fix elsewhere. Reported in the write's warnings, so the drop is
+// not silent.
+func TestRelationDoors_NonStringDefaultIsDroppedAndReportedOnWrite(t *testing.T) {
+	f := newDoorFixture(t)
+	bad := mustSchemaCollection(t, f.srv, f.ws.ID, "Bad Default", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":42}
+	]}`, f.people.Slug))
+
+	rr := f.call(f.srv.handleCreateItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/collections/"+bad.Slug+"/items",
+		map[string]string{"collSlug": bad.Slug},
+		map[string]any{"title": "Defaulted", "fields": map[string]any{"status": "open"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var out struct {
+		ID       string `json:"id"`
+		Warnings *struct {
+			DroppedFields []string `json:"dropped_fields"`
+		} `json:"warnings"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse create result: %v: %s", err, rr.Body.String())
+	}
+
+	item, err := f.srv.store.GetItem(out.ID)
+	if err != nil || item == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(item.Fields), &stored); err != nil {
+		t.Fatalf("parse fields: %v", err)
+	}
+	if v, present := stored["owner_ref"]; present {
+		t.Fatalf("a non-reference default was stored in a relation field: %#v", v)
+	}
+
+	// Dropped is not the same as silently dropped.
+	if out.Warnings == nil || len(out.Warnings.DroppedFields) == 0 {
+		t.Fatalf("the write discarded owner_ref without reporting it: %s", rr.Body.String())
+	}
+	var named bool
+	for _, k := range out.Warnings.DroppedFields {
+		if k == "owner_ref" {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("warnings.dropped_fields does not name owner_ref: %v", out.Warnings.DroppedFields)
+	}
+}
