@@ -58,10 +58,14 @@ type SessionRegistration struct {
 	// sessions by id (transcript paths, session measurement). Opaque to
 	// pad.
 	SessionID string `json:"session_id,omitempty"`
-	// Agent is the name the session declared for itself — the same
-	// self-declared value ResolveAgentName stamps on every write, recorded
-	// so a reader can tell two sessions in one checkout apart by what they
-	// are working AS. Empty is an anonymous session.
+	// Agent is the name the session declared for itself, recorded so a
+	// reader can tell two sessions in one checkout apart by what they are
+	// working AS. When non-empty it is ALSO the value ResolveAgentName
+	// stamps on every write from this session — by construction since
+	// BUG-2882, which found the two disagreeing on both live seats: the
+	// resolver now reads this record first (registeredAgentForThisSession).
+	// Empty is an anonymous session; it does not blank an environment-
+	// declared name on writes.
 	Agent string `json:"agent,omitempty"`
 	// RegistrarPID is the pid of the process that wrote the file (the
 	// `pad` command). Its JSON key is v1's "pid", kept for compatibility;
@@ -135,6 +139,75 @@ func SessionsDir() (string, error) {
 		_ = os.Chmod(dir, 0700)
 	}
 	return dir, nil
+}
+
+// registeredAgentForThisSession reads the registry record for the session
+// that owns this process — the same owner CaptureSessionOwner would record —
+// and returns its agent name. It is the first thing ResolveAgentName consults
+// (BUG-2882), so it must be cheap and must never create anything: a plain
+// stat-and-read of one file, no MkdirAll, no lock (a torn read of a record
+// being rewritten parses as malformed and is ignored, and the next call sees
+// the new record).
+//
+// ok is false — FAIL CLOSED — unless the record is confirmed to be THIS
+// session's (codex round 1 on #1248): it must parse, carry this owner pid,
+// pass the same OwnerLiveness verdict `pad session list` applies (socket
+// identity and pid alive with its token), and, when this process can read a
+// process-start token for the owner, carry the SAME token. A record with no
+// token while we have one is unverifiable, not verified: a dead session's
+// stale row under a reused pid must not name a live one. Where the platform
+// has no token at all, bare liveness is the documented residual, as it is for
+// the registry itself. And where the platform can walk process ancestry, the
+// owner pid must be this process or an ancestor — the same claim
+// session_pid_verified reports — so a misconfigured CLAUDE_PID cannot borrow
+// another live session's name. A record with an empty agent is a deliberate anonymous
+// registration and returns ("", true); the caller decides that this does not
+// override an environment-declared name.
+func registeredAgentForThisSession() (string, bool) {
+	owner, err := CaptureSessionOwner()
+	if err != nil {
+		return "", false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	path := filepath.Join(home, ".pad", "sessions", fmt.Sprintf("%d.json", owner.PID))
+	data, err := readRegistryBytes(path)
+	if err != nil {
+		return "", false
+	}
+	if !utf8.Valid(data) {
+		return "", false
+	}
+	var reg SessionRegistration
+	if err := json.Unmarshal(data, &reg); err != nil || !registrationWellFormed(&reg) {
+		return "", false
+	}
+	if reg.PID != owner.PID {
+		// v1 (legacy) records have no owner pid; they never carried a name.
+		return "", false
+	}
+	if owner.ProcStart != "" && reg.ProcStart != owner.ProcStart {
+		// Includes the empty case: a token we can check and the record
+		// cannot supply is a record we cannot trust.
+		return "", false
+	}
+	if OwnerLiveness(&reg.SessionOwner) != LivenessAlive {
+		return "", false
+	}
+	// The owner must be THIS process or an ancestor, where the platform can
+	// say (codex round 2): a harness-supplied pid that is alive, token-matched
+	// and yet not above us is a misconfigured session, and its row is not
+	// ours to speak for. CaptureSessionOwner records that outcome as
+	// PIDVerified=false but does not distinguish "checked and wrong" from
+	// "cannot check"; gating on the flag would disable this step on every
+	// platform without ancestry (see proc_ancestry_other.go), so the check is
+	// re-run here and only a checked-and-wrong answer refuses.
+	if ok, err := pidIsSelfOrAncestor(owner.PID); err == nil && !ok {
+		return "", false
+	}
+	return reg.Agent, true
 }
 
 // registryFileName matches registry records — and ONLY them. The same

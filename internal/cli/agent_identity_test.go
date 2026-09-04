@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -60,6 +61,11 @@ func TestResolveAgentName(t *testing.T) {
 				}
 			}
 			chdir(t, dir)
+			// And from a scratch HOME with no session identity, so a registry
+			// row belonging to the REAL session running these tests cannot
+			// leak in as the resolver's first answer (codex round 1, #1248).
+			isolateHome(t, t.TempDir())
+			clearSessionEnv(t)
 
 			// Clear every variable the resolver consults, then set this case's.
 			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
@@ -105,6 +111,8 @@ func TestClientSendsResolvedAgentHeader(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chdir(t, t.TempDir())
+			isolateHome(t, t.TempDir())
+			clearSessionEnv(t)
 			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
 				t.Setenv(k, "")
 				os.Unsetenv(k)
@@ -147,6 +155,8 @@ func TestClientSendsResolvedAgentHeader(t *testing.T) {
 // which read this exact header.
 func TestPushItemSendsResolvedAgentHeader(t *testing.T) {
 	chdir(t, t.TempDir())
+	isolateHome(t, t.TempDir())
+	clearSessionEnv(t)
 	for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
@@ -190,6 +200,8 @@ func TestActorKind(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chdir(t, t.TempDir())
+			isolateHome(t, t.TempDir())
+			clearSessionEnv(t)
 			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
 				t.Setenv(k, "")
 				os.Unsetenv(k)
@@ -201,5 +213,134 @@ func TestActorKind(t *testing.T) {
 				t.Errorf("ActorKind() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRegisteredAgentWinsForThisSession — BUG-2882. Two seats booted under one
+// name; one re-registered under the right one with --agent; every write it
+// made afterwards still carried the wrong name, because the registry row and
+// $PAD_AGENT were two self-declarations and nothing reconciled them. The row
+// is now the first thing the resolver reads, so `--agent` means what its help
+// text says. Three properties, each its own case so a regression names
+// itself: the row wins over the environment AND over .pad.toml; an anonymous
+// row does not blank an environment name; a row for a different session that
+// reused this pid is ignored.
+//
+// MUTANT: removing the registry step from ResolveAgentName fails the first
+// two; dropping the proc-start comparison fails the last.
+func TestRegisteredAgentWinsForThisSession(t *testing.T) {
+	sessionsDir := registryEnv(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".pad.toml"), []byte("workspace = \"w\"\nagent_name = \"toml-name\"\n"), 0o600); err != nil {
+		t.Fatalf("write .pad.toml: %v", err)
+	}
+	chdir(t, dir)
+	t.Setenv("PAD_AGENT", "wren")
+	// This process is its own session owner (no PAD_SESSION_PID / CLAUDE_PID).
+
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Fatalf("before any registration, ResolveAgentName() = %q, want the .pad.toml name", got)
+	}
+
+	if _, err := RegisterSession(dir, "rook"); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+	if got := ResolveAgentName(); got != "rook" {
+		t.Errorf("after registering as rook, ResolveAgentName() = %q, want %q (the row must win over .pad.toml and $PAD_AGENT)", got, "rook")
+	}
+
+	// Re-registering with the default keeps the name: the default IS the
+	// resolver, which now reads the row.
+	if _, err := RegisterSession(dir, ResolveAgentName()); err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	if got := ResolveAgentName(); got != "rook" {
+		t.Errorf("after a default re-register, ResolveAgentName() = %q, want %q", got, "rook")
+	}
+
+	// An anonymous row is a statement about the row, not about the writes.
+	if _, err := RegisterSession(dir, ""); err != nil {
+		t.Fatalf("anonymous register: %v", err)
+	}
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Errorf("after an anonymous registration, ResolveAgentName() = %q, want the .pad.toml name back", got)
+	}
+
+	// A record for THIS pid but a different process start is another
+	// session that once had the pid; it must not name us.
+	path := filepath.Join(sessionsDir, itoa(os.Getpid())+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	var reg SessionRegistration
+	if err := json.Unmarshal(data, &reg); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	if reg.ProcStart == "" {
+		t.Skip("platform records no process-start token; the pid-reuse guard has nothing to compare")
+	}
+	token := reg.ProcStart
+	reg.Agent = "ghost"
+	reg.ProcStart = token + "-not-us"
+	out, _ := json.Marshal(reg)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("rewrite record: %v", err)
+	}
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Errorf("a record from a different session with our pid named us: ResolveAgentName() = %q", got)
+	}
+
+	// A record with NO token, while this process can read one, is
+	// unverifiable and must not name us either (codex round 1, #1248: a
+	// dead session's stale row under a reused pid).
+	reg.ProcStart = ""
+	out, _ = json.Marshal(reg)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("rewrite record: %v", err)
+	}
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Errorf("a token-less record for our pid named us: ResolveAgentName() = %q", got)
+	}
+
+	// Positive control after the two rejections: the genuine token names us.
+	reg.ProcStart = token
+	out, _ = json.Marshal(reg)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("rewrite record: %v", err)
+	}
+	if got := ResolveAgentName(); got != "ghost" {
+		t.Errorf("the genuine record stopped naming us: ResolveAgentName() = %q", got)
+	}
+}
+
+// TestRegisteredAgentRequiresAVerifiableOwner — codex round 2 on #1248. A
+// harness-supplied owner pid that the platform CAN check and that is NOT
+// this process or an ancestor is a misconfigured session: its registry row
+// must not name us, even though the pid is alive and its token matches
+// (pid-reuse and liveness are not the failure here; the claim of ownership
+// is). Where the platform cannot walk ancestry the check does not run and
+// the token + liveness residual applies, which is why this is gated on the
+// check being available rather than on PIDVerified alone — gating on the
+// flag would have switched the fix off everywhere but Linux.
+//
+// MUTANT: dropping the pidIsSelfOrAncestor refusal makes the child's row
+// name us.
+func TestRegisteredAgentRequiresAVerifiableOwner(t *testing.T) {
+	registryEnv(t)
+	if _, err := pidIsSelfOrAncestor(os.Getpid()); err != nil {
+		t.Skip("platform cannot walk process ancestry; the ownership check does not run here")
+	}
+	dir := t.TempDir()
+	chdir(t, dir)
+	t.Setenv("PAD_AGENT", "env-name")
+	child := livingChildPID(t)
+	t.Setenv("CLAUDE_PID", itoa(child))
+
+	if _, err := RegisterSession(dir, "impostor"); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+	if got := ResolveAgentName(); got != "env-name" {
+		t.Errorf("a row owned by a live non-ancestor pid named us: ResolveAgentName() = %q, want %q", got, "env-name")
 	}
 }
