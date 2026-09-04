@@ -279,6 +279,21 @@ func (s *Server) refuseInvisibleRelationOverrides(
 	return s.resolveRelationReferentsAs(r, workspaceID, role, schema, probe)
 }
 
+// notDefaultKeys is the set a migrate door hands
+// dropInvisibleRelationDefaults: the caller's own values plus the values
+// carried from the source item. Everything else in the map came from the
+// destination schema's defaults.
+func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
+	out := make(map[string]bool, len(supplied)+len(carried))
+	for k := range supplied {
+		out[k] = true
+	}
+	for k := range carried {
+		out[k] = true
+	}
+	return out
+}
+
 // dropInvisibleRelationDefaults is the visibility check a LATE-RESOLVED
 // DEFAULT owes (codex round 11).
 //
@@ -297,17 +312,27 @@ func (s *Server) refuseInvisibleRelationOverrides(
 // Reported through the same `not_found` reason every other visibility failure
 // collapses to, so a caller cannot tell "the default names something you may
 // not see" from "the default names nothing".
+//
+// `notADefault` is every key that is NOT a destination default — the caller's
+// own values and the values carried from a source item. Both are excluded
+// deliberately and for different reasons: a caller's value is refused
+// elsewhere by the visibility check on its own door, and a CARRIED value must
+// never be refused or dropped for visibility at all, because that would make
+// an item referencing something the mover cannot see unmovable. The first
+// version of this took "present before the late pass", which at a migrate door
+// includes the defaults MigrateFields injected — so exactly the values it
+// exists to check were the ones it skipped (codex round 13).
 func (s *Server) dropInvisibleRelationDefaults(
 	r *http.Request,
 	workspaceID string,
 	role string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
-	presentBefore map[string]bool,
+	notADefault map[string]bool,
 ) ([]store.RelationIssue, error) {
 	var dropped []store.RelationIssue
 	for _, def := range schema.Fields {
-		if def.Type != "relation" || presentBefore[def.Key] {
+		if def.Type != "relation" || notADefault[def.Key] {
 			continue
 		}
 		id, isStr := fieldMap[def.Key].(string)
@@ -390,6 +415,13 @@ func (s *Server) resolveRelationsForWrite(
 	invisible, err := s.dropInvisibleRelationDefaults(r, workspaceID, role, schema, fieldMap, presentBefore)
 	if err != nil {
 		return nil, nil, err
+	}
+	// The required check covers the INVISIBLE drops too. It was written for
+	// `lateDropped` and a sibling list was added beside it a round later —
+	// deleting a key after validation has passed leaves a required field
+	// absent regardless of which list recorded it (codex round 13).
+	if required := store.RequiredRelationIssues(schema, invisible); len(required) > 0 {
+		return required, nil, nil
 	}
 	for _, ri := range append(lateDropped, invisible...) {
 		dropped = append(dropped, ri.Key)

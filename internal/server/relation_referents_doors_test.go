@@ -947,3 +947,100 @@ func TestRelationDoors_BulkMoveStatusIsCallerInput(t *testing.T) {
 		t.Fatalf("failure code = %q, want validation_error (message: %s)", got, out.Failed[0].Error)
 	}
 }
+
+// A MIGRATE door's destination default gets the visibility check too (codex
+// round 13).
+//
+// The first version of `dropInvisibleRelationDefaults` skipped keys "present
+// before the late pass". At a migrate door that set includes the defaults
+// `MigrateFields` injected — so exactly the values the helper exists to check
+// were the ones it skipped, and only the write doors were ever covered. The
+// predicate is now "not a destination default": the caller's own values and
+// the values carried from the source, both excluded for their own reasons.
+func TestRelationDoors_MoveDropsInvisibleDestinationDefault(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Move Hidden Default", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":%q}
+	]}`, f.people.Slug, f.target.Ref))
+	item := f.seed(`{"status":"open"}`)
+
+	blind := mustUser(t, f.srv, "blind-move-default@example.com", "blindmovedef", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	rr := f.callAs(blind, "editor", f.srv.handleMoveItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/move",
+		map[string]string{"itemSlug": item.Slug},
+		map[string]any{"target_collection": dst.Slug})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: expected 200 (a default is dropped, never refused), got %d: %s",
+			rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), f.target.ID) {
+		t.Fatalf("the move handed a caller who cannot see People the target's id: %s", rr.Body.String())
+	}
+	if v, ok := f.storedRelation(item.ID); ok {
+		t.Fatalf("the hidden default was stored: %#v", v)
+	}
+
+	// Control: the owner sees People, so the same move keeps the default.
+	item2 := f.seed(`{"status":"open"}`)
+	rr2 := f.call(f.srv.handleMoveItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item2.Slug+"/move",
+		map[string]string{"itemSlug": item2.Slug},
+		map[string]any{"target_collection": dst.Slug})
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("move as owner: expected 200, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if v, ok := f.storedRelation(item2.ID); !ok || v != f.target.ID {
+		t.Fatalf("the owner's move lost the default (%#v, present=%v); the drop is not "+
+			"visibility-dependent", v, ok)
+	}
+}
+
+// An invisible default in a REQUIRED relation refuses (codex round 13).
+//
+// The required check was written for the late-dropped list and a sibling list
+// — the visibility drops — was added beside it a round later. Deleting a key
+// after validation has passed leaves a required field absent regardless of
+// which list recorded it, so the check has to cover both.
+func TestRelationDoors_RequiredInvisibleDefaultRefuses(t *testing.T) {
+	f := newDoorFixture(t)
+	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Required Hidden", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":%q,"required":true}
+	]}`, f.people.Slug, f.target.Ref))
+
+	blind := mustUser(t, f.srv, "blind-required@example.com", "blindrequired", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{coll.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + coll.Slug + "/items"
+	params := map[string]string{"collSlug": coll.Slug}
+	body := map[string]any{"title": "Required hidden", "fields": map[string]any{"status": "open"}}
+
+	rr := f.callAs(blind, "editor", f.srv.handleCreateItem, "POST", path, params, body)
+	if rr.Code == http.StatusCreated {
+		t.Fatalf("the item was created with a REQUIRED relation dropped for visibility; "+
+			"dropping there stores the item with the field absent: %s", rr.Body.String())
+	}
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Control: the owner can see the target, so the same create succeeds.
+	if rr2 := f.call(f.srv.handleCreateItem, "POST", path, params, body); rr2.Code != http.StatusCreated {
+		t.Fatalf("the owner's identical create was refused %d: %s", rr2.Code, rr2.Body.String())
+	}
+}

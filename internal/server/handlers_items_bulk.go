@@ -508,6 +508,14 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if item.Fields != "" && item.Fields != "{}" {
 		_ = json.Unmarshal([]byte(item.Fields), &fieldMap)
 	}
+	// The item's own stored values, before the caller's changes merge in. Held
+	// separately because "carried" and "supplied" get different treatment
+	// everywhere in this unit, and after the merge the map cannot tell them
+	// apart.
+	storedFields := make(map[string]any, len(fieldMap))
+	for k, v := range fieldMap {
+		storedFields[k] = v
+	}
 	for k, v := range changes {
 		fieldMap[k] = v
 	}
@@ -547,7 +555,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	}
 	relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, suppliedRelations)
 	if relErr != nil {
-		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
 	if len(relIssues) > 0 {
 		return nil, &bulkOpError{message: relationIssuesMessage(relIssues), code: "validation_error"}
@@ -557,7 +565,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	}
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
 	if lateErr != nil {
-		return nil, &bulkOpError{message: lateErr.Error(), code: "internal_error"}
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
 	if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
 		return nil, &bulkOpError{
@@ -565,9 +573,16 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 			code:    "missing_required_fields",
 		}
 	}
-	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap,
+		notDefaultKeys(changes, storedFields))
 	if invErr != nil {
-		return nil, &bulkOpError{message: invErr.Error(), code: "internal_error"}
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if req := store.RequiredRelationIssues(schema, invisibleDefaults); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
 	}
 	if all := append(lateDropped, invisibleDefaults...); droppedFields != nil && len(all) > 0 {
 		for _, ri := range all {
@@ -775,7 +790,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		suppliedByCaller, store.CarriedSourceValues(currentFields, result.Dropped),
 		store.RelationCarryWithinWorkspace)
 	if relErr != nil {
-		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
 	if len(relRefusals) > 0 {
 		// Reachable since round 11: `status` is caller input, so a destination
@@ -802,7 +817,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
 	if lateErr != nil {
-		return nil, &bulkOpError{message: lateErr.Error(), code: "internal_error"}
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
 	// A REQUIRED relation whose default did not resolve cannot be left as a
 	// drop: the key is deleted AFTER validation passed, so nothing re-checks
@@ -817,9 +832,16 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		}
 	}
 	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r),
-		items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+		items.SchemaForMigratedFields(targetSchema), result.Fields,
+		notDefaultKeys(suppliedByCaller, store.CarriedSourceValues(currentFields, result.Dropped)))
 	if invErr != nil {
-		return nil, &bulkOpError{message: invErr.Error(), code: "internal_error"}
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), invisibleDefaults); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
 	}
 	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		result.Dropped = append(result.Dropped, ri.Key)

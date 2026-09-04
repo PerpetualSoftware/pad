@@ -762,7 +762,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
 		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
 	if relErr != nil {
-		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", relErr.Error()}
+		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to resolve relation references"}
 	}
 	if len(relRefusals) > 0 {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relRefusals)}
@@ -2446,9 +2446,15 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r),
-		items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+		items.SchemaForMigratedFields(targetSchema), result.Fields,
+		notDefaultKeys(input.FieldOverrides, store.CarriedSourceValues(currentFields, result.Dropped)))
 	if invErr != nil {
 		writeInternalError(w, invErr)
+		return
+	}
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), invisibleDefaults); len(req) > 0 {
+		writeError(w, http.StatusBadRequest, "missing_required_fields",
+			"Required fields missing: "+relationIssuesMessage(req))
 		return
 	}
 	for _, ri := range append(lateDropped, invisibleDefaults...) {
