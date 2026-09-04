@@ -1272,3 +1272,67 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 		t.Errorf("imported remind_at = %q, want the same instant normalized to UTC and rounded up", got[0].RemindAt)
 	}
 }
+
+// TestOrphanedItemDoesNotAbortTheImport — codex round 10.
+//
+// An ORPHANED item — one whose collection is missing from the bundle — still
+// gets an itemMap entry, because that entry is written before the skip and
+// parent resolution inside the same loop needs it. So `itemMap[x] != ""` is
+// satisfied by an id that names no row, and inserting a foreign key to it
+// fails. This loop treated that as fatal, so ONE orphaned item carrying a
+// reminder aborted an entire workspace restore.
+//
+// The bundle is hand-built rather than exported, because ExportWorkspace
+// cannot produce an orphan — which is exactly why this needed a test: the
+// shape only arrives from a hand-edited or foreign bundle, and those are the
+// ones import exists to survive.
+//
+// MUTANT: gate on `itemMap[...] != ""` instead of insertedItems, or restore
+// the fatal return, and the import fails.
+func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "orphan-import@test.com", "Orphan Import", "password123")
+	src := createTestWorkspace(t, s, "Orphan Source")
+	col := createTestCollection(t, s, src.ID, "Tasks")
+	item := createTestItem(t, s, src.ID, col.ID, "Real item", "")
+	armReminder(t, s, src.ID, item.ID, future)
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+
+	// Add an item whose collection is NOT in the bundle, and a reminder on it.
+	orphanID := "orphan-item-id"
+	exp.Items = append(exp.Items, models.ItemExport{
+		ID: orphanID, CollectionID: "collection-that-is-not-here",
+		Title: "Orphan", Slug: "orphan", Fields: "{}", Tags: "[]",
+		CreatedAt: exp.Items[0].CreatedAt, UpdatedAt: exp.Items[0].UpdatedAt,
+	})
+	exp.Reminders = append(exp.Reminders, models.ReminderExport{
+		ItemID: orphanID, RemindAt: future,
+		CreatedAt: exp.Items[0].CreatedAt, UpdatedAt: exp.Items[0].UpdatedAt,
+	})
+
+	dst, err := s.ImportWorkspace(exp, "orphan-import-target", owner.ID)
+	if err != nil {
+		t.Fatalf("one orphaned item aborted the whole import: %v", err)
+	}
+
+	// The real item and its reminder still arrived — the point is that the
+	// orphan was skipped, not that everything was.
+	items, err := s.ListItems(dst.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Real item" {
+		t.Fatalf("imported %d items, want just the real one", len(items))
+	}
+	got, err := s.ListRemindersForItem(items[0].ID)
+	if err != nil {
+		t.Fatalf("ListRemindersForItem: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("the real item's reminder did not survive the orphan (%d reminders)", len(got))
+	}
+}

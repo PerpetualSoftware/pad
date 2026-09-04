@@ -497,6 +497,20 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	coercedTags := make(map[string]string, len(data.Items))
 	// Slugs this import has already written. See the collision note in the loop.
 	claimedSlugs := make(map[string]bool, len(data.Items))
+	// itemMap records the id an item WOULD get; insertedItems records the ones
+	// that actually landed. The two differ for an orphaned item — one whose
+	// collection is missing from the bundle — because the map entry is written
+	// before the skip below, and it has to be: parent resolution inside this
+	// same loop reads itemMap for items it has not reached yet.
+	//
+	// So a later section resolving an id through itemMap alone can get one
+	// that names no row, and inserting a foreign key to it fails (SQLite
+	// enforces FKs here — `_pragma=foreign_keys(on)` in the DSN — and Postgres
+	// always does). item_links and item_versions survive that by skipping on
+	// error; the reminder loop below checks this set instead, which refuses
+	// the row for the right reason rather than letting the database refuse it
+	// for an incidental one.
+	insertedItems := make(map[string]bool, len(data.Items))
 	var nextItemNumber int
 	for _, it := range data.Items {
 		newItemID := newID()
@@ -607,6 +621,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
 		}
+		insertedItems[newItemID] = true
 	}
 
 	// Second pass: remap parent_id and relation fields (now all items exist).
@@ -681,7 +696,24 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// string would make a never-fired reminder read as fired at "".
 	for _, rm := range data.Reminders {
 		newItemID := itemMap[rm.ItemID]
-		if newItemID == "" {
+		// TWO GUARDS, AND NEITHER ALONE IS OBSERVABLE — measured, not assumed.
+		// Reverting either one on its own leaves the test green: with the map
+		// gate restored, the skip-on-error below survives the FK failure; with
+		// the fatal return restored, this gate means the insert never fails.
+		// Removing BOTH is what fails it. They are kept as a pair because they
+		// defend the same failure at different depths — this one prevents the
+		// bad write, the one below survives a bad write that arrives some
+		// other way — and the pair is recorded here so a future reader does
+		// not delete one as dead code after watching its mutant survive.
+		//
+		// insertedItems, not just a non-empty mapping: an ORPHANED item — one
+		// whose collection is missing from the bundle — still gets a map entry
+		// (it is written before the skip, because parent resolution needs it),
+		// so `!= ""` is satisfied by an id that names no row. Inserting a
+		// foreign key to it fails, and this loop used to treat that as fatal,
+		// so ONE orphaned item with a reminder aborted the entire workspace
+		// restore. Codex round 10.
+		if !insertedItems[newItemID] {
 			continue
 		}
 		// NORMALIZE ON THE WAY IN. Import is a WRITER like any other, and a
@@ -712,7 +744,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
 			newID(), ws.ID, newItemID, remindAt, firedAt, ackedAt, rm.CreatedAt, rm.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("import reminder: %w", err)
+			// SKIP, not fatal — matching item_links and item_versions, whose
+			// loops both survive a bad row. A reminder is the least critical
+			// thing in a bundle, and failing a 900-item restore over one of
+			// them is the wrong trade; this was the aggravating half of the
+			// round-10 finding, and it was mine, not the pre-existing mapping.
+			slog.Warn("workspace import: skipping reminder that failed to insert",
+				"workspace_id", ws.ID, "item_id", newItemID, "error", err)
+			continue
 		}
 	}
 
