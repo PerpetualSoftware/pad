@@ -839,3 +839,65 @@ func TestArchivedItemRemindersAreReadableAndNotEditable(t *testing.T) {
 		t.Errorf("the restored reminder should be fired and now acked, got fired=%v acked=%v", acked.FiredAt, acked.AckedAt)
 	}
 }
+
+// TestAnItemIsSuggestedOnceWhenItIsBothRemindedAndACandidate — codex round 17.
+// An in-progress, high-priority item with a fired reminder qualified for
+// suggested_next twice: once from the reminder (with the ack handle) and once
+// as an ordinary candidate. One item, one line, the one that carries the id.
+//
+// MUTANT: dropping the remindedItems filter puts the item in twice.
+func TestAnItemIsSuggestedOnceWhenItIsBothRemindedAndACandidate(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Both", "fields": `{"status":"in-progress","priority":"high"}`,
+	})
+	armViaAPI(t, srv, slug, item, pastInstant)
+	srv.runReminderTick()
+
+	resp := getDashboard(t, srv, slug)
+	var seen int
+	for _, sg := range resp.SuggestedNext {
+		if sg.ItemSlug == item.Slug {
+			seen++
+			if sg.ReminderID == "" {
+				t.Errorf("the surviving entry for %q must be the reminder one (carries the ack id); got %+v", item.Slug, sg)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("item appears %d times in suggested_next, want exactly 1: %+v", seen, resp.SuggestedNext)
+	}
+}
+
+// TestArchivedLegacyItemStillAnswers409 — codex round 17. A legacy item with no
+// item_number has an empty derived Ref; re-resolving by that empty ref inside
+// writeItemResolveError matched nothing and turned round 16's 409 into a 404.
+// The door now hands over the slug, which every item has.
+//
+// MUTANT: passing item.Ref again makes this a 404.
+func TestArchivedLegacyItemStillAnswers409(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Old one", "fields": `{"status":"open"}`,
+	})
+	r := armViaAPI(t, srv, slug, item, pastInstant)
+	srv.runReminderTick()
+
+	base := "/api/v1/workspaces/" + slug
+	if rr := doRequest(srv, "DELETE", base+"/items/"+item.Slug, nil); rr.Code != http.StatusOK && rr.Code != http.StatusNoContent {
+		t.Fatalf("archive item: %d: %s", rr.Code, rr.Body.String())
+	}
+	// Make it legacy: migration 006 added item_number to existing rows as NULL.
+	if _, err := srv.store.DB().Exec(`UPDATE items SET item_number = NULL WHERE id = ?`, item.ID); err != nil {
+		t.Fatalf("strip item_number: %v", err)
+	}
+
+	rr := doRequest(srv, "POST", base+"/reminders/"+r.ID+"/ack", nil)
+	if rr.Code != http.StatusConflict {
+		t.Errorf("acking a reminder on an archived legacy item: expected 409 archived, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

@@ -1171,7 +1171,24 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				Reason:     "REMINDER due — armed for " + pr.RemindAt,
 			})
 		}
-		resp.SuggestedNext = append(reminderSuggestions, resp.SuggestedNext...)
+		// ONE ENTRY PER ITEM ACROSS THE TWO SOURCES (codex round 17). An item
+		// can be both a fired reminder and an ordinary candidate (in progress,
+		// high priority, overdue); the reminder entry carries the ack handle
+		// and the ordinary one carries nothing the reminder does not, so the
+		// ordinary one is dropped. Two REMINDERS on one item stay two entries:
+		// each is a separate thing to acknowledge.
+		remindedItems := make(map[string]struct{}, len(reminderSuggestions))
+		for _, rs := range reminderSuggestions {
+			remindedItems[rs.ItemSlug] = struct{}{}
+		}
+		kept := make([]DashboardSuggestion, 0, len(resp.SuggestedNext))
+		for _, sg := range resp.SuggestedNext {
+			if _, dup := remindedItems[sg.ItemSlug]; dup {
+				continue
+			}
+			kept = append(kept, sg)
+		}
+		resp.SuggestedNext = append(reminderSuggestions, kept...)
 		if len(resp.SuggestedNext) > maxSuggestions {
 			resp.SuggestedNext = resp.SuggestedNext[:maxSuggestions]
 		}

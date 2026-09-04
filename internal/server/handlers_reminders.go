@@ -270,7 +270,18 @@ func (s *Server) resolveVisibleItem(w http.ResponseWriter, r *http.Request, work
 // An ARCHIVED item's reminder answers 409 "archived" here, exactly as an edit
 // to the item itself would (writeItemResolveError), rather than a 404 that
 // says nothing about why — the reminder exists, its item exists, and the
-// remedy is the item's restore. See handleListItemReminders for the read
+// remedy is the item's restore.
+//
+// THE ARCHIVED CHECK IS A DOOR COURTESY, NOT A STORE INVARIANT, and an archive
+// that lands between this check and the store's UPDATE lets the verb through
+// (codex round 17, accepted). That is the posture of every item mutation in
+// this API — UpdateItem's own UPDATE is `WHERE id = ?` with no liveness
+// clause — and the outcome is benign: an ack, re-arm or delete on a reminder
+// whose item was archived a moment ago leaves rows the scan and the pending
+// surface already exclude, and RestoreItem brings back whatever state they
+// hold. Asserting liveness inside the store's WHERE would make AckReminder's
+// no-match ambiguous again ("not fired" vs "archived"), which round 12 removed
+// on purpose; the courtesy stays at the door. See handleListItemReminders for the read
 // side of the same posture. The include-deleted load is what lets the
 // visibility check run first, so a guest who could not see the item learns
 // nothing from the difference between 404 and 409.
@@ -298,7 +309,12 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		return nil, nil
 	}
 	if item.DeletedAt != nil {
-		s.writeItemResolveError(w, r, workspaceID, item.Ref)
+		// BY SLUG, not Ref (codex round 17): Ref is derived and EMPTY for a
+		// legacy item with no item_number or collection prefix, and
+		// writeItemResolveError re-resolves by what it is handed — an empty
+		// ref matches nothing and falls through to a 404 that says nothing
+		// about why. The slug is the stable identity every item has.
+		s.writeItemResolveError(w, r, workspaceID, item.Slug)
 		return nil, nil
 	}
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
