@@ -635,3 +635,40 @@ func newCopyRelationFixtureNullSource(t *testing.T) *relationFixture {
 	f.source = src
 	return f
 }
+
+// A null source value with NO destination default is not a default (codex
+// round 5) — the tail of round 4's fix, and the other direction of the same
+// guard.
+//
+// Round 4 stopped calling a null-source key `migrated` because a destination
+// default fills it in. With no default there is nothing to fill it, the null
+// is what carries, and `default` names a value the schema never declared. One
+// guard, wrong in both directions, because "was the key present in the source"
+// is not "where did the final value come from".
+func TestCopyEndpoint_NullSourceWithoutDefaultIsNotReportedAsDefault(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, false)
+	src, err := f.srv.store.CreateItem(f.wsA.ID, f.collA.ID, models.ItemCreate{
+		Title:     "Null, undefaulted",
+		Fields:    `{"status":"open","owner_ref":null}`,
+		CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	f.source = src
+
+	pre := f.ok(f.baseBody())
+	for _, c := range pre.Fields.Carried {
+		if c.Key != "owner_ref" {
+			continue
+		}
+		if c.From == "default" {
+			t.Fatalf("preflight reports owner_ref from=%q, but the destination schema declares "+
+				"no default for it — the null came from the source", c.From)
+		}
+		return
+	}
+	// Not carried at all is also acceptable — what is not acceptable is
+	// claiming a default that does not exist. Reaching here means the key was
+	// absent from `carried`, so there is nothing mislabelled.
+}

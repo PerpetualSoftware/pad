@@ -666,17 +666,33 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	origin := make(map[string]string, len(final))
 	for k, v := range migrated.Fields {
 		final[k] = v
-		// MigrateFields' output is two things at once: values carried
-		// across from the source item, and destination-schema defaults it
-		// filled in for keys the source had nothing for. Presence in the
-		// SOURCE's field map is what separates them — presence with a VALUE,
-		// that is. A source key holding `null` carries nothing: validation
-		// treats it as missing and fills the destination default in its
-		// place, so reporting `migrated` names the source for a value the
-		// destination chose (codex round 4).
-		if sv, fromSource := currentFields[k]; fromSource && sv != nil {
+		// MigrateFields' output is two things at once: values carried across
+		// from the source item, and destination-schema defaults it filled in
+		// for keys the source had nothing for. The label has to name where
+		// the FINAL value came from, and a source key holding `null` is the
+		// case where those two answers come apart (codex rounds 4 and 5):
+		//
+		//   - source value, non-nil            -> migrated
+		//   - source null, destination default -> default (the destination
+		//     chose it; validation treats null as missing and fills it in)
+		//   - source null, NO default          -> migrated. The null is what
+		//     carried, and nothing defaulted it, so `default` would name a
+		//     value the schema never declared
+		//
+		// The middle case was reported `migrated` until round 4 and the last
+		// was reported `default` until round 5 — one guard, wrong in both
+		// directions, because "was the key present" is not "where did the
+		// value come from".
+		sv, fromSource := currentFields[k]
+		destDef, declared := targetDefs[k]
+		switch {
+		case fromSource && sv != nil:
 			origin[k] = "migrated"
-		} else {
+		case declared && destDef.Default != nil:
+			origin[k] = "default"
+		case fromSource:
+			origin[k] = "migrated"
+		default:
 			origin[k] = "default"
 		}
 	}
