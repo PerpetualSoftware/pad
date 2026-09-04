@@ -348,6 +348,26 @@ const (
 	RelationCarryCrossWorkspace
 )
 
+// RelationOrigin says where a relation value in a migrate door's field map
+// came from. THREE origins, not two, and the third is the one that is easy to
+// miss: `items.MigrateFields` injects the DESTINATION schema's defaults into
+// the map it returns, so a value can be present having been chosen by the
+// destination rather than carried from the source.
+type RelationOrigin int
+
+const (
+	// RelationOriginSupplied — an explicit override on the move or copy. The
+	// caller asserted it, so it is a write.
+	RelationOriginSupplied RelationOrigin = iota
+	// RelationOriginCarried — present on the SOURCE item. Asserted by nobody.
+	RelationOriginCarried
+	// RelationOriginDestinationDefault — absent from the source item and not
+	// supplied, so `MigrateFields` filled it from the destination schema's
+	// `default`. It never pointed at the source workspace, which is why it
+	// must not be dropped as `referent_not_portable`.
+	RelationOriginDestinationDefault
+)
+
 // MigrateRelationReferents is the ONE decision the four migrate doors share
 // (PLAN-2857 U1 / TASK-2878). Same-workspace move, bulk move, cross-workspace
 // copy and the copy preflight all call this; none of them reimplements it.
@@ -358,28 +378,39 @@ const (
 // preflight that says "carried" while the copy drops — or the reverse — is one
 // request answered two ways, which is the exact defect that comment describes.
 //
-// PROVENANCE, not door, decides the outcome:
+// ORIGIN, not door, decides the outcome:
 //
 //   - SUPPLIED (present in `supplied`, i.e. an explicit `--field` override on
 //     the move or copy): the caller asserted this value, so it is a write and
 //     an unresolvable one is REFUSED. Returned in `refusals`.
-//   - CARRIED (everything else): not asserted by anyone, so refusing it would
-//     make a legacy item — and `internal/items` has accepted any string for a
-//     relation all along, so most of them are legacy — unmovable and
-//     uncopyable. Dropped and REPORTED instead, through the same
-//     `dropped_fields` channel BUG-2674 established for a move and the same
+//   - CARRIED (present in `sourceFields`): not asserted by anyone, so refusing
+//     it would make a legacy item — and `internal/items` has accepted any
+//     string for a relation all along, so most of them are legacy — unmovable
+//     and uncopyable. Dropped and REPORTED instead, through the same
+//     `dropped_fields` channel BUG-2674 established and the same
 //     `referent_not_portable` bucket the copy already uses for `github_pr`.
+//   - DESTINATION DEFAULT (neither): `MigrateFields` filled it in from the
+//     destination schema. Resolved against the destination REGARDLESS of mode,
+//     because a value the destination chose is not a source-workspace referent
+//     and dropping it as "not portable" would be a false statement about where
+//     it came from. A default that does not resolve is a schema problem, so it
+//     is dropped and reported with the resolver's own reason rather than
+//     refused — nobody in this request typed it.
 //
-// Mutates fieldMap: dropped keys are deleted, and carried values that survive
-// are canonicalised to their target's ID.
+// EMPTY VALUES ARE NOT REFERENTS and are skipped at every origin. Reporting a
+// blank field as dropped tells a user they lost something they never had.
+//
+// Mutates fieldMap: dropped keys are deleted, and values that survive are
+// canonicalised to their target's ID.
 func (s *Store) MigrateRelationReferents(
 	workspaceID string,
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 	supplied map[string]any,
+	sourceFields map[string]any,
 	mode RelationCarryMode,
 ) (refusals []RelationIssue, dropped []RelationIssue, err error) {
-	return s.MigrateRelationReferentsQ(s.Q(), workspaceID, schema, fieldMap, supplied, mode)
+	return s.MigrateRelationReferentsQ(s.Q(), workspaceID, schema, fieldMap, supplied, sourceFields, mode)
 }
 
 // MigrateRelationReferentsQ is MigrateRelationReferents on a caller-supplied
@@ -390,13 +421,16 @@ func (s *Store) MigrateRelationReferentsQ(
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 	supplied map[string]any,
+	sourceFields map[string]any,
 	mode RelationCarryMode,
 ) (refusals []RelationIssue, dropped []RelationIssue, err error) {
-	// Split the map by provenance FIRST, so the two halves cannot be confused
-	// by anything below. Schema order, for the determinism the preflight
-	// promises its callers.
-	carried := map[string]any{}
-	suppliedRelations := map[string]any{}
+	// Split the map by ORIGIN first, so nothing below can confuse the three.
+	// Schema order, for the determinism the preflight promises its callers.
+	byOrigin := map[RelationOrigin]map[string]any{
+		RelationOriginSupplied:           {},
+		RelationOriginCarried:            {},
+		RelationOriginDestinationDefault: {},
+	}
 	for _, def := range schema.Fields {
 		if def.Type != "relation" {
 			continue
@@ -405,15 +439,24 @@ func (s *Store) MigrateRelationReferentsQ(
 		if !exists || raw == nil {
 			continue
 		}
-		if _, isSupplied := supplied[def.Key]; isSupplied {
-			suppliedRelations[def.Key] = raw
+		// An empty value is a cleared relation, not a referent. Skipping it
+		// here keeps it out of every bucket, so it is neither refused nor
+		// reported as a drop the user cannot act on.
+		if str, isStr := raw.(string); isStr && strings.TrimSpace(str) == "" {
 			continue
 		}
-		carried[def.Key] = raw
+		switch {
+		case hasKey(supplied, def.Key):
+			byOrigin[RelationOriginSupplied][def.Key] = raw
+		case hasKey(sourceFields, def.Key):
+			byOrigin[RelationOriginCarried][def.Key] = raw
+		default:
+			byOrigin[RelationOriginDestinationDefault][def.Key] = raw
+		}
 	}
 
 	// Supplied values are ordinary writes.
-	if len(suppliedRelations) > 0 {
+	if suppliedRelations := byOrigin[RelationOriginSupplied]; len(suppliedRelations) > 0 {
 		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, suppliedRelations)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
@@ -425,6 +468,26 @@ func (s *Store) MigrateRelationReferentsQ(
 		}
 	}
 
+	// Destination defaults resolve against the DESTINATION in both modes — the
+	// destination picked the value, so the mode says nothing about it.
+	if defaults := byOrigin[RelationOriginDestinationDefault]; len(defaults) > 0 {
+		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, defaults)
+		if resolveErr != nil {
+			return nil, nil, resolveErr
+		}
+		for _, ri := range issues {
+			dropped = append(dropped, ri)
+			delete(fieldMap, ri.Key)
+		}
+		for k, v := range defaults {
+			if _, survived := fieldMap[k]; !survived {
+				continue
+			}
+			fieldMap[k] = v
+		}
+	}
+
+	carried := byOrigin[RelationOriginCarried]
 	switch mode {
 	case RelationCarryCrossWorkspace:
 		// No lookup: a source-workspace id cannot mean anything here.
@@ -464,4 +527,11 @@ func (s *Store) MigrateRelationReferentsQ(
 		}
 	}
 	return refusals, dropped, nil
+}
+
+// hasKey reports whether m declares key. A nil map has no keys, which is how a
+// door with no overrides (bulk move) or no source item says so.
+func hasKey(m map[string]any, key string) bool {
+	_, ok := m[key]
+	return ok
 }

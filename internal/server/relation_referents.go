@@ -43,6 +43,25 @@ func (s *Server) resolveRelationReferents(
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 ) ([]store.RelationIssue, error) {
+	return s.resolveRelationReferentsAs(r, workspaceID, workspaceRole(r), schema, fieldMap)
+}
+
+// resolveRelationReferentsAs is resolveRelationReferents with the requester's
+// effective role passed EXPLICITLY rather than read from the request.
+//
+// The cross-workspace copy and its preflight need this. `workspaceRole(r)` is
+// the role the middleware stashed for the workspace in the URL — the SOURCE —
+// and a relation override on a copy names an item in the DESTINATION, where
+// the caller's role can be different or absent. `CrossWorkspaceAccess.Role`
+// is that role, derived fresh from membership and grants, and its own doc says
+// in as many words never to substitute `workspaceRole(r)` for it.
+func (s *Server) resolveRelationReferentsAs(
+	r *http.Request,
+	workspaceID string,
+	role string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+) ([]store.RelationIssue, error) {
 	issues, err := s.store.ResolveRelationReferents(workspaceID, schema, fieldMap)
 	if err != nil {
 		return nil, err
@@ -70,9 +89,19 @@ func (s *Server) resolveRelationReferents(
 			return nil, err
 		}
 		if item == nil {
-			continue // resolved a moment ago; treat a race as someone else's 404
+			// It resolved moments ago and is gone now — soft-deleted between
+			// the two reads. Treated as unresolvable rather than waved
+			// through: this whole unit exists to stop a dangling referent
+			// reaching the blob, and "the target vanished mid-request" is the
+			// one case where letting it through would be a deliberate one.
+			// Same `not_found` the resolver would have given a moment later,
+			// so a retry reports it identically.
+			issues = append(issues, store.RelationIssue{
+				Key: def.Key, Value: id, Target: def.Collection, Reason: store.RelationTargetNotFound,
+			})
+			continue
 		}
-		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), role, isBearerAuth(r))
 		if err != nil {
 			return nil, err
 		}
@@ -131,4 +160,47 @@ func refuseRelationIssues(w http.ResponseWriter, issues []store.RelationIssue) b
 // phrasings, which is the drift this unit exists to remove.
 func relationIssuesMessage(issues []store.RelationIssue) string {
 	return store.RelationIssuesMessage(issues)
+}
+
+// refuseInvisibleRelationOverrides is the visibility check the MIGRATE doors
+// owe their SUPPLIED half.
+//
+// The four write doors go through resolveRelationReferents, which adds
+// checkItemVisible on top of the store resolver. The migrate doors call
+// store.MigrateRelationReferents directly — it is a store function and cannot
+// answer a request-scoped question — so without this their supplied overrides
+// resolved against the database alone. This unit's own rule says a supplied
+// value is an ordinary write; an ordinary write cannot name an item the
+// requester may not see, and a caller able to edit both collections could
+// otherwise point a relation at a hidden one.
+//
+// Only relation keys are probed, on a COPY of the values: the store call that
+// follows does the canonicalising write, and a helper that also mutated would
+// leave two functions writing one map.
+//
+// `role` is explicit for the reason resolveRelationReferentsAs documents — at a
+// cross-workspace copy the relevant role is the caller's in the DESTINATION.
+func (s *Server) refuseInvisibleRelationOverrides(
+	r *http.Request,
+	workspaceID string,
+	role string,
+	schema models.CollectionSchema,
+	supplied map[string]any,
+) ([]store.RelationIssue, error) {
+	if len(supplied) == 0 {
+		return nil, nil
+	}
+	probe := make(map[string]any, len(supplied))
+	for _, def := range schema.Fields {
+		if def.Type != "relation" {
+			continue
+		}
+		if v, ok := supplied[def.Key]; ok && v != nil {
+			probe[def.Key] = v
+		}
+	}
+	if len(probe) == 0 {
+		return nil, nil
+	}
+	return s.resolveRelationReferentsAs(r, workspaceID, role, schema, probe)
 }

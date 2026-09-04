@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -269,4 +270,185 @@ func containsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+// newCopyRelationFixtureWith builds the relation fixture with two knobs the
+// default constructor does not need: a `default` on the DESTINATION's relation
+// field, and the source item's own stored value for that field.
+//
+// Both exist to reach origins the plain fixture cannot. `MigrateFields`
+// injects a destination default for any target field the source has nothing
+// for, so a value can be present in the migrated map having been chosen by the
+// DESTINATION rather than carried from the source — a third origin, and the
+// one that is invisible until a schema declares a default.
+func newCopyRelationFixtureWith(t *testing.T, destDefault bool, sourceOwnerRef *string) *relationFixture {
+	t.Helper()
+	srv := testServer(t)
+	bus := events.New()
+	srv.SetEventBus(bus)
+	t.Cleanup(bus.Close)
+
+	owner := mustUser(t, srv, "rel2-owner@example.com", "rel2owner", "")
+	wsA := mustWorkspace(t, srv, "Rel2 Source WS", owner.ID)
+	wsB := mustWorkspace(t, srv, "Rel2 Dest WS", owner.ID)
+
+	targetsA := mustSchemaCollection(t, srv, wsA.ID, "People A", `{"fields":[]}`)
+	targetsB := mustSchemaCollection(t, srv, wsB.ID, "People B", `{"fields":[]}`)
+
+	targetA, err := srv.store.CreateItem(wsA.ID, targetsA.ID, models.ItemCreate{Title: "Ada in A", CreatedBy: owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(targetA): %v", err)
+	}
+	// Created BEFORE collB, because its id is what the destination default
+	// names — a default pointing at nothing would fail for the wrong reason.
+	targetB, err := srv.store.CreateItem(wsB.ID, targetsB.ID, models.ItemCreate{Title: "Grace in B", CreatedBy: owner.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(targetB): %v", err)
+	}
+
+	relSchema := func(targetSlug, def string) string {
+		defaultClause := ""
+		if def != "" {
+			defaultClause = fmt.Sprintf(`,"default":%q`, def)
+		}
+		return fmt.Sprintf(`{"fields":[
+			{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+			{"key":"owner_ref","label":"Owner","type":"relation","collection":%q%s}
+		]}`, targetSlug, defaultClause)
+	}
+
+	collA := mustSchemaCollection(t, srv, wsA.ID, "Rel2 Tasks A", relSchema(targetsA.Slug, ""))
+	// A REF, not the UUID. This is the discriminating choice: a UUID is
+	// already its canonical form, so a default that was resolved and one that
+	// was dropped-then-re-injected-raw by ValidateFields produce IDENTICAL
+	// bytes, and the test proves nothing. Supplied as `PEOP-1`, only a
+	// resolved default lands as targetB.ID.
+	destDef := ""
+	if destDefault {
+		destDef = targetB.Ref
+	}
+	collB := mustSchemaCollection(t, srv, wsB.ID, "Rel2 Tasks B", relSchema(targetsB.Slug, destDef))
+
+	sourceFields := `{"status":"open"}`
+	if sourceOwnerRef != nil {
+		sourceFields = fmt.Sprintf(`{"status":"open","owner_ref":%q}`, *sourceOwnerRef)
+	}
+	source, err := srv.store.CreateItem(wsA.ID, collA.ID, models.ItemCreate{
+		Title: "Rel2 Source", Content: "body", Fields: sourceFields, CreatedBy: owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem(source): %v", err)
+	}
+
+	return &relationFixture{
+		copyPreflightFixture: &copyPreflightFixture{
+			t: t, srv: srv, bus: bus, owner: owner,
+			wsA: wsA, wsB: wsB, collA: collA, collB: collB, hiddenB: targetsB,
+			source: source,
+		},
+		targetsA: targetsA, targetsB: targetsB, targetA: targetA, targetB: targetB,
+	}
+}
+
+// A DESTINATION DEFAULT is not a carried referent, and must not be dropped as
+// one (codex round 1, P1).
+//
+// `MigrateFields` fills in the destination schema's defaults for keys the
+// source item has nothing for. A classifier that splits only on "did the
+// caller supply it" then files that value as CARRIED, and a cross-workspace
+// copy drops every carried relation without a lookup — so the destination's
+// own default was discarded and reported `referent_not_portable`, which is
+// flatly false about a value the destination chose.
+//
+// The source item deliberately has NO owner_ref: with one, the key is carried
+// and the default never enters the migrated map, which is the arrangement that
+// hid this.
+func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, true, nil)
+	body := f.baseBody()
+
+	pre := f.ok(body)
+	if reason, dropped := droppedReason(pre, "owner_ref"); dropped {
+		t.Fatalf("the preflight drops the DESTINATION's own default for reason %q; it never "+
+			"pointed at the source workspace", reason)
+	}
+	// RESOLVED, not merely present. Misclassifying the default as carried
+	// deletes it and ValidateFields then re-injects the raw default, so the
+	// key comes back either way — the value is the only thing that tells the
+	// two apart.
+	if v, carried := carriedValue(pre, "owner_ref"); !carried || v != f.targetB.ID {
+		t.Fatalf("preflight carries owner_ref = %#v (carried=%v), want the destination default "+
+			"RESOLVED to %q; the raw ref %q means it was dropped and re-injected unresolved",
+			v, carried, f.targetB.ID, f.targetB.Ref)
+	}
+
+	res := assertPreflightMatchesCopy(t, f.copyPreflightFixture, "destination default relation", body)
+	if got := f.persistedFields(res.Item.ID)["owner_ref"]; got != f.targetB.ID {
+		t.Fatalf("the copy persisted owner_ref = %#v, want the destination default %q", got, f.targetB.ID)
+	}
+	if hasDroppedField(res, "owner_ref") {
+		t.Fatalf("the copy reported the destination's own default as dropped: %+v", res.Warnings)
+	}
+}
+
+// An EMPTY relation value is a cleared field, not a referent, and reporting it
+// as dropped tells a user they lost something they never had (codex round 1,
+// P1, second half).
+func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
+	empty := ""
+	f := newCopyRelationFixtureWith(t, false, &empty)
+
+	pre := f.ok(f.baseBody())
+	if reason, dropped := droppedReason(pre, "owner_ref"); dropped {
+		t.Fatalf("the preflight reports an EMPTY relation as dropped (%q) — there was no "+
+			"referent to lose: %+v", reason, pre.Fields.Dropped)
+	}
+
+	res := f.copyOK(f.baseBody())
+	if hasDroppedField(res, "owner_ref") {
+		t.Fatalf("the copy reports an empty relation as dropped: %+v", res.Warnings)
+	}
+}
+
+// A supplied relation override must name an item the REQUESTER CAN SEE, on the
+// copy and its preflight alike (codex round 1, P1).
+//
+// The four write doors have always checked this; the migrate doors called the
+// store resolver directly, and the store cannot answer a request-scoped
+// question. The role that matters here is the caller's in the DESTINATION —
+// `workspaceRole(r)` is the source's.
+//
+// The unrestricted owner leg is the control: without it this passes against a
+// build that refuses every override.
+func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
+	f := newCopyRelationFixture(t)
+	body := f.baseBody()
+	body["field_overrides"] = map[string]any{"owner_ref": f.targetB.Ref}
+
+	// Editor in both, but with no access to People B — so the override names a
+	// live item in the right collection that this caller cannot see.
+	blind := f.restrictedEditor("blind-rel@example.com", "blindrel",
+		[]string{f.collA.ID}, []string{f.collB.ID})
+
+	for _, d := range []struct {
+		name string
+		rr   *httptest.ResponseRecorder
+	}{
+		{"preflight", f.call(blind, reqOpts{wsRoleCtx: "editor"}, body)},
+		{"copy", f.callCopy(blind, reqOpts{wsRoleCtx: "editor"}, body)},
+	} {
+		if d.rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400 for an override naming an item the caller cannot see, "+
+				"got %d: %s", d.name, d.rr.Code, d.rr.Body.String())
+		}
+		if code := errCode(t, d.rr); code != "validation_error" {
+			t.Fatalf("%s: error code = %q, want validation_error", d.name, code)
+		}
+	}
+
+	// Control: the same override from the owner, who can see People B.
+	if rr := f.call(f.owner, reqOpts{}, body); rr.Code != http.StatusOK {
+		t.Fatalf("the owner's identical override was refused %d — the check is refusing "+
+			"visibility-independent of who asks: %s", rr.Code, rr.Body.String())
+	}
 }

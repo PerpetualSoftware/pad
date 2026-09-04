@@ -263,7 +263,7 @@ func TestMigrateRelationReferents_SameWorkspaceKeepsWhatResolves(t *testing.T) {
 	// relation must survive. Dropping it would lose data on every move of a
 	// correctly-related item.
 	fields := map[string]any{"color": red.Ref, "status": "open"}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, RelationCarryWithinWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryWithinWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestMigrateRelationReferents_SameWorkspaceDropsWhatDoesNot(t *testing.T) {
 	// accepted any string for a relation all along, so an item carrying "red"
 	// must stay MOVABLE. Dropped and reported, never refused.
 	fields := map[string]any{"color": "red", "status": "open"}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, RelationCarryWithinWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryWithinWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestMigrateRelationReferents_CrossWorkspaceDropsEveryCarriedRelation(t *tes
 	// so there is nothing in the destination it could mean. Same reason
 	// github_pr uses, because it is the same fact about the same kind of value.
 	fields := map[string]any{"color": red.ID, "status": "open"}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, RelationCarryCrossWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, carriedFrom(fields), RelationCarryCrossWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestMigrateRelationReferents_SuppliedOverrideRefusesOnEitherMode(t *testing
 	for _, mode := range []RelationCarryMode{RelationCarryWithinWorkspace, RelationCarryCrossWorkspace} {
 		fields := map[string]any{"color": "nope"}
 		supplied := map[string]any{"color": "nope"}
-		refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, mode)
+		refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, carriedFrom(fields), mode)
 		if err != nil {
 			t.Fatalf("mode %v: %v", mode, err)
 		}
@@ -356,7 +356,7 @@ func TestMigrateRelationReferents_SuppliedOverrideRefusesOnEitherMode(t *testing
 	// on a copy at all.
 	fields := map[string]any{"color": red.ID}
 	supplied := map[string]any{"color": red.ID}
-	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, RelationCarryCrossWorkspace)
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, carriedFrom(fields), RelationCarryCrossWorkspace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -366,4 +366,17 @@ func TestMigrateRelationReferents_SuppliedOverrideRefusesOnEitherMode(t *testing
 	if fields["color"] != red.ID {
 		t.Fatalf("supplied override lost: %v", fields["color"])
 	}
+}
+
+// carriedFrom snapshots a field map so it can be passed as the migrate
+// function's `sourceFields` — i.e. "every one of these came off the source
+// item". A snapshot rather than the map itself because the function DELETES
+// dropped keys from fieldMap, and aliasing the two would make the origin
+// classification depend on mutation order.
+func carriedFrom(fields map[string]any) map[string]any {
+	out := make(map[string]any, len(fields))
+	for k, v := range fields {
+		out[k] = v
+	}
+	return out
 }

@@ -269,7 +269,8 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget, batchID)
+		var droppedFields []string
+		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget, batchID, &droppedFields)
 		if opErr != nil {
 			resp.Failed = append(resp.Failed, bulkItemFailure{
 				Ref:     itemRefOrSlug(*item),
@@ -305,6 +306,12 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			action = "moved"
 			meta["from_collection"] = item.CollectionSlug
 			meta["to_collection"] = req.Collection
+			// Same key, same joined-string shape and the same reason as
+			// handleMoveItem's: this map is map[string]string, and a raw array
+			// renders as a Go map literal in the timeline (BUG-2628).
+			if len(droppedFields) > 0 {
+				meta["dropped_fields"] = strings.Join(droppedFields, ", ")
+			}
 		}
 		s.logActivityWithMeta(workspaceID, item.ID, action, r, auditMeta(meta))
 
@@ -406,7 +413,14 @@ func bulkStoreError(err error) *bulkOpError {
 	return &bulkOpError{message: err.Error()}
 }
 
-func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection, batchID string) (*models.Item, *bulkOpError) {
+// droppedFields is an OUT-PARAMETER, and it is one deliberately. Only the
+// collection-move branch produces dropped field keys, the caller needs them to
+// build ONE activity row per item (a second row would misreport a single
+// move as two events), and threading a third return value through fourteen
+// unrelated returns would put `nil` in every branch that has nothing to say.
+// Reset by the caller each iteration; nil is accepted and means "not
+// interested".
+func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection, batchID string, droppedFields *[]string) (*models.Item, *bulkOpError) {
 	switch req.Op {
 	case "archive":
 		if err := s.store.DeleteItem(item.ID, store.WithEventBatch(batchID)); err != nil {
@@ -440,7 +454,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 
 	case "move":
 		if req.Collection != "" {
-			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget, batchID)
+			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget, batchID, droppedFields)
 		}
 		// Status-only move = a field update on the same collection.
 		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source, batchID)
@@ -661,7 +675,7 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 // resolves to nothing — deliberately, so that case and an existing-but-hidden
 // target fail identically here rather than at different HTTP statuses (the
 // existence oracle from codex round 4). Hence the nil check below.
-func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection, batchID string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection, batchID string, droppedFields *[]string) (*models.Item, *bulkOpError) {
 	if targetColl == nil {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
 	}
@@ -721,7 +735,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// for `supplied` says that rather than leaving it implied.
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
-		nil, store.RelationCarryWithinWorkspace)
+		nil, currentFields, store.RelationCarryWithinWorkspace)
 	if relErr != nil {
 		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
 	}
@@ -735,6 +749,17 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	}
 	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
+	}
+	// Hand the discarded keys back so the caller's activity row can name them
+	// (BUG-2674, which fixed only the SINGLE-item move). `result.Dropped` has
+	// been populated on this path since MigrateFields existed and NOTHING read
+	// it — a bulk move discarded field values with no record anywhere, which is
+	// the same silence that convention closed one door over. Filtered against
+	// the FINAL map for the reason handleMoveItem filters: a key MigrateFields
+	// listed may have been re-supplied or re-defaulted since, and reporting
+	// that would be a confident falsehood about data sitting on the item.
+	if droppedFields != nil {
+		*droppedFields = items.StillDropped(result.Dropped, result.Fields)
 	}
 
 	fieldsJSON, err := json.Marshal(result.Fields)

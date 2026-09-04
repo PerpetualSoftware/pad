@@ -718,9 +718,20 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	if items.ScopeFor(item.WorkspaceID, dst.WorkspaceID()) == items.CrossWorkspace {
 		relMode = store.RelationCarryCrossWorkspace
 	}
+	// Visibility on the supplied half, against the DESTINATION and the
+	// caller's role THERE — dst.Role, never workspaceRole(r), which is the
+	// source's. See refuseInvisibleRelationOverrides.
+	if invisible, err := s.refuseInvisibleRelationOverrides(
+		r, dst.WorkspaceID(), dst.Role, items.SchemaForMigratedFields(targetSchema),
+		input.FieldOverrides); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if refuseRelationIssues(w, invisible) {
+		return
+	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final,
-		input.FieldOverrides, relMode)
+		input.FieldOverrides, currentFields, relMode)
 	if relErr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation referents: %w", relErr))
 		return

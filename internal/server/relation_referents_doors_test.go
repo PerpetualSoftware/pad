@@ -496,3 +496,134 @@ func TestRelationDoors_CrossWorkspaceCopyAndPreflight(t *testing.T) {
 		assertRefused(t, "preflight", f.call(f.owner, reqOpts{}, body))
 	})
 }
+
+// A supplied relation override at the MOVE door must name an item the
+// requester can see (codex round 1, P1).
+//
+// The write doors have always checked this; the migrate doors call the store
+// resolver directly, and the store cannot answer a request-scoped question.
+// Same workspace here, so the role stashed for the request is the right one —
+// the cross-workspace half of this rule, where it is NOT, is pinned in
+// TestCopyEndpoint_InvisibleRelationOverrideIsRefused.
+func TestRelationDoors_MoveRefusesInvisibleOverride(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := f.targetCollection()
+	item := f.seed(`{"status":"open"}`)
+
+	// An editor who can see the two task collections but NOT People.
+	blind := mustUser(t, f.srv, "blind-move@example.com", "blindmove", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	body := map[string]any{
+		"target_collection": dst.Slug,
+		"field_overrides":   map[string]any{"owner_ref": f.target.Ref},
+	}
+
+	rr := f.callAs(blind, "editor", f.srv.handleMoveItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/move",
+		map[string]string{"itemSlug": item.Slug}, body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an override naming an item the caller cannot see, got %d: %s",
+			rr.Code, rr.Body.String())
+	}
+	if code := errCode(t, rr); code != "validation_error" {
+		t.Fatalf("error code = %q, want validation_error", code)
+	}
+
+	// Control: the owner, who can see People, gets the same override through.
+	// Without this the test passes against a build that refuses every override.
+	item2 := f.seed(`{"status":"open"}`)
+	body2 := map[string]any{
+		"target_collection": dst.Slug,
+		"field_overrides":   map[string]any{"owner_ref": f.target.Ref},
+	}
+	if rr := f.call(f.srv.handleMoveItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item2.Slug+"/move",
+		map[string]string{"itemSlug": item2.Slug}, body2); rr.Code != http.StatusOK {
+		t.Fatalf("the owner's identical override was refused %d — the check is not "+
+			"visibility-dependent: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A BULK collection move that discards field values must say so (codex round
+// 1, P1).
+//
+// `bulkMoveCollection` has populated `result.Dropped` since MigrateFields
+// existed and NOTHING read it — BUG-2674 fixed the single-item door only, so
+// the bulk door discarded values with no record anywhere. Wiring relation
+// drops into that same dead list is what made it worth fixing rather than
+// noting.
+//
+// Asserted on the ACTIVITY ROW, not the response: the bulk response is a
+// per-item outcome list with no room for this, and the timeline is where
+// someone asking "what happened to my item" actually looks.
+func TestRelationDoors_BulkMoveReportsDroppedFields(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := f.targetCollection()
+	item := f.seed(fmt.Sprintf(`{"status":"open","owner_ref":%q}`, badRef))
+
+	rr := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "move", "ids": []string{item.ID}, "collection": dst.Slug})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if v, ok := f.storedRelation(item.ID); ok {
+		t.Fatalf("an unresolvable relation survived the bulk move as %#v", v)
+	}
+
+	acts, err := f.srv.store.ListDocumentActivity(item.ID, models.ActivityListParams{Limit: 20})
+	if err != nil {
+		t.Fatalf("ListDocumentActivity: %v", err)
+	}
+	var moved *models.Activity
+	for i := range acts {
+		if acts[i].Action == "moved" {
+			moved = &acts[i]
+			break
+		}
+	}
+	if moved == nil {
+		t.Fatalf("no `moved` activity row for a bulk collection move: %+v", acts)
+	}
+	if !strings.Contains(moved.Metadata, "dropped_fields") || !strings.Contains(moved.Metadata, "owner_ref") {
+		t.Fatalf("the bulk move discarded owner_ref without naming it in the activity row: %s",
+			moved.Metadata)
+	}
+}
+
+// callAs is `call` with an explicit user and workspace role, for the legs that
+// need someone other than the fixture owner.
+func (f *doorFixture) callAs(user *models.User, role string, h http.HandlerFunc, method, path string, params map[string]string, body any) *httptest.ResponseRecorder {
+	f.t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			f.t.Fatalf("marshal body: %v", err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	r := httptest.NewRequest(method, path, reader)
+	if body != nil {
+		r.Header.Set("Content-Type", "application/json")
+	}
+	ctx := WithCurrentUser(r.Context(), user)
+	ctx = contextWithWorkspaceRoleForTest(ctx, role)
+	ctx = contextWithResolvedWorkspaceIDForTest(ctx, f.ws.ID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("slug", f.ws.Slug)
+	for k, v := range params {
+		rctx.URLParams.Add(k, v)
+	}
+	ctx = context.WithValue(ctx, chi.RouteCtxKey, rctx)
+	rr := httptest.NewRecorder()
+	h(rr, r.WithContext(ctx))
+	return rr
+}

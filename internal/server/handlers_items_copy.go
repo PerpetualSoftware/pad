@@ -2,12 +2,14 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 
+	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -319,6 +321,35 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 	// only by this mutating path and its post-commit events. The preflight
 	// has no counterpart, because it writes nothing to attribute.
 	actor, actorSource := actorFromRequest(r)
+
+	// Visibility on the SUPPLIED relation overrides, before the store call
+	// (TASK-2878). The store's migrate function resolves them against the
+	// database and cannot answer "may this requester see that item" — see
+	// refuseInvisibleRelationOverrides. Against the DESTINATION, with the
+	// caller's role THERE: dst.Role is derived fresh from membership and
+	// grants, and workspaceRole(r) here is the SOURCE's.
+	//
+	// Before the store call rather than inside it, and that is deliberate:
+	// this is a pre-write refusal, so it must not open a transaction and roll
+	// it back, and the preflight runs the identical check — DR-6's "the
+	// preview IS the copy" only holds if both doors refuse the same request.
+	if len(input.FieldOverrides) > 0 {
+		var targetSchema models.CollectionSchema
+		if err := json.Unmarshal([]byte(targetColl.Schema), &targetSchema); err != nil {
+			writeInternalError(w, fmt.Errorf("copy item: parse destination schema: %w", err))
+			return
+		}
+		invisible, err := s.refuseInvisibleRelationOverrides(
+			r, dst.WorkspaceID(), dst.Role, items.SchemaForMigratedFields(targetSchema),
+			input.FieldOverrides)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if refuseRelationIssues(w, invisible) {
+			return
+		}
+	}
 
 	// ---- The copy. ONE call, no retry (DR-13). ---------------------------
 	res, err := s.copyItemAcrossWorkspaces(store.CrossWorkspaceCopyRequest{

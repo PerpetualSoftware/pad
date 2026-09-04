@@ -2354,9 +2354,21 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// move. Refusing carried values here would make every legacy item — and
 	// `internal/items` has accepted any string for a relation all along —
 	// permanently unmovable.
+	// The supplied half is a write, so it owes the same visibility check the
+	// four write doors run. The store resolver cannot do it — see
+	// refuseInvisibleRelationOverrides. Same workspace here, so the role
+	// stashed for this request is the right one.
+	if invisible, err := s.refuseInvisibleRelationOverrides(
+		r, workspaceID, workspaceRole(r), items.SchemaForMigratedFields(targetSchema),
+		input.FieldOverrides); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if refuseRelationIssues(w, invisible) {
+		return
+	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
-		input.FieldOverrides, store.RelationCarryWithinWorkspace)
+		input.FieldOverrides, currentFields, store.RelationCarryWithinWorkspace)
 	if relErr != nil {
 		writeInternalError(w, relErr)
 		return
