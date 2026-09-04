@@ -113,3 +113,55 @@ func TestImportArtifactAgainstTheDefaultSchemaNamesNothingUndeclared(t *testing.
 		}
 	}
 }
+
+// The import response must forward BOTH halves of ItemWriteWarnings (codex
+// round 8).
+//
+// `createItemChecked` records dropped relation defaults alongside undeclared
+// keys; this handler enumerated only the undeclared ones, so an import that
+// discarded a value said nothing about it. That is the gap a per-member
+// forwarding loop opens every time the struct it reads from grows — and a
+// discarded value is worse news than a stored-but-unrecognized one, because it
+// is gone.
+//
+// Same route as the test above: the destination's schema is what makes the
+// case reachable, not a weird artifact. A relation field whose DEFAULT is a
+// number is never type-checked by ValidateFields, so it reaches the write and
+// is dropped there.
+func TestImportArtifactReportsDroppedRelationDefault(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/collections/conventions", map[string]any{
+		"schema": `{"fields":[{"key":"status","type":"select","options":["draft","active"]},{"key":"owner_ref","type":"relation","collection":"nobody","default":42}]}`,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("add a bad relation default: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	art := artifact.Artifact{
+		Kind:          artifact.KindConvention,
+		FormatVersion: artifact.FormatVersion,
+		Title:         "Convention meeting a broken relation default",
+		Fields:        map[string]any{"status": "active"},
+		Body:          "Body.\n",
+	}
+	data, err := artifact.Encode(art)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	rr2 := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", data)
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("import: expected 201, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	var resp struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\n%s", err, rr2.Body.String())
+	}
+	if !strings.Contains(strings.Join(resp.Warnings, "\n"), "owner_ref") {
+		t.Fatalf("the import discarded owner_ref without saying so: %v", resp.Warnings)
+	}
+}

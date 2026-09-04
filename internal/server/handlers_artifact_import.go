@@ -233,6 +233,15 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		for _, key := range item.Warnings.UndeclaredFields {
 			warnings = append(warnings, fmt.Sprintf("field %q is not declared by the destination collection's schema; stored as-is", key))
 		}
+		// The OTHER half of the same struct (TASK-2878, codex round 8).
+		// Enumerating one member of a warnings struct and forwarding it is a
+		// gap that widens every time the struct grows: `DroppedFields` was
+		// added and this loop kept reporting only what it already knew. An
+		// import discarding a value silently is the same class of news as one
+		// storing an unrecognized key, and MORE so — that value is gone.
+		for _, key := range item.Warnings.DroppedFields {
+			warnings = append(warnings, fmt.Sprintf("field %q was discarded: the destination collection's schema declares a default for it that is not a valid reference", key))
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, artifactImportResponse{
