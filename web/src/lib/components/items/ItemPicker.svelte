@@ -187,6 +187,18 @@
 	 * read would silently wedge the production effect scheduler.
 	 */
 	let seq = 0;
+	/**
+	 * The (workspace, collection) pair the rows on screen answer for.
+	 *
+	 * Plain `let` per CONVE-1688 — written and read only inside the refresh
+	 * effect, never rendered. Starts NULL rather than seeded from the props:
+	 * seeding it would capture their mount-time values outside any reactive
+	 * scope (svelte warns `state_referenced_locally`, correctly). The null makes
+	 * the effect's first run compare unequal and so report "changed", which is
+	 * inert: the query box is empty at mount, and the only reader of that flag
+	 * needs a non-empty query.
+	 */
+	let lastScope: string | null = null;
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 	let inputEl = $state<HTMLInputElement>();
 
@@ -572,17 +584,31 @@
 		const state = localIndex.bootstrapStateFor(wsSlug);
 		// Read for its dependency; the value carries no meaning here.
 		localSearch.epoch(wsSlug);
-		// TRACKED (codex round 10): the scope itself. Every other read below is
-		// untracked to keep this off the keystroke path, and `collection` was
-		// swept up in that — but it is not a per-keystroke value, it is the
-		// question the results answer. `ItemDetail` can change a relation
-		// field's declared target (a schema edit, or an SSE-driven refresh)
-		// without remounting this picker, and the rows then on screen belong to
-		// the collection it USED to point at while remaining selectable under
-		// the new one. Predates U8 (it arrived with the extraction in
-		// TASK-2862); fixed here because U8 makes `collection` load-bearing —
-		// it is now the destination an inline create writes to.
-		void collection;
+		// TRACKED (codex round 10), by being read right here: the scope itself.
+		// Every other read below is untracked to keep this effect off the
+		// keystroke path, and `collection` was swept up in that — but it is not
+		// a per-keystroke value, it is the question the results answer.
+		// `ItemDetail` can change a relation field's declared target (a schema
+		// edit, or an SSE-driven refresh) without remounting this picker, and
+		// the rows then on screen belong to the collection it USED to point at
+		// while remaining selectable under the new one. Predates U8 (it arrived
+		// with the extraction in TASK-2862); fixed here because U8 makes
+		// `collection` load-bearing in a new way — it is now the destination an
+		// inline create writes to.
+		//
+		// A SCOPE CHANGE is also not an index delta, and the two need opposite
+		// handling below, so decide which this run is while the reads are still
+		// tracked (codex round 11). Computing the pair is what SUBSCRIBES to it;
+		// a separate `void collection` alongside was redundant and went, since
+		// its mutant could not be killed.
+		const scope = `${wsSlug}\u0000${collection ?? ''}`;
+		// No `lastScope !== null` guard on the first run: its mutant could not be
+		// killed, because at mount the query box is empty, so the only branch
+		// that reads `scopeChanged` (the server-source early return, which needs
+		// a non-empty query) is unreachable then. Measured, not assumed — a line
+		// that cannot change an outcome does not get to look like a guard.
+		const scopeChanged = scope !== lastScope;
+		lastScope = scope;
 		untrack(() => {
 			if (state !== 'ready') {
 				// The workspace's state was DROPPED — `localIndex.reset()` on
@@ -616,7 +642,15 @@
 			// index is not their source of truth, and a request per delta is
 			// exactly the rate-limiter pressure the debounce exists to avoid. The
 			// empty-query LISTING still comes from the index, so it does refresh.
-			if (source === 'server' && query.trim()) return;
+			//
+			// A SCOPE change is the exception, and it is the reason this early
+			// return is conditional (codex round 11). Rows fetched for the old
+			// workspace or collection are not merely stale, they are answers to a
+			// different question — and left in place they stay selectable under
+			// the new scope. Re-querying costs one request at an event that
+			// happens when a schema is edited or a pane is retargeted, not per
+			// delta, so the rate-limiter argument does not reach it.
+			if (source === 'server' && query.trim() && !scopeChanged) return;
 			const keep = activeId;
 			runQuery();
 			activeId = keep;

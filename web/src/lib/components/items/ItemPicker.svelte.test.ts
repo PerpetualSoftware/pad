@@ -120,6 +120,17 @@ async function press(key: string, opts: KeyboardEventInit = {}) {
 	await tick();
 }
 
+/**
+ * A COMPLETE `/search` page, in the shape the server actually returns.
+ *
+ * `total`, `limit` and `offset` are non-optional on `SearchResponse` and the Go
+ * handler always sends them, so a fixture omitting them is not a smaller
+ * version of a real response — it is one that cannot occur, and it was quietly
+ * deciding the page-completeness question several of these tests are about.
+ */
+const page = (results: unknown[]) => ({ results, total: results.length, limit: 50, offset: 0 });
+const emptyPage = () => page([]);
+
 const baseProps = { wsSlug: 'ws', collection: 'colors', onselect: () => {} };
 
 beforeEach(() => {
@@ -472,6 +483,43 @@ describe('ItemPicker — the collection scope is a tracked input', () => {
 
 		expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Large')]);
 	});
+
+	it('re-queries a SERVER-sourced picker when the scope changes mid-query', async () => {
+		// codex round 11, the tail of the fix above. The effect skips
+		// server-sourced queries on an index delta — right, since the index is
+		// not their source of truth — but a scope change is not a delta. Rows
+		// fetched for the old collection are answers to a different question,
+		// and left in place they stay selectable under the new scope.
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 'c-1', title: 'Red', item_number: 1, collection_prefix: 'COLO' } }]),
+		);
+		// Index READY, which is the Relationships tab's ordinary state: that
+		// caller uses the server for QUERIES by choice, not because the index is
+		// cold. (With a cold index the non-ready branch of the effect clears the
+		// rows first and there is nothing stale left to be selectable, so this
+		// leg would not be measuring the early return.)
+		setBootstrapState('ready');
+		loadIndex([]);
+		const { component } = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', source: 'server', onselect: () => {} },
+		});
+		await tick();
+		await type('e');
+		await vi.waitFor(() => expect(options().length).toBe(1));
+		expect(searchApi).toHaveBeenCalledTimes(1);
+		expect(searchApi.mock.calls[0][1]).toMatchObject({ collection: 'colors' });
+
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 's-1', title: 'Large', item_number: 1, collection_prefix: 'SIZE' } }]),
+		);
+		(component as unknown as { setCollection: (c: string) => void }).setCollection('sizes');
+
+		await vi.waitFor(() => expect(searchApi).toHaveBeenCalledTimes(2));
+		expect(searchApi.mock.calls[1][1]).toMatchObject({ collection: 'sizes' });
+		await vi.waitFor(() =>
+			expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Large')]),
+		);
+	});
 });
 
 describe('ItemPicker — source: the two callers want different models', () => {
@@ -813,16 +861,6 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 
 	const createProps = { ...baseProps, createLabel: 'Colors' };
 
-	/**
-	 * A COMPLETE `/search` page, in the shape the server actually returns.
-	 *
-	 * `total`, `limit` and `offset` are non-optional on `SearchResponse` and the
-	 * Go handler always sends them, so a fixture omitting them is not a smaller
-	 * version of a real response — it is one that cannot occur, and it was
-	 * quietly deciding the completeness question these tests are about.
-	 */
-	const page = (results: unknown[]) => ({ results, total: results.length, limit: 50, offset: 0 });
-	const emptyPage = () => page([]);
 
 	it('offers no create row when the host passes no oncreate — the Relationships-tab caller', async () => {
 		loadIndex(makeRows(3));
