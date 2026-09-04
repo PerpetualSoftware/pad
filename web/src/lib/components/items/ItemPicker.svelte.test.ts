@@ -484,6 +484,42 @@ describe('ItemPicker — the collection scope is a tracked input', () => {
 		expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Large')]);
 	});
 
+	it('serves a scope change that arrived while the index was cold, once it hydrates', async () => {
+		// codex round 12. The not-ready branch clears and gives up WITHOUT
+		// serving the scope, so committing `lastScope` there consumes a refresh
+		// nobody performed: at hydration `scopeChanged` reads false, a
+		// server-sourced picker takes the early return, and it sits empty until
+		// the user retypes or the picker remounts.
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 'c-1', title: 'Red', item_number: 1, collection_prefix: 'COLO' } }]),
+		);
+		setBootstrapState('ready');
+		loadIndex([]);
+		const { component } = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', source: 'server', onselect: () => {} },
+		});
+		await tick();
+		await type('e');
+		await vi.waitFor(() => expect(searchApi).toHaveBeenCalledTimes(1));
+
+		// The workspace's state is dropped, and the scope changes while it is
+		// gone — the refresh is owed but cannot be served yet.
+		setBootstrapState('reset');
+		bumpEpoch();
+		await tick();
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 's-1', title: 'Large', item_number: 1, collection_prefix: 'SIZE' } }]),
+		);
+		(component as unknown as { setCollection: (c: string) => void }).setCollection('sizes');
+		await tick();
+
+		// Hydration lands. The owed refresh must be served now.
+		setBootstrapState('ready');
+		bumpEpoch();
+		await vi.waitFor(() => expect(searchApi).toHaveBeenCalledTimes(2));
+		expect(searchApi.mock.calls[1][1]).toMatchObject({ collection: 'sizes' });
+	});
+
 	it('re-queries a SERVER-sourced picker when the scope changes mid-query', async () => {
 		// codex round 11, the tail of the fix above. The effect skips
 		// server-sourced queries on an index delta — right, since the index is

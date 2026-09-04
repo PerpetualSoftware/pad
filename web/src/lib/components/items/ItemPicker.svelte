@@ -608,7 +608,6 @@
 		// a non-empty query) is unreachable then. Measured, not assumed — a line
 		// that cannot change an outcome does not get to look like a guard.
 		const scopeChanged = scope !== lastScope;
-		lastScope = scope;
 		untrack(() => {
 			if (state !== 'ready') {
 				// The workspace's state was DROPPED — `localIndex.reset()` on
@@ -636,6 +635,15 @@
 				coldAnswered = false;
 				activeId = null;
 				loading = false;
+				// `lastScope` is deliberately NOT committed here (codex round
+				// 12). This branch clears and gives up without serving the
+				// scope, so recording it as served would consume a pending
+				// refresh: a scope change arriving while the index is cold would
+				// be forgotten, and at hydration `scopeChanged` would read false
+				// and a server-sourced picker would take the early return below
+				// and sit empty until the user retyped or the picker remounted.
+				// Leaving it stale keeps the refresh owed until a run performs
+				// it.
 				return;
 			}
 			// Server-sourced QUERIES are not re-issued on an index change: the
@@ -651,6 +659,9 @@
 			// happens when a schema is edited or a pane is retargeted, not per
 			// delta, so the rate-limiter argument does not reach it.
 			if (source === 'server' && query.trim() && !scopeChanged) return;
+			// Committed only now, by a run that is actually going to serve this
+			// scope — see the note in the non-ready branch above.
+			lastScope = scope;
 			const keep = activeId;
 			runQuery();
 			activeId = keep;
