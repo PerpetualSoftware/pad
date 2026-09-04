@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // CI gate for `npm audit`, written so that a transport failure cannot be read
-// as an advisory failure (docapp BUG-2881).
+// as an advisory failure — and cannot be read as a pass either (docapp
+// BUG-2881; codex round 1 on PR #1247).
 //
 // `npm audit` exits non-zero identically for "a HIGH/CRITICAL advisory exists
 // in production deps" and "I could not reach the advisory service." On
@@ -14,12 +15,16 @@
 // the exit code:
 //
 //   - a report with metadata.vulnerabilities → fail iff high + critical > 0,
-//     naming the advisories (the gate that was always intended);
-//   - a report with an `error` envelope, or no parseable report at all → the
-//     advisory service could not be asked. Emit a GitHub warning annotation
-//     that says exactly that and exit 0, so the lane's other steps still stand
-//     as the frontend's verdict and the missing audit is visible as MISSING
-//     rather than disguised as a failure.
+//     naming the advisories (`::error title=npm audit`);
+//   - an `error` envelope, or no parseable report → the advisory service could
+//     not be asked. Retry with backoff (a registry blip is usually seconds
+//     long), and if it still cannot be asked, FAIL with a distinct title
+//     (`::error title=npm audit did not run`). Fail CLOSED, not open: the first
+//     draft of this script warned and exited 0 here, and codex's round-1 read
+//     was right that a security gate which passes when it cannot run is not a
+//     gate. The two failure titles are the whole point — a reader can tell
+//     "there is an advisory" from "the service was down" without opening the
+//     log, and re-runs the second one instead of waving it through.
 //
 // The step also runs LAST in the Web job (see .github/workflows/ci.yml), so
 // that whatever the audit does, Build / Type check / unit tests have already
@@ -29,13 +34,26 @@
 // Usage:
 //   node scripts/ci-audit.mjs            # run `npm audit --json` and decide
 //   node scripts/ci-audit.mjs --input f  # decide from a saved report (tests)
+//
+// Env: CI_AUDIT_ATTEMPTS (default 3), CI_AUDIT_BACKOFF_MS (default 20000).
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const AUDIT_ARGS = ["audit", "--json", "--audit-level=high", "--omit=dev"];
+const ATTEMPTS = Math.max(1, Number(process.env.CI_AUDIT_ATTEMPTS ?? 3));
+const BACKOFF_MS = Math.max(
+	0,
+	Number(process.env.CI_AUDIT_BACKOFF_MS ?? 20000),
+);
 
-function loadReport() {
+function sleep(ms) {
+	if (ms > 0)
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// One attempt: the raw stdout and where it came from.
+function fetchReport() {
 	const at = process.argv.indexOf("--input");
 	if (at !== -1) {
 		return {
@@ -53,40 +71,61 @@ function loadReport() {
 	return { raw: res.stdout ?? "", source: `npm ${AUDIT_ARGS.join(" ")}` };
 }
 
-function warnUnavailable(reason) {
-	// GitHub Actions workflow command: shows on the job summary and the
-	// checks tab without turning the step red.
-	console.log(`::warning title=npm audit did not run::${reason}`);
-	console.log(`npm audit: advisory service unavailable — ${reason}`);
+// Parse one attempt. Returns { vulns, report } when the service answered, or
+// { unavailable: reason } when it did not — a retryable condition, not a
+// verdict.
+function readReport({ raw, source }) {
+	let report;
+	try {
+		report = JSON.parse(raw);
+	} catch {
+		return {
+			unavailable: `unparseable output from ${source} (${raw.trim().slice(0, 200) || "empty"})`,
+		};
+	}
+	const vulns = report?.metadata?.vulnerabilities;
+	if (!vulns) {
+		// npm's --json error envelope: { message, error: { code, summary, detail } }.
+		const code = report?.error?.code ? `${report.error.code}: ` : "";
+		const why =
+			report?.error?.summary ||
+			report?.message ||
+			"no metadata.vulnerabilities in the report";
+		return { unavailable: `${code}${why}` };
+	}
+	return { vulns, report };
+}
+
+// --input is single-shot: a saved report is the same file every time.
+const attempts = process.argv.includes("--input") ? 1 : ATTEMPTS;
+let outcome;
+for (let i = 1; i <= attempts; i++) {
+	outcome = readReport(fetchReport());
+	if (!outcome.unavailable) break;
 	console.log(
-		"npm audit: NOT a pass. The gate was not asked; re-run the Web job to ask it.",
+		`npm audit: attempt ${i}/${attempts} — advisory service unavailable: ${outcome.unavailable}`,
 	);
+	if (i < attempts) sleep(BACKOFF_MS);
 }
 
-const { raw, source } = loadReport();
-
-let report;
-try {
-	report = JSON.parse(raw);
-} catch {
-	warnUnavailable(
-		`unparseable output from ${source} (${raw.trim().slice(0, 200) || "empty"})`,
+if (outcome.unavailable) {
+	// FAIL CLOSED. The gate was not asked, so the job does not get to say it
+	// passed. The title is distinct from the advisory failure below so the
+	// checks tab tells the two apart; re-running the job is the remedy for
+	// this one and never for that one.
+	console.log(
+		`::error title=npm audit did not run::${outcome.unavailable} (${attempts} attempt${attempts === 1 ? "" : "s"})`,
 	);
-	process.exit(0);
+	console.log(
+		"npm audit: the advisory service could not be asked, so this is NOT a pass. Re-run the Web job.",
+	);
+	console.log(
+		"npm audit: Build, Type check and unit tests above already ran; only the audit is outstanding.",
+	);
+	process.exit(1);
 }
 
-const vulns = report?.metadata?.vulnerabilities;
-if (!vulns) {
-	// npm's --json error envelope: { message, error: { code, summary, detail } }.
-	const code = report?.error?.code ? `${report.error.code}: ` : "";
-	const why =
-		report?.error?.summary ||
-		report?.message ||
-		"no metadata.vulnerabilities in the report";
-	warnUnavailable(`${code}${why}`);
-	process.exit(0);
-}
-
+const { vulns, report } = outcome;
 const high = Number(vulns.high ?? 0);
 const critical = Number(vulns.critical ?? 0);
 if (high + critical > 0) {

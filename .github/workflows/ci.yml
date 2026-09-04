@@ -381,8 +381,10 @@ jobs:
         # web tests caught something, when nothing had run at all (2026-09-04,
         # main and #1246, two transports, one bad window). The script decides
         # from the JSON report: real advisories fail the step and are named; an
-        # unreachable service is a warning annotation saying the gate did not
-        # run. Running last means the frontend's own verdict always exists.
+        # unreachable service retries, then fails under a DISTINCT title saying
+        # the gate did not run — closed, not open, because a gate that passes
+        # when it cannot run is not a gate. Running last means the frontend's
+        # own verdict always exists, whichever way the audit goes.
         run: npm run audit:ci
 
   e2e:
