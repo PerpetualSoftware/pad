@@ -120,7 +120,14 @@ func (s *Server) resolveRelationReferentsAs(
 				return nil, terr
 			}
 			if target == nil {
-				continue // vanished since; already the safe answer
+				// Deleted between the resolver's lookup and this one. The
+				// issue still SAYS `wrong_collection`, and that message
+				// reveals the value named something a moment ago — the same
+				// disclosure for a caller who cannot see it (codex round 4).
+				// My first comment here read "already the safe answer", which
+				// was wrong: nothing had rewritten the reason.
+				collapseIssue(issues, def.Key, store.RelationTargetNotFound)
+				continue
 			}
 			seen, verr := s.checkItemVisible(workspaceID, target, currentUser(r), role, isBearerAuth(r))
 			if verr != nil {

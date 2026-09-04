@@ -581,3 +581,57 @@ func TestCopyEndpoint_RequiredRelationWithBrokenDefaultIsRefused(t *testing.T) {
 		t.Fatalf("a refused copy mutated state:\n before: %+v\n after:  %+v", before, after)
 	}
 }
+
+// A source key holding `null` carries nothing, and the preflight must not
+// report the destination's default as `migrated` (codex round 4).
+//
+// `MigrateFields` keeps the key, the relation pass skips a nil value, and
+// validation then treats it as missing and fills the destination default in
+// its place — so the value in the response comes from the DESTINATION while
+// the origin said the source. The `from` field is what a dialog uses to tell a
+// user "this came across" from "this is the destination's default", so naming
+// the wrong one is the preview lying about the thing it exists to report.
+func TestCopyEndpoint_NullSourceRelationIsNotReportedAsMigrated(t *testing.T) {
+	f := newCopyRelationFixtureNullSource(t)
+
+	pre := f.ok(f.baseBody())
+	var from string
+	var found bool
+	for _, c := range pre.Fields.Carried {
+		if c.Key == "owner_ref" {
+			from, found = c.From, true
+		}
+	}
+	if !found {
+		t.Fatalf("owner_ref is not carried at all: %+v", pre.Fields)
+	}
+	if from != "default" {
+		t.Fatalf("preflight reports owner_ref from=%q; the source held null, so this value is "+
+			"the DESTINATION's default and %q names the wrong origin", from, from)
+	}
+	// And the value really is the destination's, resolved.
+	if v, _ := carriedValue(pre, "owner_ref"); v != f.targetB.ID {
+		t.Fatalf("carried owner_ref = %#v, want the destination default resolved to %q",
+			v, f.targetB.ID)
+	}
+}
+
+// newCopyRelationFixtureNullSource is the relation fixture whose SOURCE item
+// stores an explicit JSON null for the relation, with a resolvable default on
+// the destination. Written separately because the shared constructor takes the
+// source value as a Go string and cannot express null.
+func newCopyRelationFixtureNullSource(t *testing.T) *relationFixture {
+	t.Helper()
+	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
+	src, err := f.srv.store.CreateItem(f.wsA.ID, f.collA.ID, models.ItemCreate{
+		Title:     "Null Relation Source",
+		Content:   "body",
+		Fields:    `{"status":"open","owner_ref":null}`,
+		CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem(null-relation source): %v", err)
+	}
+	f.source = src
+	return f
+}

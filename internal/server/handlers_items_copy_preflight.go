@@ -669,8 +669,12 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// MigrateFields' output is two things at once: values carried
 		// across from the source item, and destination-schema defaults it
 		// filled in for keys the source had nothing for. Presence in the
-		// SOURCE's field map is what separates them.
-		if _, fromSource := currentFields[k]; fromSource {
+		// SOURCE's field map is what separates them — presence with a VALUE,
+		// that is. A source key holding `null` carries nothing: validation
+		// treats it as missing and fills the destination default in its
+		// place, so reporting `migrated` names the source for a value the
+		// destination chose (codex round 4).
+		if sv, fromSource := currentFields[k]; fromSource && sv != nil {
 			origin[k] = "migrated"
 		} else {
 			origin[k] = "default"
