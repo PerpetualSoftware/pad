@@ -759,7 +759,8 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// for `supplied` says that rather than leaving it implied.
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
-		nil, currentFields, store.RelationCarryWithinWorkspace)
+		nil, store.CarriedSourceValues(currentFields, result.Dropped),
+		store.RelationCarryWithinWorkspace)
 	if relErr != nil {
 		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
 	}

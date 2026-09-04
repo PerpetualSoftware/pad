@@ -662,6 +662,16 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields,
 		items.ScopeFor(item.WorkspaceID, dst.WorkspaceID()))
 
+	// The source values that actually SURVIVED migration. Used for BOTH the
+	// origin label and the relation classifier, because both are answering the
+	// same question — "did this value come across?" — and `currentFields`
+	// answers a different one, "did the source declare this key?". When
+	// MigrateFields cannot convert a value it drops the key and its default
+	// loop refills it from the DESTINATION schema, so the key is still in the
+	// source map while the value in hand came from the destination (codex
+	// round 9).
+	carriedSource := store.CarriedSourceValues(currentFields, migrated.Dropped)
+
 	final := make(map[string]any, len(migrated.Fields)+len(input.FieldOverrides))
 	origin := make(map[string]string, len(final))
 	for k, v := range migrated.Fields {
@@ -683,7 +693,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// was reported `default` until round 5 — one guard, wrong in both
 		// directions, because "was the key present" is not "where did the
 		// value come from".
-		sv, fromSource := currentFields[k]
+		sv, fromSource := carriedSource[k]
 		destDef, declared := targetDefs[k]
 		switch {
 		case fromSource && sv != nil:
@@ -751,7 +761,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final,
-		input.FieldOverrides, currentFields, relMode)
+		input.FieldOverrides, carriedSource, relMode)
 	if relErr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation referents: %w", relErr))
 		return

@@ -2409,7 +2409,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
-		input.FieldOverrides, currentFields, store.RelationCarryWithinWorkspace)
+		input.FieldOverrides, store.CarriedSourceValues(currentFields, result.Dropped),
+		store.RelationCarryWithinWorkspace)
 	if relErr != nil {
 		writeInternalError(w, relErr)
 		return

@@ -723,3 +723,81 @@ func newCopyRelationFixtureNonStringDefault(t *testing.T) *relationFixture {
 	}
 	return f
 }
+
+// A destination default survives an incompatible source value, in value AND
+// in label (codex round 9).
+//
+// `MigrateFields` matches on key AND type, so a source `owner_ref` declared as
+// `text` cannot become a `relation`: the value is DROPPED and the default loop
+// refills the key from the destination schema. The finding was that the
+// relation classifier calls that carried — it keys on the source having the
+// KEY, not on the VALUE having survived — so a cross-workspace copy would
+// discard the destination's own default as non-portable.
+//
+// READ THIS BEFORE TREATING IT AS A REGRESSION TEST. **The mutant that
+// restores the misclassification SURVIVES this test, and that is not a gap in
+// the test — the defect has no observable effect.** Two independent downstream
+// repairs erase it: the misclassified default is dropped, validation
+// re-injects it and the late-default pass resolves it, landing the same bytes;
+// and the drop deletes the key's `origin` entry, which makes the carried
+// loop's own fallback report `default`, the same label. Value and label agree
+// on both builds.
+//
+// So the fix is a robustness change, not a bug fix: it stops the classifier
+// relying on two rescues to produce a correct answer, and makes "carried" mean
+// what the word says. This test pins the OUTCOME — which is worth holding
+// however it is reached — and claims nothing about the classification.
+func TestCopyEndpoint_DefaultAfterIncompatibleSourceIsNotTreatedAsCarried(t *testing.T) {
+	f := newCopyRelationFixtureIncompatibleSource(t)
+
+	pre := f.ok(f.baseBody())
+	if reason, dropped := droppedReason(pre, "owner_ref"); dropped && reason == "referent_not_portable" {
+		t.Fatalf("the preflight discards the destination's own default as non-portable; the " +
+			"source's value never reached the destination map at all")
+	}
+	var got ItemCopyPreflightCarried
+	for _, c := range pre.Fields.Carried {
+		if c.Key == "owner_ref" {
+			got = c
+		}
+	}
+	if got.Key == "" || got.Value != f.targetB.ID {
+		t.Fatalf("preflight carries owner_ref = %#v, want the destination default resolved to %q",
+			got.Value, f.targetB.ID)
+	}
+	if got.From != "default" {
+		t.Fatalf("preflight reports owner_ref from=%q; the source's value did not survive "+
+			"migration, so this is the DESTINATION's default", got.From)
+	}
+
+	res := assertPreflightMatchesCopy(t, f.copyPreflightFixture, "default after an incompatible source", f.baseBody())
+	if got := f.persistedFields(res.Item.ID)["owner_ref"]; got != f.targetB.ID {
+		t.Fatalf("the copy persisted owner_ref = %#v, want the destination default %q",
+			got, f.targetB.ID)
+	}
+}
+
+// newCopyRelationFixtureIncompatibleSource declares the SOURCE's `owner_ref`
+// as text and the destination's as a relation with a resolvable default, so
+// migration drops the source value and the default fills the key.
+func newCopyRelationFixtureIncompatibleSource(t *testing.T) *relationFixture {
+	t.Helper()
+	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
+	srcSchema := `{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"text"}
+	]}`
+	if _, err := f.srv.store.UpdateCollection(f.collA.ID, models.CollectionUpdate{Schema: &srcSchema}); err != nil {
+		t.Fatalf("UpdateCollection(source as text): %v", err)
+	}
+	src, err := f.srv.store.CreateItem(f.wsA.ID, f.collA.ID, models.ItemCreate{
+		Title:     "Text owner_ref",
+		Fields:    `{"status":"open","owner_ref":"just some text"}`,
+		CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	f.source = src
+	return f
+}

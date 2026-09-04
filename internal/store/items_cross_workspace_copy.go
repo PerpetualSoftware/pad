@@ -1121,7 +1121,8 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 		mode = RelationCarryCrossWorkspace
 	}
 	relRefusals, relDropped, relErr := s.MigrateRelationReferentsQ(q, destWorkspaceID,
-		items.SchemaForMigratedFields(targetSchema), migrated.Fields, overrides, currentFields, mode)
+		items.SchemaForMigratedFields(targetSchema), migrated.Fields, overrides,
+		CarriedSourceValues(currentFields, migrated.Dropped), mode)
 	if relErr != nil {
 		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation referents: %w", relErr)
 	}

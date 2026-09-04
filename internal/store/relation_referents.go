@@ -687,6 +687,38 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 	return dropped, nil
 }
 
+// CarriedSourceValues narrows a source item's field map to the values that
+// actually SURVIVED migration.
+//
+// The migrate doors need "which values carried", and the source map alone
+// answers a different question — "which keys the source had" (codex round 9).
+// When MigrateFields cannot convert a source value it DROPS the key and its
+// default loop then fills the same key from the DESTINATION schema, so the
+// value sitting in the map came from the destination while the key is still
+// present in the source. Classified as carried, a cross-workspace copy then
+// discards the destination's own default as non-portable — the round-1 defect
+// again, one level finer: presence of the KEY is not survival of the VALUE.
+//
+// `dropped` is MigrateFields' own Dropped list, which is exactly the set of
+// keys whose source value did not make it.
+func CarriedSourceValues(sourceFields map[string]any, dropped []string) map[string]any {
+	if len(dropped) == 0 {
+		return sourceFields
+	}
+	lost := make(map[string]bool, len(dropped))
+	for _, k := range dropped {
+		lost[k] = true
+	}
+	out := make(map[string]any, len(sourceFields))
+	for k, v := range sourceFields {
+		if lost[k] {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // hasKey reports whether m declares key. A nil map has no keys, which is how a
 // door with no overrides (bulk move) or no source item says so.
 func hasKey(m map[string]any, key string) bool {
