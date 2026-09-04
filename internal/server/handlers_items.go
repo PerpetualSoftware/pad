@@ -758,34 +758,14 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// Referent validation for relation values (TASK-2878). AFTER the shape
 	// check, so "must be a string" and "names nothing" are never both reported
 	// for one value, and after coercion so the value is in its final form.
-	relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+	// The four steps live in one place — see resolveRelationsForWrite.
+	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
+		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
 	if relErr != nil {
 		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", relErr.Error()}
 	}
-	// Only the CALLER's values are refused here. A key validation injected a
-	// default for is not caller input, and the late pass below drops and
-	// reports it instead — see IssuesForCallerInput (codex round 10).
-	relIssues = store.IssuesForCallerInput(relIssues, relBefore)
-	if len(relIssues) > 0 {
-		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relIssues)}
-	}
-	// Keys the schema does not declare are STORED, not refused — but the write
-	// says which ones, so a typo leaves a trace (BUG-2850). Computed before the
-	// store call because fieldMap is what gets written.
-	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
-	if lateErr != nil {
-		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", lateErr.Error()}
-	}
-	if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
-		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(req)}
-	}
-	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
-	if invErr != nil {
-		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", invErr.Error()}
-	}
-	var droppedDefaults []string
-	for _, ri := range append(lateDropped, invisibleDefaults...) {
-		droppedDefaults = append(droppedDefaults, ri.Key)
+	if len(relRefusals) > 0 {
+		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relRefusals)}
 	}
 	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
 
@@ -1249,34 +1229,18 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
-		// Referent validation for relation values (TASK-2878).
-		relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+		// Referent validation for relation values (TASK-2878) — the same four
+		// steps the create door runs; see resolveRelationsForWrite.
+		relRefusals, writeDropped, relErr := s.resolveRelationsForWrite(
+			r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
 		if relErr != nil {
 			writeInternalError(w, relErr)
 			return
 		}
-		// Caller values only — an injected default is the late pass's to drop
-		// and report, not this door's to refuse (codex round 10).
-		if refuseRelationIssues(w, store.IssuesForCallerInput(relIssues, relBefore)) {
+		if refuseRelationIssues(w, relRefusals) {
 			return
 		}
-		lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
-		if lateErr != nil {
-			writeInternalError(w, lateErr)
-			return
-		}
-		if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
-			writeError(w, http.StatusBadRequest, "validation_error", relationIssuesMessage(req))
-			return
-		}
-		invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
-		if invErr != nil {
-			writeInternalError(w, invErr)
-			return
-		}
-		for _, ri := range append(lateDropped, invisibleDefaults...) {
-			droppedDefaults = append(droppedDefaults, ri.Key)
-		}
+		droppedDefaults = append(droppedDefaults, writeDropped...)
 		undeclaredFields = items.UndeclaredFieldKeys(fieldMap, schema)
 
 		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {

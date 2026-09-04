@@ -953,12 +953,20 @@ user hunting for an item that provably does not exist.
 			// separate sentences: "no such item" and "wrong collection" send the
 			// reader to different fixes, and a missing target is a schema problem
 			// rather than anything about this item.
+			// NEUTRAL WORDING, deliberately. `not_found` is what the server
+			// collapses a hidden target to as well as a missing one — telling
+			// them apart is the existence oracle it exists to prevent — so a
+			// sentence asserting non-existence is both wrong for half the
+			// cases and a claim the response cannot support.
 			case 'not_found':
-				return 'the item it refers to no longer exists';
+				return 'the item it refers to could not be found';
 			case 'wrong_collection':
 				return 'it refers to an item outside the field’s collection';
+			// Covers both "no target collection declared" and "the declared
+			// collection is not in this workspace"; the first wording named
+			// only the former and misdiagnosed the latter.
 			case 'target_missing':
-				return 'the field declares no collection to link to';
+				return 'the field has no valid collection to link to';
 			case 'invalid_shape':
 				return 'the destination field’s default is not a valid reference';
 			default:

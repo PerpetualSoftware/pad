@@ -335,3 +335,64 @@ func (s *Server) dropInvisibleRelationDefaults(
 	}
 	return dropped, nil
 }
+
+// resolveRelationsForWrite is the whole relation decision for a WRITE door —
+// create and the full-`fields` update, which ran the identical four steps.
+//
+// Extracted after codex round 10 showed the same rule stated at a third site
+// (CONVE-139: consolidate when the move is mechanical, do not defer for
+// effort). The rule is: the CALLER's values are refused, and everything
+// validation filled in is dropped and reported. Four steps expressed that, and
+// two doors each spelled all four out:
+//
+//  1. resolve the whole map, which is caller input plus injected defaults;
+//  2. keep only the issues on keys the caller actually supplied — a default is
+//     asserted by nobody, so an unresolvable one must not refuse the write;
+//  3. resolve the defaults validation injected AFTER the main pass, dropping
+//     what does not resolve — except in a REQUIRED field, where dropping
+//     would store the item with that field absent;
+//  4. drop a default whose target the caller cannot see, so the response does
+//     not hand back its id.
+//
+// NOT extended to the migrate doors, and not for effort: they reach the same
+// rule through `store.MigrateRelationReferents`, which is in `internal/store`
+// and cannot call this — the visibility layer here is request-scoped by
+// construction, and `store` cannot import `server`. Unifying the two families
+// needs a caller-supplied visibility predicate on the store API; that is
+// IDEA-2886, with its own door table.
+//
+// `refusals` are the caller's to fix; `dropped` are keys the write discarded
+// and must report.
+func (s *Server) resolveRelationsForWrite(
+	r *http.Request,
+	workspaceID string,
+	role string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	presentBefore map[string]bool,
+) (refusals []store.RelationIssue, dropped []string, err error) {
+	issues, err := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+	if err != nil {
+		return nil, nil, err
+	}
+	if callerIssues := store.IssuesForCallerInput(issues, presentBefore); len(callerIssues) > 0 {
+		return callerIssues, nil, nil
+	}
+
+	lateDropped, err := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, presentBefore)
+	if err != nil {
+		return nil, nil, err
+	}
+	if required := store.RequiredRelationIssues(schema, lateDropped); len(required) > 0 {
+		return required, nil, nil
+	}
+
+	invisible, err := s.dropInvisibleRelationDefaults(r, workspaceID, role, schema, fieldMap, presentBefore)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, ri := range append(lateDropped, invisible...) {
+		dropped = append(dropped, ri.Key)
+	}
+	return nil, dropped, nil
+}

@@ -75,7 +75,11 @@ func (ri RelationIssue) Message() string {
 	case RelationTargetWrongCollection:
 		return fmt.Sprintf("field %q: %q is not an item in collection %q", ri.Key, ri.Value, ri.Target)
 	case RelationTargetMissing:
-		return fmt.Sprintf("field %q declares no target collection, so %q cannot be resolved", ri.Key, ri.Value)
+		// Both causes, in one sentence: the field declares no target, OR the
+		// target it declares is not a collection in this workspace. The
+		// earlier wording named only the first and misdiagnosed the second as
+		// a schema that says nothing when it says something broken.
+		return fmt.Sprintf("field %q has no valid target collection, so %q cannot be resolved", ri.Key, ri.Value)
 	case RelationTargetInvalidShape:
 		return fmt.Sprintf("field %q has a default that is not a reference", ri.Key)
 	default:
