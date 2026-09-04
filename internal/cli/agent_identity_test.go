@@ -155,6 +155,8 @@ func TestClientSendsResolvedAgentHeader(t *testing.T) {
 // which read this exact header.
 func TestPushItemSendsResolvedAgentHeader(t *testing.T) {
 	chdir(t, t.TempDir())
+	isolateHome(t, t.TempDir())
+	clearSessionEnv(t)
 	for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
@@ -309,5 +311,36 @@ func TestRegisteredAgentWinsForThisSession(t *testing.T) {
 	}
 	if got := ResolveAgentName(); got != "ghost" {
 		t.Errorf("the genuine record stopped naming us: ResolveAgentName() = %q", got)
+	}
+}
+
+// TestRegisteredAgentRequiresAVerifiableOwner — codex round 2 on #1248. A
+// harness-supplied owner pid that the platform CAN check and that is NOT
+// this process or an ancestor is a misconfigured session: its registry row
+// must not name us, even though the pid is alive and its token matches
+// (pid-reuse and liveness are not the failure here; the claim of ownership
+// is). Where the platform cannot walk ancestry the check does not run and
+// the token + liveness residual applies, which is why this is gated on the
+// check being available rather than on PIDVerified alone — gating on the
+// flag would have switched the fix off everywhere but Linux.
+//
+// MUTANT: dropping the pidIsSelfOrAncestor refusal makes the child's row
+// name us.
+func TestRegisteredAgentRequiresAVerifiableOwner(t *testing.T) {
+	registryEnv(t)
+	if _, err := pidIsSelfOrAncestor(os.Getpid()); err != nil {
+		t.Skip("platform cannot walk process ancestry; the ownership check does not run here")
+	}
+	dir := t.TempDir()
+	chdir(t, dir)
+	t.Setenv("PAD_AGENT", "env-name")
+	child := livingChildPID(t)
+	t.Setenv("CLAUDE_PID", itoa(child))
+
+	if _, err := RegisterSession(dir, "impostor"); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+	if got := ResolveAgentName(); got != "env-name" {
+		t.Errorf("a row owned by a live non-ancestor pid named us: ResolveAgentName() = %q, want %q", got, "env-name")
 	}
 }

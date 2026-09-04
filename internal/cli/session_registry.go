@@ -157,7 +157,10 @@ func SessionsDir() (string, error) {
 // token while we have one is unverifiable, not verified: a dead session's
 // stale row under a reused pid must not name a live one. Where the platform
 // has no token at all, bare liveness is the documented residual, as it is for
-// the registry itself. A record with an empty agent is a deliberate anonymous
+// the registry itself. And where the platform can walk process ancestry, the
+// owner pid must be this process or an ancestor — the same claim
+// session_pid_verified reports — so a misconfigured CLAUDE_PID cannot borrow
+// another live session's name. A record with an empty agent is a deliberate anonymous
 // registration and returns ("", true); the caller decides that this does not
 // override an environment-declared name.
 func registeredAgentForThisSession() (string, bool) {
@@ -191,6 +194,17 @@ func registeredAgentForThisSession() (string, bool) {
 		return "", false
 	}
 	if OwnerLiveness(&reg.SessionOwner) != LivenessAlive {
+		return "", false
+	}
+	// The owner must be THIS process or an ancestor, where the platform can
+	// say (codex round 2): a harness-supplied pid that is alive, token-matched
+	// and yet not above us is a misconfigured session, and its row is not
+	// ours to speak for. CaptureSessionOwner records that outcome as
+	// PIDVerified=false but does not distinguish "checked and wrong" from
+	// "cannot check"; gating on the flag would disable this step on every
+	// platform without ancestry (see proc_ancestry_other.go), so the check is
+	// re-run here and only a checked-and-wrong answer refuses.
+	if ok, err := pidIsSelfOrAncestor(owner.PID); err == nil && !ok {
 		return "", false
 	}
 	return reg.Agent, true
