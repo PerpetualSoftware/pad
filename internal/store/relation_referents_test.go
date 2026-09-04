@@ -252,3 +252,118 @@ func TestResolveRelationReferents_IsDeterministicAndBatched(t *testing.T) {
 		}
 	}
 }
+
+// --- Migrate doors (PLAN-2857 U1, lead ruling: provenance, not door) ---
+
+func TestMigrateRelationReferents_SameWorkspaceKeepsWhatResolves(t *testing.T) {
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+
+	// A move within the workspace: the target is still here, so a VALID
+	// relation must survive. Dropping it would lose data on every move of a
+	// correctly-related item.
+	fields := map[string]any{"color": red.Ref, "status": "open"}
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, RelationCarryWithinWorkspace)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(refusals) != 0 || len(dropped) != 0 {
+		t.Fatalf("a valid carried relation must survive: refusals=%+v dropped=%+v", refusals, dropped)
+	}
+	if fields["color"] != red.ID {
+		t.Fatalf("survivor not canonicalised: got %v want %s", fields["color"], red.ID)
+	}
+}
+
+func TestMigrateRelationReferents_SameWorkspaceDropsWhatDoesNot(t *testing.T) {
+	s := testStore(t)
+	ws, _, _, _ := relationFixture(t, s)
+
+	// The legacy case, and the reason move doors do not refuse: `items` has
+	// accepted any string for a relation all along, so an item carrying "red"
+	// must stay MOVABLE. Dropped and reported, never refused.
+	fields := map[string]any{"color": "red", "status": "open"}
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, RelationCarryWithinWorkspace)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(refusals) != 0 {
+		t.Fatalf("a carried value must never refuse: %+v", refusals)
+	}
+	if len(dropped) != 1 || dropped[0].Key != "color" || dropped[0].Value != "red" {
+		t.Fatalf("expected one reported drop naming the value, got %+v", dropped)
+	}
+	if _, present := fields["color"]; present {
+		t.Fatalf("dropped key must be removed from the map, got %v", fields["color"])
+	}
+	if fields["status"] != "open" {
+		t.Fatalf("a drop must not disturb other fields: %+v", fields)
+	}
+}
+
+func TestMigrateRelationReferents_CrossWorkspaceDropsEveryCarriedRelation(t *testing.T) {
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+
+	// Even a PERFECTLY VALID source relation goes, and without a lookup: it
+	// names a source-workspace row, and v1 excludes cross-workspace targets,
+	// so there is nothing in the destination it could mean. Same reason
+	// github_pr uses, because it is the same fact about the same kind of value.
+	fields := map[string]any{"color": red.ID, "status": "open"}
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, nil, RelationCarryCrossWorkspace)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(refusals) != 0 {
+		t.Fatalf("a carried value must never refuse: %+v", refusals)
+	}
+	if len(dropped) != 1 || dropped[0].Reason != RelationTargetNotPortable {
+		t.Fatalf("expected one referent_not_portable drop, got %+v", dropped)
+	}
+	if _, present := fields["color"]; present {
+		t.Fatalf("carried relation must be removed on a cross-workspace copy")
+	}
+}
+
+func TestMigrateRelationReferents_SuppliedOverrideRefusesOnEitherMode(t *testing.T) {
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+
+	// Provenance is the whole rule: the SAME bad value is a drop when carried
+	// and a refusal when supplied, on both modes. A test that only drove
+	// carried values would pass against a build that never refuses anything.
+	for _, mode := range []RelationCarryMode{RelationCarryWithinWorkspace, RelationCarryCrossWorkspace} {
+		fields := map[string]any{"color": "nope"}
+		supplied := map[string]any{"color": "nope"}
+		refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, mode)
+		if err != nil {
+			t.Fatalf("mode %v: %v", mode, err)
+		}
+		if len(refusals) != 1 || refusals[0].Key != "color" {
+			t.Fatalf("mode %v: a SUPPLIED bad value must refuse, got refusals=%+v dropped=%+v", mode, refusals, dropped)
+		}
+	}
+
+	// One workspace stands in for two here: in production the cross-workspace
+	// copy passes the DESTINATION workspace and schema, so a supplied override
+	// names a destination item. The rule under test — supplied is resolved,
+	// carried is not — does not depend on which workspace that is, and the
+	// door-level pins drive the real two-workspace path.
+	//
+	// And a supplied VALID override survives even on a cross-workspace copy,
+	// where every carried relation is dropped — the caller named a
+	// destination item explicitly, which is the one way a relation can be set
+	// on a copy at all.
+	fields := map[string]any{"color": red.ID}
+	supplied := map[string]any{"color": red.ID}
+	refusals, dropped, err := s.MigrateRelationReferents(ws.ID, u1RelationSchema("colors"), fields, supplied, RelationCarryCrossWorkspace)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(refusals) != 0 || len(dropped) != 0 {
+		t.Fatalf("a supplied valid override must survive: refusals=%+v dropped=%+v", refusals, dropped)
+	}
+	if fields["color"] != red.ID {
+		t.Fatalf("supplied override lost: %v", fields["color"])
+	}
+}

@@ -221,3 +221,132 @@ func (s *Store) resolveRelationTarget(workspaceID, value string) (*models.Item, 
 	}
 	return item, nil
 }
+
+// RelationTargetNotPortable — a carried relation value that cannot cross a
+// workspace boundary. Not a defect in the value: it names a live item in the
+// SOURCE workspace, and PLAN-2857 v1 excludes cross-workspace relation
+// targets, so there is nothing in the destination it could mean. Reported with
+// the same reason `github_pr` uses, because it is the same fact about the same
+// kind of value.
+const RelationTargetNotPortable RelationIssueReason = "referent_not_portable"
+
+// RelationCarryMode says what a migrate door should do with relation values
+// CARRIED from a source item.
+type RelationCarryMode int
+
+const (
+	// RelationCarryWithinWorkspace — a same-workspace move or bulk move. The
+	// targets are still in this workspace, so a valid relation SURVIVES; only
+	// a value that does not resolve is dropped.
+	RelationCarryWithinWorkspace RelationCarryMode = iota
+	// RelationCarryCrossWorkspace — a cross-workspace copy, or its preflight.
+	// Every carried relation is dropped by construction, without a lookup:
+	// the value names a source-workspace row, and no amount of resolving in
+	// the destination changes that.
+	RelationCarryCrossWorkspace
+)
+
+// MigrateRelationReferents is the ONE decision the four migrate doors share
+// (PLAN-2857 U1 / TASK-2878). Same-workspace move, bulk move, cross-workspace
+// copy and the copy preflight all call this; none of them reimplements it.
+//
+// That is not tidiness. The preflight lives in `internal/server` and the copy
+// lives in `internal/store`, and the code already carries a warning that those
+// two sit in different packages and that is how they drift unnoticed. A
+// preflight that says "carried" while the copy drops — or the reverse — is one
+// request answered two ways, which is the exact defect that comment describes.
+//
+// PROVENANCE, not door, decides the outcome:
+//
+//   - SUPPLIED (present in `supplied`, i.e. an explicit `--field` override on
+//     the move or copy): the caller asserted this value, so it is a write and
+//     an unresolvable one is REFUSED. Returned in `refusals`.
+//   - CARRIED (everything else): not asserted by anyone, so refusing it would
+//     make a legacy item — and `internal/items` has accepted any string for a
+//     relation all along, so most of them are legacy — unmovable and
+//     uncopyable. Dropped and REPORTED instead, through the same
+//     `dropped_fields` channel BUG-2674 established for a move and the same
+//     `referent_not_portable` bucket the copy already uses for `github_pr`.
+//
+// Mutates fieldMap: dropped keys are deleted, and carried values that survive
+// are canonicalised to their target's ID.
+func (s *Store) MigrateRelationReferents(
+	workspaceID string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	supplied map[string]any,
+	mode RelationCarryMode,
+) (refusals []RelationIssue, dropped []RelationIssue, err error) {
+	// Split the map by provenance FIRST, so the two halves cannot be confused
+	// by anything below. Schema order, for the determinism the preflight
+	// promises its callers.
+	carried := map[string]any{}
+	suppliedRelations := map[string]any{}
+	for _, def := range schema.Fields {
+		if def.Type != "relation" {
+			continue
+		}
+		raw, exists := fieldMap[def.Key]
+		if !exists || raw == nil {
+			continue
+		}
+		if _, isSupplied := supplied[def.Key]; isSupplied {
+			suppliedRelations[def.Key] = raw
+			continue
+		}
+		carried[def.Key] = raw
+	}
+
+	// Supplied values are ordinary writes.
+	if len(suppliedRelations) > 0 {
+		issues, resolveErr := s.ResolveRelationReferents(workspaceID, schema, suppliedRelations)
+		if resolveErr != nil {
+			return nil, nil, resolveErr
+		}
+		refusals = issues
+		// Carry the canonicalised survivors back.
+		for k, v := range suppliedRelations {
+			fieldMap[k] = v
+		}
+	}
+
+	switch mode {
+	case RelationCarryCrossWorkspace:
+		// No lookup: a source-workspace id cannot mean anything here.
+		for _, def := range schema.Fields {
+			if def.Type != "relation" {
+				continue
+			}
+			raw, exists := carried[def.Key]
+			if !exists {
+				continue
+			}
+			value, _ := raw.(string)
+			dropped = append(dropped, RelationIssue{
+				Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetNotPortable,
+			})
+			delete(fieldMap, def.Key)
+		}
+	default:
+		// Same workspace: resolve, keep what resolves, drop what does not.
+		issues, resolveErr := s.ResolveRelationReferents(workspaceID, schema, carried)
+		if resolveErr != nil {
+			return nil, nil, resolveErr
+		}
+		for _, ri := range issues {
+			dropped = append(dropped, ri)
+			delete(fieldMap, ri.Key)
+		}
+		// Write the canonicalised survivors back. A dropped key was deleted
+		// from fieldMap just above, so its absence there is what marks it —
+		// checking that rather than re-scanning `issues` keeps the two loops
+		// from disagreeing about which keys survived.
+		for k, v := range carried {
+			if _, survived := fieldMap[k]; !survived {
+				continue
+			}
+			fieldMap[k] = v
+		}
+	}
+	return refusals, dropped, nil
+}
