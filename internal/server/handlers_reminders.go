@@ -53,13 +53,33 @@ func writeRemindAtError(w http.ResponseWriter) {
 
 // handleListItemReminders returns every reminder on an item, armed or fired.
 // GET /api/v1/workspaces/{slug}/items/{itemSlug}/reminders
+//
+// ARCHIVED ITEMS ARE READABLE HERE, AND ONLY HERE (codex round 16). This
+// route follows handleGetItem: an archived item resolves read-only, so its
+// reminder history stays visible after the item is archived — which is why
+// the store's reminderOwned enforces identity and not liveness. The lifecycle
+// verbs (arm, re-arm, ack, delete) follow every other item MUTATION instead
+// and answer 409 "archived … restore it before editing" through the same
+// writeItemResolveError the rest of the API uses. Nothing waits on an ack the
+// door refuses: the candidate scan and the pending surface already exclude an
+// archived item's reminders, RestoreItem brings them back exactly as they
+// were, and a hard delete cascades the rows away.
 func (s *Server) handleListItemReminders(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
-	item := s.resolveVisibleItem(w, r, workspaceID)
+	itemSlug := chi.URLParam(r, "itemSlug")
+	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	if item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
 
@@ -247,6 +267,13 @@ func (s *Server) resolveVisibleItem(w http.ResponseWriter, r *http.Request, work
 // edit-permission failure on an item the caller cannot see would confirm the
 // reminder exists, which is the existence-oracle shape a sibling handler
 // family already had to be fixed for.
+// An ARCHIVED item's reminder answers 409 "archived" here, exactly as an edit
+// to the item itself would (writeItemResolveError), rather than a 404 that
+// says nothing about why — the reminder exists, its item exists, and the
+// remedy is the item's restore. See handleListItemReminders for the read
+// side of the same posture. The include-deleted load is what lets the
+// visibility check run first, so a guest who could not see the item learns
+// nothing from the difference between 404 and 409.
 func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request, workspaceID string) (*models.Reminder, *models.Item) {
 	id := chi.URLParam(r, "reminderID")
 	reminder, err := s.store.GetReminder(workspaceID, id)
@@ -258,7 +285,7 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return nil, nil
 	}
-	item, err := s.store.GetItem(reminder.ItemID)
+	item, err := s.store.GetItemIncludeDeleted(reminder.ItemID)
 	if err != nil {
 		writeInternalError(w, err)
 		return nil, nil
@@ -268,6 +295,10 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		return nil, nil
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return nil, nil
+	}
+	if item.DeletedAt != nil {
+		s.writeItemResolveError(w, r, workspaceID, item.Ref)
 		return nil, nil
 	}
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {

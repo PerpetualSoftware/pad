@@ -777,3 +777,65 @@ func TestTruncationIsReportedWhenTheWindowFillsMidPage(t *testing.T) {
 		t.Error("a window that fit every live reminder reported truncation")
 	}
 }
+
+// TestArchivedItemRemindersAreReadableAndNotEditable pins the posture codex
+// round 16 read as a contradiction: the store keeps an archived item's
+// reminders (reminderOwned enforces identity, not liveness), the LIST follows
+// handleGetItem and stays readable, and the lifecycle verbs follow every other
+// item mutation and answer 409 "archived" — not a bare 404 — until the item is
+// restored, when they work again on the same rows. All three legs are
+// asserted, because the read alone would pass against a build that deleted
+// the rows, and the 409 alone against one that never restored them.
+//
+// MUTANT: resolving the list live makes the GET a 409; resolving the write
+// live makes the ack a 404; cascading the rows on soft-delete makes the
+// post-restore ack 404.
+func TestArchivedItemRemindersAreReadableAndNotEditable(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Ship it", "fields": `{"status":"open"}`,
+	})
+	r := armViaAPI(t, srv, slug, item, pastInstant)
+	srv.runReminderTick()
+
+	base := "/api/v1/workspaces/" + slug
+	if rr := doRequest(srv, "DELETE", base+"/items/"+item.Slug, nil); rr.Code != http.StatusOK && rr.Code != http.StatusNoContent {
+		t.Fatalf("archive item: %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr := doRequest(srv, "GET", base+"/items/"+item.Slug+"/reminders", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("listing an archived item's reminders: expected 200 (read-only, as GET item), got %d: %s", rr.Code, rr.Body.String())
+	}
+	var listed struct {
+		Reminders []models.Reminder `json:"reminders"`
+	}
+	parseJSON(t, rr, &listed)
+	if len(listed.Reminders) != 1 || listed.Reminders[0].ID != r.ID {
+		t.Errorf("archived item's reminder history: got %+v, want the one fired reminder", listed.Reminders)
+	}
+
+	rr = doRequest(srv, "POST", base+"/reminders/"+r.ID+"/ack", nil)
+	if rr.Code != http.StatusConflict {
+		t.Errorf("acking a reminder on an archived item: expected 409 archived, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "POST", base+"/items/"+item.Slug+"/reminders", map[string]string{"remind_at": futureInstant})
+	if rr.Code != http.StatusConflict {
+		t.Errorf("arming a reminder on an archived item: expected 409 archived, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if rr := doRequest(srv, "POST", base+"/items/"+item.Slug+"/restore", nil); rr.Code != http.StatusOK {
+		t.Fatalf("restore item: %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "POST", base+"/reminders/"+r.ID+"/ack", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("acking after restore: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var acked models.Reminder
+	parseJSON(t, rr, &acked)
+	if acked.AckedAt == nil || acked.FiredAt == nil {
+		t.Errorf("the restored reminder should be fired and now acked, got fired=%v acked=%v", acked.FiredAt, acked.AckedAt)
+	}
+}
