@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -97,10 +98,29 @@ func (s *Store) ResolveRelationReferents(
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 ) ([]RelationIssue, error) {
+	return s.ResolveRelationReferentsQ(s.Q(), workspaceID, schema, fieldMap)
+}
+
+// ResolveRelationReferentsQ is ResolveRelationReferents parameterised over its
+// read executor, following the store's own `...Q` convention (`GetItemQ`,
+// `uniqueSlugQ`, `getCollectionInWorkspaceTx`).
+//
+// This is not a convenience. `migrateCopyFields` runs inside
+// `copyItemAcrossWorkspacesTx`, which opens a transaction as its second
+// statement — so a resolver that read from the POOL there would issue pool
+// reads while holding a tx, the deadlock this repo keeps a deterministic test
+// for. Threading the Queryer is what lets ONE function serve the copy doors
+// and the write doors instead of three-and-a-half.
+func (s *Store) ResolveRelationReferentsQ(
+	q Queryer,
+	workspaceID string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+) ([]RelationIssue, error) {
 	var issues []RelationIssue
 	// Cache per target slug: a schema with several relations aimed at one
 	// collection should cost one lookup, not one per field.
-	targets := map[string]*models.Collection{}
+	targets := map[string]string{}
 
 	// Schema order, not map order, so repeated calls on equal input produce
 	// identical output — the same determinism `ValidateFieldsDetailed`
@@ -131,16 +151,16 @@ func (s *Store) ResolveRelationReferents(
 			continue
 		}
 
-		target, cached := targets[def.Collection]
+		targetID, cached := targets[def.Collection]
 		if !cached {
 			var err error
-			target, err = s.GetCollectionBySlug(workspaceID, def.Collection)
+			targetID, err = s.collectionIDBySlugQ(q, workspaceID, def.Collection)
 			if err != nil {
 				return nil, err
 			}
-			targets[def.Collection] = target
+			targets[def.Collection] = targetID
 		}
-		if target == nil {
+		if targetID == "" {
 			// The declared target names no collection in this workspace.
 			// BUG-2873 propagates renames into relation FieldDefs, so this is
 			// a genuinely broken schema rather than the ordinary rename case.
@@ -150,7 +170,7 @@ func (s *Store) ResolveRelationReferents(
 			continue
 		}
 
-		item, err := s.resolveRelationTarget(workspaceID, value)
+		item, err := s.resolveRelationTargetQ(q, workspaceID, value)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +180,7 @@ func (s *Store) ResolveRelationReferents(
 			})
 			continue
 		}
-		if item.CollectionID != target.ID {
+		if item.CollectionID != targetID {
 			issues = append(issues, RelationIssue{
 				Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetWrongCollection,
 			})
@@ -198,9 +218,9 @@ func (s *Store) ResolveRelationReferents(
 // `AND i.deleted_at IS NULL` unless asked otherwise. Checked at those lines
 // rather than assumed, because the whole read half of U2 depends on a deleted
 // target being distinguishable from a value that never resolved.
-func (s *Store) resolveRelationTarget(workspaceID, value string) (*models.Item, error) {
+func (s *Store) resolveRelationTargetQ(q Queryer, workspaceID, value string) (*models.Item, error) {
 	if isUUID(value) {
-		item, err := s.GetItem(value)
+		item, err := s.GetItemQ(q, value)
 		if err != nil {
 			return nil, err
 		}
@@ -215,11 +235,61 @@ func (s *Store) resolveRelationTarget(workspaceID, value string) (*models.Item, 
 		// particular NOT a slug — see the note above.
 		return nil, nil
 	}
-	item, err := s.GetItemByRef(workspaceID, prefix, number)
+	item, err := s.itemByRefQ(q, workspaceID, prefix, number)
 	if err != nil {
 		return nil, err
 	}
 	return item, nil
+}
+
+// collectionIDBySlugQ returns the collection's ID, or "" when the workspace
+// has no live collection with that slug. ID only: the referent check compares
+// `item.CollectionID`, and loading the whole model would pull in per-collection
+// counts this has no use for.
+func (s *Store) collectionIDBySlugQ(q Queryer, workspaceID, slug string) (string, error) {
+	var id string
+	err := q.QueryRow(s.q(`
+		SELECT id FROM collections
+		WHERE workspace_id = ? AND slug = ? AND deleted_at IS NULL
+	`), workspaceID, slug).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("collection id by slug: %w", err)
+	}
+	return id, nil
+}
+
+// itemByRefQ is GetItemByRef on a caller-supplied executor. It keeps that
+// helper's FALLBACK — item numbers are workspace-unique, so a ref whose prefix
+// no longer matches still resolves by number — because a relation written as
+// COLO-3 must keep resolving after the target's collection is renamed, which
+// is precisely what BUG-2873 made possible.
+func (s *Store) itemByRefQ(q Queryer, workspaceID, prefix string, number int) (*models.Item, error) {
+	var id string
+	err := q.QueryRow(s.q(`
+		SELECT i.id FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ? AND i.deleted_at IS NULL
+	`), workspaceID, prefix, number).Scan(&id)
+	if err == nil {
+		return s.GetItemQ(q, id)
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("item by ref: %w", err)
+	}
+	err = q.QueryRow(s.q(`
+		SELECT id FROM items
+		WHERE workspace_id = ? AND item_number = ? AND deleted_at IS NULL
+	`), workspaceID, number).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("item by number: %w", err)
+	}
+	return s.GetItemQ(q, id)
 }
 
 // RelationTargetNotPortable — a carried relation value that cannot cross a
@@ -277,6 +347,19 @@ func (s *Store) MigrateRelationReferents(
 	supplied map[string]any,
 	mode RelationCarryMode,
 ) (refusals []RelationIssue, dropped []RelationIssue, err error) {
+	return s.MigrateRelationReferentsQ(s.Q(), workspaceID, schema, fieldMap, supplied, mode)
+}
+
+// MigrateRelationReferentsQ is MigrateRelationReferents on a caller-supplied
+// read executor — see ResolveRelationReferentsQ for why the copy door needs it.
+func (s *Store) MigrateRelationReferentsQ(
+	q Queryer,
+	workspaceID string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	supplied map[string]any,
+	mode RelationCarryMode,
+) (refusals []RelationIssue, dropped []RelationIssue, err error) {
 	// Split the map by provenance FIRST, so the two halves cannot be confused
 	// by anything below. Schema order, for the determinism the preflight
 	// promises its callers.
@@ -299,7 +382,7 @@ func (s *Store) MigrateRelationReferents(
 
 	// Supplied values are ordinary writes.
 	if len(suppliedRelations) > 0 {
-		issues, resolveErr := s.ResolveRelationReferents(workspaceID, schema, suppliedRelations)
+		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, suppliedRelations)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}
@@ -329,7 +412,7 @@ func (s *Store) MigrateRelationReferents(
 		}
 	default:
 		// Same workspace: resolve, keep what resolves, drop what does not.
-		issues, resolveErr := s.ResolveRelationReferents(workspaceID, schema, carried)
+		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, carried)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}
