@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -292,7 +293,7 @@ const (
 // for, so a value can be present in the migrated map having been chosen by the
 // DESTINATION rather than carried from the source — a third origin, and the
 // one that is invisible until a schema declares a default.
-func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourceOwnerRef *string) *relationFixture {
+func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourceOwnerRef *string, requiredRelation bool) *relationFixture {
 	t.Helper()
 	srv := testServer(t)
 	bus := events.New()
@@ -317,18 +318,21 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourc
 		t.Fatalf("CreateItem(targetB): %v", err)
 	}
 
-	relSchema := func(targetSlug, def string) string {
-		defaultClause := ""
+	relSchema := func(targetSlug, def string, required bool) string {
+		clauses := ""
 		if def != "" {
-			defaultClause = fmt.Sprintf(`,"default":%q`, def)
+			clauses += fmt.Sprintf(`,"default":%q`, def)
+		}
+		if required {
+			clauses += `,"required":true`
 		}
 		return fmt.Sprintf(`{"fields":[
 			{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
 			{"key":"owner_ref","label":"Owner","type":"relation","collection":%q%s}
-		]}`, targetSlug, defaultClause)
+		]}`, targetSlug, clauses)
 	}
 
-	collA := mustSchemaCollection(t, srv, wsA.ID, "Rel2 Tasks A", relSchema(targetsA.Slug, ""))
+	collA := mustSchemaCollection(t, srv, wsA.ID, "Rel2 Tasks A", relSchema(targetsA.Slug, "", false))
 	// A REF, not the UUID, and that is the discriminating choice: a UUID is
 	// already its canonical form, so a default that was RESOLVED and one that
 	// was dropped-then-re-injected-raw by ValidateFields produce IDENTICAL
@@ -340,7 +344,7 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourc
 	case unresolvableDestDefault:
 		destDef = badRef
 	}
-	collB := mustSchemaCollection(t, srv, wsB.ID, "Rel2 Tasks B", relSchema(targetsB.Slug, destDef))
+	collB := mustSchemaCollection(t, srv, wsB.ID, "Rel2 Tasks B", relSchema(targetsB.Slug, destDef, requiredRelation))
 
 	sourceFields := `{"status":"open"}`
 	if sourceOwnerRef != nil {
@@ -377,7 +381,7 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourc
 // and the default never enters the migrated map, which is the arrangement that
 // hid this.
 func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *testing.T) {
-	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil)
+	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
 	body := f.baseBody()
 
 	pre := f.ok(body)
@@ -409,7 +413,7 @@ func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *tes
 // P1, second half).
 func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
 	empty := ""
-	f := newCopyRelationFixtureWith(t, noDestDefault, &empty)
+	f := newCopyRelationFixtureWith(t, noDestDefault, &empty, false)
 
 	pre := f.ok(f.baseBody())
 	if reason, dropped := droppedReason(pre, "owner_ref"); dropped {
@@ -492,7 +496,7 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 //     with StillDropped then suppressing the warning about it.
 func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
 	t.Run("a null override lets the default in, and it is resolved", func(t *testing.T) {
-		f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil)
+		f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
 		body := f.baseBody()
 		// Explicit null: DELETE the key, which is what makes the default the
 		// only thing that can fill it — and it arrives after the resolver.
@@ -508,7 +512,7 @@ func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
 	})
 
 	t.Run("an unresolvable default is dropped and reported, not silently stored", func(t *testing.T) {
-		f := newCopyRelationFixtureWith(t, unresolvableDestDefault, nil)
+		f := newCopyRelationFixtureWith(t, unresolvableDestDefault, nil, false)
 		body := f.baseBody()
 
 		pre := f.ok(body)
@@ -528,4 +532,52 @@ func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
 			t.Fatalf("the copy dropped the broken default without reporting it: %+v", res.Warnings)
 		}
 	})
+}
+
+// A REQUIRED relation whose default does not resolve must REFUSE, not land the
+// item with the field absent (codex round 3).
+//
+// The late pass deletes the key after validation has already passed, so
+// nothing re-checks required-ness. Re-running validation is not the fix — it
+// would re-inject the same broken default — so the doors refuse outright,
+// which is honest: there is no valid value for that field.
+//
+// The preflight reports it as needs_value rather than a hard error, which is
+// the split this pair has everywhere else: the preview says what is wrong, the
+// copy refuses. `valid` must be false either way.
+func TestCopyEndpoint_RequiredRelationWithBrokenDefaultIsRefused(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, unresolvableDestDefault, nil, true)
+	body := f.baseBody()
+
+	preRR := f.call(f.owner, reqOpts{}, body)
+	if preRR.Code != http.StatusOK {
+		t.Fatalf("preflight: expected 200, got %d: %s", preRR.Code, preRR.Body.String())
+	}
+	var pre ItemCopyPreflight
+	if err := json.Unmarshal(preRR.Body.Bytes(), &pre); err != nil {
+		t.Fatalf("parse preflight: %v", err)
+	}
+	if pre.Valid {
+		t.Fatalf("the preflight reports valid=true for a copy that cannot satisfy a required "+
+			"relation: %+v", pre.Fields)
+	}
+	var flagged bool
+	for _, nv := range pre.Fields.NeedsValue {
+		if nv.Key == "owner_ref" {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Fatalf("owner_ref is not in needs_value, so the dialog cannot tell the user what to "+
+			"supply: %+v", pre.Fields)
+	}
+
+	before := f.snapshot()
+	copyRR := f.callCopy(f.owner, reqOpts{}, body)
+	if copyRR.Code != http.StatusBadRequest {
+		t.Fatalf("copy: expected 400, got %d: %s", copyRR.Code, copyRR.Body.String())
+	}
+	if after := f.snapshot(); after != before {
+		t.Fatalf("a refused copy mutated state:\n before: %+v\n after:  %+v", before, after)
+	}
 }

@@ -101,8 +101,35 @@ func (s *Server) resolveRelationReferentsAs(
 		if !isStr || id == "" {
 			continue
 		}
-		if issuesContainKey(issues, def.Key) {
-			continue // already unresolvable; no second complaint about it
+		if ri, already := issueForKey(issues, def.Key); already {
+			// `wrong_collection` is the one issue that names a LIVE item, so
+			// its message ("is not an item in collection X") tells the caller
+			// the value EXISTS — distinguishable from the `not_found` a
+			// nonexistent value gets, and therefore an existence oracle for
+			// anyone who cannot see that item (codex round 3). Collapse it to
+			// `not_found` when the requester may not see the target; keep the
+			// specific message when they may, because "you linked a task
+			// where a person belongs" is the useful half of this reason.
+			//
+			// Any other issue is already `not_found`-shaped and needs nothing.
+			if ri.Reason != store.RelationTargetWrongCollection {
+				continue
+			}
+			target, terr := s.store.ResolveRelationTarget(workspaceID, ri.Value)
+			if terr != nil {
+				return nil, terr
+			}
+			if target == nil {
+				continue // vanished since; already the safe answer
+			}
+			seen, verr := s.checkItemVisible(workspaceID, target, currentUser(r), role, isBearerAuth(r))
+			if verr != nil {
+				return nil, verr
+			}
+			if !seen {
+				collapseIssue(issues, def.Key, store.RelationTargetNotFound)
+			}
+			continue
 		}
 		item, err := s.store.GetItem(id)
 		if err != nil {
@@ -136,13 +163,25 @@ func (s *Server) resolveRelationReferentsAs(
 	return issues, nil
 }
 
-func issuesContainKey(issues []store.RelationIssue, key string) bool {
+// issueForKey returns the issue already raised for key, if any.
+func issueForKey(issues []store.RelationIssue, key string) (store.RelationIssue, bool) {
 	for _, ri := range issues {
 		if ri.Key == key {
-			return true
+			return ri, true
 		}
 	}
-	return false
+	return store.RelationIssue{}, false
+}
+
+// collapseIssue rewrites the reason of the issue already raised for key. In
+// place, because the slice is what the caller renders.
+func collapseIssue(issues []store.RelationIssue, key string, reason store.RelationIssueReason) {
+	for i := range issues {
+		if issues[i].Key == key {
+			issues[i].Reason = reason
+			return
+		}
+	}
 }
 
 // refuseRelationIssues writes the 400 a write door owes and reports whether it

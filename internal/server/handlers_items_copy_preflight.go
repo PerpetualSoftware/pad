@@ -775,6 +775,18 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation defaults: %w", lateErr))
 		return
 	}
+	// A REQUIRED relation whose default did not resolve becomes a needs_value
+	// row rather than a drop, so the preview says what the copy will do:
+	// the copy REFUSES this request, and `valid` must be false (codex round
+	// 3). Reported through the same issues slice the required check feeds, so
+	// it lands in the same bucket a genuinely missing required field does.
+	for _, ri := range store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped) {
+		issues = append(issues, items.FieldIssue{
+			Key:     ri.Key,
+			Kind:    items.IssueRequired,
+			Message: ri.Message(),
+		})
+	}
 	for _, ri := range lateDropped {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
 		relationDropReason[ri.Key] = string(ri.Reason)

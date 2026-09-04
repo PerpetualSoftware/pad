@@ -224,6 +224,41 @@ func (s *Store) ResolveRelationReferentsQ(
 	return issues, nil
 }
 
+// ResolveRelationTarget resolves ONE relation value to its item, or (nil, nil)
+// when nothing in the workspace answers to it.
+//
+// Exported for the server's visibility layer. `wrong_collection` names a LIVE
+// item, so the message distinguishes "exists, elsewhere" from "does not
+// exist" — an existence oracle unless the server can first check whether the
+// requester may see that item, which needs the item. Same UUID-or-ref rule as
+// everything else here: no slug fallback.
+func (s *Store) ResolveRelationTarget(workspaceID, value string) (*models.Item, error) {
+	return s.resolveRelationTargetQ(s.Q(), workspaceID, value)
+}
+
+// RequiredRelationIssues returns the subset of issues whose field the schema
+// declares REQUIRED.
+//
+// A dropped value in a required relation field cannot be left as a drop: the
+// key is deleted after validation has already passed, so nothing re-checks it
+// and the item lands with a required field absent. Callers turn these into
+// their own door's missing-required refusal.
+func RequiredRelationIssues(schema models.CollectionSchema, issues []RelationIssue) []RelationIssue {
+	required := map[string]bool{}
+	for _, def := range schema.Fields {
+		if def.Type == "relation" && def.Required {
+			required[def.Key] = true
+		}
+	}
+	var out []RelationIssue
+	for _, ri := range issues {
+		if required[ri.Key] {
+			out = append(out, ri)
+		}
+	}
+	return out
+}
+
 // resolveRelationTarget looks a value up by UUID or by issue ref/slug, scoped
 // to the workspace. Returns (nil, nil) when nothing answers to it.
 //

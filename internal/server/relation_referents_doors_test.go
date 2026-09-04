@@ -320,7 +320,7 @@ func TestRelationDoors_BulkUpdateSuppliedBranch(t *testing.T) {
 		item := f.seed(`{"status":"open"}`)
 
 		_, opErr := f.srv.bulkFieldUpdate(f.requestFor(), f.ws.ID, item,
-			map[string]any{"owner_ref": badRef}, true, nil, f.owner.ID, "test", "batch")
+			map[string]any{"owner_ref": badRef}, true, nil, f.owner.ID, "test", "batch", nil)
 		if opErr == nil {
 			t.Fatalf("bulkFieldUpdate accepted an unresolvable supplied referent")
 		}
@@ -337,7 +337,7 @@ func TestRelationDoors_BulkUpdateSuppliedBranch(t *testing.T) {
 		item := f.seed(`{"status":"open"}`)
 
 		if _, opErr := f.srv.bulkFieldUpdate(f.requestFor(), f.ws.ID, item,
-			map[string]any{"owner_ref": f.target.Ref}, true, nil, f.owner.ID, "test", "batch"); opErr != nil {
+			map[string]any{"owner_ref": f.target.Ref}, true, nil, f.owner.ID, "test", "batch", nil); opErr != nil {
 			t.Fatalf("bulkFieldUpdate refused a resolvable referent: %s", opErr.message)
 		}
 		// Supplied as a ref; the ID is what must be stored. Without the
@@ -626,4 +626,98 @@ func (f *doorFixture) callAs(user *models.User, role string, h http.HandlerFunc,
 	rr := httptest.NewRecorder()
 	h(rr, r.WithContext(ctx))
 	return rr
+}
+
+// `wrong_collection` names a LIVE item, so its message tells the caller the
+// value exists — distinguishable from the `not_found` a nonexistent value
+// gets, and therefore an existence oracle for anyone who cannot see that item
+// (codex round 3).
+//
+// Both legs are required. Collapsing every wrong_collection to not_found would
+// pass the first and destroy the second, and "you linked a task where a person
+// belongs" is the useful half of this reason.
+func TestRelationDoors_WrongCollectionDoesNotDiscloseExistence(t *testing.T) {
+	f := newDoorFixture(t)
+	// A live item in a collection that is NOT the relation's declared target.
+	other := mustSchemaCollection(t, f.srv, f.ws.ID, "Vaults", `{"fields":[]}`)
+	secret, err := f.srv.store.CreateItem(f.ws.ID, other.ID, models.ItemCreate{
+		Title: "Secret", CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem(secret): %v", err)
+	}
+
+	body := map[string]any{"title": "New", "fields": map[string]any{"owner_ref": secret.Ref}}
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.tasks.Slug + "/items"
+	params := map[string]string{"collSlug": f.tasks.Slug}
+
+	// The owner can see Vaults, so they get the specific, useful reason.
+	seeing := f.call(f.srv.handleCreateItem, "POST", path, params, body)
+	if seeing.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", seeing.Code, seeing.Body.String())
+	}
+	if !strings.Contains(seeing.Body.String(), "is not an item in collection") {
+		t.Fatalf("a caller who CAN see the target lost the wrong_collection reason: %s",
+			seeing.Body.String())
+	}
+
+	// An editor with no access to Vaults must not be able to tell that
+	// `secret.Ref` names anything at all.
+	blind := mustUser(t, f.srv, "blind-oracle@example.com", "blindoracle", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, f.people.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	hidden := f.callAs(blind, "editor", f.srv.handleCreateItem, "POST", path, params, body)
+	if hidden.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", hidden.Code, hidden.Body.String())
+	}
+	if strings.Contains(hidden.Body.String(), "is not an item in collection") {
+		t.Fatalf("the refusal tells a caller who cannot see the target that it EXISTS: %s",
+			hidden.Body.String())
+	}
+	if !strings.Contains(hidden.Body.String(), "does not name an item") {
+		t.Fatalf("expected the not_found phrasing, got: %s", hidden.Body.String())
+	}
+}
+
+// A bulk status or priority change must resolve a relation default validation
+// injects (codex round 3).
+//
+// `bulkFieldUpdate` looks only at the keys `changes` names — correctly, since
+// re-litigating stored values would freeze legacy items — but `ValidateFields`
+// runs first and INJECTS schema defaults, so a defaulted relation was
+// persisted raw: never canonicalised, never checked against its collection.
+func TestRelationDoors_BulkUpdateResolvesInjectedRelationDefault(t *testing.T) {
+	f := newDoorFixture(t)
+	defaulted := mustSchemaCollection(t, f.srv, f.ws.ID, "Defaulted", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"priority","label":"Priority","type":"select","options":["low","high"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":%q}
+	]}`, f.people.Slug, f.target.Ref))
+
+	item, err := f.srv.store.CreateItem(f.ws.ID, defaulted.ID, models.ItemCreate{
+		Title: "Needs a default", Fields: `{"status":"open"}`, CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	rr := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "set-priority", "ids": []string{item.ID}, "priority": "high"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk set-priority: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// The default is declared as a REF; only a resolved one lands as the id.
+	if v, ok := f.storedRelation(item.ID); !ok || v != f.target.ID {
+		t.Fatalf("stored owner_ref = %#v (present=%v), want the default RESOLVED to %q; the raw "+
+			"ref %q means validation injected it after the relation pass had finished",
+			v, ok, f.target.ID, f.target.Ref)
+	}
 }

@@ -1155,6 +1155,15 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	if lateErr != nil {
 		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation defaults: %w", lateErr)
 	}
+	// A REQUIRED relation whose default did not resolve cannot be left as a
+	// drop: the key is deleted AFTER validation passed, so nothing re-checks
+	// it and the item would land with a required field absent, reported valid
+	// (codex round 3). Re-running validation is not the answer — it would
+	// re-inject the same broken default. There is no valid value, so this
+	// refuses.
+	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
+		return nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
+	}
 	for _, ri := range lateDropped {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
 	}

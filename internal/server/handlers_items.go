@@ -2413,6 +2413,17 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, lateErr)
 		return
 	}
+	// A REQUIRED relation whose default did not resolve cannot be left as a
+	// drop: the key is deleted AFTER validation passed, so nothing re-checks
+	// it and the item would land with a required field absent, reported valid
+	// (codex round 3). Re-running validation is not the answer — it would
+	// re-inject the same broken default. There is no valid value, so this
+	// refuses.
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
+		writeError(w, http.StatusBadRequest, "missing_required_fields",
+			"Required fields missing: "+relationIssuesMessage(req))
+		return
+	}
 	for _, ri := range lateDropped {
 		result.Dropped = append(result.Dropped, ri.Key)
 	}

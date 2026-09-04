@@ -306,12 +306,15 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			action = "moved"
 			meta["from_collection"] = item.CollectionSlug
 			meta["to_collection"] = req.Collection
-			// Same key, same joined-string shape and the same reason as
-			// handleMoveItem's: this map is map[string]string, and a raw array
-			// renders as a Go map literal in the timeline (BUG-2628).
-			if len(droppedFields) > 0 {
-				meta["dropped_fields"] = strings.Join(droppedFields, ", ")
-			}
+		}
+		// Same key, same joined-string shape and the same reason as
+		// handleMoveItem's: this map is map[string]string, and a raw array
+		// renders as a Go map literal in the timeline (BUG-2628). Outside the
+		// move branch because a bulk STATUS or PRIORITY change can discard a
+		// relation default too, and a drop nobody records is the defect
+		// BUG-2674 closed.
+		if len(droppedFields) > 0 {
+			meta["dropped_fields"] = strings.Join(droppedFields, ", ")
 		}
 		s.logActivityWithMeta(workspaceID, item.ID, action, r, auditMeta(meta))
 
@@ -457,10 +460,10 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget, batchID, droppedFields)
 		}
 		// Status-only move = a field update on the same collection.
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source, batchID)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source, batchID, droppedFields)
 
 	case "set-priority":
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source, batchID)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source, batchID, droppedFields)
 
 	case "tag":
 		return s.bulkTagUpdate(item, req.Tags, true, actor, source, batchID)
@@ -491,7 +494,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 // validates against the collection schema, runs the open-children guard
 // (unless force), and writes via UpdateItemWithPreCheck — the same path
 // the single PATCH handler uses. Used by status moves and set-priority.
-func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, visibleIDs []string, actor, source, batchID string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, visibleIDs []string, actor, source, batchID string, droppedFields *[]string) (*models.Item, *bulkOpError) {
 	coll, err := s.store.GetCollection(item.CollectionID)
 	if err != nil || coll == nil {
 		return nil, &bulkOpError{message: "failed to load collection"}
@@ -511,6 +514,12 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
+	// Snapshot before validation, which INJECTS schema defaults: this door's
+	// relation pass looks only at the keys `changes` names, so a relation
+	// default validation fills in was persisted raw — never canonicalised and
+	// never checked against its target collection (codex round 3). The same
+	// late-arrival the migrate doors hit, reached by a different route.
+	relBefore := store.RelationKeysPresent(schema, fieldMap)
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
@@ -545,6 +554,21 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	}
 	for k, v := range suppliedRelations {
 		fieldMap[k] = v
+	}
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
+	if lateErr != nil {
+		return nil, &bulkOpError{message: lateErr.Error(), code: "internal_error"}
+	}
+	if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
+	}
+	if droppedFields != nil && len(lateDropped) > 0 {
+		for _, ri := range lateDropped {
+			*droppedFields = append(*droppedFields, ri.Key)
+		}
 	}
 	if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "conflict"}
@@ -762,6 +786,18 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
 	if lateErr != nil {
 		return nil, &bulkOpError{message: lateErr.Error(), code: "internal_error"}
+	}
+	// A REQUIRED relation whose default did not resolve cannot be left as a
+	// drop: the key is deleted AFTER validation passed, so nothing re-checks
+	// it and the item would land with a required field absent, reported valid
+	// (codex round 3). Re-running validation is not the answer — it would
+	// re-inject the same broken default. There is no valid value, so this
+	// refuses.
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
 	}
 	for _, ri := range lateDropped {
 		result.Dropped = append(result.Dropped, ri.Key)
