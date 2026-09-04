@@ -63,7 +63,7 @@ func (s *Server) handleListItemReminders(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	reminders, err := s.store.ListRemindersForItem(item.ID)
+	reminders, err := s.store.ListRemindersForItem(workspaceID, item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return

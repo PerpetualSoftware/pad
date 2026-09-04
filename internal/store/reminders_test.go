@@ -1051,7 +1051,7 @@ func TestRemindersRoundTripThroughExport(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("imported %d items, want 1", len(items))
 	}
-	got, err := s.ListRemindersForItem(items[0].ID)
+	got, err := s.ListRemindersForItem(dst.ID, items[0].ID)
 	if err != nil {
 		t.Fatalf("ListRemindersForItem: %v", err)
 	}
@@ -1334,7 +1334,7 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("ListItems: %v (%d items)", err, len(items))
 	}
-	got, err := s.ListRemindersForItem(items[0].ID)
+	got, err := s.ListRemindersForItem(dst.ID, items[0].ID)
 	if err != nil {
 		t.Fatalf("ListRemindersForItem: %v", err)
 	}
@@ -1402,7 +1402,7 @@ func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
 	if len(items) != 1 || items[0].Title != "Real item" {
 		t.Fatalf("imported %d items, want just the real one", len(items))
 	}
-	got, err := s.ListRemindersForItem(items[0].ID)
+	got, err := s.ListRemindersForItem(dst.ID, items[0].ID)
 	if err != nil {
 		t.Fatalf("ListRemindersForItem: %v", err)
 	}
@@ -1446,7 +1446,7 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("ListItems: %v (%d)", err, len(items))
 	}
-	got, err := s.ListRemindersForItem(items[0].ID)
+	got, err := s.ListRemindersForItem(dst.ID, items[0].ID)
 	if err != nil {
 		t.Fatalf("ListRemindersForItem: %v", err)
 	}
@@ -1476,7 +1476,8 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 // MUTANT: dropping `i.workspace_id = item_reminders.workspace_id` from
 // reminderFireable makes the row a candidate and fires it; dropping the
 // JOIN condition in ListPendingReminders or the export query surfaces it
-// there. Each site has its own assertion below.
+// there; dropping reminderOwned from GetReminder or ListRemindersForItem
+// surfaces it through B. Each site has its own assertion below.
 func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "A")
@@ -1523,6 +1524,27 @@ func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Errorf("B's pending surface carries A's item through a mismatched reminder: %+v", pending)
+	}
+
+	// By-id and by-item reads, from B's side (the row's own workspace) and
+	// from A's side (the item's): neither may see it. B's read is the one
+	// that scoped by r.workspace_id alone before round 14; A's never could
+	// match on workspace_id and is here as the other half of the pair.
+	for _, ws := range []string{wsB.ID, wsA.ID} {
+		got, err := s.GetReminder(ws, id)
+		if err != nil {
+			t.Fatalf("GetReminder(%s): %v", ws, err)
+		}
+		if got != nil {
+			t.Errorf("GetReminder through workspace %s returned a mismatched row", ws)
+		}
+		list, err := s.ListRemindersForItem(ws, itemA.ID)
+		if err != nil {
+			t.Fatalf("ListRemindersForItem(%s): %v", ws, err)
+		}
+		if len(list) != 0 {
+			t.Errorf("ListRemindersForItem through workspace %s returned %d mismatched row(s)", ws, len(list))
+		}
 	}
 
 	// Export, from B's side.

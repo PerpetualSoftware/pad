@@ -56,6 +56,19 @@ const reminderFireable = `EXISTS (
 
 const reminderColumns = `id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at`
 
+// reminderOwned is the identity half of reminderFireable on its own — "this
+// row's workspace is its item's workspace" — for the reads that do not care
+// about liveness (a fired reminder on an archived item is still history worth
+// showing) but must still refuse a row whose two columns disagree. Referenced
+// by GetReminder and ListRemindersForItem (codex round 14); the write paths
+// reach a row only through GetReminder, so scoping it scopes them. A row no
+// door can write needs no door to delete it.
+const reminderOwned = `EXISTS (
+		SELECT 1 FROM items i
+		WHERE i.id = item_reminders.item_id
+		  AND i.workspace_id = item_reminders.workspace_id
+	)`
+
 // defaultReminderFireLimit bounds one tick's work. Reminders arrive at a rate
 // set by users arming them, not by traffic, so a tick has no reason to be
 // large — but a backlog is possible after downtime, and an unbounded pass
@@ -167,7 +180,7 @@ func (s *Store) CreateReminder(workspaceID, itemID, remindAt string) (*models.Re
 // sibling handler family already had to be fixed for. The caller has the
 // workspace; requiring it costs nothing.
 func (s *Store) GetReminder(workspaceID, id string) (*models.Reminder, error) {
-	row := s.db.QueryRow(s.q(`SELECT `+reminderColumns+` FROM item_reminders WHERE id = ? AND workspace_id = ?`), id, workspaceID)
+	row := s.db.QueryRow(s.q(`SELECT `+reminderColumns+` FROM item_reminders WHERE id = ? AND workspace_id = ? AND `+reminderOwned), id, workspaceID)
 	r, err := scanReminder(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -181,8 +194,14 @@ func (s *Store) GetReminder(workspaceID, id string) (*models.Reminder, error) {
 // ListRemindersForItem returns every reminder on an item, armed or not,
 // soonest first. History is included because a fired reminder is the record
 // that a reminder existed and went out.
-func (s *Store) ListRemindersForItem(itemID string) ([]*models.Reminder, error) {
-	rows, err := s.db.Query(s.q(`SELECT `+reminderColumns+` FROM item_reminders WHERE item_id = ? ORDER BY remind_at, id`), itemID)
+//
+// Takes the workspace as well as the item (codex round 14): the caller has
+// already resolved the item inside the workspace, so the argument costs
+// nothing, and it lets the query refuse a row stamped with a different
+// workspace than the item it points at — the same identity every other read
+// asserts, rather than the one read that trusted the item_id alone.
+func (s *Store) ListRemindersForItem(workspaceID, itemID string) ([]*models.Reminder, error) {
+	rows, err := s.db.Query(s.q(`SELECT `+reminderColumns+` FROM item_reminders WHERE item_id = ? AND workspace_id = ? AND `+reminderOwned+` ORDER BY remind_at, id`), itemID, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list reminders: %w", err)
 	}
