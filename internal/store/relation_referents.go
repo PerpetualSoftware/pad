@@ -529,6 +529,95 @@ func (s *Store) MigrateRelationReferentsQ(
 	return refusals, dropped, nil
 }
 
+// RelationKeysPresent snapshots which relation keys a field map holds, for
+// callers that must tell "this value was here before validation" from "this
+// value appeared because validation injected a schema default".
+func RelationKeysPresent(schema models.CollectionSchema, fieldMap map[string]any) map[string]bool {
+	out := map[string]bool{}
+	for _, def := range schema.Fields {
+		if def.Type != "relation" {
+			continue
+		}
+		if v, exists := fieldMap[def.Key]; exists && v != nil {
+			out[def.Key] = true
+		}
+	}
+	return out
+}
+
+// ResolveLateRelationDefaults resolves relation values that appeared in
+// fieldMap only AFTER validation ran — i.e. schema defaults `ValidateFields`
+// injected for keys that were missing or nil.
+//
+// WHY A SECOND PASS EXISTS AT ALL. The migrate doors validate after they
+// resolve, because the required-field check has to see a value that referent
+// resolution dropped: without that order, dropping an unresolvable value in a
+// REQUIRED relation field would store the item with the field absent instead
+// of refusing. But `ValidateFields` injects defaults, so a default lands after
+// the resolver has finished and reaches the row uncanonicalised — and an
+// invalid one that the resolver deleted is put straight back, with
+// `StillDropped` then suppressing the warning about it (codex round 2).
+//
+// Reordering the two would trade this defect for the required-field one. A
+// narrow pass over exactly the keys validation added costs one lookup in the
+// rare case a relation field declares a default, and nothing otherwise.
+//
+// A default is asserted by nobody, so an unresolvable one is DROPPED and
+// reported, never refused — the same disposition
+// MigrateRelationReferents gives RelationOriginDestinationDefault, which is
+// what this is: the same origin, arriving late.
+func (s *Store) ResolveLateRelationDefaults(
+	workspaceID string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	before map[string]bool,
+) (dropped []RelationIssue, err error) {
+	return s.ResolveLateRelationDefaultsQ(s.Q(), workspaceID, schema, fieldMap, before)
+}
+
+// ResolveLateRelationDefaultsQ is ResolveLateRelationDefaults on a
+// caller-supplied read executor — the copy door runs inside a transaction.
+func (s *Store) ResolveLateRelationDefaultsQ(
+	q Queryer,
+	workspaceID string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	before map[string]bool,
+) (dropped []RelationIssue, err error) {
+	late := map[string]any{}
+	for _, def := range schema.Fields {
+		if def.Type != "relation" || before[def.Key] {
+			continue
+		}
+		raw, exists := fieldMap[def.Key]
+		if !exists || raw == nil {
+			continue
+		}
+		if str, isStr := raw.(string); isStr && strings.TrimSpace(str) == "" {
+			continue
+		}
+		late[def.Key] = raw
+	}
+	if len(late) == 0 {
+		return nil, nil
+	}
+	issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, late)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	for _, ri := range issues {
+		dropped = append(dropped, ri)
+		delete(fieldMap, ri.Key)
+	}
+	for k, v := range late {
+		if _, survived := fieldMap[k]; !survived {
+			continue
+		}
+		fieldMap[k] = v
+	}
+	return dropped, nil
+}
+
 // hasKey reports whether m declares key. A nil map has no keys, which is how a
 // door with no overrides (bulk move) or no source item says so.
 func hasKey(m map[string]any, key string) bool {

@@ -2379,6 +2379,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	for _, ri := range relDropped {
 		result.Dropped = append(result.Dropped, ri.Key)
 	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), result.Fields)
 	if issues := items.ValidateFieldsDetailed(result.Fields, items.SchemaForMigratedFields(targetSchema)); len(issues) > 0 {
 		var missing, invalid []string
 		for _, iss := range issues {
@@ -2396,6 +2402,19 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_fields",
 			fmt.Sprintf("Invalid field value(s): %s", strings.Join(invalid, "; ")))
 		return
+	}
+	// Relation defaults ValidateFieldsDetailed just injected, which the pass
+	// above could not have seen (codex round 2). AFTER validation, not before:
+	// the required-field check has to see a value referent resolution dropped,
+	// which is why the main pass runs first — see ResolveLateRelationDefaults.
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+	if lateErr != nil {
+		writeInternalError(w, lateErr)
+		return
+	}
+	for _, ri := range lateDropped {
+		result.Dropped = append(result.Dropped, ri.Key)
 	}
 
 	// Serialize migrated fields

@@ -272,6 +272,17 @@ func containsAll(s string, subs ...string) bool {
 	return true
 }
 
+// destDefaultKind selects what the DESTINATION schema declares as the default
+// for its relation field: nothing, a ref that resolves to a live destination
+// item, or a ref that resolves to nothing (a broken schema).
+type destDefaultKind int
+
+const (
+	noDestDefault destDefaultKind = iota
+	resolvableDestDefault
+	unresolvableDestDefault
+)
+
 // newCopyRelationFixtureWith builds the relation fixture with two knobs the
 // default constructor does not need: a `default` on the DESTINATION's relation
 // field, and the source item's own stored value for that field.
@@ -281,7 +292,7 @@ func containsAll(s string, subs ...string) bool {
 // for, so a value can be present in the migrated map having been chosen by the
 // DESTINATION rather than carried from the source — a third origin, and the
 // one that is invisible until a schema declares a default.
-func newCopyRelationFixtureWith(t *testing.T, destDefault bool, sourceOwnerRef *string) *relationFixture {
+func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourceOwnerRef *string) *relationFixture {
 	t.Helper()
 	srv := testServer(t)
 	bus := events.New()
@@ -318,14 +329,16 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault bool, sourceOwnerRef *
 	}
 
 	collA := mustSchemaCollection(t, srv, wsA.ID, "Rel2 Tasks A", relSchema(targetsA.Slug, ""))
-	// A REF, not the UUID. This is the discriminating choice: a UUID is
-	// already its canonical form, so a default that was resolved and one that
+	// A REF, not the UUID, and that is the discriminating choice: a UUID is
+	// already its canonical form, so a default that was RESOLVED and one that
 	// was dropped-then-re-injected-raw by ValidateFields produce IDENTICAL
-	// bytes, and the test proves nothing. Supplied as `PEOP-1`, only a
-	// resolved default lands as targetB.ID.
-	destDef := ""
-	if destDefault {
+	// bytes and the test proves nothing.
+	var destDef string
+	switch destDefault {
+	case resolvableDestDefault:
 		destDef = targetB.Ref
+	case unresolvableDestDefault:
+		destDef = badRef
 	}
 	collB := mustSchemaCollection(t, srv, wsB.ID, "Rel2 Tasks B", relSchema(targetsB.Slug, destDef))
 
@@ -364,7 +377,7 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault bool, sourceOwnerRef *
 // and the default never enters the migrated map, which is the arrangement that
 // hid this.
 func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *testing.T) {
-	f := newCopyRelationFixtureWith(t, true, nil)
+	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil)
 	body := f.baseBody()
 
 	pre := f.ok(body)
@@ -396,7 +409,7 @@ func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *tes
 // P1, second half).
 func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
 	empty := ""
-	f := newCopyRelationFixtureWith(t, false, &empty)
+	f := newCopyRelationFixtureWith(t, noDestDefault, &empty)
 
 	pre := f.ok(f.baseBody())
 	if reason, dropped := droppedReason(pre, "owner_ref"); dropped {
@@ -444,6 +457,19 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 		if code := errCode(t, d.rr); code != "validation_error" {
 			t.Fatalf("%s: error code = %q, want validation_error", d.name, code)
 		}
+		// The refusal must quote what the CALLER sent, never the canonical
+		// UUID (codex round 2). The store resolver rewrites a ref into its
+		// target's id before the visibility check runs, so a message built
+		// from the resolved value hands back the id of an item this requester
+		// may not see — confirming both its existence and its canonical
+		// identity, which is the existence oracle the `not_found` collapse
+		// exists to prevent, reopened by the message.
+		if strings.Contains(d.rr.Body.String(), f.targetB.ID) {
+			t.Fatalf("%s: the refusal discloses the hidden item's UUID: %s", d.name, d.rr.Body.String())
+		}
+		if !strings.Contains(d.rr.Body.String(), f.targetB.Ref) {
+			t.Fatalf("%s: the refusal does not quote the value the caller sent: %s", d.name, d.rr.Body.String())
+		}
 	}
 
 	// Control: the same override from the owner, who can see People B.
@@ -451,4 +477,55 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 		t.Fatalf("the owner's identical override was refused %d — the check is refusing "+
 			"visibility-independent of who asks: %s", rr.Code, rr.Body.String())
 	}
+}
+
+// A destination default injected by VALIDATION — after referent resolution has
+// finished — must still be resolved (codex round 2, P1).
+//
+// The migrate doors resolve before they validate, because the required-field
+// check has to see a value that resolution dropped. `ValidateFields` then
+// injects schema defaults, so a default can land AFTER the resolver has run
+// and reach the row uncanonicalised. Two ways in, both here:
+//
+//   - a null override deletes the key, and the default fills the hole;
+//   - a default the resolver DELETED as unresolvable is put straight back,
+//     with StillDropped then suppressing the warning about it.
+func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
+	t.Run("a null override lets the default in, and it is resolved", func(t *testing.T) {
+		f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil)
+		body := f.baseBody()
+		// Explicit null: DELETE the key, which is what makes the default the
+		// only thing that can fill it — and it arrives after the resolver.
+		body["field_overrides"] = map[string]any{"owner_ref": nil}
+
+		res := assertPreflightMatchesCopy(t, f.copyPreflightFixture, "null override over a default", body)
+		got := f.persistedFields(res.Item.ID)["owner_ref"]
+		if got != f.targetB.ID {
+			t.Fatalf("persisted owner_ref = %#v, want the default RESOLVED to %q; the raw ref %q "+
+				"means validation re-injected it after the resolver had finished",
+				got, f.targetB.ID, f.targetB.Ref)
+		}
+	})
+
+	t.Run("an unresolvable default is dropped and reported, not silently stored", func(t *testing.T) {
+		f := newCopyRelationFixtureWith(t, unresolvableDestDefault, nil)
+		body := f.baseBody()
+
+		pre := f.ok(body)
+		if v, carried := carriedValue(pre, "owner_ref"); carried {
+			t.Fatalf("the preflight reports a default that names nothing as carrying %#v", v)
+		}
+		if _, dropped := droppedReason(pre, "owner_ref"); !dropped {
+			t.Fatalf("the preflight neither carries nor drops a broken default: %+v", pre.Fields)
+		}
+
+		res := assertPreflightMatchesCopy(t, f.copyPreflightFixture, "unresolvable default", body)
+		if v, present := f.persistedFields(res.Item.ID)["owner_ref"]; present {
+			t.Fatalf("the copy stored an unresolvable default as %#v — validation re-injected "+
+				"what the resolver had just discarded", v)
+		}
+		if !hasDroppedField(res, "owner_ref") {
+			t.Fatalf("the copy dropped the broken default without reporting it: %+v", res.Warnings)
+		}
+	})
 }

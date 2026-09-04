@@ -758,7 +758,28 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		relationDropReason[ri.Key] = string(ri.Reason)
 		delete(origin, ri.Key)
 	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), final)
 	issues := items.ValidateFieldsDetailed(final, items.SchemaForMigratedFields(targetSchema))
+	// Relation defaults ValidateFieldsDetailed just injected (codex round 2).
+	// The copy runs the identical pass at the same point; a preview that
+	// reported an unresolved default as carrying while the copy dropped it
+	// would be the DR-6 divergence in a new place.
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final, relBefore)
+	if lateErr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation defaults: %w", lateErr))
+		return
+	}
+	for _, ri := range lateDropped {
+		migrated.Dropped = append(migrated.Dropped, ri.Key)
+		relationDropReason[ri.Key] = string(ri.Reason)
+		delete(origin, ri.Key)
+	}
 
 	// DR-12's other half: an override whose VALUE is invalid is rejected,
 	// not bucketed. It is the caller's own input and there is nothing for

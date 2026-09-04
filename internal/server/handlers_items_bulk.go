@@ -747,8 +747,24 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	for _, ri := range relDropped {
 		result.Dropped = append(result.Dropped, ri.Key)
 	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), result.Fields)
 	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
+	}
+	// Relation defaults ValidateFields just injected (codex round 2). After
+	// validation for the reason ResolveLateRelationDefaults documents.
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+	if lateErr != nil {
+		return nil, &bulkOpError{message: lateErr.Error(), code: "internal_error"}
+	}
+	for _, ri := range lateDropped {
+		result.Dropped = append(result.Dropped, ri.Key)
 	}
 	// Hand the discarded keys back so the caller's activity row can name them
 	// (BUG-2674, which fixed only the SINGLE-item move). `result.Dropped` has

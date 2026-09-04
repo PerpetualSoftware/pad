@@ -1139,8 +1139,24 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, 
 	for _, ri := range relDropped {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
 	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), migrated.Fields)
 	if err := items.ValidateFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, nil, &FieldValidationError{Err: err}
+	}
+	// Relation defaults ValidateFields just injected, which the pass above
+	// could not have seen (codex round 2).
+	lateDropped, lateErr := s.ResolveLateRelationDefaultsQ(q, destWorkspaceID,
+		items.SchemaForMigratedFields(targetSchema), migrated.Fields, relBefore)
+	if lateErr != nil {
+		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation defaults: %w", lateErr)
+	}
+	for _, ri := range lateDropped {
+		migrated.Dropped = append(migrated.Dropped, ri.Key)
 	}
 	// Filtered against the FINAL map, matching the preflight (Codex round 3).
 	// migrated.Dropped is computed before overrides merge and before defaults

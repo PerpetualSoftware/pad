@@ -62,6 +62,26 @@ func (s *Server) resolveRelationReferentsAs(
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 ) ([]store.RelationIssue, error) {
+	// The ORIGINAL values, captured before the store resolver rewrites a ref
+	// into its target's UUID. Every issue this function raises quotes what the
+	// CALLER sent, never the canonical form: a refusal for an item the
+	// requester may not see must not hand back that item's UUID, which would
+	// confirm both its existence and its canonical identity — the existence
+	// oracle the `not_found` collapse exists to prevent, reopened by the
+	// message (codex round 2).
+	supplied := make(map[string]string, len(fieldMap))
+	for k, v := range fieldMap {
+		if str, isStr := v.(string); isStr {
+			supplied[k] = str
+		}
+	}
+	quoted := func(key, canonical string) string {
+		if orig, ok := supplied[key]; ok && orig != "" {
+			return orig
+		}
+		return canonical
+	}
+
 	issues, err := s.store.ResolveRelationReferents(workspaceID, schema, fieldMap)
 	if err != nil {
 		return nil, err
@@ -97,7 +117,8 @@ func (s *Server) resolveRelationReferentsAs(
 			// Same `not_found` the resolver would have given a moment later,
 			// so a retry reports it identically.
 			issues = append(issues, store.RelationIssue{
-				Key: def.Key, Value: id, Target: def.Collection, Reason: store.RelationTargetNotFound,
+				Key: def.Key, Value: quoted(def.Key, id), Target: def.Collection,
+				Reason: store.RelationTargetNotFound,
 			})
 			continue
 		}
@@ -107,7 +128,8 @@ func (s *Server) resolveRelationReferentsAs(
 		}
 		if !visible {
 			issues = append(issues, store.RelationIssue{
-				Key: def.Key, Value: id, Target: def.Collection, Reason: store.RelationTargetNotFound,
+				Key: def.Key, Value: quoted(def.Key, id), Target: def.Collection,
+				Reason: store.RelationTargetNotFound,
 			})
 		}
 	}
