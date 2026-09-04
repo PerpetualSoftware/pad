@@ -162,7 +162,13 @@ web-test:
 # all. The script tells the two apart, retries the second, and fails closed
 # under its own title; running it after the correctness checks means their
 # verdict exists whichever way it goes.
-web-audit: web
+#
+# NO `web` prerequisite (codex round 4 on #1247): `npm audit` reads the
+# lockfile and needs neither node_modules nor a build, and `web` is .PHONY,
+# so depending on it made `check` run `npm ci` twice and made this the one
+# new target to reach `npm ci` — the command CLAUDE.md forbids in a worktree
+# with a symlinked node_modules. Standalone, it is safe to run anywhere.
+web-audit:
 	cd web && npm run audit:ci
 
 # Pre-flight target that mirrors CI's Go and Web jobs. Run this before
