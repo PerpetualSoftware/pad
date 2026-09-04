@@ -290,7 +290,7 @@ func nulKeyPredicate(key map[string]string) (string, []any) {
 // MigratedTables names the tables `pad db migrate-to-pg` actually copies.
 //
 // The migration is application-level: it walks workspaces and runs
-// ExportWorkspace / ImportWorkspace on each. That reads six tables and no
+// ExportWorkspace / ImportWorkspace on each. That reads seven tables and no
 // others — the command's own help says users, platform settings and auth data
 // are NOT migrated — so a NUL in users.name, platform_settings.value,
 // sessions.user_agent or any oauth table cannot break it.
@@ -320,5 +320,12 @@ func MigratedTables() map[string]bool {
 		"comments":      true,
 		"item_links":    true,
 		"item_versions": true,
+		// item_reminders joined the export in IDEA-2641. Its columns are all
+		// machine-produced (ids, a re-parsed RFC3339 instant, server clocks),
+		// so a NUL here is not reachable through any writer — it is listed for
+		// COVERAGE, not because the preflight expects to find anything. The
+		// alternative is a table the migration copies and the preflight does
+		// not know about, which is the exact gap this list exists to close.
+		"item_reminders": true,
 	}
 }

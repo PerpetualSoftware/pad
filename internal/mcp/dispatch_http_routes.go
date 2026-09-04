@@ -371,6 +371,22 @@ func init() {
 		// terminal status. Without --all, the handler hides them.
 		"item starred": mapItemStarred,
 
+		// --- Reminders (IDEA-2641) ---
+		// `item remind` takes the item's slug-or-ref in the URL, same as
+		// star/show/delete — handleCreateItemReminder resolves through
+		// store.ResolveItem, which accepts UUIDs, slugs and issue refs.
+		// `item ack` addresses the REMINDER instead: an item can carry
+		// several, so the id is the only thing that names one.
+		"item remind": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/reminders",
+			bodyKeys:     []string{"remind_at"},
+		}.toRouteMapper(),
+		"item ack": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/reminders/{reminder_id}/ack",
+		}.toRouteMapper(),
+
 		// --- Roles (admin) ---
 		"role create": mapRoleCreate,
 		"role update": mapRoleUpdate,

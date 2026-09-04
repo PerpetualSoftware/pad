@@ -1373,7 +1373,7 @@ func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 // TASK-2714 edits this table (the handler-path bulk mapping), which is why the
 // independent copy lands as this unit's first commit.
 func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
-	// The events/1 set at SPEC-3 v1.4. Adding, removing or re-homing an entry
+	// The events/1 set at SPEC-3 v1.7. Adding, removing or re-homing an entry
 	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
 	// doc comment in the same commit.
 	want := map[string]struct {
@@ -1397,6 +1397,7 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		"pack.installed":      {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
 		"pack.upgraded":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
 		"pack.disabled":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"item.reminder_due":   {kernelevents.SubjectReminder, []string{kernelevents.PayloadReminder}, ""},
 	}
 
 	// The name constants are pinned to their wire strings separately, because
@@ -1419,6 +1420,7 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		kernelevents.PackInstalled:     "pack.installed",
 		kernelevents.PackUpgraded:      "pack.upgraded",
 		kernelevents.PackDisabled:      "pack.disabled",
+		kernelevents.ItemReminderDue:   "item.reminder_due",
 	} {
 		if constant != wire {
 			t.Errorf("event name constant = %q, want %q on the wire", constant, wire)

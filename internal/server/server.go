@@ -248,6 +248,12 @@ type Server struct {
 	// loop via stopOutboxDrain.
 	outboxDrain outboxDrainConfig
 
+	// reminderTick holds the periodic config + lifecycle for the item-reminder
+	// scheduler (IDEA-2641). Mirrors outboxDrain. Configured via
+	// SetReminderTickConfig + started via StartReminderTick; Stop() signals
+	// the loop via stopReminderTick.
+	reminderTick reminderTickConfig
+
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
@@ -441,6 +447,9 @@ func (s *Server) Stop() {
 	// SPEC-3 event outbox drain (TASK-2714). Same lifecycle pattern; an
 	// in-flight delivery is tracked on s.bg and awaited below.
 	s.stopOutboxDrain()
+	// Item reminder tick (IDEA-2641). Same lifecycle pattern; an in-flight
+	// pass is tracked on s.bg and awaited below.
+	s.stopReminderTick()
 	// MCP audit writer / sweeper run on s.bg too. Signal first so
 	// the workers see the close BEFORE Wait() blocks; without the
 	// signal Wait would hang forever on the writer's blocking
@@ -1818,6 +1827,15 @@ func (s *Server) setupRouter() {
 						// bus/stream — no durable row, see handlePushToItem's
 						// doc comment. `pad push <ref> -m "message"`.
 						r.Post("/push", s.handlePushToItem)
+						// Reminders (IDEA-2641 / GitHub #1010): the
+						// fire-at-an-instant primitive. Arming lives under
+						// the item because a reminder is meaningless without
+						// one; the lifecycle verbs live at the workspace
+						// level below, addressed by reminder id, because an
+						// acknowledgement is about the reminder rather than
+						// about the item it names.
+						r.Get("/reminders", s.handleListItemReminders)
+						r.Post("/reminders", s.handleCreateItemReminder)
 					})
 
 					// Links (v2)
@@ -1909,6 +1927,13 @@ func (s *Server) setupRouter() {
 					r.Get("/me", s.handleGetMe)
 
 					// Dashboard (v2)
+					// Reminder lifecycle, addressed by reminder id rather
+					// than by item: an acknowledgement is about the reminder,
+					// and an item can carry several. Permission is still the
+					// ITEM's — see resolveReminderForWrite.
+					r.Patch("/reminders/{reminderID}", s.handleRearmReminder)
+					r.Post("/reminders/{reminderID}/ack", s.handleAckReminder)
+					r.Delete("/reminders/{reminderID}", s.handleDeleteReminder)
 					r.Get("/dashboard", s.handleGetDashboard)
 
 					// Workspace graph — {nodes, edges} for the 3D

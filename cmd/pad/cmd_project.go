@@ -228,6 +228,11 @@ func nextCmd() *cobra.Command {
 			// branch's framing.
 			var dash struct {
 				SuggestedNext []struct {
+					// ReminderID is present only on a fired-reminder
+					// suggestion, and it is the handle an ack needs — a
+					// surface that shows a reminder without it can be read
+					// and not acted on (IDEA-2641, codex round 1).
+					ReminderID string `json:"reminder_id,omitempty"`
 					ItemSlug   string `json:"item_slug"`
 					ItemRef    string `json:"item_ref,omitempty"`
 					ItemTitle  string `json:"item_title"`
@@ -259,6 +264,9 @@ func nextCmd() *cobra.Command {
 					bold.Sprint(s.ItemTitle),
 					dim.Sprint(s.Reason),
 				)
+				if s.ReminderID != "" {
+					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad item ack %s", s.ReminderID))
+				}
 			}
 			return nil
 		},

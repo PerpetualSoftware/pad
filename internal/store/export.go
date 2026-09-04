@@ -241,6 +241,42 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 		return nil, err
 	}
 
+	// Reminders — exported with their lifecycle marks intact, and ONLY for
+	// items this bundle actually carries.
+	//
+	// The comment that stood here said soft-deleted items' reminders were
+	// included so "a restore that brings the item back brings its reminder
+	// with it", copying the item_links rationale. That was false for this
+	// table: the items section filters on `deleted_at IS NULL`, so the item is
+	// NOT in the bundle, and there is no restore that could ever reunite them
+	// — the import simply drops the orphan on its itemMap lookup. Exporting
+	// them shipped rows that could only ever be discarded, under a comment
+	// asserting a benefit the bundle cannot deliver.
+	//
+	// item_links can carry soft-deleted endpoints because a link is a row
+	// ABOUT two items and the graph is worth round-tripping raw; a reminder
+	// whose item is absent is not a relationship, it is a dangling schedule.
+	reminderRows, err := s.db.Query(s.q(`
+		SELECT r.item_id, r.remind_at, COALESCE(r.fired_at, ''), COALESCE(r.acked_at, ''), r.created_at, r.updated_at
+		FROM item_reminders r
+		JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
+		WHERE r.workspace_id = ? AND i.deleted_at IS NULL
+		ORDER BY r.created_at, r.id`), ws.ID)
+	if err != nil {
+		return nil, fmt.Errorf("export reminders: %w", err)
+	}
+	defer reminderRows.Close()
+	for reminderRows.Next() {
+		var rm models.ReminderExport
+		if err := reminderRows.Scan(&rm.ItemID, &rm.RemindAt, &rm.FiredAt, &rm.AckedAt, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan reminder: %w", err)
+		}
+		export.Reminders = append(export.Reminders, rm)
+	}
+	if err := reminderRows.Err(); err != nil {
+		return nil, err
+	}
+
 	// Item versions
 	versionRows, err := s.db.Query(s.q(`
 		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at
@@ -461,6 +497,20 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	coercedTags := make(map[string]string, len(data.Items))
 	// Slugs this import has already written. See the collision note in the loop.
 	claimedSlugs := make(map[string]bool, len(data.Items))
+	// itemMap records the id an item WOULD get; insertedItems records the ones
+	// that actually landed. The two differ for an orphaned item — one whose
+	// collection is missing from the bundle — because the map entry is written
+	// before the skip below, and it has to be: parent resolution inside this
+	// same loop reads itemMap for items it has not reached yet.
+	//
+	// So a later section resolving an id through itemMap alone can get one
+	// that names no row, and inserting a foreign key to it fails (SQLite
+	// enforces FKs here — `_pragma=foreign_keys(on)` in the DSN — and Postgres
+	// always does). item_links and item_versions survive that by skipping on
+	// error; the reminder loop below checks this set instead, which refuses
+	// the row for the right reason rather than letting the database refuse it
+	// for an incidental one.
+	insertedItems := make(map[string]bool, len(data.Items))
 	var nextItemNumber int
 	for _, it := range data.Items {
 		newItemID := newID()
@@ -571,6 +621,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
 		}
+		insertedItems[newItemID] = true
 	}
 
 	// Second pass: remap parent_id and relation fields (now all items exist).
@@ -636,6 +687,88 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			lk.CreatedAt)
 		if err != nil {
 			// Ignore duplicate links
+			continue
+		}
+	}
+
+	// Import reminders. NULL rather than empty string for the unset marks —
+	// the lifecycle is defined by NULL-ness (models.Reminder), and an empty
+	// string would make a never-fired reminder read as fired at "".
+	for _, rm := range data.Reminders {
+		newItemID := itemMap[rm.ItemID]
+		// TWO GUARDS, AND NEITHER ALONE IS OBSERVABLE — measured, not assumed.
+		// Reverting either one on its own leaves the test green: with the map
+		// gate restored, the skip-on-error below survives the FK failure; with
+		// the fatal return restored, this gate means the insert never fails.
+		// Removing BOTH is what fails it. They are kept as a pair because they
+		// defend the same failure at different depths — this one prevents the
+		// bad write, the one below survives a bad write that arrives some
+		// other way — and the pair is recorded here so a future reader does
+		// not delete one as dead code after watching its mutant survive.
+		//
+		// insertedItems, not just a non-empty mapping: an ORPHANED item — one
+		// whose collection is missing from the bundle — still gets a map entry
+		// (it is written before the skip, because parent resolution needs it),
+		// so `!= ""` is satisfied by an id that names no row. Inserting a
+		// foreign key to it fails, and this loop used to treat that as fatal,
+		// so ONE orphaned item with a reminder aborted the entire workspace
+		// restore. Codex round 10.
+		if !insertedItems[newItemID] {
+			continue
+		}
+		// NORMALIZE ON THE WAY IN. Import is a WRITER like any other, and a
+		// bundle is not necessarily one this server produced — it can be
+		// hand-edited, or come from another instance. Inserting a raw
+		// remind_at would let a bare date or a local offset into the one
+		// column every comparison downstream treats as a UTC instant, where
+		// it fires early, late, or never. Every other door normalizes; this
+		// one was writing underneath them.
+		//
+		// A value that will not parse is SKIPPED, not fatal: the import-side
+		// precedent here is lenient (coerce or drop, keep the import alive)
+		// rather than failing a whole workspace restore over one row.
+		remindAt, err := normalizeRemindAt(rm.RemindAt)
+		if err != nil {
+			slog.Warn("workspace import: skipping reminder with an unparseable remind_at",
+				"workspace_id", ws.ID, "item_id", newItemID, "raw_len", len(rm.RemindAt))
+			continue
+		}
+		var firedAt, ackedAt any
+		if rm.FiredAt != "" {
+			firedAt = rm.FiredAt
+		}
+		if rm.AckedAt != "" {
+			// ACKED WITHOUT FIRED IS NOT A STATE (codex round 11). The
+			// lifecycle has three: armed, fired-unacked, fired-acked. A bundle
+			// carrying an acknowledgement with no fire — which this server's
+			// export cannot produce, but a hand-edited or foreign one can —
+			// would import a reminder that fires, is excluded from the pending
+			// surface because it is already acked, and can never be
+			// acknowledged because AckReminder requires acked_at IS NULL. It
+			// would emit an event and then be invisible forever.
+			//
+			// The acknowledgement is dropped rather than the row: the user's
+			// SCHEDULE is the part worth keeping, and an ack of something that
+			// never fired means nothing. Lenient, matching the import-side
+			// precedent in this file.
+			if firedAt == nil {
+				slog.Warn("workspace import: dropping an acknowledgement on a reminder that never fired",
+					"workspace_id", ws.ID, "item_id", newItemID)
+			} else {
+				ackedAt = rm.AckedAt
+			}
+		}
+		if _, err := tx.Exec(s.q(`
+			INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			newID(), ws.ID, newItemID, remindAt, firedAt, ackedAt, rm.CreatedAt, rm.UpdatedAt); err != nil {
+			// SKIP, not fatal — matching item_links and item_versions, whose
+			// loops both survive a bad row. A reminder is the least critical
+			// thing in a bundle, and failing a 900-item restore over one of
+			// them is the wrong trade; this was the aggravating half of the
+			// round-10 finding, and it was mine, not the pre-existing mapping.
+			slog.Warn("workspace import: skipping reminder that failed to insert",
+				"workspace_id", ws.ID, "item_id", newItemID, "error", err)
 			continue
 		}
 	}

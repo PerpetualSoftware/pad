@@ -71,6 +71,20 @@ var padItemTool = ToolDef{
 		"unlink": actionItemUnlink,
 		"deps":   passThrough([]string{"item", "deps"}),
 
+		// Reminders (IDEA-2641 / GitHub #1010). An agent that can RECEIVE a
+		// reminder but not set one has half the primitive: deferring a piece
+		// of work is exactly the moment an agent knows when it wants to be
+		// asked again. `remind` arms; `ack-reminder` acknowledges a fired one
+		// so it leaves pad_project's next/ready surface.
+		//
+		// Re-arm and disarm are deliberately CLI-only for now: both address a
+		// reminder the agent would have had to list first, and the listing
+		// action does not exist on this surface yet. Adding them later is
+		// additive; shipping them without a way to discover an id would be
+		// advertising a door with no handle.
+		"remind":       passThrough([]string{"item", "remind"}),
+		"ack-reminder": passThrough([]string{"item", "ack"}),
+
 		// Stars
 		"star":    passThrough([]string{"item", "star"}),
 		"unstar":  passThrough([]string{"item", "unstar"}),
@@ -130,7 +144,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export. NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export, remind. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -147,6 +161,10 @@ var padItemSchemaParams = []ParamDef{
 	// artifact carries the frontmatter the server needs to reconstruct
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
+	// ── Reminders ── (IDEA-2641)
+	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to mean midnight — it names a 24-hour span, and choosing an hour inside it would fire at a time nobody picked."},
+	{Name: "reminder_id", Type: "string", Description: "A reminder's id, as returned when it was armed. Required for: ack-reminder. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
+
 	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
 
 	// ── Status / priority / scheduling ──
@@ -311,6 +329,19 @@ Actions:
                   Required: ref, target, link_type.
   deps          — Show all dependencies (incoming + outgoing) for an item.
                   Required: ref.
+  remind        — Arm a one-shot reminder that fires at a specific instant.
+                  Required: ref, remind_at (RFC3339 INSTANT — a bare date is
+                  refused, since it names a 24-hour span rather than a moment).
+                  When it fires, the item appears in pad_project next/ready
+                  carrying the reminder_id, until you acknowledge it. Use this
+                  when you defer work: it is how you ask to be reminded.
+  ack-reminder  — Acknowledge a fired reminder so it leaves next/ready.
+                  Required: reminder_id (from the fired suggestion, or from
+                  the response when you armed it — NOT the item ref, since an
+                  item can carry several reminders).
+                  Nothing else acknowledges one: completing the item does not,
+                  because a reminder may have been armed to fire after the
+                  work was done.
   star          — Star an item for quick access.
                   Required: ref.
   unstar        — Remove star.

@@ -868,6 +868,15 @@ func serveCmd() *cobra.Command {
 			}
 			srv.StartTokenReaper()
 
+			// Item reminder scheduler (IDEA-2641 / GitHub #1010). The only
+			// thing in Pad that ACTS at a target time rather than reporting
+			// on one when asked. Default: 30s, override-able via env
+			// (PAD_REMINDER_TICK_INTERVAL) the same way the reaper is.
+			if reminderInterval := parseDurationEnv("PAD_REMINDER_TICK_INTERVAL", 0); reminderInterval != 0 {
+				srv.SetReminderTickConfig(reminderInterval, 0)
+			}
+			srv.StartReminderTick()
+
 			// Workspace hard-purge sweeper (TASK-1966). Periodic sweep
 			// that hard-deletes workspaces soft-deleted more than 30 days
 			// ago — cascading every child row and reclaiming attachment

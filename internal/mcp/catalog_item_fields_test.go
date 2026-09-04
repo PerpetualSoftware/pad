@@ -1621,6 +1621,15 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"message": true, "reply_to": true, // action=comment
 		"comment": true, // the audit note on update
 
+		// action=remind / ack-reminder (IDEA-2641). Neither writes an item
+		// FIELD: a reminder is a row in its own table addressed by its own
+		// id, so these cannot collide with `fields` or `field` the way a
+		// promoted key can. They are listed here rather than added to a
+		// classified key set for exactly that reason — detectFieldConflicts
+		// visiting them would be visiting something that is not a field
+		// source.
+		"remind_at": true, "reminder_id": true,
+
 		// The two SOURCES themselves, not keys within them.
 		"fields": true,
 		"field":  true,

@@ -56,6 +56,8 @@ func parityFixtureInput() map[string]any {
 		"artifact":          "---\ntitle: t\n---\nbody",
 		"url":               "https://example.test/hook",
 		"status":            "open",
+		"remind_at":         "2026-08-01T09:00:00Z",
+		"reminder_id":       "rem-1",
 	}
 }
 
