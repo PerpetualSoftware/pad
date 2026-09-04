@@ -211,8 +211,10 @@ needs, and where it is only as good as its inputs):
     newest — registered_at is each session's own clock.
   - The registry is this OS user's; other users' sessions are not here.
   - The verdict is a sample: a session can register or exit right after.
-  - A row carries the name at registration; a window that changes its
-    PAD_AGENT afterwards must run 'pad session register' again.
+  - A row's name IS the name the session's writes carry (BUG-2882), and
+    it outranks PAD_AGENT and .pad.toml while the row is alive. A plain
+    're-register' keeps it; to change it, run 'pad session register
+    --agent <name>' — changing PAD_AGENT alone changes nothing.
 
 Newest first. Use --format json for the stable shape.`,
 		Args: cobra.NoArgs,
