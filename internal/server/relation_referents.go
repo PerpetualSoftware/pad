@@ -283,13 +283,21 @@ func (s *Server) refuseInvisibleRelationOverrides(
 // dropInvisibleRelationDefaults: the caller's own values plus the values
 // carried from the source item. Everything else in the map came from the
 // destination schema's defaults.
+// A NIL value is not a value. `ValidateFields` treats a present-but-nil key as
+// absent and injects the destination default in its place, so a key holding
+// nil in `supplied` or `carried` names a value that CAME FROM THE DEFAULT —
+// and counting it here excludes it from the very check it needs (codex round
+// 14). Third time nil has done this in one unit: rounds 4 and 5 were the same
+// distinction in the origin label.
 func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
 	out := make(map[string]bool, len(supplied)+len(carried))
-	for k := range supplied {
-		out[k] = true
-	}
-	for k := range carried {
-		out[k] = true
+	for _, m := range []map[string]any{supplied, carried} {
+		for k, v := range m {
+			if v == nil {
+				continue
+			}
+			out[k] = true
+		}
 	}
 	return out
 }
@@ -344,7 +352,16 @@ func (s *Server) dropInvisibleRelationDefaults(
 			return nil, err
 		}
 		if item == nil || item.WorkspaceID != workspaceID {
-			continue // never resolved, or resolved elsewhere; not this check's business
+			// Resolved a moment ago and gone now, or resolved into another
+			// workspace: either way the id in the map names nothing this
+			// requester can be shown, and leaving it there keeps a dangling
+			// canonical id AND skips the required-field handling below (codex
+			// round 14). Dropped like any other default that does not stand.
+			dropped = append(dropped, store.RelationIssue{
+				Key: def.Key, Target: def.Collection, Reason: store.RelationTargetNotFound,
+			})
+			delete(fieldMap, def.Key)
+			continue
 		}
 		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), role, isBearerAuth(r))
 		if err != nil {

@@ -1044,3 +1044,46 @@ func TestRelationDoors_RequiredInvisibleDefaultRefuses(t *testing.T) {
 		t.Fatalf("the owner's identical create was refused %d: %s", rr2.Code, rr2.Body.String())
 	}
 }
+
+// A NIL source value does not make the key "carried", so the destination
+// default that replaces it still gets the visibility check (codex round 14).
+//
+// `notDefaultKeys` counted every key present in the supplied or carried map,
+// nil included. `ValidateFields` treats a present-but-nil key as ABSENT and
+// injects the destination default in its place — so a nil counted the key out
+// of exactly the check the injected default needs. Third time in this unit
+// that a nil has been mistaken for a value; rounds 4 and 5 were the same
+// distinction in the origin label.
+func TestRelationDoors_NullSourceDoesNotExemptDefaultFromVisibility(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Null Then Hidden Default", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":%q}
+	]}`, f.people.Slug, f.target.Ref))
+	// The source HOLDS the key, as an explicit null.
+	item := f.seed(`{"status":"open","owner_ref":null}`)
+
+	blind := mustUser(t, f.srv, "blind-null@example.com", "blindnull", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	rr := f.callAs(blind, "editor", f.srv.handleMoveItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/move",
+		map[string]string{"itemSlug": item.Slug},
+		map[string]any{"target_collection": dst.Slug})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), f.target.ID) {
+		t.Fatalf("a null source value exempted the destination default from the visibility "+
+			"check, and the caller got the hidden target's id: %s", rr.Body.String())
+	}
+	if v, ok := f.storedRelation(item.ID); ok {
+		t.Fatalf("the hidden default was stored: %#v", v)
+	}
+}
