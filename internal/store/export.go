@@ -738,7 +738,25 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			firedAt = rm.FiredAt
 		}
 		if rm.AckedAt != "" {
-			ackedAt = rm.AckedAt
+			// ACKED WITHOUT FIRED IS NOT A STATE (codex round 11). The
+			// lifecycle has three: armed, fired-unacked, fired-acked. A bundle
+			// carrying an acknowledgement with no fire — which this server's
+			// export cannot produce, but a hand-edited or foreign one can —
+			// would import a reminder that fires, is excluded from the pending
+			// surface because it is already acked, and can never be
+			// acknowledged because AckReminder requires acked_at IS NULL. It
+			// would emit an event and then be invisible forever.
+			//
+			// The acknowledgement is dropped rather than the row: the user's
+			// SCHEDULE is the part worth keeping, and an ack of something that
+			// never fired means nothing. Lenient, matching the import-side
+			// precedent in this file.
+			if firedAt == nil {
+				slog.Warn("workspace import: dropping an acknowledgement on a reminder that never fired",
+					"workspace_id", ws.ID, "item_id", newItemID)
+			} else {
+				ackedAt = rm.AckedAt
+			}
 		}
 		if _, err := tx.Exec(s.q(`
 			INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)

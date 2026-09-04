@@ -1072,8 +1072,13 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		return iPlan && !jPlan
 	})
 
-	// Take top 3
-	limit := 3
+	// Take top 3. maxSuggestions is a CONSTANT and the trim below uses it
+	// rather than `limit`, which is reassigned to len(candidates) when there
+	// are fewer — reusing it would truncate the combined list to zero on a
+	// workspace whose only entries are reminders, which is exactly the case
+	// the reminder surface exists for.
+	const maxSuggestions = 3
+	limit := maxSuggestions
 	if len(candidates) < limit {
 		limit = len(candidates)
 	}
@@ -1120,12 +1125,25 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 
 	// Fired reminders lead the recommendation list (IDEA-2641).
 	//
-	// THEY ARE PREPENDED AFTER THE CAP, not entered as ranking candidates,
-	// and that is deliberate. A reminder is not a task competing on priority —
-	// it is an instruction the user left for this moment, and it should not be
-	// possible for three high-priority tasks to push it off a list capped at
-	// three. Entering the ranking would have made "did my reminder show up"
-	// depend on how busy the workspace is.
+	// They are prepended rather than entered as ranking candidates: a reminder
+	// is not a task competing on priority, it is an instruction the user left
+	// for this moment, and whether it appeared should not depend on how busy
+	// the workspace is. But the COMBINED list is then trimmed back to the same
+	// cap this surface has always had.
+	//
+	// Trimming was the round-11 correction. Prepending after the cap made
+	// suggested_next return up to eight entries where every consumer — the web
+	// dashboard, `pad project next`, `pad project ready` — was written against
+	// three. Worse, it silently falsified a decision recorded in
+	// BootstrapDashboard: that projection deliberately has no
+	// suggested_next_overflow_count BECAUSE this list is capped at three
+	// upstream, and its comment names raising that cap as the moment to add
+	// one. Raising it here would have made another unit's reasoning wrong
+	// somewhere else in the tree.
+	//
+	// A reminder can now push a task suggestion out, which is the right way
+	// round: the user asked to be told about this now, and the full set stays
+	// addressable in pending_reminders regardless.
 	//
 	// The same filtered set feeds resp.PendingReminders, which is the
 	// ADDRESSABLE form — it carries the reminder id an acknowledgement needs.
@@ -1154,6 +1172,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			})
 		}
 		resp.SuggestedNext = append(reminderSuggestions, resp.SuggestedNext...)
+		if len(resp.SuggestedNext) > maxSuggestions {
+			resp.SuggestedNext = resp.SuggestedNext[:maxSuggestions]
+		}
 	}
 
 	// Role breakdown: items per role with assigned users.

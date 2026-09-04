@@ -290,11 +290,21 @@ const (
 // paging, a bounded query plus an above-the-query filter is a starvation, and
 // that is precisely the defect this replaced.
 func (s *Server) collectPendingReminders(workspaceID string, scope store.PendingReminderScope, ctxMap map[string]doneContext) ([]*models.PendingReminder, bool, error) {
+	return s.collectPendingRemindersBounded(workspaceID, scope, ctxMap, pendingReminderWindow, pendingReminderMaxScan)
+}
+
+// collectPendingRemindersBounded is the paging loop with its bounds injected,
+// so a test can drive the case the production constants make impractical to
+// build: a window that fills PART WAY through a page. Reaching that with a
+// window of 50 needs ~75 rows in a specific terminal pattern; with a window of
+// 3 it is four rows. Same split, and the same reason, as the store's arbiter
+// and isolation seams.
+func (s *Server) collectPendingRemindersBounded(workspaceID string, scope store.PendingReminderScope, ctxMap map[string]doneContext, window, maxScan int) ([]*models.PendingReminder, bool, error) {
 	var out []*models.PendingReminder
 	scanned := 0
 
-	for len(out) < pendingReminderWindow && scanned < pendingReminderMaxScan {
-		page, more, err := s.store.ListPendingReminders(workspaceID, scope, pendingReminderWindow, scanned)
+	for len(out) < window && scanned < maxScan {
+		page, more, err := s.store.ListPendingReminders(workspaceID, scope, window, scanned)
 		if err != nil {
 			return nil, false, err
 		}
@@ -303,14 +313,24 @@ func (s *Server) collectPendingReminders(workspaceID string, scope store.Pending
 			return out, false, nil
 		}
 		scanned += len(page)
-		for _, pr := range page {
+		filledMidPage := false
+		for i, pr := range page {
 			if isItemDone(pr.ItemFields, pr.CollectionID, ctxMap) {
 				continue
 			}
 			out = append(out, pr)
-			if len(out) == pendingReminderWindow {
+			if len(out) == window {
+				// Rows AFTER this one in the page are pending reminders the
+				// caller is not being shown, so the set is truncated even if
+				// this was the last page (codex round 11). Reporting `more`
+				// alone said "you have seen everything" while unread rows sat
+				// in the very page we stopped reading.
+				filledMidPage = i < len(page)-1
 				break
 			}
+		}
+		if filledMidPage {
+			return out, true, nil
 		}
 		if !more {
 			// We read to the end of the set. Whatever we have is all there is,

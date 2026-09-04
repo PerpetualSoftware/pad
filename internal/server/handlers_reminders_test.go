@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // Reminder HTTP + poll-surface tests (IDEA-2641).
@@ -324,11 +325,14 @@ func TestFiredReminderSuggestionCarriesItsID(t *testing.T) {
 	}
 }
 
-// TestReminderSuggestionsAreCapped — codex round 3.
+// TestReminderSuggestionsAreCapped — codex round 3, tightened in round 11.
 //
-// suggested_next is a recommendation list of three; prepending an unbounded
-// number of reminders turns it into a second inbox and buries the suggestions
-// it exists to make.
+// suggested_next is a recommendation list of THREE and every consumer is
+// written against that. Round 3 capped the reminders at five and prepended
+// them past the list's own cap, which made the surface return up to eight —
+// caught in round 11, along with the fact that it falsified a decision
+// recorded in BootstrapDashboard (no suggested_next_overflow_count, BECAUSE
+// this list is capped at three upstream).
 //
 // The fixture needs MORE reminders than the cap, which is the leg the first
 // version of the prepend test lacked: with one reminder, capped and uncapped
@@ -355,8 +359,11 @@ func TestReminderSuggestionsAreCapped(t *testing.T) {
 			reminderSuggestions++
 		}
 	}
-	if reminderSuggestions != 5 {
-		t.Errorf("suggested_next carries %d reminder entries, want the cap of 5", reminderSuggestions)
+	if len(resp.SuggestedNext) != 3 {
+		t.Errorf("suggested_next carries %d entries, want the established cap of 3", len(resp.SuggestedNext))
+	}
+	if reminderSuggestions != 3 {
+		t.Errorf("suggested_next carries %d reminder entries, want 3 — reminders lead and the list is trimmed", reminderSuggestions)
 	}
 	// All eight stay addressable in the list that is not a recommendation.
 	if len(resp.PendingReminders) != 8 {
@@ -568,5 +575,205 @@ func TestPendingReminderScopeIsAppliedInTheQuery(t *testing.T) {
 	// the shape of a hint.
 	if resp.PendingRemindersTruncated {
 		t.Error("a guest whose whole visible set fits was told there is more")
+	}
+}
+
+// TestBootstrapCapsPendingReminders — codex round 11.
+//
+// BootstrapDashboard embeds *DashboardResponse, so every new field flows into
+// the boot payload automatically — including a reminder window of up to 50,
+// which is the budget PLAN-1410 spent an entire unit trimming. It needs a cap
+// where suggested_next does not, because suggested_next is capped upstream at
+// three and a bootstrap cap could never fire.
+//
+// MUTANT: remove the cap block and all eight arrive.
+func TestBootstrapCapsPendingReminders(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	owner := mustUser(t, srv, "boot-cap@example.com", "bootcap", "")
+	ws := mustWorkspace(t, srv, "Boot Cap", owner.ID)
+	coll := mustCollection(t, srv, ws.ID, "Tasks")
+	for i := 0; i < 8; i++ {
+		item := mustItem(t, srv, ws.ID, coll.ID, fmt.Sprintf("Task %d", i))
+		if _, err := srv.store.CreateReminder(ws.ID, item.ID, pastInstant); err != nil {
+			t.Fatalf("CreateReminder: %v", err)
+		}
+	}
+	srv.runReminderTick()
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", nil)
+	req = req.WithContext(contextWithResolvedWorkspaceIDForTest(WithCurrentUser(req.Context(), owner), ws.ID))
+	full, err := srv.buildDashboardResponse(ws.ID, req)
+	if err != nil {
+		t.Fatalf("buildDashboardResponse: %v", err)
+	}
+	if len(full.PendingReminders) != 8 {
+		t.Fatalf("setup: dashboard has %d pending reminders, want 8", len(full.PendingReminders))
+	}
+
+	capped := capBootstrapDashboard(full)
+	if len(capped.PendingReminders) != 5 {
+		t.Errorf("bootstrap embedded %d reminders, want the cap of 5", len(capped.PendingReminders))
+	}
+	if capped.PendingRemindersOverflowCount != 3 {
+		t.Errorf("overflow count = %d, want 3", capped.PendingRemindersOverflowCount)
+	}
+
+	// The FULL dashboard must be untouched — capBootstrapDashboard copies, and
+	// a cap that mutated its input would silently shrink `pad project
+	// dashboard` for everyone.
+	if len(full.PendingReminders) != 8 {
+		t.Error("capping the bootstrap projection mutated the dashboard it was built from")
+	}
+}
+
+// TestSuggestedNextKeepsItsCapWithReminders — codex round 11.
+//
+// Prepending up to five reminders past a list capped at three returned eight
+// entries, against consumers written for three — and it falsified the comment
+// in BootstrapDashboard that justifies having no suggested_next overflow
+// count, which names raising this cap as the moment to add one.
+//
+// MUTANT: remove the trim and eight come back.
+func TestSuggestedNextKeepsItsCapWithReminders(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	for i := 0; i < 3; i++ {
+		createItem(t, srv, slug, "tasks", map[string]interface{}{
+			"title": fmt.Sprintf("Busy %d", i), "fields": `{"status":"in-progress","priority":"high"}`,
+		})
+	}
+	for i := 0; i < 5; i++ {
+		item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+			"title": fmt.Sprintf("Remind %d", i), "fields": `{"status":"open"}`,
+		})
+		armViaAPI(t, srv, slug, item, pastInstant)
+	}
+	srv.runReminderTick()
+
+	resp := getDashboard(t, srv, slug)
+	if len(resp.SuggestedNext) != 3 {
+		t.Errorf("suggested_next returned %d entries, want the established cap of 3", len(resp.SuggestedNext))
+	}
+	// And the trim keeps the REMINDERS, which lead — trimming the front would
+	// satisfy the count and defeat the feature.
+	for i, sug := range resp.SuggestedNext {
+		if sug.ReminderID == "" {
+			t.Errorf("entry %d is not a reminder; the trim dropped the leading entries", i)
+		}
+	}
+	// All five stay addressable where they are not a recommendation.
+	if len(resp.PendingReminders) != 5 {
+		t.Errorf("pending_reminders holds %d, want all 5", len(resp.PendingReminders))
+	}
+}
+
+// TestSuggestedNextSurvivesWithNoTaskCandidates is the leg that catches the
+// bug my own first fix introduced: `limit` is reassigned to len(candidates),
+// so trimming with it would truncate to ZERO on a workspace whose only
+// entries are reminders — precisely the case the surface exists for.
+func TestSuggestedNextSurvivesWithNoTaskCandidates(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Only a reminder", "fields": `{"status":"done"}`,
+	})
+	armViaAPI(t, srv, slug, item, pastInstant)
+	srv.runReminderTick()
+
+	resp := getDashboard(t, srv, slug)
+	// The item is done, so it filters out of BOTH surfaces — which makes this
+	// the wrong fixture for the property. Re-open it and re-read.
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug,
+		map[string]interface{}{"fields": `{"status":"open"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reopen: %d", rr.Code)
+	}
+	resp = getDashboard(t, srv, slug)
+	if len(resp.SuggestedNext) != 1 {
+		t.Fatalf("a workspace whose only entry is a reminder returned %d suggestions, want 1", len(resp.SuggestedNext))
+	}
+	if resp.SuggestedNext[0].ReminderID == "" {
+		t.Error("the single suggestion is not the reminder")
+	}
+}
+
+// TestTruncationIsReportedWhenTheWindowFillsMidPage — codex round 11.
+//
+// The collector reported truncation from the store's `more` flag alone, which
+// answers "is there another PAGE" and not "did I read all of THIS one". When
+// the window filled part way through the final page, the rows behind the fill
+// point were pending reminders the caller was not shown — and it was told it
+// had seen everything.
+//
+// Fixture: window of 3. Page one holds two live reminders and two on completed
+// items (so it contributes 2 and exhausts its page); page two holds two live
+// ones, of which only the first is needed. The second is unread, in the last
+// page, and truncation must say so.
+//
+// MUTANT: drop the filledMidPage branch and this reports false.
+func TestTruncationIsReportedWhenTheWindowFillsMidPage(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	owner := mustUser(t, srv, "midpage@example.com", "midpage", "")
+	ws := mustWorkspace(t, srv, "Mid Page", owner.ID)
+	coll := mustCollection(t, srv, ws.ID, "Tasks")
+
+	// Order is by fired_at, and the tick stamps them all in one pass, so the
+	// tie-break is the reminder id — which means the page composition is not
+	// something this test can pin by creation order. What it CAN pin is the
+	// counts: 4 live and 2 done, a window of 3, so the window fills with rows
+	// still unread whichever way the ids sort.
+	mk := func(title, status string) {
+		item, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: title, Fields: `{"status":"` + status + `"}`})
+		if err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		if _, err := srv.store.CreateReminder(ws.ID, item.ID, pastInstant); err != nil {
+			t.Fatalf("CreateReminder: %v", err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		mk(fmt.Sprintf("Live %d", i), "open")
+	}
+	for i := 0; i < 2; i++ {
+		mk(fmt.Sprintf("Done %d", i), "done")
+	}
+	srv.runReminderTick()
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", nil)
+	req = req.WithContext(contextWithResolvedWorkspaceIDForTest(WithCurrentUser(req.Context(), owner), ws.ID))
+	if _, err := srv.buildDashboardResponse(ws.ID, req); err != nil {
+		t.Fatalf("buildDashboardResponse: %v", err)
+	}
+	colls, err := srv.store.ListCollections(ws.ID)
+	if err != nil {
+		t.Fatalf("ListCollections: %v", err)
+	}
+	ctxMap := buildDoneContextMap(colls)
+
+	out, truncated, err := srv.collectPendingRemindersBounded(ws.ID, store.PendingReminderScope{}, ctxMap, 3, 100)
+	if err != nil {
+		t.Fatalf("collectPendingRemindersBounded: %v", err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("collected %d, want the window of 3", len(out))
+	}
+	if !truncated {
+		t.Error("four live reminders through a window of three reported nothing more to see")
+	}
+	// Control: a window that fits everything must NOT report truncation, or
+	// the flag is just always true.
+	out, truncated, err = srv.collectPendingRemindersBounded(ws.ID, store.PendingReminderScope{}, ctxMap, 10, 100)
+	if err != nil {
+		t.Fatalf("collectPendingRemindersBounded (wide): %v", err)
+	}
+	if len(out) != 4 {
+		t.Errorf("wide window collected %d live reminders, want 4", len(out))
+	}
+	if truncated {
+		t.Error("a window that fit every live reminder reported truncation")
 	}
 }

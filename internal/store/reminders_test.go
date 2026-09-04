@@ -1336,3 +1336,53 @@ func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
 		t.Errorf("the real item's reminder did not survive the orphan (%d reminders)", len(got))
 	}
 }
+
+// TestImportRefusesAckWithoutFire — codex round 11.
+//
+// The lifecycle has three states; acked-without-fired is not one of them. A
+// bundle carrying it — which this server's export cannot produce, but a
+// hand-edited or foreign one can — would import a reminder that fires, is
+// excluded from the pending surface because it is already acked, and can
+// never be acknowledged because AckReminder requires acked_at IS NULL. It
+// emits an event and is then invisible forever.
+//
+// MUTANT: assign ackedAt unconditionally and the imported row comes back
+// neither armed nor pending.
+func TestImportRefusesAckWithoutFire(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "ackfire@test.com", "Ack Fire", "password123")
+	src := createTestWorkspace(t, s, "Ack Fire")
+	col := createTestCollection(t, s, src.ID, "Tasks")
+	item := createTestItem(t, s, src.ID, col.ID, "Ship it", "")
+	armReminder(t, s, src.ID, item.ID, future)
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	// An acknowledgement with no fire behind it.
+	exp.Reminders[0].AckedAt = "2026-01-01T00:00:00Z"
+	exp.Reminders[0].FiredAt = ""
+
+	dst, err := s.ImportWorkspace(exp, "ack-fire-target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+	items, err := s.ListItems(dst.ID, models.ItemListParams{})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListItems: %v (%d)", err, len(items))
+	}
+	got, err := s.ListRemindersForItem(items[0].ID)
+	if err != nil {
+		t.Fatalf("ListRemindersForItem: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("imported %d reminders, want 1 — the schedule is the part worth keeping", len(got))
+	}
+	if !got[0].Armed() {
+		t.Errorf("imported reminder is not armed: fired=%v acked=%v", got[0].FiredAt, got[0].AckedAt)
+	}
+	if got[0].AckedAt != nil {
+		t.Error("an acknowledgement of something that never fired was carried in")
+	}
+}

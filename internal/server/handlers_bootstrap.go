@@ -390,6 +390,14 @@ type BootstrapDashboard struct {
 	ActiveItemsOverflowCount int `json:"active_items_overflow_count,omitempty"`
 	ActivePlansOverflowCount int `json:"active_plans_overflow_count,omitempty"`
 	ByRoleOverflowCount      int `json:"by_role_overflow_count,omitempty"`
+	// PendingRemindersOverflowCount caps the reminder list (IDEA-2641). It
+	// needs one where suggested_next does not, and the difference is the whole
+	// reason the note above is worth reading: suggested_next is capped at 3
+	// upstream, so a bootstrap cap of 5 could never fire, while
+	// pending_reminders arrives with a window of up to 50 and would otherwise
+	// embed all of them in the boot payload — which is the budget PLAN-1410
+	// spent a whole unit trimming.
+	PendingRemindersOverflowCount int `json:"pending_reminders_overflow_count,omitempty"`
 }
 
 // Bootstrap caps clamp the per-array sizes in the bootstrap dashboard
@@ -401,11 +409,18 @@ type BootstrapDashboard struct {
 // remaining three (active_items / active_plans / by_role) are TASK-1422
 // (IDEA-1421 absorbed). suggested_next is excluded — upstream cap of 3.
 const (
-	bootstrapAttentionCap      = 5
-	bootstrapRecentActivityCap = 5
-	bootstrapActiveItemsCap    = 5
-	bootstrapActivePlansCap    = 5
-	bootstrapByRoleCap         = 5
+	bootstrapAttentionCap = 5
+	// Its own constant rather than borrowing bootstrapAttentionCap, which it
+	// happens to equal: the two answer different questions, and a future
+	// change to how much ATTENTION an agent should see must not silently
+	// change how many REMINDERS it sees. Five for the same reason as its
+	// neighbours — the practical depth for a greeting or status pass, with the
+	// overflow count telling the agent to pull the full dashboard.
+	bootstrapPendingRemindersCap = 5
+	bootstrapRecentActivityCap   = 5
+	bootstrapActiveItemsCap      = 5
+	bootstrapActivePlansCap      = 5
+	bootstrapByRoleCap           = 5
 )
 
 // BuildAgentBootstrap assembles the bootstrap blob from store queries.
@@ -1011,6 +1026,10 @@ func capBootstrapDashboard(d *DashboardResponse) *BootstrapDashboard {
 	if n := len(copied.RecentActivity) - bootstrapRecentActivityCap; n > 0 {
 		copied.RecentActivity = copied.RecentActivity[:bootstrapRecentActivityCap]
 		out.RecentActivityOverflowCount = n
+	}
+	if n := len(copied.PendingReminders) - bootstrapPendingRemindersCap; n > 0 {
+		copied.PendingReminders = copied.PendingReminders[:bootstrapPendingRemindersCap]
+		out.PendingRemindersOverflowCount = n
 	}
 	if n := len(copied.ActiveItems) - bootstrapActiveItemsCap; n > 0 {
 		copied.ActiveItems = copied.ActiveItems[:bootstrapActiveItemsCap]
