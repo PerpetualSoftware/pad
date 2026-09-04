@@ -25,6 +25,7 @@ const { searchApi, localIndexMock, localSearchMock } = vi.hoisted(() => ({
 		cursorFor: vi.fn(),
 		getByCollection: vi.fn(),
 		findByIdOrSlug: vi.fn(),
+		pendingResyncFor: vi.fn(),
 	},
 	localSearchMock: { search: vi.fn(), epoch: vi.fn() },
 }));
@@ -68,6 +69,12 @@ const epochs = new SvelteMap<string, number>();
  * which signal is correct.
  */
 const cursors = new SvelteMap<string, string>();
+/**
+ * `pendingResync` — true while the index is serving IDB-cached rows that
+ * delta-sync has not reconciled. Reactive for the same reason
+ * `bootstrapState` is: the create row must reappear when it settles.
+ */
+const resyncing = new SvelteMap<string, boolean>();
 
 function setBootstrapState(value: string) {
 	bootstrapState.set('ws', value);
@@ -113,6 +120,17 @@ async function press(key: string, opts: KeyboardEventInit = {}) {
 	await tick();
 }
 
+/**
+ * A COMPLETE `/search` page, in the shape the server actually returns.
+ *
+ * `total`, `limit` and `offset` are non-optional on `SearchResponse` and the Go
+ * handler always sends them, so a fixture omitting them is not a smaller
+ * version of a real response — it is one that cannot occur, and it was quietly
+ * deciding the page-completeness question several of these tests are about.
+ */
+const page = (results: unknown[]) => ({ results, total: results.length, limit: 50, offset: 0 });
+const emptyPage = () => page([]);
+
 const baseProps = { wsSlug: 'ws', collection: 'colors', onselect: () => {} };
 
 beforeEach(() => {
@@ -121,6 +139,7 @@ beforeEach(() => {
 	bootstrapState.clear();
 	epochs.clear();
 	cursors.clear();
+	resyncing.clear();
 	setBootstrapState('ready');
 	localIndexMock.bootstrapStateFor
 		.mockReset()
@@ -132,6 +151,9 @@ beforeEach(() => {
 		.mockReset()
 		.mockImplementation((ws: string) => cursors.get(ws) ?? '0');
 	localIndexMock.getByCollection.mockReset().mockReturnValue([]);
+	localIndexMock.pendingResyncFor
+		.mockReset()
+		.mockImplementation((ws: string) => resyncing.get(ws) ?? false);
 	localIndexMock.findByIdOrSlug.mockReset().mockImplementation((_ws: string, id: string) => rowsById.get(id) ?? null);
 	localSearchMock.search.mockReset().mockReturnValue([]);
 	rowsById = new Map();
@@ -427,6 +449,143 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 		);
 		expect(options()).toHaveLength(1);
 		expect(searchApi).not.toHaveBeenCalled();
+	});
+});
+
+describe('ItemPicker — the collection scope is a tracked input', () => {
+	it('re-lists when the target collection changes under an open picker', async () => {
+		// codex round 10. A relation field's declared target can change while
+		// this picker is mounted — a schema edit, or an SSE-driven collection
+		// refresh — and `ItemDetail` does not remount it for that. Rows from the
+		// OLD collection must not stay on screen and selectable under the new
+		// scope.
+		const colours = [{ id: 'c-1', title: 'Red', item_number: 1, collection_prefix: 'COLO' }];
+		const sizes = [{ id: 's-1', title: 'Large', item_number: 1, collection_prefix: 'SIZE' }];
+		rowsById = new Map([...colours, ...sizes].map((r) => [r.id, r]));
+		localIndexMock.getByCollection.mockImplementation((_ws: string, coll: string) =>
+			coll === 'colors' ? colours : sizes,
+		);
+
+		// Driven through the probe's single-prop setter, NOT `rerender`: that
+		// replaces the whole props object and re-runs the picker's effect
+		// whether or not it tracks the scope, so a rerender-driven version of
+		// this test passes against the untracked build. The identical trap this
+		// host was created for.
+		const { component } = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', onselect: () => {} },
+		});
+		await tick();
+		expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Red')]);
+
+		(component as unknown as { setCollection: (c: string) => void }).setCollection('sizes');
+		await tick();
+		await tick();
+
+		expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Large')]);
+	});
+
+	it('re-queries after a reset even when the scope never changed', async () => {
+		// codex round 13. The reset CLEARED the rows, so the picker has nothing
+		// for its scope — but the scope itself is unchanged, and a `lastScope`
+		// left in place compares equal at rehydration. A server-sourced picker
+		// then takes the early return and sits empty permanently, because
+		// nothing else will re-query it.
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 'c-1', title: 'Red', item_number: 1, collection_prefix: 'COLO' } }]),
+		);
+		setBootstrapState('ready');
+		loadIndex([]);
+		render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', source: 'server', onselect: () => {} },
+		});
+		await tick();
+		await type('e');
+		await vi.waitFor(() => expect(options().length).toBe(1));
+
+		setBootstrapState('reset');
+		bumpEpoch();
+		await tick();
+		await tick();
+		expect(options()).toHaveLength(0);
+
+		// Same workspace, same collection, back to ready.
+		setBootstrapState('ready');
+		bumpEpoch();
+		await vi.waitFor(() => expect(searchApi).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(options().length).toBe(1));
+	});
+
+	it('serves a scope change that arrived while the index was cold, once it hydrates', async () => {
+		// codex round 12. The not-ready branch clears and gives up WITHOUT
+		// serving the scope, so committing `lastScope` there consumes a refresh
+		// nobody performed: at hydration `scopeChanged` reads false, a
+		// server-sourced picker takes the early return, and it sits empty until
+		// the user retypes or the picker remounts.
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 'c-1', title: 'Red', item_number: 1, collection_prefix: 'COLO' } }]),
+		);
+		setBootstrapState('ready');
+		loadIndex([]);
+		const { component } = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', source: 'server', onselect: () => {} },
+		});
+		await tick();
+		await type('e');
+		await vi.waitFor(() => expect(searchApi).toHaveBeenCalledTimes(1));
+
+		// The workspace's state is dropped, and the scope changes while it is
+		// gone — the refresh is owed but cannot be served yet.
+		setBootstrapState('reset');
+		bumpEpoch();
+		await tick();
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 's-1', title: 'Large', item_number: 1, collection_prefix: 'SIZE' } }]),
+		);
+		(component as unknown as { setCollection: (c: string) => void }).setCollection('sizes');
+		await tick();
+
+		// Hydration lands. The owed refresh must be served now.
+		setBootstrapState('ready');
+		bumpEpoch();
+		await vi.waitFor(() => expect(searchApi).toHaveBeenCalledTimes(2));
+		expect(searchApi.mock.calls[1][1]).toMatchObject({ collection: 'sizes' });
+	});
+
+	it('re-queries a SERVER-sourced picker when the scope changes mid-query', async () => {
+		// codex round 11, the tail of the fix above. The effect skips
+		// server-sourced queries on an index delta — right, since the index is
+		// not their source of truth — but a scope change is not a delta. Rows
+		// fetched for the old collection are answers to a different question,
+		// and left in place they stay selectable under the new scope.
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 'c-1', title: 'Red', item_number: 1, collection_prefix: 'COLO' } }]),
+		);
+		// Index READY, which is the Relationships tab's ordinary state: that
+		// caller uses the server for QUERIES by choice, not because the index is
+		// cold. (With a cold index the non-ready branch of the effect clears the
+		// rows first and there is nothing stale left to be selectable, so this
+		// leg would not be measuring the early return.)
+		setBootstrapState('ready');
+		loadIndex([]);
+		const { component } = render(ItemPickerProbe, {
+			props: { wsSlug: 'ws', collection: 'colors', source: 'server', onselect: () => {} },
+		});
+		await tick();
+		await type('e');
+		await vi.waitFor(() => expect(options().length).toBe(1));
+		expect(searchApi).toHaveBeenCalledTimes(1);
+		expect(searchApi.mock.calls[0][1]).toMatchObject({ collection: 'colors' });
+
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 's-1', title: 'Large', item_number: 1, collection_prefix: 'SIZE' } }]),
+		);
+		(component as unknown as { setCollection: (c: string) => void }).setCollection('sizes');
+
+		await vi.waitFor(() => expect(searchApi).toHaveBeenCalledTimes(2));
+		expect(searchApi.mock.calls[1][1]).toMatchObject({ collection: 'sizes' });
+		await vi.waitFor(() =>
+			expect(options().map((o) => o.textContent)).toEqual([expect.stringContaining('Large')]),
+		);
 	});
 });
 
@@ -741,5 +900,452 @@ describe('ItemPicker — Escape only consumes what it closes', () => {
 
 		expect(seen).toHaveBeenCalledTimes(1);
 		expect(seen.mock.calls[0][0].defaultPrevented).toBe(false);
+	});
+});
+
+// ── U8: inline create from the picker (TASK-2877) ────────────────────────
+//
+// Pins written BEFORE the affordance exists, per team CONVE-29.
+//
+// The whole affordance is OPT-IN at the call site: the picker offers a create
+// row only when the host passes `oncreate`. That is not decoration — it is
+// where the two rules in the unit's scope live. "Relation-field pickers only"
+// is the Relationships tab simply not passing it, and "no create row unless the
+// user can create in the target collection" is `FieldEditor` withholding it
+// (pinned separately in `FieldEditor.relation.svelte.test.ts`, since the
+// permission cascade is not this component's to know).
+//
+// The no-duplicate half of the proving test lives here rather than in the
+// caller: it is EXACT-TITLE SUPPRESSION, not a create-time check. Once the
+// item exists, a picker asked for the same text again offers the row and
+// withholds the create affordance, so a second invocation cannot be a create
+// at all. `FieldEditor` upserting the new row into `localIndex` is what makes
+// that true on the very next keystroke; the mechanism is pinned there.
+describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
+	function createRow(): HTMLElement | null {
+		return document.querySelector<HTMLElement>('.picker-create');
+	}
+
+	const createProps = { ...baseProps, createLabel: 'Colors' };
+
+
+	it('offers no create row when the host passes no oncreate — the Relationships-tab caller', async () => {
+		loadIndex(makeRows(3));
+		localSearchMock.search.mockReturnValue([]);
+		render(ItemPicker, { props: { ...baseProps } });
+		await tick();
+
+		await type('Purple');
+
+		expect(createRow()).toBeNull();
+		// CONTROL: the same query DOES produce the row when a host opts in, so
+		// this leg is measuring the opt-in and not a query that never renders.
+		cleanup();
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+		await type('Purple');
+		expect(createRow()).not.toBeNull();
+	});
+
+	it('offers the create row, naming the query and the TARGET collection, when nothing matches', async () => {
+		loadIndex(makeRows(3));
+		localSearchMock.search.mockReturnValue([]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+
+		expect(createRow()).not.toBeNull();
+		expect(createRow()!.textContent).toContain('Purple');
+		// The collection is named so the row cannot be read as "create it here".
+		// U8 creates in the field's declared target, which is frequently NOT the
+		// collection the user is looking at.
+		expect(createRow()!.textContent).toContain('Colors');
+	});
+
+	it('still offers create when matches exist but none is EXACT — the "or nothing exactly" half', async () => {
+		loadIndex([
+			{ id: 'id-1', title: 'Purple Rain', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+
+		expect(options()).toHaveLength(2);
+		// Trailing, per the unit: the matches are what the user most likely wants.
+		expect(options()[1]).toBe(createRow());
+	});
+
+	it('withholds create when an exact title already exists — the no-duplicate mechanism', async () => {
+		loadIndex([
+			{ id: 'id-1', title: 'Purple', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+
+		expect(createRow()).toBeNull();
+		expect(options()).toHaveLength(1);
+	});
+
+	it('matches an existing title case- and whitespace-insensitively', async () => {
+		// A user who typed "purple " must not mint a second "Purple". Exactness
+		// here is about the user's INTENT to name an existing row, and neither
+		// case nor a trailing space changes that intent.
+		loadIndex([
+			{ id: 'id-1', title: 'Purple', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('  purple ');
+
+		expect(createRow()).toBeNull();
+	});
+
+	it('offers nothing to create on an empty query, or without a target collection', async () => {
+		loadIndex(makeRows(3));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+		// Empty query: the scoped picker is LISTING, and "Create ''" is not a
+		// thing the user asked for.
+		expect(createRow()).toBeNull();
+
+		cleanup();
+		// Unscoped: there is no target collection to create into, so the row
+		// would have to guess. A host that passes `oncreate` without a
+		// `collection` gets nothing rather than a wrong destination.
+		localSearchMock.search.mockReturnValue([]);
+		render(ItemPicker, {
+			props: { wsSlug: 'ws', onselect: () => {}, oncreate: vi.fn(), createLabel: 'Colors' },
+		});
+		await tick();
+		await type('Purple');
+		expect(createRow()).toBeNull();
+	});
+
+	it('offers nothing to create while a cold search is still in flight', async () => {
+		// "Nothing matched" is not yet known while the server is answering. A
+		// create row here would invite a duplicate of a row about to arrive.
+		//
+		// `aria-expanded` is the assertion that can actually FAIL, and the
+		// reason this leg is worth having. The markup renders the loading
+		// branch INSTEAD of the listbox, so a build that offered the create row
+		// mid-flight would still show no `.picker-create` — the row would exist
+		// in the options list and merely be off screen, which is trap #1 from
+		// this plan's false-green note. What leaks is the combobox announcing
+		// itself expanded while no listbox is rendered.
+		vi.useFakeTimers();
+		setBootstrapState('cold');
+		let release!: (v: unknown) => void;
+		searchApi.mockReturnValue(new Promise((r) => { release = r; }));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.advanceTimersByTimeAsync(300);
+		expect(createRow()).toBeNull();
+		expect(input().getAttribute('aria-expanded')).toBe('false');
+
+		release(emptyPage());
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+		expect(input().getAttribute('aria-expanded')).toBe('true');
+		vi.useRealTimers();
+	});
+
+	it('is keyboard-reachable as the last row, and Enter invokes it with the trimmed query', async () => {
+		loadIndex([
+			{ id: 'id-1', title: 'Purple Rain', item_number: 1, collection_prefix: 'COLO' },
+		]);
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		const oncreate = vi.fn();
+		const onselect = vi.fn();
+		render(ItemPicker, { props: { ...createProps, oncreate, onselect } });
+		await tick();
+
+		await type('  Purple  ');
+		await press('ArrowDown');
+		expect(options()[0].getAttribute('aria-selected')).toBe('true');
+		await press('ArrowDown');
+		expect(createRow()!.getAttribute('aria-selected')).toBe('true');
+		expect(input().getAttribute('aria-activedescendant')).toBe(createRow()!.id);
+
+		await press('Enter');
+		expect(oncreate).toHaveBeenCalledTimes(1);
+		expect(oncreate).toHaveBeenCalledWith('Purple');
+		// Enter on the create row must not ALSO select whatever row it replaced.
+		expect(onselect).not.toHaveBeenCalled();
+	});
+
+	it('clicking the create row invokes it', async () => {
+		loadIndex([]);
+		localSearchMock.search.mockReturnValue([]);
+		const oncreate = vi.fn();
+		render(ItemPicker, { props: { ...createProps, oncreate } });
+		await tick();
+
+		await type('Purple');
+		createRow()!.click();
+
+		expect(oncreate).toHaveBeenCalledTimes(1);
+		expect(oncreate).toHaveBeenCalledWith('Purple');
+	});
+
+	it('withholds create for an exact title the SEARCH RANKING did not return', async () => {
+		// codex round 1 P2. `warmSearch` asks `localSearch` for `limit +
+		// excluded.size` hits, so the exact match is only in `rawResults` if the
+		// RANKER put it there. Resting the no-duplicate guarantee on a relevance
+		// score is resting it on the wrong thing: the question "does an item with
+		// this exact title exist in this collection" has an authoritative answer
+		// in the index itself, and the index is already in RAM.
+		//
+		// The scenario is the ranker returning a full page of near-misses with
+		// the exact row outside the window.
+		loadIndex([
+			{ id: 'id-1', title: 'Purple Rain', item_number: 1, collection_prefix: 'COLO' },
+			{ id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' },
+		]);
+		// The ranker returns ONLY the near-miss; the exact row is off the window.
+		localSearchMock.search.mockReturnValue([{ id: 'id-1', score: 1 }]);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn(), limit: 1 } });
+		await tick();
+
+		await type('Purple');
+
+		expect(options().map((o) => o.textContent)).toHaveLength(1);
+		expect(createRow()).toBeNull();
+	});
+
+	it('withholds create when the COLD path returns an exact title', async () => {
+		// The `rawResults` check is not redundant with the collection scan, and
+		// this is the case that proves it: while the index is cold there is no
+		// collection to scan, and the server's answer is the only evidence that
+		// the row exists. A build relying on the scan alone offers to create a
+		// duplicate of a row `/search` just returned.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockResolvedValue(
+			page([{ item: { id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' } }]),
+		);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(options()).toHaveLength(1));
+		expect(createRow()).toBeNull();
+	});
+
+	it('offers nothing to create when the cold search FAILED', async () => {
+		// codex round 3 P2. A failed search and an empty one leave identical
+		// state — no rows, not loading — and the result list is right to render
+		// both as "No results". The create row is not: an empty answer says no
+		// such item exists, a failed one says nothing at all, and offering to
+		// create on no evidence is how the duplicate gets minted. Same rule the
+		// permission gate follows: no answer must not read as permission.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockRejectedValue(new Error('network'));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(document.body.textContent).toContain('No results'));
+		expect(createRow()).toBeNull();
+
+		// And it must not latch: the next query gets a fresh verdict.
+		searchApi.mockResolvedValue(emptyPage());
+		await type('Purple Haze');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+	});
+
+	it('a cold failure does not outlive hydration — the warm answer supersedes it', async () => {
+		// The reachable half of "must not latch". The failure flag is cleared by
+		// whatever produces the NEXT verdict, and the warm branch never reaches
+		// `coldSearch` to clear it on the way through — so without its own reset
+		// a single network blip suppresses the create row for the rest of the
+		// session, even once the authoritative in-RAM answer is available.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockRejectedValue(new Error('network'));
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(document.body.textContent).toContain('No results'));
+		expect(createRow()).toBeNull();
+
+		setBootstrapState('ready');
+		bumpEpoch();
+		await tick();
+		await tick();
+
+		expect(createRow()).not.toBeNull();
+	});
+
+	it('offers nothing to create while the index is ready but still resyncing', async () => {
+		// codex round 4 P1. `ready` coexists with `pendingResync`: the rows on
+		// screen came from the IDB cache and delta-sync has not reconciled them,
+		// so an item that EXISTS can be missing from the snapshot. Presence
+		// would still be evidence; absence is not, and absence is what the
+		// create row is derived from.
+		loadIndex([]);
+		localSearchMock.search.mockReturnValue([]);
+		resyncing.set('ws', true);
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		expect(createRow()).toBeNull();
+
+		// It must come back once the snapshot is reconciled, without retyping.
+		resyncing.set('ws', false);
+		bumpEpoch();
+		await tick();
+		await tick();
+		expect(createRow()).not.toBeNull();
+	});
+
+	it('does not carry one query\u2019s answer onto the next', async () => {
+		// `coldAnswered` has to mean "answered for what is in the box NOW".
+		// Without the per-query reset, typing a second query offers a create row
+		// immediately, on the strength of the first query's answer and against
+		// an empty result list that describes nothing.
+		vi.useFakeTimers();
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockResolvedValue(emptyPage());
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.advanceTimersByTimeAsync(300);
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+
+		// Second query, still in flight — nothing has answered for it yet.
+		let release!: (v: unknown) => void;
+		searchApi.mockReturnValue(new Promise((r) => { release = r; }));
+		await type('Teal');
+		await vi.advanceTimersByTimeAsync(300);
+		// `aria-expanded`, not the row's absence — the markup renders the
+		// loading branch INSTEAD of the listbox, so `.picker-create` is missing
+		// either way and asserting on it measures the branch rather than the
+		// rule. Same trap this suite hit on the `loading` guard; it is the
+		// options list, and therefore the combobox's expanded state, that
+		// carries the stale answer.
+		expect(input().getAttribute('aria-expanded')).toBe('false');
+		expect(createRow()).toBeNull();
+
+		release(emptyPage());
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+		vi.useRealTimers();
+	});
+
+	it('offers nothing to create when the cold answer was TRUNCATED', async () => {
+		// codex round 7. `/search` pages, so a page that does not contain the
+		// exact title is not evidence the title is unused — the row may be on a
+		// page nobody fetched. Same defect as trusting the local ranker's
+		// window, arriving from the server side.
+		//
+		// Completeness is the PAGE LENGTH against the echoed limit, not `total`
+		// (codex round 8): a failed count query floors `total` up to
+		// `len(results)` server-side, so it cannot distinguish a complete page
+		// from a broken count.
+		setBootstrapState('cold');
+		loadIndex([]);
+		// A FULL page — as many rows as the limit — which is what truncation
+		// actually looks like on the wire.
+		const row = (n: number) => ({
+			item: { id: `id-${n}`, title: `Purple ${n}`, item_number: n, collection_prefix: 'COLO' },
+		});
+		searchApi.mockResolvedValue({ results: [row(1), row(2)], total: 84, limit: 2, offset: 0 });
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(options().length).toBeGreaterThan(0));
+		expect(createRow()).toBeNull();
+
+		// The shape that discriminates PAGE LENGTH from `total`: a full page
+		// whose count query FAILED. `store.search` sets total = -1 on a count
+		// error, floors it to 0, then floors it again to len(results)
+		// (search.go:604-608) — so the wire says total === 2 with a page size of
+		// 2 and 84 rows really matching. Reading completeness off `total` calls
+		// that complete; reading it off the page length does not.
+		searchApi.mockResolvedValue({ results: [row(1), row(2)], total: 2, limit: 2, offset: 0 });
+		await type('Purple r');
+		await vi.waitFor(() => expect(options().length).toBeGreaterThan(0));
+		expect(createRow()).toBeNull();
+
+		// CONTROL: a page SHORTER than the limit is a complete answer and does
+		// offer it, so this leg measures truncation and not the query.
+		searchApi.mockResolvedValue({ results: [row(1)], total: 1, limit: 50, offset: 0 });
+		await type('Purpl');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+	});
+
+	it('offers nothing to create after the workspace state is dropped', async () => {
+		// codex round 5 P1. `localIndex.reset()` — sign-out, a 403 membership
+		// purge, a deleted workspace — drops every row, and the picker's own
+		// effect clears what it was showing. The query is still in the box, so
+		// with a negative "did it fail" flag the picker read that silence as a
+		// clean empty answer and offered to create over a workspace it can no
+		// longer see anything in.
+		setBootstrapState('cold');
+		loadIndex([]);
+		searchApi.mockResolvedValue(emptyPage());
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+
+		// The drop.
+		setBootstrapState('reset');
+		bumpEpoch();
+		await tick();
+		await tick();
+
+		expect(createRow()).toBeNull();
+	});
+
+	it('CONTROL: a cold index falls back to the returned rows and still offers create', async () => {
+		// The collection scan needs a hydrated index. While cold there is no
+		// authoritative answer to fall back ON, so the behaviour is the
+		// rawResults check alone — which is the pre-fix behaviour, and correct
+		// here because refusing to offer create while cold would strand the user.
+		setBootstrapState('cold');
+		loadIndex([{ id: 'id-2', title: 'Purple', item_number: 2, collection_prefix: 'COLO' }]);
+		searchApi.mockResolvedValue(emptyPage());
+		render(ItemPicker, { props: { ...createProps, oncreate: vi.fn() } });
+		await tick();
+
+		await type('Purple');
+		await vi.waitFor(() => expect(createRow()).not.toBeNull());
+	});
+
+	it('does not fire a second create while the first is still in flight', async () => {
+		// The duplicate this guards is not the same-text-twice case the exact
+		// match covers — it is one impatient user and two Enters inside a single
+		// round trip, when no row exists yet to suppress anything.
+		loadIndex([]);
+		localSearchMock.search.mockReturnValue([]);
+		let release!: () => void;
+		const oncreate = vi.fn(() => new Promise<void>((r) => { release = () => r(); }));
+		render(ItemPicker, { props: { ...createProps, oncreate } });
+		await tick();
+
+		await type('Purple');
+		await press('ArrowDown');
+		await press('Enter');
+		await press('Enter');
+		expect(oncreate).toHaveBeenCalledTimes(1);
+
+		release();
+		await tick();
 	});
 });

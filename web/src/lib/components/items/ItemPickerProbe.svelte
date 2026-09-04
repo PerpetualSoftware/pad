@@ -25,6 +25,18 @@
 
 	let { wsSlug, collection, source = 'index', onselect = () => {} }: Props = $props();
 
+	// The scope, held locally for the same reason `excludeIds` is: a test that
+	// changed it through `rerender` would prove nothing, since that replaces the
+	// props object and re-runs the picker's effect whether or not it tracks the
+	// scope (codex round 10 — the identical trap this host was built for).
+	let scope = $state<string | undefined>(undefined);
+	let effectiveCollection = $derived(scope ?? collection);
+
+	/** Driven by the test to simulate a relation field's target changing. */
+	export function setCollection(next: string) {
+		scope = next;
+	}
+
 	// Starts empty and is only ever changed through `setExcludeIds` — seeding
 	// it from a prop would capture the initial value and warn.
 	let excludeIds = $state<string[]>([]);
@@ -35,4 +47,4 @@
 	}
 </script>
 
-<ItemPicker {wsSlug} {collection} {source} {excludeIds} {onselect} />
+<ItemPicker {wsSlug} collection={effectiveCollection} {source} {excludeIds} {onselect} />

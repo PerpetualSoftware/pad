@@ -85,6 +85,36 @@
 		/** Chosen row. The picker does not clear itself — the caller decides. */
 		onselect: (item: ItemIndexRow) => void;
 		/**
+		 * Inline create (PLAN-2857 U8). Passing this adds a trailing
+		 * "Create \"<query>\" in <collection>" row; omitting it is how a caller
+		 * declines the affordance, and the ONLY way to decline it.
+		 *
+		 * That opt-in shape is deliberate. Both rules in U8's scope are the
+		 * caller's to know and neither is this component's:
+		 *
+		 *   * *Relation fields only.* The Relationships tab links items that
+		 *     already exist, so it passes nothing and renders exactly as before.
+		 *   * *Permission.* "Can this user create in the TARGET collection" is
+		 *     the collection-level `canEditCollection` cascade — the same
+		 *     predicate behind "+ New" — which lives in the workspace store. A
+		 *     picker that consulted it here would be a second copy of an answer
+		 *     the server also enforces.
+		 *
+		 * Awaited, and re-entrant calls are dropped while one is in flight, so
+		 * two Enters inside one round trip cannot mint two items. Rejections are
+		 * swallowed HERE and belong to the caller: it owns the API call, so it
+		 * owns the error surface (a toast) and the decision to leave the query in
+		 * place for a retry.
+		 */
+		oncreate?: (title: string) => void | Promise<void>;
+		/**
+		 * Display name of the target collection for the create row. Falls back to
+		 * the slug, which is the wrong register ("in colors" vs "in Colors") but
+		 * never wrong about WHERE the item would land — the fact the row exists
+		 * to convey.
+		 */
+		createLabel?: string;
+		/**
 		 * Escape on an already-empty box.
 		 *
 		 * Pass one if Escape should close the surface hosting the picker.
@@ -109,6 +139,8 @@
 		label = 'Search items',
 		autofocus = false,
 		onselect,
+		oncreate,
+		createLabel,
 		oncancel,
 	}: Props = $props();
 
@@ -125,6 +157,22 @@
 	let rawResults = $state<ItemIndexRow[]>([]);
 	let loading = $state(false);
 	/**
+	 * A cold search ANSWERED, and `rawResults` is that answer.
+	 *
+	 * Stated positively on purpose (codex rounds 3 and 5). The negative form
+	 * — "the last search failed" — was false in three different states that
+	 * are not answers at all: before the first request, after a failure, and
+	 * after `localIndex.reset()` drops everything on a sign-out or 403 purge.
+	 * Each left the flag reading "fine" and put a create row on screen backed
+	 * by no evidence. A flag that must be cleared everywhere is a flag that
+	 * will be missed somewhere; this one is set in exactly one place, by the
+	 * event that earns it.
+	 *
+	 * Only the COLD path needs it. A settled warm index is authoritative by
+	 * itself, and `indexCanProveAbsence` is what asks that question.
+	 */
+	let coldAnswered = $state(false);
+	/**
 	 * The highlighted row's ID, not its index. Identity survives the list
 	 * changing under it — a delta landing, a late exclusion arriving — where an
 	 * index silently moves the highlight onto whatever slid into that position.
@@ -139,17 +187,132 @@
 	 * read would silently wedge the production effect scheduler.
 	 */
 	let seq = 0;
+	/**
+	 * The (workspace, collection) pair the rows on screen answer for.
+	 *
+	 * Plain `let` per CONVE-1688 — written and read only inside the refresh
+	 * effect, never rendered. Starts NULL rather than seeded from the props:
+	 * seeding it would capture their mount-time values outside any reactive
+	 * scope (svelte warns `state_referenced_locally`, correctly). Null is also
+	 * the value the not-ready branch restores, and it reads the same way in both
+	 * places: the rows on screen answer for NO scope, so the next run owes a
+	 * refresh. At mount that is inert — the query box is empty, and the only
+	 * reader of `scopeChanged` needs a non-empty query.
+	 */
+	let lastScope: string | null = null;
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 	let inputEl = $state<HTMLInputElement>();
 
 	const uid = $props.id();
 
+	/**
+	 * Identifier for the create row in the same namespace as the result rows'
+	 * ids, so ONE `activeId` addresses either. A NUL-prefixed sentinel because
+	 * item ids are UUIDs and can never collide with it.
+	 */
+	const CREATE_OPTION_ID = '\u0000create';
+
+	type PickerOption =
+		| { kind: 'item'; id: string; row: ItemIndexRow }
+		| { kind: 'create'; id: string };
+
 	let excluded = $derived(new Set(excludeIds));
 	let results = $derived(present(rawResults));
-	let activeIndex = $derived(activeId ? results.findIndex((r) => r.id === activeId) : -1);
+
+	/**
+	 * Whether to offer the create row, for the query as it stands.
+	 *
+	 * "Matches nothing, or nothing EXACTLY" — and the exact-title question is
+	 * asked of the INDEX, not of the ranking.
+	 *
+	 * `rawResults` is checked first because it is free and is the only answer
+	 * available while the index is cold. But it is a RANKED, WINDOWED answer:
+	 * `warmSearch` asks for `limit + excluded.size` hits, so an exact row that
+	 * the ranker placed outside that window is simply absent, and resting the
+	 * no-duplicate guarantee on a relevance score rests it on the wrong thing
+	 * (codex round 1 P2). "Does an item with this exact title exist in this
+	 * collection" has an authoritative answer in `localIndex`, already in RAM,
+	 * so the warm path asks it directly. `getByCollection` excludes
+	 * soft-deleted rows, which is right: a deleted "Purple" should not stop the
+	 * user minting a live one.
+	 *
+	 * This suppression IS the no-duplicate half of U8's proving test. There is
+	 * no create-time uniqueness check anywhere below, and deliberately so: the
+	 * second invocation with the same text never reaches a create, because by
+	 * then the row exists and this returns false. What makes that true on the
+	 * next keystroke is the caller upserting the new item into `localIndex`.
+	 *
+	 * Not offered while `loading`: mid-flight, "nothing matched" is not yet
+	 * known, and a create row there invites a duplicate of a row about to land.
+	 */
+	let createTitle = $derived(query.trim());
+	function titleIs(row: ItemIndexRow, wanted: string): boolean {
+		return (row.title ?? '').trim().toLowerCase() === wanted;
+	}
+	let showCreate = $derived.by((): boolean => {
+		// No `loading` term. It and the per-query `coldAnswered` reset below are
+		// a redundant PAIR — either alone suppresses the row for the whole
+		// in-flight window, and a mutant removing either one survived while the
+		// other stood. That is not defence in depth, it is one guard and one
+		// line that looks like a guard. `coldAnswered` is the one kept, because
+		// it states the actual rule (something authoritative has answered FOR
+		// THIS QUERY) where `loading` is a UI state that merely correlates with
+		// it, and only the warm path can be settled while nothing is loading.
+		if (!oncreate || !collection || !createTitle) return false;
+		const wanted = createTitle.toLowerCase();
+		if (rawResults.some((r) => titleIs(r, wanted))) return false;
+		// Offer only where SOMETHING authoritative has answered "no such item",
+		// which is the same rule the permission gate and `coldFailed` follow: no
+		// evidence must not read as permission.
+		//
+		//   * COLD — offer only once `/search` has actually ANSWERED. The server
+		//     is authoritative and its empty answer is real evidence; not having
+		//     asked yet, a failed request, and a workspace whose state was just
+		//     dropped are all silence, and silence is not evidence. (Refusing
+		//     outright would strand every user whose index has not hydrated,
+		//     which is why this waits for the answer rather than the index.)
+		//   * READY, settled — the in-RAM collection is authoritative; scan it.
+		//   * READY, resyncing — the rows are a cache snapshot that delta-sync
+		//     has not reconciled, and `rawResults` came from THAT, so nothing in
+		//     reach can support the inference. Withhold until it settles; the
+		//     window is seconds and a duplicate outlives it.
+		if (!isWarm()) return coldAnswered;
+		if (!indexCanProveAbsence()) return false;
+		return !localIndex.getByCollection(wsSlug, collection).some((r) => titleIs(r, wanted));
+	});
+
+	/**
+	 * Result rows plus the create row, in render AND keyboard order — one list,
+	 * so arrowing onto the create row needs no special case and cannot fall out
+	 * of step with what is on screen.
+	 */
+	let options = $derived.by((): PickerOption[] => {
+		const out: PickerOption[] = results.map((row) => ({ kind: 'item', id: row.id, row }));
+		if (showCreate) out.push({ kind: 'create', id: CREATE_OPTION_ID });
+		return out;
+	});
+	let activeIndex = $derived(activeId ? options.findIndex((o) => o.id === activeId) : -1);
 
 	function isWarm(): boolean {
 		return localIndex.bootstrapStateFor(wsSlug) === 'ready';
+	}
+
+	/**
+	 * Is the local index a source we may reason about ABSENCE from?
+	 *
+	 * `ready` is not enough (codex round 4). It coexists with `pendingResync`:
+	 * `localIndex` hydrates from the IDB cache and serves those rows while
+	 * delta-sync catches up, so during that window a row that EXISTS can be
+	 * missing from the snapshot. Presence in the index is still evidence — the
+	 * row was real when it was cached — but absence is not, and absence is
+	 * exactly what the create row is derived from.
+	 *
+	 * Only `showCreate` asks this. Search and listing deliberately keep using
+	 * `isWarm`: showing cached rows during a resync is right, and it is only
+	 * the inference "therefore no such item exists" that the cache cannot bear.
+	 */
+	function indexCanProveAbsence(): boolean {
+		return isWarm() && !localIndex.pendingResyncFor(wsSlug);
 	}
 
 	/** Hide excluded rows, then bound the list. Applied to every path. */
@@ -199,11 +362,29 @@
 		try {
 			const res = await api.search(q, { workspace: wsSlug, collection });
 			if (mySeq !== seq) return;
-			rawResults = (res.results ?? []).map((r) => r.item);
+			const rows = (res.results ?? []).map((r) => r.item);
+			rawResults = rows;
+			// A TRUNCATED page is not an answer to "does this exact title
+			// exist" — the row could be on a page we never fetched (codex round
+			// 7). Same defect as trusting the local ranker's window, arriving
+			// from the server side.
+			//
+			// Completeness is read from the PAGE LENGTH, not from `total`
+			// (codex round 8). `total` cannot answer it: when the count query
+			// fails, `store.search` sets total = -1, floors it to 0, and then
+			// floors it again to `len(results)` — "Ensure total is never less
+			// than actual results", search.go:604-608 — so a failed count is
+			// indistinguishable on the wire from an exact-fit page. A page
+			// SHORTER than the limit the server echoes back is proof there is no
+			// next page, and it holds whatever the count did. A full page is not
+			// proof either way, so it does not count as an answer.
+			const pageLimit = res.limit ?? 0;
+			coldAnswered = pageLimit > 0 && rows.length < pageLimit;
 			activeId = null;
 		} catch {
 			if (mySeq !== seq) return;
 			rawResults = [];
+			coldAnswered = false;
 			activeId = null;
 		} finally {
 			if (mySeq === seq) loading = false;
@@ -237,6 +418,12 @@
 		}
 
 		rawResults = [];
+		// The previous answer described the PREVIOUS query. This is the line
+		// that makes `coldAnswered` mean "answered for what is in the box now",
+		// and with the `loading` term gone it is load-bearing on its own: drop
+		// it and query B offers a create row on the strength of query A's
+		// answer, while B is still in flight.
+		coldAnswered = false;
 		activeId = null;
 		loading = true;
 		debounceTimer = setTimeout(() => coldSearch(q, mySeq), COLD_SEARCH_DEBOUNCE_MS);
@@ -246,25 +433,57 @@
 		onselect(row);
 	}
 
+	/**
+	 * Plain `let` for the same reason `seq` is (CONVE-1688): written in a
+	 * handler, read in a handler, never rendered. Making it `$state` would put a
+	 * write inside the effect graph for a value nothing displays.
+	 */
+	let creating = false;
+
+	async function invokeCreate() {
+		if (creating || !oncreate) return;
+		const title = createTitle;
+		if (!title) return;
+		creating = true;
+		try {
+			await oncreate(title);
+		} catch {
+			// The caller owns the error surface — see the `oncreate` prop doc.
+			// Swallowed rather than rethrown so an unhandled rejection cannot
+			// escape a keydown handler.
+		} finally {
+			// A write to a destroyed instance is a no-op, so this needs no fence.
+			creating = false;
+		}
+	}
+
+	function activate(option: PickerOption) {
+		if (option.kind === 'create') {
+			void invokeCreate();
+			return;
+		}
+		choose(option.row);
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key === 'ArrowDown') {
-			if (results.length === 0) return;
+			if (options.length === 0) return;
 			e.preventDefault();
-			const next = activeIndex < results.length - 1 ? activeIndex + 1 : results.length - 1;
-			activeId = results[next]?.id ?? null;
+			const next = activeIndex < options.length - 1 ? activeIndex + 1 : options.length - 1;
+			activeId = options[next]?.id ?? null;
 			return;
 		}
 		if (e.key === 'ArrowUp') {
-			if (results.length === 0) return;
+			if (options.length === 0) return;
 			e.preventDefault();
 			const next = activeIndex - 1;
-			activeId = next >= 0 ? (results[next]?.id ?? null) : null;
+			activeId = next >= 0 ? (options[next]?.id ?? null) : null;
 			return;
 		}
 		if (e.key === 'Enter') {
-			if (activeIndex < 0 || activeIndex >= results.length) return;
+			if (activeIndex < 0 || activeIndex >= options.length) return;
 			e.preventDefault();
-			choose(results[activeIndex]);
+			activate(options[activeIndex]);
 			return;
 		}
 		if (e.key === 'Escape') {
@@ -366,6 +585,31 @@
 		const state = localIndex.bootstrapStateFor(wsSlug);
 		// Read for its dependency; the value carries no meaning here.
 		localSearch.epoch(wsSlug);
+		// TRACKED (codex round 10), by being read right here: the scope itself.
+		// Every other read below is untracked to keep this effect off the
+		// keystroke path, and `collection` was swept up in that — but it is not
+		// a per-keystroke value, it is the question the results answer.
+		// `ItemDetail` can change a relation field's declared target (a schema
+		// edit, or an SSE-driven refresh) without remounting this picker, and
+		// the rows then on screen belong to the collection it USED to point at
+		// while remaining selectable under the new one. Predates U8 (it arrived
+		// with the extraction in TASK-2862); fixed here because U8 makes
+		// `collection` load-bearing in a new way — it is now the destination an
+		// inline create writes to.
+		//
+		// A SCOPE CHANGE is also not an index delta, and the two need opposite
+		// handling below, so decide which this run is while the reads are still
+		// tracked (codex round 11). Computing the pair is what SUBSCRIBES to it;
+		// a separate `void collection` alongside was redundant and went, since
+		// its mutant could not be killed.
+		const scope = `${wsSlug}\u0000${collection ?? ''}`;
+		// No `lastScope !== null` guard on the first run: its mutant could not be
+		// killed, because at mount the query box is empty, so the only branch
+		// that reads `scopeChanged` (the server-source early return, which needs
+		// a non-empty query) is unreachable then. Measured, not assumed — a line
+		// that cannot change an outcome does not get to look like a guard.
+		const scopeChanged = scope !== lastScope;
+		lastScope = scope;
 		untrack(() => {
 			if (state !== 'ready') {
 				// The workspace's state was DROPPED — `localIndex.reset()` on
@@ -387,15 +631,45 @@
 				seq++;
 				clearTimeout(debounceTimer);
 				rawResults = [];
+				// The rows this answer described were just dropped, so it
+				// describes nothing (codex round 5). Without this the picker
+				// offers to create over a purged workspace.
+				coldAnswered = false;
 				activeId = null;
 				loading = false;
+				// INVALIDATED, not committed and not left alone (codex rounds 12
+				// and 13). `lastScope` means "the scope the rows on screen
+				// answer for", and this branch just removed the rows — so after
+				// it they answer for nothing, which is what null says.
+				//
+				// Both neighbouring mistakes fall out of that one reading. A
+				// scope change arriving while the state is dropped must not be
+				// forgotten at hydration; and rehydrating on the SAME scope must
+				// not compare equal, or a server-sourced picker takes the early
+				// return below and sits empty forever, its rows cleared and
+				// nothing left to re-query it.
+				//
+				// This also settles WHERE the commit above belongs: deferring it
+				// past the early return was a second mechanism aimed at the
+				// first of those two, and with this invalidation in place it
+				// changed no outcome — its mutant could not be killed, so it
+				// went. One rule, stated once.
+				lastScope = null;
 				return;
 			}
 			// Server-sourced QUERIES are not re-issued on an index change: the
 			// index is not their source of truth, and a request per delta is
 			// exactly the rate-limiter pressure the debounce exists to avoid. The
 			// empty-query LISTING still comes from the index, so it does refresh.
-			if (source === 'server' && query.trim()) return;
+			//
+			// A SCOPE change is the exception, and it is the reason this early
+			// return is conditional (codex round 11). Rows fetched for the old
+			// workspace or collection are not merely stale, they are answers to a
+			// different question — and left in place they stay selectable under
+			// the new scope. Re-querying costs one request at an event that
+			// happens when a schema is edited or a pane is retargeted, not per
+			// delta, so the rate-limiter argument does not reach it.
+			if (source === 'server' && query.trim() && !scopeChanged) return;
 			const keep = activeId;
 			runQuery();
 			activeId = keep;
@@ -409,7 +683,7 @@
 		class="picker-input"
 		role="combobox"
 		aria-label={label}
-		aria-expanded={results.length > 0}
+		aria-expanded={options.length > 0}
 		aria-controls="picker-results-{uid}"
 		aria-autocomplete="list"
 		aria-activedescendant={activeIndex >= 0 ? `picker-option-${uid}-${activeIndex}` : undefined}
@@ -422,23 +696,40 @@
 
 	{#if loading}
 		<div class="picker-status">Searching...</div>
-	{:else if results.length > 0}
+	{:else if options.length > 0}
 		<div class="picker-results" role="listbox" id="picker-results-{uid}" aria-label={label}>
-			{#each results as result, i (result.id)}
-				<button
-					type="button"
-					class="picker-result"
-					class:active={i === activeIndex}
-					role="option"
-					id="picker-option-{uid}-{i}"
-					aria-selected={i === activeIndex}
-					onclick={() => choose(result)}
-				>
-					{#if formatItemRef(result)}
-						<span class="picker-ref">{formatItemRef(result)}</span>
-					{/if}
-					<span class="picker-title">{result.title}</span>
-				</button>
+			{#each options as option, i (option.id)}
+				{#if option.kind === 'create'}
+					<button
+						type="button"
+						class="picker-result picker-create"
+						class:active={i === activeIndex}
+						role="option"
+						id="picker-option-{uid}-{i}"
+						aria-selected={i === activeIndex}
+						onclick={() => void invokeCreate()}
+					>
+						<span class="picker-create-mark" aria-hidden="true">+</span>
+						<span class="picker-title">
+							Create "{createTitle}" in {createLabel ?? collection}
+						</span>
+					</button>
+				{:else}
+					<button
+						type="button"
+						class="picker-result"
+						class:active={i === activeIndex}
+						role="option"
+						id="picker-option-{uid}-{i}"
+						aria-selected={i === activeIndex}
+						onclick={() => choose(option.row)}
+					>
+						{#if formatItemRef(option.row)}
+							<span class="picker-ref">{formatItemRef(option.row)}</span>
+						{/if}
+						<span class="picker-title">{option.row.title}</span>
+					</button>
+				{/if}
 			{/each}
 		</div>
 	{:else if query.trim().length > 0}
@@ -520,5 +811,21 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/*
+	 * The create row reads as an action, not as another item — it is the one
+	 * row that mints something. Muted until it is the active/hovered row, which
+	 * `.picker-result`'s own rule already handles.
+	 */
+	.picker-create {
+		color: var(--text-secondary, var(--text-muted));
+	}
+
+	.picker-create-mark {
+		flex-shrink: 0;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 0.94em;
 	}
 </style>

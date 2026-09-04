@@ -15,9 +15,13 @@ visual language as the editor but with no inputs, dropdowns, or mutation
 handlers — onchange is never called.
 -->
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { formatItemRef, type FieldDef, type ItemIndexRow, type PaneTarget } from '$lib/types';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import { api } from '$lib/api/client';
 	import ItemPicker from '$lib/components/items/ItemPicker.svelte';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -190,13 +194,190 @@ handlers — onchange is never called.
 	let editingRelation = $state(false);
 
 	function pickRelation(row: ItemIndexRow) {
+		relationWrite++;
 		editingRelation = false;
 		onchange(row.id);
 	}
 
+	// Backing out is a decision, so it supersedes an in-flight create exactly as
+	// picking another row does (codex round 2).
+	function cancelRelationEdit() {
+		relationWrite++;
+		editingRelation = false;
+	}
+
 	function clearRelation() {
+		relationWrite++;
 		editingRelation = false;
 		onchange('');
+	}
+
+	/**
+	 * Fences for the in-flight create (see `createRelationTarget`). Plain `let`
+	 * per CONVE-1688 — written and read only in handlers and lifecycle, never
+	 * rendered, so neither belongs in the effect graph.
+	 */
+	let relationWrite = 0;
+	let destroyed = false;
+	onDestroy(() => {
+		destroyed = true;
+	});
+
+	// ── Inline create from the picker (PLAN-2857 U8) ─────────────────────
+	//
+	// The picker offers a create row only when handed an `oncreate`, so this
+	// component decides BOTH of U8's gates by deciding whether to pass one.
+	//
+	// The permission gate is `canEditCollection` on the TARGET collection — the
+	// same predicate behind the collection page's "+ New", asked about where the
+	// item would LAND rather than about where the user is standing. It needs the
+	// collection's ID, which only the loaded collection list has; a target the
+	// list does not know yields `null` here and therefore no create row, because
+	// "no answer" must not read as "allowed".
+	// FRESHNESS, for the same reason `knownCollectionSlugs` has it (codex round
+	// 1 P2): `collectionStore.collections` is one global list, so during a
+	// workspace switch it still holds the PREVIOUS workspace's rows. A slug
+	// match against those yields another workspace's collection ID, and asking
+	// `canEditCollection` about that ID is asking the wrong question — it can
+	// answer yes and put a create row on a field whose target is not that
+	// collection at all.
+	let targetCollection = $derived.by(() => {
+		if (!isRelation || !field.collection || !wsSlug) return null;
+		if (!collectionStore.collectionsAreFreshFor(wsSlug)) return null;
+		return (collectionStore.collections ?? []).find((c) => c.slug === field.collection) ?? null;
+	});
+	let canCreateInTarget = $derived(
+		!!targetCollection && workspaceStore.canEditCollection(targetCollection.id),
+	);
+
+	/**
+	 * Create the item the user just described, then select it.
+	 *
+	 * NO field values are sent. The server fills every missing key that declares
+	 * a `Default` and stores the defaulted map (`items.ValidateFields`, then
+	 * "Marshal validated/defaulted fields back" in `createItemChecked`), so the
+	 * schema's own answer is already the right one. Guessing here — the
+	 * collection page's "+ New" uses `status.options[0]` — would override it,
+	 * and would be wrong for any schema whose default is not its first option.
+	 * The cost is that a target with a REQUIRED field carrying no default
+	 * refuses the create; that surfaces as a toast naming the field, which is
+	 * the honest outcome for a row this picker cannot fill in.
+	 *
+	 * The epoch is read BEFORE the request (BUG-2098): a projection resync while
+	 * it is in flight means the response was authorized under a scope that no
+	 * longer applies, and `upsert` refuses it rather than resurrecting a row no
+	 * delta will evict. Upserting at all is what makes the picker's
+	 * exact-title suppression true on the NEXT keystroke — without it the same
+	 * text would offer to create a second item.
+	 */
+	async function createRelationTarget(title: string) {
+		const ws = wsSlug;
+		const collSlug = field.collection;
+		if (!ws || !collSlug) return;
+		// Two fences on the completion, both found by codex round 1 P1, both
+		// about the same gap: the create is a round trip and the picker stays
+		// open across it, so the world can move before it lands.
+		//
+		//   * DESTROYED. `ItemDetail` wraps its fields section in
+		//     `{#key itemSlug}`, so an item switch destroys this component — but
+		//     not this promise, and `onchange` calls into the PERSISTENT parent,
+		//     whose `updateField` builds its PATCH against whatever item is
+		//     current at CALL time. Unfenced, a create started on car A writes
+		//     its colour onto car B.
+		//   * SUPERSEDED. The user can settle on another row, clear the field, or
+		//     back out of the picker entirely while this is in flight.
+		//     Last-write-wins is the wrong rule: each of those is an explicit
+		//     choice and this one is a promise they have moved past.
+		//   * RETARGETED. The `{#key itemSlug}` above keys on the SLUG ONLY, so
+		//     switching workspaces to an item carrying the same ref — every
+		//     workspace has a TASK-5 — reuses this instance and never sets
+		//     `destroyed`. Comparing the captured workspace and target collection
+		//     to the current props is what catches that (codex round 2).
+		const mySeq = ++relationWrite;
+		const epoch = localIndex.scopeEpochFor(ws);
+		const resetGen = localIndex.resetGenerationFor(ws);
+
+		// Is the index still the one this request was authorized against?
+		//
+		// Both halves are needed and neither substitutes for the other.
+		// `scopeEpoch` moves on a projection RESYNC; `resetGeneration` moves on
+		// a DROP. Epoch alone cannot see a drop, because `reset()` deletes the
+		// state and the replacement starts at 0 — and 0 is also the value in the
+		// overwhelmingly common case where no resync ever happened, so an
+		// equality check on it passes trivially across exactly the event it was
+		// meant to catch (codex round 6, correcting the residual round 5
+		// dismissed as needing a coincidence; it needs none).
+		const indexStillOurs = () => localIndex.resetGenerationFor(ws) === resetGen;
+		// THREE things are deliberately NOT fenced here, each raised by review
+		// and each declined for a reason that belongs next to the code rather
+		// than in a commit message nobody downstream reads.
+		//
+		// 1. A CONCURRENT CHANGE TO THE FIELD (SSE, another tab) landing while
+		//    the POST is pending. Overwriting it is ordinary last-write-wins on
+		//    a field the user is actively editing, and it is what every other
+		//    type in this component already does — a text field blurred after a
+		//    remote change overwrites it too. The server, not this component, is
+		//    where that race is adjudicated: `ItemDetail.updateField` sends
+		//    `expected_updated_at` and refetch-retries a 409 (BUG-2273 /
+		//    IDEA-1480). Fencing it HERE would make relation fields alone behave
+		//    differently from every other field, on a rule the item's own
+		//    optimistic-concurrency check already enforces.
+		//
+		// 2. A LOST RESPONSE on a create that actually committed. Real, and not
+		//    fixable here: `item create` has no idempotency key, and titles are
+		//    not unique (colliding slugs just get `-2` suffixes,
+		//    `store.uniqueSlug`). Nothing auto-retries — the retry would be a
+		//    person clicking Create again, seeing the picker's current state —
+		//    and the repo's standing rule for the same shape is exactly that
+		//    (`item copy` "NEVER retry it automatically"). Filed as IDEA-2880
+		//    rather than papered over with a client-side guess — checking for a
+		//    same-title item before retrying would rest on the same ranked,
+		//    paged, possibly-stale evidence the create row itself rests on, and
+		//    would look like a guarantee the client cannot make.
+		//
+		// 3. Typing a new query, which has been raised twice. The three that ARE fences each stand for an act meaning
+		// "not this one": escaping out, choosing a different row, and landing on
+		// a different item or workspace. Typing is none of those — it is
+		// mid-thought, and the user did explicitly ask for the item now being
+		// created. Treating it as a cancel would leave that row orphaned in the
+		// target collection with the field still empty, which is worse than a
+		// field holding exactly what was asked for.
+		//
+		// Is the USER still waiting on this specific create?
+		const stillWaiting = () =>
+			!destroyed &&
+			mySeq === relationWrite &&
+			ws === wsSlug &&
+			collSlug === field.collection &&
+			indexStillOurs() &&
+			localIndex.scopeEpochFor(ws) === epoch;
+		try {
+			const item = await api.items.create(ws, collSlug, { title, source: 'web' });
+			// The upsert is gated on INDEX IDENTITY only — not on whether the
+			// user is still waiting. Those are different questions: a create the
+			// user navigated away from still produced a real row that belongs in
+			// the index (it is what stops the picker offering to create it
+			// again), whereas a create whose workspace was PURGED must not write
+			// anything back. `upsert`'s own fenced-id guard cannot help there,
+			// because a brand-new id was never in the map to be fenced — the
+			// exact gap BUG-2098's comment describes.
+			if (indexStillOurs()) localIndex.upsert(ws, item, epoch);
+			if (!stillWaiting()) return;
+			editingRelation = false;
+			onchange(item.id);
+		} catch (e: any) {
+			// The SAME predicate as the success path, not a copy of some of it
+			// (codex rounds 4 and 6). A create the user escaped out of, or one
+			// belonging to a workspace they have since left or been purged from,
+			// must not throw its error over whatever they are looking at now —
+			// and the reset half was missing here while the success path had it.
+			// One predicate means the two paths cannot drift again.
+			if (!stillWaiting()) return;
+			// Still here and still waiting: the picker keeps the query, so the
+			// user can retry or pick something else; the field's value has not
+			// moved.
+			toastStore.show(e?.message || 'Failed to create item', 'error');
+		}
 	}
 
 	// ── Viewport detection ───────────────────────────────────────────────
@@ -769,7 +950,9 @@ handlers — onchange is never called.
 				placeholder="Search…"
 				autofocus={editingRelation}
 				onselect={pickRelation}
-				oncancel={relationState === 'empty' ? undefined : () => (editingRelation = false)}
+				oncreate={canCreateInTarget ? createRelationTarget : undefined}
+				createLabel={targetCollection?.name}
+				oncancel={relationState === 'empty' ? undefined : cancelRelationEdit}
 			/>
 		{/if}
 	</div>
