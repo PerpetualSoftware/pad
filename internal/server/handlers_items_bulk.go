@@ -500,6 +500,16 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
+	// Referent validation for relation values (TASK-2878). A bulk update
+	// carries CALLER-SUPPLIED changes, so it refuses like any other write —
+	// per item, so one bad referent fails its own item and not the batch.
+	relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+	if relErr != nil {
+		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
+	}
+	if len(relIssues) > 0 {
+		return nil, &bulkOpError{message: relationIssuesMessage(relIssues), code: "validation_error"}
+	}
 	if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "conflict"}
 	}

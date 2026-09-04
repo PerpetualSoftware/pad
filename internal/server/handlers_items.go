@@ -749,6 +749,16 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
 	}
+	// Referent validation for relation values (TASK-2878). AFTER the shape
+	// check, so "must be a string" and "names nothing" are never both reported
+	// for one value, and after coercion so the value is in its final form.
+	relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+	if relErr != nil {
+		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", relErr.Error()}
+	}
+	if len(relIssues) > 0 {
+		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relIssues)}
+	}
 	// Keys the schema does not declare are STORED, not refused — but the write
 	// says which ones, so a typo leaves a trace (BUG-2850). Computed before the
 	// store call because fieldMap is what gets written.
@@ -1205,6 +1215,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
+		// Referent validation for relation values (TASK-2878).
+		relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+		if relErr != nil {
+			writeInternalError(w, relErr)
+			return
+		}
+		if refuseRelationIssues(w, relIssues) {
+			return
+		}
 		undeclaredFields = items.UndeclaredFieldKeys(fieldMap, schema)
 
 		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
@@ -1380,6 +1399,20 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		undeclaredFields = items.UndeclaredFieldKeys(stored, schema)
 		if err := items.ValidatePartialFields(patchMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+		// Referent validation for relation values (TASK-2878). Only the keys
+		// this patch carries are examined — the resolver skips absent keys —
+		// so a stray unresolvable value already stored on the item is not
+		// re-litigated by an update that does not touch it. That matches the
+		// undeclared-key rule directly above, and it is what keeps this from
+		// making every edit to a legacy item fail.
+		relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, patchMap)
+		if relErr != nil {
+			writeInternalError(w, relErr)
+			return
+		}
+		if refuseRelationIssues(w, relIssues) {
 			return
 		}
 
