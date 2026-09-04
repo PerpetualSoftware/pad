@@ -278,3 +278,60 @@ func (s *Server) refuseInvisibleRelationOverrides(
 	}
 	return s.resolveRelationReferentsAs(r, workspaceID, role, schema, probe)
 }
+
+// dropInvisibleRelationDefaults is the visibility check a LATE-RESOLVED
+// DEFAULT owes (codex round 11).
+//
+// `ResolveLateRelationDefaults` lives in `store` and resolves against the
+// database alone. At the write doors the caller's own values are filtered out
+// of the refusal set before it runs — correctly, since a default is not caller
+// input — but that also removed the visibility issues raised against those
+// keys, and the store then re-resolved them with no visibility layer at all.
+// The write's RESPONSE carries the item's fields, so the caller received the
+// canonical id of an item they cannot see.
+//
+// DROPPED, not refused, because the origin has not changed: the schema author
+// chose the value and the caller can neither fix it nor be blamed for it. What
+// they must not get is the id.
+//
+// Reported through the same `not_found` reason every other visibility failure
+// collapses to, so a caller cannot tell "the default names something you may
+// not see" from "the default names nothing".
+func (s *Server) dropInvisibleRelationDefaults(
+	r *http.Request,
+	workspaceID string,
+	role string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	presentBefore map[string]bool,
+) ([]store.RelationIssue, error) {
+	var dropped []store.RelationIssue
+	for _, def := range schema.Fields {
+		if def.Type != "relation" || presentBefore[def.Key] {
+			continue
+		}
+		id, isStr := fieldMap[def.Key].(string)
+		if !isStr || strings.TrimSpace(id) == "" {
+			continue
+		}
+		item, err := s.store.GetItem(id)
+		if err != nil {
+			return nil, err
+		}
+		if item == nil || item.WorkspaceID != workspaceID {
+			continue // never resolved, or resolved elsewhere; not this check's business
+		}
+		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), role, isBearerAuth(r))
+		if err != nil {
+			return nil, err
+		}
+		if visible {
+			continue
+		}
+		dropped = append(dropped, store.RelationIssue{
+			Key: def.Key, Target: def.Collection, Reason: store.RelationTargetNotFound,
+		})
+		delete(fieldMap, def.Key)
+	}
+	return dropped, nil
+}

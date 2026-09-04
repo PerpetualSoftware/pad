@@ -565,8 +565,12 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 			code:    "missing_required_fields",
 		}
 	}
-	if droppedFields != nil && len(lateDropped) > 0 {
-		for _, ri := range lateDropped {
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
+	if invErr != nil {
+		return nil, &bulkOpError{message: invErr.Error(), code: "internal_error"}
+	}
+	if all := append(lateDropped, invisibleDefaults...); droppedFields != nil && len(all) > 0 {
+		for _, ri := range all {
 			*droppedFields = append(*droppedFields, ri.Key)
 		}
 	}
@@ -736,8 +740,17 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// context around the item is unchanged and referential system
 	// metadata still describes something true (BUG-2674).
 	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields, items.SameWorkspace)
+	// `status` here is CALLER INPUT, and the relation classifier below has to
+	// be told so. The path merges exactly one field and used to pass
+	// `supplied=nil` on the grounds that it carries no per-field overrides —
+	// true of every field except this one. A destination schema is free to
+	// declare `status` as a relation, and then a value the caller typed was
+	// classified as carried: silently dropped instead of refused, and never
+	// checked for visibility (codex round 11).
+	suppliedByCaller := map[string]any{}
 	if req.Status != "" {
 		result.Fields["status"] = req.Status
+		suppliedByCaller["status"] = req.Status
 	}
 	if len(result.Errors) > 0 {
 		return nil, &bulkOpError{
@@ -759,14 +772,17 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// for `supplied` says that rather than leaving it implied.
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
-		nil, store.CarriedSourceValues(currentFields, result.Dropped),
+		suppliedByCaller, store.CarriedSourceValues(currentFields, result.Dropped),
 		store.RelationCarryWithinWorkspace)
 	if relErr != nil {
 		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
 	}
 	if len(relRefusals) > 0 {
-		// Unreachable while `supplied` is nil, and kept so it stops being a
-		// silent no-op the day this path grows field overrides.
+		// Reachable since round 11: `status` is caller input, so a destination
+		// schema declaring it as a relation makes this the ordinary write
+		// refusal. It was written as unreachable-but-kept, which is why the
+		// misclassification survived — a branch nobody can reach is a branch
+		// nobody checks.
 		return nil, &bulkOpError{message: relationIssuesMessage(relRefusals), code: "validation_error"}
 	}
 	for _, ri := range relDropped {
@@ -800,7 +816,12 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 			code:    "missing_required_fields",
 		}
 	}
-	for _, ri := range lateDropped {
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r),
+		items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+	if invErr != nil {
+		return nil, &bulkOpError{message: invErr.Error(), code: "internal_error"}
+	}
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		result.Dropped = append(result.Dropped, ri.Key)
 	}
 	// Hand the discarded keys back so the caller's activity row can name them

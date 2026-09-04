@@ -817,7 +817,13 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			Message: ri.Message(),
 		})
 	}
-	for _, ri := range lateDropped {
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, dst.WorkspaceID(), dst.Role,
+		items.SchemaForMigratedFields(targetSchema), final, relBefore)
+	if invErr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: relation default visibility: %w", invErr))
+		return
+	}
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
 		relationDropReason[ri.Key] = string(ri.Reason)
 		delete(origin, ri.Key)

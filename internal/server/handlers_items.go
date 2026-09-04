@@ -779,8 +779,12 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(req)}
 	}
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
+	if invErr != nil {
+		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", invErr.Error()}
+	}
 	var droppedDefaults []string
-	for _, ri := range lateDropped {
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		droppedDefaults = append(droppedDefaults, ri.Key)
 	}
 	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
@@ -1265,7 +1269,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_error", relationIssuesMessage(req))
 			return
 		}
-		for _, ri := range lateDropped {
+		invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
+		if invErr != nil {
+			writeInternalError(w, invErr)
+			return
+		}
+		for _, ri := range append(lateDropped, invisibleDefaults...) {
 			droppedDefaults = append(droppedDefaults, ri.Key)
 		}
 		undeclaredFields = items.UndeclaredFieldKeys(fieldMap, schema)
@@ -2472,7 +2481,13 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 			"Required fields missing: "+relationIssuesMessage(req))
 		return
 	}
-	for _, ri := range lateDropped {
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r),
+		items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+	if invErr != nil {
+		writeInternalError(w, invErr)
+		return
+	}
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		result.Dropped = append(result.Dropped, ri.Key)
 	}
 

@@ -854,3 +854,96 @@ func TestRelationDoors_UnresolvableStringDefaultDropsInsteadOfRefusing(t *testin
 		map[string]any{"title": "Typed by hand", "fields": map[string]any{"status": "open", "owner_ref": badRef}})
 	assertRefused(t, "create with a caller-supplied bad referent", bad)
 }
+
+// A schema default naming an item the caller cannot see must not hand them its
+// id (codex round 11).
+//
+// Round 10 filtered the caller's-input-only refusals, which correctly stopped
+// a default refusing the write — and also removed the VISIBILITY issues raised
+// against those keys. `ResolveLateRelationDefaults` then re-resolved them in
+// the store, which has no visibility layer, and the write's response carries
+// the item's fields: the caller received the canonical id of an item they
+// cannot see.
+//
+// Dropped, not refused: the schema author chose the value and the caller can
+// neither fix it nor be blamed for it. What they must not get is the id.
+func TestRelationDoors_InvisibleRelationDefaultIsNotDisclosed(t *testing.T) {
+	f := newDoorFixture(t)
+	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Hidden Default", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":%q}
+	]}`, f.people.Slug, f.target.Ref))
+
+	blind := mustUser(t, f.srv, "blind-default@example.com", "blinddefault", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{coll.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + coll.Slug + "/items"
+	params := map[string]string{"collSlug": coll.Slug}
+	body := map[string]any{"title": "Hidden", "fields": map[string]any{"status": "open"}}
+
+	rr := f.callAs(blind, "editor", f.srv.handleCreateItem, "POST", path, params, body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201 (a default is dropped, never refused), got %d: %s",
+			rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), f.target.ID) {
+		t.Fatalf("the response hands a caller who cannot see People the target's id: %s",
+			rr.Body.String())
+	}
+
+	// Control: the owner CAN see People, so the same default resolves and
+	// lands. Without this leg the test passes against a build that dropped
+	// every default.
+	rr2 := f.call(f.srv.handleCreateItem, "POST", path, params, body)
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("create as owner: expected 201, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if !strings.Contains(rr2.Body.String(), f.target.ID) {
+		t.Fatalf("the owner's identical create lost the default; the drop is not "+
+			"visibility-dependent: %s", rr2.Body.String())
+	}
+}
+
+// `req.Status` on a bulk collection move is CALLER INPUT (codex round 11).
+//
+// The path merges exactly one field and passed `supplied=nil` on the grounds
+// that it carries no per-field overrides — true of every field except that
+// one. A destination schema is free to declare `status` as a relation, and
+// then a value the caller typed was classified as CARRIED: silently dropped
+// instead of refused, and never checked for visibility.
+//
+// The refusal branch on that door had been written as "unreachable today, kept
+// so it stops being a silent no-op" — which is exactly why this survived. A
+// branch nobody can reach is a branch nobody checks.
+func TestRelationDoors_BulkMoveStatusIsCallerInput(t *testing.T) {
+	f := newDoorFixture(t)
+	// A destination whose `status` is a relation rather than a select.
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Status As Relation", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"relation","collection":%q}
+	]}`, f.people.Slug))
+	item := f.seed(`{"status":"open"}`)
+
+	rr := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "move", "ids": []string{item.ID}, "collection": dst.Slug, "status": badRef})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move: expected 200 with a per-item failure, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var out bulkItemsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse bulk response: %v: %s", err, rr.Body.String())
+	}
+	if len(out.Failed) == 0 {
+		t.Fatalf("the caller's own unresolvable status was accepted; a supplied value is "+
+			"REFUSED, not dropped: %+v", out)
+	}
+	if got := out.Failed[0].Code; got != "validation_error" {
+		t.Fatalf("failure code = %q, want validation_error (message: %s)", got, out.Failed[0].Error)
+	}
+}
