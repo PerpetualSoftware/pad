@@ -341,9 +341,17 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 // racing the tick, a payload that will not marshal) cannot hold back every
 // other reminder in the pass.
 //
-// The UPDATE carries `fired_at IS NULL` as its own predicate, so it is the
-// ARBITER: two instances ticking at once both see the same candidate, and
-// exactly one gets RowsAffected 1. The loser does no work and emits nothing.
+// The UPDATE re-checks BOTH the fire mark and the instant, so it arbitrates
+// against two different actors — and getting only the first was the round-3
+// defect. Against a concurrent TICK, `fired_at IS NULL` means both instances
+// see the same candidate and exactly one gets RowsAffected 1; the loser does
+// no work and emits nothing. Against a concurrent USER, `remind_at <= nowTS`
+// means a reminder deferred between the scan and the fire is not fired — which
+// the fire mark alone could not catch, because a re-arm CLEARS that mark.
+//
+// The distinction is worth keeping in view: an arbiter is only an arbiter with
+// respect to the writers it can see, and this one was written with ticks in
+// mind while a user edit went straight past it.
 func (s *Store) FireDueReminders(nowTS string, limit int) ([]*models.Reminder, error) {
 	ids, err := s.dueReminderCandidates(nowTS, limit)
 	if err != nil {
