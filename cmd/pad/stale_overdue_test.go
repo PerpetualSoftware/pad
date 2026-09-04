@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
 
@@ -59,5 +61,59 @@ func TestRemindArgsAcceptRearmWithoutARef(t *testing.T) {
 	}
 	if err := cmd.Args(cmd, []string{"TASK-1", "TASK-2"}); err == nil {
 		t.Error("remind accepted two positional args")
+	}
+}
+
+// TestReminderCommandsExposeTheArgsMCPExpects — codex round 5, P1.
+//
+// cmdhelp derives positionals by regex from a command's `Use` string, and
+// `<instant>` inside `remind <ref> --remind-at <instant>` matched: it became a
+// second REQUIRED positional, so local stdio MCP dispatch failed with
+// `missing required argument "instant"` — the action was advertised and
+// unusable on that transport.
+//
+// The MCP catalog's own test did not catch it because its cmdhelp document is
+// HAND-BUILT: I wrote `Args: mkArgs("ref")` there, so the fixture agreed with
+// what I meant rather than with what the CLI says. This test reads the REAL
+// tree, which is the only thing that can disagree with me.
+//
+// MUTANT: put a `<...>` placeholder back in any of these Use strings and the
+// matching case fails.
+func TestReminderCommandsExposeTheArgsMCPExpects(t *testing.T) {
+	doc := cmdhelp.Build(newRootCmd(), newRootCmd(), cmdhelp.Options{MaxDepth: -1})
+
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{"item remind", []string{"ref"}},
+		{"item ack", []string{"reminder-id"}},
+		{"item reminders", []string{"ref"}},
+		{"item unremind", []string{"reminder-id"}},
+	} {
+		cmd, ok := doc.Commands[tc.path]
+		if !ok {
+			t.Errorf("%q is missing from cmdhelp entirely", tc.path)
+			continue
+		}
+		var got []string
+		for _, a := range cmd.Args {
+			got = append(got, a.Name)
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("%q positionals = %v, want %v", tc.path, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%q positionals = %v, want %v", tc.path, got, tc.want)
+				break
+			}
+		}
+	}
+
+	// The flag MCP actually sends must exist under the name it sends.
+	if _, ok := doc.Commands["item remind"].Flags["remind-at"]; !ok {
+		t.Error("`item remind` has no --remind-at flag; the MCP remind_at param maps to nothing")
 	}
 }

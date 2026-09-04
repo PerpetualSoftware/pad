@@ -23,7 +23,7 @@ var (
 
 func remindCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "remind <ref> --remind-at <instant>",
+		Use:   "remind <ref>",
 		Short: "Arm a reminder on an item",
 		Long: `Arm a one-shot reminder that fires at a specific instant.
 

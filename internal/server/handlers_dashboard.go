@@ -993,10 +993,17 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		if _, dup := seen[item.ID]; dup {
 			continue
 		}
-		// Skip non-tasks (the active-plan loop walks plan children;
-		// the orphan branch is similarly task-shaped). isCollectionVisible
-		// + collection-task gating mirrors the active-plan branch's
-		// shape so behaviour stays consistent.
+		// The comment that stood here claimed this branch gates on task
+		// collections "mirroring the active-plan branch". It does not, and
+		// never did — the only gate below is collection VISIBILITY, so an
+		// idea or a doc could always reach suggested_next. The overdue bypass
+		// (IDEA-2641) widened that from high-priority items to any overdue
+		// one, which is how codex round 5 found it.
+		//
+		// Rather than narrow the branch — which would silently drop the
+		// high-priority non-task items it has surfaced since BUG-1082 — the
+		// output now carries each item's REAL collection instead of asserting
+		// "tasks", so the surface stops mislabelling what it recommends.
 		if !isCollectionVisible(item.CollectionID, visibleIDs) {
 			continue
 		}
@@ -1072,16 +1079,23 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	}
 	for _, c := range candidates[:limit] {
 		pri := extractFieldValue(c.item.Fields, "priority")
+		// "task" only when it IS one. The orphan branch admits any collection
+		// (see above), so hardcoding the noun mislabels an idea or a doc as a
+		// task in the one place an agent reads to decide what to do next.
+		noun := "item"
+		if c.item.CollectionSlug == "tasks" {
+			noun = "task"
+		}
 		var reason string
 		switch {
 		case c.inProgress && c.plan != "":
-			reason = "In-progress task in active plan \"" + c.plan + "\""
+			reason = "In-progress " + noun + " in active plan \"" + c.plan + "\""
 		case c.inProgress:
-			reason = "In-progress task"
+			reason = "In-progress " + noun
 		case c.plan != "":
-			reason = "Open task in active plan \"" + c.plan + "\""
+			reason = "Open " + noun + " in active plan \"" + c.plan + "\""
 		default:
-			reason = "Open task"
+			reason = "Open " + noun
 		}
 		if pri != "" {
 			reason += " (" + pri + " priority)"
@@ -1093,10 +1107,13 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			reason = "OVERDUE — " + c.overdueReason + "; " + reason
 		}
 		resp.SuggestedNext = append(resp.SuggestedNext, DashboardSuggestion{
-			ItemSlug:   c.item.Slug,
-			ItemRef:    c.item.Ref,
-			ItemTitle:  c.item.Title,
-			Collection: "tasks",
+			ItemSlug:  c.item.Slug,
+			ItemRef:   c.item.Ref,
+			ItemTitle: c.item.Title,
+			// The item's REAL collection, not the literal "tasks" that stood
+			// here: this branch admits any collection, so the constant was a
+			// claim the data did not support.
+			Collection: c.item.CollectionSlug,
 			Reason:     reason,
 		})
 	}

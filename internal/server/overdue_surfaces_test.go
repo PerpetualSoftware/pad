@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -178,5 +179,60 @@ func TestFutureDeadlineIsNotOverdue(t *testing.T) {
 		if sug.ItemTitle == "Plenty of time" {
 			t.Error("a low-priority item with a FUTURE deadline was suggested; the gate bypass is unconditional")
 		}
+	}
+}
+
+// TestSuggestionsCarryTheItemsRealCollection — codex round 5, P2.
+//
+// The orphan branch admits any collection (its own comment claimed otherwise,
+// and the comment was wrong), while the output hardcoded `Collection: "tasks"`
+// and the reason said "Open task". So an overdue IDEA was recommended as a
+// task in the one surface an agent reads to decide what to work on next.
+//
+// Pre-existing for high-priority items since BUG-1082; the overdue bypass
+// widened it to any overdue item, which is how it surfaced. Fixed by carrying
+// the real collection rather than by narrowing the branch — narrowing would
+// silently drop the non-task items this has surfaced for a year.
+//
+// MUTANT: restore the "tasks" literal, or the "Open task" wording, and this
+// fails.
+func TestSuggestionsCarryTheItemsRealCollection(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// A NON-TASK collection whose status vocabulary contains "open", because
+	// that is the population the defect can actually reach. The first version
+	// of this test used an idea (status "new") and SKIPPED — the orphan branch
+	// requires "open" or an active status, so an idea never becomes a
+	// candidate and the fixture proved nothing. A test that cannot fire is a
+	// failed reconstruction, not a passing one.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+		"name":   "Bugs",
+		"schema": `{"fields":[{"key":"status","type":"select","options":["open","fixing","fixed"],"terminal_options":["fixed"],"default":"open"},{"key":"priority","type":"select","options":["low","high"]},{"key":"due_date","type":"date"}]}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
+	}
+	createItem(t, srv, slug, "bugs", map[string]interface{}{
+		"title": "Late bug", "fields": `{"status":"open","priority":"low","due_date":"2020-01-01"}`,
+	})
+
+	resp := getDashboard(t, srv, slug)
+	var found bool
+	for _, sug := range resp.SuggestedNext {
+		if sug.ItemTitle != "Late bug" {
+			continue
+		}
+		found = true
+		if sug.Collection != "bugs" {
+			t.Errorf("suggestion collection = %q, want %q", sug.Collection, "bugs")
+		}
+		if strings.Contains(sug.Reason, "task") {
+			t.Errorf("a bug is described as a task: %q", sug.Reason)
+		}
+	}
+	if !found {
+		t.Fatal("the overdue bug never reached suggested_next — the fixture cannot exercise the labelling at all")
 	}
 }

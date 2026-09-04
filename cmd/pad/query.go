@@ -66,6 +66,13 @@ for active plans.`,
 				label := strings.TrimSpace(strings.Join([]string{s.ItemRef, s.ItemTitle}, " "))
 				fmt.Printf("  %s %s\n", dim.Sprintf("%d.", i+1), bold.Sprint(label))
 				fmt.Printf("     %s\n", dim.Sprint(s.Reason))
+				// The ack handle, same as `next` (codex round 5). Showing a
+				// fired reminder on the surface an agent polls and withholding
+				// the id it needs to retire it means the same entry comes back
+				// on every poll forever.
+				if s.ReminderID != "" {
+					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad item ack %s", s.ReminderID))
+				}
 			}
 			return nil
 		},
