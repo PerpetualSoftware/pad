@@ -1007,18 +1007,20 @@ func findStatementEnd(sql string) int {
 
 // uniqueSlugExcluding generates a unique slug, excluding a specific document ID
 // from the collision check. Used during title renames.
-// It takes the executor rather than reaching for s.db, because TWO of its
-// three callers run inside a transaction that already holds locks — the item
-// update (items.go, under the workspace seq and parent-children locks) and
-// the document rename (documents.go, under the rename lock this bug added).
-// A read issued against the POOL from inside such a transaction needs a
-// SECOND connection while the first is held, and if the pool is saturated by
-// callers waiting on the very lock this transaction holds, that second
-// connection never arrives: the deadlock is then in the application rather
-// than in the database, where no SQLSTATE names it and no lock timeout breaks
-// it. The third caller (UpdateCollection) runs BEFORE its transaction opens
-// and correctly passes the pool — checked rather than assumed, after an
-// earlier version of this comment claimed all three were in-transaction.
+// It takes the executor rather than reaching for s.db, because all three of
+// its callers run inside a transaction that already holds locks — the item
+// update (items.go, under the workspace seq and parent-children locks), the
+// document rename (documents.go, under the rename lock this bug added), and
+// since IDEA-2874 the collection rename (collections.go, under the workspace
+// seq lock and the row's FOR UPDATE). A read issued against the POOL from
+// inside such a transaction needs a SECOND connection while the first is
+// held, and if the pool is saturated by callers waiting on the very lock this
+// transaction holds, that second connection never arrives: the deadlock is
+// then in the application rather than in the database, where no SQLSTATE
+// names it and no lock timeout breaks it. (An earlier version of this comment
+// claimed all three were in-transaction when UpdateCollection still ran its
+// scan BEFORE opening one; it is true now because the scan moved, not
+// because the comment was re-read.)
 func (s *Store) uniqueSlugExcluding(q rowQueryer, table, scopeCol, scopeVal, baseSlug, excludeID string) (string, error) {
 	slug := baseSlug
 	for i := 2; ; i++ {

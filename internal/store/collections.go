@@ -76,17 +76,51 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	if isReservedCollectionSlug(baseSlug) {
 		baseSlug = baseSlug + "-collection"
 	}
-	slug, err := s.uniqueSlug("collections", "workspace_id", workspaceID, baseSlug)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// LOCK ORDER: workspace advisory lock FIRST, then the INSERT (whose only
+	// row lock is the FK key-share on the workspaces row). That is the same
+	// first step item-create (tryCreateItem) and rename (UpdateCollection)
+	// take, so this path adds no new edge to the ordering those two already
+	// keep. No collection row is locked here — a create has none of its own
+	// yet — which is exactly why the lock is needed (BUG-2875): a rename's
+	// relation-repoint scan holds every EXISTING sibling row FOR UPDATE, and a
+	// row that does not exist yet cannot be held. Without this lock a create
+	// naming the old slug lands between that scan and the rename's commit,
+	// invisible to the scan and unrepointed. With it the create queues behind
+	// the rename, so whatever validates its relation targets (TASK-2878) sees
+	// committed state rather than a snapshot from before the rename.
+	//
+	// The slug is allocated UNDER the same lock, in the same transaction as
+	// the INSERT, exactly as createItemTx does (IDEA-2874's create-side half):
+	// the collision scan is serialized against every other collection slug
+	// writer in the workspace, so two creates (or a create racing a rename)
+	// deriving the same base get `x` and `x-2` rather than one of them
+	// failing on the UNIQUE index. On SQLite both the lock and the ordering
+	// come free from the single BEGIN IMMEDIATE write lock; the advisory lock
+	// is a no-op there.
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return nil, err
+	}
+
+	slug, err := s.uniqueSlugQ(tx, "collections", "workspace_id", workspaceID, baseSlug)
 	if err != nil {
 		return nil, fmt.Errorf("unique slug: %w", err)
 	}
 
-	_, err = s.db.Exec(s.q(`
+	_, err = tx.Exec(s.q(`
 		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert collection: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit collection create: %w", err)
 	}
 
 	return s.GetCollection(id)
@@ -407,31 +441,31 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{ts}
 
-	// Set when this update actually changes the slug, which is what strands
-	// relation fields (BUG-2873): `models.FieldDef.Collection` holds the
-	// target's SLUG and is the only pointer a relation has — there is no id
-	// beside it — so a rename leaves every field aimed here pointing at a name
-	// that no longer resolves.
-	var renamedTo string
-
-	if input.Name != nil {
+	// A rename re-slugifies, and the new slug is what strands relation fields
+	// (BUG-2873): `models.FieldDef.Collection` holds the target's SLUG and is
+	// the only pointer a relation has — there is no id beside it — so a rename
+	// leaves every field aimed here pointing at a name that no longer resolves.
+	//
+	// Only the BASE is derived here. The unique slug is ALLOCATED inside the
+	// transaction below, after the workspace lock and the row lock are held
+	// (IDEA-2874): allocating on the pool up front let two renames deriving
+	// the same base both scan an unlocked snapshot, both choose `gamma`, and
+	// the loser fail on the UNIQUE index — on Postgres after first BLOCKING on
+	// that index until the winner committed. Under the lock the second scan
+	// sees the first's slug and steps to `gamma-2`, matching documents.go and
+	// items.go, which have always allocated under their transactions.
+	renaming := input.Name != nil
+	var renameBase string
+	if renaming {
 		sets = append(sets, "name = ?")
 		args = append(args, *input.Name)
-		// Update slug too
-		baseSlug := slugify(*input.Name)
-		if baseSlug == "" {
-			baseSlug = "collection"
+		renameBase = slugify(*input.Name)
+		if renameBase == "" {
+			renameBase = "collection"
 		}
-		if isReservedCollectionSlug(baseSlug) {
-			baseSlug = baseSlug + "-collection"
+		if isReservedCollectionSlug(renameBase) {
+			renameBase = renameBase + "-collection"
 		}
-		newSlug, err := s.uniqueSlugExcluding(s.db, "collections", "workspace_id", existing.WorkspaceID, baseSlug, id)
-		if err != nil {
-			return nil, fmt.Errorf("unique slug: %w", err)
-		}
-		sets = append(sets, "slug = ?")
-		args = append(args, newSlug)
-		renamedTo = newSlug
 	}
 	if input.Prefix != nil {
 		sets = append(sets, "prefix = ?")
@@ -482,8 +516,9 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		args = append(args, *input.SortOrder)
 	}
 
-	args = append(args, id)
-	query := fmt.Sprintf("UPDATE collections SET %s WHERE id = ?", strings.Join(sets, ", "))
+	// `args` is not closed with the row id here — the slug (if renaming) is
+	// still to be appended under the lock below, and the statement is built
+	// after that.
 
 	// BUG-2265: collections.updated_at doubles as the optimistic-concurrency
 	// token (no schema migration — it's the existing column). For that to be
@@ -521,10 +556,11 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// creation locks the same pair in the order [workspace advisory lock
 	// (tryCreateItem) → collection-row FK key-share lock (on INSERT)], so we
 	// MUST take the workspace lock FIRST here too — grabbing the row lock first
-	// would ABBA-deadlock against a concurrent item-create. Acquired only on the
-	// migration path (the only path that touches the workspace seq lock); a
-	// plain update just takes the row lock and can't deadlock. On SQLite both
-	// are no-ops under the single BEGIN IMMEDIATE write lock.
+	// would ABBA-deadlock against a concurrent item-create. Acquired on the
+	// migration path and on renames (below); a plain update just takes the row
+	// lock and can't deadlock. On SQLite both are no-ops under the single
+	// BEGIN IMMEDIATE write lock. CreateCollection takes this same lock as ITS
+	// first step (BUG-2875), so creates serialize with renames too.
 	// The comment above orders the workspace lock against ONE collection row
 	// lock, because until BUG-2873 nothing took more than one. Migrating relation
 	// targets writes SIBLING collection rows, so two concurrent renames of
@@ -534,7 +570,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// without inventing a second ordering rule to keep in sync with the first,
 	// and it is taken BEFORE the row lock, preserving the order this comment
 	// exists to protect.
-	if len(input.Migrations) > 0 || renamedTo != "" {
+	if len(input.Migrations) > 0 || renaming {
 		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
 			return nil, err
 		}
@@ -548,8 +584,8 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// value under the lock is the only one that describes what the relations
 	// currently point at.
 	//
-	// This is the READ of the old slug. ALLOCATION of the new one is still
-	// outside the transaction and deliberately left alone here — IDEA-2874.
+	// This is the READ of the old slug; the ALLOCATION of the new one follows
+	// it, under the same locks (IDEA-2874, below).
 	reread := "SELECT updated_at, slug FROM collections WHERE id = ? AND deleted_at IS NULL"
 	if s.dialect.Driver() == DriverPostgres {
 		reread += " FOR UPDATE"
@@ -565,6 +601,29 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
 	}
 	current := parseTime(currentUpdatedAt)
+
+	// Allocate the new slug UNDER the workspace lock and this row's lock
+	// (IDEA-2874). The scan runs on `tx`, not the pool — a pool read from
+	// inside a lock-holding transaction needs a second connection and can
+	// deadlock in the application when the pool is saturated by callers
+	// waiting on the very lock this transaction holds (see
+	// uniqueSlugExcluding). Serialized by the workspace lock against every
+	// other rename and every create in this workspace (CreateCollection takes
+	// the same lock first, BUG-2875), so the count it reads is the count that
+	// will hold at commit.
+	var renamedTo string
+	if renaming {
+		newSlug, err := s.uniqueSlugExcluding(tx, "collections", "workspace_id", existing.WorkspaceID, renameBase, id)
+		if err != nil {
+			return nil, fmt.Errorf("unique slug: %w", err)
+		}
+		sets = append(sets, "slug = ?")
+		args = append(args, newSlug)
+		renamedTo = newSlug
+	}
+
+	args = append(args, id)
+	query := fmt.Sprintf("UPDATE collections SET %s WHERE id = ?", strings.Join(sets, ", "))
 
 	// Optimistic-concurrency guard — only when the caller opted in by sending
 	// the token it last read. Compared with time.Equal (format-agnostic).
@@ -1126,8 +1185,9 @@ func isReservedCollectionSlug(slug string) bool {
 // fall back on. `UpdateCollection` re-slugifies on rename, so without this every
 // relation field aimed at the renamed collection is stranded: the picker filters
 // on a slug that resolves to nothing, and the field silently stops being
-// fillable. See IDEA-2874 for the related, deliberately SEPARATE question of the
-// new slug being ALLOCATED outside this transaction.
+// fillable. The new slug is allocated inside this same transaction, under the
+// same locks (IDEA-2874) — it used to be allocated on the pool before the
+// transaction opened.
 //
 // THREE THINGS IT DOES THAT AN OBVIOUS VERSION DOES NOT, each from codex review:
 //
