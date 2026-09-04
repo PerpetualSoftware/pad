@@ -691,6 +691,26 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// doesn't allow (e.g. a status not in the target's options).
 	// Coerce strings to their declared types before validating (BUG-2850).
 	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	// Relation referents on a bulk move (TASK-2878). Same door class as the
+	// single-item move: within the workspace, so a valid relation survives and
+	// only an unresolvable one is dropped. `req` carries no per-field
+	// overrides on this path — only `status`, merged above — so every relation
+	// value here is CARRIED, and nothing on this door can refuse. Passing nil
+	// for `supplied` says that rather than leaving it implied.
+	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
+		nil, store.RelationCarryWithinWorkspace)
+	if relErr != nil {
+		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
+	}
+	if len(relRefusals) > 0 {
+		// Unreachable while `supplied` is nil, and kept so it stops being a
+		// silent no-op the day this path grows field overrides.
+		return nil, &bulkOpError{message: relationIssuesMessage(relRefusals), code: "validation_error"}
+	}
+	for _, ri := range relDropped {
+		result.Dropped = append(result.Dropped, ri.Key)
+	}
 	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}

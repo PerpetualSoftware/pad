@@ -2345,6 +2345,28 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// `invalid_fields` code rather than being mislabelled as missing.
 	// Coerce strings to their declared types before validating (BUG-2850).
 	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	// Relation referents on a SAME-WORKSPACE move (TASK-2878). A migrate door,
+	// so provenance decides: an explicit override refuses, a carried value
+	// resolves and survives if it can. The targets are still in this
+	// workspace, so a correctly-related item keeps its relation across the
+	// move; only an unresolvable value is dropped, and it joins the same
+	// `dropped_fields` report BUG-2674 established rather than failing the
+	// move. Refusing carried values here would make every legacy item — and
+	// `internal/items` has accepted any string for a relation all along —
+	// permanently unmovable.
+	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
+		input.FieldOverrides, store.RelationCarryWithinWorkspace)
+	if relErr != nil {
+		writeInternalError(w, relErr)
+		return
+	}
+	if refuseRelationIssues(w, relRefusals) {
+		return
+	}
+	for _, ri := range relDropped {
+		result.Dropped = append(result.Dropped, ri.Key)
+	}
 	if issues := items.ValidateFieldsDetailed(result.Fields, items.SchemaForMigratedFields(targetSchema)); len(issues) > 0 {
 		var missing, invalid []string
 		for _, iss := range issues {
