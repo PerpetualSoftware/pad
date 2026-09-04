@@ -425,6 +425,46 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	return ids, nil
 }
 
+// THE FIRE-PATH INVARIANT, stated once so the next change is measured against
+// it rather than against the last bug:
+//
+//	THE CANDIDATE SCAN IS A HINT AND MAY BE ASSUMED TO PROVE NOTHING. Every
+//	condition that made a row a candidate must be re-asserted inside the
+//	transaction that marks it fired, in the SAME statement that does the
+//	marking, so that checking and writing are one atomic act. A reminder may
+//	be marked fired, and its event emitted, only if at that instant: its
+//	fired_at is still NULL, its remind_at is still at or before the pass's
+//	nowTS, its item is still not soft-deleted, and its workspace is still not
+//	soft-deleted.
+//
+// The reason it is worded as "the scan proves nothing" rather than as a list:
+// a list invites the next person to add a condition to the scan and stop. Four
+// separate defects in this unit were exactly that — a filter added to the scan
+// while the arbiter went on not knowing about it — and each was fixed as an
+// instance until the third made the shape visible. reminderFireable exists so
+// the two sites cannot spell the shared half differently; this paragraph
+// exists so nobody adds a fifth condition to one of them alone.
+//
+// ITEM LIVENESS IS DEFENDED TWICE, and the pin cannot tell the two apart —
+// stated because the first version of this paragraph claimed the item load was
+// "for the payload, not for the check", and the mutation matrix falsified that
+// in one run. Removing the item half of reminderFireable alone changes NO
+// observable behaviour: the UPDATE then matches, the load returns nil for the
+// soft-deleted item, and the deferred rollback undoes the write. So the
+// invariant holds either way and a single-mutant experiment cannot say which
+// guard is carrying it. Removing BOTH kills the test, which is the experiment
+// that shows they are a genuine pair rather than one of them being dead.
+//
+// They are kept as a pair on purpose, and the predicate is the primary: it
+// means the row never matches, so no write happens at all, where the load
+// means a write happens and is undone. The load is needed regardless — the
+// payload carries an item snapshot — so the redundancy costs nothing beyond
+// this paragraph. Workspace liveness has no such second line, which is why
+// dropping ITS half of the predicate does fail the pin.
+//
+// Emission happens after the predicate passed and inside the same transaction,
+// so an event cannot describe a state that no longer held when it was written.
+//
 // FireDueReminders marks every arrived reminder as fired and writes its event,
 // returning the reminders this pass actually fired.
 //

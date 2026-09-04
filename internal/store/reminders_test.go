@@ -920,101 +920,6 @@ func TestPendingRemindersHideASoftDeletedWorkspace(t *testing.T) {
 	}
 }
 
-// TestWorkspaceDeletedMidPassDoesNotFire — codex round 7, P1, and the third
-// instance of one class: the candidate scan filters something the fire
-// transaction does not revalidate, so a change committed between them fires a
-// reminder that no longer qualifies.
-//
-// Round 3 was a re-armed instant. Round 7 is a workspace deleted between the
-// scan and the fire. Both were "the arbiter is only an arbiter for what it
-// re-checks", and fixing them one at a time is what let the third happen — so
-// the fix is now a SHARED predicate both sites reference, not another
-// condition bolted onto the UPDATE.
-//
-// MUTANT: drop reminderFireable from the UPDATE (leaving it in the scan) and
-// this fires an event for a deleted workspace.
-func TestWorkspaceDeletedMidPassDoesNotFire(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Doomed")
-	col := createTestCollection(t, s, ws.ID, "Tasks")
-	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
-	id := armReminder(t, s, ws.ID, item.ID, past)
-
-	// The pass has its candidate.
-	ids, err := s.dueReminderCandidates(nowTS(), 0)
-	if err != nil {
-		t.Fatalf("dueReminderCandidates: %v", err)
-	}
-	if len(ids) != 1 || ids[0] != id {
-		t.Fatalf("expected the armed reminder as the only candidate, got %v", ids)
-	}
-
-	// The workspace is deleted before it fires.
-	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), ws.ID); err != nil {
-		t.Fatalf("soft delete: %v", err)
-	}
-
-	fired, err := s.fireOneReminder(id, nowTS())
-	if err != nil {
-		t.Fatalf("fireOneReminder: %v", err)
-	}
-	if fired != nil {
-		t.Error("a reminder in a workspace deleted mid-pass was fired anyway")
-	}
-
-	var events int
-	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE workspace_id = ? AND event_type = ?`),
-		ws.ID, kernelevents.ItemReminderDue).Scan(&events); err != nil {
-		t.Fatalf("count events: %v", err)
-	}
-	if events != 0 {
-		t.Errorf("%d reminder event(s) left the process for a deleted workspace", events)
-	}
-
-	// Still armed, not consumed: the workspace can be restored.
-	got, err := s.GetReminder(ws.ID, id)
-	if err != nil {
-		t.Fatalf("GetReminder: %v", err)
-	}
-	if got == nil || !got.Armed() {
-		t.Error("the reminder was consumed by a pass that declined to fire it")
-	}
-}
-
-// TestItemDeletedMidPassDoesNotFire is the same class from the third side, and
-// it is here because the shared predicate now covers it in SQL rather than by
-// the item load coming back nil. Without this leg, someone simplifying that
-// EXISTS down to just the workspace check would still see green.
-func TestItemDeletedMidPassDoesNotFire(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Test")
-	col := createTestCollection(t, s, ws.ID, "Tasks")
-	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
-	id := armReminder(t, s, ws.ID, item.ID, past)
-
-	if _, err := s.dueReminderCandidates(nowTS(), 0); err != nil {
-		t.Fatalf("dueReminderCandidates: %v", err)
-	}
-	if _, err := s.db.Exec(s.q(`UPDATE items SET deleted_at = ? WHERE id = ?`), now(), item.ID); err != nil {
-		t.Fatalf("soft delete item: %v", err)
-	}
-
-	fired, err := s.fireOneReminder(id, nowTS())
-	if err != nil {
-		t.Fatalf("fireOneReminder: %v", err)
-	}
-	if fired != nil {
-		t.Error("a reminder on an item deleted mid-pass was fired anyway")
-	}
-	got, err := s.GetReminder(ws.ID, id)
-	if err != nil {
-		t.Fatalf("GetReminder: %v", err)
-	}
-	if got == nil || !got.Armed() {
-		t.Error("the reminder was consumed rather than left for the item's restore")
-	}
-}
-
 // TestRemindersRoundTripThroughExport — codex round 8, P1.
 //
 // WorkspaceExport is a hand-maintained field list, so a new table joins it
@@ -1096,5 +1001,140 @@ func TestRemindersRoundTripThroughExport(t *testing.T) {
 	if armed != 1 || pending != 1 || acked != 1 {
 		t.Errorf("imported states armed=%d pending=%d acked=%d, want 1/1/1 — the lifecycle marks were not carried",
 			armed, pending, acked)
+	}
+}
+
+// TestFirePathInvariant is the pin for the invariant stated on
+// FireDueReminders: the candidate scan proves nothing, and every condition
+// that made a row a candidate is re-asserted inside the transaction that marks
+// it fired.
+//
+// DERIVED FROM THE INVARIANT, NOT FROM THE BUG HISTORY, and that is the point
+// of writing it this way. Each case invalidates ONE scan-side condition in the
+// window between the scan and the fire, and asserts the same three things:
+// nothing fires, no event leaves, and the reminder is left alone rather than
+// consumed. Adding a fifth condition to the scan without a row here is
+// supposed to feel like an omission.
+//
+// The earlier per-defect tests (a re-armed instant, a deleted workspace, a
+// deleted item) are folded in as rows. They said the same thing one instance
+// at a time, which is exactly how four of these shipped.
+//
+// MUTANT MATRIX: drop any single re-check from the fire UPDATE — the fire
+// mark, the instant, or either half of reminderFireable — and the
+// corresponding row fails while the others stay green.
+func TestFirePathInvariant(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// invalidate makes the scanned candidate no longer fireable, standing
+		// in for a concurrent writer between the scan and the fire.
+		invalidate func(t *testing.T, s *Store, ws, item, reminder string)
+	}{
+		{
+			name: "the instant moves into the future (a re-arm)",
+			invalidate: func(t *testing.T, s *Store, ws, _, reminder string) {
+				if _, err := s.RearmReminder(ws, reminder, future); err != nil {
+					t.Fatalf("RearmReminder: %v", err)
+				}
+			},
+		},
+		{
+			name: "the item is soft-deleted",
+			invalidate: func(t *testing.T, s *Store, _, item, _ string) {
+				if _, err := s.db.Exec(s.q(`UPDATE items SET deleted_at = ? WHERE id = ?`), now(), item); err != nil {
+					t.Fatalf("soft delete item: %v", err)
+				}
+			},
+		},
+		{
+			name: "the workspace is soft-deleted",
+			invalidate: func(t *testing.T, s *Store, ws, _, _ string) {
+				if _, err := s.db.Exec(s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), ws); err != nil {
+					t.Fatalf("soft delete workspace: %v", err)
+				}
+			},
+		},
+		{
+			name: "another pass already fired it",
+			invalidate: func(t *testing.T, s *Store, _, _, reminder string) {
+				if _, err := s.db.Exec(s.q(`UPDATE item_reminders SET fired_at = ? WHERE id = ?`), now(), reminder); err != nil {
+					t.Fatalf("mark fired: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t)
+			ws := createTestWorkspace(t, s, "Invariant")
+			col := createTestCollection(t, s, ws.ID, "Tasks")
+			item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+			id := armReminder(t, s, ws.ID, item.ID, past)
+
+			// The scan runs and produces the candidate. Asserting it HERE is
+			// what makes each case a mid-pass race rather than a filtered
+			// scan: if the row were already excluded, the test would prove
+			// the scan works and say nothing about the arbiter.
+			ids, err := s.dueReminderCandidates(nowTS(), 0)
+			if err != nil {
+				t.Fatalf("dueReminderCandidates: %v", err)
+			}
+			if len(ids) != 1 || ids[0] != id {
+				t.Fatalf("setup: expected the armed reminder as the only candidate, got %v", ids)
+			}
+
+			tc.invalidate(t, s, ws.ID, item.ID, id)
+
+			fired, err := s.fireOneReminder(id, nowTS())
+			if err != nil {
+				t.Fatalf("fireOneReminder: %v", err)
+			}
+			if fired != nil {
+				t.Error("fired a reminder that stopped qualifying after the scan")
+			}
+
+			var events int
+			if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE workspace_id = ? AND event_type = ?`),
+				ws.ID, kernelevents.ItemReminderDue).Scan(&events); err != nil {
+				t.Fatalf("count events: %v", err)
+			}
+			if events != 0 {
+				t.Errorf("%d reminder event(s) left the process", events)
+			}
+		})
+	}
+}
+
+// TestFirePathInvariantFiresWhenNothingChanged is the invariant's positive
+// control. Every case above asserts that nothing happens, so all four would
+// pass against a build that never fires anything at all.
+func TestFirePathInvariantFiresWhenNothingChanged(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Invariant")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+	id := armReminder(t, s, ws.ID, item.ID, past)
+
+	ids, err := s.dueReminderCandidates(nowTS(), 0)
+	if err != nil {
+		t.Fatalf("dueReminderCandidates: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("setup: expected 1 candidate, got %d", len(ids))
+	}
+
+	fired, err := s.fireOneReminder(id, nowTS())
+	if err != nil {
+		t.Fatalf("fireOneReminder: %v", err)
+	}
+	if fired == nil {
+		t.Fatal("an unchanged candidate did not fire")
+	}
+	var events int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE workspace_id = ? AND event_type = ?`),
+		ws.ID, kernelevents.ItemReminderDue).Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 1 {
+		t.Errorf("%d reminder events emitted, want exactly 1", events)
 	}
 }
