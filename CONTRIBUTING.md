@@ -112,13 +112,13 @@ enabling progress tracking on the phase detail page.
 
 PR CI runs two security gates that block merging on regressions:
 
-- **`npm audit --audit-level=high --omit=dev`** — fails on any HIGH or CRITICAL advisory in production frontend deps. Run from `web/` locally to catch findings before opening a PR.
+- **`npm run audit:ci`** (from `web/`; `make web-audit` from the root) — `npm audit --audit-level=high --omit=dev` through `web/scripts/ci-audit.mjs`, which fails on any HIGH or CRITICAL advisory in production frontend deps and, separately, fails under its own title when the advisory service cannot be reached (after retries) rather than passing. CI runs it after build, svelte-check and vitest so those verdicts exist either way; `make check` does the same.
 - **`make vuln`** (`govulncheck -mode binary`) — builds the pad binary and scans it for known vulnerabilities in any Go package it actually reaches. Runs in **binary mode** rather than source mode (`govulncheck ./...`): source mode builds an SSA call-graph over the whole dependency tree and can consume multiple GB of RAM (BUG-2084), while binary mode reads the compiled binary's symbol table for a fraction of the memory. Pinned to a specific govulncheck version in `.github/workflows/ci.yml`; bump intentionally rather than tracking `@latest`.
 
 Both are fast enough to run locally:
 
 ```bash
-cd web && npm audit --audit-level=high --omit=dev
+make web-audit
 make vuln
 ```
 

@@ -1,4 +1,4 @@
-.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install check vuln web-check web-test
+.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install check vuln web-check web-test web-audit
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
@@ -141,13 +141,12 @@ vuln:
 	go build -o pad-vulnscan ./cmd/pad
 	$(GOVULNCHECK) -mode binary pad-vulnscan; status=$$?; rm -f pad-vulnscan; exit $$status
 
-# Web pre-flight that mirrors CI's Web job beyond the build step:
-# `npm audit` (production dependencies, high severity+) and svelte-check
+# Web pre-flight that mirrors CI's Web job beyond the build step: svelte-check
 # type checking. Depends on `web` so npm ci + build are already done.
 # Separate target so a contributor iterating on the UI can run just the
 # extra checks via `make web-check`.
 web-check: web
-	cd web && npm audit --audit-level=high --omit=dev && npm run check
+	cd web && npm run check
 
 # Run the web unit-test suite (vitest, non-watch). Mirrors the "Run web unit
 # tests" step in CI's Web job. Kept separate from web-check so a contributor
@@ -155,11 +154,22 @@ web-check: web
 web-test:
 	cd web && npm run test
 
+# `npm audit` (production dependencies, high severity+), through the same
+# gate CI uses — web/scripts/ci-audit.mjs — and, like CI, LAST (BUG-2881).
+# Bare `npm audit` exits non-zero the same way for "an advisory exists" and
+# "the advisory service was unreachable", and with `&&` in front of the other
+# checks a registry blip used to stop svelte-check and vitest from running at
+# all. The script tells the two apart, retries the second, and fails closed
+# under its own title; running it after the correctness checks means their
+# verdict exists whichever way it goes.
+web-audit: web
+	cd web && npm run audit:ci
+
 # Pre-flight target that mirrors CI's Go and Web jobs. Run this before
 # pushing — if it passes, the corresponding CI checks should pass too.
 #
 # Covers: golangci-lint suite (lint), Go test suite, govulncheck, npm ci,
-# npm audit, web build, svelte-check, vitest unit tests. The race-detector +
+# web build, svelte-check, vitest unit tests, npm audit (last, see web-audit). The race-detector +
 # Postgres jobs only run on push to main (per .github/workflows/ci.yml) and
 # are not included here; run `make test-pg` separately if you want them
 # locally.
@@ -171,3 +181,4 @@ check: lint
 	$(MAKE) vuln
 	$(MAKE) web-check
 	$(MAKE) web-test
+	$(MAKE) web-audit
