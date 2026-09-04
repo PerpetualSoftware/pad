@@ -76,9 +76,17 @@ var reservedItemFieldKeys = map[string]struct{}{
 // refusing, because nobody in the request typed it and refusing would make
 // every write into that collection fail on a schema defect its author must fix
 // elsewhere. Additive and omitempty, so a clean write is byte-identical.
+// UnresolvedRelations lists relation keys whose value was STORED without
+// resolving to a live item. Only an IMPORT produces these: Dave's ruling
+// (day 57) is that import must carry junk relation values rather than refuse
+// them, because refusing would break the import of any artifact written before
+// referent validation existed. Distinct from DroppedFields — the value is kept,
+// not discarded — and from UndeclaredFields, which is about the KEY rather than
+// what it points at.
 type ItemWriteWarnings struct {
-	UndeclaredFields []string `json:"undeclared_fields,omitempty"`
-	DroppedFields    []string `json:"dropped_fields,omitempty"`
+	UndeclaredFields    []string `json:"undeclared_fields,omitempty"`
+	DroppedFields       []string `json:"dropped_fields,omitempty"`
+	UnresolvedRelations []string `json:"unresolved_relations,omitempty"`
 }
 
 // IsReservedItemField reports whether key is system-written metadata rather than

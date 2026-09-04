@@ -696,7 +696,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue)
+	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue, relationsRefuse)
 	if cerr != nil {
 		writeError(w, cerr.status, cerr.code, cerr.message)
 		return
@@ -743,7 +743,32 @@ func (e *itemCreateError) Error() string { return e.message }
 //
 // Returns the created item (Ref/Slug populated by the store) or an
 // *itemCreateError with a status hint.
-func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string) (*models.Item, *itemCreateError) {
+// relationPosture says how a create door treats a relation value that does not
+// resolve. Two callers, two answers, and the difference is Dave's ruling
+// (day 57): refuse on write, carry on IMPORT.
+//
+// An artifact is not caller input in the sense the write doors mean. It was
+// written elsewhere, possibly years ago and certainly before referent
+// validation existed, and the person importing it did not choose its field
+// values and cannot fix them from the import call. Refusing would break the
+// import of exactly the artifacts most likely to carry junk — which is what
+// Dave's ruling names: "explicitly allow import of the junk to avoid breaking
+// import".
+type relationPosture int
+
+const (
+	// relationsRefuse — the caller typed these values, so an unresolvable one
+	// is their bug (create, update).
+	relationsRefuse relationPosture = iota
+	// relationsCarry — store what does not resolve and REPORT it. Not the
+	// migrate doors' carry, which drops what it cannot resolve: an import
+	// keeps the value, because the artifact is the record and discarding half
+	// of it silently is worse than importing something a client renders as
+	// unresolved (the read half of U2 does exactly that).
+	relationsCarry
+)
+
+func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string, posture relationPosture) (*models.Item, *itemCreateError) {
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
 	// Snapshot before validation, which INJECTS schema defaults without
@@ -764,8 +789,17 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	if relErr != nil {
 		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to resolve relation references"}
 	}
+	var unresolved []string
 	if len(relRefusals) > 0 {
-		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relRefusals)}
+		if posture == relationsRefuse {
+			return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relRefusals)}
+		}
+		// Carry: the values stay in fieldMap exactly as supplied — the
+		// resolver leaves what it cannot resolve untouched — and the write
+		// says which ones, so an import is never silently lossy.
+		for _, ri := range relRefusals {
+			unresolved = append(unresolved, ri.Key)
+		}
 	}
 	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
 
@@ -887,10 +921,11 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	// Attach after the write succeeded: these are advisory notes about a
 	// stored item, not a reason to refuse one (BUG-2850).
-	if len(undeclared) > 0 || len(droppedDefaults) > 0 {
+	if len(undeclared) > 0 || len(droppedDefaults) > 0 || len(unresolved) > 0 {
 		item.Warnings = &models.ItemWriteWarnings{
-			UndeclaredFields: undeclared,
-			DroppedFields:    droppedDefaults,
+			UndeclaredFields:    undeclared,
+			DroppedFields:       droppedDefaults,
+			UnresolvedRelations: unresolved,
 		}
 	}
 

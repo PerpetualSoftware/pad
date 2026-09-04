@@ -201,7 +201,11 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, normalizedFields, "")
+	// IMPORT CARRIES junk relation values rather than refusing them — Dave's
+	// ruling, day 57. An artifact was written elsewhere and the importer did
+	// not choose its field values; refusing would break the import of exactly
+	// the artifacts most likely to hold pre-validation junk.
+	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, normalizedFields, "", relationsCarry)
 	if cerr != nil {
 		writeError(w, cerr.status, cerr.code, cerr.message)
 		return
@@ -239,6 +243,9 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		// added and this loop kept reporting only what it already knew. An
 		// import discarding a value silently is the same class of news as one
 		// storing an unrecognized key, and MORE so — that value is gone.
+		for _, key := range item.Warnings.UnresolvedRelations {
+			warnings = append(warnings, fmt.Sprintf("field %q was imported as-is: it does not name an item in this workspace", key))
+		}
 		for _, key := range item.Warnings.DroppedFields {
 			warnings = append(warnings, fmt.Sprintf("field %q was discarded: the destination collection's schema declares a default for it that is not a valid reference", key))
 		}

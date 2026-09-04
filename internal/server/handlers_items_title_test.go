@@ -240,7 +240,7 @@ func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, cerr := srv.createItemChecked(req, ws.ID, coll, schema,
-				models.ItemCreate{Title: tc.title}, map[string]any{}, "")
+				models.ItemCreate{Title: tc.title}, map[string]any{}, "", relationsRefuse)
 			if cerr == nil {
 				t.Fatal("createItemChecked accepted an invalid title")
 			}
@@ -256,7 +256,7 @@ func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
 	// Control: a valid title still creates, so the arm above is not swallowing
 	// the success path.
 	if _, cerr := srv.createItemChecked(req, ws.ID, coll, schema,
-		models.ItemCreate{Title: "Perfectly Fine"}, map[string]any{}, ""); cerr != nil {
+		models.ItemCreate{Title: "Perfectly Fine"}, map[string]any{}, "", relationsRefuse); cerr != nil {
 		t.Fatalf("a valid title must still create: %d %s", cerr.status, cerr.message)
 	}
 }

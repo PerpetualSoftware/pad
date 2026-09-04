@@ -165,3 +165,72 @@ func TestImportArtifactReportsDroppedRelationDefault(t *testing.T) {
 		t.Fatalf("the import discarded owner_ref without saying so: %v", resp.Warnings)
 	}
 }
+
+// IMPORT CARRIES a junk relation value; it never refuses (Dave's ruling,
+// day 57: "explicitly allow import of the junk to avoid breaking import").
+//
+// Import is a CARRY door, not a write door. An artifact was written elsewhere,
+// possibly before referent validation existed, and the person importing it
+// neither chose its field values nor can fix them from the import call.
+// Refusing would break exactly the artifacts most likely to hold junk.
+//
+// Not the migrate doors' carry either: those DROP what they cannot resolve.
+// The artifact is the record, so the value is kept — and reported, so the
+// import is never silently lossy.
+func TestImportArtifactCarriesUnresolvableRelationValue(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/collections/conventions", map[string]any{
+		// `role` rather than an invented key: the artifact FORMAT decides which
+		// keys reach the field map at all (artifact.Decode populates Fields
+		// from FieldKeysForKind), so a relation field the format does not know
+		// is filtered out before this door and the case is unreachable. It has
+		// to be a canonical convention key that the DESTINATION declares as a
+		// relation. My first fixture used `owner_ref` and asserted a carry
+		// that decode had already dropped.
+		"schema": `{"fields":[{"key":"status","type":"select","options":["draft","active"]},{"key":"role","type":"relation","collection":"nobody"}]}`,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("add a relation field: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	art := artifact.Artifact{
+		Kind:          artifact.KindConvention,
+		FormatVersion: artifact.FormatVersion,
+		Title:         "Convention carrying a junk relation",
+		Fields:        map[string]any{"status": "active", "role": "just some text"},
+		Body:          "Body.\n",
+	}
+	data, err := artifact.Encode(art)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	rr2 := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", data)
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("import REFUSED a junk relation value (%d); import carries, never refuses: %s",
+			rr2.Code, rr2.Body.String())
+	}
+	var resp struct {
+		Ref      string   `json:"ref"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rr2.Body.String())
+	}
+
+	// KEPT, not dropped: the artifact is the record. Read back through the
+	// API rather than the store, so this asserts what a consumer sees.
+	show := doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items/"+resp.Ref, nil)
+	if show.Code != http.StatusOK {
+		t.Fatalf("GET the imported item: %d %s", show.Code, show.Body.String())
+	}
+	if !strings.Contains(show.Body.String(), "just some text") {
+		t.Fatalf("import discarded the junk value instead of carrying it: %s", show.Body.String())
+	}
+	// ...and reported, so the import is not silently lossy.
+	if !strings.Contains(strings.Join(resp.Warnings, "\n"), "role") {
+		t.Fatalf("import carried an unresolvable relation without saying so: %v", resp.Warnings)
+	}
+}
