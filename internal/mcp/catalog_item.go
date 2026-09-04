@@ -329,6 +329,19 @@ Actions:
                   Required: ref, target, link_type.
   deps          — Show all dependencies (incoming + outgoing) for an item.
                   Required: ref.
+  remind        — Arm a one-shot reminder that fires at a specific instant.
+                  Required: ref, remind_at (RFC3339 INSTANT — a bare date is
+                  refused, since it names a 24-hour span rather than a moment).
+                  When it fires, the item appears in pad_project next/ready
+                  carrying the reminder_id, until you acknowledge it. Use this
+                  when you defer work: it is how you ask to be reminded.
+  ack-reminder  — Acknowledge a fired reminder so it leaves next/ready.
+                  Required: reminder_id (from the fired suggestion, or from
+                  the response when you armed it — NOT the item ref, since an
+                  item can carry several reminders).
+                  Nothing else acknowledges one: completing the item does not,
+                  because a reminder may have been armed to fire after the
+                  work was done.
   star          — Star an item for quick access.
                   Required: ref.
   unstar        — Remove star.

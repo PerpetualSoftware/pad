@@ -23,7 +23,7 @@ var (
 
 func remindCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "remind <ref>",
+		Use:   "remind [ref]",
 		Short: "Arm a reminder on an item",
 		Long: `Arm a one-shot reminder that fires at a specific instant.
 
@@ -37,6 +37,13 @@ When the reminder fires it appears in 'pad project next' and 'pad project
 ready' until you acknowledge it with 'pad item ack', and it emits an
 item.reminder_due webhook event. The poll surface is not optional: an instance
 with no webhook configured delivers reminders that way and only that way.`,
+		// `[ref]` rather than `<ref>` in Use, because cmdhelp derives the
+		// machine-readable arg spec from this string and `<ref>` would declare
+		// a REQUIRED positional that --rearm does not take (codex round 6).
+		// The requirement is conditional, which cmdhelp has no way to express,
+		// so the honest declaration is "optional" plus the explicit check
+		// below that names the two ways to call it.
+		//
 		// MaximumNArgs, not ExactArgs: --rearm addresses a REMINDER by id and
 		// needs no item ref, so requiring one made the flag unusable (codex
 		// round 2). The two modes are checked below rather than merged,

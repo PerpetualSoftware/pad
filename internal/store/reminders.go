@@ -266,10 +266,12 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		FROM item_reminders r
 		JOIN items i ON i.id = r.item_id
 		JOIN collections c ON c.id = i.collection_id
+		JOIN workspaces w ON w.id = r.workspace_id
 		WHERE r.workspace_id = ?
 		  AND r.fired_at IS NOT NULL
 		  AND r.acked_at IS NULL
-		  AND i.deleted_at IS NULL`
+		  AND i.deleted_at IS NULL
+		  AND w.deleted_at IS NULL`
 	args := []any{workspaceID}
 
 	// Same three-way shape as models.ItemListParams: a guest may hold
@@ -359,10 +361,23 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	// idle. Filtering in the candidate query means those rows never occupy a
 	// slot, while the reminders themselves are kept, so restoring the item
 	// restores its reminder with it.
+	// THE WORKSPACE IS CHECKED TOO, not only the item (codex round 6).
+	// Workspace soft-delete deliberately leaves items in place for the 30-day
+	// restore window, so a workspace-level filter on the ITEM finds nothing
+	// wrong — and the tick kept firing, emitting outbound webhook events for a
+	// workspace whose owner had deleted it, possibly as part of deleting their
+	// account. That is the one failure mode here that reaches outside the
+	// process, which is why it outranks the starvation cases even though the
+	// SQL change is the same size.
+	//
+	// A restored workspace resumes normally: nothing is destroyed, the
+	// reminders simply stop being candidates while it is gone.
 	rows, err := s.db.Query(s.q(`
 		SELECT r.id FROM item_reminders r
 		JOIN items i ON i.id = r.item_id
-		WHERE r.fired_at IS NULL AND r.remind_at <= ? AND i.deleted_at IS NULL
+		JOIN workspaces w ON w.id = r.workspace_id
+		WHERE r.fired_at IS NULL AND r.remind_at <= ?
+		  AND i.deleted_at IS NULL AND w.deleted_at IS NULL
 		ORDER BY r.remind_at, r.id
 		LIMIT ?
 	`), nowTS, limit)

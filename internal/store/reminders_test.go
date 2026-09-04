@@ -821,3 +821,101 @@ func TestEmptyScopeSeesNothing(t *testing.T) {
 		t.Error("a caller who can see nothing was told there is more")
 	}
 }
+
+// TestSoftDeletedWorkspacesDoNotFire — codex round 6, P1, and the only defect
+// in this unit whose consequence leaves the process.
+//
+// Workspace soft-delete deliberately keeps items for the 30-day restore
+// window, so a filter on the ITEM's deleted_at finds nothing wrong and the
+// tick kept going — emitting outbound webhook events for a workspace whose
+// owner had deleted it, possibly while deleting their account.
+//
+// Restoration is asserted too: the reminders must be intact and fire again,
+// because "stops firing" and "is destroyed" are very different answers to a
+// user who restores a workspace, and only one of them is right.
+//
+// MUTANT: drop `AND w.deleted_at IS NULL` from the candidate query and the
+// deleted workspace's reminder fires.
+func TestSoftDeletedWorkspacesDoNotFire(t *testing.T) {
+	s := testStore(t)
+	live := createTestWorkspace(t, s, "Live")
+	gone := createTestWorkspace(t, s, "Gone")
+
+	liveCol := createTestCollection(t, s, live.ID, "Tasks")
+	goneCol := createTestCollection(t, s, gone.ID, "Tasks")
+	liveItem := createTestItem(t, s, live.ID, liveCol.ID, "Still here", "")
+	goneItem := createTestItem(t, s, gone.ID, goneCol.ID, "Deleted workspace", "")
+
+	liveID := armReminder(t, s, live.ID, liveItem.ID, past)
+	goneID := armReminder(t, s, gone.ID, goneItem.ID, past)
+
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), gone.ID); err != nil {
+		t.Fatalf("soft delete workspace: %v", err)
+	}
+
+	fired, err := s.FireDueReminders(nowTS(), 0)
+	if err != nil {
+		t.Fatalf("FireDueReminders: %v", err)
+	}
+	if len(fired) != 1 || fired[0].ID != liveID {
+		t.Fatalf("expected only the live workspace's reminder to fire, got %d", len(fired))
+	}
+
+	// No event for the deleted workspace — the point is what left the process,
+	// not merely what the return value said.
+	var events int
+	// Scoped to the REMINDER event type. Counting every event in the workspace
+	// made this fail for the wrong reason — item creation writes its own
+	// outbox rows, so the assertion was satisfiable by the fixture itself and
+	// discriminated nothing.
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE workspace_id = ? AND event_type = ?`),
+		gone.ID, kernelevents.ItemReminderDue).Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 0 {
+		t.Errorf("%d reminder event(s) emitted for a soft-deleted workspace", events)
+	}
+
+	// Restore: the reminder is intact and fires.
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET deleted_at = NULL WHERE id = ?`), gone.ID); err != nil {
+		t.Fatalf("restore workspace: %v", err)
+	}
+	fired, err = s.FireDueReminders(nowTS(), 0)
+	if err != nil {
+		t.Fatalf("FireDueReminders after restore: %v", err)
+	}
+	if len(fired) != 1 || fired[0].ID != goneID {
+		t.Errorf("a restored workspace's reminder did not fire; got %d", len(fired))
+	}
+}
+
+// TestPendingRemindersHideASoftDeletedWorkspace is the read-side half. The
+// dashboard for a deleted workspace is not reachable today, so this pins the
+// query rather than a user-visible symptom — the same reason the fire-side
+// filter is not enough on its own.
+func TestPendingRemindersHideASoftDeletedWorkspace(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Gone")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+	armReminder(t, s, ws.ID, item.ID, past)
+	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if pending, _, err := s.ListPendingReminders(ws.ID, PendingReminderScope{}, 0, 0); err != nil {
+		t.Fatalf("ListPendingReminders: %v", err)
+	} else if len(pending) != 1 {
+		t.Fatalf("setup: expected 1 pending reminder before deletion, got %d", len(pending))
+	}
+
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), ws.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	pending, _, err := s.ListPendingReminders(ws.ID, PendingReminderScope{}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListPendingReminders: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("a soft-deleted workspace still lists %d pending reminder(s)", len(pending))
+	}
+}

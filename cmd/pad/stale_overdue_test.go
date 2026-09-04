@@ -83,13 +83,18 @@ func TestReminderCommandsExposeTheArgsMCPExpects(t *testing.T) {
 	doc := cmdhelp.Build(newRootCmd(), newRootCmd(), cmdhelp.Options{MaxDepth: -1})
 
 	for _, tc := range []struct {
-		path string
-		want []string
+		path     string
+		want     []string
+		required []bool
 	}{
-		{"item remind", []string{"ref"}},
-		{"item ack", []string{"reminder-id"}},
-		{"item reminders", []string{"ref"}},
-		{"item unremind", []string{"reminder-id"}},
+		// `remind`'s ref is OPTIONAL: --rearm addresses a reminder by id and
+		// takes none. cmdhelp cannot express a conditional requirement, so
+		// declaring it required would be a machine-readable claim the command
+		// contradicts (codex round 6).
+		{"item remind", []string{"ref"}, []bool{false}},
+		{"item ack", []string{"reminder-id"}, []bool{true}},
+		{"item reminders", []string{"ref"}, []bool{true}},
+		{"item unremind", []string{"reminder-id"}, []bool{true}},
 	} {
 		cmd, ok := doc.Commands[tc.path]
 		if !ok {
@@ -108,6 +113,9 @@ func TestReminderCommandsExposeTheArgsMCPExpects(t *testing.T) {
 			if got[i] != tc.want[i] {
 				t.Errorf("%q positionals = %v, want %v", tc.path, got, tc.want)
 				break
+			}
+			if cmd.Args[i].Required != tc.required[i] {
+				t.Errorf("%q arg %q required = %v, want %v", tc.path, got[i], cmd.Args[i].Required, tc.required[i])
 			}
 		}
 	}
