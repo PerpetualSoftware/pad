@@ -118,7 +118,11 @@ the registry back with a liveness verdict per session.
 
 The agent name defaults to what every write is attributed to (.pad.toml
 agent_name, else $PAD_AGENT, else the detected runtime); --agent overrides
-it, and --agent "" registers an anonymous session.
+it, and --agent "" registers an anonymous session. A registered name is
+then what this session's writes carry from that point on — the record is
+consulted before .pad.toml and the environment (BUG-2882) — so re-registering
+under a different name re-attributes the session's later writes with it. An
+anonymous registration leaves an environment-declared name in force.
 
 Safe to call from any directory — it does not require a linked workspace
 (.pad.toml) — and safe to call more than once per session: each call
@@ -153,7 +157,7 @@ prune').`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&agent, "agent", "", "agent name to register as (default: the name this session's writes carry; \"\" for anonymous)")
+	cmd.Flags().StringVar(&agent, "agent", "", "agent name to register as; becomes the name this session's writes carry (default: the current one; \"\" for an anonymous row)")
 	return cmd
 }
 

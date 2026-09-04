@@ -12,10 +12,21 @@ import "os"
 //
 // Precedence, most explicit first:
 //
-//  1. `agent_name` in .pad.toml — a deliberate per-workspace choice.
-//  2. $PAD_AGENT — the runtime-agnostic override. Any harness we have not
+//  1. The agent this SESSION registered as (`pad session register --agent`),
+//     when a live registry record for the owning session exists and names
+//     one — the most recent and most deliberate declaration, and the one
+//     `pad session list` shows. BUG-2882: before this step the registry and
+//     the write stamp were two self-declarations that could disagree, and
+//     did — two seats launched under one name, one re-registered under the
+//     right one, and every write it made afterwards carried the wrong one,
+//     because `--agent` could rewrite the registry row but not $PAD_AGENT,
+//     and nothing reconciled the two. Now the row IS the stamp. An anonymous
+//     registration (`--agent ""`) does not blank a name the environment
+//     declares; it only says the registry row is anonymous.
+//  2. `agent_name` in .pad.toml — a deliberate per-workspace choice.
+//  3. $PAD_AGENT — the runtime-agnostic override. Any harness we have not
 //     taught this function about can set it and be attributed correctly.
-//  3. A detected agent runtime, below.
+//  4. A detected agent runtime, below.
 //
 // WHAT THIS IS NOT. The header is client-supplied and self-declared, so it
 // records honesty, not identity:
@@ -31,6 +42,9 @@ import "os"
 // agent's relay of a human's words was recorded indistinguishably from the
 // human having typed them.
 func ResolveAgentName() string {
+	if name, ok := registeredAgentForThisSession(); ok && name != "" {
+		return name
+	}
 	if pt, _ := LoadPadToml(); pt != nil && pt.AgentName != "" {
 		return pt.AgentName
 	}

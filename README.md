@@ -144,9 +144,15 @@ export PAD_AGENT=reviewer
 
 # 3. Otherwise Pad detects the runtimes it knows — Claude Code reports
 #    "claude-code" — and that detected id is used as the name.
+
+# 0. Per-session, and ahead of all three: the name this session REGISTERED
+#    as. `pad session register --agent rook` re-attributes every later write
+#    from that session to "rook", whatever .pad.toml or $PAD_AGENT say — the
+#    registry row and the write stamp are one value, not two.
+pad session register --agent rook
 ```
 
-**If none of the three produce a name, the write is not marked as an agent's at all** — it is recorded as the person whose credentials it used, which is the case the caveat below is about. The generic `agent` label you may see on older entries is a write that identified itself before Pad stored names, or an event type that records the actor without the name (workspace membership changes, sign-ins).
+**If none of these produce a name, the write is not marked as an agent's at all** — it is recorded as the person whose credentials it used, which is the case the caveat below is about. The generic `agent` label you may see on older entries is a write that identified itself before Pad stored names, or an event type that records the actor without the name (workspace membership changes, sign-ins).
 
 The name is rendered exactly as sent — Pad keeps no list of approved names, and does not re-case or rewrite what you choose.
 

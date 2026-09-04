@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -201,5 +202,80 @@ func TestActorKind(t *testing.T) {
 				t.Errorf("ActorKind() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRegisteredAgentWinsForThisSession — BUG-2882. Two seats booted under one
+// name; one re-registered under the right one with --agent; every write it
+// made afterwards still carried the wrong name, because the registry row and
+// $PAD_AGENT were two self-declarations and nothing reconciled them. The row
+// is now the first thing the resolver reads, so `--agent` means what its help
+// text says. Three properties, each its own case so a regression names
+// itself: the row wins over the environment AND over .pad.toml; an anonymous
+// row does not blank an environment name; a row for a different session that
+// reused this pid is ignored.
+//
+// MUTANT: removing the registry step from ResolveAgentName fails the first
+// two; dropping the proc-start comparison fails the last.
+func TestRegisteredAgentWinsForThisSession(t *testing.T) {
+	sessionsDir := registryEnv(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".pad.toml"), []byte("workspace = \"w\"\nagent_name = \"toml-name\"\n"), 0o600); err != nil {
+		t.Fatalf("write .pad.toml: %v", err)
+	}
+	chdir(t, dir)
+	t.Setenv("PAD_AGENT", "wren")
+	// This process is its own session owner (no PAD_SESSION_PID / CLAUDE_PID).
+
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Fatalf("before any registration, ResolveAgentName() = %q, want the .pad.toml name", got)
+	}
+
+	if _, err := RegisterSession(dir, "rook"); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+	if got := ResolveAgentName(); got != "rook" {
+		t.Errorf("after registering as rook, ResolveAgentName() = %q, want %q (the row must win over .pad.toml and $PAD_AGENT)", got, "rook")
+	}
+
+	// Re-registering with the default keeps the name: the default IS the
+	// resolver, which now reads the row.
+	if _, err := RegisterSession(dir, ResolveAgentName()); err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	if got := ResolveAgentName(); got != "rook" {
+		t.Errorf("after a default re-register, ResolveAgentName() = %q, want %q", got, "rook")
+	}
+
+	// An anonymous row is a statement about the row, not about the writes.
+	if _, err := RegisterSession(dir, ""); err != nil {
+		t.Fatalf("anonymous register: %v", err)
+	}
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Errorf("after an anonymous registration, ResolveAgentName() = %q, want the .pad.toml name back", got)
+	}
+
+	// A record for THIS pid but a different process start is another
+	// session that once had the pid; it must not name us.
+	path := filepath.Join(sessionsDir, itoa(os.Getpid())+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	var reg SessionRegistration
+	if err := json.Unmarshal(data, &reg); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	if reg.ProcStart == "" {
+		t.Skip("platform records no process-start token; the pid-reuse guard has nothing to compare")
+	}
+	reg.Agent = "ghost"
+	reg.ProcStart = reg.ProcStart + "-not-us"
+	out, _ := json.Marshal(reg)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("rewrite record: %v", err)
+	}
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Errorf("a record from a different session with our pid named us: ResolveAgentName() = %q", got)
 	}
 }

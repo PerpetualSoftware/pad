@@ -58,10 +58,14 @@ type SessionRegistration struct {
 	// sessions by id (transcript paths, session measurement). Opaque to
 	// pad.
 	SessionID string `json:"session_id,omitempty"`
-	// Agent is the name the session declared for itself — the same
-	// self-declared value ResolveAgentName stamps on every write, recorded
-	// so a reader can tell two sessions in one checkout apart by what they
-	// are working AS. Empty is an anonymous session.
+	// Agent is the name the session declared for itself, recorded so a
+	// reader can tell two sessions in one checkout apart by what they are
+	// working AS. When non-empty it is ALSO the value ResolveAgentName
+	// stamps on every write from this session — by construction since
+	// BUG-2882, which found the two disagreeing on both live seats: the
+	// resolver now reads this record first (registeredAgentForThisSession).
+	// Empty is an anonymous session; it does not blank an environment-
+	// declared name on writes.
 	Agent string `json:"agent,omitempty"`
 	// RegistrarPID is the pid of the process that wrote the file (the
 	// `pad` command). Its JSON key is v1's "pid", kept for compatibility;
@@ -135,6 +139,51 @@ func SessionsDir() (string, error) {
 		_ = os.Chmod(dir, 0700)
 	}
 	return dir, nil
+}
+
+// registeredAgentForThisSession reads the registry record for the session
+// that owns this process — the same owner CaptureSessionOwner would record —
+// and returns its agent name. It is the first thing ResolveAgentName consults
+// (BUG-2882), so it must be cheap and must never create anything: a plain
+// stat-and-read of one file, no MkdirAll, no lock (a torn read of a record
+// being rewritten parses as malformed and is ignored, and the next call sees
+// the new record).
+//
+// ok is false when there is no record, the record is malformed or legacy, or
+// the record is for a DIFFERENT session that happened to have this pid: when
+// both sides carry a process-start token they must agree, exactly as the
+// liveness verdict requires. A record with an empty agent is a deliberate
+// anonymous registration and returns ("", true); the caller decides that this
+// does not override an environment-declared name.
+func registeredAgentForThisSession() (string, bool) {
+	owner, err := CaptureSessionOwner()
+	if err != nil {
+		return "", false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	path := filepath.Join(home, ".pad", "sessions", fmt.Sprintf("%d.json", owner.PID))
+	data, err := readRegistryBytes(path)
+	if err != nil {
+		return "", false
+	}
+	if !utf8.Valid(data) {
+		return "", false
+	}
+	var reg SessionRegistration
+	if err := json.Unmarshal(data, &reg); err != nil || !registrationWellFormed(&reg) {
+		return "", false
+	}
+	if reg.PID != owner.PID {
+		// v1 (legacy) records have no owner pid; they never carried a name.
+		return "", false
+	}
+	if reg.ProcStart != "" && owner.ProcStart != "" && reg.ProcStart != owner.ProcStart {
+		return "", false
+	}
+	return reg.Agent, true
 }
 
 // registryFileName matches registry records — and ONLY them. The same
