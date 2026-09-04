@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -98,7 +99,12 @@ func (s *Server) resolveRelationReferentsAs(
 			continue
 		}
 		id, isStr := raw.(string)
-		if !isStr || id == "" {
+		// TRIMMED, matching the store resolver: it ignores a whitespace-only
+		// value as "no reference", so an untrimmed check here refuses a value
+		// the store never objected to — and since the vanished-target arm
+		// below turns a missing lookup into a refusal, `"   "` became a
+		// not_found instead of an empty field (codex round 6).
+		if !isStr || strings.TrimSpace(id) == "" {
 			continue
 		}
 		if ri, already := issueForKey(issues, def.Key); already {

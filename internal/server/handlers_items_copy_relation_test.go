@@ -672,3 +672,54 @@ func TestCopyEndpoint_NullSourceWithoutDefaultIsNotReportedAsDefault(t *testing.
 	// claiming a default that does not exist. Reaching here means the key was
 	// absent from `carried`, so there is nothing mislabelled.
 }
+
+// A relation default that is not a reference at all must be reported, not
+// silently stored (codex round 6).
+//
+// THE ROUTE MATTERS, and the review's account of it was not quite right.
+// `MigrateFields` injects destination defaults itself, so in the ordinary case
+// the key is present when `ValidateFieldsDetailed` runs and its type IS
+// checked — a numeric default lands in needs_value with "must be a string",
+// which is correct behaviour and not a defect.
+//
+// The unchecked route is narrower: a NULL OVERRIDE deletes the key after
+// MigrateFields has filled it, so validation injects the default itself — and
+// its own injection branch `continue`s PAST the type check. That is the one
+// way a non-string reaches a relation field unchallenged, and the
+// late-default pass owns values that arrive from defaults.
+func TestCopyEndpoint_NonStringRelationDefaultIsReported(t *testing.T) {
+	f := newCopyRelationFixtureNonStringDefault(t)
+	body := f.baseBody()
+	body["field_overrides"] = map[string]any{"owner_ref": nil}
+
+	pre := f.ok(body)
+	reason, dropped := droppedReason(pre, "owner_ref")
+	if !dropped {
+		t.Fatalf("a non-reference default is neither carried nor dropped: %+v", pre.Fields)
+	}
+	if reason != "invalid_shape" {
+		t.Fatalf("dropped for reason %q, want invalid_shape — the value is not a reference, so "+
+			"every other reason describes a lookup that never happened", reason)
+	}
+
+	res := assertPreflightMatchesCopy(t, f.copyPreflightFixture, "non-string relation default", body)
+	if v, present := f.persistedFields(res.Item.ID)["owner_ref"]; present {
+		t.Fatalf("the copy stored a non-reference in a relation field: %#v", v)
+	}
+}
+
+// newCopyRelationFixtureNonStringDefault gives the DESTINATION's relation
+// field a numeric default, which no valid schema would declare and which
+// nothing in the pipeline type-checks.
+func newCopyRelationFixtureNonStringDefault(t *testing.T) *relationFixture {
+	t.Helper()
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, false)
+	schema := fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":42}
+	]}`, f.targetsB.Slug)
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(non-string default): %v", err)
+	}
+	return f
+}

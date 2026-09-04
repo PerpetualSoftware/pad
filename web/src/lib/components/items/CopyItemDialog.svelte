@@ -959,6 +959,8 @@ user hunting for an item that provably does not exist.
 				return 'it refers to an item outside the field’s collection';
 			case 'target_missing':
 				return 'the field declares no collection to link to';
+			case 'invalid_shape':
+				return 'the destination field’s default is not a valid reference';
 			default:
 				return reason;
 		}

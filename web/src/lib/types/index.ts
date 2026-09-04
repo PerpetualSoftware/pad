@@ -799,7 +799,13 @@ export interface ItemCopyPreflightDropped {
 		 */
 		| 'not_found'
 		| 'wrong_collection'
-		| 'target_missing';
+		| 'target_missing'
+		/**
+		 * The destination schema's default for this field is not a reference at
+		 * all. Injected defaults are never type-checked, so this is the one
+		 * route by which a non-string reaches a relation field.
+		 */
+		| 'invalid_shape';
 }
 
 export interface ItemCopyPreflightNeedsValue {

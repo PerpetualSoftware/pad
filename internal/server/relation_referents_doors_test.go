@@ -721,3 +721,24 @@ func TestRelationDoors_BulkUpdateResolvesInjectedRelationDefault(t *testing.T) {
 			v, ok, f.target.ID, f.target.Ref)
 	}
 }
+
+// A whitespace-only relation value is "no reference", not a bad one (codex
+// round 6).
+//
+// The store resolver trims and ignores it. The server wrapper checked the
+// UNTRIMMED string, so it fell through to the visibility loop — and since the
+// vanished-target arm turns a missing lookup into a refusal, `"   "` came back
+// as not_found instead of an empty field. A defect my own round-1 fix
+// introduced: before it, the same path did `continue`.
+func TestRelationDoors_WhitespaceOnlyRelationIsNotRefused(t *testing.T) {
+	f := newDoorFixture(t)
+
+	rr := f.call(f.srv.handleCreateItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/collections/"+f.tasks.Slug+"/items",
+		map[string]string{"collSlug": f.tasks.Slug},
+		map[string]any{"title": "Blank relation", "fields": map[string]any{"owner_ref": "   "}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("a whitespace-only relation was refused %d; the store treats it as no value "+
+			"at all: %s", rr.Code, rr.Body.String())
+	}
+}

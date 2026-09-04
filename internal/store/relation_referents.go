@@ -48,6 +48,14 @@ const (
 	// so nothing can be checked against it. A schema problem, surfaced rather
 	// than treated as permission to store anything.
 	RelationTargetMissing RelationIssueReason = "target_missing"
+	// RelationTargetInvalidShape — the value is not a string at all, so it
+	// cannot name anything. Normally `ValidateFields` catches this and the
+	// resolver deliberately stays out of it (one error per defect), but an
+	// injected schema DEFAULT is never type-checked: ValidateFields assigns
+	// it and `continue`s past its own validation. That is the one route by
+	// which a non-string reaches a relation field unchallenged (codex round
+	// 6), so the late-default pass reports it rather than skipping it.
+	RelationTargetInvalidShape RelationIssueReason = "invalid_shape"
 )
 
 // RelationIssue is one unresolvable relation value, carrying everything a
@@ -68,6 +76,8 @@ func (ri RelationIssue) Message() string {
 		return fmt.Sprintf("field %q: %q is not an item in collection %q", ri.Key, ri.Value, ri.Target)
 	case RelationTargetMissing:
 		return fmt.Sprintf("field %q declares no target collection, so %q cannot be resolved", ri.Key, ri.Value)
+	case RelationTargetInvalidShape:
+		return fmt.Sprintf("field %q has a default that is not a reference", ri.Key)
 	default:
 		return fmt.Sprintf("field %q: %q does not name an item in collection %q", ri.Key, ri.Value, ri.Target)
 	}
@@ -87,6 +97,7 @@ func RelationIssueReasons() []RelationIssueReason {
 		RelationTargetWrongCollection,
 		RelationTargetMissing,
 		RelationTargetNotPortable,
+		RelationTargetInvalidShape,
 	}
 }
 
@@ -534,7 +545,16 @@ func (s *Store) MigrateRelationReferentsQ(
 			if !exists {
 				continue
 			}
-			value, _ := raw.(string)
+			value, isStr := raw.(string)
+			if !isStr {
+				// Not a reference at all, so "cannot cross a workspace
+				// boundary" is a false account of why it is going. Left in
+				// place for ValidateFields to reject on shape — which is what
+				// the SAME-workspace branch already does with it, and the two
+				// modes disagreeing about one malformed value was the defect
+				// (codex round 6).
+				continue
+			}
 			dropped = append(dropped, RelationIssue{
 				Key: def.Key, Value: value, Target: def.Collection, Reason: RelationTargetNotPortable,
 			})
@@ -628,13 +648,27 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 		if !exists || raw == nil {
 			continue
 		}
-		if str, isStr := raw.(string); isStr && strings.TrimSpace(str) == "" {
+		str, isStr := raw.(string)
+		if !isStr {
+			// A default validation injected without type-checking it. The
+			// resolver cannot use it and nothing else will complain, so it is
+			// dropped and reported here.
+			dropped = append(dropped, RelationIssue{
+				Key: def.Key, Target: def.Collection, Reason: RelationTargetInvalidShape,
+			})
+			delete(fieldMap, def.Key)
+			continue
+		}
+		if strings.TrimSpace(str) == "" {
 			continue
 		}
 		late[def.Key] = raw
 	}
 	if len(late) == 0 {
-		return nil, nil
+		// `dropped` may already carry non-string defaults rejected above, so
+		// this returns it rather than nil — an early `return nil, nil` here
+		// silently discarded them.
+		return dropped, nil
 	}
 	issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, late)
 	if resolveErr != nil {
