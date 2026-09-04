@@ -61,6 +61,11 @@ func TestResolveAgentName(t *testing.T) {
 				}
 			}
 			chdir(t, dir)
+			// And from a scratch HOME with no session identity, so a registry
+			// row belonging to the REAL session running these tests cannot
+			// leak in as the resolver's first answer (codex round 1, #1248).
+			isolateHome(t, t.TempDir())
+			clearSessionEnv(t)
 
 			// Clear every variable the resolver consults, then set this case's.
 			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
@@ -106,6 +111,8 @@ func TestClientSendsResolvedAgentHeader(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chdir(t, t.TempDir())
+			isolateHome(t, t.TempDir())
+			clearSessionEnv(t)
 			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
 				t.Setenv(k, "")
 				os.Unsetenv(k)
@@ -191,6 +198,8 @@ func TestActorKind(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chdir(t, t.TempDir())
+			isolateHome(t, t.TempDir())
+			clearSessionEnv(t)
 			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
 				t.Setenv(k, "")
 				os.Unsetenv(k)
@@ -269,13 +278,36 @@ func TestRegisteredAgentWinsForThisSession(t *testing.T) {
 	if reg.ProcStart == "" {
 		t.Skip("platform records no process-start token; the pid-reuse guard has nothing to compare")
 	}
+	token := reg.ProcStart
 	reg.Agent = "ghost"
-	reg.ProcStart = reg.ProcStart + "-not-us"
+	reg.ProcStart = token + "-not-us"
 	out, _ := json.Marshal(reg)
 	if err := os.WriteFile(path, out, 0o600); err != nil {
 		t.Fatalf("rewrite record: %v", err)
 	}
 	if got := ResolveAgentName(); got != "toml-name" {
 		t.Errorf("a record from a different session with our pid named us: ResolveAgentName() = %q", got)
+	}
+
+	// A record with NO token, while this process can read one, is
+	// unverifiable and must not name us either (codex round 1, #1248: a
+	// dead session's stale row under a reused pid).
+	reg.ProcStart = ""
+	out, _ = json.Marshal(reg)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("rewrite record: %v", err)
+	}
+	if got := ResolveAgentName(); got != "toml-name" {
+		t.Errorf("a token-less record for our pid named us: ResolveAgentName() = %q", got)
+	}
+
+	// Positive control after the two rejections: the genuine token names us.
+	reg.ProcStart = token
+	out, _ = json.Marshal(reg)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("rewrite record: %v", err)
+	}
+	if got := ResolveAgentName(); got != "ghost" {
+		t.Errorf("the genuine record stopped naming us: ResolveAgentName() = %q", got)
 	}
 }

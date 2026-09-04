@@ -149,12 +149,17 @@ func SessionsDir() (string, error) {
 // being rewritten parses as malformed and is ignored, and the next call sees
 // the new record).
 //
-// ok is false when there is no record, the record is malformed or legacy, or
-// the record is for a DIFFERENT session that happened to have this pid: when
-// both sides carry a process-start token they must agree, exactly as the
-// liveness verdict requires. A record with an empty agent is a deliberate
-// anonymous registration and returns ("", true); the caller decides that this
-// does not override an environment-declared name.
+// ok is false — FAIL CLOSED — unless the record is confirmed to be THIS
+// session's (codex round 1 on #1248): it must parse, carry this owner pid,
+// pass the same OwnerLiveness verdict `pad session list` applies (socket
+// identity and pid alive with its token), and, when this process can read a
+// process-start token for the owner, carry the SAME token. A record with no
+// token while we have one is unverifiable, not verified: a dead session's
+// stale row under a reused pid must not name a live one. Where the platform
+// has no token at all, bare liveness is the documented residual, as it is for
+// the registry itself. A record with an empty agent is a deliberate anonymous
+// registration and returns ("", true); the caller decides that this does not
+// override an environment-declared name.
 func registeredAgentForThisSession() (string, bool) {
 	owner, err := CaptureSessionOwner()
 	if err != nil {
@@ -180,7 +185,12 @@ func registeredAgentForThisSession() (string, bool) {
 		// v1 (legacy) records have no owner pid; they never carried a name.
 		return "", false
 	}
-	if reg.ProcStart != "" && owner.ProcStart != "" && reg.ProcStart != owner.ProcStart {
+	if owner.ProcStart != "" && reg.ProcStart != owner.ProcStart {
+		// Includes the empty case: a token we can check and the record
+		// cannot supply is a record we cannot trust.
+		return "", false
+	}
+	if OwnerLiveness(&reg.SessionOwner) != LivenessAlive {
 		return "", false
 	}
 	return reg.Agent, true
