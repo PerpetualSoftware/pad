@@ -259,7 +259,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	reminderRows, err := s.db.Query(s.q(`
 		SELECT r.item_id, r.remind_at, COALESCE(r.fired_at, ''), COALESCE(r.acked_at, ''), r.created_at, r.updated_at
 		FROM item_reminders r
-		JOIN items i ON i.id = r.item_id
+		JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
 		WHERE r.workspace_id = ? AND i.deleted_at IS NULL
 		ORDER BY r.created_at, r.id`), ws.ID)
 	if err != nil {

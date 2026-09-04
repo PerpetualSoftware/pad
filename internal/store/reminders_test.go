@@ -1460,3 +1460,77 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 		t.Error("an acknowledgement of something that never fired was carried in")
 	}
 }
+
+// TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert — codex round 13.
+//
+// No door writes such a row (CreateReminder derives the pair from the item;
+// import maps within the workspace), and the table has nothing that forbids
+// one. Every reader scopes by r.workspace_id and then joins the item, so a
+// row that disagreed would carry item A's title into workspace B's pending
+// surface, export, and — through the fire path — B's webhooks. The identity
+// is asserted in reminderFireable and in the two reads that do not use it,
+// so the row is inert everywhere rather than "unreachable" somewhere.
+//
+// The row is written raw, because that is the only way one can exist.
+//
+// MUTANT: dropping `i.workspace_id = item_reminders.workspace_id` from
+// reminderFireable makes the row a candidate and fires it; dropping the
+// JOIN condition in ListPendingReminders or the export query surfaces it
+// there. Each site has its own assertion below.
+func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
+	s := testStore(t)
+	wsA := createTestWorkspace(t, s, "A")
+	wsB := createTestWorkspace(t, s, "B")
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	itemA := createTestItem(t, s, wsA.ID, colA.ID, "A's item", "")
+
+	// Raw write: workspace B's reminder pointing at A's item, already fired
+	// so the pending surface would show it if it could.
+	ts := now()
+	id := newID()
+	if _, err := s.db.Exec(s.q(`
+		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+	`), id, wsB.ID, itemA.ID, past, ts, ts); err != nil {
+		t.Fatalf("raw insert: %v", err)
+	}
+
+	// Scan: not a candidate.
+	ids, err := s.dueReminderCandidates(nowTS(), 0)
+	if err != nil {
+		t.Fatalf("dueReminderCandidates: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("a mismatched row was scanned as a candidate: %v", ids)
+	}
+	// Arbiter: does not fire even when handed the id directly.
+	fired, err := s.fireOneReminder(id, nowTS())
+	if err != nil {
+		t.Fatalf("fireOneReminder: %v", err)
+	}
+	if fired != nil {
+		t.Error("a mismatched row fired")
+	}
+
+	// Pending surface, from B's side: force the row into the fired state and
+	// confirm B still cannot see A's item through it.
+	if _, err := s.db.Exec(s.q(`UPDATE item_reminders SET fired_at = ? WHERE id = ?`), ts, id); err != nil {
+		t.Fatalf("mark fired: %v", err)
+	}
+	pending, _, err := s.ListPendingReminders(wsB.ID, PendingReminderScope{}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListPendingReminders: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("B's pending surface carries A's item through a mismatched reminder: %+v", pending)
+	}
+
+	// Export, from B's side.
+	bundle, err := s.ExportWorkspace(wsB.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	if n := len(bundle.Reminders); n != 0 {
+		t.Errorf("B's export carries %d reminder(s) about A's item, want 0", n)
+	}
+}

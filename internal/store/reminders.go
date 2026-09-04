@@ -34,10 +34,22 @@ import (
 // are the ones that live on the reminder row itself and are already spelled
 // identically at both sites; folding them in would need a parameter order this
 // shared form cannot fix.
+//
+// THE ROW'S OWN workspace_id MUST AGREE WITH ITS ITEM'S (codex round 13).
+// CreateReminder writes the pair from the item, and import writes it from
+// its own in-workspace mapping, so no door produces a disagreement today —
+// but the table has an FK to the item and no constraint tying the two
+// columns, and every reader scopes by r.workspace_id and then joins the item.
+// A row that ever disagreed (a hand-edited bundle, a future move door, a
+// direct write) would carry one workspace's item into another's dashboard
+// and webhooks. The identity is asserted in the predicate, so the scan, the
+// arbiter, the pin and the reads all refuse the row rather than one of them
+// deciding it is "unreachable" on the others' behalf.
 const reminderFireable = `EXISTS (
 		SELECT 1 FROM items i
 		JOIN workspaces w ON w.id = i.workspace_id
 		WHERE i.id = item_reminders.item_id
+		  AND i.workspace_id = item_reminders.workspace_id
 		  AND i.deleted_at IS NULL
 		  AND w.deleted_at IS NULL
 	)`
@@ -334,7 +346,7 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		SELECT r.id, r.workspace_id, r.item_id, r.remind_at, r.fired_at, r.acked_at, r.created_at, r.updated_at,
 		       i.slug, i.title, i.fields, i.collection_id, c.slug, c.prefix, i.item_number
 		FROM item_reminders r
-		JOIN items i ON i.id = r.item_id
+		JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
 		JOIN collections c ON c.id = i.collection_id
 		JOIN workspaces w ON w.id = r.workspace_id
 		WHERE r.workspace_id = ?
@@ -641,7 +653,7 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 		var pinned string
 		err := tx.QueryRow(s.q(`
 			SELECT i.id FROM item_reminders r
-			JOIN items i ON i.id = r.item_id
+			JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
 			JOIN workspaces w ON w.id = i.workspace_id
 			WHERE r.id = ? AND i.deleted_at IS NULL AND w.deleted_at IS NULL
 			FOR NO KEY UPDATE OF i, w
