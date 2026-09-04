@@ -245,6 +245,48 @@ type ItemCopyPreflightCarried struct {
 }
 
 // ItemCopyPreflightDropped is one value that will not be copied.
+// The values ItemCopyPreflightDropped.Reason can carry that this package
+// originates. The relation reasons come from store.RelationIssueReasons()
+// instead — the store owns that vocabulary because it decides those failures.
+const (
+	dropReasonNoTargetField         = "no_target_field"
+	dropReasonIncompatibleType      = "incompatible_type"
+	dropReasonUndeclaredSourceField = "undeclared_source_field"
+	dropReasonAssigneeNotAMember    = "assignee_not_a_member"
+	dropReasonAgentRoleNotPortable  = "agent_role_not_portable"
+	dropReasonReferentNotPortable   = string(store.RelationTargetNotPortable)
+)
+
+// preflightDropReasons is the COMPLETE set of values this endpoint can put in
+// a dropped entry's `reason`.
+//
+// It exists to be enumerated, not read: the web dialog renders each of these
+// as a sentence and falls back to printing the raw enum, so a reason added
+// without a case there reaches a user as `undeclared_source_field`. That is
+// not hypothetical — `referent_not_portable` shipped in BUG-2674 and rendered
+// raw until TASK-2878, which is when a rare reason became a routine one.
+// TestCopyPreflightDropReasonsAreRenderedByTheDialog is the gate.
+func preflightDropReasons() []string {
+	out := []string{
+		dropReasonNoTargetField,
+		dropReasonIncompatibleType,
+		dropReasonUndeclaredSourceField,
+		dropReasonAssigneeNotAMember,
+		dropReasonAgentRoleNotPortable,
+	}
+	seen := make(map[string]bool, len(out))
+	for _, r := range out {
+		seen[r] = true
+	}
+	for _, r := range store.RelationIssueReasons() {
+		if !seen[string(r)] {
+			out = append(out, string(r))
+			seen[string(r)] = true
+		}
+	}
+	return out
+}
+
 type ItemCopyPreflightDropped struct {
 	Key   string `json:"key"`
 	Label string `json:"label,omitempty"`
@@ -839,7 +881,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// what happened, the two buckets disagreeing about one key — is the
 	// preflight lying to the dialog it exists to populate.
 	for _, key := range sortedDroppedKeys(items.StillDropped(migrated.Dropped, final), sourceSchema.Fields) {
-		reason := "no_target_field"
+		reason := dropReasonNoTargetField
 		label := key
 		// A relation value whose referent did not survive (TASK-2878). The
 		// reason is the resolver's own — `referent_not_portable` for a carried
@@ -863,7 +905,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// explains nothing about why the value is being left behind.
 		if models.IsReservedItemField(key) {
 			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
-				Key: key, Label: reservedFieldLabel(key), Kind: "field", Reason: "referent_not_portable",
+				Key: key, Label: reservedFieldLabel(key), Kind: "field", Reason: dropReasonReferentNotPortable,
 			})
 			continue
 		}
@@ -875,9 +917,9 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			// declared — MigrateFields then has no source type to convert
 			// from and drops the value unconditionally, even when the two
 			// keys would otherwise have been compatible.
-			reason = "incompatible_type"
+			reason = dropReasonIncompatibleType
 			if !declaredBySource {
-				reason = "undeclared_source_field"
+				reason = dropReasonUndeclaredSourceField
 			}
 			if def.Label != "" {
 				label = def.Label
@@ -903,7 +945,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			resp.Warnings.DroppedAssignee = true
 			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
 				Key: "assigned_user", Label: "Assignee", Kind: "assignment",
-				Reason: "assignee_not_a_member",
+				Reason: dropReasonAssigneeNotAMember,
 			})
 		}
 	}
@@ -911,7 +953,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		resp.Warnings.DroppedAgentRole = true
 		resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
 			Key: "agent_role", Label: "Agent role", Kind: "assignment",
-			Reason: "agent_role_not_portable",
+			Reason: dropReasonAgentRoleNotPortable,
 		})
 	}
 

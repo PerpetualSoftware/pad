@@ -73,6 +73,23 @@ func (ri RelationIssue) Message() string {
 	}
 }
 
+// RelationIssueReasons is every value a RelationIssue's Reason can carry.
+//
+// It exists so consumers can ENUMERATE the vocabulary rather than grep for it.
+// The copy preflight puts these strings on the wire, and the web dialog
+// switches on them; a reason added here without a case there renders as the raw
+// enum to a user, which is exactly how `referent_not_portable` shipped in
+// BUG-2674 and sat unhandled until TASK-2878 made it routine. A function rather
+// than a var so no caller can append to the package's own list.
+func RelationIssueReasons() []RelationIssueReason {
+	return []RelationIssueReason{
+		RelationTargetNotFound,
+		RelationTargetWrongCollection,
+		RelationTargetMissing,
+		RelationTargetNotPortable,
+	}
+}
+
 // RelationIssuesMessage renders a set of issues as the ONE sentence every
 // refusing door reports. It lives here rather than in `internal/server`
 // because the store's own copy door refuses too (through

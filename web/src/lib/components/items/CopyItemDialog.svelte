@@ -943,6 +943,22 @@ user hunting for an item that provably does not exist.
 				return 'the assignee is not a member of the destination';
 			case 'agent_role_not_portable':
 				return 'agent roles are workspace-local';
+			// BUG-2674 added this reason server-side and nothing here learned it,
+			// so it rendered through the fallback as the raw enum string. Rare
+			// while only `github_pr` produced it; routine since TASK-2878, which
+			// emits it for every carried relation value on a cross-workspace copy.
+			case 'referent_not_portable':
+				return 'it points at something in the source workspace';
+			// The three same-workspace referent failures (TASK-2878). Worth
+			// separate sentences: "no such item" and "wrong collection" send the
+			// reader to different fixes, and a missing target is a schema problem
+			// rather than anything about this item.
+			case 'not_found':
+				return 'the item it refers to no longer exists';
+			case 'wrong_collection':
+				return 'it refers to an item outside the field’s collection';
+			case 'target_missing':
+				return 'the field declares no collection to link to';
 			default:
 				return reason;
 		}

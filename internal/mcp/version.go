@@ -818,7 +818,56 @@ const CmdhelpVersion = "0.1"
 //     a reminder by an id the agent would have to list first, and no
 //     listing action exists on this surface — a door with no handle.
 //     Adding them later is additive.
-const ToolSurfaceVersion = "0.28"
+//
+//     0.29 — PLAN-2857 U1 / TASK-2878. A `relation` field value must
+//     now NAME A LIVE ITEM in the collection that field declares.
+//     `internal/items` has only ever checked the SHAPE of a relation
+//     ("must be a string"), because deciding whether a string names an
+//     item is a database question and that package is DB-free; so any
+//     string at all was accepted and stored, and the client then had
+//     no honest way to render it.
+//
+//     What this REFUSES that 0.28 permitted, on every write door
+//     `pad_item` reaches — create, update (fields), update
+//     (fields_patch), bulk update, and a `field:`/`fields:` override
+//     on move or copy. (a) A value naming nothing in the workspace
+//     (`not_found`). (b) A value naming a live item in the WRONG
+//     collection, which is the case a workspace-wide lookup silently
+//     accepted. (c) A value in a field whose schema declares no target
+//     collection at all (`target_missing`), surfaced rather than
+//     treated as permission to store anything. (d) A SLUG — a
+//     deliberate divergence from `ResolveItem`, which tries UUID, then
+//     ref, then slug: a slug is neither an ID nor stable, and free
+//     text like "red" resolving to whatever is slugged `red` today is
+//     exactly the corruption this closes.
+//
+//     Ordinary `validation_error`, no new error code and no new
+//     details key — the stdio transport classifies by matching CLI
+//     stderr prose, so a structured field it cannot see would help
+//     nobody there, and a new error shape is a contract change for
+//     every client.
+//
+//     What this DROPS that 0.27 carried, on the migrate doors: a
+//     CARRIED relation value — one already on the item, asserted by
+//     nobody — is never refused, because refusing would make every
+//     legacy item un-updatable, un-movable and un-copyable. Within a
+//     workspace it resolves and SURVIVES; across a workspace boundary
+//     it is dropped without a lookup, since a source-workspace id
+//     cannot mean anything in the destination, and reported through
+//     the same `warnings.dropped_fields` channel BUG-2674 established.
+//     `pad_item.action=copy` therefore returns a `dropped_fields`
+//     entry where 0.28 silently landed a dangling reference.
+//
+//     Bump rationale: a BEHAVIOR bump on the 0.27 / 0.26 / 0.16 / 0.10
+//     / 0.9 grounds — NOT on 0.28's, which was purely additive. No tool name, action enum or parameter shape
+//     changed. A caller that was writing a resolvable value sees no
+//     difference; one that was writing an unresolvable value was
+//     storing something no surface could render, so the break is the
+//     fix. No escape hatch, deliberately: unlike 0.10's `allow_draft`
+//     there is no legitimate call this refuses — the carried-value
+//     case, which is the one with a real claim to leniency, is
+//     already exempt by provenance rather than by a flag.
+const ToolSurfaceVersion = "0.29"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

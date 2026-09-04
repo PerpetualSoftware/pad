@@ -783,7 +783,23 @@ export interface ItemCopyPreflightDropped {
 		/** The item carries a key its own source schema no longer declares. */
 		| 'undeclared_source_field'
 		| 'assignee_not_a_member'
-		| 'agent_role_not_portable';
+		| 'agent_role_not_portable'
+		/**
+		 * The VALUE points at something belonging to the source workspace's
+		 * context, so it describes nothing true in the destination. Emitted for
+		 * `github_pr` (BUG-2674) and for every carried `relation` value on a
+		 * cross-workspace copy (TASK-2878) — a relation stores an item id, and a
+		 * source-workspace id cannot mean anything here.
+		 */
+		| 'referent_not_portable'
+		/**
+		 * The three same-workspace referent failures (TASK-2878): the value names
+		 * no item, names one in a collection other than the field's declared
+		 * target, or the field declares no target collection at all.
+		 */
+		| 'not_found'
+		| 'wrong_collection'
+		| 'target_missing';
 }
 
 export interface ItemCopyPreflightNeedsValue {
