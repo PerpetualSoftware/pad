@@ -214,6 +214,15 @@ func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
 // is schema-defined (a collection's terminal_options) and lives in JSON the
 // SQL layer would have to parse. The caller already builds that context for
 // the dashboard; ItemFields and CollectionID are carried for it.
+// PendingReminderScope narrows the query to what a caller may see. Nil
+// CollectionIDs means unrestricted; a NON-NIL EMPTY slice with no ItemIDs
+// means nothing is visible, matching models.ItemListParams so the two
+// visibility paths cannot drift into opposite readings of the same value.
+type PendingReminderScope struct {
+	CollectionIDs []string
+	ItemIDs       []string
+}
+
 // The window is BOUNDED because this list feeds a payload that is otherwise
 // capped: every pending reminder became a suggestion prepended to a
 // three-entry list, so a workspace with five hundred unacknowledged reminders
@@ -226,11 +235,32 @@ func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
 // true for the caller reading it, and this query cannot compute that: the
 // filter runs above, per item. "There are more than you can see here" is the
 // strongest claim the data supports, so it is the one made.
-func (s *Store) ListPendingReminders(workspaceID string, limit int) ([]*models.PendingReminder, bool, error) {
+// VISIBILITY IS SCOPED IN SQL, not filtered afterwards, and that is the
+// round-4 correction. The round-3 bound took the first N rows and let the
+// caller discard the ones it could not show — which recreated, in the READ
+// path, the exact starvation the round-1 fix removed from the FIRE path:
+// fifty rows the caller must drop can hide a visible reminder behind them
+// forever, with no continuation to reach it. A bounded window is only safe
+// when the discarding happens BEFORE the bound.
+//
+// One filter necessarily stays above: terminality is defined by a collection's
+// schema, which SQL cannot read. That one is handled by paging (the caller
+// asks for the next page when a page comes back short), which is why this
+// takes an offset at all.
+func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderScope, limit, offset int) ([]*models.PendingReminder, bool, error) {
 	if limit <= 0 {
 		limit = defaultPendingReminderLimit
 	}
-	rows, err := s.db.Query(s.q(`
+	if offset < 0 {
+		offset = 0
+	}
+	// Nothing visible at all: answer without touching the database, and say
+	// there is no more — a truncation flag here would send the caller paging
+	// through a set it can never see into.
+	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
+		return nil, false, nil
+	}
+	query := `
 		SELECT r.id, r.workspace_id, r.item_id, r.remind_at, r.fired_at, r.acked_at, r.created_at, r.updated_at,
 		       i.slug, i.title, i.fields, i.collection_id, c.slug, c.prefix, i.item_number
 		FROM item_reminders r
@@ -239,10 +269,39 @@ func (s *Store) ListPendingReminders(workspaceID string, limit int) ([]*models.P
 		WHERE r.workspace_id = ?
 		  AND r.fired_at IS NOT NULL
 		  AND r.acked_at IS NULL
-		  AND i.deleted_at IS NULL
-		ORDER BY r.fired_at, r.id
-		LIMIT ?
-	`), workspaceID, limit+1)
+		  AND i.deleted_at IS NULL`
+	args := []any{workspaceID}
+
+	// Same three-way shape as models.ItemListParams: a guest may hold
+	// collection-level grants, item-level grants, or both, and "both" is an OR
+	// rather than an AND — an item in a fully granted collection qualifies
+	// even when it is not individually granted.
+	switch {
+	case len(scope.CollectionIDs) > 0 && len(scope.ItemIDs) > 0:
+		query += " AND (i.collection_id IN (" + placeholders(len(scope.CollectionIDs)) +
+			") OR i.id IN (" + placeholders(len(scope.ItemIDs)) + "))"
+		for _, id := range scope.CollectionIDs {
+			args = append(args, id)
+		}
+		for _, id := range scope.ItemIDs {
+			args = append(args, id)
+		}
+	case len(scope.CollectionIDs) > 0:
+		query += " AND i.collection_id IN (" + placeholders(len(scope.CollectionIDs)) + ")"
+		for _, id := range scope.CollectionIDs {
+			args = append(args, id)
+		}
+	case len(scope.ItemIDs) > 0:
+		query += " AND i.id IN (" + placeholders(len(scope.ItemIDs)) + ")"
+		for _, id := range scope.ItemIDs {
+			args = append(args, id)
+		}
+	}
+
+	query += " ORDER BY r.fired_at, r.id LIMIT ? OFFSET ?"
+	args = append(args, limit+1, offset)
+
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, false, fmt.Errorf("list pending reminders: %w", err)
 	}

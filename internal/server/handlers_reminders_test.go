@@ -445,3 +445,128 @@ func TestStartReminderTickIsIdempotent(t *testing.T) {
 	// A second stop must be safe too — Stop() runs unconditionally.
 	srv.stopReminderTick()
 }
+
+// TestPendingRemindersAreNotStarvedByCompletedItems — codex round 4, P1.
+//
+// This is the defect the ROUND-3 fix introduced, and it is the same shape as
+// the round-1 one it had just removed from the fire path: a bounded window
+// whose rows are discarded ABOVE the bound hides everything behind them
+// forever, with no continuation to reach it. Bounding is only safe when the
+// discarding happens before the bound.
+//
+// The fixture puts more terminal-item reminders than the window (50) AHEAD of
+// the live one, ordered by fire time. Fewer than the window would fill from the
+// first page and prove nothing.
+//
+// MUTANT: drop the paging loop back to a single ListPendingReminders call and
+// the live reminder never appears.
+func TestPendingRemindersAreNotStarvedByCompletedItems(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	owner := mustUser(t, srv, "starve-owner@example.com", "starveowner", "")
+	ws := mustWorkspace(t, srv, "Starved", owner.ID)
+	coll := mustCollection(t, srv, ws.ID, "Tasks")
+
+	// Built through the store rather than the API: sixty items plus sixty
+	// status writes trips the write rate limiter, and a 429 mid-fixture is a
+	// test that fails for a reason unrelated to what it measures.
+	for i := 0; i < 60; i++ {
+		done, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+			Title:  fmt.Sprintf("Finished %d", i),
+			Fields: `{"status":"done"}`,
+		})
+		if err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		if _, err := srv.store.CreateReminder(ws.ID, done.ID, pastInstant); err != nil {
+			t.Fatalf("CreateReminder: %v", err)
+		}
+	}
+
+	live, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title: "Still open", Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	if _, err := srv.store.CreateReminder(ws.ID, live.ID, pastInstant); err != nil {
+		t.Fatalf("CreateReminder: %v", err)
+	}
+	srv.runReminderTick()
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", nil)
+	req = req.WithContext(contextWithResolvedWorkspaceIDForTest(WithCurrentUser(req.Context(), owner), ws.ID))
+	resp, err := srv.buildDashboardResponse(ws.ID, req)
+	if err != nil {
+		t.Fatalf("buildDashboardResponse: %v", err)
+	}
+	var found bool
+	for _, pr := range resp.PendingReminders {
+		if pr.ItemTitle == "Still open" {
+			found = true
+		}
+		if strings.HasPrefix(pr.ItemTitle, "Finished ") {
+			t.Fatalf("a completed item's reminder reached the surface: %s", pr.ItemTitle)
+		}
+	}
+	if !found {
+		t.Errorf("the live reminder was starved behind 60 completed ones (%d shown)", len(resp.PendingReminders))
+	}
+}
+
+// TestPendingReminderScopeIsAppliedInTheQuery — codex round 4, the other half.
+//
+// A guest's invisible rows must not consume the window either. The granted
+// item is armed LAST, so it sorts after 60 rows the guest may not see: if
+// scoping ran above the bound, those 60 would fill the window and the guest's
+// own reminder would be unreachable.
+//
+// MUTANT: drop the scope clause from the SQL and the guest sees nothing (or
+// sees other people's items, which the round-1 test catches).
+func TestPendingReminderScopeIsAppliedInTheQuery(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	owner := mustUser(t, srv, "scope-owner@example.com", "scopeowner", "")
+	ws := mustWorkspace(t, srv, "Scoped", owner.ID)
+	coll := mustCollection(t, srv, ws.ID, "Tasks")
+
+	for i := 0; i < 60; i++ {
+		other := mustItem(t, srv, ws.ID, coll.ID, fmt.Sprintf("Not yours %d", i))
+		if _, err := srv.store.CreateReminder(ws.ID, other.ID, pastInstant); err != nil {
+			t.Fatalf("CreateReminder: %v", err)
+		}
+	}
+	mine := mustItem(t, srv, ws.ID, coll.ID, "Yours")
+	if _, err := srv.store.CreateReminder(ws.ID, mine.ID, pastInstant); err != nil {
+		t.Fatalf("CreateReminder: %v", err)
+	}
+	srv.runReminderTick()
+
+	guest := mustUser(t, srv, "scope-guest@example.com", "scopeguest", "")
+	if _, err := srv.store.CreateItemGrant(ws.ID, mine.ID, guest.ID, "edit", owner.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", nil)
+	ctx := WithCurrentUser(req.Context(), guest)
+	ctx = contextWithWorkspaceRoleForTest(ctx, "guest")
+	ctx = contextWithResolvedWorkspaceIDForTest(ctx, ws.ID)
+	resp, err := srv.buildDashboardResponse(ws.ID, req.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("buildDashboardResponse: %v", err)
+	}
+
+	if len(resp.PendingReminders) != 1 || resp.PendingReminders[0].ItemTitle != "Yours" {
+		var titles []string
+		for _, pr := range resp.PendingReminders {
+			titles = append(titles, pr.ItemTitle)
+		}
+		t.Fatalf("guest saw %v, want exactly the granted item's reminder", titles)
+	}
+	// And the truncation flag must be FALSE: the guest's own set fits, and
+	// telling them to page through rows they can never see would be a lie in
+	// the shape of a hint.
+	if resp.PendingRemindersTruncated {
+		t.Error("a guest whose whole visible set fits was told there is more")
+	}
+}

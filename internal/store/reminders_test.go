@@ -349,7 +349,7 @@ func TestPendingRemindersAreFiredAndUnacked(t *testing.T) {
 		t.Fatalf("tick: %v", err)
 	}
 
-	pending, _, err := s.ListPendingReminders(ws.ID, 0)
+	pending, _, err := s.ListPendingReminders(ws.ID, PendingReminderScope{}, 0, 0)
 	if err != nil {
 		t.Fatalf("ListPendingReminders: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestPendingRemindersAreFiredAndUnacked(t *testing.T) {
 	if _, err := s.AckReminder(ws.ID, firedID); err != nil {
 		t.Fatalf("AckReminder: %v", err)
 	}
-	pending, _, err = s.ListPendingReminders(ws.ID, 0)
+	pending, _, err = s.ListPendingReminders(ws.ID, PendingReminderScope{}, 0, 0)
 	if err != nil {
 		t.Fatalf("ListPendingReminders after ack: %v", err)
 	}
@@ -741,7 +741,7 @@ func TestPendingRemindersAreBounded(t *testing.T) {
 		t.Fatalf("tick: %v", err)
 	}
 
-	pending, truncated, err := s.ListPendingReminders(ws.ID, 3)
+	pending, truncated, err := s.ListPendingReminders(ws.ID, PendingReminderScope{}, 3, 0)
 	if err != nil {
 		t.Fatalf("ListPendingReminders: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestPendingRemindersAreBounded(t *testing.T) {
 
 	// The probe row must never be returned as a result, and the flag must be
 	// FALSE when everything fits — a flag that is always true is not a signal.
-	pending, truncated, err = s.ListPendingReminders(ws.ID, 5)
+	pending, truncated, err = s.ListPendingReminders(ws.ID, PendingReminderScope{}, 5, 0)
 	if err != nil {
 		t.Fatalf("ListPendingReminders: %v", err)
 	}
@@ -773,5 +773,51 @@ func TestPendingRemindersAreBounded(t *testing.T) {
 	}
 	if truncated {
 		t.Error("five reminders through a window of five reported truncation")
+	}
+}
+
+// TestEmptyScopeSeesNothing pins the non-nil-empty case, which is a THIRD
+// state that reads like the second: nil CollectionIDs means unrestricted, and
+// an empty-but-present slice means "this caller can see no collections."
+// Without the guard those collapse — the switch below matches none of its
+// cases at len 0 and adds no clause at all, so "nothing visible" returns the
+// whole workspace.
+//
+// It gets a direct test because no dashboard-level test produces that state:
+// the callers that would are refused earlier by workspace access. A guard for
+// a state nothing exercises is exactly the one that rots.
+//
+// MUTANT: delete the guard and this returns every pending reminder.
+func TestEmptyScopeSeesNothing(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+	armReminder(t, s, ws.ID, item.ID, past)
+	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	// Sanity: unrestricted sees it, so a build where NOTHING is returned would
+	// not pass this test by accident.
+	all, _, err := s.ListPendingReminders(ws.ID, PendingReminderScope{}, 0, 0)
+	if err != nil {
+		t.Fatalf("unrestricted: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("unrestricted scope returned %d, want 1", len(all))
+	}
+
+	none, truncated, err := s.ListPendingReminders(ws.ID, PendingReminderScope{CollectionIDs: []string{}}, 0, 0)
+	if err != nil {
+		t.Fatalf("empty scope: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("a caller with no visible collections got %d reminders", len(none))
+	}
+	// And it must not be told to page: there is nothing behind the window it
+	// could ever reach.
+	if truncated {
+		t.Error("a caller who can see nothing was told there is more")
 	}
 }

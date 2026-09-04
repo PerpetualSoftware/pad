@@ -664,27 +664,22 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// armed, fired, unacked, still theirs — while keeping a finished item off
 	// the surface an agent polls. The distinction is observable: the reminder
 	// is absent from here and present in the table.
-	if pending, truncated, err := s.store.ListPendingReminders(workspaceID, 0); err != nil {
+	// Visibility is scoped IN THE QUERY, using the same collection/item id sets
+	// every other section here reads through `allItems` (codex rounds 1 and 4).
+	// Filtering after a bounded window is what let fifty invisible rows hide a
+	// visible one forever, so the only filter left above is terminality, which
+	// SQL cannot evaluate — a collection's schema defines it. That one is
+	// handled by PAGING: a page that comes back short of the window is refilled
+	// from the next page, bounded so a workspace full of completed items cannot
+	// turn a dashboard read into a table scan.
+	if pending, truncated, err := s.collectPendingReminders(workspaceID, store.PendingReminderScope{
+		CollectionIDs: dashCollIDs,
+		ItemIDs:       dashItemIDs,
+	}, ctxMap); err != nil {
 		markDegraded("pending_reminders", err)
 	} else {
 		resp.PendingRemindersTruncated = truncated
 		for _, pr := range pending {
-			if !isCollectionVisible(pr.CollectionID, visibleIDs) {
-				continue
-			}
-			// PER-ITEM visibility, not just per-collection (codex round 1).
-			// Every other section here reads `allItems`, which the store
-			// already scoped to the caller's collections AND granted item ids;
-			// this list is a direct workspace-wide query, so it inherits none
-			// of that. Without this check a guest holding a grant on ONE item
-			// would read the refs and titles of every other item in the
-			// collection through its reminders.
-			if !s.isItemVisibleToGuest(r, workspaceID, &models.Item{ID: pr.ItemID, CollectionID: pr.CollectionID}, dashFullCollIDs, dashGrantedItemIDs) {
-				continue
-			}
-			if isItemDone(pr.ItemFields, pr.CollectionID, ctxMap) {
-				continue
-			}
 			firedAt := ""
 			if pr.FiredAt != nil {
 				firedAt = *pr.FiredAt

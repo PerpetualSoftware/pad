@@ -259,3 +259,66 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 	}
 	return reminder, item
 }
+
+// Bounds for the pending-reminder read (IDEA-2641, codex round 4).
+const (
+	// pendingReminderWindow is how many pending reminders the dashboard shows.
+	pendingReminderWindow = 50
+
+	// pendingReminderMaxScan bounds how many rows may be READ to fill that
+	// window. The two differ because one filter cannot run in SQL: terminality
+	// is defined by a collection's schema, so a workspace where most reminders
+	// sit on completed items would otherwise need an unbounded scan to fill a
+	// bounded window.
+	//
+	// THE RECEIPT: 10x the window, so the common shape — a handful of finished
+	// items among live ones — fills the window on the first page, and the
+	// pathological shape (hundreds of completed items with reminders, which the
+	// documented "arm it to fire after the work is done" pattern actually
+	// produces) still terminates in a fixed number of indexed reads. When the
+	// scan bound stops us, the result is reported as truncated, which is
+	// honest: there may be more, and we did not look further.
+	pendingReminderMaxScan = 500
+)
+
+// collectPendingReminders fills the pending-reminder window, paging past
+// reminders whose items are in a terminal state.
+//
+// Terminal-item reminders are FILTERED, never acked — see the ack handler for
+// why. That filtering happens here rather than in SQL because terminality is
+// schema-defined, and it is the reason this function exists at all: without
+// paging, a bounded query plus an above-the-query filter is a starvation, and
+// that is precisely the defect this replaced.
+func (s *Server) collectPendingReminders(workspaceID string, scope store.PendingReminderScope, ctxMap map[string]doneContext) ([]*models.PendingReminder, bool, error) {
+	var out []*models.PendingReminder
+	scanned := 0
+
+	for len(out) < pendingReminderWindow && scanned < pendingReminderMaxScan {
+		page, more, err := s.store.ListPendingReminders(workspaceID, scope, pendingReminderWindow, scanned)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(page) == 0 {
+			// Source exhausted with room to spare: nothing was truncated.
+			return out, false, nil
+		}
+		scanned += len(page)
+		for _, pr := range page {
+			if isItemDone(pr.ItemFields, pr.CollectionID, ctxMap) {
+				continue
+			}
+			out = append(out, pr)
+			if len(out) == pendingReminderWindow {
+				break
+			}
+		}
+		if !more {
+			// We read to the end of the set. Whatever we have is all there is,
+			// even if it is short of the window.
+			return out, false, nil
+		}
+	}
+	// Either the window filled or the scan bound stopped us; in both cases
+	// rows remain unread, so say so.
+	return out, true, nil
+}
