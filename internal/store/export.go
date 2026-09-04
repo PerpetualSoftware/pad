@@ -241,6 +241,29 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 		return nil, err
 	}
 
+	// Reminders — exported with their lifecycle marks intact. Like item links
+	// above, rows whose item is soft-deleted are included: a restore that
+	// brings the item back should bring its reminder back with it, and the
+	// import path skips any whose endpoint is genuinely missing.
+	reminderRows, err := s.db.Query(s.q(`
+		SELECT item_id, remind_at, COALESCE(fired_at, ''), COALESCE(acked_at, ''), created_at, updated_at
+		FROM item_reminders WHERE workspace_id = ?
+		ORDER BY created_at, id`), ws.ID)
+	if err != nil {
+		return nil, fmt.Errorf("export reminders: %w", err)
+	}
+	defer reminderRows.Close()
+	for reminderRows.Next() {
+		var rm models.ReminderExport
+		if err := reminderRows.Scan(&rm.ItemID, &rm.RemindAt, &rm.FiredAt, &rm.AckedAt, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan reminder: %w", err)
+		}
+		export.Reminders = append(export.Reminders, rm)
+	}
+	if err := reminderRows.Err(); err != nil {
+		return nil, err
+	}
+
 	// Item versions
 	versionRows, err := s.db.Query(s.q(`
 		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at
@@ -637,6 +660,29 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err != nil {
 			// Ignore duplicate links
 			continue
+		}
+	}
+
+	// Import reminders. NULL rather than empty string for the unset marks —
+	// the lifecycle is defined by NULL-ness (models.Reminder), and an empty
+	// string would make a never-fired reminder read as fired at "".
+	for _, rm := range data.Reminders {
+		newItemID := itemMap[rm.ItemID]
+		if newItemID == "" {
+			continue
+		}
+		var firedAt, ackedAt any
+		if rm.FiredAt != "" {
+			firedAt = rm.FiredAt
+		}
+		if rm.AckedAt != "" {
+			ackedAt = rm.AckedAt
+		}
+		if _, err := tx.Exec(s.q(`
+			INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			newID(), ws.ID, newItemID, rm.RemindAt, firedAt, ackedAt, rm.CreatedAt, rm.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("import reminder: %w", err)
 		}
 	}
 

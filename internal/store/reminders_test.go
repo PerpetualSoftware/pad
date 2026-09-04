@@ -1014,3 +1014,87 @@ func TestItemDeletedMidPassDoesNotFire(t *testing.T) {
 		t.Error("the reminder was consumed rather than left for the item's restore")
 	}
 }
+
+// TestRemindersRoundTripThroughExport — codex round 8, P1.
+//
+// WorkspaceExport is a hand-maintained field list, so a new table joins it
+// only if someone remembers. Reminders did not, and the loss was silent: a
+// backup/restore or a SQLite→Postgres migration dropped every pending
+// reminder with nothing in the destination to show anything had gone.
+//
+// The line that list has always drawn is item-scoped workspace CONTENT
+// (comments, links, versions — exported) versus per-user state (stars,
+// watches — not). A reminder has no user column and hangs off an item, which
+// puts it on the exported side.
+//
+// All three lifecycle states are in the fixture, because carrying the marks is
+// the decision: a fired-unacked reminder is still owed and must arrive
+// pending, not reset to armed.
+//
+// MUTANT: drop the reminder block from either ExportWorkspace or
+// ImportWorkspace and this fails.
+func TestRemindersRoundTripThroughExport(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "reminder-export@test.com", "Export Owner", "password123")
+	src := createTestWorkspace(t, s, "Reminder Export")
+	col := createTestCollection(t, s, src.ID, "Tasks")
+	item := createTestItem(t, s, src.ID, col.ID, "Ship it", "")
+
+	armedID := armReminder(t, s, src.ID, item.ID, future)
+	firedID := armReminder(t, s, src.ID, item.ID, past)
+	ackedID := armReminder(t, s, src.ID, item.ID, past)
+	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if _, err := s.AckReminder(src.ID, ackedID); err != nil {
+		t.Fatalf("AckReminder: %v", err)
+	}
+	_ = armedID
+	_ = firedID
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	if len(exp.Reminders) != 3 {
+		t.Fatalf("export carried %d reminders, want 3", len(exp.Reminders))
+	}
+
+	dst, err := s.ImportWorkspace(exp, "reminder-export-target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+
+	items, err := s.ListItems(dst.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("imported %d items, want 1", len(items))
+	}
+	got, err := s.ListRemindersForItem(items[0].ID)
+	if err != nil {
+		t.Fatalf("ListRemindersForItem: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("imported %d reminders, want 3", len(got))
+	}
+
+	// One of each state, by shape rather than by id — the ids are re-minted on
+	// import, and asserting the STATES is what the carrying decision is about.
+	var armed, pending, acked int
+	for _, r := range got {
+		switch {
+		case r.Armed():
+			armed++
+		case r.PendingAck():
+			pending++
+		default:
+			acked++
+		}
+	}
+	if armed != 1 || pending != 1 || acked != 1 {
+		t.Errorf("imported states armed=%d pending=%d acked=%d, want 1/1/1 — the lifecycle marks were not carried",
+			armed, pending, acked)
+	}
+}

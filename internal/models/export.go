@@ -10,6 +10,31 @@ type WorkspaceExport struct {
 	Comments     []CommentExport     `json:"comments,omitempty"`
 	ItemLinks    []ItemLinkExport    `json:"item_links,omitempty"`
 	ItemVersions []ItemVersionExport `json:"item_versions,omitempty"`
+	// Reminders round-trip with the workspace (IDEA-2641). They are
+	// item-scoped workspace CONTENT, like links and versions, not per-user
+	// state like stars and watches — which is the line this list has always
+	// drawn, and it puts reminders on the exported side of it. Without them a
+	// backup/restore or a SQLite→Postgres migration silently loses every
+	// pending reminder, and "silently" is the part that matters: nothing in
+	// the destination would show that anything was dropped.
+	Reminders []ReminderExport `json:"reminders,omitempty"`
+}
+
+// ReminderExport is one item reminder in a workspace bundle.
+//
+// The LIFECYCLE MARKS ARE CARRIED, not reset. A fired-and-unacknowledged
+// reminder is still owed to whoever armed it, so it arrives pending on the
+// destination; an armed one whose instant has passed fires once on the first
+// tick there, which is the same thing that would have happened had the
+// workspace never moved. Re-arming everything on import would be inventing a
+// new schedule the user did not set.
+type ReminderExport struct {
+	ItemID    string `json:"item_id"`
+	RemindAt  string `json:"remind_at"`
+	FiredAt   string `json:"fired_at,omitempty"`
+	AckedAt   string `json:"acked_at,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // AttachmentManifestEntry describes one attachment blob in the
