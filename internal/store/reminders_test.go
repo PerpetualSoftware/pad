@@ -919,3 +919,98 @@ func TestPendingRemindersHideASoftDeletedWorkspace(t *testing.T) {
 		t.Errorf("a soft-deleted workspace still lists %d pending reminder(s)", len(pending))
 	}
 }
+
+// TestWorkspaceDeletedMidPassDoesNotFire — codex round 7, P1, and the third
+// instance of one class: the candidate scan filters something the fire
+// transaction does not revalidate, so a change committed between them fires a
+// reminder that no longer qualifies.
+//
+// Round 3 was a re-armed instant. Round 7 is a workspace deleted between the
+// scan and the fire. Both were "the arbiter is only an arbiter for what it
+// re-checks", and fixing them one at a time is what let the third happen — so
+// the fix is now a SHARED predicate both sites reference, not another
+// condition bolted onto the UPDATE.
+//
+// MUTANT: drop reminderFireable from the UPDATE (leaving it in the scan) and
+// this fires an event for a deleted workspace.
+func TestWorkspaceDeletedMidPassDoesNotFire(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Doomed")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+	id := armReminder(t, s, ws.ID, item.ID, past)
+
+	// The pass has its candidate.
+	ids, err := s.dueReminderCandidates(nowTS(), 0)
+	if err != nil {
+		t.Fatalf("dueReminderCandidates: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != id {
+		t.Fatalf("expected the armed reminder as the only candidate, got %v", ids)
+	}
+
+	// The workspace is deleted before it fires.
+	if _, err := s.db.Exec(s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), ws.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	fired, err := s.fireOneReminder(id, nowTS())
+	if err != nil {
+		t.Fatalf("fireOneReminder: %v", err)
+	}
+	if fired != nil {
+		t.Error("a reminder in a workspace deleted mid-pass was fired anyway")
+	}
+
+	var events int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM event_outbox WHERE workspace_id = ? AND event_type = ?`),
+		ws.ID, kernelevents.ItemReminderDue).Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 0 {
+		t.Errorf("%d reminder event(s) left the process for a deleted workspace", events)
+	}
+
+	// Still armed, not consumed: the workspace can be restored.
+	got, err := s.GetReminder(ws.ID, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got == nil || !got.Armed() {
+		t.Error("the reminder was consumed by a pass that declined to fire it")
+	}
+}
+
+// TestItemDeletedMidPassDoesNotFire is the same class from the third side, and
+// it is here because the shared predicate now covers it in SQL rather than by
+// the item load coming back nil. Without this leg, someone simplifying that
+// EXISTS down to just the workspace check would still see green.
+func TestItemDeletedMidPassDoesNotFire(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
+	id := armReminder(t, s, ws.ID, item.ID, past)
+
+	if _, err := s.dueReminderCandidates(nowTS(), 0); err != nil {
+		t.Fatalf("dueReminderCandidates: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE items SET deleted_at = ? WHERE id = ?`), now(), item.ID); err != nil {
+		t.Fatalf("soft delete item: %v", err)
+	}
+
+	fired, err := s.fireOneReminder(id, nowTS())
+	if err != nil {
+		t.Fatalf("fireOneReminder: %v", err)
+	}
+	if fired != nil {
+		t.Error("a reminder on an item deleted mid-pass was fired anyway")
+	}
+	got, err := s.GetReminder(ws.ID, id)
+	if err != nil {
+		t.Fatalf("GetReminder: %v", err)
+	}
+	if got == nil || !got.Armed() {
+		t.Error("the reminder was consumed rather than left for the item's restore")
+	}
+}

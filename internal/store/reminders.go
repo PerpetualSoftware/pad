@@ -15,6 +15,33 @@ import (
 // See migration 085 for why this is a table rather than an annotation on a
 // schema field, and models.Reminder for the three-state lifecycle.
 
+// reminderFireable is the single definition of "this reminder may fire",
+// referenced by BOTH the candidate scan and the fire UPDATE's arbiter.
+//
+// ONE STRING, because the drift between those two is a defect class this unit
+// hit three times: the scan filtered something the arbiter did not revalidate,
+// so a change committed between them fired a reminder that no longer
+// qualified. Round 3 was a re-armed instant, round 7 a workspace deleted
+// mid-pass, and the round-1 soft-deleted item was the same shape caught from
+// the other side. Each was fixed as an instance; this is the shape.
+//
+// Written as a correlated EXISTS on item_reminders.item_id — rather than as a
+// JOIN — precisely so the identical text is valid in a SELECT and in an
+// UPDATE. The scan deliberately does NOT alias item_reminders, so the two uses
+// are the same characters and a new condition is one edit in one place.
+//
+// The two predicates that are NOT here (`fired_at IS NULL`, `remind_at <= ?`)
+// are the ones that live on the reminder row itself and are already spelled
+// identically at both sites; folding them in would need a parameter order this
+// shared form cannot fix.
+const reminderFireable = `EXISTS (
+		SELECT 1 FROM items i
+		JOIN workspaces w ON w.id = i.workspace_id
+		WHERE i.id = item_reminders.item_id
+		  AND i.deleted_at IS NULL
+		  AND w.deleted_at IS NULL
+	)`
+
 const reminderColumns = `id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at`
 
 // defaultReminderFireLimit bounds one tick's work. Reminders arrive at a rate
@@ -373,12 +400,10 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	// A restored workspace resumes normally: nothing is destroyed, the
 	// reminders simply stop being candidates while it is gone.
 	rows, err := s.db.Query(s.q(`
-		SELECT r.id FROM item_reminders r
-		JOIN items i ON i.id = r.item_id
-		JOIN workspaces w ON w.id = r.workspace_id
-		WHERE r.fired_at IS NULL AND r.remind_at <= ?
-		  AND i.deleted_at IS NULL AND w.deleted_at IS NULL
-		ORDER BY r.remind_at, r.id
+		SELECT id FROM item_reminders
+		WHERE fired_at IS NULL AND remind_at <= ?
+		  AND `+reminderFireable+`
+		ORDER BY remind_at, id
 		LIMIT ?
 	`), nowTS, limit)
 	if err != nil {
@@ -415,8 +440,9 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 // racing the tick, a payload that will not marshal) cannot hold back every
 // other reminder in the pass.
 //
-// The UPDATE re-checks BOTH the fire mark and the instant, so it arbitrates
-// against two different actors — and getting only the first was the round-3
+// The UPDATE re-checks the FULL candidate condition — the fire mark, the
+// instant, and the shared reminderFireable predicate — so it arbitrates
+// against every actor the scan filtered for — and getting only the first was the round-3
 // defect. Against a concurrent TICK, `fired_at IS NULL` means both instances
 // see the same candidate and exactly one gets RowsAffected 1; the loser does
 // no work and emits nothing. Against a concurrent USER, `remind_at <= nowTS`
@@ -490,6 +516,7 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	res, err := tx.Exec(s.q(`
 		UPDATE item_reminders SET fired_at = ?, updated_at = ?
 		WHERE id = ? AND fired_at IS NULL AND remind_at <= ?
+		  AND `+reminderFireable+`
 	`), nowTS, now(), id, nowTS)
 	if err != nil {
 		return nil, fmt.Errorf("fire reminder %s: %w", id, err)
