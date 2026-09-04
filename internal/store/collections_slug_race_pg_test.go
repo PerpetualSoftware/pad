@@ -249,3 +249,96 @@ func TestConcurrentSlugWritersNeverCollide(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectionSlugWritersDoNoPoolIOUnderTheLock is the guard for the
+// invariant the fix introduces: everything CreateCollection and a renaming
+// UpdateCollection read while holding the workspace lock goes through the
+// transaction, never the pool. A pool read from inside a lock-holding
+// transaction needs a SECOND connection, and when the pool is saturated by
+// callers waiting on that very lock the second connection never arrives — a
+// deadlock in the application that no SQLSTATE names (BUG-2409's class). With
+// MaxOpenConns(1) the transaction owns the only connection, so ANY pool read
+// inside the critical section deadlocks deterministically here instead of
+// only under load. Works identically on both dialects.
+//
+// This one passes on the unfixed tree too (the pre-fix scans ran BEFORE the
+// transaction opened, which is the ordering defect, not this one). Its
+// negative control is the mutation matrix on the trail: handing `s.db` to
+// either allocation, or issuing the INSERT on the pool, hangs it.
+//
+// Every optional leg of the rename is armed: a relation sibling so
+// retargetRelationFieldsTx runs, and a field migration so
+// applyFieldMigrationsTx runs — an unarmed branch is invisible to the sweep.
+func TestCollectionSlugWritersDoNoPoolIOUnderTheLock(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "NoPoolIO")
+
+	alpha, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Alpha", Slug: "alpha",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("create alpha: %v", err)
+	}
+	if _, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Beta", Slug: "beta", Schema: relationSchema(t, "alpha_ref", "alpha"),
+	}); err != nil {
+		t.Fatalf("create beta: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, alpha.ID, models.ItemCreate{Title: "Migrate me", Fields: `{"status":"open"}`}); err != nil {
+		t.Fatalf("seed field value: %v", err)
+	}
+
+	// From here on the pool has exactly one connection: the transaction's.
+	s.db.SetMaxOpenConns(1)
+
+	run := func(label string, op func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- op() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", label, err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s did not complete under MaxOpenConns(1): a read inside the "+
+				"lock-holding transaction went to the pool and is waiting for a "+
+				"connection the transaction itself holds", label)
+		}
+	}
+
+	run("CreateCollection", func() error {
+		_, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Gamma"})
+		return err
+	})
+	run("UpdateCollection(rename + migration + relation sibling)", func() error {
+		name := "Alpha Prime"
+		schema := `{"fields":[{"key":"status","type":"select","options":["todo","done"]}]}`
+		_, err := s.UpdateCollection(alpha.ID, models.CollectionUpdate{
+			Name:   &name,
+			Schema: &schema,
+			Migrations: []models.FieldMigration{
+				{Field: "status", RenameOptions: map[string]string{"open": "todo"}},
+			},
+		})
+		return err
+	})
+
+	// The rename's sibling repoint ran under the same single connection.
+	if got := relationTargetOf(t, s, mustCollectionBySlug(t, s, ws.ID, "beta").ID, "alpha_ref"); got != "alpha-prime" {
+		t.Fatalf("relation target = %q, want alpha-prime", got)
+	}
+}
+
+func mustCollectionBySlug(t *testing.T, s *Store, wsID, slug string) *models.Collection {
+	t.Helper()
+	c, err := s.GetCollectionBySlug(wsID, slug)
+	if err != nil {
+		t.Fatalf("GetCollectionBySlug(%s): %v", slug, err)
+	}
+	if c == nil {
+		t.Fatalf("collection %q missing", slug)
+	}
+	return c
+}
