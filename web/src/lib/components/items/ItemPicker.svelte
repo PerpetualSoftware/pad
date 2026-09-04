@@ -193,10 +193,11 @@
 	 * Plain `let` per CONVE-1688 — written and read only inside the refresh
 	 * effect, never rendered. Starts NULL rather than seeded from the props:
 	 * seeding it would capture their mount-time values outside any reactive
-	 * scope (svelte warns `state_referenced_locally`, correctly). The null makes
-	 * the effect's first run compare unequal and so report "changed", which is
-	 * inert: the query box is empty at mount, and the only reader of that flag
-	 * needs a non-empty query.
+	 * scope (svelte warns `state_referenced_locally`, correctly). Null is also
+	 * the value the not-ready branch restores, and it reads the same way in both
+	 * places: the rows on screen answer for NO scope, so the next run owes a
+	 * refresh. At mount that is inert — the query box is empty, and the only
+	 * reader of `scopeChanged` needs a non-empty query.
 	 */
 	let lastScope: string | null = null;
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -608,6 +609,7 @@
 		// a non-empty query) is unreachable then. Measured, not assumed — a line
 		// that cannot change an outcome does not get to look like a guard.
 		const scopeChanged = scope !== lastScope;
+		lastScope = scope;
 		untrack(() => {
 			if (state !== 'ready') {
 				// The workspace's state was DROPPED — `localIndex.reset()` on
@@ -635,15 +637,24 @@
 				coldAnswered = false;
 				activeId = null;
 				loading = false;
-				// `lastScope` is deliberately NOT committed here (codex round
-				// 12). This branch clears and gives up without serving the
-				// scope, so recording it as served would consume a pending
-				// refresh: a scope change arriving while the index is cold would
-				// be forgotten, and at hydration `scopeChanged` would read false
-				// and a server-sourced picker would take the early return below
-				// and sit empty until the user retyped or the picker remounted.
-				// Leaving it stale keeps the refresh owed until a run performs
-				// it.
+				// INVALIDATED, not committed and not left alone (codex rounds 12
+				// and 13). `lastScope` means "the scope the rows on screen
+				// answer for", and this branch just removed the rows — so after
+				// it they answer for nothing, which is what null says.
+				//
+				// Both neighbouring mistakes fall out of that one reading. A
+				// scope change arriving while the state is dropped must not be
+				// forgotten at hydration; and rehydrating on the SAME scope must
+				// not compare equal, or a server-sourced picker takes the early
+				// return below and sits empty forever, its rows cleared and
+				// nothing left to re-query it.
+				//
+				// This also settles WHERE the commit above belongs: deferring it
+				// past the early return was a second mechanism aimed at the
+				// first of those two, and with this invalidation in place it
+				// changed no outcome — its mutant could not be killed, so it
+				// went. One rule, stated once.
+				lastScope = null;
 				return;
 			}
 			// Server-sourced QUERIES are not re-issued on an index change: the
@@ -659,9 +670,6 @@
 			// happens when a schema is edited or a pane is retargeted, not per
 			// delta, so the rate-limiter argument does not reach it.
 			if (source === 'server' && query.trim() && !scopeChanged) return;
-			// Committed only now, by a run that is actually going to serve this
-			// scope — see the note in the non-ready branch above.
-			lastScope = scope;
 			const keep = activeId;
 			runQuery();
 			activeId = keep;
