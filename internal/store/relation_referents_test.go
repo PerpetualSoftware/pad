@@ -380,3 +380,35 @@ func carriedFrom(fields map[string]any) map[string]any {
 	}
 	return out
 }
+
+// A ref whose number overflows must not resolve to a different item
+// (TASK-2878, codex round 12).
+//
+// `parseItemRef` accumulated into a machine int with no bound, so
+// "COLO-18446744073709551617" wrapped to 1 and named the item numbered 1 —
+// a caller-supplied value canonicalising to a DIFFERENT item, which is the
+// corruption this whole unit exists to stop, reached through the parser rather
+// than through the lookup.
+func TestResolveRelationReferents_OverflowingRefDoesNotResolve(t *testing.T) {
+	s := testStore(t)
+	ws, _, _, red := relationFixture(t, s)
+
+	// Sanity: the honest ref for that item still resolves, so a failure below
+	// is about the overflow and not about the fixture.
+	ok := map[string]any{"color": red.Ref}
+	if issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), ok); err != nil || len(issues) != 0 {
+		t.Fatalf("control: %v %+v", err, issues)
+	}
+
+	overflowed := map[string]any{"color": "COLO-18446744073709551617"}
+	issues, err := s.ResolveRelationReferents(ws.ID, u1RelationSchema("colors"), overflowed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("an overflowing ref was ACCEPTED: issues=%+v value=%v", issues, overflowed["color"])
+	}
+	if overflowed["color"] == red.ID {
+		t.Fatalf("an overflowing ref canonicalised to a different item (%s)", red.ID)
+	}
+}
