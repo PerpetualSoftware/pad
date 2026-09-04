@@ -341,7 +341,14 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		var p models.PendingReminder
 		var firedAt, ackedAt sql.NullString
 		var prefix string
-		var number int
+		// items.item_number IS NULLABLE (migration 006 added the column to
+		// existing rows), and scanning NULL into an int fails the Scan — which
+		// fails the query, which degrades the whole pending-reminder section
+		// and hides EVERY reminder in the workspace, not just the one legacy
+		// item's. ListWatchesForUser, which this query was modelled on, uses
+		// exactly this type; I copied its shape and dropped the part that
+		// handles the column's actual nullability.
+		var number sql.NullInt64
 		if err := rows.Scan(
 			&p.ID, &p.WorkspaceID, &p.ItemID, &p.RemindAt, &firedAt, &ackedAt, &p.CreatedAt, &p.UpdatedAt,
 			&p.ItemSlug, &p.ItemTitle, &p.ItemFields, &p.CollectionID, &p.CollectionSlug, &prefix, &number,
@@ -354,7 +361,12 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		if ackedAt.Valid {
 			p.AckedAt = &ackedAt.String
 		}
-		p.ItemRef = fmt.Sprintf("%s-%d", prefix, number)
+		// No ref rather than a wrong one: "PREFIX-0" would name a different
+		// item, and every consumer of this list can render a title without a
+		// ref (same disposition as ListWatchesForUser).
+		if prefix != "" && number.Valid {
+			p.ItemRef = fmt.Sprintf("%s-%d", prefix, number.Int64)
+		}
 		out = append(out, &p)
 	}
 	if err := rows.Err(); err != nil {

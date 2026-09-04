@@ -1138,3 +1138,137 @@ func TestFirePathInvariantFiresWhenNothingChanged(t *testing.T) {
 		t.Errorf("%d reminder events emitted, want exactly 1", events)
 	}
 }
+
+// TestPendingRemindersSurviveALegacyItemNumber — codex round 9, P1.
+//
+// items.item_number is NULLABLE (migration 006 added it to existing rows), and
+// scanning NULL into an int fails the Scan — which fails the QUERY, which
+// degrades the whole pending-reminder section and hides every reminder in the
+// workspace, not just the legacy item's. One old row, and the feature is dark
+// for everyone in that workspace.
+//
+// MUTANT: scan into a plain int and this fails.
+func TestPendingRemindersSurviveALegacyItemNumber(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Legacy")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	legacy := createTestItem(t, s, ws.ID, col.ID, "Pre-numbering item", "")
+	modern := createTestItem(t, s, ws.ID, col.ID, "Numbered item", "")
+
+	if _, err := s.db.Exec(s.q(`UPDATE items SET item_number = NULL WHERE id = ?`), legacy.ID); err != nil {
+		t.Fatalf("clear item_number: %v", err)
+	}
+	armReminder(t, s, ws.ID, legacy.ID, past)
+	armReminder(t, s, ws.ID, modern.ID, past)
+	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	pending, _, err := s.ListPendingReminders(ws.ID, PendingReminderScope{}, 0, 0)
+	if err != nil {
+		t.Fatalf("ListPendingReminders: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("one legacy row hid %d of 2 reminders", 2-len(pending))
+	}
+
+	// The legacy one carries no ref rather than a wrong one — "PREFIX-0" would
+	// name a different item — while the modern one still does.
+	for _, pr := range pending {
+		if pr.ItemTitle == "Pre-numbering item" && pr.ItemRef != "" {
+			t.Errorf("legacy item got a fabricated ref %q", pr.ItemRef)
+		}
+		if pr.ItemTitle == "Numbered item" && pr.ItemRef == "" {
+			t.Error("a numbered item lost its ref")
+		}
+	}
+}
+
+// TestExportSkipsRemindersForSoftDeletedItems — codex round 9, P1.
+//
+// The items section filters on deleted_at IS NULL, so a soft-deleted item is
+// NOT in the bundle and its reminder can never be reunited with it — the
+// import drops the orphan on its itemMap lookup. Exporting them shipped rows
+// that could only ever be discarded, under a comment claiming a restore
+// benefit the bundle cannot deliver.
+//
+// MUTANT: drop the JOIN's deleted_at filter and the export carries 2.
+func TestExportSkipsRemindersForSoftDeletedItems(t *testing.T) {
+	s := testStore(t)
+	src := createTestWorkspace(t, s, "Partial")
+	col := createTestCollection(t, s, src.ID, "Tasks")
+	live := createTestItem(t, s, src.ID, col.ID, "Live", "")
+	gone := createTestItem(t, s, src.ID, col.ID, "Archived", "")
+	armReminder(t, s, src.ID, live.ID, future)
+	armReminder(t, s, src.ID, gone.ID, future)
+
+	if _, err := s.db.Exec(s.q(`UPDATE items SET deleted_at = ? WHERE id = ?`), now(), gone.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	if len(exp.Reminders) != 1 {
+		t.Fatalf("export carried %d reminders, want only the live item's", len(exp.Reminders))
+	}
+	if exp.Reminders[0].ItemID != live.ID {
+		t.Errorf("export carried the archived item's reminder")
+	}
+}
+
+// TestImportNormalizesRemindAt — codex round 9, P2.
+//
+// Import is a WRITER, and a bundle is not necessarily one this server
+// produced — it can be hand-edited or come from another instance. Inserting a
+// raw remind_at let a local offset into the one column every comparison
+// downstream treats as a UTC instant. Every other door normalizes; this one
+// was writing underneath them.
+//
+// MUTANT: insert rm.RemindAt instead of the normalized value and the offset
+// value is stored verbatim.
+func TestImportNormalizesRemindAt(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "import-norm@test.com", "Import Norm", "password123")
+	src := createTestWorkspace(t, s, "Import Norm")
+	col := createTestCollection(t, s, src.ID, "Tasks")
+	item := createTestItem(t, s, src.ID, col.ID, "Ship it", "")
+	armReminder(t, s, src.ID, item.ID, future)
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	if len(exp.Reminders) != 1 {
+		t.Fatalf("setup: export carried %d reminders", len(exp.Reminders))
+	}
+	// A bundle carrying an offset instant and a fractional second — both of
+	// which the API door would have normalized on the way in.
+	exp.Reminders[0].RemindAt = "2099-08-01T09:00:00.500+09:00"
+	// And a second reminder whose value is not a time at all.
+	exp.Reminders = append(exp.Reminders, models.ReminderExport{
+		ItemID: exp.Reminders[0].ItemID, RemindAt: "next tuesday",
+		CreatedAt: exp.Reminders[0].CreatedAt, UpdatedAt: exp.Reminders[0].UpdatedAt,
+	})
+
+	dst, err := s.ImportWorkspace(exp, "import-norm-target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+	items, err := s.ListItems(dst.ID, models.ItemListParams{})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListItems: %v (%d items)", err, len(items))
+	}
+	got, err := s.ListRemindersForItem(items[0].ID)
+	if err != nil {
+		t.Fatalf("ListRemindersForItem: %v", err)
+	}
+	// The unparseable one is skipped rather than failing the whole restore.
+	if len(got) != 1 {
+		t.Fatalf("imported %d reminders, want 1 (the unparseable one skipped)", len(got))
+	}
+	if got[0].RemindAt != "2099-08-01T00:00:01Z" {
+		t.Errorf("imported remind_at = %q, want the same instant normalized to UTC and rounded up", got[0].RemindAt)
+	}
+}
