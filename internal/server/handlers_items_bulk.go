@@ -500,15 +500,37 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
-	// Referent validation for relation values (TASK-2878). A bulk update
-	// carries CALLER-SUPPLIED changes, so it refuses like any other write —
-	// per item, so one bad referent fails its own item and not the batch.
-	relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+	// Referent validation for relation values (TASK-2878). Refuses like any
+	// other write — per item, so one bad referent fails its own item and not
+	// the batch — but ONLY over the keys this operation CHANGES.
+	//
+	// `fieldMap` is the item's STORED blob merged with `changes` a few lines
+	// above, so resolving all of it would re-litigate values the caller never
+	// touched and refuse them: an item carrying a legacy relation value would
+	// become permanently un-bulk-updatable, its status and priority frozen by
+	// a field the operation does not mention. Same rule as the fields_patch
+	// door, and for the same reason — `internal/items` accepted any string in
+	// a relation field for as long as the type has existed, so such items are
+	// not hypothetical.
+	//
+	// Read out of the COERCED map rather than out of `changes`, so the value
+	// resolved is the one that would be stored, and written back so a supplied
+	// ref is canonicalised to its id exactly as at every other write door.
+	suppliedRelations := make(map[string]any, len(changes))
+	for k := range changes {
+		if v, present := fieldMap[k]; present {
+			suppliedRelations[k] = v
+		}
+	}
+	relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, suppliedRelations)
 	if relErr != nil {
 		return nil, &bulkOpError{message: relErr.Error(), code: "internal_error"}
 	}
 	if len(relIssues) > 0 {
 		return nil, &bulkOpError{message: relationIssuesMessage(relIssues), code: "validation_error"}
+	}
+	for k, v := range suppliedRelations {
+		fieldMap[k] = v
 	}
 	if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "conflict"}
