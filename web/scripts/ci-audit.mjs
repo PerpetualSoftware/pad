@@ -41,11 +41,32 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const AUDIT_ARGS = ["audit", "--json", "--audit-level=high", "--omit=dev"];
-const ATTEMPTS = Math.max(1, Number(process.env.CI_AUDIT_ATTEMPTS ?? 3));
-const BACKOFF_MS = Math.max(
-	0,
-	Number(process.env.CI_AUDIT_BACKOFF_MS ?? 20000),
-);
+// Operator-set, but a typo must not turn into a TypeError or an infinite
+// Atomics.wait (codex round 2): anything that is not an integer in range falls
+// back to the default, and says so.
+function envInt(name, fallback, min, max) {
+	const raw = process.env[name];
+	if (raw === undefined || raw === "") return fallback;
+	const n = Number(raw);
+	if (!Number.isInteger(n) || n < min || n > max) {
+		console.log(
+			`npm audit: ignoring ${name}=${JSON.stringify(raw)} (want an integer in [${min}, ${max}]); using ${fallback}`,
+		);
+		return fallback;
+	}
+	return n;
+}
+const ATTEMPTS = envInt("CI_AUDIT_ATTEMPTS", 3, 1, 10);
+const BACKOFF_MS = envInt("CI_AUDIT_BACKOFF_MS", 20000, 0, 300000);
+
+// A count the gate can decide from: a non-negative integer. Anything else — a
+// string, null, NaN, a negative — is a report the gate cannot read, and an
+// unreadable report takes the fail-closed path, never the clean one (codex
+// round 2: `Number("x") + Number(null) > 0` is false, which read as "no
+// advisories").
+function isCount(v) {
+	return Number.isInteger(v) && v >= 0;
+}
 
 function sleep(ms) {
 	if (ms > 0)
@@ -93,6 +114,11 @@ function readReport({ raw, source }) {
 			"no metadata.vulnerabilities in the report";
 		return { unavailable: `${code}${why}` };
 	}
+	if (!isCount(vulns.high) || !isCount(vulns.critical)) {
+		return {
+			unavailable: `metadata.vulnerabilities.high/critical are not counts (high=${JSON.stringify(vulns.high)}, critical=${JSON.stringify(vulns.critical)})`,
+		};
+	}
 	return { vulns, report };
 }
 
@@ -126,8 +152,8 @@ if (outcome.unavailable) {
 }
 
 const { vulns, report } = outcome;
-const high = Number(vulns.high ?? 0);
-const critical = Number(vulns.critical ?? 0);
+const high = vulns.high;
+const critical = vulns.critical;
 if (high + critical > 0) {
 	const offenders = Object.values(report.vulnerabilities ?? {})
 		.filter((v) => v.severity === "high" || v.severity === "critical")
