@@ -806,3 +806,51 @@ func TestRelationDoors_NonStringDefaultIsDroppedAndReportedOnWrite(t *testing.T)
 		t.Fatalf("warnings.dropped_fields does not name owner_ref: %v", out.Warnings.DroppedFields)
 	}
 }
+
+// An unresolvable STRING default must not refuse the write (codex round 10).
+//
+// Validation injects the default before the resolver runs, and the resolver
+// treats the whole map as caller input — so an optional relation whose schema
+// default names nothing turned every create and full-fields update into a 400,
+// on a defect the caller cannot fix and did not cause. The migrate doors always
+// dropped it and said so; the write doors refused.
+//
+// Both legs matter. The caller's OWN bad value must still be refused, or this
+// fix would have quietly disabled the door.
+func TestRelationDoors_UnresolvableStringDefaultDropsInsteadOfRefusing(t *testing.T) {
+	f := newDoorFixture(t)
+	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Dangling Default", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":%q}
+	]}`, f.people.Slug, badRef))
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + coll.Slug + "/items"
+	params := map[string]string{"collSlug": coll.Slug}
+
+	rr := f.call(f.srv.handleCreateItem, "POST", path, params,
+		map[string]any{"title": "Defaulted", "fields": map[string]any{"status": "open"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("a dangling schema DEFAULT refused the create %d; the caller neither typed it "+
+			"nor can fix it from here: %s", rr.Code, rr.Body.String())
+	}
+	var out struct {
+		ID       string `json:"id"`
+		Warnings *struct {
+			DroppedFields []string `json:"dropped_fields"`
+		} `json:"warnings"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse create result: %v: %s", err, rr.Body.String())
+	}
+	if v, ok := f.storedRelation(out.ID); ok {
+		t.Fatalf("the dangling default was stored: %#v", v)
+	}
+	if out.Warnings == nil || len(out.Warnings.DroppedFields) == 0 {
+		t.Fatalf("dropped without saying so: %s", rr.Body.String())
+	}
+
+	// The caller's OWN unresolvable value is still refused — without this leg
+	// the test passes against a door that stopped checking anything.
+	bad := f.call(f.srv.handleCreateItem, "POST", path, params,
+		map[string]any{"title": "Typed by hand", "fields": map[string]any{"status": "open", "owner_ref": badRef}})
+	assertRefused(t, "create with a caller-supplied bad referent", bad)
+}

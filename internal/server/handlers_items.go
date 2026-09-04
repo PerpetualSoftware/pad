@@ -762,6 +762,10 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	if relErr != nil {
 		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", relErr.Error()}
 	}
+	// Only the CALLER's values are refused here. A key validation injected a
+	// default for is not caller input, and the late pass below drops and
+	// reports it instead — see IssuesForCallerInput (codex round 10).
+	relIssues = store.IssuesForCallerInput(relIssues, relBefore)
 	if len(relIssues) > 0 {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relIssues)}
 	}
@@ -1247,7 +1251,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, relErr)
 			return
 		}
-		if refuseRelationIssues(w, relIssues) {
+		// Caller values only — an injected default is the late pass's to drop
+		// and report, not this door's to refuse (codex round 10).
+		if refuseRelationIssues(w, store.IssuesForCallerInput(relIssues, relBefore)) {
 			return
 		}
 		lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)

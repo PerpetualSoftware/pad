@@ -687,6 +687,28 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 	return dropped, nil
 }
 
+// IssuesForCallerInput drops the issues whose key was NOT present before
+// validation ran — i.e. the ones raised against a schema DEFAULT that
+// `ValidateFields` injected.
+//
+// The write doors resolve the whole field map, which is caller input plus
+// whatever validation just filled in, and refuse anything that does not
+// resolve. That is right for the caller's own values and wrong for a default:
+// by this unit's rule a default is asserted by nobody, so an unresolvable one
+// is dropped and reported, never refused — otherwise a single bad default in a
+// collection's schema makes every write into that collection fail, on a defect
+// its author has to fix somewhere else entirely (codex round 10). The migrate
+// doors already behaved this way; the write doors did not.
+func IssuesForCallerInput(issues []RelationIssue, presentBefore map[string]bool) []RelationIssue {
+	out := make([]RelationIssue, 0, len(issues))
+	for _, ri := range issues {
+		if presentBefore[ri.Key] {
+			out = append(out, ri)
+		}
+	}
+	return out
+}
+
 // CarriedSourceValues narrows a source item's field map to the values that
 // actually SURVIVED migration.
 //
