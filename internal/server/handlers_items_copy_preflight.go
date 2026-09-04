@@ -592,13 +592,20 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// existing intra-workspace move path (Codex round 5). Migration
 	// matches on key and type only — plus the option list for a select.
 	// It does not consider a relation field's `collection`, `computed`,
-	// `terminal_options` or `unique_scope`. So a same-named `relation`
-	// field carries a SOURCE-workspace item id into the destination and
-	// is reported as a clean carry, when across workspaces it is a
-	// dangling reference. Reporting that here would require the preflight
-	// to model semantics MigrateFields does not, and the copy would then
-	// disagree with its own preview — the divergence DR-6 exists to
-	// prevent. It belongs in MigrateFields, for both callers at once.
+	// `terminal_options` or `unique_scope`.
+	//
+	// The RELATION half of that is closed as of TASK-2878, and not where
+	// this comment predicted. A same-named `relation` field used to carry a
+	// SOURCE-workspace item id into the destination and be reported as a
+	// clean carry, when across workspaces it is a dangling reference. The fix
+	// did NOT go into MigrateFields: that function is in `internal/items`,
+	// which is DB-free by construction, and deciding whether a string names a
+	// live item in a particular collection is a database question. It went
+	// into `store.MigrateRelationReferents`, called below by this endpoint and
+	// by `migrateCopyFields` — one function, so the preview and the copy still
+	// cannot disagree, which is what the original objection was actually
+	// about. `computed`, `terminal_options` and `unique_scope` remain
+	// unmodelled here.
 	//
 	// MigrateFields computes result.Errors before any override exists, so
 	// those errors are stale the instant an override merges in. They are
@@ -649,6 +656,55 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// preflight exists to PREDICT what the copy does, so a coercion on one
 	// side only would make it report a field as failing that the copy accepts.
 	final = items.CoerceFields(final, items.SchemaForMigratedFields(targetSchema))
+	// Relation referents (TASK-2878), through the SAME store function the
+	// mutating copy calls — which is the whole reason that function is in
+	// `store` rather than beside either caller. This endpoint and
+	// `migrateCopyFields` sit in different PACKAGES, and the note above the
+	// CoerceFields call says in as many words that this is how the two drift
+	// unnoticed; a preview that says "carried" while the copy drops is one
+	// request answered two ways, the exact DR-6 divergence this pair exists to
+	// prevent.
+	//
+	// POOL executor (`s.store.MigrateRelationReferents`, not the ...Q form):
+	// the preflight is a read-only dry run holding no transaction. The copy
+	// passes its tx for the reason recorded at that call site.
+	//
+	// Scope computed the same way MigrateFields was given it, a few lines
+	// above — not re-derived, so the two cannot disagree about whether this
+	// request crosses a boundary.
+	relMode := store.RelationCarryWithinWorkspace
+	if items.ScopeFor(item.WorkspaceID, dst.WorkspaceID()) == items.CrossWorkspace {
+		relMode = store.RelationCarryCrossWorkspace
+	}
+	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final,
+		input.FieldOverrides, relMode)
+	if relErr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation referents: %w", relErr))
+		return
+	}
+	// An override the caller typed that names nothing is REFUSED here, not
+	// bucketed into needs_value — DR-12's disposition for an override with an
+	// invalid value, which is the branch immediately below. Same 400
+	// validation_error and the same sentence the copy returns, because both
+	// render through store.RelationIssuesMessage.
+	if refuseRelationIssues(w, relRefusals) {
+		return
+	}
+	// Carried values that could not survive join `migrated.Dropped` rather
+	// than a bucket of their own, so `StillDropped` filters them against the
+	// final map exactly as it filters a type-mismatch drop — including the
+	// case where the destination schema's own default re-populates the key,
+	// which makes it a carry again and must not also be reported dropped.
+	// `origin` loses its entry for the same reason: if a default does
+	// re-populate the key, its origin is the destination's default, not the
+	// source value that was just discarded.
+	relationDropReason := make(map[string]string, len(relDropped))
+	for _, ri := range relDropped {
+		migrated.Dropped = append(migrated.Dropped, ri.Key)
+		relationDropReason[ri.Key] = string(ri.Reason)
+		delete(origin, ri.Key)
+	}
 	issues := items.ValidateFieldsDetailed(final, items.SchemaForMigratedFields(targetSchema))
 
 	// DR-12's other half: an override whose VALUE is invalid is rejected,
@@ -785,6 +841,21 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	for _, key := range sortedDroppedKeys(items.StillDropped(migrated.Dropped, final), sourceSchema.Fields) {
 		reason := "no_target_field"
 		label := key
+		// A relation value whose referent did not survive (TASK-2878). The
+		// reason is the resolver's own — `referent_not_portable` for a carried
+		// value on a cross-workspace copy, or the specific lookup failure
+		// within a workspace — because the generic no_target_field is simply
+		// false here: the destination DOES declare the key, and reporting a
+		// missing field would send the reader to fix a schema that is fine.
+		if relReason, isRelation := relationDropReason[key]; isRelation {
+			if def, exists := targetDefs[key]; exists && def.Label != "" {
+				label = def.Label
+			}
+			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
+				Key: key, Label: label, Kind: "field", Reason: relReason,
+			})
+			continue
+		}
 		// A reserved key in Dropped can only have got there one way: it is
 		// referential and this is a cross-workspace copy. The generic
 		// no_target_field would be actively misleading — no schema declares

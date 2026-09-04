@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -124,10 +123,12 @@ func refuseRelationIssues(w http.ResponseWriter, issues []store.RelationIssue) b
 // and the two bulk operations (*bulkOpError). Split out rather than duplicated
 // so a caller cannot accidentally produce a different sentence for the same
 // refusal depending on which door it came through.
+//
+// DELEGATES to store.RelationIssuesMessage rather than joining here (TASK-2878).
+// The eighth door refuses inside `internal/store` — the cross-workspace copy,
+// through *FieldValidationError — so the sentence has to be reachable from
+// there too. Two joins in two packages is how one refusal acquires two
+// phrasings, which is the drift this unit exists to remove.
 func relationIssuesMessage(issues []store.RelationIssue) string {
-	parts := make([]string, 0, len(issues))
-	for _, ri := range issues {
-		parts = append(parts, ri.Message())
-	}
-	return strings.Join(parts, "; ")
+	return store.RelationIssuesMessage(issues)
 }

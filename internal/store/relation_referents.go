@@ -73,6 +73,21 @@ func (ri RelationIssue) Message() string {
 	}
 }
 
+// RelationIssuesMessage renders a set of issues as the ONE sentence every
+// refusing door reports. It lives here rather than in `internal/server`
+// because the store's own copy door refuses too (through
+// `FieldValidationError`), and a second join in a second package is how the
+// same refusal comes to be phrased two ways — the drift this whole unit
+// exists to remove. `internal/server`'s `relationIssuesMessage` delegates to
+// this.
+func RelationIssuesMessage(issues []RelationIssue) string {
+	parts := make([]string, 0, len(issues))
+	for _, ri := range issues {
+		parts = append(parts, ri.Message())
+	}
+	return strings.Join(parts, "; ")
+}
+
 // ResolveRelationReferents canonicalises every `relation` value in fieldMap to
 // the target item's ID and reports the ones that cannot be resolved.
 //
