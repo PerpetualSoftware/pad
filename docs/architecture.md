@@ -179,7 +179,7 @@ Claude/Cursor/Copilot-style agent can drive Pad via terminal calls.
   `npm run check` runs svelte-check.
 - **CI:** `.github/workflows/ci.yml` runs the full matrix — Go
   (SQLite + PostgreSQL + race), govulncheck, golangci-lint (new-issues
-  mode), web build, npm audit, svelte-check.
+  mode), web build, svelte-check, vitest, npm audit (last).
 
 ## Build and install
 

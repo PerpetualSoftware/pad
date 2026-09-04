@@ -16,7 +16,8 @@
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
 		"test:e2e:install": "playwright install --with-deps chromium",
-		"check:tiptap-pins": "node scripts/check-tiptap-pins.mjs"
+		"check:tiptap-pins": "node scripts/check-tiptap-pins.mjs",
+		"audit:ci": "node scripts/ci-audit.mjs"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.62.1",

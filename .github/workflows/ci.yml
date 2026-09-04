@@ -359,12 +359,6 @@ jobs:
         # version in the lockfile.
         run: npm run check:tiptap-pins
 
-      - name: Audit npm dependencies (production, high+)
-        # Fail the build on any HIGH or CRITICAL advisory in production deps.
-        # Dev-only advisories are treated as informational — they don't ship
-        # and fixing them can require waiting on upstream maintainers.
-        run: npm audit --audit-level=high --omit=dev
-
       - name: Build
         run: npm run build
 
@@ -373,6 +367,25 @@ jobs:
 
       - name: Run web unit tests (vitest)
         run: npm run test
+
+      - name: Audit npm dependencies (production, high+)
+        # Fail the build on any HIGH or CRITICAL advisory in production deps.
+        # Dev-only advisories are treated as informational — they don't ship
+        # and fixing them can require waiting on upstream maintainers.
+        #
+        # LAST, and through scripts/ci-audit.mjs, not bare `npm audit`
+        # (BUG-2881). Bare `npm audit` exits non-zero the same way for "an
+        # advisory exists" and "the advisory service was unreachable", and this
+        # job's shell is `bash -e` — so a registry timeout here used to SKIP
+        # Build, Type check and vitest and leave a red row that read like the
+        # web tests caught something, when nothing had run at all (2026-09-04,
+        # main and #1246, two transports, one bad window). The script decides
+        # from the JSON report: real advisories fail the step and are named; an
+        # unreachable service retries, then fails under a DISTINCT title saying
+        # the gate did not run — closed, not open, because a gate that passes
+        # when it cannot run is not a gate. Running last means the frontend's
+        # own verdict always exists, whichever way the audit goes.
+        run: npm run audit:ci
 
   e2e:
     name: E2E (Playwright)
