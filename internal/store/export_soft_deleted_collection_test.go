@@ -676,3 +676,174 @@ func keepUnless[T any](in []T, keep bool, drop func(T) bool) []T {
 	}
 	return out
 }
+
+// TestImportSurvivesOrphanedParent covers the parent_id half of the same
+// class, which my own sweep of the itemMap consumers missed and codex round 3
+// caught: the guard I added to the second pass protects the item BEING
+// updated, not the parent VALUE it writes.
+//
+// Both passes resolve a parent through itemMap, which holds an entry for an
+// orphaned item, so a live child of an archived-collection parent had a
+// nonexistent parent_id written into a foreign key. On Postgres that aborts
+// the transaction and the whole import is lost; the child is created before
+// the orphan is skipped, so this is reachable on the first pass too.
+//
+// Correct behaviour is the one the bundle can express: import the child with
+// NO parent. The parent is not in the bundle, so there is nothing to point at,
+// and dropping the edge is what item_links already does for a missing
+// endpoint.
+func TestImportSurvivesOrphanedParent(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "orphanparent2884@test.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Orphan Parent 2884")
+
+	// The parent is created FIRST so it sorts ahead of the child in the
+	// export's created_at ordering — that is what makes the first pass, not
+	// only the second, resolve the parent through itemMap.
+	archived, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Archived", Prefix: "ARCH"})
+	if err != nil {
+		t.Fatalf("CreateCollection(archived): %v", err)
+	}
+	parent, err := s.CreateItem(ws.ID, archived.ID, models.ItemCreate{Title: "Archived parent"})
+	if err != nil {
+		t.Fatalf("CreateItem(parent): %v", err)
+	}
+	live, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Live", Prefix: "LIVE"})
+	if err != nil {
+		t.Fatalf("CreateCollection(live): %v", err)
+	}
+	child, err := s.CreateItem(ws.ID, live.ID, models.ItemCreate{Title: "Live child", ParentID: &parent.ID})
+	if err != nil {
+		t.Fatalf("CreateItem(child): %v", err)
+	}
+	if err := s.DeleteCollection(archived.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	kept := exp.Collections[:0]
+	for _, c := range exp.Collections {
+		if c.ID != archived.ID {
+			kept = append(kept, c)
+		}
+	}
+	exp.Collections = kept
+
+	// Order the bundle parent-first. The export sorts by created_at then id,
+	// and both rows land in the same second, so the id tie-break decides —
+	// leaving the first-pass path exercised only about half the time. A bundle
+	// may legitimately arrive in any order, and this is the order that reaches
+	// BOTH passes, so the test pins it rather than rolling for it.
+	ordered := make([]models.ItemExport, 0, len(exp.Items))
+	for _, it := range exp.Items {
+		if it.ID == parent.ID {
+			ordered = append(ordered, it)
+		}
+	}
+	for _, it := range exp.Items {
+		if it.ID != parent.ID {
+			ordered = append(ordered, it)
+		}
+	}
+	exp.Items = ordered
+
+	// Controls: the bundle carries the child pointing at an item it does not
+	// carry, and the parent now sorts first. Without both, the write under
+	// test is never attempted.
+	var sawChild, sawParent bool
+	var parentIdx, childIdx = -1, -1
+	for i, it := range exp.Items {
+		if it.ID == child.ID {
+			sawChild, childIdx = true, i
+			if it.ParentID != parent.ID {
+				t.Fatalf("control leg failed: exported child's parent_id = %q, want the archived parent", it.ParentID)
+			}
+		}
+		if it.ID == parent.ID {
+			sawParent, parentIdx = true, i
+		}
+	}
+	if !sawChild || !sawParent {
+		t.Fatalf("control leg failed: bundle carries child=%v parent=%v", sawChild, sawParent)
+	}
+	if parentIdx > childIdx {
+		t.Fatalf("control leg failed: parent sorts after child (%d > %d), so the first pass never resolves it", parentIdx, childIdx)
+	}
+
+	imported, err := s.ImportWorkspace(exp, "orphan-parent-2884-target", owner.ID)
+	if err != nil {
+		t.Fatalf("a live item whose parent is orphaned aborted the whole import: %v", err)
+	}
+
+	items, err := s.ListItems(imported.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Live child" {
+		titles := make([]string, 0, len(items))
+		for _, i := range items {
+			titles = append(titles, i.Title)
+		}
+		t.Fatalf("imported items = %v, want just [Live child]", titles)
+	}
+	if items[0].ParentID != nil && *items[0].ParentID != "" {
+		t.Errorf("imported child kept a parent_id (%q) naming an item the bundle never carried", *items[0].ParentID)
+	}
+}
+
+// TestImportSurvivesDuplicateLinks covers the residual half of the links loop.
+// The insertedItems guard removes the foreign-key route, but a hand-edited or
+// foreign bundle can still carry the same (source, target, link_type) twice —
+// the source's UNIQUE constraint bounds what pad writes, not what arrives. The
+// loop answered that with `continue`, which is not a recovery on Postgres: the
+// unique violation has already aborted the transaction, so COMMIT fails and
+// the entire restore is lost over a row the loop meant to ignore.
+func TestImportSurvivesDuplicateLinks(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "duplinks2884@test.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Duplicate Links 2884")
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Widgets", Prefix: "WID"})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	a, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "A"})
+	if err != nil {
+		t.Fatalf("CreateItem(a): %v", err)
+	}
+	b, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "B"})
+	if err != nil {
+		t.Fatalf("CreateItem(b): %v", err)
+	}
+	if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: b.ID, LinkType: "blocks"}, a.ID); err != nil {
+		t.Fatalf("CreateItemLink: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	if len(exp.ItemLinks) != 1 {
+		t.Fatalf("control leg failed: exported links = %d, want 1", len(exp.ItemLinks))
+	}
+	// The hand-edit: the same edge twice, with distinct ids, exactly as a
+	// merged or concatenated bundle would carry it.
+	dup := exp.ItemLinks[0]
+	dup.ID = dup.ID + "-dup"
+	exp.ItemLinks = append(exp.ItemLinks, dup)
+
+	imported, err := s.ImportWorkspace(exp, "duplicate-links-2884-target", owner.ID)
+	if err != nil {
+		t.Fatalf("a bundle carrying one duplicated link aborted the whole import: %v", err)
+	}
+
+	items, err := s.ListItems(imported.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("imported items = %d, want 2", len(items))
+	}
+}
