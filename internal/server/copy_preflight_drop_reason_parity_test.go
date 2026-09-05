@@ -38,26 +38,35 @@ func readWebFile(t *testing.T, rel string) string {
 	return string(b)
 }
 
-// dropReasonSwitchBody returns just the body of CopyItemDialog's `dropReason`
-// function. Scoped rather than searched whole: the component has other
-// switches, and one of them matching `case 'not_found':` for an unrelated
-// purpose would satisfy this test while the dialog still rendered the raw enum
-// — a guard that passes on the wrong evidence.
-func dropReasonSwitchBody(t *testing.T, src string) string {
+// dropReasonMapBody returns the body of the renderer's message map.
+//
+// REPOINTED IN IDEA-2894, and the repointing is the reason this helper still
+// earns its keep. The mapper moved out of CopyItemDialog.svelte into
+// `web/src/lib/items/copyDropReasons.ts` so it could be unit-tested at all,
+// and this gate FAILED LOUDLY on that move — exactly as the fatal below says
+// it should — rather than passing on a file that no longer contained what it
+// was reading for. A parity gate that cannot tell "no such reason" from "no
+// such function" is worse than none.
+//
+// Scoped to the map's body rather than searching the file whole for the same
+// reason the old version scoped to the switch: the module also exports the
+// reason LIST, and a reason present there but missing a message would satisfy
+// a whole-file search while the dialog still rendered the raw enum.
+func dropReasonMapBody(t *testing.T, src string) string {
 	t.Helper()
-	const marker = "function dropReason(reason: string): string {"
+	const marker = "const MESSAGES: Record<CopyDropReason, string> = {"
 	start := strings.Index(src, marker)
 	if start < 0 {
-		t.Fatalf("CopyItemDialog.svelte no longer declares %q — this gate is reading for a "+
-			"function that moved or was renamed, so its green means nothing until it is repointed", marker)
+		t.Fatalf("copyDropReasons.ts no longer declares %q — this gate is reading for a "+
+			"declaration that moved or was renamed, so its green means nothing until it is "+
+			"repointed", marker)
 	}
 	rest := src[start+len(marker):]
-	// The function's own closing brace: the first line that is exactly a tab
-	// followed by `}`, matching the component's indentation for a top-level
-	// declaration in <script>.
-	end := strings.Index(rest, "\n\t}")
+	// The literal's own closing brace: the first line that is exactly `};` at
+	// column zero, matching a top-level declaration in the module.
+	end := strings.Index(rest, "\n};")
 	if end < 0 {
-		t.Fatalf("could not find the end of dropReason's body")
+		t.Fatalf("could not find the end of the MESSAGES map")
 	}
 	return rest[:end]
 }
@@ -70,8 +79,8 @@ func TestCopyPreflightDropReasonsAreRenderedByTheDialog(t *testing.T) {
 	}
 
 	types := readWebFile(t, "web/src/lib/types/index.ts")
-	dialog := readWebFile(t, "web/src/lib/components/items/CopyItemDialog.svelte")
-	switchBody := dropReasonSwitchBody(t, dialog)
+	renderer := readWebFile(t, "web/src/lib/items/copyDropReasons.ts")
+	messages := dropReasonMapBody(t, renderer)
 
 	for _, reason := range reasons {
 		t.Run(reason, func(t *testing.T) {
@@ -79,9 +88,21 @@ func TestCopyPreflightDropReasonsAreRenderedByTheDialog(t *testing.T) {
 				t.Errorf("ItemCopyPreflightDropped['reason'] in web/src/lib/types/index.ts has no "+
 					"member %q — the server can send it and the client's type says it cannot", reason)
 			}
-			if !strings.Contains(switchBody, "case '"+reason+"':") {
-				t.Errorf("CopyItemDialog's dropReason() has no case for %q, so the dialog falls "+
-					"through to `default: return reason` and shows a user the raw enum string", reason)
+			// BOTH halves of the renderer, because they fail differently.
+			// Missing from the LIST and the module's own completeness test
+			// cannot see it either — that test iterates the list, so a reason
+			// absent from it is absent from the test as well, and this gate is
+			// the only thing that notices.
+			if !strings.Contains(renderer, "\t'"+reason+"',") {
+				t.Errorf("COPY_DROP_REASONS in web/src/lib/items/copyDropReasons.ts does not list "+
+					"%q. That list drives the module's own completeness test, so a reason missing "+
+					"from it is invisible to that test too — this gate is the only place it shows.",
+					reason)
+			}
+			if !strings.Contains(messages, reason+":") {
+				t.Errorf("copyDropReasons' MESSAGES map has no entry for %q, so "+
+					"copyDropReasonMessage falls through to returning the raw string and shows a "+
+					"user the enum", reason)
 			}
 		})
 	}
