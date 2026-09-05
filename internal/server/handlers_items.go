@@ -785,7 +785,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// for one value, and after coercion so the value is in its final form.
 	// The four steps live in one place — see resolveRelationsForWrite.
 	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
-		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
+		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
 	if relErr != nil {
 		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to resolve relation references"}
 	}
@@ -1267,7 +1267,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Referent validation for relation values (TASK-2878) — the same four
 		// steps the create door runs; see resolveRelationsForWrite.
 		relRefusals, writeDropped, relErr := s.resolveRelationsForWrite(
-			r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore)
+			r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, relationsRefuse)
 		if relErr != nil {
 			writeInternalError(w, relErr)
 			return
@@ -2467,6 +2467,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
 	if lateErr != nil {
 		writeInternalError(w, lateErr)
+		return
+	}
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
+		writeInternalError(w, cerr)
 		return
 	}
 	// A REQUIRED relation whose default did not resolve cannot be left as a

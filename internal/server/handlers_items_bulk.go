@@ -567,6 +567,9 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if lateErr != nil {
 		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
 	if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
 		return nil, &bulkOpError{
 			message: "required fields missing: " + relationIssuesMessage(req),
@@ -817,6 +820,9 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
 	if lateErr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
 		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
 	// A REQUIRED relation whose default did not resolve cannot be left as a

@@ -1087,3 +1087,70 @@ func TestRelationDoors_NullSourceDoesNotExemptDefaultFromVisibility(t *testing.T
 		t.Fatalf("the hidden default was stored: %#v", v)
 	}
 }
+
+// A relation issue raised by the LATE default pass must pass through the same
+// visibility collapse the main pass applies (codex round 15).
+//
+// `store.ResolveLateRelationDefaults` cannot know who is asking, so it returns
+// the raw reason. `wrong_collection` is the one reason that names a LIVE item,
+// and every door renders these issues into a caller-visible message — so a
+// schema default pointing at an item the caller cannot see announced that the
+// item EXISTS. Same oracle round 3 closed on the main pass, reopened through
+// the late-default door round 10 added.
+func TestRelationDoors_LateDefaultWrongCollectionDoesNotDiscloseExistence(t *testing.T) {
+	f := newDoorFixture(t)
+	other := mustSchemaCollection(t, f.srv, f.ws.ID, "Late Vaults", `{"fields":[]}`)
+	secret, err := f.srv.store.CreateItem(f.ws.ID, other.ID, models.ItemCreate{
+		Title: "Late Secret", CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem(secret): %v", err)
+	}
+
+	// REQUIRED, so the unresolved default becomes a refusal the caller reads
+	// rather than a silent drop.
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Late Default Door", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"required":true,"default":%q}
+	]}`, f.people.Slug, secret.Ref))
+
+	move := func(u *models.User, role string) string {
+		t.Helper()
+		item := f.seed(`{"status":"open"}`)
+		rr := f.callAs(u, role, f.srv.handleMoveItem, "POST",
+			"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/move",
+			map[string]string{"itemSlug": item.Slug},
+			map[string]any{"target_collection": dst.Slug})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for an unresolved REQUIRED relation default, got %d: %s",
+				rr.Code, rr.Body.String())
+		}
+		return rr.Body.String()
+	}
+
+	// CONTROL: a caller who CAN see the target keeps the specific, useful
+	// reason. Without this leg, collapsing every reason to not_found would
+	// pass the assertion below while destroying the message's value.
+	seeing := move(f.owner, "owner")
+	if !strings.Contains(seeing, "is not an item in collection") {
+		t.Fatalf("a caller who CAN see the target lost the wrong_collection reason: %s", seeing)
+	}
+
+	blind := mustUser(t, f.srv, "blind-late@example.com", "blindlate", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID, f.people.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	hidden := move(blind, "editor")
+	if strings.Contains(hidden, "is not an item in collection") {
+		t.Fatalf("the late-default refusal tells a caller who cannot see the target that it "+
+			"EXISTS: %s", hidden)
+	}
+	if strings.Contains(hidden, secret.ID) {
+		t.Fatalf("the late-default refusal handed back the hidden item's canonical id: %s", hidden)
+	}
+}

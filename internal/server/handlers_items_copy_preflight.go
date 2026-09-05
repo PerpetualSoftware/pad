@@ -805,6 +805,10 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation defaults: %w", lateErr))
 		return
 	}
+	if cerr := s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, lateDropped); cerr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: relation issue visibility: %w", cerr))
+		return
+	}
 	// A REQUIRED relation whose default did not resolve becomes a needs_value
 	// row rather than a drop, so the preview says what the copy will do:
 	// the copy REFUSES this request, and `valid` must be false (codex round
@@ -819,7 +823,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	}
 	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, dst.WorkspaceID(), dst.Role,
 		items.SchemaForMigratedFields(targetSchema), final,
-		notDefaultKeys(input.FieldOverrides, carriedSource))
+		notDefaultKeys(input.FieldOverrides, carriedAfterRelationDrops(currentFields, migrated.Dropped, relDropped)))
 	if invErr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: relation default visibility: %w", invErr))
 		return

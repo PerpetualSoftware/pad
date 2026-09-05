@@ -234,3 +234,79 @@ func TestImportArtifactCarriesUnresolvableRelationValue(t *testing.T) {
 		t.Fatalf("import carried an unresolvable relation without saying so: %v", resp.Warnings)
 	}
 }
+
+// An import carrying ONE unresolvable caller value must still clean up the
+// destination schema's own broken defaults (codex round 15).
+//
+// The write path's step 2 returned early when the caller's values had issues —
+// correct while every caller of that path REFUSED, since steps 3 and 4 only
+// prepare a field map nobody stores. The carry posture made a caller that does
+// not refuse, and the early return stayed: an artifact holding one junk
+// relation skipped the late-default pass AND the default-visibility drop
+// entirely, storing whatever the destination schema injected and reporting
+// none of it.
+//
+// This fixture is the two existing artifact-relation tests composed, and the
+// composition is the whole point — each half passes on its own against the
+// unfixed build, and only together do they reach the skipped steps:
+//
+//   - `role`, an unresolvable CALLER value, which is what fires the early
+//     return (TestImportArtifactCarriesUnresolvableRelationValue);
+//   - `owner_ref`, a broken destination DEFAULT that step 3 is what drops
+//     (TestImportArtifactReportsDroppedRelationDefault).
+func TestImportArtifactCleansBrokenDefaultsDespiteACarriedJunkValue(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws+"/collections/conventions", map[string]any{
+		"schema": `{"fields":[{"key":"status","type":"select","options":["draft","active"]},{"key":"role","type":"relation","collection":"nobody"},{"key":"owner_ref","type":"relation","collection":"nobody","default":42}]}`,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("narrow conventions schema: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	art := artifact.Artifact{
+		Kind:          artifact.KindConvention,
+		FormatVersion: artifact.FormatVersion,
+		Title:         "Convention with junk AND a broken default",
+		Fields:        map[string]any{"status": "active", "role": "just some text"},
+		Body:          "Body.\n",
+	}
+	data, err := artifact.Encode(art)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	rr2 := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", data)
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("import REFUSED (%d); import carries, never refuses: %s", rr2.Code, rr2.Body.String())
+	}
+	var resp struct {
+		Ref      string   `json:"ref"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rr2.Body.String())
+	}
+	warnings := strings.Join(resp.Warnings, "\n")
+
+	// CONTROL: the carried junk value still reaches the report. If this leg
+	// fails the fixture never fired the early return, and the assertion below
+	// would be measuring a path that was never skipped.
+	if !strings.Contains(warnings, "role") {
+		t.Fatalf("the carried junk value was not reported, so the early return this test "+
+			"exists to reach was never taken: %v", resp.Warnings)
+	}
+
+	show := doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items/"+resp.Ref, nil)
+	if show.Code != http.StatusOK {
+		t.Fatalf("GET the imported item: %d %s", show.Code, show.Body.String())
+	}
+	if strings.Contains(show.Body.String(), `"owner_ref":42`) {
+		t.Fatalf("a carried junk value made the import skip the late-default pass, and the "+
+			"schema's broken default was stored raw: %s", show.Body.String())
+	}
+	if !strings.Contains(warnings, "owner_ref") {
+		t.Fatalf("the broken destination default was neither cleaned nor reported: %v", resp.Warnings)
+	}
+}

@@ -197,6 +197,48 @@ func collapseIssue(issues []store.RelationIssue, key string, reason store.Relati
 	}
 }
 
+// collapseInvisibleRelationIssues rewrites `wrong_collection` to `not_found`
+// on any issue whose target the requester cannot see — the same collapse
+// resolveRelationReferentsAs applies to the MAIN pass, hoisted so the LATE
+// pass gets it too.
+//
+// `store.ResolveLateRelationDefaults` is a store function and cannot know who
+// is asking, so every issue it returns carries the raw reason. Those issues
+// reach a caller: each door feeds them to RequiredRelationIssues and renders
+// the result into a 400 or a preflight `needs_value` row. `wrong_collection`
+// is the one reason that names a LIVE item, so an invisible target announced
+// that way is the existence oracle round 3 closed, reopened through the door
+// round 10 added (codex round 15).
+//
+// Reviewer named ONE site; this is applied at all five late-default sites,
+// per CONVE-18 — the class is "a store-resolved issue reaching a caller
+// without passing the visibility collapse", not the one call it was spotted at.
+func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, role string, issues []store.RelationIssue) error {
+	for i := range issues {
+		if issues[i].Reason != store.RelationTargetWrongCollection {
+			continue
+		}
+		target, terr := s.store.ResolveRelationTarget(workspaceID, issues[i].Value)
+		if terr != nil {
+			return terr
+		}
+		if target == nil {
+			// Vanished between the two reads. The reason still SAYS the value
+			// named something a moment ago, which is the same disclosure.
+			issues[i].Reason = store.RelationTargetNotFound
+			continue
+		}
+		seen, verr := s.checkItemVisible(workspaceID, target, currentUser(r), role, isBearerAuth(r))
+		if verr != nil {
+			return verr
+		}
+		if !seen {
+			issues[i].Reason = store.RelationTargetNotFound
+		}
+	}
+	return nil
+}
+
 // refuseRelationIssues writes the 400 a write door owes and reports whether it
 // did. One function so the six refusing doors cannot phrase the same refusal
 // three different ways, and so a client matching on the error code sees one
@@ -277,6 +319,56 @@ func (s *Server) refuseInvisibleRelationOverrides(
 		return nil, nil
 	}
 	return s.resolveRelationReferentsAs(r, workspaceID, role, schema, probe)
+}
+
+// carriedAfterRelationDrops is the carried-source set a migrate door hands
+// notDefaultKeys, with BOTH drop passes subtracted.
+//
+// A door computes its carried set from MigrateFields' drops, then runs
+// store.MigrateRelationReferents, which drops further keys whose referents did
+// not resolve. Reusing the FIRST set for the visibility call classifies a key
+// the second pass dropped as still carried; when the destination schema then
+// refills that key with a default, the default is exempted from the visibility
+// check on the strength of a value that is no longer there, and the response
+// can hand back the id of an item the caller cannot see.
+//
+// The pre-relation-drop set is still the right input to the origin label and
+// to the relation classifier itself, which are asking "did this value come
+// across from the source?" — a different question from "is the value in hand
+// now a destination default?" (codex round 15).
+//
+// ONLY the preflight needs this, and the reason is worth stating so nobody
+// "fixes" the other doors to match. Move and bulk move fold their relation
+// drops into `result.Dropped` and then recompute CarriedSourceValues INLINE at
+// the visibility call, so they read the already-extended list and were never
+// wrong. The preflight extends `migrated.Dropped` the same way but hands the
+// visibility call a `carriedSource` VARIABLE captured before that append —
+// the snapshot is the defect, not the door.
+//
+// SHIPS WITH ITS MUTANTS SURVIVING, AND THAT IS RECORDED RATHER THAN HIDDEN.
+// Restoring the stale set — at the move door OR here — leaves every test
+// green, because no configuration I could construct makes the difference
+// observable: a destination default whose target the caller cannot see is
+// already collapsed to `not_found` by the MAIN pass and dropped before this
+// check is reached. Measured with a probe on both builds — the owner's
+// preflight discloses the default's id, and a restricted editor's reports
+// `owner_ref` dropped as `not_found` on the fixed AND the unfixed build.
+//
+// So this is a robustness change, not a bug fix, kept for one reason:
+// `carriedSource` should mean what its name says at every use, rather than
+// being correct at three uses and stale at the fourth because two later passes
+// happen to repair it. A regression test WAS written for this and then
+// DELETED, because it passed against the unfixed build — a test that cannot
+// fail is worse than no test, since it reads as a guard while guarding
+// nothing.
+func carriedAfterRelationDrops(sourceFields map[string]any, migrateDropped []string, relDropped []store.RelationIssue) map[string]any {
+	if len(relDropped) == 0 {
+		return store.CarriedSourceValues(sourceFields, migrateDropped)
+	}
+	lost := make([]string, 0, len(migrateDropped)+len(relDropped))
+	lost = append(lost, migrateDropped...)
+	lost = append(lost, store.RelationIssueKeys(relDropped)...)
+	return store.CarriedSourceValues(sourceFields, lost)
 }
 
 // notDefaultKeys is the set a migrate door hands
@@ -412,21 +504,36 @@ func (s *Server) resolveRelationsForWrite(
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 	presentBefore map[string]bool,
+	posture relationPosture,
 ) (refusals []store.RelationIssue, dropped []string, err error) {
 	issues, err := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
 	if err != nil {
 		return nil, nil, err
 	}
-	if callerIssues := store.IssuesForCallerInput(issues, presentBefore); len(callerIssues) > 0 {
+	callerIssues := store.IssuesForCallerInput(issues, presentBefore)
+	if len(callerIssues) > 0 && posture == relationsRefuse {
+		// The write is about to be REFUSED, so steps 3 and 4 would only
+		// prepare a field map nobody stores.
 		return callerIssues, nil, nil
 	}
+	// A CARRYING door does not stop here, and this is the round-15 defect:
+	// the early return was written when every caller of this path refused, and
+	// stayed when the artifact-import door began carrying instead. An import
+	// holding ONE unresolvable caller value would skip the late-default pass
+	// AND the default-visibility drop entirely, storing whatever the
+	// destination schema injected — including a default the caller cannot see
+	// — and reporting none of it. The refusals are still returned; they are
+	// the carry report, not a stop.
 
 	lateDropped, err := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, presentBefore)
 	if err != nil {
 		return nil, nil, err
 	}
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, role, lateDropped); cerr != nil {
+		return nil, nil, cerr
+	}
 	if required := store.RequiredRelationIssues(schema, lateDropped); len(required) > 0 {
-		return required, nil, nil
+		return append(callerIssues, required...), nil, nil
 	}
 
 	invisible, err := s.dropInvisibleRelationDefaults(r, workspaceID, role, schema, fieldMap, presentBefore)
@@ -438,10 +545,14 @@ func (s *Server) resolveRelationsForWrite(
 	// deleting a key after validation has passed leaves a required field
 	// absent regardless of which list recorded it (codex round 13).
 	if required := store.RequiredRelationIssues(schema, invisible); len(required) > 0 {
-		return required, nil, nil
+		return append(callerIssues, required...), nil, nil
 	}
 	for _, ri := range append(lateDropped, invisible...) {
 		dropped = append(dropped, ri.Key)
 	}
-	return nil, dropped, nil
+	// callerIssues is EMPTY on a refusing door — it returned above — and holds
+	// the carry report on a carrying one. Returning it here rather than `nil`
+	// is what keeps an import's unresolvable values named in the response now
+	// that the carrying door runs to the end.
+	return callerIssues, dropped, nil
 }
