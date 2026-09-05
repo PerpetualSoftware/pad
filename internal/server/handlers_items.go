@@ -696,7 +696,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue)
+	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue, relationsRefuse)
 	if cerr != nil {
 		writeError(w, cerr.status, cerr.code, cerr.message)
 		return
@@ -743,15 +743,64 @@ func (e *itemCreateError) Error() string { return e.message }
 //
 // Returns the created item (Ref/Slug populated by the store) or an
 // *itemCreateError with a status hint.
-func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string) (*models.Item, *itemCreateError) {
+// relationPosture says how a create door treats a relation value that does not
+// resolve. Two callers, two answers, and the difference is Dave's ruling
+// (day 57): refuse on write, carry on IMPORT.
+//
+// An artifact is not caller input in the sense the write doors mean. It was
+// written elsewhere, possibly years ago and certainly before referent
+// validation existed, and the person importing it did not choose its field
+// values and cannot fix them from the import call. Refusing would break the
+// import of exactly the artifacts most likely to carry junk — which is what
+// Dave's ruling names: "explicitly allow import of the junk to avoid breaking
+// import".
+type relationPosture int
+
+const (
+	// relationsRefuse — the caller typed these values, so an unresolvable one
+	// is their bug (create, update).
+	relationsRefuse relationPosture = iota
+	// relationsCarry — store what does not resolve and REPORT it. Not the
+	// migrate doors' carry, which drops what it cannot resolve: an import
+	// keeps the value, because the artifact is the record and discarding half
+	// of it silently is worse than importing something a client renders as
+	// unresolved (the read half of U2 does exactly that).
+	relationsCarry
+)
+
+func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string, posture relationPosture) (*models.Item, *itemCreateError) {
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
+	// Snapshot before validation, which INJECTS schema defaults without
+	// type-checking them (codex round 7). The resolver below skips a
+	// non-string, so an injected `default: 42` on a relation field reached the
+	// blob unchallenged — the same hole the migrate doors had, by the same
+	// route, and closed with the same pass.
+	relBefore := store.RelationKeysPresent(schema, fieldMap)
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
 	}
-	// Keys the schema does not declare are STORED, not refused — but the write
-	// says which ones, so a typo leaves a trace (BUG-2850). Computed before the
-	// store call because fieldMap is what gets written.
+	// Referent validation for relation values (TASK-2878). AFTER the shape
+	// check, so "must be a string" and "names nothing" are never both reported
+	// for one value, and after coercion so the value is in its final form.
+	// The four steps live in one place — see resolveRelationsForWrite.
+	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
+		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
+	if relErr != nil {
+		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to resolve relation references"}
+	}
+	var unresolved []string
+	if len(relRefusals) > 0 {
+		if posture == relationsRefuse {
+			return nil, &itemCreateError{http.StatusBadRequest, "validation_error", relationIssuesMessage(relRefusals)}
+		}
+		// Carry: the values stay in fieldMap exactly as supplied — the
+		// resolver leaves what it cannot resolve untouched — and the write
+		// says which ones, so an import is never silently lossy.
+		for _, ri := range relRefusals {
+			unresolved = append(unresolved, ri.Key)
+		}
+	}
 	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
 
 	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
@@ -872,8 +921,12 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	// Attach after the write succeeded: these are advisory notes about a
 	// stored item, not a reason to refuse one (BUG-2850).
-	if len(undeclared) > 0 {
-		item.Warnings = &models.ItemWriteWarnings{UndeclaredFields: undeclared}
+	if len(undeclared) > 0 || len(droppedDefaults) > 0 || len(unresolved) > 0 {
+		item.Warnings = &models.ItemWriteWarnings{
+			UndeclaredFields:    undeclared,
+			DroppedFields:       droppedDefaults,
+			UnresolvedRelations: unresolved,
+		}
 	}
 
 	return item, nil
@@ -999,6 +1052,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// Keys this write puts in the fields blob that the schema does not
 	// declare. Stored, not refused; reported on the response (BUG-2850).
 	var undeclaredFields []string
+	// Schema-declared keys this write discarded (TASK-2878) — see
+	// models.ItemWriteWarnings.DroppedFields.
+	var droppedDefaults []string
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -1201,10 +1257,25 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		// Coerce strings to their declared types before validating (BUG-2850).
 		fieldMap = items.CoerceFields(fieldMap, schema)
+		// Snapshot before validation injects untyped schema defaults — see
+		// createItemChecked for the route (codex round 7).
+		relBefore := store.RelationKeysPresent(schema, fieldMap)
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
+		// Referent validation for relation values (TASK-2878) — the same four
+		// steps the create door runs; see resolveRelationsForWrite.
+		relRefusals, writeDropped, relErr := s.resolveRelationsForWrite(
+			r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, relationsRefuse)
+		if relErr != nil {
+			writeInternalError(w, relErr)
+			return
+		}
+		if refuseRelationIssues(w, relRefusals) {
+			return
+		}
+		droppedDefaults = append(droppedDefaults, writeDropped...)
 		undeclaredFields = items.UndeclaredFieldKeys(fieldMap, schema)
 
 		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
@@ -1380,6 +1451,20 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		undeclaredFields = items.UndeclaredFieldKeys(stored, schema)
 		if err := items.ValidatePartialFields(patchMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+		// Referent validation for relation values (TASK-2878). Only the keys
+		// this patch carries are examined — the resolver skips absent keys —
+		// so a stray unresolvable value already stored on the item is not
+		// re-litigated by an update that does not touch it. That matches the
+		// undeclared-key rule directly above, and it is what keeps this from
+		// making every edit to a legacy item fail.
+		relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, patchMap)
+		if relErr != nil {
+			writeInternalError(w, relErr)
+			return
+		}
+		if refuseRelationIssues(w, relIssues) {
 			return
 		}
 
@@ -2057,8 +2142,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Advisory, post-write, same as create (BUG-2850).
-	if len(undeclaredFields) > 0 {
-		updated.Warnings = &models.ItemWriteWarnings{UndeclaredFields: undeclaredFields}
+	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 {
+		updated.Warnings = &models.ItemWriteWarnings{
+			UndeclaredFields: undeclaredFields,
+			DroppedFields:    droppedDefaults,
+		}
 	}
 
 	writeJSON(w, http.StatusOK, updated)
@@ -2312,6 +2400,47 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// `invalid_fields` code rather than being mislabelled as missing.
 	// Coerce strings to their declared types before validating (BUG-2850).
 	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	// Relation referents on a SAME-WORKSPACE move (TASK-2878). A migrate door,
+	// so provenance decides: an explicit override refuses, a carried value
+	// resolves and survives if it can. The targets are still in this
+	// workspace, so a correctly-related item keeps its relation across the
+	// move; only an unresolvable value is dropped, and it joins the same
+	// `dropped_fields` report BUG-2674 established rather than failing the
+	// move. Refusing carried values here would make every legacy item — and
+	// `internal/items` has accepted any string for a relation all along —
+	// permanently unmovable.
+	// The supplied half is a write, so it owes the same visibility check the
+	// four write doors run. The store resolver cannot do it — see
+	// refuseInvisibleRelationOverrides. Same workspace here, so the role
+	// stashed for this request is the right one.
+	if invisible, err := s.refuseInvisibleRelationOverrides(
+		r, workspaceID, workspaceRole(r), items.SchemaForMigratedFields(targetSchema),
+		input.FieldOverrides); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if refuseRelationIssues(w, invisible) {
+		return
+	}
+	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
+		input.FieldOverrides, store.CarriedSourceValues(currentFields, result.Dropped),
+		store.RelationCarryWithinWorkspace)
+	if relErr != nil {
+		writeInternalError(w, relErr)
+		return
+	}
+	if refuseRelationIssues(w, relRefusals) {
+		return
+	}
+	for _, ri := range relDropped {
+		result.Dropped = append(result.Dropped, ri.Key)
+	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), result.Fields)
 	if issues := items.ValidateFieldsDetailed(result.Fields, items.SchemaForMigratedFields(targetSchema)); len(issues) > 0 {
 		var missing, invalid []string
 		for _, iss := range issues {
@@ -2329,6 +2458,46 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_fields",
 			fmt.Sprintf("Invalid field value(s): %s", strings.Join(invalid, "; ")))
 		return
+	}
+	// Relation defaults ValidateFieldsDetailed just injected, which the pass
+	// above could not have seen (codex round 2). AFTER validation, not before:
+	// the required-field check has to see a value referent resolution dropped,
+	// which is why the main pass runs first — see ResolveLateRelationDefaults.
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+	if lateErr != nil {
+		writeInternalError(w, lateErr)
+		return
+	}
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
+		writeInternalError(w, cerr)
+		return
+	}
+	// A REQUIRED relation whose default did not resolve cannot be left as a
+	// drop: the key is deleted AFTER validation passed, so nothing re-checks
+	// it and the item would land with a required field absent, reported valid
+	// (codex round 3). Re-running validation is not the answer — it would
+	// re-inject the same broken default. There is no valid value, so this
+	// refuses.
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
+		writeError(w, http.StatusBadRequest, "missing_required_fields",
+			"Required fields missing: "+relationIssuesMessage(req))
+		return
+	}
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r),
+		items.SchemaForMigratedFields(targetSchema), result.Fields,
+		notDefaultKeys(input.FieldOverrides, store.CarriedSourceValues(currentFields, result.Dropped)))
+	if invErr != nil {
+		writeInternalError(w, invErr)
+		return
+	}
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), invisibleDefaults); len(req) > 0 {
+		writeError(w, http.StatusBadRequest, "missing_required_fields",
+			"Required fields missing: "+relationIssuesMessage(req))
+		return
+	}
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
+		result.Dropped = append(result.Dropped, ri.Key)
 	}
 
 	// Serialize migrated fields

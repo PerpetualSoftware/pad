@@ -269,7 +269,8 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget, batchID)
+		var droppedFields []string
+		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget, batchID, &droppedFields)
 		if opErr != nil {
 			resp.Failed = append(resp.Failed, bulkItemFailure{
 				Ref:     itemRefOrSlug(*item),
@@ -305,6 +306,15 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			action = "moved"
 			meta["from_collection"] = item.CollectionSlug
 			meta["to_collection"] = req.Collection
+		}
+		// Same key, same joined-string shape and the same reason as
+		// handleMoveItem's: this map is map[string]string, and a raw array
+		// renders as a Go map literal in the timeline (BUG-2628). Outside the
+		// move branch because a bulk STATUS or PRIORITY change can discard a
+		// relation default too, and a drop nobody records is the defect
+		// BUG-2674 closed.
+		if len(droppedFields) > 0 {
+			meta["dropped_fields"] = strings.Join(droppedFields, ", ")
 		}
 		s.logActivityWithMeta(workspaceID, item.ID, action, r, auditMeta(meta))
 
@@ -406,7 +416,14 @@ func bulkStoreError(err error) *bulkOpError {
 	return &bulkOpError{message: err.Error()}
 }
 
-func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection, batchID string) (*models.Item, *bulkOpError) {
+// droppedFields is an OUT-PARAMETER, and it is one deliberately. Only the
+// collection-move branch produces dropped field keys, the caller needs them to
+// build ONE activity row per item (a second row would misreport a single
+// move as two events), and threading a third return value through fourteen
+// unrelated returns would put `nil` in every branch that has nothing to say.
+// Reset by the caller each iteration; nil is accepted and means "not
+// interested".
+func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection, batchID string, droppedFields *[]string) (*models.Item, *bulkOpError) {
 	switch req.Op {
 	case "archive":
 		if err := s.store.DeleteItem(item.ID, store.WithEventBatch(batchID)); err != nil {
@@ -440,13 +457,13 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 
 	case "move":
 		if req.Collection != "" {
-			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget, batchID)
+			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget, batchID, droppedFields)
 		}
 		// Status-only move = a field update on the same collection.
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source, batchID)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source, batchID, droppedFields)
 
 	case "set-priority":
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source, batchID)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source, batchID, droppedFields)
 
 	case "tag":
 		return s.bulkTagUpdate(item, req.Tags, true, actor, source, batchID)
@@ -477,7 +494,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 // validates against the collection schema, runs the open-children guard
 // (unless force), and writes via UpdateItemWithPreCheck — the same path
 // the single PATCH handler uses. Used by status moves and set-priority.
-func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, visibleIDs []string, actor, source, batchID string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, visibleIDs []string, actor, source, batchID string, droppedFields *[]string) (*models.Item, *bulkOpError) {
 	coll, err := s.store.GetCollection(item.CollectionID)
 	if err != nil || coll == nil {
 		return nil, &bulkOpError{message: "failed to load collection"}
@@ -491,14 +508,89 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	if item.Fields != "" && item.Fields != "{}" {
 		_ = json.Unmarshal([]byte(item.Fields), &fieldMap)
 	}
+	// The item's own stored values, before the caller's changes merge in. Held
+	// separately because "carried" and "supplied" get different treatment
+	// everywhere in this unit, and after the merge the map cannot tell them
+	// apart.
+	storedFields := make(map[string]any, len(fieldMap))
+	for k, v := range fieldMap {
+		storedFields[k] = v
+	}
 	for k, v := range changes {
 		fieldMap[k] = v
 	}
 
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
+	// Snapshot before validation, which INJECTS schema defaults: this door's
+	// relation pass looks only at the keys `changes` names, so a relation
+	// default validation fills in was persisted raw — never canonicalised and
+	// never checked against its target collection (codex round 3). The same
+	// late-arrival the migrate doors hit, reached by a different route.
+	relBefore := store.RelationKeysPresent(schema, fieldMap)
 	if err := items.ValidateFields(fieldMap, schema); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
+	}
+	// Referent validation for relation values (TASK-2878). Refuses like any
+	// other write — per item, so one bad referent fails its own item and not
+	// the batch — but ONLY over the keys this operation CHANGES.
+	//
+	// `fieldMap` is the item's STORED blob merged with `changes` a few lines
+	// above, so resolving all of it would re-litigate values the caller never
+	// touched and refuse them: an item carrying a legacy relation value would
+	// become permanently un-bulk-updatable, its status and priority frozen by
+	// a field the operation does not mention. Same rule as the fields_patch
+	// door, and for the same reason — `internal/items` accepted any string in
+	// a relation field for as long as the type has existed, so such items are
+	// not hypothetical.
+	//
+	// Read out of the COERCED map rather than out of `changes`, so the value
+	// resolved is the one that would be stored, and written back so a supplied
+	// ref is canonicalised to its id exactly as at every other write door.
+	suppliedRelations := make(map[string]any, len(changes))
+	for k := range changes {
+		if v, present := fieldMap[k]; present {
+			suppliedRelations[k] = v
+		}
+	}
+	relIssues, relErr := s.resolveRelationReferents(r, workspaceID, schema, suppliedRelations)
+	if relErr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if len(relIssues) > 0 {
+		return nil, &bulkOpError{message: relationIssuesMessage(relIssues), code: "validation_error"}
+	}
+	for k, v := range suppliedRelations {
+		fieldMap[k] = v
+	}
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(workspaceID, schema, fieldMap, relBefore)
+	if lateErr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if req := store.RequiredRelationIssues(schema, lateDropped); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
+	}
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r), schema, fieldMap,
+		notDefaultKeys(changes, storedFields))
+	if invErr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if req := store.RequiredRelationIssues(schema, invisibleDefaults); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
+	}
+	if all := append(lateDropped, invisibleDefaults...); droppedFields != nil && len(all) > 0 {
+		for _, ri := range all {
+			*droppedFields = append(*droppedFields, ri.Key)
+		}
 	}
 	if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, fieldMap); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "conflict"}
@@ -629,7 +721,7 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 // resolves to nothing — deliberately, so that case and an existing-but-hidden
 // target fail identically here rather than at different HTTP statuses (the
 // existence oracle from codex round 4). Hence the nil check below.
-func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection, batchID string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection, batchID string, droppedFields *[]string) (*models.Item, *bulkOpError) {
 	if targetColl == nil {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
 	}
@@ -666,12 +758,38 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// context around the item is unchanged and referential system
 	// metadata still describes something true (BUG-2674).
 	result := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields, items.SameWorkspace)
+	// `status` here is CALLER INPUT, and the relation classifier below has to
+	// be told so. The path merges exactly one field and used to pass
+	// `supplied=nil` on the grounds that it carries no per-field overrides —
+	// true of every field except this one. A destination schema is free to
+	// declare `status` as a relation, and then a value the caller typed was
+	// classified as carried: silently dropped instead of refused, and never
+	// checked for visibility (codex round 11).
+	suppliedByCaller := map[string]any{}
 	if req.Status != "" {
 		result.Fields["status"] = req.Status
+		suppliedByCaller["status"] = req.Status
 	}
-	if len(result.Errors) > 0 {
+	// Filtered against what the CALLER supplied, because result.Errors is
+	// computed by MigrateFields BEFORE any override exists (migrate.go:62).
+	//
+	// This is the defect PLAN-2357 DR-12 fixed at the SINGLE move door and
+	// nobody swept to this one: an override that SATISFIED a required
+	// destination field still 400'd. Reachable here since round 11 made
+	// `status` caller input — move an item whose source `status` is a select
+	// value into a destination whose `status` is a required relation, supply
+	// a perfectly good referent, and the move was refused for a field the
+	// request had just filled (codex round 19).
+	//
+	// Filtering rather than adopting the single door's "validate the merged
+	// map" shape, deliberately: ValidateFields below already covers the
+	// merged map, and switching this check to it would change the error CODE
+	// for a genuinely-missing required field from missing_required_fields to
+	// validation_error — a compatibility break for callers reading the code,
+	// to fix a defect that does not need it.
+	if remaining := requiredErrorsUnsatisfiedBy(result.Errors, suppliedByCaller); len(remaining) > 0 {
 		return nil, &bulkOpError{
-			message: "required fields missing: " + strings.Join(result.Errors, ", "),
+			message: "required fields missing: " + strings.Join(remaining, ", "),
 			code:    "missing_required_fields",
 		}
 	}
@@ -681,8 +799,102 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// doesn't allow (e.g. a status not in the target's options).
 	// Coerce strings to their declared types before validating (BUG-2850).
 	result.Fields = items.CoerceFields(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	// Relation referents on a bulk move (TASK-2878). Same door class as the
+	// single-item move: within the workspace, so a valid relation survives and
+	// only an unresolvable one is dropped. `req` carries no per-field
+	// overrides on this path — only `status`, merged above — so every relation
+	// value here is CARRIED, and nothing on this door can refuse. Passing nil
+	// for `supplied` says that rather than leaving it implied.
+	// The supplied half owes the visibility check, exactly as at the single
+	// move door. Round 11 made `status` supplied so the store classifier
+	// would REFUSE an unresolvable value rather than drop it; it did not
+	// carry across the other half of the supplied contract, which the store
+	// resolver structurally cannot provide — see
+	// refuseInvisibleRelationOverrides. This was the only one of the three
+	// MigrateRelationReferents call sites without it, so a caller who cannot
+	// see the target collection could name a live item in it and have the
+	// value stored (codex round 16).
+	if invisible, err := s.refuseInvisibleRelationOverrides(
+		r, workspaceID, workspaceRole(r), items.SchemaForMigratedFields(targetSchema),
+		suppliedByCaller); err != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	} else if len(invisible) > 0 {
+		return nil, &bulkOpError{message: relationIssuesMessage(invisible), code: "validation_error"}
+	}
+	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
+		suppliedByCaller, store.CarriedSourceValues(currentFields, result.Dropped),
+		store.RelationCarryWithinWorkspace)
+	if relErr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if len(relRefusals) > 0 {
+		// Reachable since round 11: `status` is caller input, so a destination
+		// schema declaring it as a relation makes this the ordinary write
+		// refusal. It was written as unreachable-but-kept, which is why the
+		// misclassification survived — a branch nobody can reach is a branch
+		// nobody checks.
+		return nil, &bulkOpError{message: relationIssuesMessage(relRefusals), code: "validation_error"}
+	}
+	for _, ri := range relDropped {
+		result.Dropped = append(result.Dropped, ri.Key)
+	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), result.Fields)
 	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
+	}
+	// Relation defaults ValidateFields just injected (codex round 2). After
+	// validation for the reason ResolveLateRelationDefaults documents.
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields, relBefore)
+	if lateErr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if cerr := s.collapseInvisibleRelationIssues(r, workspaceID, workspaceRole(r), lateDropped); cerr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	// A REQUIRED relation whose default did not resolve cannot be left as a
+	// drop: the key is deleted AFTER validation passed, so nothing re-checks
+	// it and the item would land with a required field absent, reported valid
+	// (codex round 3). Re-running validation is not the answer — it would
+	// re-inject the same broken default. There is no valid value, so this
+	// refuses.
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
+	}
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, workspaceID, workspaceRole(r),
+		items.SchemaForMigratedFields(targetSchema), result.Fields,
+		notDefaultKeys(suppliedByCaller, store.CarriedSourceValues(currentFields, result.Dropped)))
+	if invErr != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	}
+	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), invisibleDefaults); len(req) > 0 {
+		return nil, &bulkOpError{
+			message: "required fields missing: " + relationIssuesMessage(req),
+			code:    "missing_required_fields",
+		}
+	}
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
+		result.Dropped = append(result.Dropped, ri.Key)
+	}
+	// Hand the discarded keys back so the caller's activity row can name them
+	// (BUG-2674, which fixed only the SINGLE-item move). `result.Dropped` has
+	// been populated on this path since MigrateFields existed and NOTHING read
+	// it — a bulk move discarded field values with no record anywhere, which is
+	// the same silence that convention closed one door over. Filtered against
+	// the FINAL map for the reason handleMoveItem filters: a key MigrateFields
+	// listed may have been re-supplied or re-defaulted since, and reporting
+	// that would be a confident falsehood about data sitting on the item.
+	if droppedFields != nil {
+		*droppedFields = items.StillDropped(result.Dropped, result.Fields)
 	}
 
 	fieldsJSON, err := json.Marshal(result.Fields)
@@ -845,4 +1057,35 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 		return delta
 	}
 	return nil
+}
+
+// requiredErrorsUnsatisfiedBy drops the required-field errors MigrateFields
+// raised for keys the caller then supplied a value for.
+//
+// MigrateFields formats these as `required field %q has no value`, so the
+// match is against that exact rendering for each supplied key rather than a
+// substring of the message — a substring test would also match a key whose
+// name contains another key's name.
+func requiredErrorsUnsatisfiedBy(errs []string, supplied map[string]any) []string {
+	if len(errs) == 0 || len(supplied) == 0 {
+		return errs
+	}
+	satisfied := make(map[string]bool, len(supplied))
+	for k, v := range supplied {
+		if v == nil {
+			continue
+		}
+		if str, isStr := v.(string); isStr && strings.TrimSpace(str) == "" {
+			continue
+		}
+		satisfied[fmt.Sprintf("required field %q has no value", k)] = true
+	}
+	out := errs[:0:0]
+	for _, e := range errs {
+		if satisfied[e] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

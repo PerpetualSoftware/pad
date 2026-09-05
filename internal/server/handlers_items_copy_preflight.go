@@ -245,6 +245,48 @@ type ItemCopyPreflightCarried struct {
 }
 
 // ItemCopyPreflightDropped is one value that will not be copied.
+// The values ItemCopyPreflightDropped.Reason can carry that this package
+// originates. The relation reasons come from store.RelationIssueReasons()
+// instead — the store owns that vocabulary because it decides those failures.
+const (
+	dropReasonNoTargetField         = "no_target_field"
+	dropReasonIncompatibleType      = "incompatible_type"
+	dropReasonUndeclaredSourceField = "undeclared_source_field"
+	dropReasonAssigneeNotAMember    = "assignee_not_a_member"
+	dropReasonAgentRoleNotPortable  = "agent_role_not_portable"
+	dropReasonReferentNotPortable   = string(store.RelationTargetNotPortable)
+)
+
+// preflightDropReasons is the COMPLETE set of values this endpoint can put in
+// a dropped entry's `reason`.
+//
+// It exists to be enumerated, not read: the web dialog renders each of these
+// as a sentence and falls back to printing the raw enum, so a reason added
+// without a case there reaches a user as `undeclared_source_field`. That is
+// not hypothetical — `referent_not_portable` shipped in BUG-2674 and rendered
+// raw until TASK-2878, which is when a rare reason became a routine one.
+// TestCopyPreflightDropReasonsAreRenderedByTheDialog is the gate.
+func preflightDropReasons() []string {
+	out := []string{
+		dropReasonNoTargetField,
+		dropReasonIncompatibleType,
+		dropReasonUndeclaredSourceField,
+		dropReasonAssigneeNotAMember,
+		dropReasonAgentRoleNotPortable,
+	}
+	seen := make(map[string]bool, len(out))
+	for _, r := range out {
+		seen[r] = true
+	}
+	for _, r := range store.RelationIssueReasons() {
+		if !seen[string(r)] {
+			out = append(out, string(r))
+			seen[string(r)] = true
+		}
+	}
+	return out
+}
+
 type ItemCopyPreflightDropped struct {
 	Key   string `json:"key"`
 	Label string `json:"label,omitempty"`
@@ -569,9 +611,14 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// calls. It moved into internal/items in TASK-2365 because two
 	// implementations of "which keys are undeclared" is precisely the DR-6
 	// divergence this pair of endpoints exists to prevent (Codex round 17).
-	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
-		writeError(w, http.StatusBadRequest, "malformed_override",
-			"Destination collection has no field(s): "+summarizeKeys(bad))
+	//
+	// BOTH structural checks run here now, through the shared classifier the
+	// COPY also runs at the same point (lead ruling, day 58). The shape check
+	// used to happen far below, after validation; hoisting it changes nothing
+	// this door emits — same code, same message — and makes the ORDER the
+	// thing both doors share rather than a coincidence of layout.
+	if code, msg, ok := structuralOverrideError(input.FieldOverrides, targetSchema); !ok {
+		writeError(w, http.StatusBadRequest, code, msg)
 		return
 	}
 
@@ -592,13 +639,20 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// existing intra-workspace move path (Codex round 5). Migration
 	// matches on key and type only — plus the option list for a select.
 	// It does not consider a relation field's `collection`, `computed`,
-	// `terminal_options` or `unique_scope`. So a same-named `relation`
-	// field carries a SOURCE-workspace item id into the destination and
-	// is reported as a clean carry, when across workspaces it is a
-	// dangling reference. Reporting that here would require the preflight
-	// to model semantics MigrateFields does not, and the copy would then
-	// disagree with its own preview — the divergence DR-6 exists to
-	// prevent. It belongs in MigrateFields, for both callers at once.
+	// `terminal_options` or `unique_scope`.
+	//
+	// The RELATION half of that is closed as of TASK-2878, and not where
+	// this comment predicted. A same-named `relation` field used to carry a
+	// SOURCE-workspace item id into the destination and be reported as a
+	// clean carry, when across workspaces it is a dangling reference. The fix
+	// did NOT go into MigrateFields: that function is in `internal/items`,
+	// which is DB-free by construction, and deciding whether a string names a
+	// live item in a particular collection is a database question. It went
+	// into `store.MigrateRelationReferents`, called below by this endpoint and
+	// by `migrateCopyFields` — one function, so the preview and the copy still
+	// cannot disagree, which is what the original objection was actually
+	// about. `computed`, `terminal_options` and `unique_scope` remain
+	// unmodelled here.
 	//
 	// MigrateFields computes result.Errors before any override exists, so
 	// those errors are stale the instant an override merges in. They are
@@ -613,17 +667,47 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields,
 		items.ScopeFor(item.WorkspaceID, dst.WorkspaceID()))
 
+	// The source values that actually SURVIVED migration. Used for BOTH the
+	// origin label and the relation classifier, because both are answering the
+	// same question — "did this value come across?" — and `currentFields`
+	// answers a different one, "did the source declare this key?". When
+	// MigrateFields cannot convert a value it drops the key and its default
+	// loop refills it from the DESTINATION schema, so the key is still in the
+	// source map while the value in hand came from the destination (codex
+	// round 9).
+	carriedSource := store.CarriedSourceValues(currentFields, migrated.Dropped)
+
 	final := make(map[string]any, len(migrated.Fields)+len(input.FieldOverrides))
 	origin := make(map[string]string, len(final))
 	for k, v := range migrated.Fields {
 		final[k] = v
-		// MigrateFields' output is two things at once: values carried
-		// across from the source item, and destination-schema defaults it
-		// filled in for keys the source had nothing for. Presence in the
-		// SOURCE's field map is what separates them.
-		if _, fromSource := currentFields[k]; fromSource {
+		// MigrateFields' output is two things at once: values carried across
+		// from the source item, and destination-schema defaults it filled in
+		// for keys the source had nothing for. The label has to name where
+		// the FINAL value came from, and a source key holding `null` is the
+		// case where those two answers come apart (codex rounds 4 and 5):
+		//
+		//   - source value, non-nil            -> migrated
+		//   - source null, destination default -> default (the destination
+		//     chose it; validation treats null as missing and fills it in)
+		//   - source null, NO default          -> migrated. The null is what
+		//     carried, and nothing defaulted it, so `default` would name a
+		//     value the schema never declared
+		//
+		// The middle case was reported `migrated` until round 4 and the last
+		// was reported `default` until round 5 — one guard, wrong in both
+		// directions, because "was the key present" is not "where did the
+		// value come from".
+		sv, fromSource := carriedSource[k]
+		destDef, declared := targetDefs[k]
+		switch {
+		case fromSource && sv != nil:
 			origin[k] = "migrated"
-		} else {
+		case declared && destDef.Default != nil:
+			origin[k] = "default"
+		case fromSource:
+			origin[k] = "migrated"
+		default:
 			origin[k] = "default"
 		}
 	}
@@ -649,7 +733,145 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// preflight exists to PREDICT what the copy does, so a coercion on one
 	// side only would make it report a field as failing that the copy accepts.
 	final = items.CoerceFields(final, items.SchemaForMigratedFields(targetSchema))
+	// Relation referents (TASK-2878), through the SAME store function the
+	// mutating copy calls — which is the whole reason that function is in
+	// `store` rather than beside either caller. This endpoint and
+	// `migrateCopyFields` sit in different PACKAGES, and the note above the
+	// CoerceFields call says in as many words that this is how the two drift
+	// unnoticed; a preview that says "carried" while the copy drops is one
+	// request answered two ways, the exact DR-6 divergence this pair exists to
+	// prevent.
+	//
+	// POOL executor (`s.store.MigrateRelationReferents`, not the ...Q form):
+	// the preflight is a read-only dry run holding no transaction. The copy
+	// passes its tx for the reason recorded at that call site.
+	//
+	// Scope computed the same way MigrateFields was given it, a few lines
+	// above — not re-derived, so the two cannot disagree about whether this
+	// request crosses a boundary.
+	relMode := store.RelationCarryWithinWorkspace
+	if items.ScopeFor(item.WorkspaceID, dst.WorkspaceID()) == items.CrossWorkspace {
+		relMode = store.RelationCarryCrossWorkspace
+	}
+	// Visibility on the supplied half, against the DESTINATION and the
+	// caller's role THERE — dst.Role, never workspaceRole(r), which is the
+	// source's. See refuseInvisibleRelationOverrides.
+	if invisible, err := s.refuseInvisibleRelationOverrides(
+		r, dst.WorkspaceID(), dst.Role, items.SchemaForMigratedFields(targetSchema),
+		input.FieldOverrides); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if refuseRelationIssues(w, invisible) {
+		return
+	}
+	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
+		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final,
+		input.FieldOverrides, carriedSource, relMode)
+	if relErr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation referents: %w", relErr))
+		return
+	}
+	// An override the caller typed that names nothing is REFUSED here, not
+	// bucketed into needs_value — DR-12's disposition for an override with an
+	// invalid value, which is the branch immediately below. Same 400
+	// validation_error and the same sentence the copy returns, because both
+	// render through store.RelationIssuesMessage.
+	if refuseRelationIssues(w, relRefusals) {
+		return
+	}
+	// Carried values that could not survive join `migrated.Dropped` rather
+	// than a bucket of their own, so `StillDropped` filters them against the
+	// final map exactly as it filters a type-mismatch drop — including the
+	// case where the destination schema's own default re-populates the key,
+	// which makes it a carry again and must not also be reported dropped.
+	// `origin` loses its entry for the same reason: if a default does
+	// re-populate the key, its origin is the destination's default, not the
+	// source value that was just discarded.
+	// The CARRIED drops reach the caller too — `relationDropReason` below is
+	// rendered straight into `fields.dropped[].reason` — so they owe the same
+	// visibility collapse the late-default drops get a few lines down.
+	// `wrong_collection` is the reason that names a LIVE item, so without
+	// this a carried value pointing at one the caller cannot see reported
+	// differently from a value naming nothing: the existence oracle round 3
+	// closed on the main pass, reached by the carried path (codex round 16).
+	//
+	// This is the only site where a MigrateRelationReferents drop reason
+	// reaches a caller — move and bulk move report dropped KEYS and no
+	// reasons — so the class is one site, not five.
+	if cerr := s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, relDropped); cerr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: carried relation visibility: %w", cerr))
+		return
+	}
+	relationDropReason := make(map[string]string, len(relDropped))
+	for _, ri := range relDropped {
+		migrated.Dropped = append(migrated.Dropped, ri.Key)
+		relationDropReason[ri.Key] = string(ri.Reason)
+		delete(origin, ri.Key)
+	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), final)
 	issues := items.ValidateFieldsDetailed(final, items.SchemaForMigratedFields(targetSchema))
+	// Relation defaults ValidateFieldsDetailed just injected (codex round 2).
+	// The copy runs the identical pass at the same point; a preview that
+	// reported an unresolved default as carrying while the copy dropped it
+	// would be the DR-6 divergence in a new place.
+	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
+		dst.WorkspaceID(), items.SchemaForMigratedFields(targetSchema), final, relBefore)
+	if lateErr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: resolve relation defaults: %w", lateErr))
+		return
+	}
+	if cerr := s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, lateDropped); cerr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: relation issue visibility: %w", cerr))
+		return
+	}
+	// A REQUIRED relation whose default did not resolve becomes a needs_value
+	// row rather than a drop, so the preview says what the copy will do:
+	// the copy REFUSES this request, and `valid` must be false (codex round
+	// 3). Reported through the same issues slice the required check feeds, so
+	// it lands in the same bucket a genuinely missing required field does.
+	for _, ri := range store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped) {
+		issues = append(issues, items.FieldIssue{
+			Key:     ri.Key,
+			Kind:    items.IssueRequired,
+			Message: ri.Message(),
+		})
+	}
+	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, dst.WorkspaceID(), dst.Role,
+		items.SchemaForMigratedFields(targetSchema), final,
+		// `carriedSource` is the PRE-relation-pass snapshot and is the wrong
+		// input here. It is right for the origin label and for the relation
+		// classifier, which ask "did this value come across from the source?"
+		// — a different question from "is the value in hand now a destination
+		// default?". Recomputing against `migrated.Dropped`, which the loop
+		// above extended with the relation pass's drops, answers the second
+		// one: a key that pass dropped is no longer carried, so the default
+		// ValidateFields put in its place is checked rather than exempted.
+		//
+		// Round 15 reported this and every mutant survived, because the probe
+		// used a source value that RESOLVED — which the relation pass never
+		// drops, so the two sets were identical by construction. Round 16
+		// supplied the shape that differs: a non-nil DANGLING source value,
+		// under which the unfixed form hands a caller who cannot see the
+		// target collection the id of the item the default names.
+		notDefaultKeys(input.FieldOverrides,
+			store.CarriedSourceValues(currentFields, migrated.Dropped)))
+	if invErr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: relation default visibility: %w", invErr))
+		return
+	}
+	for _, ri := range store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), invisibleDefaults) {
+		issues = append(issues, items.FieldIssue{Key: ri.Key, Kind: items.IssueRequired, Message: ri.Message()})
+	}
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
+		migrated.Dropped = append(migrated.Dropped, ri.Key)
+		relationDropReason[ri.Key] = string(ri.Reason)
+		delete(origin, ri.Key)
+	}
 
 	// DR-12's other half: an override whose VALUE is invalid is rejected,
 	// not bucketed. It is the caller's own input and there is nothing for
@@ -783,8 +1005,23 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// what happened, the two buckets disagreeing about one key — is the
 	// preflight lying to the dialog it exists to populate.
 	for _, key := range sortedDroppedKeys(items.StillDropped(migrated.Dropped, final), sourceSchema.Fields) {
-		reason := "no_target_field"
+		reason := dropReasonNoTargetField
 		label := key
+		// A relation value whose referent did not survive (TASK-2878). The
+		// reason is the resolver's own — `referent_not_portable` for a carried
+		// value on a cross-workspace copy, or the specific lookup failure
+		// within a workspace — because the generic no_target_field is simply
+		// false here: the destination DOES declare the key, and reporting a
+		// missing field would send the reader to fix a schema that is fine.
+		if relReason, isRelation := relationDropReason[key]; isRelation {
+			if def, exists := targetDefs[key]; exists && def.Label != "" {
+				label = def.Label
+			}
+			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
+				Key: key, Label: label, Kind: "field", Reason: relReason,
+			})
+			continue
+		}
 		// A reserved key in Dropped can only have got there one way: it is
 		// referential and this is a cross-workspace copy. The generic
 		// no_target_field would be actively misleading — no schema declares
@@ -792,7 +1029,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// explains nothing about why the value is being left behind.
 		if models.IsReservedItemField(key) {
 			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
-				Key: key, Label: reservedFieldLabel(key), Kind: "field", Reason: "referent_not_portable",
+				Key: key, Label: reservedFieldLabel(key), Kind: "field", Reason: dropReasonReferentNotPortable,
 			})
 			continue
 		}
@@ -804,9 +1041,9 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			// declared — MigrateFields then has no source type to convert
 			// from and drops the value unconditionally, even when the two
 			// keys would otherwise have been compatible.
-			reason = "incompatible_type"
+			reason = dropReasonIncompatibleType
 			if !declaredBySource {
-				reason = "undeclared_source_field"
+				reason = dropReasonUndeclaredSourceField
 			}
 			if def.Label != "" {
 				label = def.Label
@@ -832,7 +1069,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			resp.Warnings.DroppedAssignee = true
 			resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
 				Key: "assigned_user", Label: "Assignee", Kind: "assignment",
-				Reason: "assignee_not_a_member",
+				Reason: dropReasonAssigneeNotAMember,
 			})
 		}
 	}
@@ -840,7 +1077,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		resp.Warnings.DroppedAgentRole = true
 		resp.Fields.Dropped = append(resp.Fields.Dropped, ItemCopyPreflightDropped{
 			Key: "agent_role", Label: "Agent role", Kind: "assignment",
-			Reason: "agent_role_not_portable",
+			Reason: dropReasonAgentRoleNotPortable,
 		})
 	}
 

@@ -178,6 +178,11 @@ func (e *CopyPreCheckError) Error() string {
 func (e *CopyPreCheckError) Unwrap() error { return e.Err }
 
 // CrossWorkspaceCopyRequest is the complete input to CopyItemAcrossWorkspaces.
+// RelationVisibilityFunc reports whether the requester may see item, using the
+// caller-supplied executor so the answer comes from inside the copy's own
+// transaction rather than from a pool connection that cannot see its writes.
+type RelationVisibilityFunc func(q Queryer, workspaceID string, item *models.Item) (bool, error)
+
 type CrossWorkspaceCopyRequest struct {
 	// SourceItemID is the item in workspace A. The source workspace is
 	// DERIVED from it rather than supplied — an item's workspace is not the
@@ -195,6 +200,24 @@ type CrossWorkspaceCopyRequest struct {
 	// (DR-12 — MigrateFields computes its Errors before any override exists,
 	// so those errors are stale the moment an override lands).
 	FieldOverrides map[string]any
+
+	// RelationVisibility answers "may the requester see this item?" ON THE
+	// COPY'S OWN CONNECTION, so the copy can apply the visibility rule to a
+	// late-resolved destination default while it holds both workspaces'
+	// advisory locks (night-11 finding; lead ruling day-58 shape (b)).
+	//
+	// It is a callback rather than a store method because visibility is
+	// REQUEST-SCOPED — it needs the requesting user, their role in the
+	// DESTINATION, and whether the call is bearer-authenticated — and `store`
+	// cannot import `server`. The server passes a closure over
+	// `checkItemVisibleQ`, which exists parameterised over its executor for
+	// exactly this reason (BUG-2409).
+	//
+	// NIL MEANS NO CHECK, and that is deliberate: internal callers with no
+	// request (tests, migrations, the seeder) have no requester whose
+	// visibility could be evaluated, and inventing one would be worse than
+	// skipping it. Every HTTP door supplies it.
+	RelationVisibility RelationVisibilityFunc
 
 	// Actor is the user performing the copy. It becomes every cloned
 	// attachment's uploaded_by (DR-11: never the source uploader, who may not
@@ -621,7 +644,17 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// computes it the same way — a divergence here would have the preview
 	// promising a carry the copy drops, which DR-6 exists to prevent.
 	scope := items.ScopeFor(sourceWorkspaceID, req.TargetWorkspaceID)
-	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides, scope)
+	// The TRANSACTION is the executor, not the pool. This function now reads
+	// (relation referents, TASK-2878), and `copyItemAcrossWorkspacesTx` has
+	// held a transaction since its second statement — a pool read from inside
+	// it can wait for a free connection while every pooled connection is
+	// itself blocked on this transaction's locks, which is the starvation
+	// shape BUG-2409 fixed for the attachment planner and this repo keeps a
+	// deterministic test for.
+	//
+	// The DESTINATION workspace id, not the source's: a supplied override is
+	// a write into workspace B and has to name something that exists THERE.
+	finalFields, dropped, err := s.migrateCopyFields(tx, req.TargetWorkspaceID, source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides, scope, req.RelationVisibility)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,7 +1078,7 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 //
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
 // migration dropped.
-func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any, scope items.MigrateScope) (map[string]any, []string, error) {
+func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID, sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any, scope items.MigrateScope, canSee RelationVisibilityFunc) (map[string]any, []string, error) {
 	var sourceSchema, targetSchema models.CollectionSchema
 	if err := json.Unmarshal([]byte(sourceSchemaJSON), &sourceSchema); err != nil {
 		return nil, nil, fmt.Errorf("copy item across workspaces: parse source schema: %w", err)
@@ -1089,8 +1122,114 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 	// note there; these two live in different PACKAGES, which is exactly how
 	// they would drift unnoticed.
 	migrated.Fields = items.CoerceFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema))
+	// Relation referents (TASK-2878) — the eighth and last coercion door, and
+	// the only one that refuses from inside `store`.
+	//
+	// A migrate door, so PROVENANCE decides rather than the door: a SUPPLIED
+	// override is an ordinary write and an unresolvable one is refused; a
+	// CARRIED value was asserted by nobody, so it is dropped and reported
+	// through the same `dropped_fields` channel BUG-2674 established. The
+	// alternative — refusing carried values — would make every legacy item
+	// uncopyable, and `internal/items` has accepted any string for a relation
+	// all along, so "legacy" is most of them.
+	//
+	// MODE COMES FROM `scope`, the same value MigrateFields was given, rather
+	// than a second flag derived here. Two independent answers to "is this
+	// crossing a workspace boundary" is how one request gets migrated one way
+	// and validated the other; this path also serves a copy whose target IS
+	// the source workspace, where relations resolve and survive exactly as
+	// they do on a move.
+	mode := RelationCarryWithinWorkspace
+	if scope == items.CrossWorkspace {
+		mode = RelationCarryCrossWorkspace
+	}
+	relRefusals, relDropped, relErr := s.MigrateRelationReferentsQ(q, destWorkspaceID,
+		items.SchemaForMigratedFields(targetSchema), migrated.Fields, overrides,
+		CarriedSourceValues(currentFields, migrated.Dropped), mode)
+	if relErr != nil {
+		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation referents: %w", relErr)
+	}
+	if len(relRefusals) > 0 {
+		// The same 400 validation_error the preflight's refuseRelationIssues
+		// emits, through the channel this function already uses for a failed
+		// destination validation — so the copy and its preview refuse one
+		// request with one code and one sentence.
+		return nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(relRefusals))}
+	}
+	// Appended to Dropped rather than reported separately: StillDropped below
+	// filters this list against the FINAL map, and MigrateRelationReferentsQ
+	// has already deleted these keys from it, so they survive that filter and
+	// reach `warnings.dropped_fields` exactly as a type-mismatch drop does.
+	// Kept separately from `migrated.Dropped` because these keys need to
+	// survive the StillDropped filter below even when a destination default
+	// refills them — see the comment at the return.
+	carriedRelationDrops := make([]string, 0, len(relDropped))
+	for _, ri := range relDropped {
+		migrated.Dropped = append(migrated.Dropped, ri.Key)
+		carriedRelationDrops = append(carriedRelationDrops, ri.Key)
+	}
+	// Snapshot AFTER the pass above and BEFORE validation: what this needs to
+	// identify is exactly what VALIDATION adds — which includes a default the
+	// pass just deleted as unresolvable and validation puts straight back.
+	// Snapshotting before the pass would treat that key as already examined
+	// and skip it, which is the arrangement that hid it.
+	relBefore := RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), migrated.Fields)
 	if err := items.ValidateFields(migrated.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
 		return nil, nil, &FieldValidationError{Err: err}
+	}
+	// Relation defaults ValidateFields just injected, which the pass above
+	// could not have seen (codex round 2).
+	lateDropped, lateErr := s.ResolveLateRelationDefaultsQ(q, destWorkspaceID,
+		items.SchemaForMigratedFields(targetSchema), migrated.Fields, relBefore)
+	if lateErr != nil {
+		return nil, nil, fmt.Errorf("copy item across workspaces: resolve relation defaults: %w", lateErr)
+	}
+	// A REQUIRED relation whose default did not resolve cannot be left as a
+	// drop: the key is deleted AFTER validation passed, so nothing re-checks
+	// it and the item would land with a required field absent, reported valid
+	// (codex round 3). Re-running validation is not the answer — it would
+	// re-inject the same broken default. There is no valid value, so this
+	// refuses.
+	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
+		return nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
+	}
+	// THE EIGHTH DOOR'S VISIBILITY PASS (night-11 finding; lead ruling day-58).
+	//
+	// Every other door runs this over its late-resolved destination defaults.
+	// This one did not, and could not as written: the pass was a *Server
+	// method needing the request, and this door resolves its defaults inside
+	// the transaction. So a caller who could not see the destination
+	// collection the default points into had the copy STORE the default's
+	// canonical id and hand it back in the 201 — while the PREFLIGHT, for the
+	// identical request, reported the key dropped. One request, two answers,
+	// which is the DR-6 divergence this unit exists to prevent.
+	//
+	// Round 15's sweep said "applied at all five late-default sites, per
+	// CONVE-18" and it was true of the sites reachable from `internal/server`.
+	// The class is one wider than the package. Same lesson as the rest of this
+	// unit — a rule applied at one door and not its siblings — one level up,
+	// at the package boundary rather than the call site.
+	//
+	// `notDefaultKeys` gets the carried set recomputed against the ALREADY
+	// EXTENDED `migrated.Dropped`, not a pre-relation-pass snapshot, for the
+	// reason the preflight's own call site records: a key the relation pass
+	// dropped is no longer carried, so the default put in its place is checked
+	// rather than exempted.
+	invisibleDefaults, invErr := s.DropInvisibleRelationDefaultsQ(q, destWorkspaceID, canSee,
+		items.SchemaForMigratedFields(targetSchema), migrated.Fields,
+		NotDefaultKeys(overrides, CarriedSourceValues(currentFields, migrated.Dropped)))
+	if invErr != nil {
+		return nil, nil, fmt.Errorf("copy item across workspaces: relation default visibility: %w", invErr)
+	}
+	// A REQUIRED relation whose default was dropped for visibility cannot be
+	// left as a drop, for the same reason the unresolvable case above cannot:
+	// the key is deleted AFTER validation passed, so nothing re-checks it and
+	// the item would land with a required field absent.
+	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), invisibleDefaults); len(req) > 0 {
+		return nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
+	}
+	for _, ri := range append(lateDropped, invisibleDefaults...) {
+		migrated.Dropped = append(migrated.Dropped, ri.Key)
 	}
 	// Filtered against the FINAL map, matching the preflight (Codex round 3).
 	// migrated.Dropped is computed before overrides merge and before defaults
@@ -1098,7 +1237,39 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 	// response's warnings.dropped_fields — so without this the preview said
 	// "carried", the copy PERSISTED the key, and the copy's own response
 	// still reported it dropped. Three surfaces, two answers, one request.
-	return migrated.Fields, items.StillDropped(migrated.Dropped, migrated.Fields), nil
+	stillDropped := items.StillDropped(migrated.Dropped, migrated.Fields)
+	// EXCEPT for a CARRIED RELATION value that a destination default then
+	// refilled (lead ruling, day 58). Round 3's filter is right about a key
+	// the caller can see is populated — but here the SOURCE'S value was
+	// genuinely discarded and what sits in the key is a different value the
+	// destination chose. Suppressing the row told the user nothing was lost
+	// when something was.
+	//
+	// The preflight already discloses it: its carried row for that key reads
+	// `"from":"default"`, which says the value did not come across. So this
+	// adds no information the pair did not already have between them — it
+	// makes the COPY say it too, which is the DR-6 agreement this unit is
+	// about.
+	//
+	// Scoped to relation drops on purpose. A key MigrateFields dropped for a
+	// type or schema mismatch and a default refilled is round 3's case
+	// unchanged, and reporting it would re-open exactly what that filter
+	// closed.
+	present := make(map[string]bool, len(stillDropped))
+	for _, k := range stillDropped {
+		present[k] = true
+	}
+	for _, k := range carriedRelationDrops {
+		if present[k] {
+			continue
+		}
+		if v, refilled := migrated.Fields[k]; refilled && v != nil {
+			stillDropped = append(stillDropped, k)
+			present[k] = true
+		}
+	}
+	sort.Strings(stillDropped)
+	return migrated.Fields, stillDropped, nil
 }
 
 // carryAssigneeTx implements DR-8's assignee rule: the source's assignee

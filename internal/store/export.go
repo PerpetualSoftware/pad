@@ -850,11 +850,38 @@ func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string
 	if fieldsJSON == "" {
 		return "{}"
 	}
+	// WHOLE-VALUE matches only, never a substring (codex round 17).
+	//
+	// This was `strings.ReplaceAll` over the RAW id, which corrupts a value
+	// that merely CONTAINS one: with a bundle carrying ids `c-1` and a
+	// relation value `"c-10"`, the value came out as `<new-id-for-c-1>0` — a
+	// string that references nothing and existed on neither side. Bundle ids
+	// are whatever the exporting instance had and an import accepts a
+	// caller-supplied file, so this is not confined to well-formed UUIDs.
+	//
+	// It matters since the carry posture: an unresolvable relation value is
+	// deliberately imported VERBATIM rather than dropped, and verbatim is the
+	// whole promise. A partial rewrite breaks it silently.
+	//
+	// Matching the QUOTED JSON token is what makes it whole-value: `"c-1"`
+	// does not occur inside `"c-10"`, and the form still reaches ids inside
+	// arrays, which a multi-valued relation needs.
+	//
+	// DELIBERATELY NOT an unmarshal/marshal walk. That was this fix's first
+	// version and the full suite caught it: re-encoding rewrites the WHOLE
+	// blob, so a stored `\ufffd` escape came back as the literal replacement
+	// character and broke the NUL-repair import test, which asserts on the
+	// stored bytes. Every byte this function does not deliberately change has
+	// to survive it, and only a textual substitution guarantees that.
+	//
+	// I engineered a fixture AROUND this hazard in the import carry test
+	// rather than asking whether the product had it. It did.
 	result := fieldsJSON
 	for oldID, newID := range itemMap {
-		if oldID != "" && newID != "" {
-			result = strings.ReplaceAll(result, oldID, newID)
+		if oldID == "" || newID == "" {
+			continue
 		}
+		result = strings.ReplaceAll(result, `"`+oldID+`"`, `"`+newID+`"`)
 	}
 	return result
 }

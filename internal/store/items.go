@@ -867,12 +867,27 @@ func parseItemRef(s string) (string, int, bool) {
 			return "", 0, false
 		}
 		num = num*10 + int(c-'0')
+		// OVERFLOW IS A WRONG ANSWER, NOT A BIG ONE (TASK-2878, codex round
+		// 12). This accumulates into a machine int with no bound, so
+		// "TASK-18446744073709551617" wraps to 1 and resolves to TASK-1 — a
+		// caller-supplied ref canonicalising to a DIFFERENT item, which is
+		// exactly the corruption relation referent validation exists to stop.
+		// The cap is far above any real item number and below the wrap point,
+		// so a value past it is rejected rather than silently reinterpreted.
+		if num > maxItemNumber {
+			return "", 0, false
+		}
 	}
 	if num == 0 {
 		return "", 0, false
 	}
 	return prefix, num, true
 }
+
+// maxItemNumber bounds the numeric half of an issue ref. Item numbers are
+// per-workspace sequence values; a workspace reaching two billion items has
+// problems this constant is not the place to solve.
+const maxItemNumber = 1 << 31
 
 // parseItemNumber parses a bare numeric string (e.g. "843") into a positive
 // item number. Returns false for empty strings, non-digit input, zero, or

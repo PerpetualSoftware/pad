@@ -943,6 +943,42 @@ user hunting for an item that provably does not exist.
 				return 'the assignee is not a member of the destination';
 			case 'agent_role_not_portable':
 				return 'agent roles are workspace-local';
+			// BUG-2674 added this reason server-side and nothing here learned it,
+			// so it rendered through the fallback as the raw enum string. Rare
+			// while only `github_pr` produced it; routine since TASK-2878, which
+			// emits it for every carried relation value on a cross-workspace copy.
+			//
+			// NEUTRAL WORDING, for the same reason `not_found` below has it,
+			// and it took a second reviewer to see that the same rule applied
+			// here (codex round 18). This reason is emitted for EVERY carried
+			// cross-workspace relation WITHOUT resolving the target, so the
+			// value may name a live item, a deleted one, one the caller cannot
+			// see, or nothing at all — and `github_pr` reaches it too, where
+			// the referent is not in any workspace. "It points at something in
+			// the source workspace" asserted both existence and location, and
+			// the response says neither.
+			case 'referent_not_portable':
+				return 'this reference cannot be carried to the destination';
+			// The three same-workspace referent failures (TASK-2878). Worth
+			// separate sentences: "no such item" and "wrong collection" send the
+			// reader to different fixes, and a missing target is a schema problem
+			// rather than anything about this item.
+			// NEUTRAL WORDING, deliberately. `not_found` is what the server
+			// collapses a hidden target to as well as a missing one — telling
+			// them apart is the existence oracle it exists to prevent — so a
+			// sentence asserting non-existence is both wrong for half the
+			// cases and a claim the response cannot support.
+			case 'not_found':
+				return 'the item it refers to could not be found';
+			case 'wrong_collection':
+				return 'it refers to an item outside the field’s collection';
+			// Covers both "no target collection declared" and "the declared
+			// collection is not in this workspace"; the first wording named
+			// only the former and misdiagnosed the latter.
+			case 'target_missing':
+				return 'the field has no valid collection to link to';
+			case 'invalid_shape':
+				return 'the destination field’s default is not a valid reference';
 			default:
 				return reason;
 		}
