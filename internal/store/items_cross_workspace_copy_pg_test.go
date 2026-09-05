@@ -68,8 +68,14 @@ import (
 // with:
 //
 //	docker compose -f docker-compose.test.yml up -d --wait
-//	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" \
+//	PORT=$(docker compose -f docker-compose.test.yml port postgres 5432 | sed 's/.*://')
+//	PAD_TEST_POSTGRES_URL="postgres://pad:pad@127.0.0.1:$PORT/pad?sslmode=disable" \
 //	  go test ./internal/store/ -run 'CrossWorkspaces_Opposing|JointlyExceedQuota' -count=1
+//
+// The port is READ BACK, not hardcoded (TASK-2708): the compose file lets
+// Docker assign it, so several worktrees can run the Postgres leg at once.
+// This recipe said 5445 until that change; pasting it now would connect to
+// whatever else happens to be on that port, or to nothing.
 //
 // MUTATION A — remove the outer acquisition entirely.
 //
