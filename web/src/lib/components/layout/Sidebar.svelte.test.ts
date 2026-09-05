@@ -301,7 +301,8 @@ describe('sidebar — GitHub repo link', () => {
 		for (const rel of [
 			'src/lib/components/layout/Sidebar.svelte',
 			'src/lib/components/layout/UserMenuResources.svelte',
-			'src/lib/components/auth/AuthFooter.svelte'
+			'src/lib/components/auth/AuthFooter.svelte',
+			'src/lib/components/auth/AuthHeader.svelte'
 		]) {
 			const source = readFileSync(join(root, rel), 'utf8');
 			expect(source, `${rel} hardcodes the repo URL`).not.toContain(
