@@ -947,8 +947,18 @@ user hunting for an item that provably does not exist.
 			// so it rendered through the fallback as the raw enum string. Rare
 			// while only `github_pr` produced it; routine since TASK-2878, which
 			// emits it for every carried relation value on a cross-workspace copy.
+			//
+			// NEUTRAL WORDING, for the same reason `not_found` below has it,
+			// and it took a second reviewer to see that the same rule applied
+			// here (codex round 18). This reason is emitted for EVERY carried
+			// cross-workspace relation WITHOUT resolving the target, so the
+			// value may name a live item, a deleted one, one the caller cannot
+			// see, or nothing at all — and `github_pr` reaches it too, where
+			// the referent is not in any workspace. "It points at something in
+			// the source workspace" asserted both existence and location, and
+			// the response says neither.
 			case 'referent_not_portable':
-				return 'it points at something in the source workspace';
+				return 'this reference cannot be carried to the destination';
 			// The three same-workspace referent failures (TASK-2878). Worth
 			// separate sentences: "no such item" and "wrong collection" send the
 			// reader to different fixes, and a missing target is a schema problem

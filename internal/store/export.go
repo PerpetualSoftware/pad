@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -851,59 +852,36 @@ func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string
 	}
 	// WHOLE-VALUE matches only, never a substring (codex round 17).
 	//
-	// This was `strings.ReplaceAll` over the raw JSON text for every id in the
-	// bundle, which corrupts a value that merely CONTAINS one: with a bundle
-	// carrying ids `c-1` and a relation value `"c-10"`, the value came out as
-	// `<new-id-for-c-1>0` — a string that references nothing and that the
-	// importer then stored as though it were the user's data. Bundle ids are
-	// whatever the exporting instance had and an import accepts a
+	// This was `strings.ReplaceAll` over the RAW id, which corrupts a value
+	// that merely CONTAINS one: with a bundle carrying ids `c-1` and a
+	// relation value `"c-10"`, the value came out as `<new-id-for-c-1>0` — a
+	// string that references nothing and existed on neither side. Bundle ids
+	// are whatever the exporting instance had and an import accepts a
 	// caller-supplied file, so this is not confined to well-formed UUIDs.
 	//
-	// It matters more since the carry posture: an unresolvable relation value
-	// is deliberately IMPORTED VERBATIM rather than dropped, and "verbatim" is
-	// the whole promise. A partial rewrite breaks it silently and produces a
-	// value that never existed on either side.
+	// It matters since the carry posture: an unresolvable relation value is
+	// deliberately imported VERBATIM rather than dropped, and verbatim is the
+	// whole promise. A partial rewrite breaks it silently.
 	//
-	// The same text substitution also rewrote ids appearing inside ordinary
-	// text values, which was never the intent — the remap exists to repoint
-	// RELATIONS at their clones. Whole-value matching gets both.
+	// Matching the QUOTED JSON token is what makes it whole-value: `"c-1"`
+	// does not occur inside `"c-10"`, and the form still reaches ids inside
+	// arrays, which a multi-valued relation needs.
+	//
+	// DELIBERATELY NOT an unmarshal/marshal walk. That was this fix's first
+	// version and the full suite caught it: re-encoding rewrites the WHOLE
+	// blob, so a stored `\ufffd` escape came back as the literal replacement
+	// character and broke the NUL-repair import test, which asserts on the
+	// stored bytes. Every byte this function does not deliberately change has
+	// to survive it, and only a textual substitution guarantees that.
 	//
 	// I engineered a fixture AROUND this hazard in the import carry test
 	// rather than asking whether the product had it. It did.
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(fieldsJSON), &decoded); err != nil {
-		// Not an object we can walk. Left exactly as-is rather than
-		// substring-rewritten: an unparseable blob is not a thing to guess at.
-		return fieldsJSON
-	}
-	for k, v := range decoded {
-		decoded[k] = remapFieldValue(v, itemMap)
-	}
-	out, err := json.Marshal(decoded)
-	if err != nil {
-		return fieldsJSON
-	}
-	return string(out)
-}
-
-// remapFieldValue rewrites a value that IS an old item id, and recurses into
-// arrays so a multi-valued relation is covered. Anything else — a number, a
-// bool, a nested object, a string that merely contains an id — is returned
-// unchanged.
-func remapFieldValue(v any, itemMap map[string]string) any {
-	switch t := v.(type) {
-	case string:
-		if newID, ok := itemMap[t]; ok && t != "" && newID != "" {
-			return newID
+	result := fieldsJSON
+	for oldID, newID := range itemMap {
+		if oldID == "" || newID == "" {
+			continue
 		}
-		return t
-	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = remapFieldValue(e, itemMap)
-		}
-		return out
-	default:
-		return v
+		result = strings.ReplaceAll(result, `"`+oldID+`"`, `"`+newID+`"`)
 	}
+	return result
 }

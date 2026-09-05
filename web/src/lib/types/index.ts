@@ -696,6 +696,36 @@ export interface Item {
 	convention?: ItemConventionMetadata;
 	implementation_notes?: ItemImplementationNote[];
 	decision_log?: ItemDecisionLogEntry[];
+	/**
+	 * Advisory notes about a write that SUCCEEDED. Present on create and
+	 * update responses only — never on a read, and never stored — so
+	 * `undefined` is the normal case and says nothing went unreported.
+	 *
+	 * The Go side has carried this since BUG-2850 and TASK-2878 added two
+	 * more members; nothing here mirrored it, so typed code could not reach
+	 * a warning the server was already sending (codex round 18).
+	 */
+	warnings?: ItemWriteWarnings;
+}
+
+/**
+ * Mirrors `models.ItemWriteWarnings`. Every member is optional because the Go
+ * struct marks each `omitempty`: an absent key means "nothing to report for
+ * this kind", not "unknown".
+ */
+export interface ItemWriteWarnings {
+	/** Field keys stored in the blob that the collection's schema does not declare (BUG-2850). */
+	undeclared_fields?: string[];
+	/** Keys the write DISCARDED — a relation whose referent did not resolve, a value the destination schema has no home for (TASK-2878). */
+	dropped_fields?: string[];
+	/**
+	 * Keys KEPT with a value that does not resolve to a live item. Import only:
+	 * an import must carry junk relation values rather than refuse them, or no
+	 * artifact written before referent validation could be imported. Distinct
+	 * from `dropped_fields` — the value survives — and from `undeclared_fields`,
+	 * which is about the key rather than what it points at.
+	 */
+	unresolved_relations?: string[];
 }
 
 // ─── Items index (skinny projection) ─────────────────────────────────────────
