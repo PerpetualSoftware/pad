@@ -1,7 +1,26 @@
 # PostgreSQL for integration tests.
-# Usage: docker compose -f docker-compose.test.yml up -d
-#        make test-pg
-#        docker compose -f docker-compose.test.yml down -v
+# Usage: make test-pg          (starts, runs, tears down)
+#        make test-pg-down     (tear down a stack left behind)
+#
+# THE HOST PORT IS EPHEMERAL AND THAT IS THE POINT (TASK-2708). It used to be
+# hardcoded to 5445, which let exactly ONE worktree run the Postgres leg at a
+# time: a second `make test-pg` failed with "port is already allocated", and a
+# stack orphaned by a removed worktree blocked the port for everyone until
+# somebody found and reaped it. With concurrent worktrees the normal operating
+# mode, that produced three incidents in one afternoon — including a run that
+# exited 2 having executed NO TESTS, which reads a lot like green at a glance.
+#
+# Docker assigns the host port; the Makefile reads it back with
+# `docker compose port postgres 5432` and builds PAD_TEST_POSTGRES_URL from it.
+# Do not reintroduce a fixed host port here, and do not hardcode one in a
+# script — derive it, or you have rebuilt the collision.
+#
+# The Makefile also sets an EXPLICIT compose project name, keyed to the
+# checkout's absolute path. Compose's default is the directory BASENAME, which
+# is per-worktree in the usual layout but NOT unique — two checkouts sharing a
+# basename would share a stack, and one `down -v` would tear down the other's
+# database mid-run. An earlier version of this comment claimed the default was
+# already sufficient; it is not, and the Makefile no longer relies on it.
 
 services:
   postgres:
@@ -11,7 +30,9 @@ services:
       POSTGRES_PASSWORD: pad
       POSTGRES_DB: pad
     ports:
-      - "5445:5432"
+      # No host side: Docker picks a free port. Read it back rather than
+      # assuming one (see the header).
+      - "5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pad"]
       interval: 2s

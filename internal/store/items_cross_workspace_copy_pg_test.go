@@ -67,9 +67,19 @@ import (
 // substantiate them, which is the point of writing down the exact edit. Re-run
 // with:
 //
-//	docker compose -f docker-compose.test.yml up -d --wait
-//	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" \
+//	P=$(make test-pg-project)
+//	docker compose -p $P -f docker-compose.test.yml up -d --wait
+//	PORT=$(docker compose -p $P -f docker-compose.test.yml port postgres 5432 | sed 's/.*://')
+//	PAD_TEST_POSTGRES_URL="postgres://pad:pad@127.0.0.1:$PORT/pad?sslmode=disable" \
 //	  go test ./internal/store/ -run 'CrossWorkspaces_Opposing|JointlyExceedQuota' -count=1
+//	docker compose -p $P -f docker-compose.test.yml down -v
+//
+// The port is READ BACK and the project name is EXPLICIT (TASK-2708). This
+// recipe hardcoded 5445 until that change, so pasting it now would reach
+// whatever else is on that port, or nothing. The `-p` is not decoration
+// either: without it compose falls back to the directory basename, and two
+// checkouts sharing a basename would share this stack — which is the
+// cross-worktree teardown the change exists to prevent.
 //
 // MUTATION A — remove the outer acquisition entirely.
 //

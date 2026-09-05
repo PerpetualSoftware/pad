@@ -1,4 +1,4 @@
-.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install check vuln web-check web-test web-audit
+.PHONY: build test test-pg test-pg-down test-pg-project dev clean web dev-web serve restart lint install check vuln web-check web-test web-audit
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
@@ -58,16 +58,162 @@ test:
 	go test -timeout=45m ./... -v
 
 # Run tests against PostgreSQL (starts a container automatically).
-# Uses port 5445 to avoid conflicts with any local PostgreSQL.
-test-pg:
-	docker compose -f docker-compose.test.yml up -d --wait
-	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" go test -timeout=45m ./... -v -count=1; \
-		EXIT_CODE=$$?; \
-		docker compose -f docker-compose.test.yml down -v; \
-		exit $$EXIT_CODE
+#
+# THE HOST PORT IS EPHEMERAL (TASK-2708). It was hardcoded to 5445, which let
+# exactly one worktree run this target at a time; with concurrent worktrees the
+# normal operating mode that produced three incidents in an afternoon, the worst
+# of which forged a green-looking gate leg — `go test` exited 2 having run NO
+# TESTS because the container was unreachable, and "exit 2 with zero FAIL lines"
+# reads a lot like a pass to a quick glance.
+#
+# So: Docker assigns the port, we read it back, and we REFUSE TO RUN rather than
+# let an unreachable database look like a test result. Never put a fixed host
+# port back in docker-compose.test.yml or hardcode one here.
+#
+# AN INTERRUPT TEARS THE STACK DOWN TOO. Ctrl-C during `go test` kills this
+# recipe's shell, and without the trap above `down -v` never runs — orphaning
+# exactly the stack this task was filed about. Set before `up`, so an interrupt
+# during startup is covered as well.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO: report a database that dies AFTER a
+# passing run. The post-run banner is gated on the tests having failed, and a
+# reviewer asked for that gate to be dropped. It stays, because the premise
+# does not hold — storetest.NewPostgres skips only when PAD_TEST_POSTGRES_URL
+# is EMPTY, and a database that is gone produces t.Fatalf, not a skip. So under
+# this target a dead database always fails the tests that touch it, and exit 0
+# means every Postgres-backed test completed against a live one. Failing the
+# leg on a container that stopped after the suite finished would turn honest
+# greens red.
+#
+# THE READINESS PROBE TESTS THE HOST-PUBLISHED PORT, which is the path the
+# tests take — not the container's own socket. Two ways in, because neither is
+# universal: the host's pg_isready when it exists, otherwise a throwaway
+# container reaching back through host.docker.internal (native on Docker
+# Desktop, and `--add-host=...:host-gateway` makes it resolve on Linux too).
+# An earlier version used `--network host`, which is Linux-only and would have
+# made a healthy database read as unreachable on Desktop; the version after
+# that fell back to `compose exec`, which answers "is the server alive inside
+# the container" and would let a broken port mapping through the guard. This
+# box has no host pg_isready, so the fallback is the branch that actually runs
+# here — it is not a rarely-exercised path.
+#
+# THE BANNER IS THE DISCRIMINATOR, NOT THE EXIT CODE. make collapses every
+# failed recipe to exit 2, so "the database was unreachable" and "tests failed"
+# are indistinguishable by status — measured, not assumed. Do not key automation
+# off the exit code expecting to tell them apart; grep the output for
+# NO TESTS EXECUTED (nothing ran) or THE DATABASE DIED (it ran against a
+# database that went away).
+#
+# Recovering an orphan (a stack whose worktree was removed before teardown):
+# `docker ps --filter name=padtest-` lists them, and the container name carries
+# the project. Reap one from anywhere with
+#   docker compose -p <project> down -v
+# From inside the worktree itself, `make test-pg-project` prints the name and
+# `make test-pg-down` does it for you.
+# TEST_PG_PKGS narrows the run. Defaults to everything, which is what a gate
+# wants; a narrower value is for checking this target's own plumbing (e.g. the
+# concurrency acceptance) without two full-suite runs. A gate leg reported from
+# a narrowed run is not a gate leg.
+TEST_PG_PKGS ?= ./...
 
+# An EXPLICIT project name, unique per absolute path (codex round 1, P2).
+# Compose otherwise defaults it to the directory BASENAME, so two checkouts
+# that happen to share a basename — /a/docapp and /b/docapp — share a stack,
+# and one `down -v` tears down the other's database mid-run. That is the
+# cross-worktree teardown this task exists to make impossible, reachable
+# through a second door. The basename is kept in the name so an orphan is
+# still identifiable by eye; the checksum of the full path is what makes it
+# unique. Lowercased and punctuation-stripped because compose rejects
+# anything else.
+# $$PWD and pwd rather than $(CURDIR): make interpolates CURDIR into the
+# command TEXT, so a checkout path containing a quote would break the quoting
+# and run whatever followed it. The shell reads its own working directory
+# instead, so no path text is ever parsed as command text. cksum is 32-bit and
+# that is deliberate — it is portable to every platform this repo builds on,
+# unlike sha1sum/shasum, and the basename is in the name too, so the checksum
+# only has to separate same-named siblings rather than be cryptographic.
+# `tr -d '\n'` BEFORE the -c translation, not after: `tr -c` treats the
+# trailing newline basename emits as an invalid character and turns it into a
+# dash, which produced `padtest-docapp-2708--1800854141`. Compose accepted it,
+# so nothing failed — the doubled dash in the printed name is what showed it.
+TEST_PG_PROJECT := padtest-$(shell basename "$$PWD" | tr -d '\n' | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_-' '-')-$(shell pwd | cksum | cut -d' ' -f1)
+COMPOSE_TEST := docker compose -p $(TEST_PG_PROJECT) -f docker-compose.test.yml
+
+test-pg:
+	@trap 'echo ""; if $(COMPOSE_TEST) down -v >/dev/null 2>&1; then echo "test-pg: INTERRUPTED - stack $(TEST_PG_PROJECT) torn down."; else echo "test-pg: INTERRUPTED and TEARDOWN FAILED - reap it with: docker compose -p $(TEST_PG_PROJECT) down -v"; fi; exit 130' INT TERM; \
+	port=""; \
+	if ! $(COMPOSE_TEST) up -d --wait; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# NO TESTS EXECUTED - the database container never came up      #"; \
+		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
+		echo "################################################################"; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1 || echo "# ...and TEARDOWN ALSO FAILED: docker compose -p $(TEST_PG_PROJECT) down -v"; \
+		exit 1; \
+	fi; \
+	port=$$($(COMPOSE_TEST) port postgres 5432 2>/dev/null | sed 's/.*://'); \
+	if [ -z "$$port" ]; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# NO TESTS EXECUTED - could not read the container's host port  #"; \
+		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
+		echo "################################################################"; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1 || echo "# ...and TEARDOWN ALSO FAILED: docker compose -p $(TEST_PG_PROJECT) down -v"; \
+		exit 1; \
+	fi; \
+	url="postgres://pad:pad@127.0.0.1:$$port/pad?sslmode=disable"; \
+	if command -v pg_isready >/dev/null 2>&1; then \
+		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; ready=$$?; \
+	else \
+		docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine \
+			pg_isready -h host.docker.internal -p "$$port" -U pad -q; ready=$$?; \
+	fi; \
+	if [ $$ready -ne 0 ]; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# NO TESTS EXECUTED - Postgres on port $$port is not ready      #"; \
+		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
+		echo "################################################################"; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1 || echo "# ...and TEARDOWN ALSO FAILED: docker compose -p $(TEST_PG_PROJECT) down -v"; \
+		exit 1; \
+	fi; \
+	echo "test-pg: Postgres on 127.0.0.1:$$port (project $(TEST_PG_PROJECT))"; \
+	PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $(TEST_PG_PKGS) -v -count=1; \
+	EXIT_CODE=$$?; \
+	if command -v pg_isready >/dev/null 2>&1; then \
+		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; still_up=$$?; \
+	else \
+		docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine \
+			pg_isready -h host.docker.internal -p "$$port" -U pad -q; still_up=$$?; \
+	fi; \
+	if [ $$EXIT_CODE -ne 0 ] && [ $$still_up -ne 0 ]; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# THE DATABASE DIED DURING THE RUN.                             #"; \
+		echo "# Treat the failures above as INFRASTRUCTURE, not as evidence   #"; \
+		echo "# about the code, and re-run before drawing any conclusion.     #"; \
+		echo "################################################################"; \
+	fi; \
+	if ! $(COMPOSE_TEST) down -v; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# TEARDOWN FAILED - the stack is still running. Reap it with:    #"; \
+		echo "#   docker compose -p $(TEST_PG_PROJECT) down -v"; \
+		echo "# The test status below is honest; this leak is a separate fact. #"; \
+		echo "################################################################"; \
+	fi; \
+	exit $$EXIT_CODE
+
+# Tears down THIS directory's stack only: the project name is keyed to this
+# directory's ABSOLUTE path, so it cannot reach a sibling's container even if
+# the two directories share a basename.
 test-pg-down:
-	docker compose -f docker-compose.test.yml down -v
+	$(COMPOSE_TEST) down -v
+
+# Prints this directory's compose project name, so an orphan can be reaped
+# from anywhere without re-deriving it by hand.
+test-pg-project:
+	@echo $(TEST_PG_PROJECT)
 
 dev: build-go
 	./$(BINARY) server start --host $(HOST)
