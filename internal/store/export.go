@@ -147,10 +147,26 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 		},
 	}
 
-	// Collections
+	// Collections — including SOFT-DELETED ones, which carry their deleted_at
+	// so the importer can reproduce the archive (BUG-2884).
+	//
+	// This section used to filter `deleted_at IS NULL` while the items section
+	// below filtered only on the ITEM's own deleted_at. DeleteCollection
+	// soft-deletes the collection row alone, so its items stay live and stay
+	// reachable — by ref, by id, and through search, since no item-bearing
+	// read in this package joins collection liveness. Two sections, two rules,
+	// and the bundle named a collection it did not contain: ImportWorkspace
+	// then dropped every such item on its orphan gate, with no log line for
+	// the item itself.
+	//
+	// The other repair — filtering items to live collections — was rejected on
+	// measurement rather than taste. `pad db migrate` is ExportWorkspace piped
+	// into ImportWorkspace (cmd/pad/cmd_db.go), so dropping those items would
+	// silently DELETE live, addressable rows during a SQLite→Postgres
+	// migration: a worse defect than the lossy backup it would fix.
 	rows, err := s.db.Query(s.q(`
-		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at
-		FROM collections WHERE workspace_id = ? AND deleted_at IS NULL
+		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, COALESCE(deleted_at, '')
+		FROM collections WHERE workspace_id = ?
 		ORDER BY sort_order, name`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export collections: %w", err)
@@ -159,7 +175,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	for rows.Next() {
 		var c models.CollectionExport
 		var isDefault, isSystem bool
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
 		c.IsDefault = isDefault
@@ -304,6 +320,36 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	return export, nil
 }
 
+// resolveImportParent maps an exported parent_id onto the id its item received
+// in this import, and returns "" — meaning no parent — unless that item
+// actually landed.
+//
+// itemMap alone is not enough (BUG-2884, codex round 3). It holds an entry for
+// every item in the bundle INCLUDING orphans, written before the orphan skip
+// because parent resolution reads it for items the loop has not reached yet.
+// So `mapped != ""` was satisfied by an id naming no row, and a live child of
+// an archived-collection parent wrote that id into items.parent_id — a foreign
+// key. It fails on both drivers (SQLite runs with foreign_keys ON), fatally on
+// the first pass and by aborting the transaction on Postgres.
+//
+// Dropping the edge is the only thing the bundle can express: the parent is
+// not in it, so there is nothing to point at. item_links already drops a link
+// whose endpoint is missing, for the same reason.
+//
+// Both passes call this, and both need it: the first because an orphan earlier
+// in the bundle's order is already mapped by the time a later child is
+// inserted, the second because by then every item is mapped.
+func resolveImportParent(exportedParentID string, itemMap map[string]string, insertedItems map[string]bool) string {
+	if exportedParentID == "" {
+		return ""
+	}
+	mapped, ok := itemMap[exportedParentID]
+	if !ok || !insertedItems[mapped] {
+		return ""
+	}
+	return mapped
+}
+
 // ImportWorkspace imports a workspace from an exported data structure.
 // It creates a new workspace with regenerated IDs, remapping all references.
 // If newName is non-empty, it overrides the workspace name and slug.
@@ -353,9 +399,21 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// declarations live, which collection receives an imported artifact or
 	// answers an invocation slug depends on collection order. Warn so the
 	// operator can fix it. Codex round 8.
+	//
+	// ARCHIVED collections are excluded from this scan (BUG-2884). Since the
+	// bundle started carrying soft-deleted collections, a workspace whose
+	// archived collection still declares the kind its live replacement
+	// declares would warn on every import about an ambiguity that does not
+	// exist: routing is live-only (ListTraitedCollections filters
+	// deleted_at IS NULL), so an archived declaration resolves nothing. Worse
+	// than the noise, the archived slug could win `seenKinds` and the warning
+	// would name the LIVE collection as the duplicate.
 	seenKinds := map[string]string{}
 	invocationCollection := ""
 	for _, c := range data.Collections {
+		if c.DeletedAt != "" {
+			continue
+		}
 		if t, err := models.ParseCollectionTraits(c.Traits); err == nil {
 			if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
 				if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
@@ -449,7 +507,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// that only round-trips through an export. Slug-keyed for the same
 		// reason the migration is: on a row with no declarations, the slug is
 		// the only evidence of intent that exists. Codex round 4.
-		if inferred := collections.CanonicalTraitsForSlug(c.Slug); !inferred.IsZero() {
+		//
+		// Not applied to an ARCHIVED collection (BUG-2884): inference exists so
+		// a restored workspace comes up ROUTING, and an archived collection
+		// never routes. Stamping it would only add a log line about a
+		// declaration nothing reads — and, where the archived collection is a
+		// renamed predecessor of the live one, would put the canonical set on
+		// two rows.
+		if inferred := collections.CanonicalTraitsForSlug(c.Slug); !inferred.IsZero() && c.DeletedAt == "" {
 			if current, err := models.ParseCollectionTraits(traits); err == nil && current.IsZero() {
 				if encoded, err := inferred.JSON(); err == nil {
 					// Two different situations reach here and the log must
@@ -470,11 +535,15 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			}
 		}
 
+		// NULLIF so an ABSENT deleted_at — every archive written before
+		// BUG-2884, which decodes the missing key as "" — imports the
+		// collection LIVE. That direction is what keeps old bundles working;
+		// only a non-empty mark reproduces an archive.
 		_, err := tx.Exec(s.q(`
-			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`),
 			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, traits, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
-			c.CreatedAt, c.UpdatedAt)
+			c.CreatedAt, c.UpdatedAt, c.DeletedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)
 		}
@@ -506,10 +575,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// So a later section resolving an id through itemMap alone can get one
 	// that names no row, and inserting a foreign key to it fails (SQLite
 	// enforces FKs here — `_pragma=foreign_keys(on)` in the DSN — and Postgres
-	// always does). item_links and item_versions survive that by skipping on
-	// error; the reminder loop below checks this set instead, which refuses
-	// the row for the right reason rather than letting the database refuse it
-	// for an incidental one.
+	// always does).
+	//
+	// EVERY consumer therefore checks this set, not just a non-empty mapping
+	// (BUG-2884): the two parent-resolution sites via resolveImportParent, and
+	// the comment, link, version and reminder loops directly. The earlier
+	// design let links and versions "survive by skipping on error", which is
+	// true only on SQLite — on Postgres a failed statement aborts the
+	// transaction, so the skip never runs and COMMIT reports "commit
+	// unexpectedly resulted in rollback". A row that cannot be written has to
+	// be refused before the database sees it, which also refuses it for the
+	// right reason rather than letting the database refuse it for an
+	// incidental one.
 	insertedItems := make(map[string]bool, len(data.Items))
 	var nextItemNumber int
 	for _, it := range data.Items {
@@ -521,12 +598,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 
 		// On first pass, parent_id may refer to an item not yet created, so use empty
-		parentID := ""
-		if it.ParentID != "" {
-			if mapped, ok := itemMap[it.ParentID]; ok {
-				parentID = mapped
-			}
-		}
+		parentID := resolveImportParent(it.ParentID, itemMap, insertedItems)
 
 		nextItemNumber++
 		// IDEA-1486 + IDEA-1488: coerce empty-string / malformed
@@ -631,7 +703,11 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	_ = coercedTags // tags don't carry ID relations; second-pass only touches fields
 	for _, it := range data.Items {
 		newItemID := itemMap[it.ID]
-		if newItemID == "" {
+		// Same correction as the comment loop, though this one was INERT
+		// rather than wrong: an orphan's UPDATE matched no row and returned no
+		// error. Left as `== ""` it reads like an orphan guard that works,
+		// which is the reading that let the comment loop ship unguarded.
+		if !insertedItems[newItemID] {
 			continue
 		}
 		fieldsInput, ok := coercedFields[it.ID]
@@ -640,12 +716,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 		// Remap relation fields now that ALL items are mapped
 		fields := remapFieldIDs(fieldsInput, itemMap, collMap)
-		parentID := ""
-		if it.ParentID != "" {
-			if mapped, ok := itemMap[it.ParentID]; ok {
-				parentID = mapped
-			}
-		}
+		parentID := resolveImportParent(it.ParentID, itemMap, insertedItems)
 		_, err := tx.Exec(s.q(`UPDATE items SET fields = ?, parent_id = NULLIF(?, '') WHERE id = ?`),
 			fields, parentID, newItemID)
 		if err != nil {
@@ -656,7 +727,21 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// Import comments
 	for _, cm := range data.Comments {
 		newItemID := itemMap[cm.ItemID]
-		if newItemID == "" {
+		// insertedItems, NOT `newItemID == ""` (BUG-2884). That test cannot
+		// fire for an item the bundle CONTAINS: itemMap is written for every
+		// item before the orphan skip above, deliberately, because parent
+		// resolution reads it for items the loop has not reached yet. So an
+		// orphaned item's comment used to reach this INSERT with an item_id
+		// naming no row, and the foreign key aborted the ENTIRE workspace
+		// import — one skippable row taking the whole restore down.
+		//
+		// The reminder loop below carries a long note about being fixed for
+		// exactly this; the comment loop was left standing. Fixing the export
+		// half removes pad's own route here (a bundle this build writes has no
+		// orphans), but a hand-edited, foreign, or pre-fix archive can still
+		// carry one, and that is precisely the population that needs to
+		// import.
+		if !insertedItems[newItemID] {
 			continue
 		}
 		// Stamp BEFORE the INSERT (BUG-2415).
@@ -674,19 +759,47 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	}
 
 	// Import item links
+	seenLinks := make(map[string]bool, len(data.ItemLinks))
 	for _, lk := range data.ItemLinks {
 		newSourceID := itemMap[lk.SourceID]
 		newTargetID := itemMap[lk.TargetID]
-		if newSourceID == "" || newTargetID == "" {
+		// insertedItems on BOTH endpoints, not just a non-empty mapping
+		// (BUG-2884). An orphaned item still gets a map entry — written before
+		// the skip, because parent resolution needs it — so `!= ""` is
+		// satisfied by an id naming no row, and the INSERT below hits the
+		// foreign key. `continue` on that error is not a recovery on
+		// POSTGRES: a failed statement aborts the surrounding transaction, so
+		// every later statement fails and COMMIT reports "commit unexpectedly
+		// resulted in rollback". One skippable link took the whole restore
+		// down. The row has to be refused before the database sees it.
+		if !insertedItems[newSourceID] || !insertedItems[newTargetID] {
 			continue
 		}
+		// DEDUPE BEFORE THE WRITE, not after the error. The source enforces
+		// UNIQUE(source_id, target_id, link_type), but that bounds what pad
+		// WROTE, not what ARRIVES: a hand-edited, merged, or concatenated
+		// bundle can carry the same edge twice. On Postgres the unique
+		// violation aborts the transaction, so the `continue` below could
+		// never ignore it — COMMIT failed and the whole restore was lost over
+		// a row the loop meant to drop (codex round 3). Keyed on the remapped
+		// triple because that is what the index sees.
+		edge := newSourceID + "\x00" + newTargetID + "\x00" + lk.LinkType
+		if seenLinks[edge] {
+			continue
+		}
+		seenLinks[edge] = true
 		_, err := tx.Exec(s.q(`
 			INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`),
 			newID(), ws.ID, newSourceID, newTargetID, lk.LinkType, lk.CreatedBy,
 			lk.CreatedAt)
 		if err != nil {
-			// Ignore duplicate links
+			// Defence in depth for a duplicate, nothing more — and on Postgres
+			// it is thin: the transaction is already poisoned by the time this
+			// runs, so the guard above is what actually keeps the import
+			// alive. A duplicate is not expected here anyway, since the source
+			// enforces UNIQUE(source_id, target_id, link_type) and the ids are
+			// freshly minted.
 			continue
 		}
 	}
@@ -696,11 +809,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// string would make a never-fired reminder read as fired at "".
 	for _, rm := range data.Reminders {
 		newItemID := itemMap[rm.ItemID]
-		// TWO GUARDS, AND NEITHER ALONE IS OBSERVABLE — measured, not assumed.
-		// Reverting either one on its own leaves the test green: with the map
-		// gate restored, the skip-on-error below survives the FK failure; with
-		// the fatal return restored, this gate means the insert never fails.
-		// Removing BOTH is what fails it. They are kept as a pair because they
+		// TWO GUARDS, AND NEITHER ALONE IS OBSERVABLE ON SQLITE — measured,
+		// not assumed. Reverting either one on its own leaves the test green
+		// there: with the map gate restored, the skip-on-error below survives
+		// the FK failure; with the fatal return restored, this gate means the
+		// insert never fails. Removing BOTH is what fails it.
+		//
+		// The driver qualifier is not decoration (BUG-2884): on POSTGRES a
+		// failed statement aborts the transaction, so "the skip-on-error
+		// survives the FK failure" is false there — COMMIT reports "commit
+		// unexpectedly resulted in rollback" and the whole import is lost.
+		// This gate, which refuses the row before the database sees it, is the
+		// one that carries both drivers. They are kept as a pair because they
 		// defend the same failure at different depths — this one prevents the
 		// bad write, the one below survives a bad write that arrives some
 		// other way — and the pair is recorded here so a future reader does
@@ -776,7 +896,13 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// Import item versions
 	for _, ver := range data.ItemVersions {
 		newItemID := itemMap[ver.ItemID]
-		if newItemID == "" {
+		// insertedItems, not just a non-empty mapping — same reason as the
+		// links loop above, and the same Postgres consequence (BUG-2884). The
+		// skip-on-error below is a log-and-continue for the unexpected, not a
+		// substitute for this gate: on Postgres the FK failure it used to
+		// "skip" had already aborted the transaction, so a single orphaned
+		// item's version history failed the entire workspace restore.
+		if !insertedItems[newItemID] {
 			continue
 		}
 		// version_seq (BUG-2270): re-derive a per-item monotonic seq at
