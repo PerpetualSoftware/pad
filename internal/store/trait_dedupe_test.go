@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
@@ -587,4 +589,106 @@ func TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt(t *testin
 	if parsed.ArtifactKind == nil || parsed.ArtifactKind.Kind != "convention" {
 		t.Errorf("the archived collection was stripped to %q; nothing routes to it and the indexes exclude it, so import has no business editing data the operator archived", archivedTraits)
 	}
+}
+
+// TestTheSnapshotIsTakenBeforeTheRepairWrites pins the ORDER of two startup
+// steps, which is the whole of what it asserts (codex round 5, P2).
+//
+// The repair changes data — it strips a declaration, moving which collection
+// owns a kernel behavior — and `<db>.pre-<version>` is the operator's rollback
+// for a bad upgrade. Calling the repair from the constructor, ahead of
+// migrate(), put the altered ownership INSIDE the snapshot: restoring after a
+// failed migration handed back the old schema with the repair already applied
+// and no record of it, so the one thing the rollback could not undo was the
+// only thing that had silently changed routing.
+//
+// SQLite only. Postgres takes no snapshot — backups there are the operator's
+// pg_dump/PITR job — so on that dialect there is no ordering to pin.
+func TestTheSnapshotIsTakenBeforeTheRepairWrites(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverSQLite {
+		t.Skip("no pre-migration snapshot on Postgres; the ordering this pins does not exist there")
+	}
+	dbPath := s.dbPath
+	if dbPath == "" {
+		t.Fatal("control leg failed: the test store has no file path, so no snapshot could be written either way")
+	}
+
+	ws := createTestWorkspace(t, s, "Snapshot Order")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	convs, err := s.GetCollectionBySlug(ws.ID, "conventions")
+	if err != nil || convs == nil {
+		t.Fatalf("GetCollectionBySlug(conventions): %v (nil=%v)", err, convs == nil)
+	}
+	rival, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "House Rules", Prefix: "HOUSE"})
+	if err != nil {
+		t.Fatalf("create rival: %v", err)
+	}
+
+	// The legacy state: two live collections declaring one kind, with the
+	// migration that forbids it not yet applied. Both halves are needed —
+	// without the pending migration no snapshot is taken at all, and the test
+	// would pass by measuring nothing.
+	restore := s.SuspendTraitUniquenessForTesting()
+	_ = restore // deliberately not called: the duplicate must survive the reopen
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), convs.Traits, rival.ID); err != nil {
+		t.Fatalf("plant the duplicate: %v", err)
+	}
+	const migration = "087_collection_trait_uniqueness.sql"
+	res, err := s.db.Exec(s.q(`DELETE FROM schema_migrations WHERE version = ?`), migration)
+	if err != nil {
+		t.Fatalf("un-apply %s: %v", migration, err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("control leg failed: %s was not in schema_migrations (rows=%d), so nothing would be pending and no snapshot taken", migration, n)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	snapshot := dbPath + ".pre-" + sanitizeVersion(BinaryVersion)
+	if _, err := os.Stat(snapshot); err == nil {
+		t.Fatalf("control leg failed: a snapshot at %s already existed before the reopen, and snapshotBeforeMigrate preserves the first one", snapshot)
+	}
+
+	reopened, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("reopen (this is the upgrade the repair runs during): %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+
+	// The live database is repaired: exactly one live collection declares it.
+	if got := countDeclaringConvention(t, reopened.db, reopened.q, ws.ID); got != 1 {
+		t.Fatalf("collections declaring convention after the upgrade = %d, want 1; the repair did not run", got)
+	}
+
+	// And the snapshot still holds the state the operator would roll back TO.
+	// Opened with the raw driver, not New(): New() would migrate and repair the
+	// snapshot too, which would destroy the very thing being measured.
+	snap, err := sql.Open("sqlite", snapshot)
+	if err != nil {
+		t.Fatalf("open snapshot %s: %v", snapshot, err)
+	}
+	defer snap.Close()
+	if got := countDeclaringConvention(t, snap, func(q string) string { return q }, ws.ID); got != 2 {
+		t.Errorf("collections declaring convention in the snapshot = %d, want 2; the repair committed BEFORE the snapshot, so restoring it cannot undo the routing change", got)
+	}
+}
+
+// countDeclaringConvention counts LIVE collections in a workspace whose traits
+// declare artifact_kind=convention, reading the same way the index does.
+func countDeclaringConvention(t *testing.T, db *sql.DB, q func(string) string, workspaceID string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(q(`
+		SELECT COUNT(*) FROM collections
+		WHERE workspace_id = ?
+		  AND deleted_at IS NULL
+		  AND json_valid(traits)
+		  AND json_extract(traits, '$.artifact_kind.kind') = 'convention'`), workspaceID).Scan(&n); err != nil {
+		t.Fatalf("count declaring collections: %v", err)
+	}
+	return n
 }

@@ -291,15 +291,6 @@ func New(dbPath string) (*Store, error) {
 	db.SetConnMaxLifetime(time.Hour)
 
 	s := &Store{db: db, dialect: &sqliteDialect{}, dbPath: dbPath}
-	// BEFORE migrate(), not after (TASK-2710). Migrations 087 / 064 add partial
-	// unique indexes over the collection-trait declarations, and those CREATE
-	// statements fail on exactly the databases that hold duplicates — so the
-	// repair has to precede them. No-ops on a fresh database, where the
-	// collections table does not exist yet.
-	if err := s.dedupeTraitDeclarations(); err != nil {
-		return nil, fmt.Errorf("de-duplicate collection trait declarations: %w", err)
-	}
-
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -386,15 +377,6 @@ func NewPostgres(connStr string) (*Store, error) {
 	}
 
 	s := &Store{db: db, dialect: &postgresDialect{}}
-	// BEFORE migrate(), not after (TASK-2710). Migrations 087 / 064 add partial
-	// unique indexes over the collection-trait declarations, and those CREATE
-	// statements fail on exactly the databases that hold duplicates — so the
-	// repair has to precede them. No-ops on a fresh database, where the
-	// collections table does not exist yet.
-	if err := s.dedupeTraitDeclarations(); err != nil {
-		return nil, fmt.Errorf("de-duplicate collection trait declarations: %w", err)
-	}
-
 	if err := s.migratePostgres(); err != nil {
 		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}
@@ -479,6 +461,27 @@ func (s *Store) migrate() error {
 	// worth snapshotting. Best-effort; a failed snapshot warns, not fatal.
 	if len(applied) > 0 && hasPending(applied, migrations) {
 		s.snapshotBeforeMigrate()
+	}
+
+	// AFTER the snapshot and BEFORE the migrations, both deliberately
+	// (TASK-2710, codex round 5).
+	//
+	// Before the migrations, because 087 / 064 add partial unique indexes over
+	// the collection-trait declarations and those CREATE statements fail on
+	// exactly the databases that hold duplicates — the repair has to precede
+	// them. No-ops on a fresh database, where the collections table does not
+	// exist yet.
+	//
+	// After the snapshot, because the repair CHANGES DATA — it strips a
+	// declaration, moving which collection owns a kernel behavior — and the
+	// snapshot is the operator's rollback for a bad upgrade. Running it in the
+	// constructor, ahead of migrate(), put the altered ownership INSIDE the
+	// snapshot: restoring after a failed migration would have given back the
+	// old schema with the repair already applied and unrecorded, so the one
+	// thing the rollback could not undo was the only thing that had silently
+	// changed routing.
+	if err := s.dedupeTraitDeclarations(); err != nil {
+		return fmt.Errorf("de-duplicate collection trait declarations: %w", err)
 	}
 
 	for _, name := range migrations {
@@ -643,6 +646,15 @@ func (s *Store) migratePostgres() error {
 	// something we can safely fake with a file copy.
 	if err := guardSchemaAhead(applied, migrations); err != nil {
 		return err
+	}
+
+	// The trait repair, in the same position as SQLite's: before the
+	// migrations, because 064's partial unique indexes fail on databases
+	// holding duplicates. There is no snapshot here to sit after — see the
+	// note above — so the ordering argument is one-sided on this dialect, but
+	// the call lives in the same place so the two paths cannot drift.
+	if err := s.dedupeTraitDeclarations(); err != nil {
+		return fmt.Errorf("de-duplicate collection trait declarations: %w", err)
 	}
 
 	for _, name := range migrations {
