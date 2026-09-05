@@ -1009,11 +1009,11 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 		// Reachable in production only through a future re-seed door — both of
 		// today's callers seed a workspace they just created — but the seeder
 		// should not be the thing that discovers the invariant the hard way.
-		if taken, takenBy, terr := s.artifactKindTaken(workspaceID, def.Traits); terr != nil {
-			return fmt.Errorf("check artifact kind for %s: %w", def.Slug, terr)
+		if taken, takenBy, which, terr := s.traitDeclarationTaken(workspaceID, def.Traits); terr != nil {
+			return fmt.Errorf("check trait declarations for %s: %w", def.Slug, terr)
 		} else if taken {
-			slog.Info("seed: skipping a template collection whose artifact kind is already declared",
-				"workspace_id", workspaceID, "skipped_slug", def.Slug, "declared_by", takenBy)
+			slog.Info("seed: skipping a template collection whose declaration is already held",
+				"workspace_id", workspaceID, "skipped_slug", def.Slug, "declaration", which, "declared_by", takenBy)
 			continue
 		}
 
@@ -1365,24 +1365,39 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 	return string(encoded), true, nil
 }
 
-// artifactKindTaken reports whether some live collection in the workspace
-// already declares the artifact kind carried by def's traits, and which one.
-// Returns false for a definition that declares no kind, which is most of them.
+// traitDeclarationTaken reports whether some live collection in the workspace
+// already holds either declaration carried by def's traits — the artifact kind
+// or invocation routing — and which collection holds it.
 //
-// Exists so SeedCollectionsFromTemplate can skip rather than collide with the
-// TASK-2710 unique index. Deliberately a read on the same rule the index
-// enforces, not a second spelling of it: it asks "is this kind declared", which
-// is exactly what the index makes unique.
-func (s *Store) artifactKindTaken(workspaceID string, traits models.CollectionTraits) (bool, string, error) {
-	if traits.ArtifactKind == nil || traits.ArtifactKind.Kind == "" {
-		return false, "", nil
+// BOTH, not just the kind (codex round 1, P2). The playbooks definition
+// declares artifact_kind AND invocation_field, and TASK-2710 adds a unique
+// index for each; checking only the kind left the invocation index reachable,
+// so a workspace whose invocation-routing collection had been renamed would
+// still have failed its seed. A definition is skipped when EITHER is held: the
+// workspace already has a collection doing that job, which is what seeding is
+// for.
+//
+// Exists so SeedCollectionsFromTemplate can skip rather than collide with those
+// indexes. Deliberately a read on the same rule they enforce rather than a
+// second spelling of it.
+func (s *Store) traitDeclarationTaken(workspaceID string, traits models.CollectionTraits) (bool, string, string, error) {
+	declaresKind := traits.ArtifactKind != nil && traits.ArtifactKind.Kind != ""
+	if !declaresKind && traits.InvocationField == "" {
+		return false, "", "", nil
 	}
 	live, err := s.ListTraitedCollections(workspaceID)
 	if err != nil {
-		return false, "", err
+		return false, "", "", err
 	}
-	if owner := collections.FindByArtifactKind(live, traits.ArtifactKind.Kind); owner != nil {
-		return true, owner.Slug, nil
+	if declaresKind {
+		if owner := collections.FindByArtifactKind(live, traits.ArtifactKind.Kind); owner != nil {
+			return true, owner.Slug, "artifact_kind=" + traits.ArtifactKind.Kind, nil
+		}
 	}
-	return false, "", nil
+	if traits.InvocationField != "" {
+		if owners := collections.FindByInvocationField(live); len(owners) > 0 {
+			return true, owners[0].Slug, "invocation_field", nil
+		}
+	}
+	return false, "", "", nil
 }

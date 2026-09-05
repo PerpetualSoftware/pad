@@ -229,8 +229,8 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 
 	coll, err := s.store.CreateCollection(workspaceID, input)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			writeError(w, http.StatusConflict, "conflict", "A collection with this name already exists")
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "conflict", uniqueCollectionConflictMessage(err))
 			return
 		}
 		writeInternalError(w, err)
@@ -382,6 +382,15 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 			writeCollectionUpdateConflictError(w, coll.Slug, conflict)
 			return
 		}
+		// A unique violation reaching here is a RACE past checkTraitConflicts
+		// and the slug pre-check — that gate reads then writes without holding
+		// a lock across both, which is why TASK-2710 made the constraint the
+		// real guarantee. This path recognised NEITHER driver's text and
+		// answered 500; it now matches create.
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "conflict", uniqueCollectionConflictMessage(err))
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -525,4 +534,35 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// isUniqueViolation recognises a unique-index violation from EITHER driver.
+//
+// The collection handlers used to check only SQLite's "UNIQUE constraint", so
+// the identical race answered 409 on SQLite and 500 on Postgres — and the
+// update path checked neither. Every item handler already tests both strings;
+// this is that test, named, so the next handler needing it does not invent a
+// third spelling (codex round 1, P2).
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint") || strings.Contains(msg, "duplicate key")
+}
+
+// uniqueCollectionConflictMessage distinguishes the indexes a collection write
+// can violate, because "a collection with this name already exists" is
+// actively misleading for a TASK-2710 trait conflict: the NAME is fine, the
+// DECLARATION is taken, and a user told to rename would rename forever.
+func uniqueCollectionConflictMessage(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "idx_collections_artifact_kind_per_workspace"):
+		return "Another collection in this workspace already declares this artifact kind"
+	case strings.Contains(msg, "idx_collections_invocation_field_per_workspace"):
+		return "Another collection in this workspace already handles invocation routing"
+	default:
+		return "A collection with this name already exists"
+	}
 }
