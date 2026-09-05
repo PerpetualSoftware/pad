@@ -28,9 +28,19 @@
 -- rows that do not opt in and rows that are soft-deleted.
 
 -- One collection per artifact kind per workspace.
+-- json_valid() guards every extraction. SQLite's json_extract RAISES on
+-- malformed JSON rather than returning NULL, so an unguarded expression here
+-- would fail this CREATE — and therefore startup — on any database holding one
+-- malformed traits blob. Every other reader treats malformed traits as
+-- declaring nothing (ListTraitedCollections returns empty traits rather than
+-- failing the call), and this matches that: a row whose blob does not parse
+-- declares nothing, so it is outside the index rather than fatal to it.
+-- Postgres needs no equivalent — traits is JSONB there, so the column type
+-- makes malformed content unrepresentable at rest. Codex round 2, P2.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_artifact_kind_per_workspace
     ON collections(workspace_id, json_extract(traits, '$.artifact_kind.kind'))
-    WHERE json_extract(traits, '$.artifact_kind.kind') IS NOT NULL
+    WHERE json_valid(traits)
+      AND json_extract(traits, '$.artifact_kind.kind') IS NOT NULL
       AND json_extract(traits, '$.artifact_kind.kind') != ''
       AND deleted_at IS NULL;
 
@@ -40,6 +50,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_artifact_kind_per_workspace
 -- and the partial predicate is what restricts it to the declaring rows.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_invocation_field_per_workspace
     ON collections(workspace_id)
-    WHERE json_extract(traits, '$.invocation_field') IS NOT NULL
+    WHERE json_valid(traits)
+      AND json_extract(traits, '$.invocation_field') IS NOT NULL
       AND json_extract(traits, '$.invocation_field') != ''
       AND deleted_at IS NULL;
