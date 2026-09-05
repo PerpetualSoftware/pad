@@ -1,6 +1,7 @@
 package store
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -282,9 +283,43 @@ func TestImportRoutingIgnoresSoftDeletedCollections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
+
+	var captured []slog.Record
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(&recordCapturingHandler{records: &captured}))
+
 	imported, err := s.ImportWorkspace(exp, "routing-2884-target", owner.ID)
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
+	}
+	slog.SetDefault(prev)
+
+	// DISCRIMINATION. The two assertions below are the ones that die when the
+	// scan skip and the inference skip are reverted; the ListTraitedCollections
+	// check further down does NOT discriminate them, because that query filters
+	// deleted rows anyway and would pass either way. Kept as the end-to-end leg,
+	// labelled so nobody reads it as coverage for the skips.
+	//
+	// (1) The duplicate-declaration scan must not fire on the archived
+	// collection: it declares the same artifact kind as the live conventions
+	// collection, and without the skip the import warns about an ambiguity
+	// that cannot exist — routing is live-only.
+	for _, r := range captured {
+		if r.Level != slog.LevelWarn {
+			continue
+		}
+		if strings.Contains(r.Message, "declares one artifact kind on two collections") ||
+			strings.Contains(r.Message, "declares invocation routing on two collections") {
+			var colls string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "collections" {
+					colls = a.Value.String()
+				}
+				return true
+			})
+			t.Errorf("import warned about a duplicate declaration that only exists because an ARCHIVED collection joined the scan: %q (collections=%s)", r.Message, colls)
+		}
 	}
 
 	traited, err := s.ListTraitedCollections(imported.ID)
@@ -419,5 +454,83 @@ func TestImportSurvivesOrphanedItemWithComment(t *testing.T) {
 			got = append(got, i.Title)
 		}
 		t.Errorf("imported items = %v, want just [Live item]", got)
+	}
+}
+
+// TestImportDoesNotInferTraitsForArchivedCollections discriminates the SECOND
+// archived-collection skip: canonical-trait inference.
+//
+// Inference exists so a pre-traits archive comes up ROUTING (BUG-2702). An
+// archived collection never routes — ListTraitedCollections filters
+// deleted_at IS NULL — so stamping it writes a declaration nothing reads, and
+// where the archived row is a renamed predecessor of a live one, puts the
+// canonical set on two rows in the same workspace.
+//
+// The fixture is a workspace whose conventions collection was DELETED with no
+// live replacement, which is the only shape that reaches inference: the slug
+// is what inference keys on, and slug uniqueness spans deleted rows, so an
+// archived "conventions" and a live one cannot coexist.
+func TestImportDoesNotInferTraitsForArchivedCollections(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "inference2884@test.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Inference 2884")
+
+	conv, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Conventions", Prefix: "CONV"})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if conv.Slug != "conventions" {
+		t.Fatalf("fixture assumed slug %q, got %q — inference keys on the slug", "conventions", conv.Slug)
+	}
+	// A pre-traits archive's shape: the column holds no declarations. Written
+	// directly because the create path may stamp them.
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = '{}' WHERE id = ?`), conv.ID); err != nil {
+		t.Fatalf("blank traits: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, conv.ID, models.ItemCreate{Title: "A rule"}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	if err := s.DeleteCollection(conv.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	// Control: the bundle carries the archived collection, blank, and it is
+	// the slug inference would act on. Without this the assertion below could
+	// pass because nothing reached inference at all.
+	var carried bool
+	for _, c := range exp.Collections {
+		if c.Slug == "conventions" {
+			carried = true
+			if c.DeletedAt == "" {
+				t.Fatal("control leg failed: the archived collection exported without its mark")
+			}
+			if parsed, perr := models.ParseCollectionTraits(c.Traits); perr != nil || !parsed.IsZero() {
+				t.Fatalf("control leg failed: exported traits are not blank (err=%v), so inference would not have fired either way", perr)
+			}
+		}
+	}
+	if !carried {
+		t.Fatal("control leg failed: the bundle carries no conventions collection")
+	}
+
+	imported, err := s.ImportWorkspace(exp, "inference-2884-target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+
+	var stored string
+	if err := s.db.QueryRow(s.q(`SELECT traits FROM collections WHERE workspace_id = ? AND slug = ?`), imported.ID, "conventions").Scan(&stored); err != nil {
+		t.Fatalf("read imported traits: %v", err)
+	}
+	parsed, perr := models.ParseCollectionTraits(stored)
+	if perr != nil {
+		t.Fatalf("ParseCollectionTraits(%q): %v", stored, perr)
+	}
+	if !parsed.IsZero() {
+		t.Errorf("inference stamped the canonical set onto an ARCHIVED collection; stored traits = %s", stored)
 	}
 }
