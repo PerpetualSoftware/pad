@@ -107,6 +107,28 @@ type CollectionExport struct {
 	IsSystem  bool   `json:"is_system"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// DeletedAt carries a collection's soft-delete mark, empty for a live
+	// collection (BUG-2884).
+	//
+	// The bundle used to skip soft-deleted collections while exporting every
+	// live ITEM, and DeleteCollection soft-deletes only the collection row —
+	// its items keep deleted_at IS NULL and stay reachable by ref, by id, and
+	// through search, because no item-bearing read joins collection liveness.
+	// So the two sections were filtered by different rules and the bundle
+	// named a collection it did not carry; ImportWorkspace then dropped those
+	// items on its orphan gate, silently. Since pad db migrate is
+	// ExportWorkspace piped into ImportWorkspace, that was live data lost on a
+	// SQLite→Postgres migration, not just a lossy backup.
+	//
+	// Filtering the items to live collections instead would have made the
+	// migration DELETE reachable rows, so the bundle carries the archived
+	// collection and the importer reproduces the archive.
+	//
+	// omitempty for the same reason as Traits: an archive from a workspace
+	// with nothing deleted omits the key rather than carrying a noise "" on
+	// every collection. Absent decodes to "" and MUST mean live — that is what
+	// keeps every archive written before this field importable.
+	DeletedAt string `json:"deleted_at,omitempty"`
 }
 
 // ItemExport holds an item's data for export.
