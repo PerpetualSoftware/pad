@@ -426,3 +426,70 @@ func TestImportDeduplicatesAConflictingArchive(t *testing.T) {
 		t.Errorf("the stripped collection is missing from the import (err=%v); it should keep everything but the declaration", err)
 	}
 }
+
+// TestImportDeduplicatesAfterCanonicalInference covers the ordering trap in the
+// import de-duplication: inference runs AFTER it.
+//
+// A pre-traits archive carries `conventions` with an EMPTY traits blob, and
+// import infers the canonical declaration for it from its slug (BUG-2702's
+// fix — without that, restoring an old archive comes up inert). If the same
+// bundle also carries another collection that explicitly declares
+// artifact_kind=convention, the de-dup pass sees only ONE declaration and
+// leaves both alone; inference then adds the second, and the unique index
+// aborts the whole import.
+//
+// So the pass has to run on the traits each collection will ACTUALLY be
+// inserted with, not on the ones the bundle carries.
+func TestImportDeduplicatesAfterCanonicalInference(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "inferdedupe@test.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Infer Dedupe Source")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	var convTraits string
+	for i := range exp.Collections {
+		if exp.Collections[i].Slug == "conventions" {
+			convTraits = exp.Collections[i].Traits
+			// The pre-traits archive shape: the key is absent, which decodes
+			// to "". Inference is what gives it back its declaration.
+			exp.Collections[i].Traits = ""
+		}
+	}
+	if convTraits == "" {
+		t.Fatal("control leg failed: the export carries no conventions declaration to work from")
+	}
+
+	// A second collection that DOES declare it explicitly.
+	rival := exp.Collections[0]
+	rival.ID = rival.ID + "-rival"
+	rival.Slug = "house-rules"
+	rival.Name = "House Rules"
+	rival.Prefix = "HRULE"
+	rival.Traits = convTraits
+	exp.Collections = append(exp.Collections, rival)
+
+	imported, err := s.ImportWorkspace(exp, "infer-dedupe-target", owner.ID)
+	if err != nil {
+		t.Fatalf("import failed on an archive whose duplicate only appears after inference: %v", err)
+	}
+
+	traited, err := s.ListTraitedCollections(imported.ID)
+	if err != nil {
+		t.Fatalf("ListTraitedCollections: %v", err)
+	}
+	var declaring []string
+	for _, tc := range traited {
+		if tc.Traits.ArtifactKind != nil && tc.Traits.ArtifactKind.Kind == "convention" {
+			declaring = append(declaring, tc.Slug)
+		}
+	}
+	if len(declaring) != 1 {
+		t.Errorf("collections declaring convention after import = %v, want exactly 1", declaring)
+	}
+}
