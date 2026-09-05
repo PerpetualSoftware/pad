@@ -823,7 +823,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	}
 	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, dst.WorkspaceID(), dst.Role,
 		items.SchemaForMigratedFields(targetSchema), final,
-		notDefaultKeys(input.FieldOverrides, carriedAfterRelationDrops(currentFields, migrated.Dropped, relDropped)))
+		notDefaultKeys(input.FieldOverrides, carriedSource))
 	if invErr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: relation default visibility: %w", invErr))
 		return

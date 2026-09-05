@@ -321,56 +321,6 @@ func (s *Server) refuseInvisibleRelationOverrides(
 	return s.resolveRelationReferentsAs(r, workspaceID, role, schema, probe)
 }
 
-// carriedAfterRelationDrops is the carried-source set a migrate door hands
-// notDefaultKeys, with BOTH drop passes subtracted.
-//
-// A door computes its carried set from MigrateFields' drops, then runs
-// store.MigrateRelationReferents, which drops further keys whose referents did
-// not resolve. Reusing the FIRST set for the visibility call classifies a key
-// the second pass dropped as still carried; when the destination schema then
-// refills that key with a default, the default is exempted from the visibility
-// check on the strength of a value that is no longer there, and the response
-// can hand back the id of an item the caller cannot see.
-//
-// The pre-relation-drop set is still the right input to the origin label and
-// to the relation classifier itself, which are asking "did this value come
-// across from the source?" — a different question from "is the value in hand
-// now a destination default?" (codex round 15).
-//
-// ONLY the preflight needs this, and the reason is worth stating so nobody
-// "fixes" the other doors to match. Move and bulk move fold their relation
-// drops into `result.Dropped` and then recompute CarriedSourceValues INLINE at
-// the visibility call, so they read the already-extended list and were never
-// wrong. The preflight extends `migrated.Dropped` the same way but hands the
-// visibility call a `carriedSource` VARIABLE captured before that append —
-// the snapshot is the defect, not the door.
-//
-// SHIPS WITH ITS MUTANTS SURVIVING, AND THAT IS RECORDED RATHER THAN HIDDEN.
-// Restoring the stale set — at the move door OR here — leaves every test
-// green, because no configuration I could construct makes the difference
-// observable: a destination default whose target the caller cannot see is
-// already collapsed to `not_found` by the MAIN pass and dropped before this
-// check is reached. Measured with a probe on both builds — the owner's
-// preflight discloses the default's id, and a restricted editor's reports
-// `owner_ref` dropped as `not_found` on the fixed AND the unfixed build.
-//
-// So this is a robustness change, not a bug fix, kept for one reason:
-// `carriedSource` should mean what its name says at every use, rather than
-// being correct at three uses and stale at the fourth because two later passes
-// happen to repair it. A regression test WAS written for this and then
-// DELETED, because it passed against the unfixed build — a test that cannot
-// fail is worse than no test, since it reads as a guard while guarding
-// nothing.
-func carriedAfterRelationDrops(sourceFields map[string]any, migrateDropped []string, relDropped []store.RelationIssue) map[string]any {
-	if len(relDropped) == 0 {
-		return store.CarriedSourceValues(sourceFields, migrateDropped)
-	}
-	lost := make([]string, 0, len(migrateDropped)+len(relDropped))
-	lost = append(lost, migrateDropped...)
-	lost = append(lost, store.RelationIssueKeys(relDropped)...)
-	return store.CarriedSourceValues(sourceFields, lost)
-}
-
 // notDefaultKeys is the set a migrate door hands
 // dropInvisibleRelationDefaults: the caller's own values plus the values
 // carried from the source item. Everything else in the map came from the

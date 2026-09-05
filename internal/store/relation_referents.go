@@ -745,27 +745,6 @@ func CarriedSourceValues(sourceFields map[string]any, dropped []string) map[stri
 	return out
 }
 
-// RelationIssueKeys is the key set of a relation-issue slice, for callers that
-// need to subtract what the relation pass dropped from a set captured BEFORE
-// it ran.
-//
-// The migrate doors capture their carried-source set from MigrateFields'
-// drops, then run MigrateRelationReferents, which drops MORE keys. A set
-// captured before the second pass and reused after it names keys that are no
-// longer carried — and if the destination schema refills one with a default,
-// that default is then treated as carried and skips the visibility check it
-// needs (codex round 15).
-func RelationIssueKeys(issues []RelationIssue) []string {
-	if len(issues) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(issues))
-	for _, ri := range issues {
-		out = append(out, ri.Key)
-	}
-	return out
-}
-
 // hasKey reports whether m declares key. A nil map has no keys, which is how a
 // door with no overrides (bulk move) or no source item says so.
 func hasKey(m map[string]any, key string) bool {
