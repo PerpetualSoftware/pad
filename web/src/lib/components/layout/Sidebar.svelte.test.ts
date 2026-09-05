@@ -290,7 +290,7 @@ describe('sidebar — GitHub repo link', () => {
 		// re-hardcoded the same string renders an identical href and passes every
 		// assertion above; it fails this one.
 		//
-		// Deliberately narrow: it names the two consumers rather than sweeping the
+		// Deliberately narrow: it names the consumers rather than sweeping the
 		// tree, so it cannot fail for an unrelated file (a doc, a fixture, a
 		// changelog entry legitimately quoting the URL) and cannot quietly stop
 		// covering them by drifting into a glob that no longer matches.
@@ -300,7 +300,9 @@ describe('sidebar — GitHub repo link', () => {
 		const root = process.cwd();
 		for (const rel of [
 			'src/lib/components/layout/Sidebar.svelte',
-			'src/lib/components/layout/UserMenuResources.svelte'
+			'src/lib/components/layout/UserMenuResources.svelte',
+			'src/lib/components/auth/AuthFooter.svelte',
+			'src/lib/components/auth/AuthHeader.svelte'
 		]) {
 			const source = readFileSync(join(root, rel), 'utf8');
 			expect(source, `${rel} hardcodes the repo URL`).not.toContain(

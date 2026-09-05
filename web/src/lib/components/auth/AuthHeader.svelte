@@ -14,6 +14,8 @@
 	// under their own brand and must not get getpad.dev chrome imposed on them.
 	// Same pattern as the companion AuthFooter.svelte in this directory.
 
+	import { DOCS_URL, GITHUB_REPO_URL } from '$lib/brand/links';
+
 	let { cloudMode = false }: { cloudMode?: boolean } = $props();
 
 	let mobileMenuOpen = $state(false);
@@ -21,11 +23,13 @@
 	// Link list mirrors pad-web's marketing nav (Docs / Blog / GitHub) but
 	// points at absolute marketing URLs explicitly — auth pages are pre-login,
 	// the user has no workspace context, and these are "go back to the
-	// marketing site" links rather than in-app nav.
+	// marketing site" links rather than in-app nav. The Docs and GitHub
+	// addresses come from $lib/brand/links (single source, guarded by
+	// Sidebar.svelte.test.ts); Blog has no constant yet.
 	const navLinks: Array<{ label: string; href: string }> = [
-		{ label: 'Docs', href: 'https://getpad.dev/docs' },
+		{ label: 'Docs', href: DOCS_URL },
 		{ label: 'Blog', href: 'https://getpad.dev/blog' },
-		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' }
+		{ label: 'GitHub', href: GITHUB_REPO_URL }
 	];
 
 	function handleKeydown(event: KeyboardEvent) {

@@ -284,14 +284,15 @@ because Tailwind/Svelte tooling will warn without it.
 Always the same order. This is the contract:
 
 1. GitHub *(external)*
-2. Docs
-3. Changelog
-4. Contribute
-5. FAQ
-6. Security
-7. Privacy
-8. Terms
-9. Sub-processors
+2. Community *(external — the repo's GitHub Discussions; TASK-2888)*
+3. Docs
+4. Changelog
+5. Contribute
+6. FAQ
+7. Security
+8. Privacy
+9. Terms
+10. Sub-processors
 
 If a surface omits a link (e.g. self-hosted footer skips Changelog
 because there's no Changelog page on a self-hosted install), keep the
