@@ -51,11 +51,18 @@ func duplicateTraitFixture(t *testing.T, s *Store, name string, userWrote bool) 
 	if err != nil {
 		t.Fatalf("create the would-be reseed: %v", err)
 	}
-	withTraitIndexSuspended(t, s, func() {
-		if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), conv.Traits, dup.ID); err != nil {
-			t.Fatalf("plant the duplicate declaration: %v", err)
+	restore := s.SuspendTraitUniquenessForTesting()
+	t.Cleanup(func() {
+		// After de-duplication the workspace holds one declaration, so the
+		// indexes must be creatable again — which is precisely the precondition
+		// the migration needs, asserted here rather than assumed.
+		if err := restore(); err != nil {
+			t.Errorf("the indexes could not be recreated after de-duplication, so the migration would fail on this state: %v", err)
 		}
 	})
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), conv.Traits, dup.ID); err != nil {
+		t.Fatalf("plant the duplicate declaration: %v", err)
+	}
 	{
 		// The reseed would have populated the duplicate with template rows, and
 		// the bare reproduction ties on item count — that tie is what makes it
@@ -75,20 +82,6 @@ func duplicateTraitFixture(t *testing.T, s *Store, name string, userWrote bool) 
 		}
 	}
 	return ws, conv.ID, dup.ID
-}
-
-// withTraitIndexSuspended runs fn with the TASK-2710 artifact-kind index
-// dropped, so a test can plant the pre-migration duplicate state the index now
-// forbids. Recreated afterwards on the SQLite path; on Postgres the recreate
-// would fail while the planted row is live, so it stays dropped for the rest
-// of that store's life — acceptable because each test gets its own.
-func withTraitIndexSuspended(t *testing.T, s *Store, fn func()) {
-	t.Helper()
-	const idx = "idx_collections_artifact_kind_per_workspace"
-	if _, err := s.db.Exec(`DROP INDEX IF EXISTS ` + idx); err != nil {
-		t.Fatalf("suspend %s: %v", idx, err)
-	}
-	fn()
 }
 
 func declaringConvention(t *testing.T, s *Store, workspaceID string) []string {
