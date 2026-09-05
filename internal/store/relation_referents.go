@@ -521,6 +521,42 @@ func (s *Store) MigrateRelationReferentsQ(
 	// Destination defaults resolve against the DESTINATION in both modes — the
 	// destination picked the value, so the mode says nothing about it.
 	if defaults := byOrigin[RelationOriginDestinationDefault]; len(defaults) > 0 {
+		// A NON-STRING default is dropped and reported here, exactly as
+		// ResolveLateRelationDefaultsQ drops one, and NOT left for
+		// ValidateFields (codex round 17).
+		//
+		// The general rule a few lines up — shape is ValidateFields's to
+		// reject, so one defect produces one error — is right for a SUPPLIED
+		// or CARRIED value and wrong for a default, because the two disagree
+		// about what should happen: ValidateFields REFUSES the request, and a
+		// destination default is not the caller's assertion, so this unit's
+		// posture is drop-and-report.
+		//
+		// Leaving it produced an outcome that depended on WHEN the default
+		// arrived. A default MigrateFields injects is in the map before
+		// validation and was refused; the identical default that
+		// ValidateFields injects — which is what happens when the caller
+		// sends an unrelated `{"key": null}` override — reached the late pass
+		// and was dropped. Same malformed schema, opposite answers, selected
+		// by a request detail with nothing to do with it. Dropping here makes
+		// the two paths agree BY CONSTRUCTION rather than by argument.
+		for _, def := range schema.Fields {
+			if def.Type != "relation" {
+				continue
+			}
+			raw, exists := defaults[def.Key]
+			if !exists {
+				continue
+			}
+			if _, isStr := raw.(string); isStr {
+				continue
+			}
+			dropped = append(dropped, RelationIssue{
+				Key: def.Key, Target: def.Collection, Reason: RelationTargetInvalidShape,
+			})
+			delete(fieldMap, def.Key)
+			delete(defaults, def.Key)
+		}
 		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, defaults)
 		if resolveErr != nil {
 			return nil, nil, resolveErr

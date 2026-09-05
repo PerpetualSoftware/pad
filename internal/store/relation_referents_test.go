@@ -572,3 +572,104 @@ func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
 		})
 	}
 }
+
+// An unresolvable carried relation value survives the ID remap VERBATIM, even
+// when it contains a resolvable id as a substring (codex round 17).
+//
+// `remapFieldIDs` rewrote relation values with strings.ReplaceAll over the raw
+// JSON for every id in the bundle, so a value that merely CONTAINED another
+// id was partially rewritten into a string that references nothing and existed
+// on neither side. The carry posture makes this load-bearing: an unresolvable
+// value is deliberately imported verbatim rather than dropped, and a partial
+// rewrite breaks that promise silently.
+//
+// THE PREFIX RELATIONSHIP IS THE FIXTURE, not an accident of naming. The
+// sibling test above deliberately chose ids sharing no prefix so its own
+// assertion could not fail for this reason — which is how the defect went
+// unexamined: the fixture was engineered around it instead of at it.
+func TestImportWorkspace_UnresolvableRelationValueSurvivesAPrefixCollision(t *testing.T) {
+	s := testStore(t)
+	owner, err := s.CreateUser(models.UserCreate{
+		Name: "Owner", Email: "prefix-collision-owner@example.com", Password: "passw0rd!",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	const (
+		liveColorID = "old-color-1"  // a real item in the bundle; gets remapped
+		danglingID  = "old-color-10" // NOT an item; contains liveColorID as a prefix
+	)
+
+	export := &models.WorkspaceExport{
+		Version:    1,
+		ExportedAt: "2026-09-05T00:00:00Z",
+		Workspace:  models.WorkspaceExportMeta{Name: "Prefix Archive", Slug: "prefix-archive"},
+		Collections: []models.CollectionExport{
+			{
+				ID: "old-coll-colors", Name: "Colors", Slug: "colors", Prefix: "COLO",
+				Schema:    `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+			{
+				ID: "old-coll-cars", Name: "Cars", Slug: "cars", Prefix: "CAR",
+				Schema:    `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"color","type":"relation","collection":"colors"}]}`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+		},
+		Items: []models.ItemExport{
+			{
+				ID: liveColorID, CollectionID: "old-coll-colors",
+				Title: "Red", Slug: "red", Fields: `{}`, Tags: `[]`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+			{
+				ID: "old-car-dangling", CollectionID: "old-coll-cars",
+				Title: "Dangling", Slug: "dangling",
+				Fields: `{"color":"` + danglingID + `"}`, Tags: `[]`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+			{
+				// CONTROL: an EXACT match still gets remapped to the new id.
+				// Without this leg the test passes against a build that
+				// stopped remapping altogether.
+				ID: "old-car-resolvable", CollectionID: "old-coll-cars",
+				Title: "Resolvable", Slug: "resolvable",
+				Fields: `{"color":"` + liveColorID + `"}`, Tags: `[]`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+		},
+	}
+
+	ws, err := s.ImportWorkspace(export, "Prefix Archive Target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+
+	byTitle := map[string]string{}
+	items, err := s.ListItems(ws.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	for _, it := range items {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(it.Fields), &m); err != nil {
+			t.Fatalf("parse fields for %q (%q): %v", it.Title, it.Fields, err)
+		}
+		if v, ok := m["color"].(string); ok {
+			byTitle[it.Title] = v
+		}
+		if it.Title == "Red" {
+			byTitle["__red_id__"] = it.ID
+		}
+	}
+
+	if got := byTitle["Dangling"]; got != danglingID {
+		t.Fatalf("the unresolvable value was rewritten to %q; it must carry VERBATIM as %q — "+
+			"a partial rewrite produces a value that existed on neither side", got, danglingID)
+	}
+	if got, want := byTitle["Resolvable"], byTitle["__red_id__"]; got != want {
+		t.Fatalf("the EXACT-match value carried as %q, want the imported item's new id %q; "+
+			"the remap has stopped working", got, want)
+	}
+}

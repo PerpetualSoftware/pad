@@ -848,3 +848,60 @@ func TestCopyPreflight_RelationDroppedCarriedKeyDoesNotExemptTheDefault(t *testi
 			v, carried, f.targetB.ID)
 	}
 }
+
+// A malformed destination default gets the SAME answer whether or not the
+// caller sent an unrelated null override (codex round 17).
+//
+// `MigrateRelationReferents` skipped non-string values on the general rule
+// that shape is ValidateFields's to reject, so one defect makes one error.
+// That rule is right for a supplied or carried value and wrong for a
+// DESTINATION DEFAULT, because the two disagree about the outcome:
+// ValidateFields REFUSES, and a default is not the caller's assertion, so
+// this unit's posture is drop-and-report.
+//
+// The observable was worse than the inconsistency. A default MigrateFields
+// injects sits in the map before validation and was REFUSED; the identical
+// default that ValidateFields injects — which is what a `{"owner_ref": null}`
+// override causes — reached the late pass and was DROPPED. So the same
+// malformed schema either blocked the copy outright or dropped an optional
+// field, chosen by a request detail with nothing to do with it. The existing
+// non-string-default test sends the override and therefore only ever
+// exercised the forgiving path.
+func TestCopyEndpoint_NonStringDestinationDefaultDropsWithOrWithoutANullOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		override bool
+	}{
+		{"no override", false},
+		{"explicit null override", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCopyRelationFixtureNonStringDefault(t)
+			body := f.baseBody()
+			if tc.override {
+				body["field_overrides"] = map[string]any{"owner_ref": nil}
+			}
+
+			pre := f.ok(body)
+			reason, dropped := droppedReason(pre, "owner_ref")
+			if !dropped {
+				t.Fatalf("a non-reference default is neither carried nor dropped: %+v", pre.Fields)
+			}
+			if reason != "invalid_shape" {
+				t.Fatalf("dropped for reason %q, want invalid_shape — the value is not a "+
+					"reference, so every other reason describes a lookup that never happened",
+					reason)
+			}
+			if !pre.Valid {
+				t.Fatalf("the preflight refuses over a malformed default in an OPTIONAL "+
+					"field; a default is not the caller's assertion and drops: %+v", pre.Fields)
+			}
+
+			res := assertPreflightMatchesCopy(t, f.copyPreflightFixture,
+				"non-string relation default ("+tc.name+")", body)
+			if v, present := f.persistedFields(res.Item.ID)["owner_ref"]; present {
+				t.Fatalf("the copy stored a non-reference in a relation field: %#v", v)
+			}
+		})
+	}
+}
