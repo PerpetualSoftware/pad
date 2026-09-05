@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -1471,7 +1472,18 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 // is asserted in reminderFireable and in the two reads that do not use it,
 // so the row is inert everywhere rather than "unreachable" somewhere.
 //
-// The row is written raw, because that is the only way one can exist.
+// The row is written with the composite foreign key SUSPENDED, because since
+// IDEA-2883 that is the only way one can exist: the table now FORBIDS the
+// disagreement rather than merely failing to forbid it (migrations 086 / 063).
+//
+// This test survives that change on purpose, and the reason is specific rather
+// than a general nod to defence in depth. The constraint protects rows written
+// through a connection that is ENFORCING it, and SQLite's enforcement is a
+// per-connection PRAGMA that table-rebuild migrations legitimately turn off —
+// so a row can still arrive from a restored pre-086 backup, from an operator
+// who dropped the constraint, or through a future rebuild's window. If one
+// ever does, these five reads are what keep it inert, and this is the only
+// test that says so.
 //
 // MUTANT: dropping `i.workspace_id = item_reminders.workspace_id` from
 // reminderFireable makes the row a candidate and fires it; dropping the
@@ -1489,12 +1501,7 @@ func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
 	// so the pending surface would show it if it could.
 	ts := now()
 	id := newID()
-	if _, err := s.db.Exec(s.q(`
-		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
-	`), id, wsB.ID, itemA.ID, past, ts, ts); err != nil {
-		t.Fatalf("raw insert: %v", err)
-	}
+	insertUnconstrainedReminder(t, s, id, wsB.ID, itemA.ID, past, ts)
 
 	// Scan: not a candidate.
 	ids, err := s.dueReminderCandidates(nowTS(), 0)
@@ -1554,5 +1561,57 @@ func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
 	}
 	if n := len(bundle.Reminders); n != 0 {
 		t.Errorf("B's export carries %d reminder(s) about A's item, want 0", n)
+	}
+}
+
+// insertUnconstrainedReminder writes a reminder row that the IDEA-2883
+// composite foreign key would refuse, by suspending enforcement for exactly
+// that one INSERT. It exists so the read-side identity predicates keep a test
+// after the constraint made their fixture unbuildable.
+//
+// The two drivers suspend differently and neither is a shortcut worth hiding:
+//
+//   - SQLite enforcement is a PER-CONNECTION pragma, so the pragma and the
+//     INSERT have to ride the SAME pinned connection — on the pool they could
+//     land on different ones and the INSERT would be refused (the hazard
+//     applySQLiteMigration documents). It is restored on a defer, so the
+//     connection never returns to the pool with foreign keys off.
+//   - Postgres has no per-session equivalent short of superuser tricks, so the
+//     constraint is DROPPED. It is not re-added: the row now in the table
+//     violates it, so the ADD would fail. That is fine here — the subject of
+//     this test is the READ predicates, and the constraint has its own tests —
+//     but it means this fixture must stay the last thing that needs the
+//     constraint in its store.
+func insertUnconstrainedReminder(t *testing.T, s *Store, id, workspaceID, itemID, remindAt, ts string) {
+	t.Helper()
+	const ins = `INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`
+
+	if s.dialect.Driver() == DriverPostgres {
+		if _, err := s.db.Exec(`ALTER TABLE item_reminders DROP CONSTRAINT item_reminders_item_workspace_fkey`); err != nil {
+			t.Fatalf("suspend composite fk: %v", err)
+		}
+		if _, err := s.db.Exec(s.q(ins), id, workspaceID, itemID, remindAt, ts, ts); err != nil {
+			t.Fatalf("raw insert: %v", err)
+		}
+		return
+	}
+
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("pin connection: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("suspend foreign keys: %v", err)
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+			t.Fatalf("restore foreign keys: %v", err)
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, s.q(ins), id, workspaceID, itemID, remindAt, ts, ts); err != nil {
+		t.Fatalf("raw insert: %v", err)
 	}
 }
