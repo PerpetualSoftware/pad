@@ -15,6 +15,13 @@
 /** The public repository. Shown in the app so a user never has to search for it. */
 export const GITHUB_REPO_URL = 'https://github.com/PerpetualSoftware/pad';
 
+/**
+ * Community channel: the repo's GitHub Discussions tab (TASK-2888 — Dave's
+ * day-57 call: no Discord; Discussions, or r/getpad, is the channel for now).
+ * Project-wide, so shown on Cloud and self-hosted alike.
+ */
+export const COMMUNITY_URL = `${GITHUB_REPO_URL}/discussions`;
+
 /** Canonical project documentation — the same for Cloud and self-hosted. */
 export const DOCS_URL = 'https://getpad.dev/docs';
 

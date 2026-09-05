@@ -22,6 +22,8 @@
 	// Replaces the prior LegalFooter + SupportFooter pair — the brand spec
 	// describes a single footer pattern, not two separate strips.
 
+	import { COMMUNITY_URL } from '$lib/brand/links';
+
 	let { cloudMode = false }: { cloudMode?: boolean } = $props();
 
 	// Canonical Cloud-mode link order from docs/brand.md §7. Do not reorder.
@@ -30,6 +32,7 @@
 	// to lose their form state by navigating away.
 	const cloudLinks: Array<{ label: string; href: string }> = [
 		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' },
+		{ label: 'Community', href: COMMUNITY_URL },
 		{ label: 'Docs', href: 'https://getpad.dev/docs' },
 		{ label: 'Changelog', href: 'https://getpad.dev/changelog' },
 		{ label: 'Contribute', href: 'https://getpad.dev/contribute' },
