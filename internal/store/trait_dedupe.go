@@ -226,3 +226,12 @@ func (s *Store) tableHasColumn(table, column string) bool {
 	// rather than running against a schema it could not inspect.
 	return s.db.QueryRow(query, table, column).Scan(&one) == nil
 }
+
+// DropIndexForTest drops an index by name. Exported solely so tests in other
+// packages can build a state that TASK-2710's partial unique indexes forbid —
+// the legacy shape whose HANDLING those tests still verify. Not called by
+// production code.
+func (s *Store) DropIndexForTest(name string) error {
+	_, err := s.db.Exec(`DROP INDEX IF EXISTS ` + name)
+	return err
+}
