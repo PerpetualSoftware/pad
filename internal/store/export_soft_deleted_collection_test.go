@@ -347,3 +347,77 @@ func TestLegacyBundleWithoutDeletedAtImportsLive(t *testing.T) {
 		t.Errorf("a legacy bundle's collection did not import LIVE; live collections = %d", len(live))
 	}
 }
+
+// TestImportSurvivesOrphanedItemWithComment covers a SECOND defect, found by
+// the dependents test above while the export half was still unfixed: an
+// orphaned item — one whose collection the bundle does not carry — aborted the
+// ENTIRE workspace import if it had a comment.
+//
+// The comment loop guards on `itemMap[cm.ItemID] == ""`, and that guard cannot
+// fire for an item the bundle contains: itemMap is populated for EVERY item
+// before the orphan skip, deliberately, because parent resolution reads it for
+// items the loop has not reached. So the loop INSERTed a comment whose item_id
+// names no row and the FK refused it, failing the whole restore. This is the
+// same defect the reminder loop already carries a long comment about ("ONE
+// orphaned item with a reminder aborted the entire workspace import"); it was
+// fixed there and left standing here.
+//
+// Fixing the export half removes pad's own route to it — a bundle this build
+// writes has no orphans — but not a hand-edited, foreign, or pre-fix archive,
+// which is exactly the population that needs to import.
+func TestImportSurvivesOrphanedItemWithComment(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "orphan2884@test.com", "Owner", "password123")
+	ws, archived, it := archivedCollectionFixture(t, s, "Orphan Comment 2884")
+
+	if _, err := s.CreateComment(ws.ID, it.ID, "", models.CommentCreate{Author: "Rook", Body: "on an orphan"}); err != nil {
+		t.Fatalf("CreateComment: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+
+	// Hand-edit the bundle into the pre-fix shape: the item stays, its
+	// collection is removed. This is what every archive written before this
+	// change looks like, and what a foreign bundle may look like at any time.
+	kept := exp.Collections[:0]
+	for _, c := range exp.Collections {
+		if c.ID != archived.ID {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == len(exp.Collections) {
+		t.Fatal("control leg failed: the archived collection was not in the bundle to remove")
+	}
+	exp.Collections = kept
+	var orphanHasComment bool
+	for _, cm := range exp.Comments {
+		if cm.ItemID == it.ID {
+			orphanHasComment = true
+		}
+	}
+	if !orphanHasComment {
+		t.Fatal("control leg failed: the bundle carries no comment on the orphaned item")
+	}
+
+	imported, err := s.ImportWorkspace(exp, "orphan-comment-2884-target", owner.ID)
+	if err != nil {
+		t.Fatalf("a bundle with one orphaned item aborted the whole import: %v", err)
+	}
+
+	// The orphan is skipped — that part is correct and unchanged — but the
+	// rest of the workspace must land.
+	items, err := s.ListItems(imported.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Live item" {
+		got := make([]string, 0, len(items))
+		for _, i := range items {
+			got = append(got, i.Title)
+		}
+		t.Errorf("imported items = %v, want just [Live item]", got)
+	}
+}

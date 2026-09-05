@@ -144,9 +144,12 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 // edits, not the only one. The others are ListCollections (above), and
 // ExportWorkspace / ImportWorkspace in export.go, which carry their own
 // projection over models.CollectionExport — a portability format, deliberately
-// not this model: it omits workspace_id and deleted_at because an import
-// assigns a fresh workspace and an export skips deleted rows. A column added
-// here but not there hydrates everywhere and still vanishes on export/import.
+// not this model: it omits workspace_id because an import assigns a fresh
+// workspace. It DOES carry deleted_at (BUG-2884): the export used to skip
+// deleted collections while exporting their still-live items, so the bundle
+// named a collection it did not contain and the importer dropped those items
+// silently. A column added here but not there hydrates everywhere and still
+// vanishes on export/import.
 const collectionColumns = `id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, created_at, updated_at, deleted_at`
 
 // collectionSelect is the shared prefix each single-row accessor completes

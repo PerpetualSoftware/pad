@@ -147,10 +147,26 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 		},
 	}
 
-	// Collections
+	// Collections — including SOFT-DELETED ones, which carry their deleted_at
+	// so the importer can reproduce the archive (BUG-2884).
+	//
+	// This section used to filter `deleted_at IS NULL` while the items section
+	// below filtered only on the ITEM's own deleted_at. DeleteCollection
+	// soft-deletes the collection row alone, so its items stay live and stay
+	// reachable — by ref, by id, and through search, since no item-bearing
+	// read in this package joins collection liveness. Two sections, two rules,
+	// and the bundle named a collection it did not contain: ImportWorkspace
+	// then dropped every such item on its orphan gate, with no log line for
+	// the item itself.
+	//
+	// The other repair — filtering items to live collections — was rejected on
+	// measurement rather than taste. `pad db migrate` is ExportWorkspace piped
+	// into ImportWorkspace (cmd/pad/cmd_db.go), so dropping those items would
+	// silently DELETE live, addressable rows during a SQLite→Postgres
+	// migration: a worse defect than the lossy backup it would fix.
 	rows, err := s.db.Query(s.q(`
-		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at
-		FROM collections WHERE workspace_id = ? AND deleted_at IS NULL
+		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, COALESCE(deleted_at, '')
+		FROM collections WHERE workspace_id = ?
 		ORDER BY sort_order, name`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export collections: %w", err)
@@ -159,7 +175,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 	for rows.Next() {
 		var c models.CollectionExport
 		var isDefault, isSystem bool
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
 		c.IsDefault = isDefault
@@ -353,9 +369,21 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// declarations live, which collection receives an imported artifact or
 	// answers an invocation slug depends on collection order. Warn so the
 	// operator can fix it. Codex round 8.
+	//
+	// ARCHIVED collections are excluded from this scan (BUG-2884). Since the
+	// bundle started carrying soft-deleted collections, a workspace whose
+	// archived collection still declares the kind its live replacement
+	// declares would warn on every import about an ambiguity that does not
+	// exist: routing is live-only (ListTraitedCollections filters
+	// deleted_at IS NULL), so an archived declaration resolves nothing. Worse
+	// than the noise, the archived slug could win `seenKinds` and the warning
+	// would name the LIVE collection as the duplicate.
 	seenKinds := map[string]string{}
 	invocationCollection := ""
 	for _, c := range data.Collections {
+		if c.DeletedAt != "" {
+			continue
+		}
 		if t, err := models.ParseCollectionTraits(c.Traits); err == nil {
 			if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
 				if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
@@ -449,7 +477,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// that only round-trips through an export. Slug-keyed for the same
 		// reason the migration is: on a row with no declarations, the slug is
 		// the only evidence of intent that exists. Codex round 4.
-		if inferred := collections.CanonicalTraitsForSlug(c.Slug); !inferred.IsZero() {
+		//
+		// Not applied to an ARCHIVED collection (BUG-2884): inference exists so
+		// a restored workspace comes up ROUTING, and an archived collection
+		// never routes. Stamping it would only add a log line about a
+		// declaration nothing reads — and, where the archived collection is a
+		// renamed predecessor of the live one, would put the canonical set on
+		// two rows.
+		if inferred := collections.CanonicalTraitsForSlug(c.Slug); !inferred.IsZero() && c.DeletedAt == "" {
 			if current, err := models.ParseCollectionTraits(traits); err == nil && current.IsZero() {
 				if encoded, err := inferred.JSON(); err == nil {
 					// Two different situations reach here and the log must
@@ -470,11 +505,15 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			}
 		}
 
+		// NULLIF so an ABSENT deleted_at — every archive written before
+		// BUG-2884, which decodes the missing key as "" — imports the
+		// collection LIVE. That direction is what keeps old bundles working;
+		// only a non-empty mark reproduces an archive.
 		_, err := tx.Exec(s.q(`
-			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`),
 			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, traits, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
-			c.CreatedAt, c.UpdatedAt)
+			c.CreatedAt, c.UpdatedAt, c.DeletedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)
 		}
@@ -631,7 +670,11 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	_ = coercedTags // tags don't carry ID relations; second-pass only touches fields
 	for _, it := range data.Items {
 		newItemID := itemMap[it.ID]
-		if newItemID == "" {
+		// Same correction as the comment loop, though this one was INERT
+		// rather than wrong: an orphan's UPDATE matched no row and returned no
+		// error. Left as `== ""` it reads like an orphan guard that works,
+		// which is the reading that let the comment loop ship unguarded.
+		if !insertedItems[newItemID] {
 			continue
 		}
 		fieldsInput, ok := coercedFields[it.ID]
@@ -656,7 +699,21 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// Import comments
 	for _, cm := range data.Comments {
 		newItemID := itemMap[cm.ItemID]
-		if newItemID == "" {
+		// insertedItems, NOT `newItemID == ""` (BUG-2884). That test cannot
+		// fire for an item the bundle CONTAINS: itemMap is written for every
+		// item before the orphan skip above, deliberately, because parent
+		// resolution reads it for items the loop has not reached yet. So an
+		// orphaned item's comment used to reach this INSERT with an item_id
+		// naming no row, and the foreign key aborted the ENTIRE workspace
+		// import — one skippable row taking the whole restore down.
+		//
+		// The reminder loop below carries a long note about being fixed for
+		// exactly this; the comment loop was left standing. Fixing the export
+		// half removes pad's own route here (a bundle this build writes has no
+		// orphans), but a hand-edited, foreign, or pre-fix archive can still
+		// carry one, and that is precisely the population that needs to
+		// import.
+		if !insertedItems[newItemID] {
 			continue
 		}
 		// Stamp BEFORE the INSERT (BUG-2415).
