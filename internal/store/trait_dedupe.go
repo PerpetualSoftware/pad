@@ -192,7 +192,6 @@ func (s *Store) dedupeTraitDeclarations() error {
 	// restore what the first removed. The duplicate then survived and the
 	// migration would still fail.
 	stripped := map[string]*models.CollectionTraits{}
-	order := []string{}
 	for _, l := range losers {
 		cur, seen := stripped[l.loser.id]
 		if !seen {
@@ -206,7 +205,6 @@ func (s *Store) dedupeTraitDeclarations() error {
 			}
 			cur = &parsed
 			stripped[l.loser.id] = cur
-			order = append(order, l.loser.id)
 		}
 		if l.stripAll {
 			cur.InvocationField = ""
