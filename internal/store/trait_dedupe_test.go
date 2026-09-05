@@ -220,3 +220,77 @@ func TestTraitUniquenessIsEnforcedByTheDatabase(t *testing.T) {
 		t.Logf("second declaration refused: %v", err)
 	}
 }
+
+// TestDedupeStripsEveryDeclarationALoserHolds covers the case a collection
+// loses BOTH declarations, which the single-declaration fixtures above cannot
+// reach. The playbooks definition declares artifact_kind AND invocation_field,
+// so a duplicated playbooks collection competes on two fronts at once.
+//
+// The defect this pins: resolving each declaration in its own pass, with each
+// pass re-parsing the row's ORIGINAL traits, made the second write restore what
+// the first had stripped. The duplicate survived and the migration would still
+// have failed on it — which is precisely the failure the de-dup pass exists to
+// prevent, so it would have surfaced as a broken upgrade rather than a test.
+func TestDedupeStripsEveryDeclarationALoserHolds(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Dedupe Both Declarations")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	play, err := s.GetCollectionBySlug(ws.ID, "playbooks")
+	if err != nil || play == nil {
+		t.Fatalf("get playbooks: %v (nil=%v)", err, play == nil)
+	}
+	// Control: the seeded definition really does declare both, otherwise this
+	// test is a duplicate of the single-declaration ones.
+	seeded, perr := models.ParseCollectionTraits(play.Traits)
+	if perr != nil {
+		t.Fatalf("parse seeded traits: %v", perr)
+	}
+	if seeded.ArtifactKind == nil || seeded.ArtifactKind.Kind == "" || seeded.InvocationField == "" {
+		t.Fatalf("control leg failed: playbooks declares kind=%v field=%q, want both", seeded.ArtifactKind, seeded.InvocationField)
+	}
+
+	dup, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Old Playbooks", Prefix: "OPLAY"})
+	if err != nil {
+		t.Fatalf("create duplicate: %v", err)
+	}
+	restore := s.SuspendTraitUniquenessForTesting()
+	t.Cleanup(func() {
+		if err := restore(); err != nil {
+			t.Errorf("indexes not recreatable after de-dup, so the migration would fail here: %v", err)
+		}
+	})
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), play.Traits, dup.ID); err != nil {
+		t.Fatalf("plant the double declaration: %v", err)
+	}
+	// The loser must be the planted one: the seeded playbooks holds the
+	// template's items and the plant holds none, so "most user-written items"
+	// ties at zero and the terminator decides. Give the seeded one a
+	// user-written item so the outcome is determined rather than a coin flip —
+	// this test is about stripping both declarations, not about the tie-break.
+	if _, err := s.CreateItem(ws.ID, play.ID, models.ItemCreate{
+		Title: "A real playbook", CreatedBy: "user", Source: "web",
+	}); err != nil {
+		t.Fatalf("user item: %v", err)
+	}
+
+	if err := s.dedupeTraitDeclarations(); err != nil {
+		t.Fatalf("dedupeTraitDeclarations: %v", err)
+	}
+
+	var raw string
+	if err := s.db.QueryRow(s.q(`SELECT traits FROM collections WHERE id = ?`), dup.ID).Scan(&raw); err != nil {
+		t.Fatalf("read loser traits: %v", err)
+	}
+	got, perr := models.ParseCollectionTraits(raw)
+	if perr != nil {
+		t.Fatalf("parse loser traits %q: %v", raw, perr)
+	}
+	if got.ArtifactKind != nil && got.ArtifactKind.Kind != "" {
+		t.Errorf("the loser kept its artifact_kind (%q); both declarations should be gone", got.ArtifactKind.Kind)
+	}
+	if got.InvocationField != "" {
+		t.Errorf("the loser kept its invocation_field (%q); both declarations should be gone", got.InvocationField)
+	}
+}

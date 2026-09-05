@@ -66,12 +66,28 @@ func (s *Store) dedupeTraitDeclarations() error {
 		createdAt string
 	}
 
+	// THE EXTRACTION IS THE INDEX'S, NOT GO'S (codex round 1, P1). An earlier
+	// version parsed traits with ParseCollectionTraits and skipped rows that
+	// failed — but the indexes key on json_extract / ->>, so "declares a kind"
+	// had two spellings that could disagree: a row the Go parser rejected still
+	// carries a value the index sees, and the de-dup would leave a pair the
+	// CREATE then refuses. Asking the database the same question the index asks
+	// makes them incapable of disagreeing.
+	//
+	// source IS NULL counts as user-written: the column is nullable
+	// (migrations/005 declares `source TEXT DEFAULT 'web'`) and legacy rows
+	// predate it. `i.source <> 'template'` alone is NULL for those, which SQL
+	// treats as not-true, so a workspace whose only user content is old would
+	// have had it ignored entirely.
+	kindExpr, fieldExpr := s.traitExtractionExprs()
 	rows, err := s.db.Query(s.q(`
 		SELECT c.id, c.slug, c.workspace_id, c.traits, c.created_at,
+		       COALESCE(` + kindExpr + `, ''),
+		       COALESCE(` + fieldExpr + `, ''),
 		       (SELECT COUNT(*) FROM items i
 		         WHERE i.collection_id = c.id
 		           AND i.deleted_at IS NULL
-		           AND i.source <> 'template')
+		           AND (i.source IS NULL OR i.source <> 'template'))
 		FROM collections c
 		WHERE c.deleted_at IS NULL
 		ORDER BY c.workspace_id, c.created_at ASC, c.id ASC`))
@@ -86,24 +102,17 @@ func (s *Store) dedupeTraitDeclarations() error {
 	fieldOwners := map[string][]candidate{}
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.slug, &c.workspace, &c.traits, &c.createdAt, &c.userItems); err != nil {
+		var kind, field string
+		if err := rows.Scan(&c.id, &c.slug, &c.workspace, &c.traits, &c.createdAt, &kind, &field, &c.userItems); err != nil {
 			return fmt.Errorf("scan collection: %w", err)
 		}
-		parsed, perr := models.ParseCollectionTraits(c.traits)
-		if perr != nil {
-			// A blob that does not parse declares nothing, which is how every
-			// other reader treats it (ListTraitedCollections). It cannot
-			// compete for a declaration and it cannot violate the index.
-			continue
-		}
-		if parsed.ArtifactKind != nil && parsed.ArtifactKind.Kind != "" {
+		if kind != "" {
 			if kindOwners[c.workspace] == nil {
 				kindOwners[c.workspace] = map[string][]candidate{}
 			}
-			k := parsed.ArtifactKind.Kind
-			kindOwners[c.workspace][k] = append(kindOwners[c.workspace][k], c)
+			kindOwners[c.workspace][kind] = append(kindOwners[c.workspace][kind], c)
 		}
-		if parsed.InvocationField != "" {
+		if field != "" {
 			fieldOwners[c.workspace] = append(fieldOwners[c.workspace], c)
 		}
 	}
@@ -176,22 +185,46 @@ func (s *Store) dedupeTraitDeclarations() error {
 	}
 	defer tx.Rollback()
 
+	// ONE WRITE PER COLLECTION, accumulating every declaration it lost (codex
+	// round 1, P1). A collection can lose BOTH — the playbooks definition
+	// declares artifact_kind AND invocation_field — and stripping them in two
+	// passes, each re-parsing the row's ORIGINAL traits, made the second write
+	// restore what the first removed. The duplicate then survived and the
+	// migration would still fail.
+	stripped := map[string]*models.CollectionTraits{}
+	order := []string{}
 	for _, l := range losers {
-		parsed, perr := models.ParseCollectionTraits(l.loser.traits)
-		if perr != nil {
-			continue
+		cur, seen := stripped[l.loser.id]
+		if !seen {
+			parsed, perr := models.ParseCollectionTraits(l.loser.traits)
+			if perr != nil {
+				// Unparseable here means the row carries a value the INDEX can
+				// see but Go cannot re-encode. Refuse rather than guess: a
+				// silent skip is what would let the CREATE fail later, which is
+				// the failure this pass exists to prevent.
+				return fmt.Errorf("collection %s declares a trait the index sees but its traits blob does not parse; repair it before upgrading: %w", l.loser.slug, perr)
+			}
+			cur = &parsed
+			stripped[l.loser.id] = cur
+			order = append(order, l.loser.id)
 		}
 		if l.stripAll {
-			parsed.InvocationField = ""
+			cur.InvocationField = ""
 		} else {
-			parsed.ArtifactKind = nil
+			cur.ArtifactKind = nil
 		}
-		encoded, eerr := parsed.JSON()
-		if eerr != nil {
-			return fmt.Errorf("re-encode traits for %s: %w", l.loser.slug, eerr)
-		}
-		if _, err := tx.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), encoded, l.loser.id); err != nil {
-			return fmt.Errorf("strip duplicate declaration from %s: %w", l.loser.slug, err)
+	}
+	writtenFor := map[string]bool{}
+	for _, l := range losers {
+		if !writtenFor[l.loser.id] {
+			encoded, eerr := stripped[l.loser.id].JSON()
+			if eerr != nil {
+				return fmt.Errorf("re-encode traits for %s: %w", l.loser.slug, eerr)
+			}
+			if _, err := tx.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), encoded, l.loser.id); err != nil {
+				return fmt.Errorf("strip duplicate declaration from %s: %w", l.loser.slug, err)
+			}
+			writtenFor[l.loser.id] = true
 		}
 		// One line per resolution, carrying everything an operator needs to
 		// tell a considered resolution from a coin flip.
@@ -225,4 +258,16 @@ func (s *Store) tableHasColumn(table, column string) bool {
 	// cannot tell, and the safe answer there is "absent" so the pass no-ops
 	// rather than running against a schema it could not inspect.
 	return s.db.QueryRow(query, table, column).Scan(&one) == nil
+}
+
+// traitExtractionExprs returns the SQL that reads the artifact kind and the
+// invocation field out of the traits column, per driver — the SAME expressions
+// migrations 087 / 064 index on. Kept in one place so the de-duplication pass
+// and the constraint cannot develop different opinions about what a
+// declaration is.
+func (s *Store) traitExtractionExprs() (kind, field string) {
+	if s.dialect.Driver() == DriverPostgres {
+		return `(c.traits -> 'artifact_kind' ->> 'kind')`, `(c.traits ->> 'invocation_field')`
+	}
+	return `json_extract(c.traits, '$.artifact_kind.kind')`, `json_extract(c.traits, '$.invocation_field')`
 }
