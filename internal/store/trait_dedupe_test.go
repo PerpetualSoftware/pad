@@ -294,3 +294,118 @@ func TestDedupeStripsEveryDeclarationALoserHolds(t *testing.T) {
 		t.Errorf("the loser kept its invocation_field (%q); both declarations should be gone", got.InvocationField)
 	}
 }
+
+// TestMalformedTraitsDoNotBreakTheInvariant covers the row nobody writes on
+// purpose: a collections row whose traits blob is not valid JSON.
+//
+// SQLite's json_extract RAISES on malformed JSON rather than returning NULL,
+// so an unguarded expression in either the index predicate or the de-dup scan
+// would fail STARTUP — not a request, startup — on a database holding one bad
+// blob. Every other reader treats malformed traits as declaring nothing, and
+// the guard makes these two agree with that rather than being fatal.
+func TestMalformedTraitsDoNotBreakTheInvariant(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Malformed Traits")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	junk, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Junk", Prefix: "JUNK"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Written raw: every door validates traits, so this is the shape of a row
+	// that arrived some other way — a hand-edited database, or a write from a
+	// build that predates validation.
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), `{"artifact_kind":`, junk.ID); err != nil {
+		t.Fatalf("plant malformed traits: %v", err)
+	}
+
+	// The de-dup pass must survive it — this is what runs before migrate().
+	if err := s.dedupeTraitDeclarations(); err != nil {
+		t.Fatalf("de-dup failed on a malformed traits blob; startup would fail here: %v", err)
+	}
+
+	// And the indexes must still be creatable, which is the migration itself.
+	restore := s.SuspendTraitUniquenessForTesting()
+	if err := restore(); err != nil {
+		t.Fatalf("the indexes could not be created against a malformed traits blob; the migration would fail here: %v", err)
+	}
+
+	// The malformed row is outside the invariant, not inside it: a live
+	// collection can still take a declaration the junk row appears to hold.
+	var stored string
+	if err := s.db.QueryRow(s.q(`SELECT traits FROM collections WHERE id = ?`), junk.ID).Scan(&stored); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if stored != `{"artifact_kind":` {
+		t.Errorf("the malformed blob was rewritten to %q; this unit does not repair traits, it only removes duplicate declarations", stored)
+	}
+}
+
+// TestImportDeduplicatesAConflictingArchive covers TASK-2710 item 4. Before
+// the indexes, import warned about a duplicate declaration and inserted both.
+// With them the second INSERT is refused, the whole transaction rolls back and
+// the workspace minted beforehand survives as a husk — so an archive carrying
+// a duplicate would become unimportable, and those archives are exactly the
+// ones this release exists to repair.
+func TestImportDeduplicatesAConflictingArchive(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "importdedupe@test.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Import Dedupe Source")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	// The conflicting archive: a second collection carrying the conventions
+	// declaration. Built in the BUNDLE rather than the database, which is how
+	// it actually arrives — a hand-edited or foreign archive.
+	var convTraits string
+	for _, c := range exp.Collections {
+		if c.Slug == "conventions" {
+			convTraits = c.Traits
+		}
+	}
+	if convTraits == "" {
+		t.Fatal("control leg failed: the exported bundle carries no conventions declaration to duplicate")
+	}
+	dupe := exp.Collections[0]
+	dupe.ID = dupe.ID + "-dupe"
+	dupe.Slug = "old-conventions"
+	dupe.Name = "Old Conventions"
+	dupe.Prefix = "OCONV"
+	dupe.Traits = convTraits
+	exp.Collections = append(exp.Collections, dupe)
+
+	imported, err := s.ImportWorkspace(exp, "import-dedupe-target", owner.ID)
+	if err != nil {
+		t.Fatalf("an archive carrying a duplicate declaration failed to import: %v", err)
+	}
+
+	// Exactly one collection declares it, and the LATER one lost it.
+	traited, err := s.ListTraitedCollections(imported.ID)
+	if err != nil {
+		t.Fatalf("ListTraitedCollections: %v", err)
+	}
+	var declaring []string
+	for _, tc := range traited {
+		if tc.Traits.ArtifactKind != nil && tc.Traits.ArtifactKind.Kind == "convention" {
+			declaring = append(declaring, tc.Slug)
+		}
+	}
+	if len(declaring) != 1 {
+		t.Fatalf("collections declaring convention after import = %v, want exactly 1", declaring)
+	}
+	if declaring[0] != "conventions" {
+		t.Errorf("declaration landed on %q; bundle order gives it to the first, which is conventions", declaring[0])
+	}
+
+	// The stripped collection still exists — it lost the declaration, not its
+	// place in the workspace.
+	if got, err := s.GetCollectionBySlug(imported.ID, "old-conventions"); err != nil || got == nil {
+		t.Errorf("the stripped collection is missing from the import (err=%v); it should keep everything but the declaration", err)
+	}
+}

@@ -267,5 +267,11 @@ func (s *Store) traitExtractionExprs() (kind, field string) {
 	if s.dialect.Driver() == DriverPostgres {
 		return `(c.traits -> 'artifact_kind' ->> 'kind')`, `(c.traits ->> 'invocation_field')`
 	}
-	return `json_extract(c.traits, '$.artifact_kind.kind')`, `json_extract(c.traits, '$.invocation_field')`
+	// json_valid guard, matching the index's partial predicate exactly: SQLite's
+	// json_extract RAISES on malformed JSON, so an unguarded read here would
+	// fail STARTUP on a database holding one bad blob — and a row the index
+	// skips must be a row this pass skips, or the two disagree about what a
+	// declaration is, which is the thing this whole design avoids.
+	return `CASE WHEN json_valid(c.traits) THEN json_extract(c.traits, '$.artifact_kind.kind') END`,
+		`CASE WHEN json_valid(c.traits) THEN json_extract(c.traits, '$.invocation_field') END`
 }

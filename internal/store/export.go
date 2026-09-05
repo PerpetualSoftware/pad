@@ -353,26 +353,66 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// declarations live, which collection receives an imported artifact or
 	// answers an invocation slug depends on collection order. Warn so the
 	// operator can fix it. Codex round 8.
+	// DE-DUPLICATED ON THE WAY IN, not warned about and inserted (TASK-2710
+	// item 4, and codex round 2's P1 when it was still the latter).
+	//
+	// This used to warn and import both, which was the right call while nothing
+	// forbade the pair. With the partial unique indexes it is no longer
+	// available: the second INSERT is refused, the whole import transaction
+	// rolls back, and the workspace minted before it survives as a husk
+	// ([[BUG-2892]]). An archive carrying a duplicate would become unimportable
+	// — and archives carrying duplicates are exactly the ones this release
+	// repairs, so refusing them is the worst of the three options.
+	//
+	// So the FIRST declaring collection in bundle order keeps the declaration
+	// and later ones are stripped of it, which is the same disposition
+	// dedupeTraitDeclarations applies to an existing database. It cannot use
+	// that pass's primary rule — most user-written items — because items are
+	// inserted after collections and every count would be zero here; bundle
+	// order IS the terminator, and the log says so rather than implying a
+	// considered choice.
+	//
+	// The loser keeps every item, as in the de-dup pass: only the declaration
+	// is dropped, and the items still land in that collection.
+	strippedTraits := map[string]string{}
 	seenKinds := map[string]string{}
 	invocationCollection := ""
 	for _, c := range data.Collections {
-		if t, err := models.ParseCollectionTraits(c.Traits); err == nil {
-			if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
-				if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
-					slog.Warn("import: archive declares one artifact kind on two collections; artifact routing will depend on collection order until one is changed",
-						"kind", t.ArtifactKind.Kind, "collections", prev+","+c.Slug, "workspace_id", ws.ID)
-				} else {
-					seenKinds[t.ArtifactKind.Kind] = c.Slug
-				}
+		t, err := models.ParseCollectionTraits(c.Traits)
+		if err != nil {
+			continue
+		}
+		changed := false
+		if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
+			if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
+				slog.Warn("import: archive declares one artifact kind on two collections; the later one is imported WITHOUT the declaration and keeps its items",
+					"kind", t.ArtifactKind.Kind, "keeps_declaration", prev, "stripped", c.Slug,
+					"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
+					"workspace_id", ws.ID)
+				t.ArtifactKind = nil
+				changed = true
+			} else {
+				seenKinds[t.ArtifactKind.Kind] = c.Slug
 			}
-			if t.InvocationField != "" {
-				if invocationCollection != "" {
-					slog.Warn("import: archive declares invocation routing on two collections; playbook resolution will depend on collection order until one is changed",
-						"collections", invocationCollection+","+c.Slug, "workspace_id", ws.ID)
-				} else {
-					invocationCollection = c.Slug
-				}
+		}
+		if t.InvocationField != "" {
+			if invocationCollection != "" {
+				slog.Warn("import: archive declares invocation routing on two collections; the later one is imported WITHOUT the declaration and keeps its items",
+					"keeps_declaration", invocationCollection, "stripped", c.Slug,
+					"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
+					"workspace_id", ws.ID)
+				t.InvocationField = ""
+				changed = true
+			} else {
+				invocationCollection = c.Slug
 			}
+		}
+		if changed {
+			encoded, eerr := t.JSON()
+			if eerr != nil {
+				return nil, fmt.Errorf("re-encode de-duplicated traits for %s: %w", c.Slug, eerr)
+			}
+			strippedTraits[c.ID] = encoded
 		}
 	}
 
@@ -398,7 +438,12 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// fires. Archives written before TASK-2657 carry no traits key at
 		// all, which lands here as "" — a pre-traits archive imports as a
 		// collection that declares nothing, which is the honest reading.
-		traits := coerceJSONForImport(c.Traits, "{}", "collections.traits", c.ID, ws.ID, true)
+		rawTraits := c.Traits
+		if stripped, ok := strippedTraits[c.ID]; ok {
+			// This collection lost a duplicate declaration above.
+			rawTraits = stripped
+		}
+		traits := coerceJSONForImport(rawTraits, "{}", "collections.traits", c.ID, ws.ID, true)
 		// coerceJSONForImport only guarantees the blob is valid JSON. Traits
 		// are declarations that switch kernel behavior on, so an import is
 		// held to the same grammar the API enforces — otherwise a
