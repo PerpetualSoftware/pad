@@ -638,6 +638,46 @@ func (s *Store) MigrateRelationReferentsQ(
 		}
 	default:
 		// Same workspace: resolve, keep what resolves, drop what does not.
+		//
+		// WHAT SURVIVES HERE IS OBSERVABLE, AND THAT IS ACCEPTED (IDEA-2893,
+		// lead ruling day 58; the measurements it rests on are on that idea's
+		// trail, which is where to check this reasoning rather than take it).
+		//
+		// A carried value naming a live item in a collection the mover cannot
+		// see resolves and survives; one naming nothing is dropped. So a mover
+		// can tell those two apart, and on a stored REF they additionally
+		// learn the target's canonical id.
+		//
+		// It is accepted for a reason that was MEASURED rather than assumed,
+		// and the measurement is the part worth keeping:
+		//
+		//   1. NOT ENUMERABLE. A caller cannot choose what to test. Every
+		//      write door refuses a caller-supplied ref naming an item they
+		//      cannot see — create, update and fields_patch all answer 400
+		//      with the COLLAPSED `not_found` wording — so no door turns a
+		//      chosen value into a carried one. This can only ever confirm a
+		//      value already sitting in an item the caller can read and did
+		//      not put there.
+		//   2. THEY ALREADY HAVE THE VALUE. An ordinary GET returns the raw
+		//      stored relation value verbatim; reads apply no redaction. The
+		//      increment is "it currently resolves", plus the ref->id mapping.
+		//
+		// Every way of closing it costs more than the increment. Redacting the
+		// response closes nothing, because the canonical id is written into
+		// the blob and comes straight back from a plain GET. Not canonicalising
+		// removes only the id half and makes a relation value stop meaning one
+		// thing everywhere. Dropping by the MOVER's visibility silently
+		// destroys a valid relation because of who moved the item, which is
+		// the failure this whole carry rule exists to prevent. Canonicalising
+		// only for movers who can see the target would make the STORED BYTES
+		// depend on who performed the move.
+		//
+		// THE ONE THING THAT WOULD CLOSE IT is carrying unresolvable values
+		// verbatim instead of dropping them, so survival stops signalling
+		// anything — and that is exactly the drop-and-report rule three lines
+		// below, which exists to keep dangling referents out of the blob. So
+		// this comment is also a warning: if you ever change that rule, you
+		// are changing this too, in the other direction.
 		issues, resolveErr := s.ResolveRelationReferentsQ(q, workspaceID, schema, carried)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
