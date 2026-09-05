@@ -734,7 +734,16 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	for _, lk := range data.ItemLinks {
 		newSourceID := itemMap[lk.SourceID]
 		newTargetID := itemMap[lk.TargetID]
-		if newSourceID == "" || newTargetID == "" {
+		// insertedItems on BOTH endpoints, not just a non-empty mapping
+		// (BUG-2884). An orphaned item still gets a map entry — written before
+		// the skip, because parent resolution needs it — so `!= ""` is
+		// satisfied by an id naming no row, and the INSERT below hits the
+		// foreign key. `continue` on that error is not a recovery on
+		// POSTGRES: a failed statement aborts the surrounding transaction, so
+		// every later statement fails and COMMIT reports "commit unexpectedly
+		// resulted in rollback". One skippable link took the whole restore
+		// down. The row has to be refused before the database sees it.
+		if !insertedItems[newSourceID] || !insertedItems[newTargetID] {
 			continue
 		}
 		_, err := tx.Exec(s.q(`
@@ -743,7 +752,12 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			newID(), ws.ID, newSourceID, newTargetID, lk.LinkType, lk.CreatedBy,
 			lk.CreatedAt)
 		if err != nil {
-			// Ignore duplicate links
+			// Defence in depth for a duplicate, nothing more — and on Postgres
+			// it is thin: the transaction is already poisoned by the time this
+			// runs, so the guard above is what actually keeps the import
+			// alive. A duplicate is not expected here anyway, since the source
+			// enforces UNIQUE(source_id, target_id, link_type) and the ids are
+			// freshly minted.
 			continue
 		}
 	}
@@ -753,11 +767,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// string would make a never-fired reminder read as fired at "".
 	for _, rm := range data.Reminders {
 		newItemID := itemMap[rm.ItemID]
-		// TWO GUARDS, AND NEITHER ALONE IS OBSERVABLE — measured, not assumed.
-		// Reverting either one on its own leaves the test green: with the map
-		// gate restored, the skip-on-error below survives the FK failure; with
-		// the fatal return restored, this gate means the insert never fails.
-		// Removing BOTH is what fails it. They are kept as a pair because they
+		// TWO GUARDS, AND NEITHER ALONE IS OBSERVABLE ON SQLITE — measured,
+		// not assumed. Reverting either one on its own leaves the test green
+		// there: with the map gate restored, the skip-on-error below survives
+		// the FK failure; with the fatal return restored, this gate means the
+		// insert never fails. Removing BOTH is what fails it.
+		//
+		// The driver qualifier is not decoration (BUG-2884): on POSTGRES a
+		// failed statement aborts the transaction, so "the skip-on-error
+		// survives the FK failure" is false there — COMMIT reports "commit
+		// unexpectedly resulted in rollback" and the whole import is lost.
+		// This gate, which refuses the row before the database sees it, is the
+		// one that carries both drivers. They are kept as a pair because they
 		// defend the same failure at different depths — this one prevents the
 		// bad write, the one below survives a bad write that arrives some
 		// other way — and the pair is recorded here so a future reader does
@@ -833,7 +854,13 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// Import item versions
 	for _, ver := range data.ItemVersions {
 		newItemID := itemMap[ver.ItemID]
-		if newItemID == "" {
+		// insertedItems, not just a non-empty mapping — same reason as the
+		// links loop above, and the same Postgres consequence (BUG-2884). The
+		// skip-on-error below is a log-and-continue for the unexpected, not a
+		// substitute for this gate: on Postgres the FK failure it used to
+		// "skip" had already aborted the transaction, so a single orphaned
+		// item's version history failed the entire workspace restore.
+		if !insertedItems[newItemID] {
 			continue
 		}
 		// version_seq (BUG-2270): re-derive a per-item monotonic seq at

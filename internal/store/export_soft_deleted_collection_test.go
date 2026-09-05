@@ -383,77 +383,203 @@ func TestLegacyBundleWithoutDeletedAtImportsLive(t *testing.T) {
 	}
 }
 
-// TestImportSurvivesOrphanedItemWithComment covers a SECOND defect, found by
-// the dependents test above while the export half was still unfixed: an
-// orphaned item — one whose collection the bundle does not carry — aborted the
-// ENTIRE workspace import if it had a comment.
+// TestImportSurvivesOrphanedItemDependents covers a SECOND defect, found by
+// the dependents test above while the export half was still unfixed, and
+// widened by the Postgres gate: a dependent row hanging off an ORPHANED item —
+// one whose collection the bundle does not carry — took the ENTIRE workspace
+// import down.
 //
-// The comment loop guards on `itemMap[cm.ItemID] == ""`, and that guard cannot
-// fire for an item the bundle contains: itemMap is populated for EVERY item
-// before the orphan skip, deliberately, because parent resolution reads it for
-// items the loop has not reached. So the loop INSERTed a comment whose item_id
-// names no row and the FK refused it, failing the whole restore. This is the
-// same defect the reminder loop already carries a long comment about ("ONE
-// orphaned item with a reminder aborted the entire workspace import"); it was
-// fixed there and left standing here.
+// Two mechanisms, and the second is why the SQLite suite was not enough.
 //
-// Fixing the export half removes pad's own route to it — a bundle this build
+//  1. THE GUARD CANNOT FIRE. Every dependent loop tested
+//     `itemMap[...] == ""`, and itemMap is populated for EVERY item before the
+//     orphan skip — deliberately, because parent resolution reads it for items
+//     the loop has not reached. So the INSERT went ahead with an id naming no
+//     row and the foreign key refused it.
+//
+//  2. "SKIP ON ERROR" IS NOT A SKIP ON POSTGRES. The links and versions loops
+//     answered the FK failure by continuing, which works on SQLite. On
+//     Postgres a failed statement aborts the surrounding transaction, so every
+//     later statement fails and COMMIT reports `commit unexpectedly resulted in
+//     rollback`. Catching the error cannot recover it; the row has to be
+//     refused BEFORE the database sees it. That is exactly what the reminder
+//     loop's insertedItems check already did, and it is now what all four do.
+//
+// One dependent kind per subtest, deliberately: a fixture carrying all three
+// would fail whichever loop is checked first and prove nothing about the other
+// two.
+//
+// Fixing the export half removes pad's own route here — a bundle this build
 // writes has no orphans — but not a hand-edited, foreign, or pre-fix archive,
 // which is exactly the population that needs to import.
-func TestImportSurvivesOrphanedItemWithComment(t *testing.T) {
-	s := testStore(t)
-	owner := createTestUser(t, s, "orphan2884@test.com", "Owner", "password123")
-	ws, archived, it := archivedCollectionFixture(t, s, "Orphan Comment 2884")
+func TestImportSurvivesOrphanedItemDependents(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// seed hangs exactly ONE kind of dependent row off the orphaned item.
+		seed func(t *testing.T, s *Store, ws *models.Workspace, orphan, live *models.Item)
+		// present asserts the bundle actually carries it, so a green cannot
+		// come from the fixture never reaching the loop under test.
+		present func(exp *models.WorkspaceExport, orphanID string) bool
+	}{
+		{
+			name: "comment",
+			seed: func(t *testing.T, s *Store, ws *models.Workspace, orphan, live *models.Item) {
+				if _, err := s.CreateComment(ws.ID, orphan.ID, "", models.CommentCreate{Author: "Rook", Body: "on an orphan"}); err != nil {
+					t.Fatalf("CreateComment: %v", err)
+				}
+			},
+			present: func(exp *models.WorkspaceExport, orphanID string) bool {
+				for _, cm := range exp.Comments {
+					if cm.ItemID == orphanID {
+						return true
+					}
+				}
+				return false
+			},
+		},
+		{
+			name: "version",
+			seed: func(t *testing.T, s *Store, ws *models.Workspace, orphan, live *models.Item) {
+				body := "edited, which mints a version"
+				if _, err := s.UpdateItem(orphan.ID, models.ItemUpdate{Content: &body}); err != nil {
+					t.Fatalf("UpdateItem: %v", err)
+				}
+			},
+			present: func(exp *models.WorkspaceExport, orphanID string) bool {
+				for _, v := range exp.ItemVersions {
+					if v.ItemID == orphanID {
+						return true
+					}
+				}
+				return false
+			},
+		},
+		{
+			name: "link",
+			seed: func(t *testing.T, s *Store, ws *models.Workspace, orphan, live *models.Item) {
+				if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: orphan.ID, LinkType: "blocks"}, live.ID); err != nil {
+					t.Fatalf("CreateItemLink: %v", err)
+				}
+			},
+			present: func(exp *models.WorkspaceExport, orphanID string) bool {
+				for _, lk := range exp.ItemLinks {
+					if lk.TargetID == orphanID || lk.SourceID == orphanID {
+						return true
+					}
+				}
+				return false
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t)
+			owner := createTestUser(t, s, "orphan-"+tc.name+"-2884@test.com", "Owner", "password123")
+			ws, archived, orphan := archivedCollectionFixture(t, s, "Orphan "+tc.name+" 2884")
 
-	if _, err := s.CreateComment(ws.ID, it.ID, "", models.CommentCreate{Author: "Rook", Body: "on an orphan"}); err != nil {
-		t.Fatalf("CreateComment: %v", err)
-	}
+			var live *models.Item
+			items, err := s.ListItems(ws.ID, models.ItemListParams{})
+			if err != nil {
+				t.Fatalf("ListItems: %v", err)
+			}
+			for i := range items {
+				if items[i].Title == "Live item" {
+					live = &items[i]
+				}
+			}
+			if live == nil {
+				t.Fatal("control leg failed: the fixture has no live item to link from")
+			}
+			tc.seed(t, s, ws, orphan, live)
 
-	exp, err := s.ExportWorkspace(ws.Slug)
-	if err != nil {
-		t.Fatalf("ExportWorkspace: %v", err)
-	}
+			exp, err := s.ExportWorkspace(ws.Slug)
+			if err != nil {
+				t.Fatalf("ExportWorkspace: %v", err)
+			}
 
-	// Hand-edit the bundle into the pre-fix shape: the item stays, its
-	// collection is removed. This is what every archive written before this
-	// change looks like, and what a foreign bundle may look like at any time.
-	kept := exp.Collections[:0]
-	for _, c := range exp.Collections {
-		if c.ID != archived.ID {
-			kept = append(kept, c)
-		}
-	}
-	if len(kept) == len(exp.Collections) {
-		t.Fatal("control leg failed: the archived collection was not in the bundle to remove")
-	}
-	exp.Collections = kept
-	var orphanHasComment bool
-	for _, cm := range exp.Comments {
-		if cm.ItemID == it.ID {
-			orphanHasComment = true
-		}
-	}
-	if !orphanHasComment {
-		t.Fatal("control leg failed: the bundle carries no comment on the orphaned item")
-	}
+			// Hand-edit the bundle into the pre-fix shape: the item stays, its
+			// collection is removed. This is what every archive written before
+			// this change looks like, and what a foreign bundle may look like
+			// at any time.
+			kept := exp.Collections[:0]
+			for _, c := range exp.Collections {
+				if c.ID != archived.ID {
+					kept = append(kept, c)
+				}
+			}
+			if len(kept) == len(exp.Collections) {
+				t.Fatal("control leg failed: the archived collection was not in the bundle to remove")
+			}
+			exp.Collections = kept
 
-	imported, err := s.ImportWorkspace(exp, "orphan-comment-2884-target", owner.ID)
-	if err != nil {
-		t.Fatalf("a bundle with one orphaned item aborted the whole import: %v", err)
-	}
+			// ISOLATE. Creating and editing an item mints rows of its own, so
+			// a bundle assembled for the "comment" case also carries a version
+			// for the orphan — and then the fixture would fail at whichever
+			// loop runs first no matter which loop is broken. Strip every
+			// orphan-attached dependent except the one under test, so each
+			// subtest can fail for exactly one reason.
+			exp.Comments = keepUnless(exp.Comments, tc.name == "comment", func(cm models.CommentExport) bool { return cm.ItemID == orphan.ID })
+			exp.ItemVersions = keepUnless(exp.ItemVersions, tc.name == "version", func(v models.ItemVersionExport) bool { return v.ItemID == orphan.ID })
+			exp.ItemLinks = keepUnless(exp.ItemLinks, tc.name == "link", func(lk models.ItemLinkExport) bool {
+				return lk.SourceID == orphan.ID || lk.TargetID == orphan.ID
+			})
 
-	// The orphan is skipped — that part is correct and unchanged — but the
-	// rest of the workspace must land.
-	items, err := s.ListItems(imported.ID, models.ItemListParams{})
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	if len(items) != 1 || items[0].Title != "Live item" {
-		got := make([]string, 0, len(items))
-		for _, i := range items {
-			got = append(got, i.Title)
-		}
-		t.Errorf("imported items = %v, want just [Live item]", got)
+			if !tc.present(exp, orphan.ID) {
+				t.Fatalf("control leg failed: the bundle carries no %s on the orphaned item, so the loop under test is never reached", tc.name)
+			}
+			// ...and nothing else attached to the orphan survived the strip.
+			for _, other := range []struct {
+				kind    string
+				present func(*models.WorkspaceExport, string) bool
+			}{
+				{"comment", func(e *models.WorkspaceExport, id string) bool {
+					for _, cm := range e.Comments {
+						if cm.ItemID == id {
+							return true
+						}
+					}
+					return false
+				}},
+				{"version", func(e *models.WorkspaceExport, id string) bool {
+					for _, v := range e.ItemVersions {
+						if v.ItemID == id {
+							return true
+						}
+					}
+					return false
+				}},
+				{"link", func(e *models.WorkspaceExport, id string) bool {
+					for _, lk := range e.ItemLinks {
+						if lk.SourceID == id || lk.TargetID == id {
+							return true
+						}
+					}
+					return false
+				}},
+			} {
+				if other.kind != tc.name && other.present(exp, orphan.ID) {
+					t.Fatalf("fixture is not single-reason: it also carries a %s on the orphaned item", other.kind)
+				}
+			}
+
+			imported, err := s.ImportWorkspace(exp, "orphan-"+tc.name+"-2884-target", owner.ID)
+			if err != nil {
+				t.Fatalf("a bundle with one orphaned item carrying a %s aborted the whole import: %v", tc.name, err)
+			}
+
+			// The orphan is skipped — that part is correct and unchanged — but
+			// the rest of the workspace must land.
+			got, err := s.ListItems(imported.ID, models.ItemListParams{})
+			if err != nil {
+				t.Fatalf("ListItems: %v", err)
+			}
+			if len(got) != 1 || got[0].Title != "Live item" {
+				titles := make([]string, 0, len(got))
+				for _, i := range got {
+					titles = append(titles, i.Title)
+				}
+				t.Errorf("imported items = %v, want just [Live item]", titles)
+			}
+		})
 	}
 }
 
@@ -533,4 +659,20 @@ func TestImportDoesNotInferTraitsForArchivedCollections(t *testing.T) {
 	if !parsed.IsZero() {
 		t.Errorf("inference stamped the canonical set onto an ARCHIVED collection; stored traits = %s", stored)
 	}
+}
+
+// keepUnless drops the entries matching drop, unless keep is true, in which
+// case the slice is returned untouched. Used to reduce an exported bundle to
+// exactly one kind of orphan-attached dependent.
+func keepUnless[T any](in []T, keep bool, drop func(T) bool) []T {
+	if keep {
+		return in
+	}
+	out := in[:0]
+	for _, v := range in {
+		if !drop(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
