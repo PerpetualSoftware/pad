@@ -98,7 +98,18 @@ TEST_PG_PKGS ?= ./...
 # still identifiable by eye; the checksum of the full path is what makes it
 # unique. Lowercased and punctuation-stripped because compose rejects
 # anything else.
-TEST_PG_PROJECT := padtest-$(shell printf '%s' '$(notdir $(CURDIR))' | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_-' '-')-$(shell printf '%s' '$(CURDIR)' | cksum | cut -d' ' -f1)
+# $$PWD and pwd rather than $(CURDIR): make interpolates CURDIR into the
+# command TEXT, so a checkout path containing a quote would break the quoting
+# and run whatever followed it. The shell reads its own working directory
+# instead, so no path text is ever parsed as command text. cksum is 32-bit and
+# that is deliberate — it is portable to every platform this repo builds on,
+# unlike sha1sum/shasum, and the basename is in the name too, so the checksum
+# only has to separate same-named siblings rather than be cryptographic.
+# `tr -d '\n'` BEFORE the -c translation, not after: `tr -c` treats the
+# trailing newline basename emits as an invalid character and turns it into a
+# dash, which produced `padtest-docapp-2708--1800854141`. Compose accepted it,
+# so nothing failed — the doubled dash in the printed name is what showed it.
+TEST_PG_PROJECT := padtest-$(shell basename "$$PWD" | tr -d '\n' | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_-' '-')-$(shell pwd | cksum | cut -d' ' -f1)
 COMPOSE_TEST := docker compose -p $(TEST_PG_PROJECT) -f docker-compose.test.yml
 
 test-pg:
@@ -109,7 +120,7 @@ test-pg:
 		echo "# NO TESTS EXECUTED - the database container never came up      #"; \
 		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
 		echo "################################################################"; \
-		$(COMPOSE_TEST) down -v >/dev/null 2>&1; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1 || echo "# ...and TEARDOWN ALSO FAILED: docker compose -p $(TEST_PG_PROJECT) down -v"; \
 		exit 1; \
 	fi; \
 	port=$$($(COMPOSE_TEST) port postgres 5432 2>/dev/null | sed 's/.*://'); \
@@ -119,23 +130,33 @@ test-pg:
 		echo "# NO TESTS EXECUTED - could not read the container's host port  #"; \
 		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
 		echo "################################################################"; \
-		$(COMPOSE_TEST) down -v >/dev/null 2>&1; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1 || echo "# ...and TEARDOWN ALSO FAILED: docker compose -p $(TEST_PG_PROJECT) down -v"; \
 		exit 1; \
 	fi; \
 	url="postgres://pad:pad@127.0.0.1:$$port/pad?sslmode=disable"; \
-	if ! docker run --rm --network host postgres:17-alpine pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; then \
+	if command -v pg_isready >/dev/null 2>&1; then \
+		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; ready=$$?; \
+	else \
+		$(COMPOSE_TEST) exec -T postgres pg_isready -U pad -q; ready=$$?; \
+	fi; \
+	if [ $$ready -ne 0 ]; then \
 		echo ""; \
 		echo "################################################################"; \
 		echo "# NO TESTS EXECUTED - Postgres on port $$port is not ready      #"; \
 		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
 		echo "################################################################"; \
-		$(COMPOSE_TEST) down -v >/dev/null 2>&1; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1 || echo "# ...and TEARDOWN ALSO FAILED: docker compose -p $(TEST_PG_PROJECT) down -v"; \
 		exit 1; \
 	fi; \
 	echo "test-pg: Postgres on 127.0.0.1:$$port (project $(TEST_PG_PROJECT))"; \
 	PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $(TEST_PG_PKGS) -v -count=1; \
 	EXIT_CODE=$$?; \
-	if [ $$EXIT_CODE -ne 0 ] && ! docker run --rm --network host postgres:17-alpine pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; then \
+	if command -v pg_isready >/dev/null 2>&1; then \
+		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; still_up=$$?; \
+	else \
+		$(COMPOSE_TEST) exec -T postgres pg_isready -U pad -q; still_up=$$?; \
+	fi; \
+	if [ $$EXIT_CODE -ne 0 ] && [ $$still_up -ne 0 ]; then \
 		echo ""; \
 		echo "################################################################"; \
 		echo "# THE DATABASE DIED DURING THE RUN.                             #"; \
