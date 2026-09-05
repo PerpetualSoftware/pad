@@ -788,6 +788,22 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// overrides on this path — only `status`, merged above — so every relation
 	// value here is CARRIED, and nothing on this door can refuse. Passing nil
 	// for `supplied` says that rather than leaving it implied.
+	// The supplied half owes the visibility check, exactly as at the single
+	// move door. Round 11 made `status` supplied so the store classifier
+	// would REFUSE an unresolvable value rather than drop it; it did not
+	// carry across the other half of the supplied contract, which the store
+	// resolver structurally cannot provide — see
+	// refuseInvisibleRelationOverrides. This was the only one of the three
+	// MigrateRelationReferents call sites without it, so a caller who cannot
+	// see the target collection could name a live item in it and have the
+	// value stored (codex round 16).
+	if invisible, err := s.refuseInvisibleRelationOverrides(
+		r, workspaceID, workspaceRole(r), items.SchemaForMigratedFields(targetSchema),
+		suppliedByCaller); err != nil {
+		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
+	} else if len(invisible) > 0 {
+		return nil, &bulkOpError{message: relationIssuesMessage(invisible), code: "validation_error"}
+	}
 	relRefusals, relDropped, relErr := s.store.MigrateRelationReferents(
 		workspaceID, items.SchemaForMigratedFields(targetSchema), result.Fields,
 		suppliedByCaller, store.CarriedSourceValues(currentFields, result.Dropped),

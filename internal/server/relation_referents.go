@@ -331,11 +331,23 @@ func (s *Server) refuseInvisibleRelationOverrides(
 // and counting it here excludes it from the very check it needs (codex round
 // 14). Third time nil has done this in one unit: rounds 4 and 5 were the same
 // distinction in the origin label.
+//
+// An EXPLICIT nil in `supplied` beats a non-nil `carried`, and that is a
+// separate rule from the one above rather than a restatement of it (codex
+// round 16). Round 14 skipped nils PER MAP, so a caller who nulled a key
+// whose stored value was non-nil still had it counted — out of `carried`,
+// on the strength of a value the request had just discarded. The request is
+// the later statement about that key: it says there is no value here, so
+// whatever ValidateFields puts in its place is a default and owes the
+// visibility check.
 func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
 	out := make(map[string]bool, len(supplied)+len(carried))
 	for _, m := range []map[string]any{supplied, carried} {
 		for k, v := range m {
 			if v == nil {
+				continue
+			}
+			if sv, overridden := supplied[k]; overridden && sv == nil {
 				continue
 			}
 			out[k] = true

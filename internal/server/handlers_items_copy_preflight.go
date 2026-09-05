@@ -782,6 +782,21 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// `origin` loses its entry for the same reason: if a default does
 	// re-populate the key, its origin is the destination's default, not the
 	// source value that was just discarded.
+	// The CARRIED drops reach the caller too — `relationDropReason` below is
+	// rendered straight into `fields.dropped[].reason` — so they owe the same
+	// visibility collapse the late-default drops get a few lines down.
+	// `wrong_collection` is the reason that names a LIVE item, so without
+	// this a carried value pointing at one the caller cannot see reported
+	// differently from a value naming nothing: the existence oracle round 3
+	// closed on the main pass, reached by the carried path (codex round 16).
+	//
+	// This is the only site where a MigrateRelationReferents drop reason
+	// reaches a caller — move and bulk move report dropped KEYS and no
+	// reasons — so the class is one site, not five.
+	if cerr := s.collapseInvisibleRelationIssues(r, dst.WorkspaceID(), dst.Role, relDropped); cerr != nil {
+		writeInternalError(w, fmt.Errorf("copy preflight: carried relation visibility: %w", cerr))
+		return
+	}
 	relationDropReason := make(map[string]string, len(relDropped))
 	for _, ri := range relDropped {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
@@ -823,7 +838,23 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	}
 	invisibleDefaults, invErr := s.dropInvisibleRelationDefaults(r, dst.WorkspaceID(), dst.Role,
 		items.SchemaForMigratedFields(targetSchema), final,
-		notDefaultKeys(input.FieldOverrides, carriedSource))
+		// `carriedSource` is the PRE-relation-pass snapshot and is the wrong
+		// input here. It is right for the origin label and for the relation
+		// classifier, which ask "did this value come across from the source?"
+		// — a different question from "is the value in hand now a destination
+		// default?". Recomputing against `migrated.Dropped`, which the loop
+		// above extended with the relation pass's drops, answers the second
+		// one: a key that pass dropped is no longer carried, so the default
+		// ValidateFields put in its place is checked rather than exempted.
+		//
+		// Round 15 reported this and every mutant survived, because the probe
+		// used a source value that RESOLVED — which the relation pass never
+		// drops, so the two sets were identical by construction. Round 16
+		// supplied the shape that differs: a non-nil DANGLING source value,
+		// under which the unfixed form hands a caller who cannot see the
+		// target collection the id of the item the default names.
+		notDefaultKeys(input.FieldOverrides,
+			store.CarriedSourceValues(currentFields, migrated.Dropped)))
 	if invErr != nil {
 		writeInternalError(w, fmt.Errorf("copy preflight: relation default visibility: %w", invErr))
 		return

@@ -152,6 +152,24 @@ func (f *doorFixture) storedRelation(itemID string) (any, bool) {
 	return v, ok
 }
 
+// storedRelationKey is storedRelation for a key other than owner_ref. Same
+// reason it reads the database rather than the response: a handler that
+// echoed the right thing while writing the wrong thing would pass a
+// response-only check.
+func (f *doorFixture) storedRelationKey(itemID, key string) (any, bool) {
+	f.t.Helper()
+	it, err := f.srv.store.GetItem(itemID)
+	if err != nil || it == nil {
+		f.t.Fatalf("GetItem(%s): %v", itemID, err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(it.Fields), &m); err != nil {
+		f.t.Fatalf("parse fields %q: %v", it.Fields, err)
+	}
+	v, ok := m[key]
+	return v, ok
+}
+
 // badRef is shaped like a real issue ref and names nothing. Not a slug and not
 // free text: those are refused by a DIFFERENT rule (the resolver has no slug
 // fallback), and a fixture rejectable two ways discriminates nothing.
@@ -1152,5 +1170,227 @@ func TestRelationDoors_LateDefaultWrongCollectionDoesNotDiscloseExistence(t *tes
 	}
 	if strings.Contains(hidden, secret.ID) {
 		t.Fatalf("the late-default refusal handed back the hidden item's canonical id: %s", hidden)
+	}
+}
+
+// A BULK move owes its supplied half the same visibility check the single
+// move door runs (codex round 16).
+//
+// Round 11 established that `req.Status` on a bulk collection move is CALLER
+// INPUT and wired `suppliedByCaller` so the store classifier would refuse an
+// unresolvable value instead of dropping it. What that round did not carry
+// across is the OTHER half of the supplied contract: the single move door,
+// the copy, and the preflight all call refuseInvisibleRelationOverrides
+// before handing the values to the store, because the store resolver cannot
+// answer a request-scoped question. Bulk move is the fourth migrate door and
+// the only one that never called it — the N+1th site of a rule three doors
+// already applied.
+//
+// So a caller who cannot see the relation's target collection could name a
+// live item in it and have the value stored, receiving its canonical id back.
+func TestRelationDoors_BulkMoveRefusesInvisibleSuppliedStatus(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Bulk Status Relation", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"relation","collection":%q}
+	]}`, f.people.Slug))
+
+	blind := mustUser(t, f.srv, "blind-bulk-status@example.com", "blindbulkstatus", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	// Sees the source and the destination; NOT People.
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	item := f.seed(`{"status":"open"}`)
+	rr := f.callAs(blind, "editor", f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "move", "ids": []string{item.ID}, "collection": dst.Slug,
+			"status": f.target.Ref})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move: expected 200 with a per-item failure, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), f.target.ID) {
+		t.Fatalf("the bulk move handed a caller who cannot see People the target's id: %s",
+			rr.Body.String())
+	}
+	if v, ok := f.storedRelationKey(item.ID, "status"); ok && v == f.target.ID {
+		t.Fatalf("a caller who cannot see People pointed a relation at one of its items: %#v", v)
+	}
+	var out bulkItemsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse bulk response: %v: %s", err, rr.Body.String())
+	}
+	if len(out.Failed) == 0 {
+		t.Fatalf("a supplied value naming an item the caller cannot see was accepted: %+v", out)
+	}
+
+	// Control: the OWNER can see People, so the identical bulk move lands and
+	// stores the canonical id. Without this leg the test passes against a
+	// build that refused every supplied status.
+	item2 := f.seed(`{"status":"open"}`)
+	rr2 := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "move", "ids": []string{item2.ID}, "collection": dst.Slug,
+			"status": f.target.Ref})
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("bulk move as owner: expected 200, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if v, ok := f.storedRelationKey(item2.ID, "status"); !ok || v != f.target.ID {
+		t.Fatalf("the owner's identical bulk move did not store the relation (%#v, present=%v); "+
+			"the refusal above is not visibility-dependent", v, ok)
+	}
+}
+
+// The preflight's CARRIED relation drops owe the same visibility collapse the
+// late-default drops get (codex round 16).
+//
+// Round 15 hoisted the collapse so `ResolveLateRelationDefaults`' issues stop
+// naming live items to callers who cannot see them. `MigrateRelationReferents`
+// returns its issues down a second path — `relationDropReason`, rendered
+// straight into `fields.dropped[].reason` — and that path never passed through
+// the collapse. `wrong_collection` is the reason that names a LIVE item, so a
+// carried value pointing at one the caller cannot see was reported
+// differently from a value naming nothing: the existence oracle, on the
+// carried path rather than the default path.
+//
+// The two legs are the whole test: a hidden-but-live target and a dangling
+// value must produce the SAME reason for a caller who can see neither.
+func TestRelationDoors_PreflightCarriedDropDoesNotDiscloseExistence(t *testing.T) {
+	f := newDoorFixture(t)
+	// A collection the restricted caller cannot see, holding a live item.
+	secret := mustSchemaCollection(t, f.srv, f.ws.ID, "Secret People", `{"fields":[]}`)
+	hidden, err := f.srv.store.CreateItem(f.ws.ID, secret.ID, models.ItemCreate{
+		Title: "Hidden Person", CreatedBy: f.owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem(hidden): %v", err)
+	}
+	// The destination declares owner_ref against People, which the caller CAN
+	// see — so the only thing hidden is the collection the source value
+	// actually points into.
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Preflight Dest", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q}
+	]}`, f.people.Slug))
+
+	blind := mustUser(t, f.srv, "blind-carried-drop@example.com", "blindcarrieddrop", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID, f.people.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	reasonFor := func(user *models.User, role, storedRef string) string {
+		t.Helper()
+		item := f.seed(fmt.Sprintf(`{"status":"open","owner_ref":%q}`, storedRef))
+		rr := f.callAs(user, role, f.srv.handleCopyItemPreflight, "POST",
+			"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/copy/preflight",
+			map[string]string{"itemSlug": item.Slug},
+			map[string]any{"target_workspace": f.ws.Slug, "target_collection": dst.Slug})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("preflight (%s): got %d, want 200: %s", storedRef, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), hidden.ID) && user == blind {
+			t.Fatalf("the preflight handed a caller who cannot see Secret People the hidden "+
+				"item's id: %s", rr.Body.String())
+		}
+		var pre ItemCopyPreflight
+		if err := json.Unmarshal(rr.Body.Bytes(), &pre); err != nil {
+			t.Fatalf("parse preflight: %v: %s", err, rr.Body.String())
+		}
+		for _, d := range pre.Fields.Dropped {
+			if d.Key == "owner_ref" {
+				return d.Reason
+			}
+		}
+		t.Fatalf("preflight (%s) reported no drop for owner_ref: %+v", storedRef, pre.Fields)
+		return ""
+	}
+
+	hiddenReason := reasonFor(blind, "editor", hidden.Ref)
+	danglingReason := reasonFor(blind, "editor", badRef)
+	if hiddenReason != danglingReason {
+		t.Fatalf("a caller who can see neither target distinguishes them: a LIVE hidden item "+
+			"reports %q and a nonexistent value reports %q — that difference is the existence "+
+			"oracle", hiddenReason, danglingReason)
+	}
+
+	// Control: the OWNER can see Secret People, so they still get the
+	// specific reason. Without this leg the test passes against a build that
+	// collapsed every reason to not_found and told nobody anything.
+	if got := reasonFor(f.owner, "owner", hidden.Ref); got == danglingReason {
+		t.Fatalf("the owner's identical preflight also reports %q for a live item they CAN "+
+			"see; the collapse is not visibility-dependent", got)
+	}
+}
+
+// A NULL override does not make a stale non-nil source value stop counting as
+// carried (codex round 16).
+//
+// `notDefaultKeys` already knows that a nil value is not a value — round 14
+// taught it that, because ValidateFields treats a present-but-nil key as
+// absent and injects the destination default in its place. What it checks is
+// the SUPPLIED and CARRIED maps; the carried map here is built from the
+// item's STORED blob, which holds a non-nil legacy value. So a caller who
+// nulls the key gets the default injected AND the key exempted from the
+// visibility check, on the strength of a stored value the request just
+// discarded.
+//
+// The relation pass does not rescue this: an override of nil leaves nothing
+// for it to resolve, so the key is never dropped and never leaves the carried
+// set. The existing null-source test does not reach it — that fixture has no
+// stored value to go stale.
+func TestRelationDoors_NullOverrideDoesNotExemptDefaultFromVisibility(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Null Override Dest", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"default":%q,"required":true}
+	]}`, f.people.Slug, f.target.Ref))
+
+	blind := mustUser(t, f.srv, "blind-null-override@example.com", "blindnulloverride", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, blind.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, blind.ID, "specific",
+		[]string{f.tasks.ID, dst.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	// A non-nil STORED value, which is what goes stale. badRef so the value
+	// itself is unresolvable and cannot be confused for the thing under test.
+	item := f.seed(fmt.Sprintf(`{"status":"open","owner_ref":%q}`, badRef))
+	rr := f.callAs(blind, "editor", f.srv.handleMoveItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/move",
+		map[string]string{"itemSlug": item.Slug},
+		map[string]any{"target_collection": dst.Slug,
+			"field_overrides": map[string]any{"owner_ref": nil}})
+	if strings.Contains(rr.Body.String(), f.target.ID) {
+		t.Fatalf("the move handed a caller who cannot see People the id of the item the "+
+			"destination default names: %s", rr.Body.String())
+	}
+	if v, ok := f.storedRelation(item.ID); ok && v == f.target.ID {
+		t.Fatalf("the hidden default was stored for a caller who cannot see People: %#v", v)
+	}
+
+	// Control: the OWNER can see People, so the same move keeps the default.
+	// Without this leg the test passes against a build that dropped every
+	// default, or refused every move.
+	item2 := f.seed(fmt.Sprintf(`{"status":"open","owner_ref":%q}`, badRef))
+	rr2 := f.call(f.srv.handleMoveItem, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item2.Slug+"/move",
+		map[string]string{"itemSlug": item2.Slug},
+		map[string]any{"target_collection": dst.Slug,
+			"field_overrides": map[string]any{"owner_ref": nil}})
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("move as owner: expected 200, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if v, ok := f.storedRelation(item2.ID); !ok || v != f.target.ID {
+		t.Fatalf("the owner's identical move did not store the default (%#v, present=%v); "+
+			"the drop above is not visibility-dependent", v, ok)
 	}
 }

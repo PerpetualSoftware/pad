@@ -801,3 +801,50 @@ func newCopyRelationFixtureIncompatibleSource(t *testing.T) *relationFixture {
 	f.source = src
 	return f
 }
+
+// A carried key the RELATION pass dropped must stop counting as carried when
+// the destination default that replaces it is visibility-checked (codex round
+// 16, the concrete case round 15 could not produce).
+//
+// The preflight computes `carriedSource` from MigrateFields' drops, then runs
+// MigrateRelationReferents, which drops MORE keys — and hands the
+// default-visibility call the set captured BEFORE that second pass. A key the
+// relation pass dropped therefore still reads as "carried", and
+// `notDefaultKeys` exempts it from the visibility check. When ValidateFields
+// then refills that very key with the destination schema's default, the
+// default is exempted on the strength of a value that is no longer there.
+//
+// Round 15 reported this shape and every mutant survived, so it shipped as a
+// robustness change and was then REVERTED by lead ruling as unobservable. The
+// probe that cleared it used a source value that RESOLVED — which the relation
+// pass never drops, so the two sets were identical by construction and the
+// probe could not have failed. THIS fixture uses a non-nil DANGLING source
+// value, which is the only shape that makes the two sets differ.
+func TestCopyPreflight_RelationDroppedCarriedKeyDoesNotExemptTheDefault(t *testing.T) {
+	dangling := badRef
+	f := newCopyRelationFixtureWith(t, resolvableDestDefault, &dangling, true)
+
+	// An editor who can see the source and the destination collections, but
+	// NOT People B — the collection the destination's default points into.
+	blind := f.restrictedEditor("blind-carried-default@example.com", "blindcarrieddef",
+		[]string{f.collA.ID}, []string{f.collB.ID})
+
+	rr := f.call(blind, reqOpts{wsRoleCtx: "editor"}, f.baseBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preflight: got %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), f.targetB.ID) {
+		t.Fatalf("the preflight handed a caller who cannot see People B the id of the item "+
+			"its default names: %s", rr.Body.String())
+	}
+
+	// Control: the OWNER can see People B, so the same preflight resolves the
+	// default and carries its canonical id. Without this leg the test passes
+	// against a build that dropped every destination default.
+	pre := f.ok(f.baseBody())
+	if v, carried := carriedValue(pre, "owner_ref"); !carried || v != f.targetB.ID {
+		t.Fatalf("the owner's identical preflight did not resolve the destination default "+
+			"(%#v, carried=%v, want %q); the omission above is not visibility-dependent",
+			v, carried, f.targetB.ID)
+	}
+}
