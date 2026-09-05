@@ -770,9 +770,26 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		result.Fields["status"] = req.Status
 		suppliedByCaller["status"] = req.Status
 	}
-	if len(result.Errors) > 0 {
+	// Filtered against what the CALLER supplied, because result.Errors is
+	// computed by MigrateFields BEFORE any override exists (migrate.go:62).
+	//
+	// This is the defect PLAN-2357 DR-12 fixed at the SINGLE move door and
+	// nobody swept to this one: an override that SATISFIED a required
+	// destination field still 400'd. Reachable here since round 11 made
+	// `status` caller input — move an item whose source `status` is a select
+	// value into a destination whose `status` is a required relation, supply
+	// a perfectly good referent, and the move was refused for a field the
+	// request had just filled (codex round 19).
+	//
+	// Filtering rather than adopting the single door's "validate the merged
+	// map" shape, deliberately: ValidateFields below already covers the
+	// merged map, and switching this check to it would change the error CODE
+	// for a genuinely-missing required field from missing_required_fields to
+	// validation_error — a compatibility break for callers reading the code,
+	// to fix a defect that does not need it.
+	if remaining := requiredErrorsUnsatisfiedBy(result.Errors, suppliedByCaller); len(remaining) > 0 {
 		return nil, &bulkOpError{
-			message: "required fields missing: " + strings.Join(result.Errors, ", "),
+			message: "required fields missing: " + strings.Join(remaining, ", "),
 			code:    "missing_required_fields",
 		}
 	}
@@ -1040,4 +1057,35 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 		return delta
 	}
 	return nil
+}
+
+// requiredErrorsUnsatisfiedBy drops the required-field errors MigrateFields
+// raised for keys the caller then supplied a value for.
+//
+// MigrateFields formats these as `required field %q has no value`, so the
+// match is against that exact rendering for each supplied key rather than a
+// substring of the message — a substring test would also match a key whose
+// name contains another key's name.
+func requiredErrorsUnsatisfiedBy(errs []string, supplied map[string]any) []string {
+	if len(errs) == 0 || len(supplied) == 0 {
+		return errs
+	}
+	satisfied := make(map[string]bool, len(supplied))
+	for k, v := range supplied {
+		if v == nil {
+			continue
+		}
+		if str, isStr := v.(string); isStr && strings.TrimSpace(str) == "" {
+			continue
+		}
+		satisfied[fmt.Sprintf("required field %q has no value", k)] = true
+	}
+	out := errs[:0:0]
+	for _, e := range errs {
+		if satisfied[e] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

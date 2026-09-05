@@ -1394,3 +1394,65 @@ func TestRelationDoors_NullOverrideDoesNotExemptDefaultFromVisibility(t *testing
 			"the drop above is not visibility-dependent", v, ok)
 	}
 }
+
+// A supplied value that SATISFIES a required destination field must not be
+// refused by a required-field error computed before the override existed
+// (codex round 19).
+//
+// PLAN-2357 DR-12 fixed exactly this at the SINGLE move door — the comment
+// there records that `result.Errors` is computed by MigrateFields BEFORE any
+// override, so an override that satisfied a required field still 400'd — and
+// nobody swept the fix to the bulk door. It became reachable when round 11
+// established that `req.Status` on a bulk move is caller input.
+//
+// The shape: a source `status` holding a select value cannot migrate into a
+// destination `status` declared as a required relation, so MigrateFields drops
+// it and records the required-field error. The caller supplies a perfectly
+// good referent in the same request, and the move was refused for a field the
+// request had just filled.
+func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Bulk Required Relation", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"relation","collection":%q,"required":true}
+	]}`, f.people.Slug))
+
+	item := f.seed(`{"status":"open"}`)
+	rr := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "move", "ids": []string{item.ID}, "collection": dst.Slug,
+			"status": f.target.Ref})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move: got %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var out bulkItemsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse bulk response: %v: %s", err, rr.Body.String())
+	}
+	if len(out.Failed) > 0 {
+		t.Fatalf("the move was refused for a required field the SAME request supplied: %+v",
+			out.Failed)
+	}
+	if v, ok := f.storedRelationKey(item.ID, "status"); !ok || v != f.target.ID {
+		t.Fatalf("the supplied referent was not stored (%#v, present=%v), want %q",
+			v, ok, f.target.ID)
+	}
+
+	// Control: with NOTHING supplied for the required relation, the move must
+	// STILL be refused, and with the same code. Without this leg the test
+	// passes against a build that stopped checking required fields at all.
+	item2 := f.seed(`{"status":"open"}`)
+	rr2 := f.call(f.srv.handleBulkItems, "POST",
+		"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+		map[string]any{"op": "move", "ids": []string{item2.ID}, "collection": dst.Slug})
+	var out2 bulkItemsResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &out2); err != nil {
+		t.Fatalf("parse bulk response: %v: %s", err, rr2.Body.String())
+	}
+	if len(out2.Failed) == 0 {
+		t.Fatalf("a move leaving a REQUIRED relation empty was accepted: %+v", out2)
+	}
+	if got := out2.Failed[0].Code; got != "missing_required_fields" {
+		t.Fatalf("failure code = %q, want missing_required_fields — the filter must narrow "+
+			"the error list, not replace the check (message: %s)", got, out2.Failed[0].Error)
+	}
+}
