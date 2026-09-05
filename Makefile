@@ -85,6 +85,18 @@ test:
 # leg on a container that stopped after the suite finished would turn honest
 # greens red.
 #
+# THE READINESS PROBE TESTS THE HOST-PUBLISHED PORT, which is the path the
+# tests take — not the container's own socket. Two ways in, because neither is
+# universal: the host's pg_isready when it exists, otherwise a throwaway
+# container reaching back through host.docker.internal (native on Docker
+# Desktop, and `--add-host=...:host-gateway` makes it resolve on Linux too).
+# An earlier version used `--network host`, which is Linux-only and would have
+# made a healthy database read as unreachable on Desktop; the version after
+# that fell back to `compose exec`, which answers "is the server alive inside
+# the container" and would let a broken port mapping through the guard. This
+# box has no host pg_isready, so the fallback is the branch that actually runs
+# here — it is not a rarely-exercised path.
+#
 # THE BANNER IS THE DISCRIMINATOR, NOT THE EXIT CODE. make collapses every
 # failed recipe to exit 2, so "the database was unreachable" and "tests failed"
 # are indistinguishable by status — measured, not assumed. Do not key automation
@@ -128,7 +140,7 @@ TEST_PG_PROJECT := padtest-$(shell basename "$$PWD" | tr -d '\n' | tr 'A-Z' 'a-z
 COMPOSE_TEST := docker compose -p $(TEST_PG_PROJECT) -f docker-compose.test.yml
 
 test-pg:
-	@trap '$(COMPOSE_TEST) down -v >/dev/null 2>&1; echo ""; echo "test-pg: INTERRUPTED - stack $(TEST_PG_PROJECT) torn down."; exit 130' INT TERM; \
+	@trap 'echo ""; if $(COMPOSE_TEST) down -v >/dev/null 2>&1; then echo "test-pg: INTERRUPTED - stack $(TEST_PG_PROJECT) torn down."; else echo "test-pg: INTERRUPTED and TEARDOWN FAILED - reap it with: docker compose -p $(TEST_PG_PROJECT) down -v"; fi; exit 130' INT TERM; \
 	port=""; \
 	if ! $(COMPOSE_TEST) up -d --wait; then \
 		echo ""; \
@@ -153,7 +165,8 @@ test-pg:
 	if command -v pg_isready >/dev/null 2>&1; then \
 		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; ready=$$?; \
 	else \
-		$(COMPOSE_TEST) exec -T postgres pg_isready -U pad -q; ready=$$?; \
+		docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine \
+			pg_isready -h host.docker.internal -p "$$port" -U pad -q; ready=$$?; \
 	fi; \
 	if [ $$ready -ne 0 ]; then \
 		echo ""; \
@@ -170,7 +183,8 @@ test-pg:
 	if command -v pg_isready >/dev/null 2>&1; then \
 		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; still_up=$$?; \
 	else \
-		$(COMPOSE_TEST) exec -T postgres pg_isready -U pad -q; still_up=$$?; \
+		docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine \
+			pg_isready -h host.docker.internal -p "$$port" -U pad -q; still_up=$$?; \
 	fi; \
 	if [ $$EXIT_CODE -ne 0 ] && [ $$still_up -ne 0 ]; then \
 		echo ""; \
