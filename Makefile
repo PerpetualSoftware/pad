@@ -70,6 +70,21 @@ test:
 # let an unreachable database look like a test result. Never put a fixed host
 # port back in docker-compose.test.yml or hardcode one here.
 #
+# AN INTERRUPT TEARS THE STACK DOWN TOO. Ctrl-C during `go test` kills this
+# recipe's shell, and without the trap above `down -v` never runs — orphaning
+# exactly the stack this task was filed about. Set before `up`, so an interrupt
+# during startup is covered as well.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO: report a database that dies AFTER a
+# passing run. The post-run banner is gated on the tests having failed, and a
+# reviewer asked for that gate to be dropped. It stays, because the premise
+# does not hold — storetest.NewPostgres skips only when PAD_TEST_POSTGRES_URL
+# is EMPTY, and a database that is gone produces t.Fatalf, not a skip. So under
+# this target a dead database always fails the tests that touch it, and exit 0
+# means every Postgres-backed test completed against a live one. Failing the
+# leg on a container that stopped after the suite finished would turn honest
+# greens red.
+#
 # THE BANNER IS THE DISCRIMINATOR, NOT THE EXIT CODE. make collapses every
 # failed recipe to exit 2, so "the database was unreachable" and "tests failed"
 # are indistinguishable by status — measured, not assumed. Do not key automation
@@ -113,7 +128,8 @@ TEST_PG_PROJECT := padtest-$(shell basename "$$PWD" | tr -d '\n' | tr 'A-Z' 'a-z
 COMPOSE_TEST := docker compose -p $(TEST_PG_PROJECT) -f docker-compose.test.yml
 
 test-pg:
-	@port=""; \
+	@trap '$(COMPOSE_TEST) down -v >/dev/null 2>&1; echo ""; echo "test-pg: INTERRUPTED - stack $(TEST_PG_PROJECT) torn down."; exit 130' INT TERM; \
+	port=""; \
 	if ! $(COMPOSE_TEST) up -d --wait; then \
 		echo ""; \
 		echo "################################################################"; \
