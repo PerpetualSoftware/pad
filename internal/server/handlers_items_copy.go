@@ -339,6 +339,16 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, fmt.Errorf("copy item: parse destination schema: %w", err))
 			return
 		}
+		// STRUCTURAL BEFORE SEMANTIC, through the one classifier the preflight
+		// also runs (lead ruling, day 58). This door used to reach the
+		// visibility question first and the structural checks only later,
+		// inside the store call — so the same body got `malformed_override`
+		// from the preview and `validation_error` from the copy. The order was
+		// never chosen; it was wherever each check happened to live.
+		if code, msg, ok := structuralOverrideError(input.FieldOverrides, targetSchema); !ok {
+			writeError(w, http.StatusBadRequest, code, msg)
+			return
+		}
 		invisible, err := s.refuseInvisibleRelationOverrides(
 			r, dst.WorkspaceID(), dst.Role, items.SchemaForMigratedFields(targetSchema),
 			input.FieldOverrides)
@@ -357,6 +367,13 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		TargetWorkspaceID:  dst.WorkspaceID(),
 		TargetCollectionID: targetColl.ID,
 		FieldOverrides:     input.FieldOverrides,
+		// The visibility rule, bound to THIS request and to the caller's role
+		// in the DESTINATION — dst.Role, never workspaceRole(r), which is the
+		// source's. The copy runs it on its own transaction so a late-resolved
+		// destination default gets the same check the other seven doors give
+		// it, and so the copy and its preflight agree by construction rather
+		// than by two implementations (night-11 finding; lead ruling day-58).
+		RelationVisibility: s.relationVisibility(r, dst.Role),
 		Actor:              actorID,
 		CreatedBy:          actor,
 		Source:             actorSource,

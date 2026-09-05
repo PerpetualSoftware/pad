@@ -135,6 +135,18 @@ func carriedValue(pre ItemCopyPreflight, key string) (any, bool) {
 	return nil, false
 }
 
+// carriedFrom returns the preflight's origin label for key. That label is the
+// preflight's half of the refilled-carried-drop contract: `"default"` says the
+// value in hand came from the DESTINATION schema, not across from the source.
+func carriedFrom(pre ItemCopyPreflight, key string) string {
+	for _, c := range pre.Fields.Carried {
+		if c.Key == key {
+			return c.From
+		}
+	}
+	return ""
+}
+
 func TestCopyEndpoint_PreflightAndCopyAgreeOnRelationReferents(t *testing.T) {
 	t.Run("a carried relation drops identically on both doors", func(t *testing.T) {
 		f := newCopyRelationFixture(t)
@@ -901,6 +913,211 @@ func TestCopyEndpoint_NonStringDestinationDefaultDropsWithOrWithoutANullOverride
 				"non-string relation default ("+tc.name+")", body)
 			if v, present := f.persistedFields(res.Item.ID)["owner_ref"]; present {
 				t.Fatalf("the copy stored a non-reference in a relation field: %#v", v)
+			}
+		})
+	}
+}
+
+// The cross-workspace COPY gives a late-resolved DESTINATION DEFAULT the same
+// visibility check the other seven doors give it (night-11 finding, lead
+// ruling day 58).
+//
+// `dropInvisibleRelationDefaults` reached five call sites, all in
+// `internal/server`. The SIXTH caller of the late-default resolver is
+// `store.migrateCopyFields`, inside the copy's own transaction, where a
+// *Server method cannot go. Round 15's CONVE-18 sweep said "all five late-
+// default sites" and was right about the sites it could see: the class is one
+// wider than the package.
+//
+// The consequence is this unit's own thesis at the eighth door. For ONE
+// request the preflight reported `owner_ref` dropped and the copy STORED it,
+// handing the caller the canonical id of an item in a collection they cannot
+// read.
+//
+// Leg 3 is what makes this a test rather than an assertion: the OWNER's
+// identical copy must still resolve and store the default, so a build that
+// dropped every default cannot pass. The structure is the night reviewer's;
+// keeping it because a visibility test without the can-see control is not one.
+func TestCopyEndpoint_InvisibleDestinationDefaultIsDroppedByTheCopyToo(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
+
+	// Editor in both workspaces: sees the source collection in A and the
+	// destination collection in B, but NOT People B — where the destination
+	// schema's own default points.
+	blind := f.restrictedEditor("eighth-door-blind@example.com", "eighthdoorblind",
+		[]string{f.collA.ID}, []string{f.collB.ID})
+
+	// Leg 1 — the preflight, as the premise this test is about agreement with.
+	rr := f.call(blind, reqOpts{wsRoleCtx: "editor"}, f.baseBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preflight: got %d: %s", rr.Code, rr.Body.String())
+	}
+	var pre ItemCopyPreflight
+	if err := json.Unmarshal(rr.Body.Bytes(), &pre); err != nil {
+		t.Fatalf("parse preflight: %v: %s", err, rr.Body.String())
+	}
+	preReason, preDropped := droppedReason(pre, "owner_ref")
+	if !preDropped {
+		t.Fatalf("premise failed: the preflight did not drop the invisible default: %+v", pre.Fields)
+	}
+
+	// Leg 2 — the copy must agree.
+	rr2 := f.callCopy(blind, reqOpts{wsRoleCtx: "editor"}, f.baseBody())
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("copy: expected 201, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	var out ItemCopyResult
+	if err := json.Unmarshal(rr2.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse copy result: %v: %s", err, rr2.Body.String())
+	}
+	if got := f.persistedFields(out.Item.ID)["owner_ref"]; got == f.targetB.ID {
+		t.Fatalf("the copy STORED the invisible default's canonical id %q for a caller who "+
+			"cannot see People B, while the preflight reported it dropped (%q) for the same "+
+			"request — one request, two answers", f.targetB.ID, preReason)
+	}
+	if strings.Contains(rr2.Body.String(), f.targetB.ID) {
+		t.Fatalf("the 201 hands the caller the hidden item's id %q: %s",
+			f.targetB.ID, rr2.Body.String())
+	}
+
+	// Leg 3 — CONTROL. The owner CAN see People B, so the default must resolve
+	// and land. Without this the test passes against a build that drops every
+	// destination default.
+	rr3 := f.callCopy(f.owner, reqOpts{}, f.baseBody())
+	if rr3.Code != http.StatusCreated {
+		t.Fatalf("copy as owner: expected 201, got %d: %s", rr3.Code, rr3.Body.String())
+	}
+	var out3 ItemCopyResult
+	if err := json.Unmarshal(rr3.Body.Bytes(), &out3); err != nil {
+		t.Fatalf("parse owner copy result: %v", err)
+	}
+	if got := f.persistedFields(out3.Item.ID)["owner_ref"]; got != f.targetB.ID {
+		t.Fatalf("the owner's identical copy did not resolve the default to %q (got %#v); "+
+			"the drop above is not visibility-dependent", f.targetB.ID, got)
+	}
+}
+
+// A CARRIED relation value that a destination default refills is still
+// reported dropped by the COPY (lead ruling, day 58).
+//
+// Round 3 taught StillDropped to suppress a key the final map has a value for,
+// because reporting a populated key as dropped made three surfaces give two
+// answers. That is right for a key MigrateFields dropped and a default
+// refilled — the caller never had anything else there. It is wrong for a
+// CARRIED RELATION: the source's value was genuinely discarded, and what sits
+// in the key is a different value the destination chose. The row said nothing
+// was lost when something was.
+//
+// The preflight already discloses it, in the carried row's `"from":"default"`.
+// This makes the copy say it too, so the pair agrees.
+func TestCopyEndpoint_CarriedRelationDropIsReportedEvenWhenADefaultRefillsIt(t *testing.T) {
+	dangling := badRef
+	f := newCopyRelationFixtureWith(t, resolvableDestDefault, &dangling, false)
+
+	pre := f.ok(f.baseBody())
+	// The preflight's half of the contract: it says the value in hand came
+	// from the DESTINATION, not from the source.
+	if v, carried := carriedValue(pre, "owner_ref"); !carried || v != f.targetB.ID {
+		t.Fatalf("premise failed: the preflight did not carry the resolved destination "+
+			"default (%#v, carried=%v, want %q)", v, carried, f.targetB.ID)
+	}
+	if from := carriedFrom(pre, "owner_ref"); from != "default" {
+		t.Fatalf("premise failed: the preflight labels owner_ref's origin %q, want \"default\" — "+
+			"that label is what makes the copy's drop row redundant rather than contradictory", from)
+	}
+
+	res := f.copyOK(f.baseBody())
+	if !hasDroppedField(res, "owner_ref") {
+		t.Fatalf("the copy discarded the source's carried relation value and reported nothing: "+
+			"%+v", res.Warnings)
+	}
+	// The destination's default must still LAND — the drop report is about the
+	// source value that went, not about the key being empty. Without this leg
+	// the test passes against a build that dropped the default too.
+	if got := f.persistedFields(res.Item.ID)["owner_ref"]; got != f.targetB.ID {
+		t.Fatalf("the copy reported the drop but also lost the destination default "+
+			"(owner_ref = %#v, want %q)", got, f.targetB.ID)
+	}
+}
+
+// The copy and its preflight give the SAME error, with the same precedence,
+// for the two bodies codex round 19 named (lead ruling, day 58).
+//
+// Structural errors about the request — an undeclared key
+// (`malformed_override`) and a wrong-shaped value (`invalid_override`) — are
+// decided before ANY semantic check. The copy used to run the relation
+// visibility question first, because that check lived in the handler while the
+// structural ones lived inside the store call, so:
+//
+//	{"owner_ref":"<invisible live item>","ghost":"x"}
+//	   preflight -> 400 malformed_override      copy -> 400 validation_error
+//	{"owner_ref":42}
+//	   preflight -> 400 invalid_override        copy -> 400 validation_error
+//
+// Both doors refused both bodies, so nothing leaked and nothing was written —
+// they simply disagreed about WHY, which is the DR-6 divergence this pair
+// exists to prevent.
+//
+// Driven as a table over BOTH doors on ONE body: asserting them separately is
+// what let them drift, since each door's own test passed.
+func TestCopyEndpoint_PreflightAndCopyAgreeOnOverridePrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// override builds the body from the fixture, so the invisible-item
+		// case can name a real id.
+		override func(f *relationFixture) map[string]any
+		wantCode string
+	}{
+		{
+			name: "an undeclared key beats an invisible relation target",
+			override: func(f *relationFixture) map[string]any {
+				return map[string]any{"owner_ref": f.targetB.Ref, "ghost": "x"}
+			},
+			wantCode: "malformed_override",
+		},
+		{
+			name: "a wrong-shaped value beats store validation",
+			override: func(f *relationFixture) map[string]any {
+				return map[string]any{"owner_ref": 42}
+			},
+			wantCode: "invalid_override",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCopyRelationFixtureWith(t, noDestDefault, nil, false)
+			// A caller who cannot see People B, so the SEMANTIC check would
+			// fire on owner_ref if it were reached first.
+			blind := f.restrictedEditor("precedence@example.com", "precedence",
+				[]string{f.collA.ID}, []string{f.collB.ID})
+
+			body := f.baseBody()
+			body["field_overrides"] = tc.override(f)
+
+			rrPre := f.call(blind, reqOpts{wsRoleCtx: "editor"}, body)
+			rrCopy := f.callCopy(blind, reqOpts{wsRoleCtx: "editor"}, body)
+
+			if rrPre.Code != http.StatusBadRequest || rrCopy.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 from both doors, got preflight=%d copy=%d\npreflight: %s\ncopy: %s",
+					rrPre.Code, rrCopy.Code, rrPre.Body.String(), rrCopy.Body.String())
+			}
+			preCode, copyCode := errCode(t, rrPre), errCode(t, rrCopy)
+			if preCode != tc.wantCode {
+				t.Fatalf("preflight code = %q, want %q: %s", preCode, tc.wantCode, rrPre.Body.String())
+			}
+			if copyCode != preCode {
+				t.Fatalf("the copy answers %q where the preview answers %q for the SAME body — "+
+					"one request, two answers\npreflight: %s\ncopy: %s",
+					copyCode, preCode, rrPre.Body.String(), rrCopy.Body.String())
+			}
+			// Nothing was written: the refusal is pre-write at both doors.
+			if items, err := f.srv.store.ListItems(f.wsB.ID, models.ItemListParams{}); err != nil {
+				t.Fatalf("ListItems: %v", err)
+			} else {
+				for _, it := range items {
+					if it.CollectionID == f.collB.ID {
+						t.Fatalf("a refused copy created %q in the destination", it.Title)
+					}
+				}
 			}
 		})
 	}

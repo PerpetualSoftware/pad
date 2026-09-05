@@ -611,9 +611,14 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// calls. It moved into internal/items in TASK-2365 because two
 	// implementations of "which keys are undeclared" is precisely the DR-6
 	// divergence this pair of endpoints exists to prevent (Codex round 17).
-	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, items.SchemaForMigratedFields(targetSchema).Fields); len(bad) > 0 {
-		writeError(w, http.StatusBadRequest, "malformed_override",
-			"Destination collection has no field(s): "+summarizeKeys(bad))
+	//
+	// BOTH structural checks run here now, through the shared classifier the
+	// COPY also runs at the same point (lead ruling, day 58). The shape check
+	// used to happen far below, after validation; hoisting it changes nothing
+	// this door emits — same code, same message — and makes the ORDER the
+	// thing both doors share rather than a coincidence of layout.
+	if code, msg, ok := structuralOverrideError(input.FieldOverrides, targetSchema); !ok {
+		writeError(w, http.StatusBadRequest, code, msg)
 		return
 	}
 

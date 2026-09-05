@@ -823,3 +823,102 @@ func hasKey(m map[string]any, key string) bool {
 	_, ok := m[key]
 	return ok
 }
+
+// NotDefaultKeys is the set a migrate door hands DropInvisibleRelationDefaults:
+// the caller's own values plus the values carried from the source item.
+// Everything else in the map came from the destination schema's defaults.
+//
+// A NIL value is not a value. `ValidateFields` treats a present-but-nil key as
+// absent and injects the destination default in its place, so a key holding
+// nil in `supplied` or `carried` names a value that CAME FROM THE DEFAULT —
+// and counting it here excludes it from the very check it needs (codex round
+// 14).
+//
+// An EXPLICIT nil in `supplied` beats a non-nil `carried`, and that is a
+// separate rule (codex round 16). Round 14 skipped nils PER MAP, so a caller
+// who nulled a key whose stored value was non-nil still had it counted — out
+// of `carried`, on the strength of a value the request had just discarded.
+// The request is the later statement about that key.
+//
+// Lives in `store` rather than `server` because the cross-workspace COPY needs
+// it from inside its transaction, and one implementation feeding both doors is
+// the point — the alternative is two copies kept in step by hand (lead ruling,
+// day 58).
+func NotDefaultKeys(supplied, carried map[string]any) map[string]bool {
+	out := make(map[string]bool, len(supplied)+len(carried))
+	for _, m := range []map[string]any{supplied, carried} {
+		for k, v := range m {
+			if v == nil {
+				continue
+			}
+			if sv, overridden := supplied[k]; overridden && sv == nil {
+				continue
+			}
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// DropInvisibleRelationDefaultsQ removes destination-schema defaults whose
+// target the requester cannot see, and reports each as a `not_found` drop.
+//
+// The write's RESPONSE carries the item's fields, so a default resolved to an
+// item in a collection the caller cannot read would hand them its canonical
+// id. `canSee` is nil for internal callers with no requester, in which case
+// nothing is dropped — see RelationVisibilityFunc.
+//
+// Executor-parameterised so the cross-workspace copy can call it INSIDE its
+// transaction, which is the one door that could not reach the *Server form
+// (night-11 finding). The server's own doors call it through the same function
+// with a pool executor, so there is one implementation rather than two.
+func (s *Store) DropInvisibleRelationDefaultsQ(
+	q Queryer,
+	workspaceID string,
+	canSee RelationVisibilityFunc,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	notADefault map[string]bool,
+) ([]RelationIssue, error) {
+	if canSee == nil {
+		return nil, nil
+	}
+	var dropped []RelationIssue
+	for _, def := range schema.Fields {
+		if def.Type != "relation" || notADefault[def.Key] {
+			continue
+		}
+		id, isStr := fieldMap[def.Key].(string)
+		if !isStr || strings.TrimSpace(id) == "" {
+			continue
+		}
+		item, err := s.GetItemQ(q, id)
+		if err != nil {
+			return nil, err
+		}
+		if item == nil || item.WorkspaceID != workspaceID {
+			// Resolved a moment ago and gone now, or resolved into another
+			// workspace: either way the id in the map names nothing this
+			// requester can be shown, and leaving it there keeps a dangling
+			// canonical id AND skips the required-field handling the callers
+			// do (codex round 14).
+			dropped = append(dropped, RelationIssue{
+				Key: def.Key, Target: def.Collection, Reason: RelationTargetNotFound,
+			})
+			delete(fieldMap, def.Key)
+			continue
+		}
+		visible, err := canSee(q, workspaceID, item)
+		if err != nil {
+			return nil, err
+		}
+		if visible {
+			continue
+		}
+		dropped = append(dropped, RelationIssue{
+			Key: def.Key, Target: def.Collection, Reason: RelationTargetNotFound,
+		})
+		delete(fieldMap, def.Key)
+	}
+	return dropped, nil
+}

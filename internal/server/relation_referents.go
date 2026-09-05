@@ -2,8 +2,10 @@ package server
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -321,39 +323,14 @@ func (s *Server) refuseInvisibleRelationOverrides(
 	return s.resolveRelationReferentsAs(r, workspaceID, role, schema, probe)
 }
 
-// notDefaultKeys is the set a migrate door hands
-// dropInvisibleRelationDefaults: the caller's own values plus the values
-// carried from the source item. Everything else in the map came from the
-// destination schema's defaults.
-// A NIL value is not a value. `ValidateFields` treats a present-but-nil key as
-// absent and injects the destination default in its place, so a key holding
-// nil in `supplied` or `carried` names a value that CAME FROM THE DEFAULT —
-// and counting it here excludes it from the very check it needs (codex round
-// 14). Third time nil has done this in one unit: rounds 4 and 5 were the same
-// distinction in the origin label.
+// notDefaultKeys delegates to store.NotDefaultKeys.
 //
-// An EXPLICIT nil in `supplied` beats a non-nil `carried`, and that is a
-// separate rule from the one above rather than a restatement of it (codex
-// round 16). Round 14 skipped nils PER MAP, so a caller who nulled a key
-// whose stored value was non-nil still had it counted — out of `carried`,
-// on the strength of a value the request had just discarded. The request is
-// the later statement about that key: it says there is no value here, so
-// whatever ValidateFields puts in its place is a default and owes the
-// visibility check.
+// The rule moved into `store` because the cross-workspace COPY needs it from
+// inside its transaction, and the lead's day-58 ruling is that both doors run
+// ONE classifier rather than two kept in step by hand. Kept as a wrapper so
+// the four server call sites read unchanged.
 func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
-	out := make(map[string]bool, len(supplied)+len(carried))
-	for _, m := range []map[string]any{supplied, carried} {
-		for k, v := range m {
-			if v == nil {
-				continue
-			}
-			if sv, overridden := supplied[k]; overridden && sv == nil {
-				continue
-			}
-			out[k] = true
-		}
-	}
-	return out
+	return store.NotDefaultKeys(supplied, carried)
 }
 
 // dropInvisibleRelationDefaults is the visibility check a LATE-RESOLVED
@@ -383,7 +360,19 @@ func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
 // an item referencing something the mover cannot see unmovable. The first
 // version of this took "present before the late pass", which at a migrate door
 // includes the defaults MigrateFields injected — so exactly the values it
-// exists to check were the ones it skipped (codex round 13).
+// dropInvisibleRelationDefaults removes destination-schema defaults whose
+// target this requester cannot see, reporting each as a `not_found` drop.
+//
+// The body moved to store.DropInvisibleRelationDefaultsQ so the cross-workspace
+// COPY — which resolves its late defaults inside its own transaction and could
+// not reach a *Server method — runs the SAME code rather than a second
+// implementation of the same rule. That door was the one site of five that
+// never got this pass, because round 15's sweep enumerated the sites reachable
+// from `internal/server` and the class is one wider than the package
+// (night-11 finding, lead ruling day 58).
+//
+// The request-scoped part stays here, as the closure: who is asking, their role
+// in this workspace, and whether the call is bearer-authenticated.
 func (s *Server) dropInvisibleRelationDefaults(
 	r *http.Request,
 	workspaceID string,
@@ -392,44 +381,20 @@ func (s *Server) dropInvisibleRelationDefaults(
 	fieldMap map[string]any,
 	notADefault map[string]bool,
 ) ([]store.RelationIssue, error) {
-	var dropped []store.RelationIssue
-	for _, def := range schema.Fields {
-		if def.Type != "relation" || notADefault[def.Key] {
-			continue
-		}
-		id, isStr := fieldMap[def.Key].(string)
-		if !isStr || strings.TrimSpace(id) == "" {
-			continue
-		}
-		item, err := s.store.GetItem(id)
-		if err != nil {
-			return nil, err
-		}
-		if item == nil || item.WorkspaceID != workspaceID {
-			// Resolved a moment ago and gone now, or resolved into another
-			// workspace: either way the id in the map names nothing this
-			// requester can be shown, and leaving it there keeps a dangling
-			// canonical id AND skips the required-field handling below (codex
-			// round 14). Dropped like any other default that does not stand.
-			dropped = append(dropped, store.RelationIssue{
-				Key: def.Key, Target: def.Collection, Reason: store.RelationTargetNotFound,
-			})
-			delete(fieldMap, def.Key)
-			continue
-		}
-		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), role, isBearerAuth(r))
-		if err != nil {
-			return nil, err
-		}
-		if visible {
-			continue
-		}
-		dropped = append(dropped, store.RelationIssue{
-			Key: def.Key, Target: def.Collection, Reason: store.RelationTargetNotFound,
-		})
-		delete(fieldMap, def.Key)
+	return s.store.DropInvisibleRelationDefaultsQ(s.store.Q(), workspaceID,
+		s.relationVisibility(r, role), schema, fieldMap, notADefault)
+}
+
+// relationVisibility binds the request-scoped half of the visibility rule into
+// a callback the store can run on ITS executor. This is what lets the copy
+// apply the rule inside the transaction that holds both workspaces' advisory
+// locks — the shape `checkItemVisibleQ` is parameterised for (BUG-2409).
+func (s *Server) relationVisibility(r *http.Request, role string) store.RelationVisibilityFunc {
+	user := currentUser(r)
+	bearer := isBearerAuth(r)
+	return func(q store.Queryer, workspaceID string, item *models.Item) (bool, error) {
+		return s.checkItemVisibleQ(q, workspaceID, item, user, role, bearer)
 	}
-	return dropped, nil
 }
 
 // resolveRelationsForWrite is the whole relation decision for a WRITE door —
@@ -517,4 +482,85 @@ func (s *Server) resolveRelationsForWrite(
 	// is what keeps an import's unresolvable values named in the response now
 	// that the carrying door runs to the end.
 	return callerIssues, dropped, nil
+}
+
+// structuralOverrideError classifies the problems with a caller's field
+// overrides that are about the REQUEST rather than about the workspace's
+// state, and is the one classifier both copy doors run before any semantic
+// check (lead ruling, day 58).
+//
+// Two kinds, in this order:
+//
+//	malformed_override — an override names a field the destination schema does
+//	                     not declare.
+//	invalid_override   — an override's VALUE fails the destination's type for
+//	                     that field.
+//
+// STRUCTURAL BEFORE SEMANTIC, and the preflight's order is the contract. The
+// copy used to run refuseInvisibleRelationOverrides — a question about what
+// this caller may SEE — before the store call that performs these checks, so
+// `{"owner_ref":"<invisible>","ghost":"x"}` returned `malformed_override` from
+// the preflight and `validation_error` from the copy, and `{"owner_ref":42}`
+// returned `invalid_override` from the preflight and `validation_error` from
+// the copy. One body, two answers, which is the DR-6 divergence this pair
+// exists to prevent (codex round 19).
+//
+// One function rather than two orderings kept in step by hand: the previous
+// arrangement was not that anyone chose the wrong order, it was that the order
+// was an emergent property of where each check happened to live.
+//
+// Returns ok=true when nothing structural is wrong.
+func structuralOverrideError(overrides map[string]any, targetSchema models.CollectionSchema) (code, message string, ok bool) {
+	if len(overrides) == 0 {
+		return "", "", true
+	}
+	schema := items.SchemaForMigratedFields(targetSchema)
+	if bad := items.UndeclaredOverrideKeys(overrides, schema.Fields); len(bad) > 0 {
+		return "malformed_override", "Destination collection has no field(s): " + summarizeKeys(bad), false
+	}
+	// Validated in ISOLATION — the overrides alone, never merged over the
+	// migrated map — so the answer cannot depend on the source item's
+	// contents. That is the same property the undeclared check has, and it is
+	// what lets this run before anything reads the source.
+	probe := make(map[string]any, len(overrides))
+	for k, v := range overrides {
+		if v == nil {
+			// An explicit null is a CLEAR, not a value, and has no type to
+			// fail. Validating it here would refuse the documented way to
+			// blank a field.
+			continue
+		}
+		probe[k] = v
+	}
+	if len(probe) == 0 {
+		return "", "", true
+	}
+	// COERCED FIRST, exactly as both doors coerce before validating (BUG-2850).
+	// Without this the classifier refuses a value the copy would happily
+	// accept — `{"cost":"42"}` against a number field is coercible, and
+	// TestCopyAndPreflightCoerceIdentically pins that it must be accepted at
+	// both doors. Hoisting a check above the coercion that makes it pass is
+	// the same class of error as the ordering this function exists to fix.
+	probe = items.CoerceFields(probe, schema)
+	var bad []string
+	for _, iss := range items.ValidateFieldsDetailed(probe, schema) {
+		if iss.Kind != items.IssueInvalid {
+			// IssueRequired and friends are about the FINAL map, which this
+			// probe is not — a required field the overrides do not mention is
+			// not an override problem.
+			continue
+		}
+		if _, overridden := overrides[iss.Key]; !overridden {
+			continue
+		}
+		bad = append(bad, iss.Message)
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		// Bounded for the same reason the malformed_override message is:
+		// validateFieldType quotes the offending VALUE verbatim, so a single
+		// large override string would otherwise be reflected back in full.
+		return "invalid_override", "Invalid override value(s): " + summarizeMessages(bad), false
+	}
+	return "", "", true
 }
