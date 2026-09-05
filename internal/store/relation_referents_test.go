@@ -412,3 +412,163 @@ func TestResolveRelationReferents_OverflowingRefDoesNotResolve(t *testing.T) {
 		t.Fatalf("an overflowing ref canonicalised to a different item (%s)", red.ID)
 	}
 }
+
+// TestImportWorkspace_CarriesUnresolvableRelationValues pins the store's
+// workspace-import door (TASK-2878 / checkpoint 12's open item).
+//
+// THE QUESTION THIS ANSWERS, stated before the result (CONVE-30): does
+// ImportWorkspace store a relation value whose referent is not in the bundle
+// VERBATIM — neither refusing the import nor dropping the value — while still
+// remapping the relation values it CAN resolve?
+//
+// Why it is owed even though this unit never touched export.go. Import writes
+// raw rows and never goes through createItemChecked, so referent validation
+// cannot have reached it; that is an argument that the behaviour is unchanged,
+// not evidence that it is correct or that it will stay. The carry is a RULING
+// (Dave's, day 71: an import's value HAS a home, because the artifact is the
+// record) and an unpinned ruling is one refactor away from becoming a refusal
+// that turns every pre-validation archive into a hard failure. Same reasoning
+// as TestImportWorkspace_CoercesTitles one file over, which this is modelled on.
+//
+// The resolvable leg is a CONTROL, not decoration: without it a build that
+// deleted the second-pass remap entirely would still pass every carry
+// assertion, because "carried verbatim" and "never processed" produce
+// byte-identical output for the junk rows. The control is the only leg whose
+// expected output DIFFERS from its input.
+func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
+	s := testStore(t)
+	owner, err := s.CreateUser(models.UserCreate{
+		Name:     "Owner",
+		Email:    "relation-import-owner@example.com",
+		Password: "passw0rd!",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// The exported ids below deliberately share no common prefix. remapFieldIDs
+	// rewrites relation values by strings.ReplaceAll over every id in the
+	// bundle, so an unresolvable value that CONTAINED a resolvable one
+	// ("old-color-1" inside "old-color-10") would be partially rewritten and
+	// the carry assertion would fail for a reason that has nothing to do with
+	// the rule under test.
+	const (
+		liveColorID   = "old-color-alpha"
+		missingID     = "old-color-omega" // never appears as an item id in the bundle
+		staleRef      = "COLO-999"        // a ref shape, equally unresolvable
+		relationField = "color"
+	)
+
+	export := &models.WorkspaceExport{
+		Version:    1,
+		ExportedAt: "2026-09-05T00:00:00Z",
+		Workspace: models.WorkspaceExportMeta{
+			Name: "Relation Archive",
+			Slug: "relation-archive",
+		},
+		Collections: []models.CollectionExport{
+			{
+				ID: "old-coll-colors", Name: "Colors", Slug: "colors", Prefix: "COLO",
+				Schema:    `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+			{
+				ID: "old-coll-cars", Name: "Cars", Slug: "cars", Prefix: "CAR",
+				Schema:    `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"color","type":"relation","collection":"colors"}]}`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+		},
+		Items: []models.ItemExport{
+			{
+				ID: liveColorID, CollectionID: "old-coll-colors",
+				Title: "Red", Slug: "red",
+				Fields: `{}`, Tags: `[]`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+			{
+				// CONTROL: this one resolves inside the bundle and MUST come
+				// out rewritten to the new id.
+				ID: "old-car-resolvable", CollectionID: "old-coll-cars",
+				Title: "Resolvable", Slug: "resolvable",
+				Fields: `{"color":"` + liveColorID + `"}`, Tags: `[]`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+			{
+				ID: "old-car-missing", CollectionID: "old-coll-cars",
+				Title: "Missing Referent", Slug: "missing-referent",
+				Fields: `{"color":"` + missingID + `"}`, Tags: `[]`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+			{
+				ID: "old-car-stale-ref", CollectionID: "old-coll-cars",
+				Title: "Stale Ref", Slug: "stale-ref",
+				Fields: `{"color":"` + staleRef + `"}`, Tags: `[]`,
+				CreatedAt: "2026-09-05T00:00:00Z", UpdatedAt: "2026-09-05T00:00:00Z",
+			},
+		},
+	}
+
+	ws, err := s.ImportWorkspace(export, "Relation Archive Target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace must SUCCEED on a bundle carrying unresolvable relation values, not refuse it: %v", err)
+	}
+
+	items, err := s.ListItems(ws.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	byTitle := map[string]models.Item{}
+	for _, it := range items {
+		byTitle[it.Title] = it
+	}
+	red, ok := byTitle["Red"]
+	if !ok {
+		t.Fatalf("the relation TARGET did not import; the control below would be meaningless. titles=%v", byTitle)
+	}
+
+	relationValue := func(title string) (any, bool) {
+		t.Helper()
+		it, ok := byTitle[title]
+		if !ok {
+			t.Fatalf("item %q did not import", title)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(it.Fields), &fields); err != nil {
+			t.Fatalf("item %q has an unreadable fields blob %q: %v", title, it.Fields, err)
+		}
+		v, present := fields[relationField]
+		return v, present
+	}
+
+	// CONTROL: the remap ran. This is the only assertion whose expected value
+	// differs from what was exported.
+	got, present := relationValue("Resolvable")
+	if !present {
+		t.Fatalf("the resolvable relation value was DROPPED")
+	}
+	if got == liveColorID {
+		t.Fatalf("the second-pass remap did not run: %q survived as the exported id, so every carry assertion below proves nothing", liveColorID)
+	}
+	if got != red.ID {
+		t.Fatalf("resolvable relation remapped to %v, want the imported target's id %q", got, red.ID)
+	}
+
+	// The rule: an unresolvable referent is CARRIED, verbatim, key intact.
+	for _, tc := range []struct {
+		title string
+		want  string
+	}{
+		{"Missing Referent", missingID},
+		{"Stale Ref", staleRef},
+	} {
+		t.Run(tc.title, func(t *testing.T) {
+			got, present := relationValue(tc.title)
+			if !present {
+				t.Fatalf("import DROPPED an unresolvable relation value; the ruling is that it carries")
+			}
+			if got != tc.want {
+				t.Fatalf("import rewrote an unresolvable relation value to %v, want it carried verbatim as %q", got, tc.want)
+			}
+		})
+	}
+}
