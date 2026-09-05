@@ -37,14 +37,22 @@ import (
 //
 // THE ROW'S OWN workspace_id MUST AGREE WITH ITS ITEM'S (codex round 13).
 // CreateReminder writes the pair from the item, and import writes it from
-// its own in-workspace mapping, so no door produces a disagreement today —
-// but the table has an FK to the item and no constraint tying the two
-// columns, and every reader scopes by r.workspace_id and then joins the item.
-// A row that ever disagreed (a hand-edited bundle, a future move door, a
-// direct write) would carry one workspace's item into another's dashboard
-// and webhooks. The identity is asserted in the predicate, so the scan, the
-// arbiter, the pin and the reads all refuse the row rather than one of them
-// deciding it is "unreachable" on the others' behalf.
+// its own in-workspace mapping, so no door produces a disagreement today, and
+// since IDEA-2883 the TABLE forbids one: the foreign key is composite,
+// (item_id, workspace_id) REFERENCES items(id, workspace_id), so a
+// disagreeing row is unrepresentable rather than merely unwritten
+// (migrations 086 / 063). The sentence that stood here said the table had "no
+// constraint tying the two columns", which is what this predicate was
+// compensating for.
+//
+// THE PREDICATE STAYS, and not out of habit. Enforcement binds to the
+// connection doing the write, and SQLite's is a per-connection pragma that
+// table-rebuild migrations legitimately turn off — so a row can still arrive
+// from a restored pre-086 backup, from an operator who dropped the
+// constraint, or through a future rebuild's window. When one does, the scan,
+// the arbiter, the pin and the reads all refuse it here rather than one of
+// them deciding it is "unreachable" on the others' behalf. Belt on top of
+// braces, with the braces now actually present.
 const reminderFireable = `EXISTS (
 		SELECT 1 FROM items i
 		JOIN workspaces w ON w.id = i.workspace_id
