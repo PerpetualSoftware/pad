@@ -562,7 +562,17 @@ func uniqueCollectionConflictMessage(err error) string {
 		return "Another collection in this workspace already declares this artifact kind"
 	case strings.Contains(msg, "idx_collections_invocation_field_per_workspace"):
 		return "Another collection in this workspace already handles invocation routing"
-	default:
+	case strings.Contains(msg, "collections"):
+		// Names the collections table or its slug constraint
+		// (collections_workspace_id_slug_key on Postgres, "UNIQUE constraint
+		// failed: collections.workspace_id, collections.slug" on SQLite).
 		return "A collection with this name already exists"
+	default:
+		// Reached because a collection UPDATE can migrate ITEM field values,
+		// and an item-level unique index can fail there — invocation_slug is
+		// the live example. Telling that caller their collection NAME is taken
+		// sends them to rename something that is not the problem, so the
+		// message stays honest about what it does not know (codex round 3).
+		return "This change conflicts with an existing unique value"
 	}
 }

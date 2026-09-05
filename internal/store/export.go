@@ -356,65 +356,33 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// DE-DUPLICATED ON THE WAY IN, not warned about and inserted (TASK-2710
 	// item 4, and codex round 2's P1 when it was still the latter).
 	//
-	// This used to warn and import both, which was the right call while nothing
-	// forbade the pair. With the partial unique indexes it is no longer
-	// available: the second INSERT is refused, the whole import transaction
-	// rolls back, and the workspace minted before it survives as a husk
-	// ([[BUG-2892]]). An archive carrying a duplicate would become unimportable
-	// — and archives carrying duplicates are exactly the ones this release
-	// repairs, so refusing them is the worst of the three options.
+	// Import used to warn and insert both, which was right while nothing
+	// forbade the pair. With the partial unique indexes the second INSERT is
+	// refused, the whole transaction rolls back, and the workspace minted
+	// before it survives as a husk ([[BUG-2892]]) — so an archive carrying a
+	// duplicate would be unimportable, and archives carrying duplicates are
+	// exactly the ones this release repairs.
 	//
-	// So the FIRST declaring collection in bundle order keeps the declaration
-	// and later ones are stripped of it, which is the same disposition
-	// dedupeTraitDeclarations applies to an existing database. It cannot use
-	// that pass's primary rule — most user-written items — because items are
-	// inserted after collections and every count would be zero here; bundle
-	// order IS the terminator, and the log says so rather than implying a
-	// considered choice.
+	// THE CHECK HAPPENS IN THE INSERT LOOP, ON THE FINAL BYTES, and that
+	// placement is the fix for codex round 3's P1 rather than a style choice.
+	// An earlier version pre-computed the strips from the traits the BUNDLE
+	// carries, which is not what gets written: coercion, validation-discard and
+	// canonical inference all run afterwards. A pre-traits archive carrying
+	// `conventions` with an EMPTY blob has its declaration INFERRED from the
+	// slug (BUG-2702), so a bundle pairing that with an explicit declarer
+	// showed the pre-pass one declaration and the database two — and the index
+	// aborted the import. Checking immediately before the INSERT makes the
+	// question "what am I about to write" instead of "what did the file say".
 	//
-	// The loser keeps every item, as in the de-dup pass: only the declaration
-	// is dropped, and the items still land in that collection.
-	strippedTraits := map[string]string{}
+	// The FIRST declaring collection in bundle order keeps the declaration and
+	// later ones are stripped, which is the disposition dedupeTraitDeclarations
+	// applies to an existing database. It cannot use that pass's primary rule —
+	// most user-written items — because items are inserted after collections
+	// and every count here is zero; bundle order IS the terminator, and the log
+	// says so rather than implying a considered choice. The loser keeps every
+	// item; only the declaration is dropped.
 	seenKinds := map[string]string{}
 	invocationCollection := ""
-	for _, c := range data.Collections {
-		t, err := models.ParseCollectionTraits(c.Traits)
-		if err != nil {
-			continue
-		}
-		changed := false
-		if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
-			if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
-				slog.Warn("import: archive declares one artifact kind on two collections; the later one is imported WITHOUT the declaration and keeps its items",
-					"kind", t.ArtifactKind.Kind, "keeps_declaration", prev, "stripped", c.Slug,
-					"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
-					"workspace_id", ws.ID)
-				t.ArtifactKind = nil
-				changed = true
-			} else {
-				seenKinds[t.ArtifactKind.Kind] = c.Slug
-			}
-		}
-		if t.InvocationField != "" {
-			if invocationCollection != "" {
-				slog.Warn("import: archive declares invocation routing on two collections; the later one is imported WITHOUT the declaration and keeps its items",
-					"keeps_declaration", invocationCollection, "stripped", c.Slug,
-					"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
-					"workspace_id", ws.ID)
-				t.InvocationField = ""
-				changed = true
-			} else {
-				invocationCollection = c.Slug
-			}
-		}
-		if changed {
-			encoded, eerr := t.JSON()
-			if eerr != nil {
-				return nil, fmt.Errorf("re-encode de-duplicated traits for %s: %w", c.Slug, eerr)
-			}
-			strippedTraits[c.ID] = encoded
-		}
-	}
 
 	for _, c := range data.Collections {
 		newCollID := newID()
@@ -438,12 +406,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// fires. Archives written before TASK-2657 carry no traits key at
 		// all, which lands here as "" — a pre-traits archive imports as a
 		// collection that declares nothing, which is the honest reading.
-		rawTraits := c.Traits
-		if stripped, ok := strippedTraits[c.ID]; ok {
-			// This collection lost a duplicate declaration above.
-			rawTraits = stripped
-		}
-		traits := coerceJSONForImport(rawTraits, "{}", "collections.traits", c.ID, ws.ID, true)
+		traits := coerceJSONForImport(c.Traits, "{}", "collections.traits", c.ID, ws.ID, true)
 		// coerceJSONForImport only guarantees the blob is valid JSON. Traits
 		// are declarations that switch kernel behavior on, so an import is
 		// held to the same grammar the API enforces — otherwise a
@@ -513,6 +476,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 					traits = encoded
 				}
 			}
+		}
+
+		// Now that `traits` is final — coerced, validated, and inferred — drop
+		// any declaration another collection in this bundle already took.
+		var derr error
+		traits, derr = dropDuplicateImportDeclarations(traits, c.Slug, ws.ID, seenKinds, &invocationCollection)
+		if derr != nil {
+			return nil, fmt.Errorf("de-duplicate declarations for %s: %w", c.Slug, derr)
 		}
 
 		_, err := tx.Exec(s.q(`
@@ -929,4 +900,52 @@ func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string
 		result = strings.ReplaceAll(result, `"`+oldID+`"`, `"`+newID+`"`)
 	}
 	return result
+}
+
+// dropDuplicateImportDeclarations returns traits with any declaration already
+// claimed by an earlier collection in the same bundle removed, recording the
+// claims it does allow. Called with the FINAL blob, immediately before the
+// INSERT that writes it — see the note at the import loop for why that
+// placement is load-bearing rather than incidental.
+//
+// A blob that does not parse is returned untouched: it declares nothing to
+// every other reader, and it is outside the indexes' json_valid guard too.
+func dropDuplicateImportDeclarations(traits, slug, workspaceID string, seenKinds map[string]string, invocationCollection *string) (string, error) {
+	t, err := models.ParseCollectionTraits(traits)
+	if err != nil {
+		return traits, nil
+	}
+	changed := false
+	if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
+		if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
+			slog.Warn("import: archive declares one artifact kind on two collections; the later one is imported WITHOUT the declaration and keeps its items",
+				"kind", t.ArtifactKind.Kind, "keeps_declaration", prev, "stripped", slug,
+				"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
+				"workspace_id", workspaceID)
+			t.ArtifactKind = nil
+			changed = true
+		} else {
+			seenKinds[t.ArtifactKind.Kind] = slug
+		}
+	}
+	if t.InvocationField != "" {
+		if *invocationCollection != "" {
+			slog.Warn("import: archive declares invocation routing on two collections; the later one is imported WITHOUT the declaration and keeps its items",
+				"keeps_declaration", *invocationCollection, "stripped", slug,
+				"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
+				"workspace_id", workspaceID)
+			t.InvocationField = ""
+			changed = true
+		} else {
+			*invocationCollection = slug
+		}
+	}
+	if !changed {
+		return traits, nil
+	}
+	encoded, eerr := t.JSON()
+	if eerr != nil {
+		return "", eerr
+	}
+	return encoded, nil
 }
