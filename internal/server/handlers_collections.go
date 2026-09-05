@@ -125,24 +125,30 @@ func validateCollectionTraits(raw string) error {
 // would depend on sort_order and creation time. That is a coin flip wearing a
 // rule's clothes. Codex round 7.
 //
-// BEST-EFFORT, NOT AN INVARIANT — say so plainly rather than let the name
-// imply more than it delivers (Codex round 8). This reads and then writes
-// without holding a lock across both, so two concurrent owner-level writes can
-// both pass and mint a duplicate. Workspace IMPORT bypasses it entirely by
-// design, and a rename that frees a canonical slug can produce a duplicate
-// with no write to this path at all.
+// NOT THE GUARANTEE — say so plainly rather than let the name imply more than
+// it delivers (Codex round 8). This reads and then writes without holding a
+// lock across both, so two concurrent owner-level writes can both pass it, and
+// a rename that frees a canonical slug can produce a duplicate with no write
+// to this path at all.
 //
-// The database-level version — a partial unique index on the extracted trait,
-// the shape migration 054 already uses for invocation_slug — is deliberately
-// NOT added in phase 0: existing deployments can already hold duplicates (the
-// rename-then-reseed path produces one), so creating such an index would fail
-// the migration on exactly the databases that most need fixing. That wants a
-// de-duplication pass first, which is its own unit.
+// What backs it is migration 087's two partial unique indexes (TASK-2710),
+// which turned the rule into a database invariant for LIVE collections. This
+// gate survives them for the message: a unique violation is a 409 saying a
+// name is taken unless something tells the handler otherwise, and "rename your
+// collection" is useless advice when the name is fine and the DECLARATION is
+// taken. So the pre-check produces the friendly, specific refusal in the
+// common case and the index is what actually holds — the same division
+// checkUniqueFields and the invocation_slug index already use. A violation
+// that reaches the handler anyway is translated by
+// uniqueCollectionConflictMessage rather than mis-labelled.
 //
-// So this gate closes the common case — a user or agent declaring a duplicate
-// through the API — and the resolvers keep their documented order-dependent
-// behaviour for duplicates arriving any other way, because refusing to resolve
-// at read time would break a workspace rather than a request.
+// Two things it is still worth knowing this gate does not cover. Workspace
+// IMPORT does not call it: an archive arrives whole and is often the only copy
+// of a workspace, so import DE-DUPLICATES on the way in (see
+// dropDuplicateImportDeclarations) rather than refusing the restore. And
+// ARCHIVED collections are outside the invariant entirely — both indexes carry
+// AND deleted_at IS NULL, and every trait resolver filters the same way, so a
+// soft-deleted row may hold a declaration a live one also holds.
 //
 // excludeCollID is the collection being updated, so a collection never
 // conflicts with itself.
