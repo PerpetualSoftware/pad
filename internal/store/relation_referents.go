@@ -547,8 +547,22 @@ func (s *Store) MigrateRelationReferentsQ(
 				delete(fieldMap, ri.Key)
 			}
 		}
-		// Carry the canonicalised survivors back.
+		// Carry the canonicalised SURVIVORS back — survivors, not everything
+		// supplied. A key deleted above is absent from fieldMap, and checking
+		// that is what stops the write-back restoring a value the branch just
+		// dropped; the alternative, deleting from both maps, keeps two loops
+		// that have to agree with each other.
+		//
+		// Identical to the destination-default branch below, and that is the
+		// point: the two dispositions differ, the write-back does not. Review
+		// found the first version of this branch reporting a drop while
+		// retaining the dropped value — an unreachable branch that was WRONG,
+		// which is a trap for whoever makes it reachable, and the whole reason
+		// the branch exists is that someone might.
 		for k, v := range suppliedRelations {
+			if _, survived := fieldMap[k]; !survived {
+				continue
+			}
 			fieldMap[k] = v
 		}
 	}
