@@ -70,6 +70,13 @@ test:
 # let an unreachable database look like a test result. Never put a fixed host
 # port back in docker-compose.test.yml or hardcode one here.
 #
+# THE BANNER IS THE DISCRIMINATOR, NOT THE EXIT CODE. make collapses every
+# failed recipe to exit 2, so "the database was unreachable" and "tests failed"
+# are indistinguishable by status — measured, not assumed. Do not key automation
+# off the exit code expecting to tell them apart; grep the output for
+# NO TESTS EXECUTED (nothing ran) or THE DATABASE DIED (it ran against a
+# database that went away).
+#
 # Recovering an orphan (a stack whose worktree was removed before teardown):
 # the compose project name is the directory basename, so
 #   docker compose -p <that-directory-name> down -v
