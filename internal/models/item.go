@@ -210,6 +210,16 @@ type Item struct {
 	// or share-link path, and never emit a placeholder when the gate denies.
 	MovedTo []ItemMovedTo `json:"moved_to,omitempty"`
 
+	// Lease is the item's LIVE execution lease (#1221) — who is actively
+	// executing this item right now, distinct from AssignedUserID's
+	// longer-term ownership. Populated on the single-item GET and on list
+	// responses; nil when unclaimed OR expired (an expired lease is absent
+	// on every read path — expiry is the reaper). Never persisted through
+	// item update paths: claiming/releasing goes through the dedicated
+	// claim/release endpoints and deliberately bumps neither updated_at
+	// nor the version history.
+	Lease *ItemLease `json:"lease,omitempty"`
+
 	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
 	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
 	Convention          *ItemConventionMetadata  `json:"convention,omitempty"`
@@ -275,6 +285,16 @@ func (item *Item) ComputeRef() {
 	if item.CollectionPrefix != "" && item.ItemNumber != nil {
 		item.Ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
 	}
+}
+
+// ItemLease is a live execution lease on an item (#1221): holder is a
+// freeform identity string (defaulting server-side to the authenticated
+// user), and the lease is live iff ExpiresAt is in the future. Expired
+// leases are never returned — expiry is absence.
+type ItemLease struct {
+	Holder     string    `json:"holder"`
+	AcquiredAt time.Time `json:"acquired_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 // ItemMovedTo is one destination an archived item was moved to, rendered in

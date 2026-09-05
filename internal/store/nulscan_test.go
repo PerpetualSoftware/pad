@@ -331,7 +331,7 @@ func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 // list is the source and the comment is the copy.
 func TestScanCostFiguresMatchTheList(t *testing.T) {
 	const (
-		wantTotal = 131
+		wantTotal = 132
 		wantJSON  = 24
 	)
 

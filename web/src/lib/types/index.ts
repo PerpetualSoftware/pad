@@ -634,6 +634,16 @@ export interface ItemMovedTo {
 	moved_at?: string;
 }
 
+// ItemLease is a live execution lease on an item (#1221). holder is a
+// freeform identity string (defaults server-side to the authenticated
+// user); the lease is live iff expires_at is in the future, and the server
+// never returns an expired one.
+export interface ItemLease {
+	holder: string;
+	acquired_at: string;
+	expires_at: string;
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;
@@ -691,6 +701,12 @@ export interface Item {
 	// means "nothing to show", never "there is one you may not see". Do not
 	// render a distinction between the two; there isn't one.
 	moved_to?: ItemMovedTo[];
+	// Live execution lease (#1221): who is actively executing this item right
+	// now, distinct from assigned_user_id's longer-term ownership. Present on
+	// the single-item GET and on list responses; the server omits the key for
+	// unclaimed items AND for expired leases (expiry is absence — there is no
+	// reaper), so `undefined` always means "no one holds this right now".
+	lease?: ItemLease;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
 	convention?: ItemConventionMetadata;

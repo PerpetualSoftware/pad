@@ -1817,6 +1817,10 @@ func (s *Server) setupRouter() {
 						r.Get("/star", s.handleGetItemStarStatus)
 						r.Post("/star", s.handleStarItem)
 						r.Delete("/star", s.handleUnstarItem)
+						// Execution lease (#1221): atomic claim/checkout so
+						// concurrent pollers can't both "start" an item.
+						r.Post("/claim", s.handleClaimItem)
+						r.Post("/release", s.handleReleaseItem)
 						// Watches (TASK-2533): durable per-item subscriptions
 						// for the padd event-stream / plugin-monitor nudge
 						// pipeline. `pad watch <ref>` / `pad watch remove <ref>`.
