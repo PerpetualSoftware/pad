@@ -574,6 +574,41 @@ func (s *Store) MigrateRelationReferentsQ(
 	}
 
 	carried := byOrigin[RelationOriginCarried]
+	// A NON-STRING carried value is dropped and reported HERE, above the mode
+	// switch, so both modes keep agreeing about it — which was round 6's
+	// point — while the thing they agree on becomes the right one.
+	//
+	// They agreed on leaving it for ValidateFields, and ValidateFields
+	// REFUSES. For a carried value that is the failure this unit's carry rule
+	// exists to prevent, stated in as many words at the move door: refusing
+	// carried values "would make every legacy item permanently unmovable".
+	// A legacy blob holding a number in a relation field was exactly that —
+	// the single move answered 400 invalid_fields and the bulk move failed
+	// the item, on every attempt, with no way for the owner to fix it except
+	// by editing the blob through some other door (codex round 20, F20-3).
+	//
+	// `invalid_shape` rather than `not_portable` or `not_found`: the value is
+	// not a reference, so every reason describing a LOOKUP is a false account
+	// of why it is going. Same reason and same disposition the destination-
+	// default branch above uses, and that ResolveLateRelationDefaultsQ has
+	// always used — the three now agree.
+	for _, def := range schema.Fields {
+		if def.Type != "relation" {
+			continue
+		}
+		raw, exists := carried[def.Key]
+		if !exists {
+			continue
+		}
+		if _, isStr := raw.(string); isStr {
+			continue
+		}
+		dropped = append(dropped, RelationIssue{
+			Key: def.Key, Target: def.Collection, Reason: RelationTargetInvalidShape,
+		})
+		delete(fieldMap, def.Key)
+		delete(carried, def.Key)
+	}
 	switch mode {
 	case RelationCarryCrossWorkspace:
 		// No lookup: a source-workspace id cannot mean anything here.
@@ -587,12 +622,13 @@ func (s *Store) MigrateRelationReferentsQ(
 			}
 			value, isStr := raw.(string)
 			if !isStr {
-				// Not a reference at all, so "cannot cross a workspace
-				// boundary" is a false account of why it is going. Left in
-				// place for ValidateFields to reject on shape — which is what
-				// the SAME-workspace branch already does with it, and the two
-				// modes disagreeing about one malformed value was the defect
-				// (codex round 6).
+				// Unreachable: the loop above the mode switch already dropped
+				// every non-string carried value, in BOTH modes. Kept as a
+				// type assertion rather than removed, so this branch cannot
+				// silently start treating a non-string as a ref if that loop
+				// is ever narrowed. Round 6 established that the two modes
+				// must not disagree about a malformed value; they now agree
+				// by construction, above.
 				continue
 			}
 			dropped = append(dropped, RelationIssue{

@@ -1456,3 +1456,81 @@ func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *test
 			"the error list, not replace the check (message: %s)", got, out2.Failed[0].Error)
 	}
 }
+
+// A legacy item holding a NON-STRING in a relation field is still movable
+// (codex round 20).
+//
+// The carry rule exists so that legacy items stay usable: `internal/items`
+// accepted anything in a relation field for as long as the type has existed,
+// and the move door's own comment says refusing carried values "would make
+// every legacy item permanently unmovable". A non-string carried value was
+// the case where that happened anyway — both carried branches deliberately
+// left it for ValidateFields, and ValidateFields REFUSES. The single move
+// answered 400 `invalid_fields` and the bulk move failed the item, on every
+// attempt, with no way for the owner to fix it through these doors at all.
+//
+// Round 6 established that the two migration MODES must not disagree about a
+// malformed value. They still agree; the drop is hoisted above the mode
+// switch so they agree BY CONSTRUCTION, and what they agree on is now
+// drop-and-report rather than refuse.
+func TestRelationDoors_CarriedNonStringRelationDropsInsteadOfRefusing(t *testing.T) {
+	f := newDoorFixture(t)
+	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "NonString Carried Dest", fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q}
+	]}`, f.people.Slug))
+
+	t.Run("single move", func(t *testing.T) {
+		item := f.seed(`{"status":"open","owner_ref":42}`)
+		rr := f.call(f.srv.handleMoveItem, "POST",
+			"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/move",
+			map[string]string{"itemSlug": item.Slug},
+			map[string]any{"target_collection": dst.Slug})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("move: got %d, want 200 — a carried value DROPS, it does not refuse, or "+
+				"the item is unmovable forever: %s", rr.Code, rr.Body.String())
+		}
+		if v, ok := f.storedRelation(item.ID); ok {
+			t.Fatalf("the non-reference survived the move as %#v", v)
+		}
+	})
+
+	t.Run("bulk move", func(t *testing.T) {
+		item := f.seed(`{"status":"open","owner_ref":42}`)
+		rr := f.call(f.srv.handleBulkItems, "POST",
+			"/api/v1/workspaces/"+f.ws.Slug+"/items/bulk", nil,
+			map[string]any{"op": "move", "ids": []string{item.ID}, "collection": dst.Slug})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("bulk move: got %d, want 200: %s", rr.Code, rr.Body.String())
+		}
+		var out bulkItemsResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+			t.Fatalf("parse bulk response: %v: %s", err, rr.Body.String())
+		}
+		if len(out.Failed) > 0 {
+			t.Fatalf("a bulk move REFUSED a carried non-reference; carried values drop: %+v",
+				out.Failed)
+		}
+		if v, ok := f.storedRelation(item.ID); ok {
+			t.Fatalf("the non-reference survived the bulk move as %#v", v)
+		}
+	})
+
+	// Control: a carried value that RESOLVES still survives a move. Without
+	// this leg the test passes against a build that dropped every carried
+	// relation value rather than only the malformed ones.
+	t.Run("a resolvable carried value still survives", func(t *testing.T) {
+		item := f.seed(fmt.Sprintf(`{"status":"open","owner_ref":%q}`, f.target.Ref))
+		rr := f.call(f.srv.handleMoveItem, "POST",
+			"/api/v1/workspaces/"+f.ws.Slug+"/items/"+item.Slug+"/move",
+			map[string]string{"itemSlug": item.Slug},
+			map[string]any{"target_collection": dst.Slug})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("move: got %d, want 200: %s", rr.Code, rr.Body.String())
+		}
+		if v, ok := f.storedRelation(item.ID); !ok || v != f.target.ID {
+			t.Fatalf("a RESOLVABLE carried value was lost (%#v, present=%v), want %q",
+				v, ok, f.target.ID)
+		}
+	})
+}
