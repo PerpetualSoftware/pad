@@ -8,8 +8,8 @@
 	// menu (just above "Connect a project…" and "Sign out") and gives them
 	// a quiet escape hatch back out to the surrounding ecosystem.
 	//
-	// Cloud (cloudMode=true): GitHub / Docs / Changelog / Status / Support / Community
-	// Self-hosted (cloudMode=false): GitHub / Docs / Community — Changelog and
+	// Cloud (cloudMode=true): GitHub / Community / Docs / Changelog / Status / Support
+	// Self-hosted (cloudMode=false): GitHub / Community / Docs — Changelog and
 	// Status are Cloud-specific surfaces, and getpad.dev's support@getpad.dev
 	// mailbox is not the operator's to direct people to. The Docs link still
 	// points at getpad.dev because that's the canonical project documentation
@@ -54,29 +54,30 @@
 	};
 
 	// Order follows the canonical link order from docs/brand.md §7: GitHub,
-	// Docs, Changelog, then anything else. Status, Support and Community are
-	// user-menu-specific additions (the brand-spec footer doesn't carry Status
-	// or Support) so they land at the end; Community follows Support because
-	// the two answer the same "I need help" impulse — email, then the forum. Keeping the same relative order as the marketing
+	// Community, Docs, Changelog, then anything else. Status and Support are
+	// user-menu-specific additions (the brand-spec footer doesn't carry them)
+	// so they land at the end. Community sits second, as in the footer: the
+	// brand doc's rule is that a surface may omit links but never reorders
+	// the ones it keeps (codex round 1 on TASK-2888 caught the drift). Keeping the same relative order as the marketing
 	// footer means a user visiting both surfaces sees the same linear pattern
 	// — small cohesion win that Codex flagged on first review.
 	const cloudLinks: ResourceLink[] = [
 		{ label: 'GitHub', href: GITHUB_REPO_URL },
+		{ label: 'Community', href: COMMUNITY_URL },
 		{ label: 'Docs', href: DOCS_URL },
 		{ label: 'Changelog', href: CHANGELOG_URL },
 		{ label: 'Status', href: STATUS_URL },
-		{ label: 'Support', href: SUPPORT_MAILTO },
-		{ label: 'Community', href: COMMUNITY_URL }
+		{ label: 'Support', href: SUPPORT_MAILTO }
 	];
 
 	// Self-hosted is a subset that preserves the relative canonical order —
-	// GitHub before Docs. Changelog/Status/Support are Cloud-only surfaces
+	// GitHub, Community, Docs. Changelog/Status/Support are Cloud-only surfaces
 	// (operators have their own changelog/status if any; getpad.dev's
 	// support@ mailbox is not theirs to direct people to).
 	const selfHostedLinks: ResourceLink[] = [
 		{ label: 'GitHub', href: GITHUB_REPO_URL },
-		{ label: 'Docs', href: DOCS_URL },
-		{ label: 'Community', href: COMMUNITY_URL }
+		{ label: 'Community', href: COMMUNITY_URL },
+		{ label: 'Docs', href: DOCS_URL }
 	];
 
 	const links = $derived(cloudMode ? cloudLinks : selfHostedLinks);

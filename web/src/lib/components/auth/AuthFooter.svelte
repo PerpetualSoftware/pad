@@ -22,7 +22,7 @@
 	// Replaces the prior LegalFooter + SupportFooter pair — the brand spec
 	// describes a single footer pattern, not two separate strips.
 
-	import { COMMUNITY_URL } from '$lib/brand/links';
+	import { CHANGELOG_URL, COMMUNITY_URL, DOCS_URL, GITHUB_REPO_URL } from '$lib/brand/links';
 
 	let { cloudMode = false }: { cloudMode?: boolean } = $props();
 
@@ -31,10 +31,10 @@
 	// anchor opens in a new tab — the user is mid-auth-flow and we don't want
 	// to lose their form state by navigating away.
 	const cloudLinks: Array<{ label: string; href: string }> = [
-		{ label: 'GitHub', href: 'https://github.com/PerpetualSoftware/pad' },
+		{ label: 'GitHub', href: GITHUB_REPO_URL },
 		{ label: 'Community', href: COMMUNITY_URL },
-		{ label: 'Docs', href: 'https://getpad.dev/docs' },
-		{ label: 'Changelog', href: 'https://getpad.dev/changelog' },
+		{ label: 'Docs', href: DOCS_URL },
+		{ label: 'Changelog', href: CHANGELOG_URL },
 		{ label: 'Contribute', href: 'https://getpad.dev/contribute' },
 		{ label: 'FAQ', href: 'https://getpad.dev/faq' },
 		{ label: 'Security', href: 'https://getpad.dev/security' },
