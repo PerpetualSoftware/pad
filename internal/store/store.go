@@ -291,6 +291,15 @@ func New(dbPath string) (*Store, error) {
 	db.SetConnMaxLifetime(time.Hour)
 
 	s := &Store{db: db, dialect: &sqliteDialect{}, dbPath: dbPath}
+	// BEFORE migrate(), not after (TASK-2710). Migrations 087 / 064 add partial
+	// unique indexes over the collection-trait declarations, and those CREATE
+	// statements fail on exactly the databases that hold duplicates — so the
+	// repair has to precede them. No-ops on a fresh database, where the
+	// collections table does not exist yet.
+	if err := s.dedupeTraitDeclarations(); err != nil {
+		return nil, fmt.Errorf("de-duplicate collection trait declarations: %w", err)
+	}
+
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -377,6 +386,15 @@ func NewPostgres(connStr string) (*Store, error) {
 	}
 
 	s := &Store{db: db, dialect: &postgresDialect{}}
+	// BEFORE migrate(), not after (TASK-2710). Migrations 087 / 064 add partial
+	// unique indexes over the collection-trait declarations, and those CREATE
+	// statements fail on exactly the databases that hold duplicates — so the
+	// repair has to precede them. No-ops on a fresh database, where the
+	// collections table does not exist yet.
+	if err := s.dedupeTraitDeclarations(); err != nil {
+		return nil, fmt.Errorf("de-duplicate collection trait declarations: %w", err)
+	}
+
 	if err := s.migratePostgres(); err != nil {
 		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}

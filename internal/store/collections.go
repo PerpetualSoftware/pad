@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -996,6 +997,26 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 			continue
 		}
 
+		// A collection can be missing BY SLUG and still be present by
+		// DECLARATION: renaming re-slugs, so a workspace whose `conventions`
+		// became `house-rules` looks slug-empty here while its artifact kind is
+		// still claimed. Creating the definition anyway used to mint a silent
+		// duplicate — the reproduction TASK-2710 exists to repair — and since
+		// that task's partial unique index it would fail this whole seed
+		// instead. Skip and say so: the point of seeding is that the template's
+		// collections EXIST, and by declaration this one does.
+		//
+		// Reachable in production only through a future re-seed door — both of
+		// today's callers seed a workspace they just created — but the seeder
+		// should not be the thing that discovers the invariant the hard way.
+		if taken, takenBy, terr := s.artifactKindTaken(workspaceID, def.Traits); terr != nil {
+			return fmt.Errorf("check artifact kind for %s: %w", def.Slug, terr)
+		} else if taken {
+			slog.Info("seed: skipping a template collection whose artifact kind is already declared",
+				"workspace_id", workspaceID, "skipped_slug", def.Slug, "declared_by", takenBy)
+			continue
+		}
+
 		schemaJSON, err := json.Marshal(def.Schema)
 		if err != nil {
 			return fmt.Errorf("marshal schema for %s: %w", def.Slug, err)
@@ -1342,4 +1363,26 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 		return raw, false, err
 	}
 	return string(encoded), true, nil
+}
+
+// artifactKindTaken reports whether some live collection in the workspace
+// already declares the artifact kind carried by def's traits, and which one.
+// Returns false for a definition that declares no kind, which is most of them.
+//
+// Exists so SeedCollectionsFromTemplate can skip rather than collide with the
+// TASK-2710 unique index. Deliberately a read on the same rule the index
+// enforces, not a second spelling of it: it asks "is this kind declared", which
+// is exactly what the index makes unique.
+func (s *Store) artifactKindTaken(workspaceID string, traits models.CollectionTraits) (bool, string, error) {
+	if traits.ArtifactKind == nil || traits.ArtifactKind.Kind == "" {
+		return false, "", nil
+	}
+	live, err := s.ListTraitedCollections(workspaceID)
+	if err != nil {
+		return false, "", err
+	}
+	if owner := collections.FindByArtifactKind(live, traits.ArtifactKind.Kind); owner != nil {
+		return true, owner.Slug, nil
+	}
+	return false, "", nil
 }
