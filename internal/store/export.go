@@ -427,6 +427,18 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// and every count here is zero; bundle order IS the terminator, and the log
 	// says so rather than implying a considered choice. The loser keeps every
 	// item; only the declaration is dropped.
+	//
+	// ARCHIVED collections take no part in this (BUG-2884). Since the bundle
+	// started carrying soft-deleted collections, an archived collection can
+	// travel alongside the live one that replaced it, still declaring the same
+	// kind — and it arrives FIRST if it was created first, because the bundle
+	// is in creation order. It must neither CLAIM the kind, which would strip
+	// the live collection later in the bundle and leave the workspace with
+	// routing owned by a row every resolver filters out
+	// (ListTraitedCollections is deleted_at IS NULL), nor LOSE its own, which
+	// would edit data the operator archived rather than deleted. Both partial
+	// unique indexes carry `AND deleted_at IS NULL`, so an archived row is
+	// outside the constraint and can conflict with nothing.
 	seenKinds := map[string]string{}
 	invocationCollection := ""
 
@@ -534,7 +546,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// Now that `traits` is final — coerced, validated, and inferred — drop
 		// any declaration another collection in this bundle already took.
 		var derr error
-		traits, derr = dropDuplicateImportDeclarations(traits, c.Slug, ws.ID, seenKinds, &invocationCollection)
+		traits, derr = dropDuplicateImportDeclarations(traits, c.Slug, c.DeletedAt, ws.ID, seenKinds, &invocationCollection)
 		if derr != nil {
 			return nil, fmt.Errorf("de-duplicate declarations for %s: %w", c.Slug, derr)
 		}
@@ -1024,7 +1036,19 @@ func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string
 //
 // A blob that does not parse is returned untouched: it declares nothing to
 // every other reader, and it is outside the indexes' json_valid guard too.
-func dropDuplicateImportDeclarations(traits, slug, workspaceID string, seenKinds map[string]string, invocationCollection *string) (string, error) {
+//
+// So is an ARCHIVED collection's, for the same reason one step further out: a
+// soft-deleted row is outside both partial unique indexes (`AND deleted_at IS
+// NULL`) and outside every trait resolver, so it can neither create the
+// conflict this function exists to prevent nor be harmed by holding a stale
+// declaration. Letting it take a claim would be the actual damage — the live
+// collection later in the bundle would be stripped and the workspace would
+// import with no routing for that kind at all (BUG-2884; the pre-pass this
+// replaced grew the same condition).
+func dropDuplicateImportDeclarations(traits, slug, deletedAt, workspaceID string, seenKinds map[string]string, invocationCollection *string) (string, error) {
+	if deletedAt != "" {
+		return traits, nil
+	}
 	t, err := models.ParseCollectionTraits(traits)
 	if err != nil {
 		return traits, nil
