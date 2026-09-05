@@ -26,20 +26,26 @@ WHERE NOT EXISTS (
 -- Harmless if it stayed — the composite FK is strictly stronger — but then
 -- the two dialects would not actually agree, and the next reader comparing
 -- them would be reading a lie.
+-- A LOOP rather than SELECT ... INTO: plpgsql's INTO takes the first row and
+-- does not error on several, so a table carrying two single-column FKs on
+-- item_id would keep one and leave a reader asking which was dropped. Nothing
+-- creates a duplicate today; the loop costs two lines and removes the
+-- question.
 DO $$
 DECLARE
     conname_found TEXT;
 BEGIN
-    SELECT conname INTO conname_found
-    FROM pg_constraint
-    WHERE conrelid = 'item_reminders'::regclass
-      AND contype = 'f'
-      AND confrelid = 'items'::regclass
-      AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
-                          WHERE attrelid = 'item_reminders'::regclass AND attname = 'item_id')]::smallint[];
-    IF conname_found IS NOT NULL THEN
+    FOR conname_found IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'item_reminders'::regclass
+          AND contype = 'f'
+          AND confrelid = 'items'::regclass
+          AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                              WHERE attrelid = 'item_reminders'::regclass AND attname = 'item_id')]::smallint[]
+    LOOP
         EXECUTE format('ALTER TABLE item_reminders DROP CONSTRAINT %I', conname_found);
-    END IF;
+    END LOOP;
 END
 $$;
 

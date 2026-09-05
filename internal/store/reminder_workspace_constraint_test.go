@@ -310,3 +310,79 @@ func TestMigration063DropsPreExistingDisagreeingRows(t *testing.T) {
 		t.Error("after the migration the table still accepts a disagreeing row")
 	}
 }
+
+// TestMigration063DropsEveryLegacyItemIdConstraint exercises the LOOP in 063's
+// DO block, which the repair-pass test above cannot: that fixture carries one
+// legacy foreign key, and one is what a `SELECT ... INTO` handles correctly
+// too. Two is where they differ — plpgsql's INTO takes the first row and does
+// not error, so the second would survive and sit alongside the composite key,
+// leaving the two dialects disagreeing about the table's shape while the
+// migration reported success.
+//
+// Nothing creates a duplicate today. It is tested because the loop exists to
+// handle a case no other test reaches, and an untested branch that only runs
+// on a database nobody has is worse than no branch at all.
+func TestMigration063DropsEveryLegacyItemIdConstraint(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("Postgres-only: the DO block has no SQLite counterpart (the rebuild replaces the FK wholesale)")
+	}
+	const migrationName = "063_item_reminders_composite_fk.sql"
+
+	s := testStore(t)
+
+	legacyCount := func() int {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRow(`
+			SELECT COUNT(*) FROM pg_constraint
+			WHERE conrelid = 'item_reminders'::regclass
+			  AND contype = 'f'
+			  AND confrelid = 'items'::regclass
+			  AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+			                      WHERE attrelid = 'item_reminders'::regclass AND attname = 'item_id')]::smallint[]
+		`).Scan(&n); err != nil {
+			t.Fatalf("count legacy constraints: %v", err)
+		}
+		return n
+	}
+
+	// Rewind past 063 and put TWO single-column FKs on item_id, the shape the
+	// loop exists for.
+	for _, stmt := range []string{
+		`ALTER TABLE item_reminders DROP CONSTRAINT item_reminders_item_workspace_fkey`,
+		`ALTER TABLE item_reminders ADD CONSTRAINT item_reminders_item_id_fkey FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE`,
+		`ALTER TABLE item_reminders ADD CONSTRAINT item_reminders_item_id_fkey1 FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE`,
+		`DELETE FROM schema_migrations WHERE version = '` + migrationName + `'`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			t.Fatalf("rewind %q: %v", stmt, err)
+		}
+	}
+	if got := legacyCount(); got != 2 {
+		t.Fatalf("control leg failed: seeded %d legacy constraints, want 2 — the loop's case is not set up", got)
+	}
+
+	body, err := pgMigrationsFS.ReadFile("pgmigrations/" + migrationName)
+	if err != nil {
+		t.Fatalf("read embedded migration: %v", err)
+	}
+	if err := applyPostgresMigration(s.db, migrationName, string(body)); err != nil {
+		t.Fatalf("migration failed against two legacy constraints: %v", err)
+	}
+
+	if got := legacyCount(); got != 0 {
+		t.Errorf("legacy single-column constraints remaining = %d, want 0 — the DO block dropped only the first", got)
+	}
+
+	// And the composite key is the one in force.
+	var composite int
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM pg_constraint
+		WHERE conrelid = 'item_reminders'::regclass AND conname = 'item_reminders_item_workspace_fkey'
+	`).Scan(&composite); err != nil {
+		t.Fatalf("count composite: %v", err)
+	}
+	if composite != 1 {
+		t.Errorf("composite constraints = %d, want 1", composite)
+	}
+}
