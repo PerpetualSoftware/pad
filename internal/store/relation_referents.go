@@ -418,6 +418,29 @@ const (
 	RelationOriginDestinationDefault
 )
 
+// Refuses reports whether an unresolvable value of this origin REFUSES the
+// request, or is dropped and reported.
+//
+// THIS IS THE ONE STATEMENT OF THE RULE (IDEA-2886). A relation value the
+// CALLER ASSERTED in this request is a write, and an unresolvable write is
+// their bug, so it is refused. A value asserted by NOBODY — carried from the
+// source item, or injected from the destination schema's `default` — is
+// dropped and reported instead. Refusing those would make a legacy item
+// permanently un-updatable, un-movable and un-copyable, and would let a single
+// bad default in a schema fail every write into that collection, on a defect
+// its author has to fix somewhere else entirely.
+//
+// It was stated three times before this — in the origin split below, in the
+// late-default pass, and in IssuesForCallerInput — each in its own control
+// flow and its own prose. Three statements of one rule is the shape that
+// invites a fourth door to state it slightly differently, which is the drift
+// TASK-2878 existed to remove. The polarity now lives HERE and nowhere else,
+// so a reviewer checking "does this door get the rule right" reads one
+// function, and a mutation of it breaks every site at once.
+func (o RelationOrigin) Refuses() bool {
+	return o == RelationOriginSupplied
+}
+
 // MigrateRelationReferents is the ONE decision the four migrate doors share
 // (PLAN-2857 U1 / TASK-2878). Same-workspace move, bulk move, cross-workspace
 // copy and the copy preflight all call this; none of them reimplements it.
@@ -511,7 +534,19 @@ func (s *Store) MigrateRelationReferentsQ(
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}
-		refusals = issues
+		// Routed through the origin's own rule rather than assigning to
+		// `refusals` because this branch happens to be the supplied one
+		// (IDEA-2886). The `else` is unreachable while Refuses() answers as it
+		// does — and that is the point: if the rule ever changes, this site
+		// follows it instead of contradicting it.
+		if RelationOriginSupplied.Refuses() {
+			refusals = issues
+		} else {
+			dropped = append(dropped, issues...)
+			for _, ri := range issues {
+				delete(fieldMap, ri.Key)
+			}
+		}
 		// Carry the canonicalised survivors back.
 		for k, v := range suppliedRelations {
 			fieldMap[k] = v
@@ -519,7 +554,9 @@ func (s *Store) MigrateRelationReferentsQ(
 	}
 
 	// Destination defaults resolve against the DESTINATION in both modes — the
-	// destination picked the value, so the mode says nothing about it.
+	// destination picked the value, so the mode says nothing about it. They
+	// DROP rather than refuse because RelationOriginDestinationDefault.Refuses()
+	// is false, which is the one place that is decided (IDEA-2886).
 	if defaults := byOrigin[RelationOriginDestinationDefault]; len(defaults) > 0 {
 		// A NON-STRING default is dropped and reported here, exactly as
 		// ResolveLateRelationDefaultsQ drops one, and NOT left for
@@ -755,6 +792,18 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 	fieldMap map[string]any,
 	before map[string]bool,
 ) (dropped []RelationIssue, err error) {
+	// EVERY key this pass looks at is a destination default: the `before`
+	// guard skips anything present before validation ran, so what remains was
+	// injected by `ValidateFields` from the schema. Its return is therefore
+	// named `dropped` and never `refusals` — which is
+	// RelationOriginDestinationDefault.Refuses() being false, not a separate
+	// decision this function makes (IDEA-2886). The assertion below says so in
+	// code rather than in prose, so a future edit that starts refusing here
+	// contradicts the rule instead of quietly forking it.
+	if RelationOriginDestinationDefault.Refuses() {
+		return nil, fmt.Errorf("relation defaults now refuse; this pass reports drops only " +
+			"and its callers treat its return as a drop list — see RelationOrigin.Refuses")
+	}
 	late := map[string]any{}
 	for _, def := range schema.Fields {
 		if def.Type != "relation" || before[def.Key] {
@@ -818,7 +867,16 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 func IssuesForCallerInput(issues []RelationIssue, presentBefore map[string]bool) []RelationIssue {
 	out := make([]RelationIssue, 0, len(issues))
 	for _, ri := range issues {
+		// CLASSIFY, then ask the rule — rather than restating the rule as
+		// "keep it if it was there before" (IDEA-2886). At a write door,
+		// present-before-validation IS the caller's own input and anything
+		// else is a default validation injected, so the two origins below are
+		// the only ones reachable here; there is no source item to carry from.
+		origin := RelationOriginDestinationDefault
 		if presentBefore[ri.Key] {
+			origin = RelationOriginSupplied
+		}
+		if origin.Refuses() {
 			out = append(out, ri)
 		}
 	}
