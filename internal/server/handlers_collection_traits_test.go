@@ -252,11 +252,17 @@ func TestResolvePlaybookIgnoresInvisibleCollections(t *testing.T) {
 	var second models.Collection
 	parseJSON(t, rr, &second)
 	secondTraits := `{"bootstrap_include":[{"mode":"metadata","key":"playbooks"}],"invocation_field":"invocation_slug"}`
-	withTraitUniquenessSuspended(t, srv, func() {
-		if _, err := srv.store.UpdateCollection(second.ID, models.CollectionUpdate{Traits: &secondTraits}); err != nil {
-			t.Fatalf("attach traits to second collection: %v", err)
-		}
-	})
+	// TASK-2710's unique indexes forbid this state; it is built anyway because
+	// LEGACY databases hold it and what this test verifies is how resolution
+	// HANDLES it. The restore is expected to fail here — the duplicate stays
+	// live for the whole test, which is exactly the condition that makes
+	// recreating a unique index impossible — so its error is ignored
+	// deliberately rather than by omission.
+	restoreTraitUniqueness := srv.store.SuspendTraitUniquenessForTesting()
+	defer func() { _ = restoreTraitUniqueness() }()
+	if _, err := srv.store.UpdateCollection(second.ID, models.CollectionUpdate{Traits: &secondTraits}); err != nil {
+		t.Fatalf("attach traits to second collection: %v", err)
+	}
 
 	// Same invocation slug in both collections. The partial unique index is
 	// per (collection_id, invocation_slug), so this is legal.
@@ -327,11 +333,17 @@ func TestCollectionIDForKindIgnoresInvisibleCollections(t *testing.T) {
 	var second models.Collection
 	parseJSON(t, rr, &second)
 	secondTraits := `{"artifact_kind":{"kind":"convention"}}`
-	withTraitUniquenessSuspended(t, srv, func() {
-		if _, err := srv.store.UpdateCollection(second.ID, models.CollectionUpdate{Traits: &secondTraits}); err != nil {
-			t.Fatalf("attach traits to second collection: %v", err)
-		}
-	})
+	// TASK-2710's unique indexes forbid this state; it is built anyway because
+	// LEGACY databases hold it and what this test verifies is how resolution
+	// HANDLES it. The restore is expected to fail here — the duplicate stays
+	// live for the whole test, which is exactly the condition that makes
+	// recreating a unique index impossible — so its error is ignored
+	// deliberately rather than by omission.
+	restoreTraitUniqueness := srv.store.SuspendTraitUniquenessForTesting()
+	defer func() { _ = restoreTraitUniqueness() }()
+	if _, err := srv.store.UpdateCollection(second.ID, models.CollectionUpdate{Traits: &secondTraits}); err != nil {
+		t.Fatalf("attach traits to second collection: %v", err)
+	}
 
 	wsID := workspaceIDForSlug(t, srv, wsSlug)
 
@@ -513,36 +525,4 @@ func TestFirstPartyKeyModeIsPinned(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("control leg failed: bodies mode on `conventions` was refused: %d %s", rr.Code, rr.Body.String())
 	}
-}
-
-// withTraitUniquenessSuspended runs fn with TASK-2710's partial unique indexes
-// dropped, so a test can build the two-collections-declaring-one-trait state
-// those indexes now forbid.
-//
-// The state is not hypothetical and the tests above are not obsolete. They
-// guard the round-2 shadowing fix: when two collections declare one kind and
-// the first-sorting one is invisible to the caller, resolution must return the
-// visible one instead of failing. TASK-2710 makes that state unrepresentable
-// GOING FORWARD and repairs it at startup on databases that already hold it —
-// but the resolver is what stands between a legacy database and a wrong answer
-// in the window before that repair, and on any deployment where an operator
-// has dropped the index. Deleting these tests would retire a guarantee that is
-// still load-bearing; suspending the constraint to build the fixture keeps
-// them testing exactly what they always tested.
-//
-// This mirrors internal/store's withTraitIndexSuspended, and the same
-// reasoning as IDEA-2883's disagreeing-reminder fixture: once a constraint
-// makes a legacy state unbuildable, the test for how that state is HANDLED has
-// to construct it the way it actually exists in the wild.
-func withTraitUniquenessSuspended(t *testing.T, srv *Server, fn func()) {
-	t.Helper()
-	for _, idx := range []string{
-		"idx_collections_artifact_kind_per_workspace",
-		"idx_collections_invocation_field_per_workspace",
-	} {
-		if err := srv.store.DropIndexForTest(idx); err != nil {
-			t.Fatalf("suspend %s: %v", idx, err)
-		}
-	}
-	fn()
 }
