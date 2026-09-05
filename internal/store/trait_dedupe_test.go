@@ -316,8 +316,25 @@ func TestMalformedTraitsDoNotBreakTheInvariant(t *testing.T) {
 	// Written raw: every door validates traits, so this is the shape of a row
 	// that arrived some other way — a hand-edited database, or a write from a
 	// build that predates validation.
-	if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), `{"artifact_kind":`, junk.ID); err != nil {
-		t.Fatalf("plant malformed traits: %v", err)
+	//
+	// THE TWO DRIVERS DIFFER HERE, and that difference is the point rather
+	// than an inconvenience. On Postgres traits is JSONB, so the column type
+	// REFUSES malformed content and the state is unrepresentable at rest —
+	// which is exactly why migration 064 carries no json_valid guard while 087
+	// does. That claim was prose in the migration until this test found the
+	// refusal; asserting it here makes it a checked fact, and turns this into
+	// the test that would catch someone "fixing" the asymmetry by adding a
+	// guard Postgres does not need, or removing the one SQLite does.
+	_, plantErr := s.db.Exec(s.q(`UPDATE collections SET traits = ? WHERE id = ?`), `{"artifact_kind":`, junk.ID)
+	if s.dialect.Driver() == DriverPostgres {
+		if plantErr == nil {
+			t.Fatal("Postgres accepted a malformed traits blob; the JSONB column type is what makes migration 064's missing json_valid guard correct, and it just stopped being true")
+		}
+		t.Logf("Postgres refused the malformed blob, as the JSONB column requires: %v", plantErr)
+		return
+	}
+	if plantErr != nil {
+		t.Fatalf("plant malformed traits: %v", plantErr)
 	}
 
 	// The de-dup pass must survive it — this is what runs before migrate().
