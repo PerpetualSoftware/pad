@@ -493,3 +493,98 @@ func TestImportDeduplicatesAfterCanonicalInference(t *testing.T) {
 		t.Errorf("collections declaring convention after import = %v, want exactly 1", declaring)
 	}
 }
+
+// TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt is the
+// rebase test for this branch against BUG-2884 (checkpoint 6 on TASK-2710).
+//
+// BUG-2884 made the bundle CARRY soft-deleted collections, so an archived
+// collection can now travel alongside the live one that replaced it, still
+// declaring the same artifact kind. Import's de-duplication runs in bundle
+// order and has no notion of liveness, so the archived collection claims the
+// kind and the LIVE one is stripped of it. The workspace then imports with its
+// convention routing owned by a row every resolver filters out
+// (ListTraitedCollections is deleted_at IS NULL) — the workspace comes up
+// inert, which is the failure BUG-2884's own pre-pass skip existed to prevent
+// and which this branch's relocation of the check into the insert loop
+// reintroduced.
+//
+// The archived collection must also KEEP its declaration. Nothing routes to it,
+// the partial unique indexes exclude it (`AND deleted_at IS NULL`), and
+// stripping it would edit data the operator archived rather than deleted.
+func TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "archivedtrait@test.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Archived Trait Source")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	exp, err := s.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	var convTraits string
+	liveIndex := -1
+	for i, c := range exp.Collections {
+		if c.Slug == "conventions" {
+			convTraits = c.Traits
+			liveIndex = i
+		}
+	}
+	if convTraits == "" || liveIndex < 0 {
+		t.Fatal("control leg failed: the exported bundle carries no live conventions declaration to contend with")
+	}
+
+	// The archived predecessor, placed FIRST in bundle order — which is what
+	// makes it the claimant under a de-duplication that only counts order.
+	// Built in the bundle rather than the database because that is how it
+	// arrives: BUG-2884 put soft-deleted collections into the archive.
+	archived := exp.Collections[liveIndex]
+	archived.ID = archived.ID + "-archived"
+	archived.Slug = "old-conventions"
+	archived.Name = "Old Conventions"
+	archived.Prefix = "OCONV"
+	archived.Traits = convTraits
+	archived.DeletedAt = "2026-01-02T03:04:05Z"
+	exp.Collections = append([]models.CollectionExport{archived}, exp.Collections...)
+
+	imported, err := s.ImportWorkspace(exp, "archived-trait-target", owner.ID)
+	if err != nil {
+		t.Fatalf("import failed with an archived collection sharing a declaration: %v", err)
+	}
+
+	// The live collection answers for the kind. This is the assertion a naive
+	// rebase fails: the archived row claims `convention` first and the live
+	// conventions collection is stripped, so nothing resolves.
+	traited, err := s.ListTraitedCollections(imported.ID)
+	if err != nil {
+		t.Fatalf("ListTraitedCollections: %v", err)
+	}
+	var declaring []string
+	for _, tc := range traited {
+		if tc.Traits.ArtifactKind != nil && tc.Traits.ArtifactKind.Kind == "convention" {
+			declaring = append(declaring, tc.Slug)
+		}
+	}
+	if len(declaring) != 1 || declaring[0] != "conventions" {
+		t.Fatalf("live collections declaring convention = %v, want exactly [conventions]; an archived collection took the declaration and left the workspace with no live convention routing", declaring)
+	}
+
+	// And the archived one still holds its own. Read straight from the table:
+	// every store-level reader filters it out, which is the whole reason it is
+	// harmless for it to keep the declaration.
+	var archivedTraits string
+	if err := s.db.QueryRow(s.q(`
+		SELECT traits FROM collections
+		WHERE workspace_id = ? AND slug = ? AND deleted_at IS NOT NULL`),
+		imported.ID, "old-conventions").Scan(&archivedTraits); err != nil {
+		t.Fatalf("read back the archived collection: %v", err)
+	}
+	parsed, perr := models.ParseCollectionTraits(archivedTraits)
+	if perr != nil {
+		t.Fatalf("archived traits did not parse: %v", perr)
+	}
+	if parsed.ArtifactKind == nil || parsed.ArtifactKind.Kind != "convention" {
+		t.Errorf("the archived collection was stripped to %q; nothing routes to it and the indexes exclude it, so import has no business editing data the operator archived", archivedTraits)
+	}
+}
