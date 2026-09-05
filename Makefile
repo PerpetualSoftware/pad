@@ -58,14 +58,66 @@ test:
 	go test -timeout=45m ./... -v
 
 # Run tests against PostgreSQL (starts a container automatically).
-# Uses port 5445 to avoid conflicts with any local PostgreSQL.
-test-pg:
-	docker compose -f docker-compose.test.yml up -d --wait
-	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" go test -timeout=45m ./... -v -count=1; \
-		EXIT_CODE=$$?; \
-		docker compose -f docker-compose.test.yml down -v; \
-		exit $$EXIT_CODE
+#
+# THE HOST PORT IS EPHEMERAL (TASK-2708). It was hardcoded to 5445, which let
+# exactly one worktree run this target at a time; with concurrent worktrees the
+# normal operating mode that produced three incidents in an afternoon, the worst
+# of which forged a green-looking gate leg — `go test` exited 2 having run NO
+# TESTS because the container was unreachable, and "exit 2 with zero FAIL lines"
+# reads a lot like a pass to a quick glance.
+#
+# So: Docker assigns the port, we read it back, and we REFUSE TO RUN rather than
+# let an unreachable database look like a test result. Never put a fixed host
+# port back in docker-compose.test.yml or hardcode one here.
+#
+# Recovering an orphan (a stack whose worktree was removed before teardown):
+# the compose project name is the directory basename, so
+#   docker compose -p <that-directory-name> down -v
+# reaps it from anywhere. `docker ps --filter name=postgres` finds the name.
+# TEST_PG_PKGS narrows the run. Defaults to everything, which is what a gate
+# wants; a narrower value is for checking this target's own plumbing (e.g. the
+# concurrency acceptance) without two full-suite runs. A gate leg reported from
+# a narrowed run is not a gate leg.
+TEST_PG_PKGS ?= ./...
 
+test-pg:
+	@docker compose -f docker-compose.test.yml up -d --wait
+	@port=$$(docker compose -f docker-compose.test.yml port postgres 5432 2>/dev/null | sed 's/.*://'); \
+	if [ -z "$$port" ]; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# NO TESTS EXECUTED - could not read the container's host port  #"; \
+		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
+		echo "################################################################"; \
+		docker compose -f docker-compose.test.yml down -v >/dev/null 2>&1; \
+		exit 1; \
+	fi; \
+	url="postgres://pad:pad@127.0.0.1:$$port/pad?sslmode=disable"; \
+	if ! docker run --rm --network host postgres:17-alpine pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# NO TESTS EXECUTED - Postgres on port $$port is not ready      #"; \
+		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
+		echo "################################################################"; \
+		docker compose -f docker-compose.test.yml down -v >/dev/null 2>&1; \
+		exit 1; \
+	fi; \
+	echo "test-pg: Postgres on 127.0.0.1:$$port (project $$(basename $$(pwd)))"; \
+	PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $(TEST_PG_PKGS) -v -count=1; \
+	EXIT_CODE=$$?; \
+	if [ $$EXIT_CODE -ne 0 ] && ! docker run --rm --network host postgres:17-alpine pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# THE DATABASE DIED DURING THE RUN.                             #"; \
+		echo "# Treat the failures above as INFRASTRUCTURE, not as evidence   #"; \
+		echo "# about the code, and re-run before drawing any conclusion.     #"; \
+		echo "################################################################"; \
+	fi; \
+	docker compose -f docker-compose.test.yml down -v; \
+	exit $$EXIT_CODE
+
+# Tears down THIS directory's stack only — the compose project name is the
+# directory basename, so it cannot reach a sibling worktree's container.
 test-pg-down:
 	docker compose -f docker-compose.test.yml down -v
 

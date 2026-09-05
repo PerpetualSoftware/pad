@@ -1,7 +1,23 @@
 # PostgreSQL for integration tests.
-# Usage: docker compose -f docker-compose.test.yml up -d
-#        make test-pg
-#        docker compose -f docker-compose.test.yml down -v
+# Usage: make test-pg          (starts, runs, tears down)
+#        make test-pg-down     (tear down a stack left behind)
+#
+# THE HOST PORT IS EPHEMERAL AND THAT IS THE POINT (TASK-2708). It used to be
+# hardcoded to 5445, which let exactly ONE worktree run the Postgres leg at a
+# time: a second `make test-pg` failed with "port is already allocated", and a
+# stack orphaned by a removed worktree blocked the port for everyone until
+# somebody found and reaped it. With concurrent worktrees the normal operating
+# mode, that produced three incidents in one afternoon — including a run that
+# exited 2 having executed NO TESTS, which reads a lot like green at a glance.
+#
+# Docker assigns the host port; the Makefile reads it back with
+# `docker compose port postgres 5432` and builds PAD_TEST_POSTGRES_URL from it.
+# Do not reintroduce a fixed host port here, and do not hardcode one in a
+# script — derive it, or you have rebuilt the collision.
+#
+# The compose PROJECT NAME defaults to the directory basename, so each worktree
+# already gets its own stack and `down -v` cannot reach a sibling's. That was
+# never the broken part; the port was.
 
 services:
   postgres:
@@ -11,7 +27,9 @@ services:
       POSTGRES_PASSWORD: pad
       POSTGRES_DB: pad
     ports:
-      - "5445:5432"
+      # No host side: Docker picks a free port. Read it back rather than
+      # assuming one (see the header).
+      - "5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pad"]
       interval: 2s
