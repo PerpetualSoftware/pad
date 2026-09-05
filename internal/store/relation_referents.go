@@ -640,10 +640,13 @@ func (s *Store) MigrateRelationReferentsQ(
 		// Same workspace: resolve, keep what resolves, drop what does not.
 		//
 		// WHAT SURVIVES HERE IS OBSERVABLE, AND THAT IS ACCEPTED (IDEA-2893,
-		// lead ruling day 58). A carried value naming a live item in a
-		// collection the mover cannot see resolves and survives; one naming
-		// nothing is dropped. So a mover can tell those two apart, and on a
-		// stored REF they additionally learn the target's canonical id.
+		// lead ruling day 58; the measurements it rests on are on that idea's
+		// trail, which is where to check this reasoning rather than take it).
+		//
+		// A carried value naming a live item in a collection the mover cannot
+		// see resolves and survives; one naming nothing is dropped. So a mover
+		// can tell those two apart, and on a stored REF they additionally
+		// learn the target's canonical id.
 		//
 		// It is accepted for a reason that was MEASURED rather than assumed,
 		// and the measurement is the part worth keeping:
