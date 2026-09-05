@@ -15,9 +15,12 @@
 # Do not reintroduce a fixed host port here, and do not hardcode one in a
 # script — derive it, or you have rebuilt the collision.
 #
-# The compose PROJECT NAME defaults to the directory basename, so each worktree
-# already gets its own stack and `down -v` cannot reach a sibling's. That was
-# never the broken part; the port was.
+# The Makefile also sets an EXPLICIT compose project name, keyed to the
+# checkout's absolute path. Compose's default is the directory BASENAME, which
+# is per-worktree in the usual layout but NOT unique — two checkouts sharing a
+# basename would share a stack, and one `down -v` would tear down the other's
+# database mid-run. An earlier version of this comment claimed the default was
+# already sufficient; it is not, and the Makefile no longer relies on it.
 
 services:
   postgres:

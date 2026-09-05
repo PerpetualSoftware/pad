@@ -1,4 +1,4 @@
-.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install check vuln web-check web-test web-audit
+.PHONY: build test test-pg test-pg-down test-pg-project dev clean web dev-web serve restart lint install check vuln web-check web-test web-audit
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
@@ -78,25 +78,48 @@ test:
 # database that went away).
 #
 # Recovering an orphan (a stack whose worktree was removed before teardown):
-# the compose project name is the directory basename, so
-#   docker compose -p <that-directory-name> down -v
-# reaps it from anywhere. `docker ps --filter name=postgres` finds the name.
+# `docker ps --filter name=padtest-` lists them, and the container name carries
+# the project. Reap one from anywhere with
+#   docker compose -p <project> down -v
+# From inside the worktree itself, `make test-pg-project` prints the name and
+# `make test-pg-down` does it for you.
 # TEST_PG_PKGS narrows the run. Defaults to everything, which is what a gate
 # wants; a narrower value is for checking this target's own plumbing (e.g. the
 # concurrency acceptance) without two full-suite runs. A gate leg reported from
 # a narrowed run is not a gate leg.
 TEST_PG_PKGS ?= ./...
 
+# An EXPLICIT project name, unique per absolute path (codex round 1, P2).
+# Compose otherwise defaults it to the directory BASENAME, so two checkouts
+# that happen to share a basename — /a/docapp and /b/docapp — share a stack,
+# and one `down -v` tears down the other's database mid-run. That is the
+# cross-worktree teardown this task exists to make impossible, reachable
+# through a second door. The basename is kept in the name so an orphan is
+# still identifiable by eye; the checksum of the full path is what makes it
+# unique. Lowercased and punctuation-stripped because compose rejects
+# anything else.
+TEST_PG_PROJECT := padtest-$(shell printf '%s' '$(notdir $(CURDIR))' | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_-' '-')-$(shell printf '%s' '$(CURDIR)' | cksum | cut -d' ' -f1)
+COMPOSE_TEST := docker compose -p $(TEST_PG_PROJECT) -f docker-compose.test.yml
+
 test-pg:
-	@docker compose -f docker-compose.test.yml up -d --wait
-	@port=$$(docker compose -f docker-compose.test.yml port postgres 5432 2>/dev/null | sed 's/.*://'); \
+	@port=""; \
+	if ! $(COMPOSE_TEST) up -d --wait; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# NO TESTS EXECUTED - the database container never came up      #"; \
+		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
+		echo "################################################################"; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1; \
+		exit 1; \
+	fi; \
+	port=$$($(COMPOSE_TEST) port postgres 5432 2>/dev/null | sed 's/.*://'); \
 	if [ -z "$$port" ]; then \
 		echo ""; \
 		echo "################################################################"; \
 		echo "# NO TESTS EXECUTED - could not read the container's host port  #"; \
 		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
 		echo "################################################################"; \
-		docker compose -f docker-compose.test.yml down -v >/dev/null 2>&1; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1; \
 		exit 1; \
 	fi; \
 	url="postgres://pad:pad@127.0.0.1:$$port/pad?sslmode=disable"; \
@@ -106,10 +129,10 @@ test-pg:
 		echo "# NO TESTS EXECUTED - Postgres on port $$port is not ready      #"; \
 		echo "# This is NOT a test result. The Postgres leg did not run.      #"; \
 		echo "################################################################"; \
-		docker compose -f docker-compose.test.yml down -v >/dev/null 2>&1; \
+		$(COMPOSE_TEST) down -v >/dev/null 2>&1; \
 		exit 1; \
 	fi; \
-	echo "test-pg: Postgres on 127.0.0.1:$$port (project $$(basename $$(pwd)))"; \
+	echo "test-pg: Postgres on 127.0.0.1:$$port (project $(TEST_PG_PROJECT))"; \
 	PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $(TEST_PG_PKGS) -v -count=1; \
 	EXIT_CODE=$$?; \
 	if [ $$EXIT_CODE -ne 0 ] && ! docker run --rm --network host postgres:17-alpine pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; then \
@@ -120,13 +143,26 @@ test-pg:
 		echo "# about the code, and re-run before drawing any conclusion.     #"; \
 		echo "################################################################"; \
 	fi; \
-	docker compose -f docker-compose.test.yml down -v; \
+	if ! $(COMPOSE_TEST) down -v; then \
+		echo ""; \
+		echo "################################################################"; \
+		echo "# TEARDOWN FAILED - the stack is still running. Reap it with:    #"; \
+		echo "#   docker compose -p $(TEST_PG_PROJECT) down -v"; \
+		echo "# The test status below is honest; this leak is a separate fact. #"; \
+		echo "################################################################"; \
+	fi; \
 	exit $$EXIT_CODE
 
-# Tears down THIS directory's stack only — the compose project name is the
-# directory basename, so it cannot reach a sibling worktree's container.
+# Tears down THIS directory's stack only: the project name is keyed to this
+# directory's ABSOLUTE path, so it cannot reach a sibling's container even if
+# the two directories share a basename.
 test-pg-down:
-	docker compose -f docker-compose.test.yml down -v
+	$(COMPOSE_TEST) down -v
+
+# Prints this directory's compose project name, so an orphan can be reaped
+# from anywhere without re-deriving it by hand.
+test-pg-project:
+	@echo $(TEST_PG_PROJECT)
 
 dev: build-go
 	./$(BINARY) server start --host $(HOST)
