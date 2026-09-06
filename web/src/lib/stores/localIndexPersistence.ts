@@ -42,7 +42,9 @@ import { resolveRowWrite, type Tombstone } from './itemRowMerge';
  * store-creation migrations. Bumped 1 → 2 in PLAN-2636 unit 2 to add the
  * `tombstones` object store (BUG-2633). Distinct from
  * `LOCAL_INDEX_SCHEMA_VERSION`, which versions the ROW SHAPE: the row shape did
- * not change, so that constant stays 3. A v1 DB reopening under v2 gets the
+ * not change in that unit, so the constant stayed 3 there. (It is 4 now — the
+ * meta row gained `accessEpoch` in IDEA-2898. Two independent counters, and
+ * neither implies the other.) A v1 DB reopening under v2 gets the
  * upgrade callback with `oldVersion === 1`; `items`/`meta` data is RETAINED and
  * only the new store is created (empty — old exposure until first resync, not
  * corruption). An OLD build reopening a v2 DB at version 1 gets a VersionError,
@@ -63,13 +65,44 @@ export const IDB_FORMAT_VERSION = 2;
  * `/items-index`. Server truth (items.content) is never persisted
  * here, so a cache wipe loses nothing.
  */
-export const LOCAL_INDEX_SCHEMA_VERSION = 3;
+export const LOCAL_INDEX_SCHEMA_VERSION = 4;
 
 /** Result of a `hydrate()` call. Empty payload when there's no cache yet. */
 export interface HydrateResult {
 	items: ItemIndexRow[];
 	cursor: string;
 	includesUnparentedMetadata: boolean | null;
+	/**
+	 * The caller's access fingerprint at the time this cache was written
+	 * (IDEA-2898). Persisted for one reason: a revocation that lands while the
+	 * tab is CLOSED writes no row, so the cached rows are stale and nothing in
+	 * the delta stream says so. Comparing the persisted epoch against the next
+	 * response's is what turns that into a resync instead of a silent adopt.
+	 *
+	 * Null means NO BASELINE, and this build can still WRITE one: a server that
+	 * predates `access_epoch` omits it, and `persistDelta`/`persistReplace`
+	 * record that absence honestly rather than inventing a value. What the
+	 * version bump to 4 rules out is a PRE-IDEA-2898 cache being read as though
+	 * it had a baseline — those are wiped, not adopted. Both cases are covered
+	 * in localIndexPersistenceAccessEpoch.idb.test.ts.
+	 */
+	accessEpoch: string | null;
+	/**
+	 * Did this call actually READ the durable cache? (IDEA-2898, review round 2
+	 * of the reduced tip.)
+	 *
+	 * Every failure here returns the same empty payload as a genuinely empty
+	 * cache — deliberately, because a best-effort cache that throws should not
+	 * take the app down with it. But "there is nothing stored" and "I could not
+	 * find out" are opposite facts for a caller deciding whether it is safe to
+	 * adopt a new access epoch, and the empty payload cannot tell them apart.
+	 *
+	 * TRUE when the read succeeded, AND when IndexedDB is unsupported — with no
+	 * durable cache in the picture there is nothing that could later contradict
+	 * an adopted epoch. FALSE only when a database that might hold rows could
+	 * not be opened or read.
+	 */
+	durableRead: boolean;
 	/**
 	 * The durable retag overlay applied to `items` before return (BUG-2634):
 	 * `collection_id → newSlug`. Returned for inspection; `items` already
@@ -85,6 +118,8 @@ interface MetaRow {
 	cursor: string;
 	schemaVersion: number;
 	includesUnparentedMetadata: boolean;
+	/** See HydrateResult.accessEpoch (IDEA-2898). */
+	accessEpoch: string | null;
 }
 
 /**
@@ -228,9 +263,13 @@ export async function hydrate(
 		items: [],
 		cursor: '0',
 		includesUnparentedMetadata: null,
+		accessEpoch: null,
+		durableRead: false,
 		retags: {},
 	};
-	if (!isSupported()) return empty;
+	// Unsupported is not a failed read: there is no durable cache to be wrong
+	// about, now or later.
+	if (!isSupported()) return { ...empty, durableRead: true };
 
 	const db = await open(userId, ws);
 	if (!db) return empty;
@@ -246,7 +285,9 @@ export async function hydrate(
 		if (meta && meta.schemaVersion !== LOCAL_INDEX_SCHEMA_VERSION) {
 			await tx.done.catch(() => undefined);
 			await wipe(userId, ws);
-			return empty;
+			// A successful read that found an incompatible cache and destroyed
+			// it. There is now genuinely nothing stored, so this is `true`.
+			return { ...empty, durableRead: true };
 		}
 
 		const retagsRow = (await metaStore.get('retags')) as RetagsRow | undefined;
@@ -292,6 +333,8 @@ export async function hydrate(
 			items,
 			cursor: meta?.cursor ?? '0',
 			includesUnparentedMetadata: meta?.includesUnparentedMetadata ?? null,
+			accessEpoch: meta?.accessEpoch ?? null,
+			durableRead: true,
 			retags,
 		};
 	} catch {
@@ -466,6 +509,7 @@ export async function persistDelta(
 	rows: ItemIndexRow[],
 	cursor: string,
 	includesUnparentedMetadata: boolean,
+	accessEpoch: string | null,
 	removeIds: string[] = [],
 ): Promise<void> {
 	if (!isSupported()) return;
@@ -505,6 +549,7 @@ export async function persistDelta(
 				cursor,
 				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
 				includesUnparentedMetadata,
+				accessEpoch,
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;
@@ -543,6 +588,7 @@ export async function persistReplace(
 	rows: ItemIndexRow[],
 	cursor: string,
 	includesUnparentedMetadata: boolean,
+	accessEpoch: string | null,
 ): Promise<void> {
 	if (!isSupported()) return;
 	const db = await open(userId, ws);
@@ -570,8 +616,63 @@ export async function persistReplace(
 				cursor,
 				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
 				includesUnparentedMetadata,
+				accessEpoch,
 			} satisfies MetaRow)
 			.catch(() => undefined);
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
+ * Record a new access epoch on an EXISTING cache, touching nothing else
+ * (IDEA-2898, review of the reduced tip).
+ *
+ * There is one caller and one reason for it. `ensureAccessScope` may JOIN a
+ * resync that is already in flight rather than start one; the resync it joined
+ * ran its own `persistReplace` under its own baseline, so the meta row records
+ * the OLD epoch while RAM has adopted the told one. Without this the two
+ * disagree durably: the session converges, and every reload hydrates the stale
+ * baseline and pays a full resync for a scope that has not changed since.
+ *
+ * Deliberately a no-op when there is no meta row. A cache that has never synced
+ * has nothing to describe, and minting a meta row here would invent a cursor —
+ * and a cursor is the claim that everything up to it has been seen, which is
+ * precisely the claim such a cache cannot make.
+ *
+ * `expectedPrevious` makes the patch a COMPARE-AND-SET rather than a blind
+ * overwrite; see the comment at the check.
+ */
+export async function persistAccessEpoch(
+	userId: string | null,
+	ws: string,
+	accessEpoch: string | null,
+	expectedPrevious: string | null,
+): Promise<void> {
+	if (!isSupported()) return;
+	const db = await open(userId, ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction('meta', 'readwrite');
+		const store = tx.objectStore('meta');
+		const cached = (await store.get('sync')) as MetaRow | undefined;
+		if (!cached) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
+		// COMPARE-AND-SET, because this is a read-modify-write on a row other
+		// writers own. IDB serializes the transactions, but a `persistDelta` or
+		// `persistReplace` carrying a NEWER epoch can commit between the resync
+		// this caller joined and this patch — and a blind overwrite would then
+		// stamp the older epoch onto rows fetched under the newer one, so the
+		// next comparison reports a change that never happened and pays a full
+		// resync for it. Patch only the row this caller is actually repairing.
+		if ((cached.accessEpoch ?? null) !== expectedPrevious) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
+		store.put({ ...cached, accessEpoch } satisfies MetaRow).catch(() => undefined);
 		await tx.done;
 	} catch {
 		/* swallow — best-effort cache */

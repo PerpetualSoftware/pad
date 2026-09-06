@@ -253,6 +253,13 @@ function planLimitMessage(err: PadApiError): string {
  * see last time you synced" — a 403 mid-session means access was
  * revoked, and the offending entry should drop.
  *
+ * That decision covers a 403 on a READ the user actually made. It never
+ * covered a revocation the user does not click into — one that writes no
+ * row and so reaches no endpoint — which left the cache listing titles
+ * from a collection the caller could no longer open. IDEA-2898 closes
+ * that half elsewhere (an access fingerprint on the item doors, compared
+ * in localIndex); this handler is unchanged and still owns the 403.
+ *
  * The scope is the WHOLE WORKSPACE. Pad's server returns 403 from
  * the workspace-access middleware (see internal/server/middleware_auth.go:
  * `permission_denied`, `not a member of this workspace`), and item-
@@ -1069,6 +1076,7 @@ export const api = {
 				total: number;
 				cursor: string;
 				includes_unparented_metadata: boolean;
+				access_epoch?: string;
 			}>(
 				`/workspaces/${ws}/items-index${qs({
 					collection: opts?.collection,
@@ -1089,6 +1097,12 @@ export const api = {
 				total: raw.total,
 				cursor: raw.cursor,
 				includes_unparented_metadata: raw.includes_unparented_metadata === true,
+				// Passed through UNNORMALIZED, deliberately: the value is
+				// opaque and only ever compared for equality, and coercing an
+				// absent field to a string would turn "this server does not
+				// send it" into a value that can differ from a real one
+				// (IDEA-2898).
+				access_epoch: raw.access_epoch,
 			};
 		},
 
@@ -1122,6 +1136,7 @@ export const api = {
 				changes: (ItemChangeRow & { content?: string })[];
 				cursor: string;
 				includes_unparented_metadata: boolean;
+				access_epoch?: string;
 			}>(
 				`/workspaces/${ws}/items-changes${qs({
 					since: sinceCursor,
@@ -1142,6 +1157,12 @@ export const api = {
 				changes,
 				cursor: raw.cursor,
 				includes_unparented_metadata: raw.includes_unparented_metadata === true,
+				// Passed through UNNORMALIZED, deliberately: the value is
+				// opaque and only ever compared for equality, and coercing an
+				// absent field to a string would turn "this server does not
+				// send it" into a value that can differ from a real one
+				// (IDEA-2898).
+				access_epoch: raw.access_epoch,
 			};
 		},
 

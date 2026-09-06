@@ -9,6 +9,7 @@ import {
 	rawRetags,
 	seedV1Database,
 } from '../../test/idbHarness';
+import { LOCAL_INDEX_SCHEMA_VERSION } from './localIndexPersistence';
 
 /**
  * PLAN-2636 unit 2 — the cache's order-and-merge contract, end-to-end through a
@@ -44,7 +45,7 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 
 		await persistUpserts(U, WS, [row('x', 5)]);
 		// A delta evicts x (moved-out) and advances the cursor to 10 — atomic.
-		await persistDelta(U, WS, [], '10', false, ['x']);
+		await persistDelta(U, WS, [], '10', false, null, ['x']);
 		// The stale RAM snapshot for x (seq 5, behind the cursor) lands last.
 		await persistUpserts(U, WS, [row('x', 5)]);
 
@@ -60,7 +61,7 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const WS = 'ws-2633-seqless';
 
 		await persistUpserts(U, WS, [row('x', 5)]);
-		await persistDelta(U, WS, [], '10', false, ['x']);
+		await persistDelta(U, WS, [], '10', false, null, ['x']);
 		await persistUpserts(U, WS, [row('x', undefined)]); // optimistic seq-less snapshot
 
 		expect(await rawItem(U, WS, 'x')).toBeUndefined();
@@ -72,7 +73,7 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const WS = 'ws-2633-supersede';
 
 		await persistUpserts(U, WS, [row('x', 5)]);
-		await persistDelta(U, WS, [], '10', false, ['x']); // tombstone x @ 10
+		await persistDelta(U, WS, [], '10', false, null, ['x']); // tombstone x @ 10
 		await persistUpserts(U, WS, [row('x', 11)]); // newer than the tombstone
 
 		expect((await rawItem(U, WS, 'x'))?.seq).toBe(11);
@@ -85,7 +86,7 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const WS = 'ws-2633-purge';
 
 		// A prior sync established rows + a persisted cursor of 20.
-		await persistDelta(U, WS, [row('y', 15)], '20', false);
+		await persistDelta(U, WS, [row('y', 15)], '20', false, null);
 		await persistRemovals(U, WS, ['y']); // no cursor in hand → reads meta.sync (20)
 
 		expect((await rawTombstone(U, WS, 'y'))?.deletedAtSeq).toBe(20);
@@ -121,9 +122,9 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const WS = 'ws-2633-f4';
 
 		await persistUpserts(U, WS, [row('x', 5)]);
-		await persistDelta(U, WS, [], '20', false, ['x']); // tombstone x @ 20
+		await persistDelta(U, WS, [], '20', false, null, ['x']); // tombstone x @ 20
 		// An out-of-order lower-cursor eviction for the same id must not lower it.
-		await persistDelta(U, WS, [], '10', false, ['x']);
+		await persistDelta(U, WS, [], '10', false, null, ['x']);
 		expect((await rawTombstone(U, WS, 'x'))?.deletedAtSeq).toBe(20);
 
 		// A snapshot at a seq between the two stamps is still refused.
@@ -150,7 +151,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 
 		// A delta captured BEFORE the rename commits AFTER it, at a newer seq,
 		// carrying the dead slug — no seq compare can arbitrate an out-of-band field.
-		await persistDelta(U, WS, [collRow('a1', 2, 'coll-a', 'old-a')], '2', false);
+		await persistDelta(U, WS, [collRow('a1', 2, 'coll-a', 'old-a')], '2', false, null);
 		expect((await rawItem(U, WS, 'a1'))?.collection_slug).toBe('old-a'); // stored row regressed...
 
 		// ...but hydrate reapplies the overlay, so the reader sees the rename.
@@ -168,7 +169,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 		// Rename coll-a → new-a: a1 rewritten in place + overlay persisted.
 		await persistRetag(U, WS, 'coll-a', ['a1'], 'new-a');
 		// a1 then genuinely MOVES to coll-b via an authoritative delta at a newer seq.
-		await persistDelta(U, WS, [collRow('a1', 2, 'coll-b', 'b-slug')], '2', false);
+		await persistDelta(U, WS, [collRow('a1', 2, 'coll-b', 'b-slug')], '2', false, null);
 		expect((await rawItem(U, WS, 'a1'))?.collection_id).toBe('coll-b');
 
 		// Membership is by collection_id: the coll-a overlay must NOT rewrite a1's
@@ -201,7 +202,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 		expect(await rawRetags(U, WS)).toEqual({ 'coll-a': 'new-a' });
 
 		// A projection resync installs an authoritative snapshot (live slugs).
-		await persistReplace(U, WS, [collRow('a1', 3, 'coll-a', 'authoritative')], '3', true);
+		await persistReplace(U, WS, [collRow('a1', 3, 'coll-a', 'authoritative')], '3', true, null);
 		expect(await rawRetags(U, WS)).toBeUndefined();
 		// Hydrate no longer rewrites the slug — the overlay is gone.
 		expect((await hydrate(U, WS)).items.find((i) => i.id === 'a1')?.collection_slug).toBe(
@@ -247,10 +248,10 @@ describe('persistReplace clears the tombstone store too', () => {
 		const WS = 'ws-replace-tombstones';
 
 		await persistUpserts(U, WS, [row('x', 5)]);
-		await persistDelta(U, WS, [], '10', false, ['x']); // tombstone x
+		await persistDelta(U, WS, [], '10', false, null, ['x']); // tombstone x
 		expect(await rawTombstones(U, WS)).toHaveLength(1);
 
-		await persistReplace(U, WS, [row('y', 1)], '10', false);
+		await persistReplace(U, WS, [row('y', 1)], '10', false, null);
 		expect(await rawTombstones(U, WS)).toHaveLength(0);
 	});
 });
@@ -262,7 +263,12 @@ describe('v1 → v2 migration through the real module', () => {
 		// Seed a pre-unit-2 (format v1) database with an item + meta.
 		await seedV1Database(U, WS, [row('keep', 3)], {
 			cursor: '3',
-			schemaVersion: 3,
+			// The CURRENT cache-shape version, not a literal: these fixtures
+			// exercise the IDB FORMAT migration (v1 → v2), and a hard-coded
+			// version silently becomes a STALE-cache fixture the next time
+			// LOCAL_INDEX_SCHEMA_VERSION moves — which is how IDEA-2898's bump
+			// to 4 turned this into a wipe and failed the hydrate assertion.
+			schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
 			includesUnparentedMetadata: true,
 		});
 
@@ -291,7 +297,7 @@ describe('raw readers address the module database', () => {
 			{ id: 'r', seq: 1, collection_id: 'c', collection_slug: 's' } as unknown as ItemIndexRow,
 		]);
 		await persistRetag(U, WS, 'c', ['r'], 's2');
-		await persistDelta(U, WS, [], '9', false, ['r']);
+		await persistDelta(U, WS, [], '9', false, null, ['r']);
 
 		expect(await rawRetags(U, WS)).toEqual({ c: 's2' });
 		expect((await rawTombstone(U, WS, 'r'))?.deletedAtSeq).toBe(9);

@@ -63,6 +63,7 @@ import {
 	persistDelta,
 	persistRemovals,
 	persistReplace,
+	persistAccessEpoch,
 	persistRetag,
 	persistUpserts,
 	wipe as persistWipe,
@@ -111,6 +112,24 @@ class WorkspaceState {
 	// persisted with the cursor because the same user/workspace cache can
 	// outlive a permission upgrade or downgrade.
 	includesUnparentedMetadata = $state<boolean | null>(null);
+	// The caller's access fingerprint as of the last authoritative snapshot or
+	// delta (IDEA-2898). Persisted with the cursor for the same reason
+	// `includesUnparentedMetadata` is: the cache outlives a permission change,
+	// and a revocation that writes no row leaves no other trace.
+	//
+	// Null means NO BASELINE, and that outlives the first response: a server
+	// that sends no epoch never supplies one, and the guard below declines to
+	// adopt until the durable cache has been read. A null baseline over a
+	// populated cache resyncs, which is the safe reading of "we cannot know
+	// what this was authorised for".
+	accessEpoch = $state<string | null>(null);
+	// Has the DURABLE cache been read yet this session? (IDEA-2898, review of
+	// the reduced tip.) `accessEpoch === null` and `items.size === 0` say what
+	// RAM holds, which is not the same claim: during `bootstrap`'s hydrate
+	// await, RAM is empty and the cache on disk may be full. Adopting an epoch
+	// on that evidence is the silent adopt this change exists to prevent — see
+	// `ensureAccessScope`.
+	cacheRead = $state(false);
 
 	// `scopeEpoch` bumps every time a projection resync installs a new
 	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
@@ -297,7 +316,21 @@ function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
 	localSearch.rebuild(ws, state.items.values());
 }
 
-async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise<void> {
+async function resyncProjectionScope(
+	ws: string,
+	state: WorkspaceState,
+	// The epoch the SERVER most recently told this caller, when the caller has
+	// one. Used only if the authoritative snapshot carries none — an older
+	// server answering /items-index during a mixed deployment. Passing it in
+	// rather than patching `state.accessEpoch` after the resync returns is what
+	// keeps RAM and IDB agreeing: `persistReplace` happens inside this
+	// function, so a post-hoc assignment would leave the durable meta row a
+	// version behind the in-memory baseline. The next warm boot hydrates the
+	// DURABLE one, so it would start from a baseline this session had already
+	// superseded and resync on its first delta — a full snapshot per reload,
+	// for a scope that never actually changed (round 2).
+	fallbackEpoch?: string,
+): Promise<void> {
 	const pending = projectionResyncs.get(ws);
 	if (pending) return pending;
 	const generation = state.generation;
@@ -378,6 +411,24 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		// for them. (The scope epoch was already bumped before the fetch above.)
 		state.fencedIds = new Set(toDrop);
 		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
+		// The snapshot IS the new scope, so its epoch is the new baseline. Set
+		// here rather than at the call sites: every route into a resync ends
+		// here, and a baseline left stale would re-fire the resync on the very
+		// next poll.
+		//
+		// ABSENT means UNKNOWN, and unknown must not erase what we know
+		// (review round 1 F3). `?? null` here read "no epoch on the snapshot"
+		// as "this workspace has no baseline", which during a mixed deployment
+		// — a delta from a new server, a snapshot from an old one — sent the
+		// reconcile loop into the null-baseline branch and resynced again, up
+		// to the 50-page cap, a full snapshot per iteration. Keeping the prior
+		// value leaves the loop's own termination to `ensureAccessScope`,
+		// which records the epoch it was TOLD once a resync has run.
+		if (resp.access_epoch !== undefined) {
+			state.accessEpoch = resp.access_epoch;
+		} else if (fallbackEpoch !== undefined) {
+			state.accessEpoch = fallbackEpoch;
+		}
 		for (const row of resp.items) {
 			const next = toSkinny(row);
 			const existing = state.items.get(next.id);
@@ -430,6 +481,16 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 			snapshot,
 			state.cursor,
 			resp.includes_unparented_metadata,
+			// The state's baseline, NOT `resp.access_epoch ?? null` (round 2).
+			// F3 deliberately keeps a known baseline when the snapshot carries
+			// no epoch; writing null here would contradict it in the durable
+			// copy. A null on disk is not a harmless gap: `ensureAccessScope`
+			// reads a null baseline over a POPULATED cache as "cannot know what
+			// this was authorised for" and resyncs, so the next warm boot would
+			// pay a full snapshot to rediscover the epoch this one already
+			// knew. The fix for an absent epoch on the wire must not become an
+			// absent epoch on disk.
+			state.accessEpoch,
 		);
 	})();
 	projectionResyncs.set(ws, promise);
@@ -538,10 +599,24 @@ export const localIndex = {
 							items: [],
 							cursor: state.cursor,
 							includesUnparentedMetadata: state.includesUnparentedMetadata,
+							accessEpoch: state.accessEpoch,
+							// A reentry is not a read; the durable cache was
+							// read on the bootstrap that set this state up.
+							durableRead: state.cacheRead,
 							retags: {},
 						}
 					: await persistHydrate(userId, ws);
 				if (isStale()) return;
+				// The durable cache has now answered, whatever it said. From
+				// here an empty RAM state is evidence about the cache and not
+				// merely about how far bootstrap has got.
+				// `durableRead`, NOT an unconditional true: every failure inside
+				// `hydrate` returns the same empty payload a genuinely empty
+				// cache does, and treating a failed read as an empty cache is
+				// how a silent adopt gets back in through the front door
+				// (review round 2). A transient IDB failure now leaves the
+				// baseline unacquired, which costs a resync and hides nothing.
+				state.cacheRead = cached.durableRead;
 				// A populated cache is one we've successfully synced
 				// from before — either there are rows, or the cursor
 				// has moved off the "0" floor (empty workspaces /
@@ -554,6 +629,13 @@ export const localIndex = {
 				const hasCache = reentry || cacheIsPopulated;
 				if (!reentry && cacheIsPopulated) {
 					state.includesUnparentedMetadata = cached.includesUnparentedMetadata;
+					// Adopt the PERSISTED epoch, not a fresh one — it is the
+					// baseline the first reconcile compares against, and it is
+					// the only record of what this cache was authorised for
+					// when it was written. Overwriting it with the incoming
+					// response's value is exactly the silent adopt that leaves
+					// an offline revocation undetected.
+					state.accessEpoch = cached.accessEpoch;
 					for (const row of cached.items) {
 						mergeRow(state, row);
 					}
@@ -628,6 +710,26 @@ export const localIndex = {
 								// data (Codex P2 round 8).
 								continue;
 							}
+							// IDEA-2898. The caller's visible set changed with no row
+							// change to carry it — a revocation writes no item, so
+							// nothing else in this response could evict the rows it
+							// hid. Delegated to `ensureAccessScope` rather than
+							// re-implemented here: an inline copy is a second
+							// definition of the same rule, and the first draft of it
+							// already diverged (it skipped the null-baseline case,
+							// which is precisely the offline-revocation cache this
+							// exists for). One tested function, two call sites.
+							//
+							// `continue`, never `break`, for the same reason as the
+							// projection branch below: the resync pins the cursor to
+							// the snapshot's, so post-snapshot mutations are only
+							// replayed if the loop polls again. It cannot re-fire,
+							// because the resync set the epoch to the snapshot's.
+							if (await localIndex.ensureAccessScope(ws, delta.access_epoch)) {
+								if (isStale()) return;
+								continue;
+							}
+							if (isStale()) return;
 							if (
 								state.includesUnparentedMetadata !== null &&
 								state.includesUnparentedMetadata !== delta.includes_unparented_metadata
@@ -714,10 +816,17 @@ export const localIndex = {
 						// state stays 'ready' so the UI keeps working.
 						// `pendingResync` remains true so the next
 						// bootstrap() call retries (Codex P2 round 5).
-						// Permission revocation that doesn't change
-						// row data is NOT covered here — TASK-1360 and
-						// DOC-1342 decision #3 explicitly punt that in
-						// favor of the 403-on-click purge path.
+						// Permission revocation that doesn't change row
+						// data used to be uncovered here — TASK-1360 and
+						// DOC-1342 decision #3 punted it in favour of the
+						// 403-on-click purge. IDEA-2898 covers it now, and
+						// not from this branch: the caller's access
+						// fingerprint rides on the delta response, and a
+						// change routes through `ensureAccessScope` above
+						// into an authoritative resync. What decision #3
+						// still owns is the item READ — a 403 on click. What
+						// it never reached is the LISTING, which is what
+						// ItemPicker does with these rows.
 						//
 						// A `rate_limited` (429) error lands here too and is
 						// intentionally treated as transient: the per-request
@@ -734,6 +843,9 @@ export const localIndex = {
 					});
 					if (isStale()) return;
 					state.includesUnparentedMetadata = resp.includes_unparented_metadata;
+					if (resp.access_epoch !== undefined) {
+						state.accessEpoch = resp.access_epoch;
+					}
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
@@ -770,6 +882,10 @@ export const localIndex = {
 						snapshot,
 						state.cursor,
 						resp.includes_unparented_metadata,
+						// The baseline this snapshot established, so the durable
+						// meta row records the scope its rows were fetched under
+						// (IDEA-2898).
+						state.accessEpoch,
 					).catch(
 						() => undefined,
 					);
@@ -1004,10 +1120,98 @@ export const localIndex = {
 			toPersist,
 			newCursor,
 			includesUnparentedMetadata,
+			state.accessEpoch,
 			toRemove,
 		).catch(
 			() => undefined,
 		);
+	},
+
+	/**
+	 * Force a full snapshot when the caller's ACCESS set changes (IDEA-2898).
+	 *
+	 * The sibling of `ensureProjectionScope`, and deliberately the same shape:
+	 * both answer "the server just told me my scope is not what this cache was
+	 * built under". This one exists for the page-driven `/items-changes` poll,
+	 * which is the path a long-lived session uses after bootstrap has settled
+	 * — bootstrap's own reconcile loop carries the same comparison inline.
+	 *
+	 * Returns true when a resync ran, so the caller can skip applying a delta
+	 * that the snapshot has already superseded.
+	 */
+	async ensureAccessScope(ws: string, accessEpoch: string | undefined): Promise<boolean> {
+		// A server that does not send the field (an older build, mid-deploy)
+		// must not be read as "the set changed". Absence is not a value.
+		if (accessEpoch === undefined) return false;
+		const state = ensureState(ws);
+		if (state.accessEpoch === null) {
+			// No baseline. If this cache holds anything, we cannot know what it
+			// was authorised for, so the safe reading is that it may be stale —
+			// resync rather than adopt. Mirrors ensureProjectionScope's null
+			// branch exactly, including the "empty cache adopts silently" case,
+			// which costs nothing because there is nothing to evict.
+			if (state.items.size > 0 || cursorAsNum(state.cursor) > 0) {
+				await resyncProjectionScope(ws, state, accessEpoch);
+				// Same joined-resync case as below.
+				if (state.accessEpoch === null) {
+					state.accessEpoch = accessEpoch;
+					await persistAccessEpoch(state.userId, ws, accessEpoch, null);
+				}
+				return true;
+			}
+			// AN EMPTY RAM STATE IS NOT AN EMPTY CACHE. This is the silent
+			// adopt, and it is only safe once the durable cache has actually
+			// answered: `bootstrap` awaits `hydrate` before it merges anything,
+			// and an SSE-driven `deltaSync` runs on its own subscription rather
+			// than behind that await, so it can reach this line with RAM empty
+			// and IDB holding rows from a scope nobody has checked. Adopting
+			// there would stamp the new epoch onto the durable cache — via the
+			// delta this caller is about to apply — and the stale row would then
+			// hydrate under an epoch that agrees with the server forever.
+			//
+			// Declining to adopt is the safe direction: the delta persists with
+			// a null epoch, and a null baseline over a populated cache resyncs
+			// on the next reconcile.
+			if (!state.cacheRead) return false;
+			state.accessEpoch = accessEpoch;
+			return false;
+		}
+		if (state.accessEpoch === accessEpoch) return false;
+		// TERMINATION (round 1 F3). The resync adopts the snapshot's epoch when
+		// it has one. When it does not — an older server answering the snapshot
+		// while a newer one answers the delta — the baseline would be unchanged,
+		// the very next poll would compare it against the same incoming epoch,
+		// and it would resync again, forever. So the epoch we were TOLD goes in
+		// as the fallback: a true statement about what the server last said,
+		// which is all the baseline has ever claimed to be, and it lands in RAM
+		// and IDB together.
+		const beforeResync = state.accessEpoch;
+		await resyncProjectionScope(ws, state, accessEpoch);
+		// ...UNLESS THE RESYNC WAS JOINED, not started (round 3). Resyncs are
+		// deduplicated per workspace, so a resync already in flight — started
+		// by a projection mismatch, which passes no fallback — returns its
+		// promise and this caller's fallback is never seen. The baseline is then
+		// unchanged and the next poll asks again. Applying it here after the
+		// await covers the joined case without a second resync; it is the same
+		// statement ("the server last told us this"), made at the only point
+		// where we can tell the fallback was dropped.
+		if (state.accessEpoch === beforeResync) {
+			state.accessEpoch = accessEpoch;
+			// ...AND DURABLY, not only in RAM. The resync we JOINED ran its own
+			// `persistReplace` with its own baseline, so the meta row still
+			// records `beforeResync`; assigning here would leave RAM and disk
+			// disagreeing, and the next reload would hydrate the old baseline
+			// and resync again — every reload, for a scope that has not changed
+			// since. The started-resync path has no such gap, because its
+			// fallback is applied BEFORE the persist that happens inside it.
+			await persistAccessEpoch(state.userId, ws, accessEpoch, beforeResync);
+		}
+		return true;
+	},
+
+	/** The access fingerprint this workspace's cache was last built under. */
+	accessEpochFor(ws: string): string | null {
+		return workspaces.get(ws)?.accessEpoch ?? null;
 	},
 
 	/** Force a full snapshot when the server's projection capability changes. */

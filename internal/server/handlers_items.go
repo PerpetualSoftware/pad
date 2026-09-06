@@ -139,6 +139,12 @@ type itemsIndexResponse struct {
 	Total                      int           `json:"total"`
 	Cursor                     string        `json:"cursor"`
 	IncludesUnparentedMetadata bool          `json:"includes_unparented_metadata"`
+	// AccessEpoch fingerprints the caller's effective visible set so the
+	// client can detect a revocation that wrote no row (IDEA-2898). See
+	// computeAccessEpoch. Carried on BOTH doors, and they must agree: a
+	// cold bootstrap and a delta poll that disagreed about the caller's
+	// scope would resync each other in a loop.
+	AccessEpoch string `json:"access_epoch"`
 }
 
 // handleListItemsIndex returns the skinny-projection of every item in a
@@ -258,6 +264,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		Total:                      len(result),
 		Cursor:                     cursor,
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
+		AccessEpoch:                computeAccessEpoch(visibleIDs, grantedItemIDs),
 	})
 }
 
@@ -293,6 +300,10 @@ type itemsChangesResponse struct {
 	Changes                    []itemChangeRow `json:"changes"`
 	Cursor                     string          `json:"cursor"`
 	IncludesUnparentedMetadata bool            `json:"includes_unparented_metadata"`
+	// AccessEpoch — see itemsIndexResponse.AccessEpoch. This is the door
+	// that matters most for IDEA-2898: it is the one a warm client polls,
+	// and the one a revocation is otherwise invisible on.
+	AccessEpoch string `json:"access_epoch"`
 }
 
 // handleListItemsChanges is the delta-fetch sibling of
@@ -442,10 +453,32 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// THE EPOCH USES THE LIVE GRANT SET, NOT THIS DOOR'S QUERY SET (review
+	// round 2). The query above deliberately resolves grants with deleted items
+	// INCLUDED, so a tombstone on a granted item still flows through
+	// (TASK-1354). The fingerprint must not: /items-index resolves LIVE grants,
+	// and a caller holding a grant on a soft-deleted item would otherwise get
+	// permanently disagreeing epochs from the two doors — the client resyncs,
+	// the snapshot restores the index door's value, the next delta contradicts
+	// it again, and the reconcile loop runs to its 50-page cap on every sync
+	// trigger, forever. Two values on two wires that are compared against each
+	// other have to have ONE definition, and the live set is it: it is what the
+	// SSE revalidation tick already holds, so all three sites agree.
+	//
+	// The cost is one extra grant resolve on this door, and the consequence is
+	// that soft-deleting a granted item does change the epoch once. That is a
+	// single spurious resync which then converges, rather than a storm that
+	// never does.
+	_, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
+	if liveGrantErr != nil {
+		writeInternalError(w, liveGrantErr)
+		return
+	}
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
 		Changes:                    changes,
 		Cursor:                     strconv.FormatInt(cursorSeq, 10),
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
+		AccessEpoch:                computeAccessEpoch(visibleIDs, liveGrantedItemIDs),
 	})
 }
 
