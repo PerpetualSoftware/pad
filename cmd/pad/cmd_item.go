@@ -2191,6 +2191,14 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 		if len(f.Options) > 0 {
 			fmt.Fprintf(w, "  %-20s   options: %s\n", "", itemCopyList(f.Options))
 		}
+		// The relation analogue of `options` (TASK-2869). A row reading
+		// `owner_ref (relation) required — no value` tells a CLI user nothing
+		// about what a valid value would be; the target collection is what
+		// makes `--field owner_ref=<ref>` answerable. Same reason the dialog
+		// needs it, on the surface that has no picker at all.
+		if f.Collection != "" {
+			fmt.Fprintf(w, "  %-20s   target collection: %s\n", "", itemCopyLine(f.Collection))
+		}
 		if f.Message != "" {
 			fmt.Fprintf(w, "  %-20s   %s\n", "", itemCopyLine(f.Message))
 		}
