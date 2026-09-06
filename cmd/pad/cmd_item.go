@@ -1835,12 +1835,14 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 			_ = renderItemCopyNeedsValue(stderr, pre, req.FieldOverrides)
 		}
 		// The hint is CONDITIONAL for the same reason the render's Add: line
-		// is (IDEA-2899): when every unresolved field is a relation whose
-		// target is unavailable, `--field` cannot resolve any of them, and the
-		// error is the one line a script or a hurried reader actually sees.
+		// is (IDEA-2899): when NO unresolved field can be supplied — an
+		// unavailable relation target, or a key `--field` cannot address —
+		// telling someone to use `--field` is advice that cannot be followed,
+		// and the error is the one line a script or a hurried reader sees.
 		hint := " (use --field key=value)"
 		if itemCopyUnfillable(pre.Fields.NeedsValue) == len(pre.Fields.NeedsValue) {
-			hint = " (no --field can supply it: the relation target is not available to you)"
+			hint = fmt.Sprintf(" (no --field can supply it: %s)",
+				itemCopyUnfillableWhy(pre.Fields.NeedsValue))
 		}
 		return fmt.Errorf("copy refused: %s in %s/%s %s a value%s",
 			pluralize(len(pre.Fields.NeedsValue), "field", "fields"),
@@ -2121,22 +2123,24 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 	fmt.Fprintln(w)
 	if len(p.Fields.NeedsValue) > 0 {
 		// IDEA-2899. "Supply with --field key=value" is advice, and advice that
-		// cannot be followed is worse than none: a relation whose target
-		// collection is unavailable has no value that satisfies it, so telling
-		// someone to supply one sends them to run a command that is refused for
-		// exactly the reason they are stuck.
+		// cannot be followed is worse than none. Two rows cannot be supplied:
+		// a relation whose target collection is unavailable, and one whose key
+		// is empty. Both send someone to run a command that is refused for
+		// exactly the reason they are already stuck.
 		unfillable := itemCopyUnfillable(p.Fields.NeedsValue)
 		switch {
 		case unfillable == len(p.Fields.NeedsValue):
-			fmt.Fprintf(w, "%s still %s a value, and no --field can supply %s: the relation target is not available to you.\n",
+			fmt.Fprintf(w, "%s still %s a value, and no --field can supply %s: %s.\n",
 				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
 				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1],
-				map[bool]string{true: "it", false: "them"}[len(p.Fields.NeedsValue) == 1])
+				map[bool]string{true: "it", false: "them"}[len(p.Fields.NeedsValue) == 1],
+				itemCopyUnfillableWhy(p.Fields.NeedsValue))
 		case unfillable > 0:
-			fmt.Fprintf(w, "%s still %s a value. Supply the rest with --field key=value, then re-run without --dry-run — but %d of them cannot be supplied at all (the relation target is not available to you).\n",
+			fmt.Fprintf(w, "%s still %s a value. Supply the rest with --field key=value, then re-run without --dry-run — but %d of them cannot be supplied at all (%s).\n",
 				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
 				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1],
-				unfillable)
+				unfillable,
+				itemCopyUnfillableWhy(p.Fields.NeedsValue))
 		default:
 			fmt.Fprintf(w, "%s still %s a value. Supply with --field key=value, then re-run without --dry-run.\n",
 				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
@@ -2308,12 +2312,14 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 // itemCopyUnfillable counts needs_value rows NO `--field` can satisfy, for
 // EITHER reason (IDEA-2899).
 //
-// ONE definition, consulted by all three places that tell a user to supply a
-// value: the detailed render, the --dry-run summary, and the returned error.
-// The first version of this fix touched only the render, and a review found the
-// other two still printing `--field key=value` at someone for whom no value
-// exists. Three sites independently answering "how do I supply this" is exactly
-// how they diverge, so they ask one function instead.
+// Consulted by the two sites that state the advice in ONE sentence — the
+// --dry-run summary and the returned error. (The detailed render has its own
+// per-row handling and uses `itemCopyUnavailableTarget` plus its separate
+// empty-key branch, because it explains each reason where the row is printed.)
+// The first version of this fix touched only that render, and a review found
+// the other two still printing `--field key=value` at someone for whom no value
+// exists. Sites independently answering "how do I supply this" is exactly how
+// they diverge, so they ask one function instead.
 //
 // TWO reasons, not one, and the second was already here: an EMPTY KEY cannot be
 // supplied because `--field =value` is rejected by this command's own parser,
@@ -2330,6 +2336,39 @@ func itemCopyUnfillable(rows []cli.ItemCopyPreflightNeedsValue) int {
 		}
 	}
 	return n
+}
+
+// itemCopyUnfillableWhy names WHY no `--field` can supply the given rows, for
+// the two sites that state it in one sentence (IDEA-2899, review round 3).
+//
+// Broadening `itemCopyUnfillable` to cover empty keys without broadening the
+// SENTENCE was the defect: a set of empty-key rows selected the all-unfillable
+// branch and was then explained as "the relation target is not available to
+// you", which is a false statement about rows that have no relation in them.
+// Widening what a rule ACTS on silently widens what it SAYS, and the tell is a
+// sentence that was true while the predicate was narrower.
+//
+// Returns "" when nothing is unfillable.
+func itemCopyUnfillableWhy(rows []cli.ItemCopyPreflightNeedsValue) string {
+	targets, keys := 0, 0
+	for _, f := range rows {
+		if f.CollectionUnavailable {
+			targets++
+			continue
+		}
+		if strings.TrimSpace(f.Key) == "" {
+			keys++
+		}
+	}
+	switch {
+	case targets > 0 && keys > 0:
+		return "the relation target is not available to you, and the rest came back with an empty key"
+	case targets > 0:
+		return "the relation target is not available to you"
+	case keys > 0:
+		return "the destination reported them with an empty key, which --field cannot address"
+	}
+	return ""
 }
 
 // itemCopyUnavailableTarget counts only the relation half, for the detailed

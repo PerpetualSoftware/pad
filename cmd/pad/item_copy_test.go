@@ -1940,3 +1940,73 @@ func TestRunItemCopy_EmptyKeyRowsAreUnfillableToo(t *testing.T) {
 		t.Fatalf("an empty-key row is described as an unavailable relation target:\n%s", stderr)
 	}
 }
+
+// Review round 3, and the sharpest miss of this unit: broadening what a
+// predicate ACTS on silently broadened what the sentence SAYS. Once
+// `itemCopyUnfillable` counted empty keys too, a set of empty-key rows selected
+// the all-unfillable branch and was explained as "the relation target is not
+// available to you" — a false statement about rows containing no relation.
+//
+// The tell was available: a sentence that was true while the predicate was
+// narrower is a sentence to re-read when it widens.
+func TestRunItemCopy_UnfillableExplanationMatchesTheActualReason(t *testing.T) {
+	emptyKeyOnly := fullPreflight()
+	emptyKeyOnly.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Type: "text", Required: true, Reason: "missing_required",
+	}}
+
+	d := &recordingDeps{t: t, preflight: emptyKeyOnly, forbidCopy: true}
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	if strings.Contains(err.Error(), "relation target") {
+		t.Fatalf("an empty-key-only refusal is explained as a relation problem: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty key") {
+		t.Fatalf("the error does not name the actual reason: %v", err)
+	}
+
+	// The --dry-run summary states it in one sentence too.
+	opts := baseOpts()
+	opts.DryRun = true
+	d2 := &recordingDeps{t: t, preflight: emptyKeyOnly, forbidCopy: true}
+	var out2, errOut2 bytes.Buffer
+	if err := runItemCopy(opts, d2.deps(), &out2, &errOut2); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	if strings.Contains(out2.String(), "relation target") {
+		t.Fatalf("the dry-run summary explains an empty-key row as a relation problem:\n%s", out2.String())
+	}
+
+	// CONTROL: a relation-only refusal still says relation. Without this leg the
+	// fix could have been "never mention relations", which is the same defect
+	// pointing the other way.
+	d3 := &recordingDeps{t: t, preflight: unfillableOnlyPreflight(), forbidCopy: true}
+	var out3, errOut3 bytes.Buffer
+	err3 := runItemCopy(baseOpts(), d3.deps(), &out3, &errOut3)
+	if err3 == nil || !strings.Contains(err3.Error(), "relation target") {
+		t.Fatalf("a relation-only refusal lost its explanation: %v", err3)
+	}
+
+	// MIXED: both reasons present, and the sentence must not pick one.
+	mixed := fullPreflight()
+	mixed.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{
+		{Key: "owner_ref", Type: "relation", Collection: "people",
+			CollectionUnavailable: true, Required: true, Reason: "missing_required"},
+		{Key: "", Type: "text", Required: true, Reason: "missing_required"},
+	}
+	d4 := &recordingDeps{t: t, preflight: mixed, forbidCopy: true}
+	var out4, errOut4 bytes.Buffer
+	err4 := runItemCopy(baseOpts(), d4.deps(), &out4, &errOut4)
+	if err4 == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	for _, want := range []string{"relation target", "empty key"} {
+		if !strings.Contains(err4.Error(), want) {
+			t.Fatalf("the mixed refusal omits %q, so one of the two reasons goes unexplained: %v",
+				want, err4)
+		}
+	}
+}
