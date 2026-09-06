@@ -225,7 +225,15 @@ type ItemCopyPreflightFields struct {
 
 	// NeedsValue are destination fields the copy cannot satisfy on its
 	// own: required-and-empty, or carrying a value the destination schema
-	// rejects. Supply an override for each and the entry clears.
+	// rejects. Supplying an override clears the entry — for the ones an
+	// override CAN clear.
+	//
+	// Some cannot be (IDEA-2899). A row whose `collection_unavailable` is set
+	// names a relation target that has been deleted or that this caller cannot
+	// read, so no value would resolve it; and a row the destination schema
+	// reported with an EMPTY key cannot be addressed by an override at all.
+	// Both are reported rather than hidden, because a caller that is told only
+	// "supply a value" will go looking for one that does not exist.
 	NeedsValue []ItemCopyPreflightNeedsValue `json:"needs_value"`
 }
 
@@ -354,7 +362,30 @@ type ItemCopyPreflightNeedsValue struct {
 	// before. Not a wire-version question for the same reason
 	// `models.ItemWriteWarnings` was not.
 	Collection string `json:"collection,omitempty"`
-	Required   bool   `json:"required"`
+	// CollectionUnavailable is true when `Collection` names a target this
+	// caller cannot actually use in the destination — the slug names no live
+	// collection, or names one they cannot read (IDEA-2899).
+	//
+	// Naming a target is not the same as having one. Without this the dialog
+	// offers the row a picker that can return nothing, and since the row is not
+	// blocked, Confirm stays disabled with only the generic required-field
+	// message: the user is told a value is missing and never told that no value
+	// is reachable.
+	//
+	// DELETED and UNREADABLE are deliberately NOT distinguished. They are
+	// different facts with the same consequence — no picker can be built — and
+	// the client has no branch that would differ between them. Distinguishing
+	// them would also disclose to a caller who cannot read a collection that it
+	// nonetheless exists, which is a fact this endpoint has no reason to leak.
+	//
+	// `omitempty` on a BOOL drops `false`, which is why the field is phrased
+	// negatively. Present-and-true means the server checked and the target is
+	// unusable; ABSENT means available, or a server that does not report. The
+	// client must block only on an explicit true, so absence stays "no
+	// information" rather than becoming a value — the same rule
+	// `access_epoch` follows on the item doors.
+	CollectionUnavailable bool `json:"collection_unavailable,omitempty"`
+	Required              bool `json:"required"`
 	// Reason is "missing_required" (no value and no default) or
 	// "invalid_value" (a value carried across that the destination schema
 	// rejects — only reachable for non-override values; an INVALID
@@ -942,6 +973,17 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		},
 	}
 
+	// Which relation targets the destination schema names that this caller
+	// cannot use (IDEA-2899). Computed once for the whole response rather than
+	// per row: a schema can declare several relations onto one collection, and
+	// the answer does not vary between them. Runs no query at all when the
+	// destination declares no relation field.
+	unavailableTargets, err := s.relationTargetsUnavailable(r, dst.Workspace.ID, targetSchema)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	// carried / needs_value, walked in destination-schema order so the
 	// response is stable across identical calls.
 	//
@@ -958,14 +1000,25 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 				reason = "missing_required"
 			}
 			resp.Fields.NeedsValue = append(resp.Fields.NeedsValue, ItemCopyPreflightNeedsValue{
-				Key:        def.Key,
-				Label:      def.Label,
-				Type:       def.Type,
-				Options:    def.Options,
-				Collection: def.Collection,
-				Required:   def.Required,
-				Reason:     reason,
-				Message:    iss.Message,
+				Key:     def.Key,
+				Label:   def.Label,
+				Type:    def.Type,
+				Options: def.Options,
+				// GATED ON THE TYPE, both of them. The doc on this field says
+				// `collection` is empty for every non-relation type, and until
+				// now that was a claim about schemas rather than about this
+				// code: nothing stops a schema declaring `collection` on a
+				// `select` — the validator does not police keys it has no use
+				// for — and the value was copied straight through. The CLI then
+				// printed "target collection: people" under a select, which is
+				// a relation fact asserted about a field that has none (review
+				// round 2). Gating here makes the documented contract true at
+				// the only place that can make it true.
+				Collection:            relationTargetSlug(def),
+				CollectionUnavailable: def.Type == "relation" && unavailableTargets[def.Collection],
+				Required:              def.Required,
+				Reason:                reason,
+				Message:               iss.Message,
 			})
 			continue
 		}

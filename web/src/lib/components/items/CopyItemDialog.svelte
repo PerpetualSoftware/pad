@@ -48,7 +48,7 @@ user hunting for an item that provably does not exist.
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import { copyDropReasonMessage } from '$lib/items/copyDropReasons';
-	import { isCollectable } from '$lib/items/copyNeedsValue';
+	import { isCollectable, uncollectableReason } from '$lib/items/copyNeedsValue';
 	import { canEditCollection } from '$lib/utils/permissions';
 	import { parseSchema } from '$lib/types';
 	import type {
@@ -133,6 +133,15 @@ user hunting for an item that provably does not exist.
 	 * the dangerous case: enterable and silently invalid. So a required field of
 	 * any uncollectable type renders an explicit blocked state naming the field
 	 * and its type, rather than a dead Confirm or a lying input.
+	 *
+	 * TYPE IS NO LONGER THE ONLY REASON A ROW IS BLOCKED (IDEA-2899). A
+	 * `relation` whose target collection is deleted or unreadable is blocked
+	 * too, and its message says which collection rather than blaming the type —
+	 * the type is fine, the target is gone. `uncollectableReason` is what tells
+	 * the two apart, and it also decides whether the CLI is worth suggesting:
+	 * it is for a type this dialog cannot collect, and it is NOT for an
+	 * unavailable target or an empty key, both of which the CLI refuses for the
+	 * same reason the dialog does.
 	 */
 	// COLLECTABLE_TYPES and isCollectable now live in `$lib/items/copyNeedsValue`
 	// so they can be tested (TASK-2869, following IDEA-2894): the mutant that
@@ -251,6 +260,23 @@ user hunting for an item that provably does not exist.
 	/** Required destination fields the dialog cannot safely collect a value for. */
 	let blockedFields = $derived(
 		(preflight?.fields.needs_value ?? []).filter((f) => !isCollectable(f))
+	);
+
+	/**
+	 * The first blocked field the CLI could actually fill, or null (IDEA-2899).
+	 *
+	 * `blockedFields[0]` was fine while every blocked row was type-shaped. It
+	 * is not now: with a relation whose target is unavailable sorted first, the
+	 * printed command would name the ONE field the CLI cannot set either.
+	 *
+	 * An EMPTY KEY is excluded for the same reason and was the round-4 miss:
+	 * `--field =value` is rejected by the CLI's own parser, so a required
+	 * `json` field the destination reported with no key is type-shaped, blocked,
+	 * and still unfillable. The CLI has refused these since Codex round 6; the
+	 * dialog was printing the command anyway.
+	 */
+	let cliFillableField = $derived(
+		blockedFields.find((f) => uncollectableReason(f) === 'type' && f.key.trim() !== '') ?? null
 	);
 
 	let warnings = $derived(preflight?.warnings ?? null);
@@ -1149,16 +1175,34 @@ user hunting for an item that provably does not exist.
 									<p class="notice notice-error" role="alert">
 										{#each blockedFields as f (f.key)}
 											<span class="blocked-line">
-												<strong>{f.label || f.key}</strong> is a required
-												<code>{f.type ?? 'unknown'}</code> field. This dialog can’t collect a value
-												for that type safely.
+												{#if uncollectableReason(f) === 'unavailable_target'}
+													<strong>{f.label || f.key}</strong> points at
+													<code>{f.collection}</code> in {destWorkspaceName}, which isn’t
+													available to you — it may have been deleted, or you may not have
+													access to it. There’s no value this field can be given here.
+												{:else}
+													<strong>{f.label || f.key}</strong> is a required
+													<code>{f.type ?? 'unknown'}</code> field. This dialog can’t collect a
+													value for that type safely.
+												{/if}
 											</span>
 										{/each}
-										Use the CLI instead:
-										<code
-											>pad item copy {sourceRef} --to-workspace {destWs} --collection {destColl}
-											--field {blockedFields[0].key}=value</code
-										>
+										<!--
+											The CLI is offered ONLY for the type-shaped failures (IDEA-2899).
+											It genuinely helps there: `json` and `multi_select` cannot be typed
+											into this dialog safely and `--field` can set them. It is worse than
+											useless for an unavailable relation target — the CLI runs as the
+											same user against the same referent validation, so the command
+											would be refused for the same reason, and printing it sends someone
+											to do work that cannot succeed.
+										-->
+										{#if cliFillableField}
+											Use the CLI instead:
+											<code
+												>pad item copy {sourceRef} --to-workspace {destWs} --collection {destColl}
+												--field {cliFillableField.key}=value</code
+											>
+										{/if}
 									</p>
 								{/if}
 								<div class="needs-list">

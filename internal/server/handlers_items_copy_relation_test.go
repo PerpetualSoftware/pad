@@ -1183,3 +1183,209 @@ func TestCopyPreflight_RequiredRelationNeedsValueCarriesItsCollection(t *testing
 		}
 	}
 }
+
+// needsValueRow returns the needs_value row for key, or nil.
+func needsValueRow(pre ItemCopyPreflight, key string) *ItemCopyPreflightNeedsValue {
+	for i := range pre.Fields.NeedsValue {
+		if pre.Fields.NeedsValue[i].Key == key {
+			return &pre.Fields.NeedsValue[i]
+		}
+	}
+	return nil
+}
+
+// IDEA-2899. TASK-2869 made a needs_value relation row COLLECTABLE as soon as
+// it names a target collection. Naming one is not having one: the slug can name
+// a collection that has been deleted, or one this caller cannot read. The
+// dialog then mounts a picker that can return nothing and, because the row is
+// not blocked, Confirm stays disabled with only the generic required-field
+// message — a value is missing and nothing says no value is reachable.
+//
+// The client cannot answer this itself: its destination collection list is
+// filtered by `canEditCollection` (it drives the copy-INTO picker), while a
+// relation TARGET needs only READ access. Testing against the editable list
+// would refuse rows the user could have filled in, which is a worse failure and
+// invisible to whoever hits it.
+func TestCopyPreflight_RelationNeedsValueReportsADeletedTarget(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	// CONTROL LEG FIRST, on the same fixture, so the two legs differ in exactly
+	// one fact: whether the target collection is still there. A test that only
+	// ever sees the broken state cannot show the flag tracks anything.
+	live := needsValueRow(f.ok(f.baseBody()), "owner_ref")
+	if live == nil {
+		t.Fatalf("a REQUIRED relation with no value produced no needs_value row")
+	}
+	if live.CollectionUnavailable {
+		t.Fatalf("target %q is live and readable, yet the row reports it unavailable: %+v",
+			f.targetsB.Slug, live)
+	}
+
+	// "" opts out of the optimistic-concurrency check, as every other test
+	// that deletes a collection does; nothing here races the delete.
+	if err := f.srv.store.DeleteCollection(f.targetsB.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection(targetsB): %v", err)
+	}
+
+	gone := needsValueRow(f.ok(f.baseBody()), "owner_ref")
+	if gone == nil {
+		t.Fatalf("the needs_value row disappeared when its target was deleted; "+
+			"the field is still required and still unsatisfiable: %+v", f.ok(f.baseBody()).Fields)
+	}
+	if !gone.CollectionUnavailable {
+		t.Fatalf("target %q is DELETED and the row does not say so: %+v",
+			f.targetsB.Slug, gone)
+	}
+	// The slug is still reported. The client needs it to say WHICH target is
+	// gone; suppressing it would trade one silent failure for another.
+	if gone.Collection != f.targetsB.Slug {
+		t.Fatalf("row stopped naming its target once it became unavailable: %+v", gone)
+	}
+}
+
+// The other half of the same defect, and the half the client provably cannot
+// compute: the collection EXISTS and this caller cannot read it.
+func TestCopyPreflight_RelationNeedsValueReportsAnUnreadableTarget(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	// An editor who may copy INTO the destination collection but may NOT read
+	// the relation's target. That combination is the whole point: every
+	// permission the dialog can see is satisfied, so nothing on the client side
+	// could distinguish this from a usable target.
+	u := f.restrictedEditor("rel-target-hidden@example.com", "reltargethidden",
+		[]string{f.collA.ID, f.targetsA.ID}, []string{f.collB.ID})
+
+	rr := f.call(u, reqOpts{}, f.baseBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preflight as restricted editor: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var pre ItemCopyPreflight
+	if err := json.Unmarshal(rr.Body.Bytes(), &pre); err != nil {
+		t.Fatalf("parse preflight: %v", err)
+	}
+
+	row := needsValueRow(pre, "owner_ref")
+	if row == nil {
+		t.Fatalf("a REQUIRED relation with no value produced no needs_value row: %+v", pre.Fields)
+	}
+	if !row.CollectionUnavailable {
+		t.Fatalf("target %q is unreadable by this caller and the row does not say so: %+v",
+			f.targetsB.Slug, row)
+	}
+
+	// CONTROL LEG: the OWNER, who can read it, gets no flag on the same field
+	// of the same fixture. Without this the test would pass against a server
+	// that flagged every relation row unconditionally.
+	if owner := needsValueRow(f.ok(f.baseBody()), "owner_ref"); owner == nil || owner.CollectionUnavailable {
+		t.Fatalf("the owner can read %q, yet their row reports it unavailable: %+v",
+			f.targetsB.Slug, owner)
+	}
+}
+
+// `omitempty` on a bool drops FALSE, which is what makes the field's negative
+// phrasing load-bearing: absent must read as "available, or a server that does
+// not report", never as "unavailable". A client that blocked on absence would
+// refuse every row against a server predating this change.
+func TestCopyPreflight_AvailableRelationTargetOmitsTheFlagEntirely(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	rr := f.call(f.owner, reqOpts{}, f.baseBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preflight: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "collection_unavailable") {
+		t.Fatalf("a response whose relation targets are all usable still mentions "+
+			"collection_unavailable; it must be omitted so the wire is byte-identical "+
+			"to before this change:\n%s", rr.Body.String())
+	}
+}
+
+// The flag's meaning is defined for RELATION rows only, so the builder gates
+// on the field TYPE as well as on the unavailable-target set. Nothing stops a
+// schema declaring `collection` on a field of another type — the validator does
+// not police keys it has no use for — and such a field would otherwise pick up
+// a flag that says nothing true about it: the dialog would block a perfectly
+// collectable `select` because some relation elsewhere in the schema points at
+// a collection that happens to be gone.
+//
+// Found by a surviving mutant, not by inspection: dropping the type gate left
+// every other test in this file green.
+func TestCopyPreflight_OnlyRelationRowsCarryTheUnavailableFlag(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	// A destination schema where a NON-relation required field names the same
+	// target slug as the relation does. One deleted collection, two rows that
+	// mention it, and only one of them means anything by it.
+	schema := fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"required":true},
+		{"key":"bucket","label":"Bucket","type":"select","options":["a","b"],"collection":%q,"required":true}
+	]}`, f.targetsB.Slug, f.targetsB.Slug)
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(collB): %v", err)
+	}
+	if err := f.srv.store.DeleteCollection(f.targetsB.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection(targetsB): %v", err)
+	}
+
+	pre := f.ok(f.baseBody())
+	rel := needsValueRow(pre, "owner_ref")
+	if rel == nil || !rel.CollectionUnavailable {
+		t.Fatalf("the RELATION row should report its deleted target: %+v", pre.Fields.NeedsValue)
+	}
+	bucket := needsValueRow(pre, "bucket")
+	if bucket == nil {
+		t.Fatalf("the required select produced no needs_value row: %+v", pre.Fields.NeedsValue)
+	}
+	if bucket.CollectionUnavailable {
+		t.Fatalf("a %s row carries collection_unavailable; the flag is defined for "+
+			"relations only, and blocking this row would refuse a value the dialog "+
+			"can perfectly well collect: %+v", bucket.Type, bucket)
+	}
+	// AND IT CARRIES NO TARGET AT ALL (review round 2). The field's doc says
+	// `collection` is empty for every non-relation type; until this unit that
+	// was a claim about the schemas people write rather than a property of the
+	// response, and the CLI rendered "target collection: people" beneath a
+	// select because it checks only for a non-empty slug.
+	if bucket.Collection != "" {
+		t.Fatalf("a %s row carries collection %q; only a relation names a target, and the "+
+			"CLI prints this as one: %+v", bucket.Type, bucket.Collection, bucket)
+	}
+}
+
+// THE BOUNDARY, pinned deliberately rather than left to be rediscovered.
+//
+// A review asked whether a target collection that is live and readable but
+// holds NO items the caller can pick should be flagged too: the picker is empty
+// either way, so the symptom looks identical. It must NOT be, and the reason is
+// the one that shaped this whole change — over-blocking is the worse failure.
+//
+// An unavailable target is unfixable from inside the dialog: nothing the user
+// does makes a deleted or unreadable collection pickable, so refusing the copy
+// costs them nothing they had. An EMPTY collection is a "nothing to pick YET"
+// state that the user can resolve by creating the item and retrying, and
+// blocking would refuse a copy they were about to be able to complete. Testing
+// for it would also cost a live-visible-item COUNT per relation target on a
+// dry-run the UI calls on every keystroke.
+//
+// The weaker case — an empty picker that says nothing about why it is empty —
+// is IDEA-2905, and it belongs to the picker rather than to this flag.
+func TestCopyPreflight_AnEmptyButReadableTargetIsNotReportedUnavailable(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	// targetsB is live and readable; remove its only item so the picker there
+	// would come back empty.
+	if err := f.srv.store.DeleteItem(f.targetB.ID); err != nil {
+		t.Fatalf("DeleteItem(targetB): %v", err)
+	}
+
+	row := needsValueRow(f.ok(f.baseBody()), "owner_ref")
+	if row == nil {
+		t.Fatalf("a REQUIRED relation with no value produced no needs_value row")
+	}
+	if row.CollectionUnavailable {
+		t.Fatalf("an EMPTY but readable target was reported unavailable: %+v\n"+
+			"blocking here refuses a copy the user could complete by creating the target item",
+			row)
+	}
+}

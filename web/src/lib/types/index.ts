@@ -854,6 +854,25 @@ export interface ItemCopyPreflightNeedsValue {
 	 * workspace items the copy cannot use.
 	 */
 	collection?: string;
+	/**
+	 * True when `collection` names a target this caller cannot USE in the
+	 * destination — the slug names no live collection, or names one they cannot
+	 * read (IDEA-2899).
+	 *
+	 * The client cannot work this out for itself. `destCollections` is filtered
+	 * through `canEditCollection` because it drives the copy-INTO picker, while
+	 * a relation TARGET needs only READ access, so a perfectly usable target
+	 * routinely does not appear there. Testing against that list would refuse
+	 * rows the user could have filled in.
+	 *
+	 * ABSENT IS NOT FALSE-ish BY ACCIDENT — it is the contract. The server omits
+	 * the field when the target is fine, and a server predating this change
+	 * omits it always. So absence means "no information" and must never block;
+	 * only an explicit `true` does. Deleted and unreadable are deliberately
+	 * indistinguishable here: same consequence, and separating them would tell a
+	 * caller who cannot read a collection that it nonetheless exists.
+	 */
+	collection_unavailable?: boolean;
 	required: boolean;
 	reason: 'missing_required' | 'invalid_value';
 	message?: string;

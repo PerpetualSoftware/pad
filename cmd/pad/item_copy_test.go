@@ -1709,3 +1709,369 @@ func TestRenderItemCopyNeedsValue_RelationNamesItsTargetCollection(t *testing.T)
 		t.Fatalf("the select row lost its options line:\n%s", got)
 	}
 }
+
+// IDEA-2899. Naming the target is only useful if the target is THERE. When it
+// is not — deleted, or unreadable by this caller — the CLI must say so and must
+// NOT print `--field owner_ref=<value>`: the referent validation this command
+// runs against would refuse anything the user could name, so the suggestion is
+// a command that cannot work. Same disposition as the empty-key branch, which
+// exists for exactly that reason.
+func TestRenderItemCopyNeedsValue_UnavailableRelationTargetIsNotSuggested(t *testing.T) {
+	pre := &cli.ItemCopyPreflight{
+		Destination: cli.ItemCopyPreflightDestination{
+			WorkspaceSlug: "dest-ws", CollectionSlug: "tasks",
+		},
+		Fields: cli.ItemCopyPreflightFields{
+			NeedsValue: []cli.ItemCopyPreflightNeedsValue{
+				{
+					Key: "owner_ref", Label: "Owner", Type: "relation",
+					Collection: "people", CollectionUnavailable: true,
+					Required: true, Reason: "missing_required",
+				},
+				// A row the CLI CAN fill, in the same render. Without it the
+				// test could pass by suppressing the Add: line entirely, which
+				// would be a different and worse bug.
+				{
+					Key: "priority", Label: "Priority", Type: "select",
+					Options: []string{"low", "high"}, Required: true,
+					Reason: "missing_required",
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderItemCopyNeedsValue(&buf, pre, nil); err != nil {
+		t.Fatalf("renderItemCopyNeedsValue: %v", err)
+	}
+	got := buf.String()
+
+	if !strings.Contains(got, "NOT AVAILABLE to you") {
+		t.Fatalf("the unavailable target is rendered as though it were usable:\n%s", got)
+	}
+	if strings.Contains(got, "--field owner_ref=") {
+		t.Fatalf("the CLI suggests supplying a relation whose target is unavailable; no value "+
+			"can satisfy it and the command would be refused:\n%s", got)
+	}
+	// THE OTHER DIRECTION, which is what makes the assertion above mean
+	// something: the fillable row is still suggested.
+	if !strings.Contains(got, "--field priority=<value>") {
+		t.Fatalf("the fillable row lost its suggestion, so the fix suppressed more than the one "+
+			"row it should have:\n%s", got)
+	}
+	if !strings.Contains(got, "no --field value can satisfy") {
+		t.Fatalf("nothing explains WHY the relation is missing from the Add: line; a suggestion "+
+			"that silently omits a required field reads as a bug in the CLI:\n%s", got)
+	}
+}
+
+// The control for the line above: an AVAILABLE target renders exactly as it did
+// before this change, so `omitempty`'s absent-means-available contract is
+// exercised on the CLI surface and not only on the web one.
+func TestRenderItemCopyNeedsValue_AvailableRelationTargetIsUnchanged(t *testing.T) {
+	pre := &cli.ItemCopyPreflight{
+		Destination: cli.ItemCopyPreflightDestination{
+			WorkspaceSlug: "dest-ws", CollectionSlug: "tasks",
+		},
+		Fields: cli.ItemCopyPreflightFields{
+			NeedsValue: []cli.ItemCopyPreflightNeedsValue{{
+				Key: "owner_ref", Label: "Owner", Type: "relation",
+				Collection: "people", Required: true, Reason: "missing_required",
+			}},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderItemCopyNeedsValue(&buf, pre, nil); err != nil {
+		t.Fatalf("renderItemCopyNeedsValue: %v", err)
+	}
+	got := buf.String()
+
+	if strings.Contains(got, "NOT AVAILABLE") {
+		t.Fatalf("a row with no flag was rendered as unavailable; absence must mean available, "+
+			"or a server that does not report:\n%s", got)
+	}
+	if !strings.Contains(got, "--field owner_ref=<value>") {
+		t.Fatalf("a fillable relation lost its suggestion:\n%s", got)
+	}
+}
+
+// unfillableOnlyPreflight is a refusal whose ONLY unresolved field is a
+// relation nobody can supply (IDEA-2899).
+func unfillableOnlyPreflight() *cli.ItemCopyPreflight {
+	p := fullPreflight()
+	p.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "owner_ref", Label: "Owner", Type: "relation",
+		Collection: "people", CollectionUnavailable: true,
+		Required: true, Reason: "missing_required",
+	}}
+	return p
+}
+
+// IDEA-2899, found by review AFTER the render was fixed and the reason the
+// advice now goes through ONE predicate. Three places tell a user how to supply
+// a value — the detailed render, the --dry-run summary, and the returned error
+// — and fixing only the first left the other two printing `--field key=value`
+// at someone for whom no value exists. The error is the line a script or a
+// hurried reader actually sees.
+func TestRunItemCopy_ErrorDoesNotSuggestFieldWhenNothingCanSupplyIt(t *testing.T) {
+	d := &recordingDeps{t: t, preflight: unfillableOnlyPreflight(), forbidCopy: true}
+
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error so the command exits non-zero")
+	}
+	if strings.Contains(err.Error(), "use --field key=value") {
+		t.Fatalf("the error tells the user to supply a value for a field no value can satisfy: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not available to you") {
+		t.Fatalf("the error does not say WHY the field cannot be supplied: %v", err)
+	}
+	if len(d.copyCalls) != 0 {
+		t.Fatalf("no mutating request may be sent; got %d", len(d.copyCalls))
+	}
+}
+
+// The CONTROL for the above, on the same command path: an ordinary refusal
+// still carries the hint, so the change did not simply delete it.
+func TestRunItemCopy_ErrorKeepsTheFieldHintWhenAFieldCanBeSupplied(t *testing.T) {
+	d := &recordingDeps{t: t, preflight: fullPreflight(), forbidCopy: true}
+
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	if !strings.Contains(err.Error(), "use --field key=value") {
+		t.Fatalf("an ordinary refusal lost its hint: %v", err)
+	}
+}
+
+// The third site: the --dry-run summary, which is a different function again.
+func TestRunItemCopy_DryRunSummaryDoesNotSuggestAnImpossibleField(t *testing.T) {
+	d := &recordingDeps{t: t, preflight: unfillableOnlyPreflight(), forbidCopy: true}
+	opts := baseOpts()
+	opts.DryRun = true
+
+	var out, errOut bytes.Buffer
+	if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "Supply with --field key=value") {
+		t.Fatalf("the dry-run summary still tells the user to supply a value nothing can satisfy:\n%s", got)
+	}
+	if !strings.Contains(got, "not available to you") {
+		t.Fatalf("the dry-run summary does not say why the field cannot be supplied:\n%s", got)
+	}
+
+	// MIXED CASE, which is the one a switch gets wrong: one fillable field and
+	// one that is not. The advice must survive for the fillable one and the
+	// caveat must appear for the other.
+	mixed := unfillableOnlyPreflight()
+	mixed.Fields.NeedsValue = append(mixed.Fields.NeedsValue, cli.ItemCopyPreflightNeedsValue{
+		Key: "priority", Label: "Priority", Type: "select",
+		Options: []string{"low", "high"}, Required: true, Reason: "missing_required",
+	})
+	d2 := &recordingDeps{t: t, preflight: mixed, forbidCopy: true}
+	var out2, errOut2 bytes.Buffer
+	if err := runItemCopy(opts, d2.deps(), &out2, &errOut2); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	got2 := out2.String()
+	if !strings.Contains(got2, "--field key=value") {
+		t.Fatalf("the mixed case lost the advice for the field that CAN be supplied:\n%s", got2)
+	}
+	if !strings.Contains(got2, "cannot be supplied at all") {
+		t.Fatalf("the mixed case does not flag the field that cannot be supplied:\n%s", got2)
+	}
+}
+
+// The OTHER reason a row cannot be supplied, and the one that was already here:
+// an empty key. `--field =value` is rejected by this command's own parser, and
+// the detailed render has explained that since Codex round 6 — but the summary
+// and the error went on advising `--field` for those rows, because the first
+// version of `itemCopyUnfillable` answered for the relation reason only.
+//
+// Review round 2. A predicate named "unfillable" that covered one of two
+// reasons is a worse trap than no predicate: correct at the site that defined
+// it, wrong everywhere it was reused.
+func TestRunItemCopy_EmptyKeyRowsAreUnfillableToo(t *testing.T) {
+	p := fullPreflight()
+	p.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Label: "", Type: "text", Required: true, Reason: "missing_required",
+	}}
+	d := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	if strings.Contains(err.Error(), "use --field key=value") {
+		t.Fatalf("the error advises --field for a row whose key is empty; `--field =value` is "+
+			"rejected by this command's own parser: %v", err)
+	}
+
+	// The --dry-run summary is the third site and a different function.
+	opts := baseOpts()
+	opts.DryRun = true
+	d2 := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+	var out2, errOut2 bytes.Buffer
+	if err := runItemCopy(opts, d2.deps(), &out2, &errOut2); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	if strings.Contains(out2.String(), "Supply with --field key=value") {
+		t.Fatalf("the dry-run summary advises --field for an empty-key row:\n%s", out2.String())
+	}
+
+	// AND the detailed render still describes it as an empty key rather than as
+	// an unavailable relation target — one predicate for the advice, two
+	// explanations, because the two reasons are not interchangeable to a reader.
+	var out3, errOut3 bytes.Buffer
+	d3 := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+	_ = runItemCopy(baseOpts(), d3.deps(), &out3, &errOut3)
+	stderr := errOut3.String()
+	if !strings.Contains(stderr, "empty key") {
+		t.Fatalf("the detailed render stopped explaining the empty-key case:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "not available to you") {
+		t.Fatalf("an empty-key row is described as an unavailable relation target:\n%s", stderr)
+	}
+}
+
+// Review round 3, and the sharpest miss of this unit: broadening what a
+// predicate ACTS on silently broadened what the sentence SAYS. Once
+// `itemCopyUnfillable` counted empty keys too, a set of empty-key rows selected
+// the all-unfillable branch and was explained as "the relation target is not
+// available to you" — a false statement about rows containing no relation.
+//
+// The tell was available: a sentence that was true while the predicate was
+// narrower is a sentence to re-read when it widens.
+func TestRunItemCopy_UnfillableExplanationMatchesTheActualReason(t *testing.T) {
+	emptyKeyOnly := fullPreflight()
+	emptyKeyOnly.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Type: "text", Required: true, Reason: "missing_required",
+	}}
+
+	d := &recordingDeps{t: t, preflight: emptyKeyOnly, forbidCopy: true}
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	if strings.Contains(err.Error(), "relation target") {
+		t.Fatalf("an empty-key-only refusal is explained as a relation problem: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty key") {
+		t.Fatalf("the error does not name the actual reason: %v", err)
+	}
+
+	// The --dry-run summary states it in one sentence too.
+	opts := baseOpts()
+	opts.DryRun = true
+	d2 := &recordingDeps{t: t, preflight: emptyKeyOnly, forbidCopy: true}
+	var out2, errOut2 bytes.Buffer
+	if err := runItemCopy(opts, d2.deps(), &out2, &errOut2); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	if strings.Contains(out2.String(), "relation target") {
+		t.Fatalf("the dry-run summary explains an empty-key row as a relation problem:\n%s", out2.String())
+	}
+
+	// CONTROL: a relation-only refusal still says relation. Without this leg the
+	// fix could have been "never mention relations", which is the same defect
+	// pointing the other way.
+	d3 := &recordingDeps{t: t, preflight: unfillableOnlyPreflight(), forbidCopy: true}
+	var out3, errOut3 bytes.Buffer
+	err3 := runItemCopy(baseOpts(), d3.deps(), &out3, &errOut3)
+	if err3 == nil || !strings.Contains(err3.Error(), "relation target") {
+		t.Fatalf("a relation-only refusal lost its explanation: %v", err3)
+	}
+
+	// MIXED: both reasons present, and the sentence must not pick one.
+	mixed := fullPreflight()
+	mixed.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{
+		{Key: "owner_ref", Type: "relation", Collection: "people",
+			CollectionUnavailable: true, Required: true, Reason: "missing_required"},
+		{Key: "", Type: "text", Required: true, Reason: "missing_required"},
+	}
+	d4 := &recordingDeps{t: t, preflight: mixed, forbidCopy: true}
+	var out4, errOut4 bytes.Buffer
+	err4 := runItemCopy(baseOpts(), d4.deps(), &out4, &errOut4)
+	if err4 == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	for _, want := range []string{"relation target", "empty key"} {
+		if !strings.Contains(err4.Error(), want) {
+			t.Fatalf("the mixed refusal omits %q, so one of the two reasons goes unexplained: %v",
+				want, err4)
+		}
+	}
+}
+
+// ONE row carrying BOTH faults — an empty key AND an unavailable relation
+// target. Review round 4, and the fixture that matters: the mixed-case test
+// above uses TWO rows with one fault each, and a `continue` between the two
+// counts made a single dual-fault row report only the relation reason. Two
+// rows with one fault each and one row with two are different inputs, and only
+// the second exercises the counting.
+func TestRunItemCopy_ARowWithBothFaultsReportsBoth(t *testing.T) {
+	p := fullPreflight()
+	p.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Type: "relation", Collection: "people",
+		CollectionUnavailable: true, Required: true, Reason: "missing_required",
+	}}
+
+	d := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	for _, want := range []string{"relation target", "empty key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("a row with BOTH faults omits %q, so one reason goes unexplained: %v",
+				want, err)
+		}
+	}
+}
+
+// The tally as a unit, including the case its callers cannot currently reach.
+//
+// Both call sites sit inside `if len(NeedsValue) > 0`, so `Total == 0` never
+// arrives today and a mutant removing the guard SURVIVES every command-level
+// test. Keeping an unreachable guard and calling it defence is how a promise
+// becomes a lie, so it is tested where it IS reachable: an empty set is not
+// "entirely unfillable", and a future caller outside that gate would otherwise
+// be told, silently, that nothing can be supplied.
+func TestItemCopyTally(t *testing.T) {
+	if got := itemCopyTally(nil); got.AllUnfillable() {
+		t.Fatalf("an empty set reports AllUnfillable: %+v", got)
+	}
+
+	// ONE row, BOTH faults. Unfillable must be 1, not 2 — otherwise
+	// `Unfillable == Total` is false for a set that is entirely unfillable,
+	// which is the comparison both callers make.
+	both := itemCopyTally([]cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Type: "relation", CollectionUnavailable: true,
+	}})
+	if both.Unfillable != 1 || both.Total != 1 || !both.AllUnfillable() {
+		t.Fatalf("a single row with both faults tallied wrong: %+v", both)
+	}
+	if both.UnavailableTarget != 1 || both.EmptyKey != 1 {
+		t.Fatalf("both reasons should be counted for the same row: %+v", both)
+	}
+
+	// A whitespace-only key is an empty key: `--field " "=value` names nothing
+	// either, and the render has trimmed since Codex round 6.
+	if got := itemCopyTally([]cli.ItemCopyPreflightNeedsValue{{Key: "   "}}); got.EmptyKey != 1 {
+		t.Fatalf("a whitespace-only key is not counted as empty: %+v", got)
+	}
+
+	// A perfectly ordinary row is unfillable in neither sense.
+	if got := itemCopyTally([]cli.ItemCopyPreflightNeedsValue{{Key: "size", Type: "select"}}); got.Unfillable != 0 || got.Why() != "" {
+		t.Fatalf("an ordinary row was tallied as unfillable: %+v (why=%q)", got, got.Why())
+	}
+}

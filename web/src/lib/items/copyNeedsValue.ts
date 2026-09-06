@@ -40,6 +40,55 @@ export const COLLECTABLE_TYPES = new Set([
  */
 export function isCollectable(row: ItemCopyPreflightNeedsValue): boolean {
 	const type = row.type ?? 'text';
-	if (type === 'relation') return Boolean(row.collection);
+	if (type === 'relation') {
+		if (!row.collection) return false;
+		// IDEA-2899. Naming a target is not having one: the slug can name a
+		// collection that has been deleted, or one this caller cannot read.
+		// Either way the picker mounts and returns nothing, and the row stays
+		// out of `blockedFields`, so Confirm is disabled with only the generic
+		// required-field message — a value is missing and nothing says no value
+		// is reachable.
+		//
+		// STRICT `=== true`, not truthiness. The field is ABSENT when the target
+		// is fine AND absent from a server that predates it, so absence must
+		// read as "no information" rather than as a value.
+		//
+		// SAID PLAINLY BECAUSE A MUTANT PROVED IT: over the domain this field's
+		// TYPE admits — `boolean | undefined` — `!row.collection_unavailable`
+		// is EQUIVALENT, and swapping it in kills no test and breaks nothing.
+		// It is not a defect and no test is owed for it. The strict form is
+		// kept for a reason about the next edit rather than this one: it states
+		// the contract in the code, so the inverse spelling
+		// (`collection_available`, which WOULD block every row against a server
+		// that omits it) reads as the mistake it is.
+		return row.collection_unavailable !== true;
+	}
 	return COLLECTABLE_TYPES.has(type);
+}
+
+/**
+ * Why a row cannot be collected, for the message the dialog shows.
+ *
+ * The two reasons need DIFFERENT copy and, more importantly, different advice.
+ * A `json` or `multi_select` field genuinely cannot be typed into this dialog
+ * safely, and the CLI can set it — so pointing at `pad item copy --field` is
+ * real help. An unavailable relation TARGET is not like that: the CLI runs as
+ * the same user against the same referent validation, so the command the dialog
+ * would print gets refused for the same reason. Offering it sends the user to
+ * do work that cannot succeed.
+ */
+export type UncollectableReason = 'type' | 'unavailable_target';
+
+export function uncollectableReason(
+	row: ItemCopyPreflightNeedsValue
+): UncollectableReason | null {
+	if (isCollectable(row)) return null;
+	const type = row.type ?? 'text';
+	// A relation naming a target the caller cannot use — as opposed to one
+	// naming no target at all, which is the TASK-2869 case and stays a
+	// type-shaped failure: there is nothing to point the user at.
+	if (type === 'relation' && row.collection && row.collection_unavailable === true) {
+		return 'unavailable_target';
+	}
+	return 'type';
 }

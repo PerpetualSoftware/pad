@@ -1834,10 +1834,22 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 			// that cannot be written to has nowhere to report that.
 			_ = renderItemCopyNeedsValue(stderr, pre, req.FieldOverrides)
 		}
-		return fmt.Errorf("copy refused: %s in %s/%s %s a value (use --field key=value)",
+		// The hint is CONDITIONAL for the same reason the render's Add: line
+		// is (IDEA-2899): when NO unresolved field can be supplied — an
+		// unavailable relation target, or a key `--field` cannot address —
+		// telling someone to use `--field` is advice that cannot be followed,
+		// and the error is the one line a script or a hurried reader sees.
+		hint := " (use --field key=value)"
+		if tally := itemCopyTally(pre.Fields.NeedsValue); tally.AllUnfillable() {
+			hint = fmt.Sprintf(" (no --field can supply %s: %s)",
+				map[bool]string{true: "it", false: "them"}[tally.Total == 1],
+				tally.Why())
+		}
+		return fmt.Errorf("copy refused: %s in %s/%s %s a value%s",
 			pluralize(len(pre.Fields.NeedsValue), "field", "fields"),
 			targetWorkspace, targetCollection,
-			map[bool]string{true: "needs", false: "need"}[len(pre.Fields.NeedsValue) == 1])
+			map[bool]string{true: "needs", false: "need"}[len(pre.Fields.NeedsValue) == 1],
+			hint)
 	}
 	if !pre.Valid {
 		// needs_value is empty but the server still says the mapping is
@@ -2111,9 +2123,27 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 
 	fmt.Fprintln(w)
 	if len(p.Fields.NeedsValue) > 0 {
-		fmt.Fprintf(w, "%s still %s a value. Supply with --field key=value, then re-run without --dry-run.\n",
-			pluralize(len(p.Fields.NeedsValue), "field", "fields"),
-			map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1])
+		// IDEA-2899. "Supply with --field key=value" is advice, and advice that
+		// cannot be followed is worse than none. Two rows cannot be supplied:
+		// a relation whose target collection is unavailable, and one whose key
+		// is empty. Both send someone to run a command that is refused for
+		// exactly the reason they are already stuck.
+		tally := itemCopyTally(p.Fields.NeedsValue)
+		fields := pluralize(tally.Total, "field", "fields")
+		needs := map[bool]string{true: "needs", false: "need"}[tally.Total == 1]
+		switch {
+		case tally.AllUnfillable():
+			fmt.Fprintf(w, "%s still %s a value, and no --field can supply %s: %s.\n",
+				fields, needs,
+				map[bool]string{true: "it", false: "them"}[tally.Total == 1],
+				tally.Why())
+		case tally.Unfillable > 0:
+			fmt.Fprintf(w, "%s still %s a value. Supply the rest with --field key=value, then re-run without --dry-run — but %d of them cannot be supplied at all (%s).\n",
+				fields, needs, tally.Unfillable, tally.Why())
+		default:
+			fmt.Fprintf(w, "%s still %s a value. Supply with --field key=value, then re-run without --dry-run.\n",
+				fields, needs)
+		}
 		return w.err
 	}
 	// `valid` is the server's own gate, and it means only that
@@ -2123,8 +2153,15 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 	return w.err
 }
 
-// renderItemCopyNeedsValue is the refusal. It names every unresolved field
-// and shows the exact flags to add.
+// renderItemCopyNeedsValue is the refusal. It names every unresolved field and
+// shows the flags to add FOR THE ONES A FLAG CAN ADDRESS.
+//
+// Not every one can (IDEA-2899). A field the destination reported with an empty
+// key cannot be named by `--field` at all, and a relation whose target
+// collection is unavailable to this caller has no value that would resolve it.
+// Those rows are named and explained, and deliberately left out of the `Add:`
+// line — printing a command that is refused for exactly the reason someone is
+// already stuck is worse than printing nothing.
 //
 // No MUTATING request was sent. The read-only preflight has of course
 // already run — that is where this information came from — so do not read
@@ -2197,7 +2234,18 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 		// makes `--field owner_ref=<ref>` answerable. Same reason the dialog
 		// needs it, on the surface that has no picker at all.
 		if f.Collection != "" {
-			fmt.Fprintf(w, "  %-20s   target collection: %s\n", "", itemCopyLine(f.Collection))
+			// IDEA-2899. Naming the target is only useful if the target is
+			// there: it can have been deleted, or be one this caller cannot
+			// read. Saying "target collection: people" and then refusing every
+			// ref the user finds is the CLI version of the dialog's empty
+			// picker — it sends someone looking for a value that does not
+			// exist for them.
+			if f.CollectionUnavailable {
+				fmt.Fprintf(w, "  %-20s   target collection: %s — NOT AVAILABLE to you (deleted, or you cannot access it)\n",
+					"", itemCopyLine(f.Collection))
+			} else {
+				fmt.Fprintf(w, "  %-20s   target collection: %s\n", "", itemCopyLine(f.Collection))
+			}
 		}
 		if f.Message != "" {
 			fmt.Fprintf(w, "  %-20s   %s\n", "", itemCopyLine(f.Message))
@@ -2210,10 +2258,21 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	// instead (Codex round 6). Empty keys are not currently rejected by
 	// collection-schema validation, so this is reachable.
 	unnamed := 0
+	unfillable := itemCopyTally(p.Fields.NeedsValue).UnavailableTarget
 	var toAdd, toFix []string
 	for _, f := range p.Fields.NeedsValue {
 		if strings.TrimSpace(f.Key) == "" {
 			unnamed++
+			continue
+		}
+		// A relation whose TARGET is unavailable cannot be supplied either
+		// (IDEA-2899), and for the same reason the empty-key case above is
+		// excluded: `--field owner_ref=<value>` is a command with no value that
+		// can satisfy it, since the referent validation this command runs
+		// against would refuse anything the user could name. Printing it is
+		// handing someone a command that cannot work — the exact failure the
+		// empty-key branch was written to avoid.
+		if f.CollectionUnavailable {
 			continue
 		}
 		if _, ok := supplied(f.Key); ok {
@@ -2239,6 +2298,13 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 		}
 		fmt.Fprintln(w)
 	}
+	if unfillable > 0 {
+		fmt.Fprintf(w, "\n%s a relation whose target collection is not available to you, so no --field value can satisfy %s.\n",
+			map[bool]string{true: "One field is", false: pluralize(unfillable, "field is", "fields are")}[unfillable == 1],
+			map[bool]string{true: "it", false: "them"}[unfillable == 1])
+		fmt.Fprintf(w, "That is a permissions or schema problem in %s/%s, not something\nthis command can resolve.\n",
+			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug)
+	}
 	if unnamed > 0 {
 		fmt.Fprintf(w, "\n%s came back with an empty key and cannot be supplied with --field.\n",
 			pluralize(unnamed, "field", "fields"))
@@ -2246,6 +2312,79 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug)
 	}
 	return w.err
+}
+
+// itemCopyFieldTally is what every "how do I supply this" sentence in the copy
+// path is computed from (IDEA-2899).
+//
+// ONE pass, ONE shape, because the alternative was measured. This started as a
+// single count, grew a second for the other reason a row cannot be supplied,
+// then a phrase function, and each addition falsified the previous round's
+// wording somewhere else: four review rounds, and every finding but the first
+// lived in this layer while the server half stayed clean. That distribution is
+// the finding — not the individual bugs, which were each small and each real.
+//
+// So the branching is gone. Callers ask for the tally and read the fields they
+// need; there is no second definition of "unfillable" to drift from the first,
+// and no sentence describing a subset of what a predicate counts.
+type itemCopyFieldTally struct {
+	// Total is every needs_value row.
+	Total int
+	// UnavailableTarget is rows naming a relation target this caller cannot
+	// use — deleted, or unreadable (IDEA-2899).
+	UnavailableTarget int
+	// EmptyKey is rows the destination reported with no key. `--field =value`
+	// is rejected by this command's own parser, so these have been unfillable
+	// since Codex round 6; only the detailed render knew it.
+	EmptyKey int
+	// Unfillable is rows carrying EITHER fault. NOT the sum: one row can carry
+	// BOTH — a relation with an empty key whose target is also unavailable —
+	// and counting it twice would make `Unfillable == Total` false for a set
+	// that is entirely unfillable, which is the comparison every caller makes.
+	Unfillable int
+}
+
+func itemCopyTally(rows []cli.ItemCopyPreflightNeedsValue) itemCopyFieldTally {
+	t := itemCopyFieldTally{Total: len(rows)}
+	for _, f := range rows {
+		bad := false
+		if f.CollectionUnavailable {
+			t.UnavailableTarget++
+			bad = true
+		}
+		if strings.TrimSpace(f.Key) == "" {
+			t.EmptyKey++
+			bad = true
+		}
+		if bad {
+			t.Unfillable++
+		}
+	}
+	return t
+}
+
+// AllUnfillable is the condition the error and the summary both test: no
+// `--field` resolves ANY of them, so advising one is advice that cannot be
+// followed. False for an empty set, which has nothing to advise about.
+func (t itemCopyFieldTally) AllUnfillable() bool {
+	return t.Total > 0 && t.Unfillable == t.Total
+}
+
+// Why names the reasons actually present, for the two sites that state it in
+// one sentence. Neutral on number: one caller says "it" and the other may be
+// plural, so the phrase has to read correctly after either.
+//
+// Empty when nothing is unfillable.
+func (t itemCopyFieldTally) Why() string {
+	switch {
+	case t.UnavailableTarget > 0 && t.EmptyKey > 0:
+		return "some name a relation target that is not available to you, and some came back with an empty key"
+	case t.UnavailableTarget > 0:
+		return "the relation target is not available to you"
+	case t.EmptyKey > 0:
+		return "an empty key came back from the destination, which --field cannot address"
+	}
+	return ""
 }
 
 // renderItemCopyResult writes the outcome of a completed copy.

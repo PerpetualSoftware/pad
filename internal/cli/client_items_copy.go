@@ -141,8 +141,14 @@ type ItemCopyPreflightDropped struct {
 	Reason string `json:"reason"`
 }
 
-// ItemCopyPreflightNeedsValue is one destination field the caller must
-// resolve with an override before the copy can proceed.
+// ItemCopyPreflightNeedsValue is one destination field the copy cannot satisfy
+// on its own.
+//
+// Usually the caller resolves it with an override. Not always: a row carrying
+// `CollectionUnavailable` names a relation target that is deleted or unreadable
+// by this caller, and a row with an EMPTY key cannot be named by `--field` — so
+// the copy cannot proceed at all, and the CLI says so instead of advising a
+// flag (IDEA-2899).
 type ItemCopyPreflightNeedsValue struct {
 	Key     string   `json:"key"`
 	Label   string   `json:"label,omitempty"`
@@ -154,7 +160,16 @@ type ItemCopyPreflightNeedsValue struct {
 	// server's field for field — a mirror that silently lags is a mirror that
 	// lies, and the CLI renders these rows.
 	Collection string `json:"collection,omitempty"`
-	Required   bool   `json:"required"`
+	// CollectionUnavailable is true when Collection names a target this caller
+	// cannot use — deleted, or not readable by them (IDEA-2899). Mirrored for
+	// the same reason Collection is, and the CLI uses it for the same decision
+	// the dialog does: a row whose target is unavailable must not appear in the
+	// `--field key=<value>` suggestion, because there is no value to supply.
+	//
+	// ABSENT means available OR a server that does not report; only an explicit
+	// true says the target is unusable.
+	CollectionUnavailable bool `json:"collection_unavailable,omitempty"`
+	Required              bool `json:"required"`
 	// Reason is "missing_required" or "invalid_value".
 	Reason  string `json:"reason"`
 	Message string `json:"message,omitempty"`
