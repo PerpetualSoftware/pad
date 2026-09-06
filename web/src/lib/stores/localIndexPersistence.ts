@@ -78,8 +78,13 @@ export interface HydrateResult {
 	 * tab is CLOSED writes no row, so the cached rows are stale and nothing in
 	 * the delta stream says so. Comparing the persisted epoch against the next
 	 * response's is what turns that into a resync instead of a silent adopt.
-	 * Null only for a cache with no epoch yet — which the version bump to 4
-	 * makes unreachable for caches written by this build or later.
+	 *
+	 * Null means NO BASELINE, and this build can still WRITE one: a server that
+	 * predates `access_epoch` omits it, and `persistDelta`/`persistReplace`
+	 * record that absence honestly rather than inventing a value. What the
+	 * version bump to 4 rules out is a PRE-IDEA-2898 cache being read as though
+	 * it had a baseline — those are wiped, not adopted. Both cases are covered
+	 * in localIndexPersistenceAccessEpoch.idb.test.ts.
 	 */
 	accessEpoch: string | null;
 	/**

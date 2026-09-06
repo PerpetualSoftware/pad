@@ -142,6 +142,11 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(persistence.persistAccessEpoch).toHaveBeenCalled();
 		const args = persistence.persistAccessEpoch.mock.calls.at(-1) as unknown[];
 		expect(args[2]).toBe('e2');
+		// AND the value it expects to be replacing. The patch is a
+		// compare-and-set; a wrong `expectedPrevious` makes it a no-op that
+		// still looks right in RAM, and the disagreement only shows up as a
+		// resync on the next reload.
+		expect(args[3]).toBe('e1');
 	});
 
 	it('persists the told epoch after a joined resync on a NULL baseline too', async () => {
@@ -188,9 +193,10 @@ describe('IDEA-2898 — what the resync hands on', () => {
 
 		expect(localIndex.accessEpochFor(ws)).toBe('told');
 		expect(persistence.persistAccessEpoch).toHaveBeenCalled();
-		expect(
-			(persistence.persistAccessEpoch.mock.calls.at(-1) as unknown[])[2],
-		).toBe('told');
+		const nullBranchArgs = persistence.persistAccessEpoch.mock.calls.at(-1) as unknown[];
+		expect(nullBranchArgs[2]).toBe('told');
+		// The baseline being repaired on this branch is the ABSENT one.
+		expect(nullBranchArgs[3]).toBeNull();
 	});
 
 	it('does NOT adopt when the durable read FAILED, only when it answered', async () => {
