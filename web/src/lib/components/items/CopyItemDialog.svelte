@@ -48,7 +48,7 @@ user hunting for an item that provably does not exist.
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import { copyDropReasonMessage } from '$lib/items/copyDropReasons';
-	import { isCollectable } from '$lib/items/copyNeedsValue';
+	import { isCollectable, uncollectableReason } from '$lib/items/copyNeedsValue';
 	import { canEditCollection } from '$lib/utils/permissions';
 	import { parseSchema } from '$lib/types';
 	import type {
@@ -251,6 +251,17 @@ user hunting for an item that provably does not exist.
 	/** Required destination fields the dialog cannot safely collect a value for. */
 	let blockedFields = $derived(
 		(preflight?.fields.needs_value ?? []).filter((f) => !isCollectable(f))
+	);
+
+	/**
+	 * The first blocked field the CLI could actually fill, or null (IDEA-2899).
+	 *
+	 * `blockedFields[0]` was fine while every blocked row was type-shaped. It
+	 * is not now: with a relation whose target is unavailable sorted first, the
+	 * printed command would name the ONE field the CLI cannot set either.
+	 */
+	let cliFillableField = $derived(
+		blockedFields.find((f) => uncollectableReason(f) === 'type') ?? null
 	);
 
 	let warnings = $derived(preflight?.warnings ?? null);
@@ -1149,16 +1160,34 @@ user hunting for an item that provably does not exist.
 									<p class="notice notice-error" role="alert">
 										{#each blockedFields as f (f.key)}
 											<span class="blocked-line">
-												<strong>{f.label || f.key}</strong> is a required
-												<code>{f.type ?? 'unknown'}</code> field. This dialog can’t collect a value
-												for that type safely.
+												{#if uncollectableReason(f) === 'unavailable_target'}
+													<strong>{f.label || f.key}</strong> points at
+													<code>{f.collection}</code> in {destWorkspaceName}, which isn’t
+													available to you — it may have been deleted, or you may not have
+													access to it. There’s no value this field can be given here.
+												{:else}
+													<strong>{f.label || f.key}</strong> is a required
+													<code>{f.type ?? 'unknown'}</code> field. This dialog can’t collect a
+													value for that type safely.
+												{/if}
 											</span>
 										{/each}
-										Use the CLI instead:
-										<code
-											>pad item copy {sourceRef} --to-workspace {destWs} --collection {destColl}
-											--field {blockedFields[0].key}=value</code
-										>
+										<!--
+											The CLI is offered ONLY for the type-shaped failures (IDEA-2899).
+											It genuinely helps there: `json` and `multi_select` cannot be typed
+											into this dialog safely and `--field` can set them. It is worse than
+											useless for an unavailable relation target — the CLI runs as the
+											same user against the same referent validation, so the command
+											would be refused for the same reason, and printing it sends someone
+											to do work that cannot succeed.
+										-->
+										{#if cliFillableField}
+											Use the CLI instead:
+											<code
+												>pad item copy {sourceRef} --to-workspace {destWs} --collection {destColl}
+												--field {cliFillableField.key}=value</code
+											>
+										{/if}
 									</p>
 								{/if}
 								<div class="needs-list">
