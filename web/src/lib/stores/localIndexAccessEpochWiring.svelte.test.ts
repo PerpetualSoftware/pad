@@ -59,12 +59,14 @@ afterEach(() => {
 });
 
 describe('IDEA-2898 round 2 — what the callers hand on', () => {
-	it('tells persistDelta which ids the cold snapshot dropped', async () => {
-		// Without this the durable cache keeps an old-scope row while the meta
-		// row advertises the new epoch — a state that survives a reload and
-		// that no later delta can detect, because every later delta agrees with
-		// the epoch the cache is claiming.
-		localIndex.upsert(ws, row('secret', 2, 'revoked'));
+	it('mirrors the cold snapshot into IDB with a REPLACE, not an append', async () => {
+		// Round 3 replaced round 2's removeIds repair with the shape the resync
+		// uses. `persistDelta` writes the rows it is given and leaves the rest
+		// of the store alone, so a row that reached IDB before any `meta.sync`
+		// row existed — an optimistic write on a first visit — is invisible to
+		// any RAM-derived drop set and survives into the next warm boot under
+		// the new epoch. A replace cannot have that hole, because the durable
+		// copy simply becomes the snapshot.
 		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
 			items: [row('keeper', 1, 'kept')],
 			total: 1,
@@ -75,10 +77,11 @@ describe('IDEA-2898 round 2 — what the callers hand on', () => {
 
 		await localIndex.bootstrap(ws, { userId: null });
 
-		expect(persistence.persistDelta).toHaveBeenCalled();
-		const args = persistence.persistDelta.mock.calls.at(-1) as unknown[];
-		expect(args[5]).toBe('e2'); // the epoch this cache is now claiming
-		expect(args[6]).toEqual(['secret']); // ...and the row it must not keep
+		expect(persistence.persistReplace).toHaveBeenCalled();
+		expect(persistence.persistDelta).not.toHaveBeenCalled();
+		const args = persistence.persistReplace.mock.calls.at(-1) as unknown[];
+		expect((args[2] as { id: string }[]).map((r) => r.id)).toEqual(['keeper']);
+		expect(args[5]).toBe('e2');
 	});
 
 	it('writes the PRESERVED baseline to IDB when a resync snapshot carries no epoch', async () => {

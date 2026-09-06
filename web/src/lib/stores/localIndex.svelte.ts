@@ -823,96 +823,70 @@ export const localIndex = {
 						includeArchived: true,
 					});
 					if (isStale()) return;
-					state.includesUnparentedMetadata = resp.includes_unparented_metadata;
-					// DROP ROWS THE SNAPSHOT OMITS BEFORE ADOPTING ITS EPOCH
-					// (review round 1 F1). The cold path merges, which is right
-					// when RAM is empty — the usual case, and then this loop
-					// finds nothing. It is not right when a concurrent delta or
-					// optimistic write populated RAM while `/items-index` was in
-					// flight: merging keeps a row the snapshot omits, and the
-					// line below then stamps the cache with the snapshot's
-					// epoch. The result is a cache that ADVERTISES a scope it
-					// does not hold, and since the next delta agrees with that
-					// epoch, no resync ever fires — the same permanently-inert
-					// state as F2, reached from the other side.
+					// IS THIS SNAPSHOT A DESCRIPTION OF WHERE WE ARE?
 					//
-					// Same disposition as `resyncProjectionScope`'s step 1, and
-					// for the same reason: a post-snapshot mutation this caller
-					// can still see comes back on the very next
-					// `/items-changes?since=cursor`, so nothing visible is
-					// permanently lost, while a row the snapshot omits stays
-					// gone. Fenced for the same reason too — an in-flight
-					// optimistic write must not resurrect it.
-					const coldDropped: string[] = [];
+					// Round 3, and a SIMPLIFICATION rather than another guard.
+					// Rounds 1 and 2 grew this branch a drop-absent pass, a
+					// fence, a cursor pin, a removeIds list and a supersession
+					// check — which is `resyncProjectionScope` being
+					// re-implemented here one review finding at a time, and
+					// round 3 found the two pieces that had not been copied yet
+					// (a superseded snapshot's ROWS were still merged even
+					// though its epoch was refused, and `scopeEpoch` was never
+					// bumped, so a delayed old-scope write walked past the
+					// fence).
+					//
+					// So this branch no longer tries. There are exactly two
+					// ways a cold snapshot can fail to describe the current
+					// state, and in either case the authoritative resync — one
+					// function, already hardened by every earlier round, which
+					// drops, fences, pins the cursor, bumps `scopeEpoch` and
+					// replaces IDB in one transaction — is the correct answer:
+					//
+					//   1. SUPERSEDED: the caller's scope changed while this
+					//      request was in flight, so these rows are from a
+					//      scope that no longer holds.
+					//   2. OMISSIONS: RAM holds rows this snapshot does not,
+					//      which means something landed during the request and
+					//      only an authoritative reconcile can say which of
+					//      those rows survive.
+					//
+					// The common case — a genuinely cold boot into an empty
+					// store — takes neither branch and is unchanged.
+					const supersededEpoch = coldEpochAtStart !== state.accessEpoch;
+					let ramHasOmittedRows = false;
 					if (state.items.size > 0) {
 						const snapshotIds = new Set<string>();
 						for (const row of resp.items) snapshotIds.add(row.id);
-						const toDrop = coldDropped;
 						for (const id of state.items.keys()) {
-							if (!snapshotIds.has(id)) toDrop.push(id);
+							if (!snapshotIds.has(id)) {
+								ramHasOmittedRows = true;
+								break;
+							}
 						}
-						for (const id of toDrop) {
-							state.items.delete(id);
-							localSearch.remove(ws, id);
-						}
-						// CONDITIONAL, where `resyncProjectionScope` replaces
-						// unconditionally — a deliberate divergence, not an
-						// oversight. Replacing there clears the fence on a
-						// re-UPGRADE, when the rows are legitimately back. Here
-						// an empty `toDrop` says only that RAM held nothing the
-						// snapshot omits; a fence from an earlier resync may
-						// still be guarding ids that are in neither, and
-						// clearing it would let an in-flight optimistic write
-						// resurrect one. Keeping it costs nothing: `applyDelta`
-						// lifts the fence per id as soon as an authoritative
-						// delta carries that row, so a genuine re-upgrade
-						// self-heals.
-						if (toDrop.length > 0) state.fencedIds = new Set(toDrop);
 					}
-					// The snapshot is authoritative under the CURRENT scope, so
-					// its epoch is the baseline. Absent means unknown and must
-					// not erase a known value (F3).
-					//
-					// NOT authoritative over a NEWER epoch, though (round 2).
-					// This request may have been in flight while a concurrent
-					// delta learned a newer scope — `ensureAccessScope` records
-					// one without resyncing when RAM is empty, which is exactly
-					// the state a cold boot is in. Adopting the snapshot's
-					// older value there would walk the baseline BACKWARDS and
-					// re-open the window this whole change closes. The delta's
-					// value wins; this snapshot's rows are then the stale ones,
-					// so a reconcile is owed and `pendingResync` says so below.
-					const coldEpochSuperseded =
-						coldEpochAtStart !== state.accessEpoch;
-					if (resp.access_epoch !== undefined && !coldEpochSuperseded) {
+					if (supersededEpoch || ramHasOmittedRows) {
+						await resyncProjectionScope(ws, state);
+						if (isStale()) return;
+						// The resync leaves `pendingResync` set on purpose: it
+						// installs the snapshot and pins the cursor, and the
+						// post-snapshot mutations are not caught up until a
+						// reconcile drains from that cursor.
+						return;
+					}
+					state.includesUnparentedMetadata = resp.includes_unparented_metadata;
+					if (resp.access_epoch !== undefined) {
 						state.accessEpoch = resp.access_epoch;
 					}
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
-					// CURSOR PIN (round 2). Forward-only is right when nothing
-					// was dropped. It is WRONG when this snapshot dropped a row
-					// that a concurrent delta had legitimately added: the row is
-					// gone from RAM, the cursor is past the seq that carried it,
-					// and no future `/items-changes?since=cursor` can return it
-					// — a visible item vanishes until a full resync. Pinning to
-					// the snapshot's cursor makes the replay refetch it, which
-					// is the same reason `resyncProjectionScope` pins rather
-					// than advances.
-					if (coldDropped.length > 0) {
-						state.cursor = resp.cursor;
-					} else if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
+					if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
 						state.cursor = resp.cursor;
 					}
 					state.bootstrapState = 'ready';
-					// Cold path is a full snapshot — nothing pending, UNLESS
-					// this snapshot pinned the cursor back to replay dropped
-					// rows, or landed under a superseded epoch. Either way a
-					// reconcile is owed and the next bootstrap must not no-op.
-					state.pendingResync = coldDropped.length > 0 || coldEpochSuperseded;
-					// Server rows carry the live collection slug — drop any
-					// rename recorded pre-snapshot rather than re-applying
-					// it over fresher server truth (BUG-2601).
+					// Cold path is a full snapshot — nothing pending.
+					state.pendingResync = false;
 					state.pendingRetags.clear();
 					// Rebuild the search index from the cold snapshot —
 					// TASK-1363. Bulk rebuild is cheaper than N per-row
@@ -931,23 +905,22 @@ export const localIndex = {
 					// yields exactly the merged, winning rows.
 					const snapshot: ItemIndexRow[] = [];
 					for (const row of state.items.values()) snapshot.push(row);
-					persistDelta(
+					// REPLACE, not append (round 3). `persistDelta` writes the
+					// rows it is given and leaves everything else in the store,
+					// so a row that reached IDB before any `meta.sync` row
+					// existed — an optimistic write on a first visit — is
+					// invisible to a RAM-derived drop set and survives into the
+					// next warm boot under the new epoch. The snapshot is
+					// authoritative, so the durable copy should BE the snapshot;
+					// that is what the resync does, and it is one transaction
+					// either way.
+					persistReplace(
 						userId,
 						ws,
 						snapshot,
 						state.cursor,
 						resp.includes_unparented_metadata,
 						state.accessEpoch,
-						// The rows this snapshot dropped must leave IDB too
-						// (round 2). Repairing only RAM left the durable cache
-						// holding an old-scope row while the meta row advertised
-						// the new epoch — which survives a reload and which no
-						// later delta can detect, because every later delta
-						// agrees with the epoch the cache is claiming.
-						// `removeIds` also raises a tombstone stamped at this
-						// cursor, so a delayed write for the same id cannot
-						// reinsert it behind the cursor (BUG-2633).
-						coldDropped,
 					).catch(
 						() => undefined,
 					);
@@ -1239,6 +1212,10 @@ export const localIndex = {
 			// which costs nothing because there is nothing to evict.
 			if (state.items.size > 0 || cursorAsNum(state.cursor) > 0) {
 				await resyncProjectionScope(ws, state, accessEpoch);
+				// Same joined-resync case as below.
+				if (state.accessEpoch === null) {
+					state.accessEpoch = accessEpoch;
+				}
 				return true;
 			}
 			state.accessEpoch = accessEpoch;
@@ -1253,7 +1230,19 @@ export const localIndex = {
 		// as the fallback: a true statement about what the server last said,
 		// which is all the baseline has ever claimed to be, and it lands in RAM
 		// and IDB together.
+		const beforeResync = state.accessEpoch;
 		await resyncProjectionScope(ws, state, accessEpoch);
+		// ...UNLESS THE RESYNC WAS JOINED, not started (round 3). Resyncs are
+		// deduplicated per workspace, so a resync already in flight — started
+		// by a projection mismatch, which passes no fallback — returns its
+		// promise and this caller's fallback is never seen. The baseline is then
+		// unchanged and the next poll asks again. Applying it here after the
+		// await covers the joined case without a second resync; it is the same
+		// statement ("the server last told us this"), made at the only point
+		// where we can tell the fallback was dropped.
+		if (state.accessEpoch === beforeResync) {
+			state.accessEpoch = accessEpoch;
+		}
 		return true;
 	},
 

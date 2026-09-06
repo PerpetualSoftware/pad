@@ -192,16 +192,29 @@ describe('localIndex access-epoch scope', () => {
 		// The assertion that matters is the PAIR: the row is gone AND the epoch
 		// is the snapshot's. Asserting only the epoch would pass on the
 		// unfixed code, which is exactly how this got past four mutants.
+		// ROUND 3: the mechanism changed, the property did not. The cold path no
+		// longer repairs itself in place — a snapshot that omits rows RAM holds
+		// is not a description of where we are, so it is discarded and the
+		// authoritative resync runs instead. Hence TWO index responses: the
+		// cold one, then the resync's.
 		localIndex.upsert(ws, row('secret', 2, 'revoked'));
 		expect(pickerCanSee('secret', 'revoked')).toBe(true);
 
-		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
-			items: [row('keeper', 1, 'kept')],
-			total: 1,
-			cursor: '1',
-			includes_unparented_metadata: false,
-			access_epoch: 'cold-epoch',
-		});
+		vi.spyOn(api.items, 'listIndex')
+			.mockResolvedValueOnce({
+				items: [row('keeper', 1, 'kept')],
+				total: 1,
+				cursor: '1',
+				includes_unparented_metadata: false,
+				access_epoch: 'cold-epoch',
+			})
+			.mockResolvedValueOnce({
+				items: [row('keeper', 1, 'kept')],
+				total: 1,
+				cursor: '1',
+				includes_unparented_metadata: false,
+				access_epoch: 'cold-epoch',
+			});
 		await localIndex.bootstrap(ws, { userId: null });
 
 		expect(pickerCanSee('secret', 'revoked')).toBe(false);
@@ -269,11 +282,14 @@ describe('localIndex access-epoch scope', () => {
 		// The assertion is the cursor, not the row: the row is correctly gone
 		// at this instant either way, and only the cursor decides whether it
 		// can come back.
+		// ROUND 3: the pin now comes from the resync this case routes to, which
+		// has pinned rather than advanced since long before this unit. Same
+		// property, one fewer implementation of it.
 		localIndex.upsert(ws, row('added-while-in-flight', 2, 'kept'));
 		localIndex.applyDelta(ws, [], '2', false);
 		expect(localIndex.cursorFor(ws)).toBe('2');
 
-		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+		vi.spyOn(api.items, 'listIndex').mockResolvedValue({
 			items: [row('keeper', 1, 'kept')],
 			total: 1,
 			cursor: '1',
@@ -317,6 +333,17 @@ describe('localIndex access-epoch scope', () => {
 		await localIndex.ensureAccessScope(ws, 'newer');
 		expect(localIndex.accessEpochFor(ws)).toBe('newer');
 
+		// The resync this now routes to fetches its own snapshot under the
+		// CURRENT scope. Round 2 kept the superseded snapshot's rows while
+		// refusing its epoch, which round 3 showed was the worse half of the
+		// bargain: the rows were the stale part.
+		vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [row('current', 2, 'kept')],
+			total: 1,
+			cursor: '2',
+			includes_unparented_metadata: false,
+			access_epoch: 'newer',
+		});
 		resolveIndex!({
 			items: [row('stale', 1, 'kept')],
 			total: 1,
@@ -327,9 +354,52 @@ describe('localIndex access-epoch scope', () => {
 		await boot;
 
 		expect(localIndex.accessEpochFor(ws)).toBe('newer');
-		// And a reconcile is owed, because the rows that DID land are the ones
-		// from the superseded scope.
+		// The superseded snapshot's ROWS are gone too, not merely its epoch.
+		expect(localIndex.findByIdOrSlug(ws, 'stale')).toBeNull();
 		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
+	it('records the told-epoch even when it JOINS a resync that was already running', async () => {
+		// Round 3, P2. Resyncs are deduplicated per workspace, so a resync
+		// already in flight — started by a PROJECTION mismatch, which passes no
+		// fallback — returns its promise and the access caller's fallback is
+		// never seen. The baseline then stays unchanged and the next poll asks
+		// for the same resync again.
+		//
+		// The instrument has to hold the first resync OPEN across the second
+		// call, or the two never overlap and the test passes against code that
+		// has the bug. That timing is the test.
+		await seedUnder('old', [row('keeper', 1, 'kept')]);
+
+		let release: (() => void) | null = null;
+		let inFlight: () => void = () => {};
+		const started = new Promise<void>((res) => {
+			inFlight = res;
+		});
+		const snapshot = {
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: true,
+			// No access_epoch — the mixed-deployment case, so only a fallback
+			// can move the baseline.
+		};
+		vi.spyOn(api.items, 'listIndex').mockImplementationOnce(() => {
+			inFlight();
+			return new Promise((res) => {
+				release = () => res(snapshot as never);
+			}) as never;
+		});
+
+		// Projection mismatch starts the resync; it passes no fallback.
+		const projection = localIndex.ensureProjectionScope(ws, true);
+		await started;
+		// The access caller joins the SAME promise.
+		const access = localIndex.ensureAccessScope(ws, 'told');
+		release!();
+		await Promise.all([projection, access]);
+
+		expect(localIndex.accessEpochFor(ws)).toBe('told');
 	});
 
 	it('adopts silently when there is no baseline and nothing cached', async () => {

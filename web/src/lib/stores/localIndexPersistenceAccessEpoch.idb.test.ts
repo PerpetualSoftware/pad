@@ -54,15 +54,63 @@ describe('IDEA-2898 F2 — a writer under a superseded epoch cannot reinsert int
 		await persistUpserts(U, WS, [row('allowed', 3)], 'e2');
 		expect((await rawItems(U, WS)).map((r) => r.id).sort()).toEqual(['allowed', 'keeper']);
 
-		// SECOND CONTROL LEG. A writer with no baseline yet makes no claim, and
-		// a workspace that has never resynced has nothing to be stale relative
-		// to. Refusing these would break the first write of every session.
+		// SECOND LEG — CHANGED IN ROUND 3, because the PROPERTY changed.
+		//
+		// This used to assert that a writer with no baseline is let through
+		// against any cache, on the reading that null means "no claim". Round 3
+		// showed that is the way IN: a delayed callback from before this tab had
+		// a baseline, or a fresh state after a `reset()`, could insert into a
+		// cache that had already resynced past it. Null does not mean the write
+		// is safe; it means the WRITER knows nothing about scope, which is a
+		// reason to refuse it against a cache that does know.
 		await persistUpserts(U, WS, [row('unclaimed', 4)], null);
-		expect((await rawItems(U, WS)).map((r) => r.id).sort()).toEqual([
-			'allowed',
-			'keeper',
-			'unclaimed',
-		]);
+		expect((await rawItems(U, WS)).map((r) => r.id).sort()).toEqual(['allowed', 'keeper']);
+	});
+
+	it('refuses a slower tab\'s older snapshot rather than clobbering a newer one', async () => {
+		// Two tabs can resync at once. If tab A started under an older scope and
+		// lands second, an unfenced `persistReplace` clears the store and writes
+		// its own rows and epoch over tab B's newer ones — transient rather than
+		// permanently inert, since a later delta contradicts the regressed
+		// epoch, but that is a full round trip and a window of visibly wrong
+		// rows for no gain.
+		//
+		// Unlike the delta fence there is nothing to salvage from a refused
+		// replace: its removals are expressed as "everything not in this
+		// snapshot", a claim about a scope that has already been superseded.
+		const U = null;
+		const WS = 'ws-replace-fence';
+		const { persistReplace, hydrate } = await loadPersistence();
+
+		await persistReplace(U, WS, [row('newer', 9)], '9', false, 'e2');
+		await persistReplace(U, WS, [row('older', 1)], '1', false, 'e1');
+
+		const after = await hydrate(U, WS);
+		expect(after.items.map((r) => r.id)).toEqual(['newer']);
+		expect(after.accessEpoch).toBe('e2');
+		expect(after.cursor).toBe('9');
+
+		// CONTROL LEG: a replace under the CURRENT epoch must still land, or
+		// every resync after the first would be a no-op.
+		await persistReplace(U, WS, [row('newest', 12)], '12', false, 'e2');
+		const healthy = await hydrate(U, WS);
+		expect(healthy.items.map((r) => r.id)).toEqual(['newest']);
+		expect(healthy.cursor).toBe('12');
+	});
+
+	it('lets an unclaimed writer through only when the CACHE has no epoch either', async () => {
+		// The exemption that is legitimate, and the reason the fence cannot
+		// simply refuse every null writer: a cache with no recorded epoch has
+		// had no resync, so nothing can be stale relative to it. Refusing here
+		// would drop the first write of every session.
+		const U = null;
+		const WS = 'ws-epoch-fence-virgin';
+		const { persistUpserts, hydrate } = await loadPersistence();
+
+		await persistUpserts(U, WS, [row('first', 1)], null);
+		const after = await hydrate(U, WS);
+		expect(after.items.map((r) => r.id)).toEqual(['first']);
+		expect(after.accessEpoch).toBeNull();
 	});
 
 	it('fences persistDelta too, and refuses its meta write rather than regressing the epoch', async () => {
@@ -88,11 +136,28 @@ describe('IDEA-2898 F2 — a writer under a superseded epoch cannot reinsert int
 		expect(after.accessEpoch).toBe('e2');
 		expect(after.cursor).toBe('5');
 
+		// A FENCE NEVER BLOCKS A REMOVAL (round 3). The stale batch's row write
+		// is refused above; its REMOVALS must still apply, because a removal
+		// can only narrow what the cache asserts and no later delta re-sends a
+		// removal for a sequence already behind the persisted cursor. Round 2's
+		// version refused the whole transaction and so caused the exact
+		// permanent state the fence exists to prevent.
+		await persistDelta(U, WS, [], '6', false, 'e1', ['keeper']);
+		const afterRemoval = await hydrate(U, WS);
+		expect(afterRemoval.items.map((r) => r.id)).toEqual([]);
+		// ...and the refused batch still may not advance the cursor or the
+		// epoch, which is the half that must NOT leak through with it.
+		expect(afterRemoval.cursor).toBe('5');
+		expect(afterRemoval.accessEpoch).toBe('e2');
+
 		// CONTROL LEG. A current-epoch delta must still land, or every
 		// authoritative write after a resync would be silently dropped.
 		await persistDelta(U, WS, [row('fresh', 7)], '7', false, 'e2');
 		const healthy = await hydrate(U, WS);
-		expect(healthy.items.map((r) => r.id).sort()).toEqual(['fresh', 'keeper']);
+		// 'keeper' is gone because the refused batch's REMOVAL was applied — the
+		// leg above. Only 'fresh' remains, which is what a current-epoch write
+		// landing proves.
+		expect(healthy.items.map((r) => r.id)).toEqual(['fresh']);
 		expect(healthy.cursor).toBe('7');
 	});
 });

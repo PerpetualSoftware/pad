@@ -371,16 +371,28 @@ export async function persistUpserts(
 		// wrong, it is permanently inert.
 		//
 		// So a writer declares the epoch it believes it is writing under, and
-		// the transaction refuses the whole batch if the cache has moved on.
-		// Null (the default, and the value a caller with no baseline yet has)
-		// means "no claim" and is not fenced: a workspace with no recorded
-		// epoch has had no resync to be stale relative to.
-		if (writerAccessEpoch !== null) {
-			const meta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
-			if (meta && meta.accessEpoch !== null && meta.accessEpoch !== writerAccessEpoch) {
-				await tx.done.catch(() => undefined);
-				return;
-			}
+		// the transaction refuses the batch if the cache has moved on.
+		//
+		// A NULL WRITER IS NOT EXEMPT (round 3). Round 2 read null as "no
+		// claim" and let it through, which made it the way in: a delayed
+		// callback from before this tab had a baseline, or a fresh state after
+		// a `reset()`, could insert a row into a cache that had already
+		// resynced past it. What null actually means is that the WRITER knows
+		// nothing about scope — which is a reason to refuse it against a cache
+		// that does know, not a reason to trust it.
+		//
+		// The exemption that IS legitimate is the other side: a cache with no
+		// recorded epoch has had no resync, so nothing can be stale relative to
+		// it, and the first write of a session must land.
+		const meta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+		// `?? null` because a meta row written before this field existed has it
+		// ABSENT, not null — and `undefined !== null` would have fenced out
+		// every writer against a pre-IDEA-2898 cache. Caught by the v1-migration
+		// test, which is the only fixture that produces that shape.
+		const cachedEpoch = meta ? (meta.accessEpoch ?? null) : null;
+		if (cachedEpoch !== null && cachedEpoch !== writerAccessEpoch) {
+			await tx.done.catch(() => undefined);
+			return;
 		}
 		for (const row of rows) {
 			const stored = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
@@ -520,22 +532,44 @@ export async function persistDelta(
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
-		// EPOCH FENCE, same as persistUpserts (round 2). An authoritative
-		// delta is not exempt from the cross-tab race: an old tab's
-		// `persistDelta` committing after another tab's `persistReplace`
+		// EPOCH FENCE — AND A FENCE NEVER BLOCKS A REMOVAL (round 3).
+		//
+		// An authoritative delta is not exempt from the cross-tab race: an old
+		// tab's `persistDelta` committing after another tab's `persistReplace`
 		// writes BOTH the old row and the old epoch, which is worse than the
-		// upsert case — it regresses the meta row, and a null or stale meta
-		// epoch disables this fence for every writer that follows.
+		// upsert case, because a regressed meta row disables this fence for
+		// every writer that follows.
+		//
+		// But round 2's version refused the WHOLE transaction, `removeIds`
+		// included — and that made the fence cause the exact state it exists to
+		// prevent. A `moved_out` eviction or a snapshot's repair carried by a
+		// stale-epoch batch was dropped, the row stayed in IDB, and no later
+		// delta re-sends a removal for a sequence already behind the persisted
+		// cursor. The fence blocked the only thing that could have cleaned up.
+		//
+		// The asymmetry is the rule, and it generalises past this function: a
+		// stale writer may not ADD or claim, because adding stale data is how a
+		// cache goes wrong. It may always REMOVE, because removal can only ever
+		// narrow what the cache asserts, and a removal that was correct under an
+		// older scope is still correct under a narrower one.
+		let fencedOut = false;
 		if (accessEpoch !== null) {
 			const existing = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
-			if (
-				existing &&
-				existing.accessEpoch !== null &&
-				existing.accessEpoch !== accessEpoch
-			) {
-				await tx.done.catch(() => undefined);
-				return;
+			const cached = existing ? (existing.accessEpoch ?? null) : null;
+			if (cached !== null && cached !== accessEpoch) {
+				fencedOut = true;
 			}
+		}
+		if (fencedOut) {
+			// Removals only, no row writes and no cursor/epoch advance.
+			const tombstones = tx.objectStore('tombstones');
+			const deletedAtSeq = seqFromCursor(cursor);
+			for (const id of removeIds) {
+				tx.objectStore('items').delete(id).catch(() => undefined);
+				await raiseTombstone(tombstones, id, deletedAtSeq);
+			}
+			await tx.done.catch(() => undefined);
+			return;
 		}
 		// Same policy as persistUpserts (resolveRowWrite): the race runs in both
 		// directions, so a delta must not overwrite a row that is already NEWER
@@ -613,6 +647,26 @@ export async function persistReplace(
 	if (!db) return;
 	try {
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
+		// A SLOWER TAB MUST NOT CLOBBER A NEWER SNAPSHOT (round 3). Two tabs
+		// can resync at once; if tab A started under an older scope and lands
+		// second, it clears the store and writes its own rows and epoch over
+		// tab B's newer ones. That is transient rather than permanently inert —
+		// a later delta contradicts the regressed epoch and forces another
+		// resync — but it is a full round trip and a window of visibly wrong
+		// rows, for no gain.
+		//
+		// Unlike the delta fence there is nothing to salvage from a refused
+		// replace: its removals are expressed as "everything not in this
+		// snapshot", which is a claim about a scope that has already been
+		// superseded, and applying it would be the clobber.
+		if (accessEpoch !== null) {
+			const existing = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+			const cached = existing ? (existing.accessEpoch ?? null) : null;
+			if (cached !== null && cached !== accessEpoch) {
+				await tx.done.catch(() => undefined);
+				return;
+			}
+		}
 		const itemsStore = tx.objectStore('items');
 		// Queued before the puts; IDB executes requests against a store in
 		// issue order, so the clear always lands first.
