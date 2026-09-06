@@ -29,7 +29,11 @@ const persistence = vi.hoisted(() => ({
 	})),
 	persistDelta: vi.fn(async () => undefined),
 	persistRemovals: vi.fn(async () => undefined),
-	persistReplace: vi.fn(async () => undefined),
+	// Returns the durable-commit signal IDEA-2898's caller now reads (TASK-2906
+	// round 2): true = the snapshot reached disk. Default it to the committing
+	// case so these epoch-argument assertions keep testing what they name; the
+	// refusal case gets its own test below.
+	persistReplace: vi.fn(async () => true),
 	persistAccessEpoch: vi.fn(async () => undefined),
 	persistRetag: vi.fn(async () => undefined),
 	persistUpserts: vi.fn(async () => undefined),
@@ -149,6 +153,63 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(args[3]).toBe('e1');
 	});
 
+	it('does NOT stamp the told epoch on disk when the joined resync\u2019s snapshot was refused', async () => {
+		// TASK-2906 round 2. The compare-and-set above is honest about the row
+		// it patches but cannot see whether the `persistReplace` it is
+		// finishing on behalf of committed. Since TASK-2906 that write can be
+		// declined — its cursor lost the race to another tab — and then the
+		// durable rows still describe the OLD scope. Stamping the new epoch
+		// over them leaves a cache that AGREES with the server about a scope it
+		// does not hold, so neither a hydrate nor another tab's poll ever
+		// notices the revoked rows again: the silent adopt IDEA-2898 exists to
+		// prevent, arriving through a different door.
+		persistence.persistReplace.mockResolvedValueOnce(
+			false as unknown as Awaited<ReturnType<typeof persistence.persistReplace>>,
+		);
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [row('cached', 1, 'kept')],
+			cursor: '1',
+			includesUnparentedMetadata: false,
+			accessEpoch: 'e1',
+			durableRead: true,
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+		persistence.persistAccessEpoch.mockClear();
+
+		let releaseSnapshot: (() => void) | undefined;
+		vi.spyOn(api.items, 'listIndex').mockReturnValue(
+			new Promise((resolve) => {
+				releaseSnapshot = () =>
+					resolve({
+						items: [row('cached', 1, 'kept')],
+						total: 1,
+						cursor: '1',
+						includes_unparented_metadata: false,
+						// No access_epoch, so the joined caller's fallback is the
+						// only thing that could move the baseline — exactly the
+						// path the round-2 finding walked.
+					});
+			}) as unknown as ReturnType<typeof api.items.listIndex>,
+		);
+		const first = localIndex.ensureProjectionScope(ws, true);
+		const joined = localIndex.ensureAccessScope(ws, 'e2');
+		releaseSnapshot?.();
+		await Promise.all([first, joined]);
+
+		// RAM still adopts it — this session has the new scope and re-resyncing
+		// it would loop. Only the DURABLE stamp is withheld, and withholding it
+		// is what leaves the disagreement that makes the next hydrate resync.
+		expect(localIndex.accessEpochFor(ws)).toBe('e2');
+		expect(persistence.persistAccessEpoch).not.toHaveBeenCalled();
+	});
+
 	it('persists the told epoch after a joined resync on a NULL baseline too', async () => {
 		// The same durable-repair as above, on the other branch. A populated
 		// cache with no recorded baseline resyncs by design; if that resync is
@@ -197,6 +258,53 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(nullBranchArgs[2]).toBe('told');
 		// The baseline being repaired on this branch is the ABSENT one.
 		expect(nullBranchArgs[3]).toBeNull();
+	});
+
+	it('withholds the durable stamp on the NULL-baseline branch too when the snapshot was refused', async () => {
+		// TASK-2906 round 2, second door. The guard belongs on BOTH branches for
+		// the same reason the stamp does, and a mutation run found this one
+		// unguarded-and-untested while its sibling above was covered — which is
+		// the failure the sibling test's own comment already warns about, one
+		// change later.
+		persistence.persistReplace.mockResolvedValueOnce(
+			false as unknown as Awaited<ReturnType<typeof persistence.persistReplace>>,
+		);
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [row('cached', 1, 'kept')],
+			cursor: '1',
+			includesUnparentedMetadata: false,
+			accessEpoch: null,
+			durableRead: true,
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		let releaseSnapshot: (() => void) | undefined;
+		vi.spyOn(api.items, 'listIndex').mockReturnValue(
+			new Promise((resolve) => {
+				releaseSnapshot = () =>
+					resolve({
+						items: [row('cached', 1, 'kept')],
+						total: 1,
+						cursor: '1',
+						includes_unparented_metadata: false,
+					});
+			}) as unknown as ReturnType<typeof api.items.listIndex>,
+		);
+		await localIndex.bootstrap(ws, { userId: null });
+		expect(localIndex.accessEpochFor(ws)).toBeNull();
+
+		persistence.persistAccessEpoch.mockClear();
+		const first = localIndex.ensureProjectionScope(ws, true);
+		const joined = localIndex.ensureAccessScope(ws, 'told');
+		releaseSnapshot?.();
+		await Promise.all([first, joined]);
+
+		expect(localIndex.accessEpochFor(ws)).toBe('told');
+		expect(persistence.persistAccessEpoch).not.toHaveBeenCalled();
 	});
 
 	it('does NOT adopt when the durable read FAILED, only when it answered', async () => {
@@ -272,6 +380,54 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(persistence.persistDelta).toHaveBeenCalled();
 		const args = persistence.persistDelta.mock.calls.at(-1) as unknown[];
 		expect(args[5]).toBe('e1');
+	});
+
+	it('hands persistDelta a NULL baseline while a refused snapshot is unrepaired', async () => {
+		// TASK-2906 round 3. Skipping the joined stamp is not enough on its own:
+		// RAM has adopted the new epoch, and the very next delta advances the
+		// cursor and carries that epoch onto durable rows the refused snapshot
+		// never replaced. The delta cannot be skipped — its rows and cursor must
+		// land — so it writes NULL, which is the accurate claim ("cannot know
+		// what this was authorised for") and the one `ensureAccessScope`
+		// already resyncs on.
+		persistence.persistReplace.mockResolvedValueOnce(
+			false as unknown as Awaited<ReturnType<typeof persistence.persistReplace>>,
+		);
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [row('cached', 1, 'kept')],
+			cursor: '1',
+			includesUnparentedMetadata: false,
+			accessEpoch: 'e1',
+			durableRead: true,
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		});
+		vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [row('cached', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'e2',
+		} as unknown as Awaited<ReturnType<typeof api.items.listIndex>>);
+		await localIndex.bootstrap(ws, { userId: null });
+		await localIndex.ensureAccessScope(ws, 'e2');
+		expect(localIndex.accessEpochFor(ws)).toBe('e2');
+
+		persistence.persistDelta.mockClear();
+		localIndex.applyDelta(ws, [], '501', false);
+
+		expect(persistence.persistDelta).toHaveBeenCalled();
+		const args = persistence.persistDelta.mock.calls.at(-1) as unknown[];
+		// RAM keeps 'e2' — this session genuinely has the new scope. Only the
+		// DURABLE claim is withheld, and withholding it is what makes the next
+		// hydrate resync instead of adopting rows nobody replaced.
+		expect(args[5]).toBeNull();
+		expect(localIndex.accessEpochFor(ws)).toBe('e2');
 	});
 
 	it('writes the PRESERVED baseline to IDB when a resync snapshot carries no epoch', async () => {

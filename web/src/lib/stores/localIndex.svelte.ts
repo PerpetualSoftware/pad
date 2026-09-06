@@ -130,6 +130,17 @@ class WorkspaceState {
 	// on that evidence is the silent adopt this change exists to prevent — see
 	// `ensureAccessScope`.
 	cacheRead = $state(false);
+	// Did the last projection/access resync's authoritative snapshot actually
+	// REACH the durable cache? (TASK-2906, review round 2.) `persistReplace` can
+	// decline — its cursor lost a race to another tab, or storage failed — and
+	// when it does the durable rows still describe the OLD scope while RAM has
+	// moved on. `ensureAccessScope` must not then stamp the new epoch onto disk
+	// on that resync's behalf: an epoch is a claim about the rowset it was
+	// fetched with, and adopting one over a rowset that was never replaced makes
+	// the cache agree with the server about a scope it does not hold — the
+	// silent adopt IDEA-2898 exists to prevent, arriving through a different
+	// door. Starts true: with no resync yet there is no unconfirmed snapshot.
+	durableSnapshotCommitted = $state(true);
 
 	// `scopeEpoch` bumps every time a projection resync installs a new
 	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
@@ -316,6 +327,31 @@ function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
 	localSearch.rebuild(ws, state.items.values());
 }
 
+/**
+ * The access epoch a DELTA may stamp on the durable cache (TASK-2906 round 3).
+ *
+ * `state.accessEpoch` is what RAM believes, and after a REFUSED `persistReplace`
+ * that belief is true of RAM and false of disk: the resync adopted the new epoch
+ * while the durable rows were left describing the old scope. A delta advancing
+ * the cursor would then carry the new epoch onto those rows and make the cache
+ * agree with the server about a scope it does not hold — the same silent adopt
+ * the joined-resync stamp was taught to skip, one door along. Skipping is not
+ * available here, because the delta's rows and cursor must still land.
+ *
+ * So the delta writes NULL instead, which is not a gap but the accurate
+ * statement: a null baseline over a populated cache means "cannot know what this
+ * was authorised for", and `ensureAccessScope` already reads it as a resync. It
+ * clears itself — the next `persistReplace` that commits records the real epoch
+ * and flips the flag back.
+ *
+ * One function rather than the expression written at each `persistDelta` call,
+ * because a rule applied at one door and not its sibling is how this unit's
+ * previous two rounds each went.
+ */
+function durableEpochFor(state: WorkspaceState): string | null {
+	return state.durableSnapshotCommitted ? state.accessEpoch : null;
+}
+
 async function resyncProjectionScope(
 	ws: string,
 	state: WorkspaceState,
@@ -475,7 +511,7 @@ async function resyncProjectionScope(
 		// hydrate.
 		if (state.generation !== generation) return;
 		const snapshot = [...state.items.values()];
-		await persistReplace(
+		state.durableSnapshotCommitted = await persistReplace(
 			userId,
 			ws,
 			snapshot,
@@ -884,8 +920,10 @@ export const localIndex = {
 						resp.includes_unparented_metadata,
 						// The baseline this snapshot established, so the durable
 						// meta row records the scope its rows were fetched under
-						// (IDEA-2898).
-						state.accessEpoch,
+						// (IDEA-2898) — unless a refused snapshot has left the
+						// durable rows describing an older scope, in which case
+						// see durableEpochFor (TASK-2906).
+						durableEpochFor(state),
 					).catch(
 						() => undefined,
 					);
@@ -1120,7 +1158,7 @@ export const localIndex = {
 			toPersist,
 			newCursor,
 			includesUnparentedMetadata,
-			state.accessEpoch,
+			durableEpochFor(state),
 			toRemove,
 		).catch(
 			() => undefined,
@@ -1155,7 +1193,11 @@ export const localIndex = {
 				// Same joined-resync case as below.
 				if (state.accessEpoch === null) {
 					state.accessEpoch = accessEpoch;
-					await persistAccessEpoch(state.userId, ws, accessEpoch, null);
+					// Only when the resync's snapshot actually landed durably —
+					// see `durableSnapshotCommitted` (TASK-2906 round 2).
+					if (state.durableSnapshotCommitted) {
+						await persistAccessEpoch(state.userId, ws, accessEpoch, null);
+					}
 				}
 				return true;
 			}
@@ -1204,7 +1246,19 @@ export const localIndex = {
 			// and resync again — every reload, for a scope that has not changed
 			// since. The started-resync path has no such gap, because its
 			// fallback is applied BEFORE the persist that happens inside it.
-			await persistAccessEpoch(state.userId, ws, accessEpoch, beforeResync);
+			// ...AND ONLY IF THAT RESYNC'S SNAPSHOT REACHED DISK (TASK-2906
+			// round 2). The compare-and-set below is honest about the row it
+			// patches but cannot see whether the `persistReplace` it is
+			// finishing on behalf of committed. When that write was declined —
+			// a cursor that lost the race to another tab, or a storage failure —
+			// the durable rows still describe the OLD scope, and stamping the
+			// new epoch over them would leave a cache that agrees with the
+			// server about a scope it does not hold, with nothing left to
+			// notice. Skipping keeps the stale baseline on disk, which is
+			// exactly the disagreement that makes the next hydrate resync.
+			if (state.durableSnapshotCommitted) {
+				await persistAccessEpoch(state.userId, ws, accessEpoch, beforeResync);
+			}
 		}
 		return true;
 	},

@@ -200,6 +200,114 @@ async function raiseTombstone(
 }
 
 /**
+ * Is `cursor` BEHIND the cursor already recorded in `meta.sync`? (TASK-2906.)
+ *
+ * The durable cursor is the claim that every change at or below it is already
+ * reflected in the durable rows. Two functions write that FIELD — `persistDelta`
+ * and `persistReplace` — and until this gate both `put` a freshly built
+ * `MetaRow` unconditionally, so the cursor was LAST-WRITER-WINS while every
+ * other value this cache holds was already ordered (rows arbitrate on `seq`
+ * through `resolveRowWrite`, tombstones on `Math.max` through
+ * `raiseTombstone`). `persistAccessEpoch` also writes the `sync` ROW, but it
+ * carries the stored cursor across unchanged, so it is not a third writer of
+ * the position.
+ *
+ * WHY A REGRESSION IS NOT MERELY WASTEFUL. A cursor that is too LOW only costs
+ * a replay, which is why this looked harmless. It is not, because nothing keeps
+ * it low until the replay happens: a behind tab lowers the cursor to 400 over
+ * rows another tab had current to 500, and then that other tab's next ordinary
+ * delta writes 501 — leaving the cache claiming 501 while the rows are missing
+ * every change in 401..500, with nothing left that will ever replay them. The
+ * regression alone is recoverable; the regression followed by an unrelated
+ * advance is not, and the advance is the next ordinary event.
+ *
+ * A SNAPSHOT'S POSITION IS NEVER LEGITIMATELY BEHIND. `/items-index` returns
+ * `max(workspace MAX(seq) read before the list, MAX(returned rows.seq))`, and
+ * that floor is workspace-global — unfiltered by visibility and by soft-delete.
+ * Every cursor the workspace has issued is therefore at or below its max seq at
+ * issue time, and seq is strictly monotonic per workspace. So a `persistReplace`
+ * whose cursor is behind is a STALE RESPONSE that landed late, not a resync
+ * legitimately pinning the cursor for replay — that pin is about the resyncing
+ * tab's own RAM position, where a regression is safe because the merge keeps the
+ * newer row per id and a replayed range is idempotent. See TASK-2906
+ * checkpoint 2 for the measurement.
+ *
+ * BUT POSITION IS ALL A BEHIND CURSOR SETTLES (review round 1). A snapshot that
+ * is behind in position can still be strictly NEWER IN SCOPE — an access
+ * revocation writes no item, so the epoch changes while the cursor does not, and
+ * such a snapshot can lose the position race to an unrelated mutation in another
+ * tab. Refusing it therefore does drop a true statement, and the reason that is
+ * survivable is the refusal being WHOLE: the durable epoch stays at the OLD
+ * value, so the disagreement that drives the repair is still on disk. Any
+ * hydrate of this cache reads the stale baseline and resyncs; and the tab that
+ * WON the position race reads the changed epoch on its own next
+ * `/items-changes` response — which carries the live-grant fingerprint even when
+ * it carries no changes — and resyncs from a cursor that is not behind. Writing
+ * the epoch while withholding the cursor would look like a kinder refusal and is
+ * the one thing that would break this: it erases the signal and leaves the
+ * revoked rows with nothing left to notice them.
+ *
+ * ORDERING PRECISION — and why this does NOT go through `seqFromCursor`
+ * (review round 2). Both sides of THIS comparison are cursors, which travel as
+ * opaque decimal strings and are unrounded until something calls `Number` on
+ * them, so an exact compare here is meaningful and is what `compareCursors`
+ * does. The lossiness of `ItemIndexRow.seq` — a JSON `number`, already rounded
+ * at parse — bounds the ROW comparisons in `resolveRowWrite` and the tombstone
+ * stamps in `raiseTombstone`, which is a different pair of values; reasoning
+ * from that pair to this one was the first draft's mistake. `seqFromCursor`
+ * stays as it is because a tombstone stamp is persisted as a `number` and has
+ * to be one.
+ *
+ * The caller drops the WHOLE batch on true, rows included. A delta's rows and
+ * its cursor are one statement, so writing the rows while withholding the
+ * cursor would break it in half — and unlike the epoch case that reasoning came
+ * from, dropping it whole costs nothing here: everything a behind batch carries
+ * is already covered by the claim the stored cursor makes. The batch is
+ * superseded, not refused, so no caller is owed a signal or a resync.
+ */
+async function cursorIsBehind(
+	metaStore: { get(key: string): Promise<unknown> },
+	cursor: string,
+): Promise<boolean> {
+	const stored = (await metaStore.get('sync')) as MetaRow | undefined;
+	// No stored cursor: nothing to be behind. Equal is not behind — the rows are
+	// a restatement at the same position, and refusing one would drop rows a
+	// cold snapshot may hold that the other writer's cache does not.
+	if (!stored) return false;
+	return compareCursors(cursor, stored.cursor) < 0;
+}
+
+/**
+ * Order two cursors EXACTLY (TASK-2906, review round 2). Cursors are opaque
+ * decimal strings on the wire, so comparing them through `Number` ties any pair
+ * that differs only above 2^53 — and a tie reads as "not behind", which is the
+ * direction that lets a stale batch through.
+ *
+ * Canonical non-negative decimals compare by digit count and then
+ * lexicographically, which is exact at any magnitude and needs no BigInt.
+ * Anything else — an empty string, a non-numeric value, a sign, a fractional
+ * part — falls back to `seqFromCursor`'s `Number` reading so malformed input
+ * behaves exactly as it did before this function existed rather than acquiring
+ * a new meaning here.
+ *
+ * Returns <0 when `a` is behind `b`, 0 when equal, >0 when ahead.
+ */
+function compareCursors(a: string, b: string): number {
+	if (!DECIMAL_CURSOR.test(a) || !DECIMAL_CURSOR.test(b)) {
+		return seqFromCursor(a) - seqFromCursor(b);
+	}
+	// Strip leading zeros so "007" and "7" compare equal by length as well as
+	// by digits; the guard keeps a lone "0" intact.
+	const x = a.replace(/^0+(?=\d)/, '');
+	const y = b.replace(/^0+(?=\d)/, '');
+	if (x.length !== y.length) return x.length - y.length;
+	return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/** A canonical non-negative decimal cursor — the only shape the server emits. */
+const DECIMAL_CURSOR = /^\d+$/;
+
+/**
  * Open the workspace's IDB database for the given user, creating
  * object stores on first run. Cached so subsequent calls reuse the
  * connection. Returns null on any storage failure — callers must
@@ -519,6 +627,15 @@ export async function persistDelta(
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
+		const metaStore = tx.objectStore('meta');
+		// CURSOR ORDERING GATE (TASK-2906). Read the stored cursor BEFORE any
+		// write is issued in this transaction, so a behind batch lands nothing
+		// at all — see cursorIsBehind for why the whole batch goes, not just
+		// the cursor.
+		if (await cursorIsBehind(metaStore, cursor)) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
 		// Same policy as persistUpserts (resolveRowWrite): the race runs in both
 		// directions, so a delta must not overwrite a row that is already NEWER
 		// in the cache, and a tombstone must refuse a stale resurrection.
@@ -543,7 +660,7 @@ export async function persistDelta(
 			itemsStore.delete(id).catch(() => undefined);
 			await raiseTombstone(tombstones, id, deletedAtSeq);
 		}
-		tx.objectStore('meta')
+		metaStore
 			.put({
 				key: 'sync',
 				cursor,
@@ -589,13 +706,36 @@ export async function persistReplace(
 	cursor: string,
 	includesUnparentedMetadata: boolean,
 	accessEpoch: string | null,
-): Promise<void> {
-	if (!isSupported()) return;
+): Promise<boolean> {
+	// TRUE means "nothing durable can now contradict this snapshot" — the same
+	// reading `HydrateResult.durableRead` uses, and the reason an unsupported
+	// IndexedDB answers true: with no durable cache in the picture there is no
+	// stale rowset for an adopted epoch to describe. FALSE means this call did
+	// not put the snapshot on disk, and is deliberately the answer when the
+	// database could not even be OPENED — that failure cannot prove a cache is
+	// absent, and between "no cache" and "a cache I could not replace" only the
+	// second is safe to assume. See the caller notes in
+	// `localIndex.ensureAccessScope` and `durableEpochFor` for why the
+	// difference is load-bearing (review rounds 2 and 3).
+	if (!isSupported()) return true;
 	const db = await open(userId, ws);
-	if (!db) return;
+	if (!db) return false;
 	try {
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
+		const metaStore = tx.objectStore('meta');
+		// CURSOR ORDERING GATE (TASK-2906), before the clear below issues. A
+		// replace whose cursor is behind is a stale response that landed late,
+		// not a legitimate pin; letting it through clears rows another tab had
+		// current and regresses the cursor over them. Refusing keeps rows this
+		// snapshot's scope no longer grants — an accepted cost, recorded on the
+		// TASK-2906 trail: it adds no exposure the cache did not already carry
+		// one moment earlier, and refusing the epoch ALONG WITH the rows is what
+		// keeps the repair alive — see cursorIsBehind's scope paragraph.
+		if (await cursorIsBehind(metaStore, cursor)) {
+			await tx.done.catch(() => undefined);
+			return false;
+		}
 		// Queued before the puts; IDB executes requests against a store in
 		// issue order, so the clear always lands first.
 		itemsStore.clear().catch(() => undefined);
@@ -605,7 +745,6 @@ export async function persistReplace(
 		// both overlays so a stale tombstone can't refuse a legitimate row and a
 		// stale retag can't regress a newer slug on the next hydrate.
 		tx.objectStore('tombstones').clear().catch(() => undefined);
-		const metaStore = tx.objectStore('meta');
 		metaStore.delete('retags').catch(() => undefined);
 		for (const row of rows) {
 			itemsStore.put(row).catch(() => undefined);
@@ -620,8 +759,10 @@ export async function persistReplace(
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;
+		return true;
 	} catch {
 		/* swallow — best-effort cache */
+		return false;
 	}
 }
 
