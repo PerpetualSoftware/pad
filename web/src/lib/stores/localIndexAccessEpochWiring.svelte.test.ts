@@ -29,6 +29,7 @@ const persistence = vi.hoisted(() => ({
 	persistDelta: vi.fn(async () => undefined),
 	persistRemovals: vi.fn(async () => undefined),
 	persistReplace: vi.fn(async () => undefined),
+	persistAccessEpoch: vi.fn(async () => undefined),
 	persistRetag: vi.fn(async () => undefined),
 	persistUpserts: vi.fn(async () => undefined),
 	wipe: vi.fn(async () => undefined),
@@ -90,6 +91,104 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(listIndex).not.toHaveBeenCalled();
 	});
 
+	it('persists the told epoch after a JOINED resync, not only in RAM', async () => {
+		// Resyncs are deduplicated per workspace. When `ensureAccessScope`
+		// joins one that is already running, that resync did its own
+		// `persistReplace` under its OWN baseline — so assigning the told epoch
+		// afterwards updates RAM and leaves the meta row behind. The session
+		// converges and every reload then hydrates the stale baseline and pays
+		// a full resync for a scope that has not changed since. Invisible to a
+		// single-session behavioural test, which is why it is asserted here.
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [row('cached', 1, 'kept')],
+			cursor: '1',
+			includesUnparentedMetadata: false,
+			accessEpoch: 'e1',
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+		expect(localIndex.accessEpochFor(ws)).toBe('e1');
+
+		// A resync that carries NO epoch on its snapshot, started first and
+		// still in flight, so the next caller joins it rather than starting one.
+		let releaseSnapshot: (() => void) | undefined;
+		vi.spyOn(api.items, 'listIndex').mockReturnValue(
+			new Promise((resolve) => {
+				releaseSnapshot = () =>
+					resolve({
+						items: [row('cached', 1, 'kept')],
+						total: 1,
+						cursor: '1',
+						includes_unparented_metadata: false,
+						// No access_epoch: an older server answering the snapshot.
+					});
+			}) as unknown as ReturnType<typeof api.items.listIndex>,
+		);
+		const first = localIndex.ensureProjectionScope(ws, true);
+		const joined = localIndex.ensureAccessScope(ws, 'e2');
+		releaseSnapshot?.();
+		await Promise.all([first, joined]);
+
+		expect(localIndex.accessEpochFor(ws)).toBe('e2');
+		expect(persistence.persistAccessEpoch).toHaveBeenCalled();
+		const args = persistence.persistAccessEpoch.mock.calls.at(-1) as unknown[];
+		expect(args[2]).toBe('e2');
+	});
+
+	it('persists the told epoch after a joined resync on a NULL baseline too', async () => {
+		// The same durable-repair as above, on the other branch. A populated
+		// cache with no recorded baseline resyncs by design; if that resync is
+		// one it JOINED, the meta row is left with no epoch and the very next
+		// reload repeats the whole thing. Two branches, one property — and the
+		// first version of this fix had it on only one of them, which no test
+		// in this file could tell apart.
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [row('cached', 1, 'kept')],
+			cursor: '1',
+			includesUnparentedMetadata: false,
+			accessEpoch: null,
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		let releaseSnapshot: (() => void) | undefined;
+		vi.spyOn(api.items, 'listIndex').mockReturnValue(
+			new Promise((resolve) => {
+				releaseSnapshot = () =>
+					resolve({
+						items: [row('cached', 1, 'kept')],
+						total: 1,
+						cursor: '1',
+						includes_unparented_metadata: false,
+						// No access_epoch on the snapshot.
+					});
+			}) as unknown as ReturnType<typeof api.items.listIndex>,
+		);
+		await localIndex.bootstrap(ws, { userId: null });
+		expect(localIndex.accessEpochFor(ws)).toBeNull();
+
+		persistence.persistAccessEpoch.mockClear();
+		const first = localIndex.ensureProjectionScope(ws, true);
+		const joined = localIndex.ensureAccessScope(ws, 'told');
+		releaseSnapshot?.();
+		await Promise.all([first, joined]);
+
+		expect(localIndex.accessEpochFor(ws)).toBe('told');
+		expect(persistence.persistAccessEpoch).toHaveBeenCalled();
+		expect(
+			(persistence.persistAccessEpoch.mock.calls.at(-1) as unknown[])[2],
+		).toBe('told');
+	});
+
 	it('hands persistDelta the baseline the rows were applied under', async () => {
 		// `applyDelta` writes through to IDB, and the meta row it stamps is the
 		// ONLY record of the scope for the next session. Passing null there
@@ -97,7 +196,18 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		// resyncs on the first delta — a full snapshot per reload, forever, for
 		// a scope that never changed. Invisible in jsdom, where persistence is
 		// a no-op, so it is asserted as an ARGUMENT.
-		await localIndex.ensureAccessScope(ws, 'e1');
+		// Through a cold bootstrap, because the silent adopt now requires the
+		// durable cache to have answered first.
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [],
+			total: 0,
+			cursor: '0',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+		persistence.persistDelta.mockClear();
+
 		localIndex.applyDelta(ws, [], '7', false);
 
 		expect(persistence.persistDelta).toHaveBeenCalled();

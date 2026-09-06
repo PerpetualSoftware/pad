@@ -70,6 +70,39 @@ describe('IDEA-2898 — the access epoch survives a reload', () => {
 		expect((await hydrate(U, WS)).accessEpoch).toBeNull();
 	});
 
+	it('persistAccessEpoch rewrites ONLY the epoch on an existing cache', async () => {
+		const U = null;
+		const WS = 'ws-epoch-patch';
+		const { persistReplace, persistAccessEpoch, hydrate } = await loadPersistence();
+
+		await persistReplace(U, WS, [row('a', 1)], '5', false, 'e1');
+		await persistAccessEpoch(U, WS, 'e2');
+
+		const after = await hydrate(U, WS);
+		expect(after.accessEpoch).toBe('e2');
+		// Everything else the meta row carries is untouched — this exists to
+		// repair a baseline after a JOINED resync, not to make a claim about
+		// how far the cache has synced.
+		expect(after.cursor).toBe('5');
+		expect(after.includesUnparentedMetadata).toBe(false);
+		expect(after.items.map((r) => r.id)).toEqual(['a']);
+	});
+
+	it('persistAccessEpoch does NOT mint a meta row for a cache that never synced', async () => {
+		const U = null;
+		const WS = 'ws-epoch-patch-empty';
+		const { persistAccessEpoch, hydrate } = await loadPersistence();
+
+		await persistAccessEpoch(U, WS, 'e1');
+
+		// A cache with no meta row has nothing to describe. Writing one here
+		// would invent a cursor — and a cursor is a claim that everything up to
+		// it has been seen, which is exactly the claim this cache cannot make.
+		const after = await hydrate(U, WS);
+		expect(after.accessEpoch).toBeNull();
+		expect(after.cursor).toBe('0');
+	});
+
 	it('reads a meta row with no epoch key as null, not undefined', async () => {
 		const U = null;
 		const WS = 'ws-epoch-legacy-key';

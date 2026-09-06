@@ -42,16 +42,28 @@ function pickerCanSee(id: string, collection: string): boolean {
 }
 
 /**
- * Establish a baseline epoch on an EMPTY cache, then populate — the order a
- * real session takes (a cold snapshot carries the epoch that describes it).
- * Adopting a baseline onto an already-populated cache is not a no-op: it is
- * the unknown-provenance case, and it resyncs by design (see "resyncs a
- * populated cache that carries no baseline epoch").
+ * Establish a baseline epoch and populate the index, the order a real session
+ * takes: a cold snapshot carries the epoch that describes it. Adopting a
+ * baseline onto an already-populated cache is not a no-op — it is the
+ * unknown-provenance case, and it resyncs by design (see "resyncs a populated
+ * cache that carries no baseline epoch").
  */
 async function seedUnder(epoch: string, rows: ItemIndexRow[]): Promise<void> {
-	await localIndex.ensureAccessScope(ws, epoch);
-	for (const r of rows) localIndex.upsert(ws, r);
-	localIndex.applyDelta(ws, [], String(rows.length), false);
+	// Through a COLD BOOTSTRAP, which is how a real session acquires its first
+	// baseline: the snapshot carries the epoch that describes it. The earlier
+	// shortcut — calling `ensureAccessScope` on a never-bootstrapped workspace —
+	// stopped working when the silent adopt was gated on the durable cache
+	// having answered, and it was the less faithful of the two anyway.
+	const listIndex = vi.spyOn(api.items, 'listIndex');
+	listIndex.mockResolvedValueOnce({
+		items: rows,
+		total: rows.length,
+		cursor: String(rows.length),
+		includes_unparented_metadata: false,
+		access_epoch: epoch,
+	});
+	await localIndex.bootstrap(ws, { userId: null });
+	listIndex.mockClear();
 }
 
 afterEach(() => {
@@ -277,12 +289,48 @@ describe('localIndex access-epoch scope', () => {
 		expect(localIndex.accessEpochFor(ws)).toBe('told');
 	});
 
-	it('adopts silently when there is no baseline and nothing cached', async () => {
+	it('adopts silently when there is no baseline and the cache is known empty', async () => {
 		// Nothing to evict, so a resync would buy nothing and cost a full
 		// index fetch on every cold start.
+		//
+		// PROPERTY CHANGED in review of the reduced tip, and said out loud
+		// rather than quietly rewritten: this used to hold for a workspace that
+		// had never been bootstrapped at all. It no longer does, because RAM
+		// being empty was standing in for "the cache is empty" and those are
+		// different claims while a hydrate is still in flight. The cold
+		// bootstrap below is what makes the cache's emptiness KNOWN; the
+		// unbootstrapped case is the next test.
 		const listIndex = vi.spyOn(api.items, 'listIndex');
+		listIndex.mockResolvedValueOnce({
+			items: [],
+			total: 0,
+			cursor: '0',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+		listIndex.mockClear();
+
 		expect(await localIndex.ensureAccessScope(ws, 'first')).toBe(false);
 		expect(listIndex).not.toHaveBeenCalled();
 		expect(localIndex.accessEpochFor(ws)).toBe('first');
+	});
+
+	it('does NOT adopt before the durable cache has answered', async () => {
+		// The race this closes: `bootstrap` awaits `hydrate` before it merges
+		// anything, but an SSE-driven `deltaSync` runs on its own subscription
+		// rather than behind that await — so it can reach the comparison with
+		// RAM empty and IDB holding rows from a scope nobody has checked.
+		// Adopting there stamps the new epoch onto the durable cache through
+		// the delta that follows, and the stale row then hydrates under an
+		// epoch that agrees with the server forever: the signal is not merely
+		// wrong once, it is permanently inert.
+		//
+		// Declining costs nothing. The delta persists with a null epoch, and a
+		// null baseline over a populated cache resyncs on the next reconcile.
+		const listIndex = vi.spyOn(api.items, 'listIndex');
+
+		expect(await localIndex.ensureAccessScope(ws, 'e2')).toBe(false);
+		expect(listIndex).not.toHaveBeenCalled();
+		expect(localIndex.accessEpochFor(ws)).toBeNull();
 	});
 });

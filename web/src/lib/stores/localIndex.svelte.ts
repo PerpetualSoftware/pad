@@ -63,6 +63,7 @@ import {
 	persistDelta,
 	persistRemovals,
 	persistReplace,
+	persistAccessEpoch,
 	persistRetag,
 	persistUpserts,
 	wipe as persistWipe,
@@ -117,6 +118,13 @@ class WorkspaceState {
 	// and a revocation that writes no row leaves no other trace. Null only
 	// before the first response of a session lands.
 	accessEpoch = $state<string | null>(null);
+	// Has the DURABLE cache been read yet this session? (IDEA-2898, review of
+	// the reduced tip.) `accessEpoch === null` and `items.size === 0` say what
+	// RAM holds, which is not the same claim: during `bootstrap`'s hydrate
+	// await, RAM is empty and the cache on disk may be full. Adopting an epoch
+	// on that evidence is the silent adopt this change exists to prevent — see
+	// `ensureAccessScope`.
+	cacheRead = $state(false);
 
 	// `scopeEpoch` bumps every time a projection resync installs a new
 	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
@@ -591,6 +599,10 @@ export const localIndex = {
 						}
 					: await persistHydrate(userId, ws);
 				if (isStale()) return;
+				// The durable cache has now answered, whatever it said. From
+				// here an empty RAM state is evidence about the cache and not
+				// merely about how far bootstrap has got.
+				state.cacheRead = true;
 				// A populated cache is one we've successfully synced
 				// from before — either there are rows, or the cursor
 				// has moved off the "0" floor (empty workspaces /
@@ -1129,9 +1141,24 @@ export const localIndex = {
 				// Same joined-resync case as below.
 				if (state.accessEpoch === null) {
 					state.accessEpoch = accessEpoch;
+					await persistAccessEpoch(state.userId, ws, accessEpoch);
 				}
 				return true;
 			}
+			// AN EMPTY RAM STATE IS NOT AN EMPTY CACHE. This is the silent
+			// adopt, and it is only safe once the durable cache has actually
+			// answered: `bootstrap` awaits `hydrate` before it merges anything,
+			// and an SSE-driven `deltaSync` runs on its own subscription rather
+			// than behind that await, so it can reach this line with RAM empty
+			// and IDB holding rows from a scope nobody has checked. Adopting
+			// there would stamp the new epoch onto the durable cache — via the
+			// delta this caller is about to apply — and the stale row would then
+			// hydrate under an epoch that agrees with the server forever.
+			//
+			// Declining to adopt is the safe direction: the delta persists with
+			// a null epoch, and a null baseline over a populated cache resyncs
+			// on the next reconcile.
+			if (!state.cacheRead) return false;
 			state.accessEpoch = accessEpoch;
 			return false;
 		}
@@ -1156,6 +1183,14 @@ export const localIndex = {
 		// where we can tell the fallback was dropped.
 		if (state.accessEpoch === beforeResync) {
 			state.accessEpoch = accessEpoch;
+			// ...AND DURABLY, not only in RAM. The resync we JOINED ran its own
+			// `persistReplace` with its own baseline, so the meta row still
+			// records `beforeResync`; assigning here would leave RAM and disk
+			// disagreeing, and the next reload would hydrate the old baseline
+			// and resync again — every reload, for a scope that has not changed
+			// since. The started-resync path has no such gap, because its
+			// fallback is applied BEFORE the persist that happens inside it.
+			await persistAccessEpoch(state.userId, ws, accessEpoch);
 		}
 		return true;
 	},

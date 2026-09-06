@@ -599,6 +599,43 @@ export async function persistReplace(
 }
 
 /**
+ * Record a new access epoch on an EXISTING cache, touching nothing else
+ * (IDEA-2898, review of the reduced tip).
+ *
+ * There is one caller and one reason for it. `ensureAccessScope` may JOIN a
+ * resync that is already in flight rather than start one; the resync it joined
+ * ran its own `persistReplace` under its own baseline, so the meta row records
+ * the OLD epoch while RAM has adopted the told one. Without this the two
+ * disagree durably: the session converges, and every reload hydrates the stale
+ * baseline and pays a full resync for a scope that has not changed since.
+ *
+ * Deliberately a no-op when there is no meta row. A cache that has never synced
+ * has nothing to describe, and minting a meta row here would invent a cursor.
+ */
+export async function persistAccessEpoch(
+	userId: string | null,
+	ws: string,
+	accessEpoch: string | null,
+): Promise<void> {
+	if (!isSupported()) return;
+	const db = await open(userId, ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction('meta', 'readwrite');
+		const store = tx.objectStore('meta');
+		const cached = (await store.get('sync')) as MetaRow | undefined;
+		if (!cached) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
+		store.put({ ...cached, accessEpoch } satisfies MetaRow).catch(() => undefined);
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
  * Delete rows by id (hard remove). Used by `localIndex.remove` for
  * 403 purge (TASK-1360) and any other hard-delete path. Soft deletes
  * stay in the cache as upserts with `deleted_at` populated — they
