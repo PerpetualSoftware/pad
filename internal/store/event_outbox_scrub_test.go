@@ -111,6 +111,7 @@ func assignItemSnapshot(t *testing.T, s *Store, itemID, userID string) *models.I
 }
 
 func TestScrubOutboxUserRefs_ItemSnapshot(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, bystander := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub item")
@@ -152,6 +153,7 @@ func TestScrubOutboxUserRefs_ItemSnapshot(t *testing.T) {
 }
 
 func TestScrubOutboxUserRefs_BulkMembers(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, bystander := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub bulk")
@@ -202,6 +204,7 @@ func TestScrubOutboxUserRefs_BulkMembers(t *testing.T) {
 }
 
 func TestScrubOutboxUserRefs_CommentSnapshot(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, bystander := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub comment")
@@ -238,6 +241,7 @@ func TestScrubOutboxUserRefs_CommentSnapshot(t *testing.T) {
 }
 
 func TestScrubOutboxUserRefs_AttachmentSnapshot(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, bystander := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub attachment")
@@ -268,6 +272,7 @@ func TestScrubOutboxUserRefs_AttachmentSnapshot(t *testing.T) {
 }
 
 func TestScrubOutboxUserRefs_MemberRowAndSubjectColumn(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, bystander := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub member")
@@ -339,6 +344,7 @@ func TestScrubOutboxUserRefs_MemberRowAndSubjectColumn(t *testing.T) {
 }
 
 func TestScrubOutboxUserRefs_DispatchedRowsScrubbedNotDeleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, _ := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub dispatched")
@@ -379,6 +385,7 @@ func TestScrubOutboxUserRefs_DispatchedRowsScrubbedNotDeleted(t *testing.T) {
 // cross the rewrite verbatim, so an int64 past float64's 2^53 integer range
 // cannot be corrupted by the re-marshal.
 func TestScrubOutboxUserRefs_KeyScopedAndNumberSafe(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, _ := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub scoped")
@@ -427,6 +434,7 @@ func TestScrubOutboxUserRefs_KeyScopedAndNumberSafe(t *testing.T) {
 // re-read must scrub what is actually stored rather than reintroduce the
 // stale bytes.
 func TestScrubOutboxRow_StaleReadRetriesAgainstFreshPayload(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, bystander := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Scrub CAS")
@@ -481,6 +489,7 @@ func TestScrubOutboxRow_StaleReadRetriesAgainstFreshPayload(t *testing.T) {
 }
 
 func TestScrubOutboxUserRefs_RefusesEmptyUserID(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -498,6 +507,7 @@ func TestScrubOutboxUserRefs_RefusesEmptyUserID(t *testing.T) {
 // DeleteAccountAtomic passes every test above and still ships the bug this
 // task is about.
 func TestDeleteAccountAtomic_ScrubsOutbox(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, bystander := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "Deletion scrub wiring")

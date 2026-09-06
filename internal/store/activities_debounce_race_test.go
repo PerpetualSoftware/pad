@@ -93,6 +93,7 @@ func changesOf(t *testing.T, a models.Activity) string {
 // re-read is pinned instead by the mutation matrix (M5) and by
 // TestMergeIntoUnlinkedActivity_RefusesMovedRow at the statement level.
 func TestCreateActivityDebounced_ConcurrentMergeKeepsBothChanges(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Race")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -149,6 +150,7 @@ func TestCreateActivityDebounced_ConcurrentMergeKeepsBothChanges(t *testing.T) {
 // loop forever or drop the change text. Presentation degrades (an extra
 // timeline entry), content does not.
 func TestCreateActivityDebounced_ContentionPastTheBoundKeepsTheChange(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Race")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -206,6 +208,7 @@ func TestCreateActivityDebounced_ContentionPastTheBoundKeepsTheChange(t *testing
 // expectation, same row, same call) is what makes the refusal evidence of a
 // predicate rather than of a merge that no longer works at all.
 func TestMergeIntoUnlinkedActivity_RefusesMovedRow(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "CAS")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -255,6 +258,7 @@ func TestMergeIntoUnlinkedActivity_RefusesMovedRow(t *testing.T) {
 // dispositions — retry, or start a fresh row — so each of its three inputs
 // gets a leg.
 func TestDebounceRowUnchanged(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Classify")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -329,6 +333,7 @@ func TestDebounceRowUnchanged(t *testing.T) {
 // (matrix M3) — and it is listed here so nobody reads it as evidence for
 // the CAS.
 func TestCreateActivityDebounced_FrozenRowIsNotRetried(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 
 	writer := models.Activity{
@@ -378,6 +383,7 @@ func TestCreateActivityDebounced_FrozenRowIsNotRetried(t *testing.T) {
 // assigned into. A test that only passed `null` as the incoming side would
 // go green against the unguarded code and say nothing.
 func TestMergeActivityMeta_NullBlobDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	got := mergeActivityMeta("null", `{"agent":"rook","changes":"status: open → done"}`)
 	var m map[string]any
 	if err := json.Unmarshal([]byte(got), &m); err != nil {
@@ -415,6 +421,7 @@ func TestMergeActivityMeta_NullBlobDoesNotPanic(t *testing.T) {
 // or hand-written caller can leave behind: CreateActivity only substitutes
 // "{}" for the EMPTY string.
 func TestCreateActivityDebounced_NullMetadataRowSurvives(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Null")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")

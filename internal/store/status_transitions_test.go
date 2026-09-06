@@ -60,6 +60,7 @@ func newTransitionTestWorkspace(t *testing.T, s *Store) (workspaceID, collection
 }
 
 func TestStatusTransition_CapturedOnStatusChange(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "Do a thing", "")
@@ -85,6 +86,7 @@ func TestStatusTransition_CapturedOnStatusChange(t *testing.T) {
 }
 
 func TestStatusTransition_MultiHopEachRecorded(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "Multi", "")
@@ -115,6 +117,7 @@ func TestStatusTransition_MultiHopEachRecorded(t *testing.T) {
 }
 
 func TestStatusTransition_NoHopWhenStatusUnchanged(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "Title only", "")
@@ -136,6 +139,7 @@ func TestStatusTransition_NoHopWhenStatusUnchanged(t *testing.T) {
 // Finding 2: every created item gets a create-time "entered initial status"
 // seed row so it has an "entered status" timestamp.
 func TestStatusTransition_CreateSeed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "Fresh", "") // status defaults to open
@@ -156,6 +160,7 @@ func TestStatusTransition_CreateSeed(t *testing.T) {
 // Finding 2: an item created directly in a terminal value must still get a
 // create-seed row so reports can count it as a completion.
 func TestStatusTransition_CreateInTerminalStatus(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item, err := s.CreateItem(wsID, colID, models.ItemCreate{Title: "Born done", Fields: `{"status":"done"}`})
@@ -172,6 +177,7 @@ func TestStatusTransition_CreateInTerminalStatus(t *testing.T) {
 // Finding 1: collections that designate a non-status select field as their
 // done field (BoardGroupBy) must record transitions on THAT field.
 func TestStatusTransition_NonStatusDoneField(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Name: "Hank", Email: "hank@example.com"})
 	if err != nil {
@@ -213,6 +219,7 @@ func TestStatusTransition_NonStatusDoneField(t *testing.T) {
 }
 
 func TestStatusTransition_CapturedOnMoveWithStatusOverride(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, srcColID := newTransitionTestWorkspace(t, s)
 	dstCol := createTestCollection(t, s, wsID, "Done Bucket")
@@ -239,6 +246,7 @@ func TestStatusTransition_CapturedOnMoveWithStatusOverride(t *testing.T) {
 }
 
 func TestStatusTransition_NoHopOnMoveWithoutStatusChange(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, srcColID := newTransitionTestWorkspace(t, s)
 	dstCol := createTestCollection(t, s, wsID, "Other Bucket")
@@ -256,6 +264,7 @@ func TestStatusTransition_NoHopOnMoveWithoutStatusChange(t *testing.T) {
 // A hard delete of an item must cascade to its status_transitions rows
 // (FK ON DELETE CASCADE), or the delete would fail the FK constraint.
 func TestStatusTransition_CascadesOnHardDelete(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "Doomed", "") // seeds a create-row
@@ -272,6 +281,7 @@ func TestStatusTransition_CascadesOnHardDelete(t *testing.T) {
 }
 
 func TestParseFieldChange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in       string
 		key      string
@@ -297,6 +307,7 @@ func TestParseFieldChange(t *testing.T) {
 }
 
 func TestBackfillStatusTransitions(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "Historical", "")
@@ -361,6 +372,7 @@ func TestBackfillStatusTransitions(t *testing.T) {
 }
 
 func TestStatusTransition_RecordsStatusClear(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "clearable", "") // status open

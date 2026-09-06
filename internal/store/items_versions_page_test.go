@@ -18,6 +18,7 @@ import (
 )
 
 func TestListItemVersionsPage_ReturnsUnresolvedRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Versions WS"})
 	if err != nil {
@@ -100,6 +101,7 @@ func TestListItemVersionsPage_ReturnsUnresolvedRows(t *testing.T) {
 }
 
 func TestListItemVersionsPage_LimitTakesTheNewest(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Versions WS 2"})
 	if err != nil {

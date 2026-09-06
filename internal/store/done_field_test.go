@@ -12,6 +12,7 @@ import (
 // terminal_options declared, child-progress counts reflect THAT field's
 // terminals — not status, and not the global default list.
 func TestGetItemProgress_DoneFieldFollowsBoardGroupBy(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "DoneFieldTest")
 
@@ -109,6 +110,7 @@ func TestGetItemProgress_DoneFieldFollowsBoardGroupBy(t *testing.T) {
 // a collection without board_group_by (i.e. shipped today) should have its
 // `status` field drive done-detection, exactly as before.
 func TestGetItemProgress_DefaultsToStatusWithoutSettings(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "DefaultStatusTest")
 
@@ -164,6 +166,7 @@ func TestGetItemProgress_DefaultsToStatusWithoutSettings(t *testing.T) {
 // per-collection `collection_id = ? AND ...` clause and would always be
 // counted as active.
 func TestGetItemProgress_HonorsSoftDeletedChildCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "SoftDeleteTest")
 
@@ -223,6 +226,7 @@ func TestGetItemProgress_HonorsSoftDeletedChildCollections(t *testing.T) {
 // come from multiple collections with different done-field configurations,
 // each child is evaluated against its own collection's rules.
 func TestGetItemProgress_MixedChildCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "MixedChildTest")
 

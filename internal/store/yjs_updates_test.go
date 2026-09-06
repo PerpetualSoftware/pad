@@ -9,6 +9,7 @@ import (
 // TestYjsUpdatesAppendAndLoad verifies AppendYjsUpdate returns monotonic
 // IDs and LoadYjsUpdatesSince filters strictly above the cursor.
 func TestYjsUpdatesAppendAndLoad(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -77,6 +78,7 @@ func TestYjsUpdatesAppendAndLoad(t *testing.T) {
 // schemaVersion. We do this in Go rather than relying on the NOT NULL
 // constraint so callers fail fast with a clear error message.
 func TestYjsUpdatesValidation(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -105,6 +107,7 @@ func TestYjsUpdatesValidation(t *testing.T) {
 // TestYjsUpdatesPrune removes only rows older than the cutoff for the
 // given item, leaving newer rows + other items untouched.
 func TestYjsUpdatesPrune(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -155,6 +158,7 @@ func TestYjsUpdatesPrune(t *testing.T) {
 // op-log rows when their parent item is deleted. Without this, item
 // deletion would leave orphaned binary blobs on disk indefinitely.
 func TestYjsUpdatesCascadeOnItemDelete(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

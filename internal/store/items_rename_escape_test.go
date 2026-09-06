@@ -23,6 +23,7 @@ import (
 // the `!applied` arm re-parsed and flipped the index row to broken. Content and
 // index disagreed, and the user saw a stale link.
 func TestCascade_RewritesLinksStoredInEscapedForm(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "EscapeRoundTrip")
 	col := createTestCollection(t, s, ws.ID, "Notes")
@@ -83,6 +84,7 @@ func TestCascade_RewritesLinksStoredInEscapedForm(t *testing.T) {
 // so the source content stayed wrong forever. This test pins the emission AND
 // the recovery, because the permanence is the part that made it medium severity.
 func TestCascade_EmitsEscapedTitlesAndDoesNotDestroyTheIndex(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, newTitle, wantContent string }{
 		{"closing bracket", "New ] Name", `Ref [[New \] Name]] here.`},
 		{"pipe", "New | Name", `Ref [[New \| Name]] here.`},
@@ -169,6 +171,7 @@ func TestCascade_EmitsEscapedTitlesAndDoesNotDestroyTheIndex(t *testing.T) {
 // pins that the rewriter will not be the instrument of destruction even if that
 // gap is never closed.
 func TestCascade_RenameToEmptyTitleDoesNotDestroyLinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "EmptyRenameGuard")
 	col := createTestCollection(t, s, ws.ID, "Notes")

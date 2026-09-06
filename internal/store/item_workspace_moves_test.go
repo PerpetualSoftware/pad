@@ -106,6 +106,7 @@ func (f moveFixture) bySource(t *testing.T, sourceItemID string) []models.ItemWo
 // every column survives the dialect round-trip — notably archived_source
 // (INTEGER on SQLite, BOOLEAN on Postgres) and the nullable source_seq.
 func TestRecordItemWorkspaceMoveTx_RoundTrip(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "RoundTrip")
 	target := f.dest(t, f.dstWS, "Copy")
 
@@ -170,6 +171,7 @@ func TestRecordItemWorkspaceMoveTx_RoundTrip(t *testing.T) {
 // distinction: a plain copy never archives, so it has no source workspace seq
 // and must store NULL.
 func TestRecordItemWorkspaceMoveTx_CopyLeavesSeqNull(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "CopySeqNull")
 	target := f.dest(t, f.dstWS, "Copy")
 
@@ -219,6 +221,7 @@ const (
 // the caller's transaction: this is the whole reason the helper is tx-taking
 // rather than self-committing (DR-9).
 func TestRecordItemWorkspaceMoveTx_RollbackLeavesNoRow(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "Rollback")
 	target := f.dest(t, f.dstWS, "Copy")
 
@@ -252,6 +255,7 @@ func TestRecordItemWorkspaceMoveTx_RollbackLeavesNoRow(t *testing.T) {
 // catch a blank, and a blank created_by would violate NOT NULL only at the
 // driver layer with a far worse error.
 func TestRecordItemWorkspaceMoveTx_RequiresIdentifiers(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "Validation")
 	target := f.dest(t, f.dstWS, "Copy")
 
@@ -292,6 +296,7 @@ func TestRecordItemWorkspaceMoveTx_RequiresIdentifiers(t *testing.T) {
 // through to the ID tiebreak, which is exactly the arbitrary answer source_seq
 // exists to prevent (DR-2a).
 func TestRecordItemWorkspaceMoveTx_SourceSeqMatchesArchivedSource(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "SeqInvariant")
 	target := f.dest(t, f.dstWS, "Copy")
 
@@ -332,6 +337,7 @@ func TestRecordItemWorkspaceMoveTx_SourceSeqMatchesArchivedSource(t *testing.T) 
 // row is written in the transaction that creates the target), and left
 // unenforced it would silently change which source the back lookup names.
 func TestItemWorkspaceMoves_TargetIsUnique(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "TargetUnique")
 	target := f.dest(t, f.dstWS, "Copy")
 	otherSource := createTestItem(t, f.s, f.srcWS.ID,
@@ -364,6 +370,7 @@ func TestItemWorkspaceMoves_TargetIsUnique(t *testing.T) {
 // direction would fail outright when the purged workspace sits on the other
 // end.
 func TestPurgeWorkspaceData_ClearsItemWorkspaceMovesBothDirections(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "Purge")
 	s := f.s
 
@@ -424,6 +431,7 @@ func TestPurgeWorkspaceData_ClearsItemWorkspaceMovesBothDirections(t *testing.T)
 // carries no FK at all — the archived source is precisely the row whose
 // pointer must survive.
 func TestItemWorkspaceMoves_TargetDeleteCascades(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "Cascade")
 	target := f.dest(t, f.dstWS, "Copy")
 
@@ -467,6 +475,7 @@ func TestItemWorkspaceMoves_TargetDeleteCascades(t *testing.T) {
 // load, sort, scan and allocate every one of them on every read of the source,
 // and none of them can ever contribute to the result.
 func TestListArchivedItemWorkspaceMovesBySource(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "ArchivedOnly")
 
 	// Two plain copies with LATER timestamps than either move, so a query that
@@ -553,6 +562,7 @@ func TestListArchivedItemWorkspaceMovesBySource(t *testing.T) {
 // destination. The ids below are fixed so "arbitrary" is deterministic and the
 // wrong answer is reproducible rather than a coin flip.
 func TestListArchivedItemWorkspaceMovesBySource_SameSecondUsesSourceSeq(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "ArchivedOrder")
 	earlier := f.dest(t, f.dstWS, "Earlier Move")
 	later := f.dest(t, f.dst2WS, "Later Move")
@@ -613,6 +623,7 @@ func TestListArchivedItemWorkspaceMovesBySource_SameSecondUsesSourceSeq(t *testi
 // all, because the insert was rejected by the foreign keys long before the
 // constraint under test was reached.
 func TestItemWorkspaceMoves_ArchivedSourceIsConstrainedAtRest(t *testing.T) {
+	t.Parallel()
 	f := newMoveFixture(t, "AtRestCheck")
 	if f.s.dialect.Driver() == DriverPostgres {
 		t.Skip("Postgres enforces this with BOOLEAN; the CHECK exists to match it on SQLite")

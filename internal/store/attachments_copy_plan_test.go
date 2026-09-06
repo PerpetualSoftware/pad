@@ -129,6 +129,7 @@ func assertSourceSet(t *testing.T, p *AttachmentCopyPlan, want ...string) {
 // TestPlanAttachmentCopy_RefsInContentOnly is the base case: one image
 // reference in the body, one row, one map entry, the bytes counted.
 func TestPlanAttachmentCopy_RefsInContentOnly(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "shot.png", 1234)
 
@@ -153,6 +154,7 @@ func TestPlanAttachmentCopy_RefsInContentOnly(t *testing.T) {
 // a reference living only in a field value (no markdown around it, nested
 // inside an array) must still be cloned.
 func TestPlanAttachmentCopy_RefsInFieldsOnly(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	bare := f.attach(t, f.wsA, "bare.png", 10)
 	nested := f.attach(t, f.wsA, "nested.pdf", 20)
@@ -171,6 +173,7 @@ func TestPlanAttachmentCopy_RefsInFieldsOnly(t *testing.T) {
 // TestPlanAttachmentCopy_RefsInBoth covers the union, and pins that the
 // two sources are merged rather than one shadowing the other.
 func TestPlanAttachmentCopy_RefsInBoth(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	inBody := f.attach(t, f.wsA, "body.png", 5)
 	inField := f.attach(t, f.wsA, "field.png", 7)
@@ -188,6 +191,7 @@ func TestPlanAttachmentCopy_RefsInBoth(t *testing.T) {
 // Two rows would mean the rewrite maps the old id to whichever new id won,
 // and the dry-run would double the bytes.
 func TestPlanAttachmentCopy_SameRefTwice(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "shot.png", 900)
 
@@ -209,6 +213,7 @@ func TestPlanAttachmentCopy_SameRefTwice(t *testing.T) {
 // resolves to nothing to clone and nothing to count — it is not a
 // reference, so it is not an unresolvable reference either.
 func TestPlanAttachmentCopy_EmptyRefsIgnored(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 
 	plan := f.plan(t, f.req("see pad-attachment: and pad-attachment:)", map[string]any{
@@ -230,6 +235,7 @@ func TestPlanAttachmentCopy_EmptyRefsIgnored(t *testing.T) {
 // a cosmetic one: this body was already broken in workspace A (nothing
 // resolves `<uuid>x` there either), and it stays exactly as broken in B.
 func TestPlanAttachmentCopy_JunkSuffixIsUnresolvable(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "shot.png", 77)
 
@@ -247,6 +253,7 @@ func TestPlanAttachmentCopy_JunkSuffixIsUnresolvable(t *testing.T) {
 // choice: an attachment whose id is not RFC4122-shaped is still
 // enumerated and still cloned. A canonical-UUID-only regex would drop it.
 func TestPlanAttachmentCopy_NonUUIDIdResolves(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := &models.Attachment{
 		ID:          "legacy_img-42",
@@ -273,6 +280,7 @@ func TestPlanAttachmentCopy_NonUUIDIdResolves(t *testing.T) {
 // planner skipped fenced references the rewrite would leave workspace A's
 // UUID in the copied body, and that UUID 403s on download from B.
 func TestPlanAttachmentCopy_RefsInCodeFencesAreCloned(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "shot.png", 42)
 
@@ -293,6 +301,7 @@ func TestPlanAttachmentCopy_RefsInCodeFencesAreCloned(t *testing.T) {
 // referencing it — invisible, and un-GC-able because item_id is set — and
 // would overstate the dry-run's byte total.
 func TestPlanAttachmentCopy_DroppedFieldNotCloned(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	kept := f.attach(t, f.wsA, "kept.png", 100)
 	dropped := f.attach(t, f.wsA, "dropped.png", 999999)
@@ -345,6 +354,7 @@ func TestPlanAttachmentCopy_DroppedFieldNotCloned(t *testing.T) {
 // controls, bypassing the download handler's workspace check
 // (handleGetAttachment, handlers_attachments.go) entirely.
 func TestPlanAttachmentCopy_ForeignRefNotCloned(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	mine := f.attach(t, f.wsA, "mine.png", 11)
 	theirs := f.attach(t, f.wsC, "theirs.png", 5_000_000)
@@ -367,6 +377,7 @@ func TestPlanAttachmentCopy_ForeignRefNotCloned(t *testing.T) {
 // is out of scope exactly like a foreign one. Cloning it would resurrect
 // bytes the workspace already deleted.
 func TestPlanAttachmentCopy_SoftDeletedRefNotCloned(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	gone := f.attach(t, f.wsA, "gone.png", 64)
 	if err := f.s.SoftDeleteAttachment(gone.ID); err != nil {
@@ -391,6 +402,7 @@ func TestPlanAttachmentCopy_SoftDeletedRefNotCloned(t *testing.T) {
 // reference is a pre-existing condition. The resolvable siblings still
 // plan normally.
 func TestPlanAttachmentCopy_DanglingRefNotFatal(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	real := f.attach(t, f.wsA, "real.png", 8)
 	ghost := newID()
@@ -410,6 +422,7 @@ func TestPlanAttachmentCopy_DanglingRefNotFatal(t *testing.T) {
 // remapped to the NEW original's id, and the original emitted first so a
 // caller inserting in order never writes a parent_id ahead of its parent.
 func TestPlanAttachmentCopy_VariantsFollowParent(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 1000)
 	sm := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
@@ -446,6 +459,7 @@ func TestPlanAttachmentCopy_VariantsFollowParent(t *testing.T) {
 // workspace A's original must not be dragged in by the variant traversal.
 // An unscoped `WHERE parent_id IN (...)` would clone it.
 func TestPlanAttachmentCopy_ForeignVariantNotFollowed(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 100)
 	ours := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 5)
@@ -467,6 +481,7 @@ func TestPlanAttachmentCopy_ForeignVariantNotFollowed(t *testing.T) {
 // TestPlanAttachmentCopy_SoftDeletedVariantNotFollowed: the variant
 // traversal carries the deleted_at half of the scope too.
 func TestPlanAttachmentCopy_SoftDeletedVariantNotFollowed(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 100)
 	dead := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 7)
@@ -488,6 +503,7 @@ func TestPlanAttachmentCopy_SoftDeletedVariantNotFollowed(t *testing.T) {
 // so the in-scope parent is pulled in as the clone root and the whole
 // variant set comes with it.
 func TestPlanAttachmentCopy_RefToVariantPullsInParent(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 100)
 	sm := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 5)
@@ -511,6 +527,7 @@ func TestPlanAttachmentCopy_RefToVariantPullsInParent(t *testing.T) {
 // workspace A but its parent lives elsewhere, so following the parent
 // would clone a foreign original. The reference is unresolvable instead.
 func TestPlanAttachmentCopy_RefToVariantWithForeignParent(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	foreignOrig := f.attach(t, f.wsC, "theirs.png", 4_000)
 	localThumb := f.variant(t, f.wsA, foreignOrig, models.AttachmentVariantThumbSm, 6)
@@ -540,6 +557,7 @@ func TestPlanAttachmentCopy_RefToVariantWithForeignParent(t *testing.T) {
 // content-addressed columns carried over verbatim so a same-instance copy
 // is a row copy rather than a byte copy.
 func TestPlanAttachmentCopy_RowShape(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	src := f.attach(t, f.wsA, "shot.png", 4096)
 
@@ -587,6 +605,7 @@ func TestPlanAttachmentCopy_RowShape(t *testing.T) {
 // destination item yet and writes nothing, so an empty TargetItemID is
 // legal there and simply leaves item_id nil.
 func TestPlanAttachmentCopy_DryRunAllowsEmptyTargetItem(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	src := f.attach(t, f.wsA, "shot.png", 3)
 
@@ -609,6 +628,7 @@ func TestPlanAttachmentCopy_DryRunAllowsEmptyTargetItem(t *testing.T) {
 // blobs — referenced by the copied body, so never GC'd, and invisible
 // through every item-scoped surface.
 func TestPlanAttachmentCopy_InsertablePlanRequiresTargetItem(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	src := f.attach(t, f.wsA, "shot.png", 3)
 
@@ -627,6 +647,7 @@ func TestPlanAttachmentCopy_InsertablePlanRequiresTargetItem(t *testing.T) {
 // The plan must say so per row rather than emit a key the target backend
 // cannot resolve.
 func TestPlanAttachmentCopy_CrossBackendDetected(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	src := f.attachWith(t, f.wsA, "shot.png", 12, "fs:deadbeef", "deadbeef")
 
@@ -655,6 +676,7 @@ func TestPlanAttachmentCopy_CrossBackendDetected(t *testing.T) {
 // orchestration that forgets the Get/Put step fails loudly at insert
 // rather than quietly creating an attachment that 404s on download.
 func TestPlanAttachmentCopy_CrossBackendRowUninsertable(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	src := f.attachWith(t, f.wsA, "shot.png", 12, "fs:deadbeef", "deadbeef")
 
@@ -680,6 +702,7 @@ func TestPlanAttachmentCopy_CrossBackendRowUninsertable(t *testing.T) {
 // TestPlanAttachmentCopy_SameBackendNoTransfer: naming the backend
 // explicitly, when it matches, must NOT trigger a pointless byte copy.
 func TestPlanAttachmentCopy_SameBackendNoTransfer(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	src := f.attachWith(t, f.wsA, "shot.png", 12, "fs:deadbeef", "deadbeef")
 
@@ -703,6 +726,7 @@ func TestPlanAttachmentCopy_SameBackendNoTransfer(t *testing.T) {
 // backend prefix cannot be routed by the registry, so it is treated as
 // needing a real transfer rather than assumed resolvable.
 func TestPlanAttachmentCopy_PrefixlessKeyNeedsTransfer(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	src := f.attachWith(t, f.wsA, "shot.png", 12, "legacy-key-no-prefix", "hash1")
 
@@ -724,6 +748,7 @@ func TestPlanAttachmentCopy_PrefixlessKeyNeedsTransfer(t *testing.T) {
 // Per DR-16 storage is reported, not enforced — the dry-run's number must
 // agree with the storage page, not with a hash-deduped fiction.
 func TestPlanAttachmentCopy_DedupedBlobsCountedPerRow(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attachWith(t, f.wsA, "one.png", 500, "fs:samehash", "samehash")
 	b := f.attachWith(t, f.wsA, "two.png", 500, "fs:samehash", "samehash")
@@ -744,6 +769,7 @@ func TestPlanAttachmentCopy_DedupedBlobsCountedPerRow(t *testing.T) {
 // same inputs, so the guarantee is structural — this pins it against a
 // future change that special-cases DryRun and lets the two drift.
 func TestPlanAttachmentCopy_DryRunTotalsMatchTheRealCopy(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 1000)
 	f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
@@ -791,6 +817,7 @@ func TestPlanAttachmentCopy_DryRunTotalsMatchTheRealCopy(t *testing.T) {
 // first-appearance order (content before fields), so a dry-run and the
 // subsequent copy list the same rows in the same order.
 func TestPlanAttachmentCopy_DeterministicOrder(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	first := f.attach(t, f.wsA, "first.png", 1)
 	second := f.attach(t, f.wsA, "second.png", 2)
@@ -812,6 +839,7 @@ func TestPlanAttachmentCopy_DeterministicOrder(t *testing.T) {
 // that same map to the destination item after planning, so a mutation
 // here would corrupt the copy.
 func TestPlanAttachmentCopy_DoesNotMutateCallerFields(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "shot.png", 5)
 
@@ -839,6 +867,7 @@ func TestPlanAttachmentCopy_DoesNotMutateCallerFields(t *testing.T) {
 // TestPlanAttachmentCopy_NoRefs: nothing referenced, nothing planned, and
 // a non-nil map so callers can index it unconditionally.
 func TestPlanAttachmentCopy_NoRefs(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 
 	plan := f.plan(t, f.req("just prose", map[string]any{"status": "open"}))
@@ -855,6 +884,7 @@ func TestPlanAttachmentCopy_NoRefs(t *testing.T) {
 // the plan safe are mandatory. An empty SourceWorkspaceID in particular
 // would turn the DR-11a scope into "any workspace".
 func TestPlanAttachmentCopy_RequiredInputs(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 
 	for _, tc := range []struct {
@@ -883,6 +913,7 @@ func TestPlanAttachmentCopy_RequiredInputs(t *testing.T) {
 // — which the planner would report as "not referenced" rather than as an
 // error.
 func TestChunkStrings(t *testing.T) {
+	t.Parallel()
 	ids := func(n int) []string {
 		out := make([]string, n)
 		for i := range out {
@@ -935,6 +966,7 @@ func TestChunkStrings(t *testing.T) {
 // — that one pins the split arithmetic, this one pins that a plan built
 // from more than one query is complete.
 func TestPlanAttachmentCopy_ManyRefsChunked(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("creates attachmentPlanChunk+1 rows")
 	}
@@ -969,6 +1001,7 @@ func TestPlanAttachmentCopy_ManyRefsChunked(t *testing.T) {
 // reference equals, field for field, the plan produced for a UUID that
 // names nothing at all.
 func TestPlanAttachmentCopy_DeniedRefIsExactlyDangling(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	secret := f.attach(t, f.wsA, "secret.png", 4096)
 	f.variant(t, f.wsA, secret, models.AttachmentVariantThumbMd, 20)
@@ -1001,6 +1034,7 @@ func TestPlanAttachmentCopy_DeniedRefIsExactlyDangling(t *testing.T) {
 // reference naming a VARIANT whose original the caller may not see cannot
 // smuggle that original in as its clone root.
 func TestPlanAttachmentCopy_DeniedParentSinksTheVariantRef(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 1000)
 	thumb := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
@@ -1026,6 +1060,7 @@ func TestPlanAttachmentCopy_DeniedParentSinksTheVariantRef(t *testing.T) {
 // cannot see drops out on its own, without taking the legitimate original
 // with it.
 func TestPlanAttachmentCopy_DeniedVariantDropsOnlyItself(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 1000)
 	sm := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
@@ -1050,6 +1085,7 @@ func TestPlanAttachmentCopy_DeniedVariantDropsOnlyItself(t *testing.T) {
 // transient database error into a copy that quietly drops the user's
 // images.
 func TestPlanAttachmentCopy_AuthorizerErrorIsFatal(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "shot.png", 10)
 
@@ -1065,6 +1101,7 @@ func TestPlanAttachmentCopy_AuthorizerErrorIsFatal(t *testing.T) {
 // claim itself: every row the plan emits was offered to the authorizer.
 // The gate is only worth what it is asked about.
 func TestPlanAttachmentCopy_AuthorizerSeesEveryClonedRow(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	orig := f.attach(t, f.wsA, "shot.png", 1000)
 	sm := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)

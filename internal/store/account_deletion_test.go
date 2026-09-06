@@ -23,6 +23,7 @@ import (
 //   - the workspace is soft-deleted (recoverable), the second user and
 //     their data are untouched.
 func TestDeleteAccountAtomic_FullyPopulatedUser(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// The account under deletion, plus a bystander whose data must survive.

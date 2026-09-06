@@ -157,6 +157,7 @@ func maxSeq(t *testing.T, s *Store, workspaceID string) int64 {
 // --- Happy path -------------------------------------------------------------
 
 func TestCopyItemAcrossWorkspaces_PlainCopyLandsInDestination(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	parent := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Parent", "")
 	src, err := f.s.CreateItem(f.wsA.ID, f.colA.ID, models.ItemCreate{
@@ -249,6 +250,7 @@ func TestCopyItemAcrossWorkspaces_PlainCopyLandsInDestination(t *testing.T) {
 // row, wiki-link index, status transition, slug, item_number and seq must all
 // exist in the destination.
 func TestCopyItemAcrossWorkspaces_CreationParity(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	// A destination item the copied body's [[...]] link resolves to.
 	createTestItem(t, f.s, f.wsB.ID, f.colB.ID, "Target Doc", "")
@@ -292,6 +294,7 @@ func TestCopyItemAcrossWorkspaces_CreationParity(t *testing.T) {
 // have nothing to see, and a spurious bump would make them re-fetch an
 // unchanged item.
 func TestCopyItemAcrossWorkspaces_PlainCopyDoesNotAdvanceSourceSeq(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Untouched", "body")
 
@@ -331,6 +334,7 @@ func TestCopyItemAcrossWorkspaces_PlainCopyDoesNotAdvanceSourceSeq(t *testing.T)
 // On a MOVE, A must advance so its clients receive the tombstone — otherwise
 // they keep rendering a source item that no longer exists.
 func TestCopyItemAcrossWorkspaces_MoveEmitsTombstoneInSourceWorkspace(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Moving out", "body")
 
@@ -389,6 +393,7 @@ func TestCopyItemAcrossWorkspaces_MoveEmitsTombstoneInSourceWorkspace(t *testing
 // those stale errors rejects a copy whose override already supplied the
 // missing required field. Overrides must be applied first, then validated.
 func TestCopyItemAcrossWorkspaces_OverrideSatisfiesRequiredField(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	// A destination collection with a required field the source does not have.
 	dest, err := f.s.CreateCollection(f.wsB.ID, models.CollectionCreate{
@@ -430,6 +435,7 @@ func TestCopyItemAcrossWorkspaces_OverrideSatisfiesRequiredField(t *testing.T) {
 // The mirror image: an override with a value the destination schema rejects
 // must be type-checked. Pre-DR-12 the override was never validated at all.
 func TestCopyItemAcrossWorkspaces_InvalidOverrideRejected(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Bad override", "")
 
@@ -451,6 +457,7 @@ func TestCopyItemAcrossWorkspaces_InvalidOverrideRejected(t *testing.T) {
 }
 
 func TestCopyItemAcrossWorkspaces_DroppedFieldsReported(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	dest, err := f.s.CreateCollection(f.wsB.ID, models.CollectionCreate{
 		Name:   "Narrow",
@@ -480,6 +487,7 @@ func TestCopyItemAcrossWorkspaces_DroppedFieldsReported(t *testing.T) {
 // --- Assignment scrubs (DR-8) -----------------------------------------------
 
 func TestCopyItemAcrossWorkspaces_AssigneeCarriesOnlyForDestinationMembers(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	member := createTestUser(t, f.s, "member@example.com", "Member", "s3cret")
 	stranger := createTestUser(t, f.s, "stranger@example.com", "Stranger", "s3cret")
@@ -543,6 +551,7 @@ func TestCopyItemAcrossWorkspaces_AssigneeCarriesOnlyForDestinationMembers(t *te
 // --- Attachments (DR-11 / DR-11a) -------------------------------------------
 
 func TestCopyItemAcrossWorkspaces_AttachmentsClonedAndRefsRewritten(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	orig := f.attachIn(t, f.wsA.ID, "diagram.png", 4096)
 	thumb := f.variantOf(t, f.wsA.ID, orig, "thumb-md", 512)
@@ -706,6 +715,7 @@ func TestCopyItemAcrossWorkspaces_AttachmentsClonedAndRefsRewritten(t *testing.T
 // IS NULL` are never cloned, the literal text survives, and the copy is not
 // blocked. The foreign-workspace case is the confused-deputy hole.
 func TestCopyItemAcrossWorkspaces_UnresolvableRefsAreNeverCloned(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	foreign := f.attachIn(t, f.wsC.ID, "someone-elses.png", 9999)
 	dangling := newID()
@@ -742,6 +752,7 @@ func TestCopyItemAcrossWorkspaces_UnresolvableRefsAreNeverCloned(t *testing.T) {
 // v1 refuses a copy whose bytes live in a backend the destination does not
 // write to, rather than silently inserting a row that 404s on download.
 func TestCopyItemAcrossWorkspaces_CrossBackendRefused(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	orig := f.attachIn(t, f.wsA.ID, "on-disk.png", 100) // storage_key is "fs:…"
 	src, err := f.s.CreateItem(f.wsA.ID, f.colA.ID, models.ItemCreate{
@@ -771,6 +782,7 @@ func TestCopyItemAcrossWorkspaces_CrossBackendRefused(t *testing.T) {
 // A failure at ANY stage must leave nothing behind in either workspace: no
 // item, no attachment rows, no provenance row, and neither seq advanced.
 func TestCopyItemAcrossWorkspaces_RollbackIsCompleteAtEveryStage(t *testing.T) {
+	t.Parallel()
 	stages := []string{copyStageCreateItem, copyStageAttachments, copyStageArchive, copyStageProvenance}
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
@@ -828,6 +840,7 @@ func TestCopyItemAcrossWorkspaces_RollbackIsCompleteAtEveryStage(t *testing.T) {
 // was already inserted. (A row with no key is a live attachment the registry
 // cannot resolve; it fails at download time with nothing to point at.)
 func TestCopyItemAcrossWorkspaces_AttachmentInsertFailureRollsBackTheItem(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	// Insert an attachment with an empty storage_key directly — CreateAttachment
 	// refuses it, which is precisely the guard being exercised downstream.
@@ -868,6 +881,7 @@ func TestCopyItemAcrossWorkspaces_AttachmentInsertFailureRollsBackTheItem(t *tes
 // --- Scope refusals ---------------------------------------------------------
 
 func TestCopyItemAcrossWorkspaces_TargetCollectionMustBelongToTargetWorkspace(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Scoped", "")
 
@@ -884,6 +898,7 @@ func TestCopyItemAcrossWorkspaces_TargetCollectionMustBelongToTargetWorkspace(t 
 }
 
 func TestCopyItemAcrossWorkspaces_ArchivedSourceIsNotCopyable(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Already gone", "")
 	if err := f.s.DeleteItem(src.ID); err != nil {
@@ -930,6 +945,7 @@ func newQuotaFixture(t *testing.T, limit int) copyFixture {
 }
 
 func TestCopyItemAcrossWorkspaces_ItemQuota(t *testing.T) {
+	t.Parallel()
 	// The destination starts empty and the cap is 2: the first copy is
 	// "exactly at limit minus one" and lands; the second fills the cap and
 	// lands; the third is one-over and is refused.
@@ -980,6 +996,7 @@ func TestCopyItemAcrossWorkspaces_ItemQuota(t *testing.T) {
 // CheckLimitTx and invisible to CheckLimit, so swapping the call in the copy
 // path back to the pool form makes this test fail.
 func TestCheckLimitTx_SeesUncommittedRowsInTheTransaction(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "tx-count@example.com", "Owner", "s3cret")
 	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
@@ -1025,6 +1042,7 @@ func TestCheckLimitTx_SeesUncommittedRowsInTheTransaction(t *testing.T) {
 // collapsed. Colliding keys (two workspaces hashing to one value) are ONE lock,
 // not two.
 func TestSortedDedupedLockKeys(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   []int64
@@ -1072,6 +1090,7 @@ func TestSortedDedupedLockKeys(t *testing.T) {
 // security boundary which makes "a collection in someone else's workspace" a
 // not-found rather than a cross-workspace write.
 func TestCopyAcrossWorkspaces_CollectionMissingSentinels(t *testing.T) {
+	t.Parallel()
 	t.Run("source collection soft-deleted under the lock", func(t *testing.T) {
 		f := newCopyFixture(t)
 		src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Orphaned", "body")
@@ -1137,6 +1156,7 @@ func TestCopyAcrossWorkspaces_CollectionMissingSentinels(t *testing.T) {
 // nothing: it is pure computation over rows already read, and the quota still
 // runs inside the transaction before any insert, which is all DR-16 asks.
 func TestCopyAcrossWorkspaces_BadRequestBeatsQuota(t *testing.T) {
+	t.Parallel()
 	// A cap of 1, already consumed, so the destination is genuinely full.
 	f := newQuotaFixture(t, 1)
 	if _, err := f.s.CreateItem(f.wsB.ID, f.colB.ID, models.ItemCreate{Title: "Occupant"}); err != nil {
@@ -1190,6 +1210,7 @@ func TestCopyAcrossWorkspaces_BadRequestBeatsQuota(t *testing.T) {
 // "pad-attachment:"+old rewrote the `<uuid>` prefix inside it anyway (Codex
 // round 26), producing text matching neither the plan nor the user's input.
 func TestRemapAttachmentRefsTokenizesLikeThePlanner(t *testing.T) {
+	t.Parallel()
 	const (
 		oldID = "11111111-2222-4333-8444-555555555555"
 		newID = "99999999-8888-4777-8666-555555555555"
@@ -1262,6 +1283,7 @@ func TestRemapAttachmentRefsTokenizesLikeThePlanner(t *testing.T) {
 // over a routine permission denial (Codex round 10). The caller's own error
 // type still comes back out through errors.As.
 func TestCopyAcrossWorkspaces_PreCheckRefusalIsWrapped(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Refused", "body")
 
@@ -1306,6 +1328,7 @@ func TestCopyAcrossWorkspaces_PreCheckRefusalIsWrapped(t *testing.T) {
 // The last two are the ones that make this test worth having; assert on all
 // three so a regression in any implementation strategy is caught.
 func TestCopyAcrossWorkspaces_PreCheckGetsCopies(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 
 	// The assignee must be a member of BOTH workspaces, or DR-8 drops it and
@@ -1400,6 +1423,7 @@ func TestCopyAcrossWorkspaces_PreCheckGetsCopies(t *testing.T) {
 // deadlock=true at ERROR — which this code did until PLAN-2357's final review —
 // leaves an operator unable to tell a lock-ordering bug from ordinary load.
 func TestCopyRollbackErrorClassification(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		err         error

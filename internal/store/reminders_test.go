@@ -50,6 +50,7 @@ func nowTS() string { return time.Now().UTC().Format(time.RFC3339) }
 // future reminder and not the past one — both halves of this test go red, and
 // asserting only on the fired one would have let the flip through.
 func TestFireDueRemindersFiresOnlyArrivedReminders(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -96,6 +97,7 @@ func TestFireDueRemindersFiresOnlyArrivedReminders(t *testing.T) {
 // leaves fired_at set with no event — the reminder is retired and nobody is
 // ever told, which is the silent failure this test exists to make loud.
 func TestFireDueRemindersWritesOutboxEvent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -154,6 +156,7 @@ func TestFireDueRemindersWritesOutboxEvent(t *testing.T) {
 // MUTANT: dropping `AND fired_at IS NULL` from the fire UPDATE makes the
 // second tick re-fire and write a second event.
 func TestFireDueRemindersIsIdempotentAcrossTicks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -191,6 +194,7 @@ func TestFireDueRemindersIsIdempotentAcrossTicks(t *testing.T) {
 // MUTANT: dropping the RowsAffected check makes the loser return a reminder
 // and emit a duplicate event.
 func TestFireOneReminderArbitratesAStaleCandidate(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -229,6 +233,7 @@ func TestFireOneReminderArbitratesAStaleCandidate(t *testing.T) {
 // acknowledged — a state the lifecycle has no name for, and one that would
 // make the reminder invisible on the poll surface after it fires again.
 func TestRearmClearsBothFireMarks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -284,6 +289,7 @@ func TestRearmClearsBothFireMarks(t *testing.T) {
 // MUTANT: dropping `AND fired_at IS NOT NULL` from the ack UPDATE makes the
 // first assertion pass an acked-but-never-fired row.
 func TestAckRequiresAFiredReminder(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -355,6 +361,7 @@ func TestAckRequiresAFiredReminder(t *testing.T) {
 // MUTANT: dropping `i.workspace_id = ?` from the INSERT's SELECT accepts the
 // row and both halves of this test fail.
 func TestCreateReminderRefusesAnotherWorkspacesItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "A")
 	wsB := createTestWorkspace(t, s, "B")
@@ -388,6 +395,7 @@ func TestCreateReminderRefusesAnotherWorkspacesItem(t *testing.T) {
 //
 // MUTANT: dropping `i.deleted_at IS NULL` from the INSERT accepts it.
 func TestCreateReminderRefusesASoftDeletedItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -412,6 +420,7 @@ func TestCreateReminderRefusesASoftDeletedItem(t *testing.T) {
 // surface forever; dropping `fired_at IS NOT NULL` shows a reminder before its
 // time.
 func TestPendingRemindersAreFiredAndUnacked(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -458,6 +467,7 @@ func TestPendingRemindersAreFiredAndUnacked(t *testing.T) {
 // the lexicographic comparison then fires it against an RFC3339 clock string
 // at a moment nobody chose.
 func TestReminderRejectsANonInstant(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -485,6 +495,7 @@ func TestReminderRejectsANonInstant(t *testing.T) {
 // reminder then fires nine hours late — a silent, timezone-shaped error with
 // nothing in the row to show why.
 func TestReminderNormalizesToUTC(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -504,6 +515,7 @@ func TestReminderNormalizesToUTC(t *testing.T) {
 //
 // MUTANT: dropping `AND workspace_id = ?` returns the other workspace's row.
 func TestGetReminderIsWorkspaceScoped(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "A")
 	wsB := createTestWorkspace(t, s, "B")
@@ -524,6 +536,7 @@ func TestGetReminderIsWorkspaceScoped(t *testing.T) {
 // nothing to say; the FK is what makes that structural rather than a cleanup
 // job somebody has to remember to write.
 func TestReminderCascadesWithItsItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -559,6 +572,7 @@ func TestReminderCascadesWithItsItem(t *testing.T) {
 // MUTANT: dropping `AND i.deleted_at IS NULL` from the candidate query starves
 // the live reminder and this fails.
 func TestSoftDeletedItemsDoNotOccupyTheBatch(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -611,6 +625,7 @@ func TestSoftDeletedItemsDoNotOccupyTheBatch(t *testing.T) {
 //
 // MUTANT: `continue` back to `return fired, err` and the third id never runs.
 func TestOneBrokenReminderDoesNotBlockTheRest(t *testing.T) {
+	t.Parallel()
 	var attempted []string
 	fired, err := fireEachReminder([]string{"a", "b", "c"}, nowTS(),
 		func(id, _ string) (*models.Reminder, error) {
@@ -638,6 +653,7 @@ func TestOneBrokenReminderDoesNotBlockTheRest(t *testing.T) {
 // TestEveryReminderFailingIsStillReported is the negative control for the
 // aggregation: with nothing fired, the error is the only signal there was one.
 func TestEveryReminderFailingIsStillReported(t *testing.T) {
+	t.Parallel()
 	fired, err := fireEachReminder([]string{"a", "b"}, nowTS(),
 		func(string, string) (*models.Reminder, error) { return nil, errors.New("boom") })
 	if len(fired) != 0 {
@@ -653,6 +669,7 @@ func TestEveryReminderFailingIsStillReported(t *testing.T) {
 // reporting the loser as an error would make every multi-instance tick log
 // spurious failures.
 func TestSkippedRemindersAreNotErrors(t *testing.T) {
+	t.Parallel()
 	fired, err := fireEachReminder([]string{"a", "b"}, nowTS(),
 		func(id, _ string) (*models.Reminder, error) {
 			if id == "a" {
@@ -679,6 +696,7 @@ func TestSkippedRemindersAreNotErrors(t *testing.T) {
 // MUTANT: replace NormalizeInstant's round-up with Truncate and the first case
 // stores ...00Z.
 func TestFractionalSecondsRoundUp(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -708,6 +726,7 @@ func TestFractionalSecondsRoundUp(t *testing.T) {
 // STRING being right is only interesting because of what the tick does with
 // it. Asserting the column alone would not catch a comparison that ignored it.
 func TestAFractionalReminderDoesNotFireEarly(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -749,6 +768,7 @@ func TestAFractionalReminderDoesNotFireEarly(t *testing.T) {
 //
 // MUTANT: drop `AND remind_at <= ?` from the fire UPDATE and this fires.
 func TestARearmedReminderIsNotFiredByAnInFlightPass(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -804,6 +824,7 @@ func TestARearmedReminderIsNotFiredByAnInFlightPass(t *testing.T) {
 // MUTANT: remove the LIMIT and both the window and the truncation flag are
 // wrong.
 func TestPendingRemindersAreBounded(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -864,6 +885,7 @@ func TestPendingRemindersAreBounded(t *testing.T) {
 //
 // MUTANT: delete the guard and this returns every pending reminder.
 func TestEmptyScopeSeesNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -912,6 +934,7 @@ func TestEmptyScopeSeesNothing(t *testing.T) {
 // MUTANT: drop `AND w.deleted_at IS NULL` from the candidate query and the
 // deleted workspace's reminder fires.
 func TestSoftDeletedWorkspacesDoNotFire(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	live := createTestWorkspace(t, s, "Live")
 	gone := createTestWorkspace(t, s, "Gone")
@@ -969,6 +992,7 @@ func TestSoftDeletedWorkspacesDoNotFire(t *testing.T) {
 // query rather than a user-visible symptom — the same reason the fire-side
 // filter is not enough on its own.
 func TestPendingRemindersHideASoftDeletedWorkspace(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Gone")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1014,6 +1038,7 @@ func TestPendingRemindersHideASoftDeletedWorkspace(t *testing.T) {
 // MUTANT: drop the reminder block from either ExportWorkspace or
 // ImportWorkspace and this fails.
 func TestRemindersRoundTripThroughExport(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "reminder-export@test.com", "Export Owner", "password123")
 	src := createTestWorkspace(t, s, "Reminder Export")
@@ -1099,6 +1124,7 @@ func TestRemindersRoundTripThroughExport(t *testing.T) {
 // mark, the instant, or either half of reminderFireable — and the
 // corresponding row fails while the others stay green.
 func TestFirePathInvariant(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// invalidate makes the scanned candidate no longer fireable, standing
@@ -1183,6 +1209,7 @@ func TestFirePathInvariant(t *testing.T) {
 // control. Every case above asserts that nothing happens, so all four would
 // pass against a build that never fires anything at all.
 func TestFirePathInvariantFiresWhenNothingChanged(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Invariant")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1224,6 +1251,7 @@ func TestFirePathInvariantFiresWhenNothingChanged(t *testing.T) {
 //
 // MUTANT: scan into a plain int and this fails.
 func TestPendingRemindersSurviveALegacyItemNumber(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Legacy")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1269,6 +1297,7 @@ func TestPendingRemindersSurviveALegacyItemNumber(t *testing.T) {
 //
 // MUTANT: drop the JOIN's deleted_at filter and the export carries 2.
 func TestExportSkipsRemindersForSoftDeletedItems(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	src := createTestWorkspace(t, s, "Partial")
 	col := createTestCollection(t, s, src.ID, "Tasks")
@@ -1304,6 +1333,7 @@ func TestExportSkipsRemindersForSoftDeletedItems(t *testing.T) {
 // MUTANT: insert rm.RemindAt instead of the normalized value and the offset
 // value is stored verbatim.
 func TestImportNormalizesRemindAt(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "import-norm@test.com", "Import Norm", "password123")
 	src := createTestWorkspace(t, s, "Import Norm")
@@ -1365,6 +1395,7 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 // MUTANT: gate on `itemMap[...] != ""` instead of insertedItems, or restore
 // the fatal return, and the import fails.
 func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "orphan-import@test.com", "Orphan Import", "password123")
 	src := createTestWorkspace(t, s, "Orphan Source")
@@ -1424,6 +1455,7 @@ func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
 // MUTANT: assign ackedAt unconditionally and the imported row comes back
 // neither armed nor pending.
 func TestImportRefusesAckWithoutFire(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "ackfire@test.com", "Ack Fire", "password123")
 	src := createTestWorkspace(t, s, "Ack Fire")
@@ -1491,6 +1523,7 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 // there; dropping reminderOwned from GetReminder or ListRemindersForItem
 // surfaces it through B. Each site has its own assertion below.
 func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "A")
 	wsB := createTestWorkspace(t, s, "B")

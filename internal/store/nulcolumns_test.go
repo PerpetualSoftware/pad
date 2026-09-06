@@ -21,6 +21,7 @@ import (
 // add the column to nulColumns (with its class) or to nulExcluded (with the
 // reason). Do not delete the test.
 func TestNULColumnCensus(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("census runs against the SQLite schema; Layer B is SQLite-only (Postgres refuses natively)")
@@ -194,6 +195,7 @@ func TestNULColumnCensus(t *testing.T) {
 // TestNULColumnListIsWellFormed checks the list itself before anything is
 // generated from it.
 func TestNULColumnListIsWellFormed(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	var jsonN, textN int
 	for _, c := range NULProtectedColumns() {
@@ -287,6 +289,7 @@ func isDerivedTable(name string) bool {
 // having done it once and it staying done. A new *_by column fails here the day
 // it is added.
 func TestAttributionColumnsAreAllProtected(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("schema census runs against SQLite")

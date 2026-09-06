@@ -36,6 +36,7 @@ func (f *gcClaimFixture) createDocument(t *testing.T, content string) *models.Do
 // as referenced. Before the fix the scan covered items and comments only, so
 // this returned false and the GC was free to reclaim a live reference.
 func TestAttachmentReferenced_SeesDocumentContent(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	a := f.seedNeverAttached(t)
 
@@ -64,6 +65,7 @@ func TestAttachmentReferenced_SeesDocumentContent(t *testing.T) {
 // A soft-deleted document must NOT hold a reference, mirroring items. Without
 // this the scan would pin blobs behind deleted content forever.
 func TestAttachmentReferenced_IgnoresDeletedDocument(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	a := f.seedNeverAttached(t)
 	doc := f.createDocument(t, "![img](pad-attachment:"+a.ID+")")
@@ -95,6 +97,7 @@ func TestAttachmentReferenced_IgnoresDeletedDocument(t *testing.T) {
 // A document in ANOTHER workspace must not hold the reference — the scan is
 // workspace-scoped, and a pasted foreign id must not pin someone else's rows.
 func TestAttachmentReferenced_DocumentScanIsWorkspaceScoped(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	a := f.seedNeverAttached(t)
 
@@ -125,6 +128,7 @@ func TestAttachmentReferenced_DocumentScanIsWorkspaceScoped(t *testing.T) {
 // they were differently shaped: UpdateDocument already had a transaction,
 // CreateDocument had none and needed one.
 func TestDocumentWrites_StampAttachmentRefs(t *testing.T) {
+	t.Parallel()
 	t.Run("create stamps", func(t *testing.T) {
 		f := newGCClaimFixture(t)
 		a := f.seedNeverAttached(t)
@@ -191,6 +195,7 @@ func TestDocumentWrites_StampAttachmentRefs(t *testing.T) {
 // destination, and the clone it should have pointed at ends up referenced by
 // nothing.
 func TestRemapAttachmentReferences_RewritesCommentBodies(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	oldID, newID := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
 
@@ -229,6 +234,7 @@ func TestRemapAttachmentReferences_RewritesCommentBodies(t *testing.T) {
 // unless the remap adds one, which is exactly the never-attached shape the GC
 // claims.
 func TestRemapAttachmentReferences_StampsTheRewrittenTarget(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	target := f.seedNeverAttached(t)
 	oldID := "33333333-3333-4333-8333-333333333333"
@@ -262,6 +268,7 @@ func TestRemapAttachmentReferences_StampsTheRewrittenTarget(t *testing.T) {
 // whole id map would vouch for rows no text points at, keeping genuinely
 // unreferenced clones alive for an extra GC window.
 func TestRemapAttachmentReferences_DoesNotStampUnreferencedClones(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	unreferenced := f.seedNeverAttached(t)
 

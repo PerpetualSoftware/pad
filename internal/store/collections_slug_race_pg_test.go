@@ -78,6 +78,7 @@ func holdUncommittedRename(t *testing.T, s *Store, wsID, collID, newSlug string)
 // BUG-2875: a create must queue behind an in-flight rename, not slip between
 // its scan and its commit.
 func TestCreateCollectionWaitsForAnUncommittedRename(t *testing.T) {
+	t.Parallel()
 	s, wsID, alpha := slugRacePGStore(t)
 
 	tx := holdUncommittedRename(t, s, wsID, alpha.ID, "gamma")
@@ -127,6 +128,7 @@ func TestCreateCollectionWaitsForAnUncommittedRename(t *testing.T) {
 // renames deriving the same slug serialize into `gamma` and `gamma-2` rather
 // than one of them failing on the UNIQUE index.
 func TestRenameAllocatesItsSlugUnderTheWorkspaceLock(t *testing.T) {
+	t.Parallel()
 	s, wsID, alpha := slugRacePGStore(t)
 	beta, err := s.CreateCollection(wsID, models.CollectionCreate{Name: "Beta", Slug: "beta"})
 	if err != nil {

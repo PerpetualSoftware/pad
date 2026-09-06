@@ -11,6 +11,7 @@ import (
 )
 
 func TestCreateActivityDebounced_NonUpdateActions(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -45,6 +46,7 @@ func TestCreateActivityDebounced_NonUpdateActions(t *testing.T) {
 }
 
 func TestCreateActivityDebounced_CoalescesUpdates(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -96,6 +98,7 @@ func TestCreateActivityDebounced_CoalescesUpdates(t *testing.T) {
 // future cutoff excludes everything. Timestamp-agnostic (uses past/future
 // relative to now) so it doesn't flake on clock skew.
 func TestListWorkspaceActivity_SinceFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -145,6 +148,7 @@ func TestListWorkspaceActivity_SinceFilter(t *testing.T) {
 }
 
 func TestCreateActivityDebounced_DifferentUsersDontCoalesce(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -192,6 +196,7 @@ func TestCreateActivityDebounced_DifferentUsersDontCoalesce(t *testing.T) {
 }
 
 func TestCreateActivityDebounced_DifferentDocsDontCoalesce(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc1 := createTestDoc(t, s, ws.ID, "Doc 1", "content 1")
@@ -274,6 +279,7 @@ func TestCreateActivityDebounced_TimestampBumped(t *testing.T) {
 }
 
 func TestCreateActivityDebounced_MetadataMerge(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -318,6 +324,7 @@ func TestCreateActivityDebounced_MetadataMerge(t *testing.T) {
 }
 
 func TestCreateActivityDebounced_AgentMetaPreserved(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -365,6 +372,7 @@ func TestCreateActivityDebounced_AgentMetaPreserved(t *testing.T) {
 }
 
 func TestCreateActivityDebounced_MultipleRapidSaves(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -390,6 +398,7 @@ func TestCreateActivityDebounced_MultipleRapidSaves(t *testing.T) {
 }
 
 func TestCreateActivityDebounced_NoUserID(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -426,6 +435,7 @@ func TestCreateActivityDebounced_NoUserID(t *testing.T) {
 }
 
 func TestCollapseChanges(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   string
@@ -574,6 +584,7 @@ func TestCollapseChanges(t *testing.T) {
 // instead of a 30-step keystroke chain (as seen on BUG-1419's timeline
 // pre-fix).
 func TestMergeActivityMeta_CollapsesSameFieldRun(t *testing.T) {
+	t.Parallel()
 	existing := `{"changes":"component: → e; component: e → ed; component: ed → edi"}`
 	incoming := `{"changes":"component: edi → editor"}`
 	got := mergeActivityMeta(existing, incoming)
@@ -589,6 +600,7 @@ func TestMergeActivityMeta_CollapsesSameFieldRun(t *testing.T) {
 }
 
 func TestMergeActivityMeta(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		existing string
@@ -653,6 +665,7 @@ func TestMergeActivityMeta(t *testing.T) {
 // row COUNT: splitting into two rows that both name the same writer would be a
 // different bug wearing this fix's passing test (CONVE-12).
 func TestCreateActivityDebounced_WriterIdentitySplitsRuns(t *testing.T) {
+	t.Parallel()
 	oneAccount := func(t *testing.T) (st *Store, wsID, docID, userID string) {
 		t.Helper()
 		st = testStore(t)

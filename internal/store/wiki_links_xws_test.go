@@ -12,6 +12,7 @@ import (
 // A surfaces the cross-ws source — provided the requester has
 // visibility into workspace B. PLAN-1593 / TASK-1597.
 func TestWikiLinks_CrossWorkspaceRefIndexedAndQueryable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 
@@ -62,6 +63,7 @@ func TestWikiLinks_CrossWorkspaceRefIndexedAndQueryable(t *testing.T) {
 // enumerates only workspaces the requester has access to via
 // GetUserWorkspaces.
 func TestWikiLinks_CrossWorkspaceNonMemberDoesNotSee(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
@@ -106,6 +108,7 @@ func TestWikiLinks_CrossWorkspaceNonMemberDoesNotSee(t *testing.T) {
 // other collections in B. Mirrors the same-ws Phase 1 visibility
 // model — Codex round-1/2 P1 — across the cross-ws boundary.
 func TestWikiLinks_CrossWorkspaceGuestSeesGrantedCollectionOnly(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
@@ -163,6 +166,7 @@ func TestWikiLinks_CrossWorkspaceGuestSeesGrantedCollectionOnly(t *testing.T) {
 // target. This is the cross-ws equivalent of
 // TestWikiLinks_ItemGrantPagination from Phase 1.
 func TestWikiLinks_CrossWorkspaceGuestItemGrantOnlyVisible(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
@@ -213,6 +217,7 @@ func TestWikiLinks_CrossWorkspaceGuestItemGrantOnlyVisible(t *testing.T) {
 // any wsID). Documents the broken-link semantics consistent with the
 // renderer's resolver-route 404 path.
 func TestWikiLinks_CrossWorkspaceUnknownSlugBroken(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 	ws := createTestWorkspace(t, s, "Workspace A")
@@ -243,6 +248,7 @@ func TestWikiLinks_CrossWorkspaceUnknownSlugBroken(t *testing.T) {
 // SourceWorkspaceSlug so the renderer can route the link to the
 // foreign workspace. Same-ws rows leave it empty.
 func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 
@@ -290,6 +296,7 @@ func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
 // same-ws query requires target_item_id (workspace_ref leaves it
 // NULL) and the cross-ws query skips the target workspace.
 func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 	ws := createTestWorkspace(t, s, "Test")
@@ -327,6 +334,7 @@ func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) 
 // fallback; the index must match or it creates ghost backlinks the
 // UI doesn't render.
 func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 	ws := createTestWorkspace(t, s, "Test")
@@ -366,6 +374,7 @@ func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
 // Without this fix, an admin querying for backlinks misses cross-ws
 // links from any workspace they're not explicitly a member of.
 func TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
@@ -429,6 +438,7 @@ func TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces(t *testing.T) {
 // match — otherwise the bearer-admin's grant elsewhere becomes a
 // side-channel into a workspace they can't open directly.
 func TestWikiLinks_CrossWorkspaceBearerAdminGrantOnlyWorkspaceFiltered(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
@@ -492,6 +502,7 @@ func TestWikiLinks_CrossWorkspaceBearerAdminGrantOnlyWorkspaceFiltered(t *testin
 // visible even via bearer auth — the gate's job is to suppress the
 // PLATFORM admin role, not membership-based access.
 func TestWikiLinks_CrossWorkspaceBearerAdminSeesMemberWorkspaces(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	admin, err := s.CreateUser(models.UserCreate{
@@ -533,6 +544,7 @@ func TestWikiLinks_CrossWorkspaceBearerAdminSeesMemberWorkspaces(t *testing.T) {
 // fallback by item_number; cross-ws resolves at query time so the
 // query SQL has the OR-LIKE fallback inline.
 func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 
@@ -594,6 +606,7 @@ func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 // `[]string{"*"}` → wildcard consent.
 // Explicit list → strict slug match.
 func TestWikiLinks_CrossWorkspaceTokenAllowListFilters(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 
@@ -651,6 +664,7 @@ func TestWikiLinks_CrossWorkspaceTokenAllowListFilters(t *testing.T) {
 // guest. Each case asserts the (fullCollIDs, grantedItemIDs) shape
 // against the documented contract. PLAN-1593 / TASK-1597.
 func TestResolveBacklinksVisibility_RoleMatrix(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Test")

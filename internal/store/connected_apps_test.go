@@ -99,6 +99,7 @@ func seedAccess(t *testing.T, s *Store, requestID, clientID, subject string, ts 
 }
 
 func TestListUserOAuthConnections_DeduplicatesChain(t *testing.T) {
+	t.Parallel()
 	s := newConnectedTestStore(t)
 	uid := seedUser(t, s, "list-dedup@example.com")
 	clientID := seedClient(t, s, "Claude Desktop")
@@ -149,6 +150,7 @@ func TestListUserOAuthConnections_DeduplicatesChain(t *testing.T) {
 }
 
 func TestListUserOAuthConnections_FiltersBySubject(t *testing.T) {
+	t.Parallel()
 	s := newConnectedTestStore(t)
 	alice := seedUser(t, s, "alice-conn@example.com")
 	bob := seedUser(t, s, "bob-conn@example.com")
@@ -176,6 +178,7 @@ func TestListUserOAuthConnections_FiltersBySubject(t *testing.T) {
 }
 
 func TestListUserOAuthConnections_ExcludesInactiveChains(t *testing.T) {
+	t.Parallel()
 	s := newConnectedTestStore(t)
 	uid := seedUser(t, s, "inactive@example.com")
 	clientID := seedClient(t, s, "Test Client")
@@ -197,6 +200,7 @@ func TestListUserOAuthConnections_ExcludesInactiveChains(t *testing.T) {
 }
 
 func TestRevokeUserOAuthConnection_OwnershipCheck(t *testing.T) {
+	t.Parallel()
 	s := newConnectedTestStore(t)
 	alice := seedUser(t, s, "revoke-alice@example.com")
 	bob := seedUser(t, s, "revoke-bob@example.com")
@@ -234,6 +238,7 @@ func TestRevokeUserOAuthConnection_OwnershipCheck(t *testing.T) {
 }
 
 func TestRevokeUserOAuthConnection_Idempotent(t *testing.T) {
+	t.Parallel()
 	s := newConnectedTestStore(t)
 	uid := seedUser(t, s, "idem@example.com")
 	clientID := seedClient(t, s, "Idem Tester")
@@ -248,6 +253,7 @@ func TestRevokeUserOAuthConnection_Idempotent(t *testing.T) {
 }
 
 func TestRevokeUserOAuthConnection_UnknownChain(t *testing.T) {
+	t.Parallel()
 	s := newConnectedTestStore(t)
 	uid := seedUser(t, s, "unknown@example.com")
 	if err := s.RevokeUserOAuthConnection(uid, "no-such-chain"); err != ErrConnectionNotFound {
@@ -256,6 +262,7 @@ func TestRevokeUserOAuthConnection_UnknownChain(t *testing.T) {
 }
 
 func TestClassifyCapabilityTier(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		scopes string
 		want   models.CapabilityTier
@@ -291,6 +298,7 @@ func TestClassifyCapabilityTier(t *testing.T) {
 //   - explicit slug list               → (hasKey=true, isStar=false, slugs=<list>)
 //     → seeder writes all_current_workspaces=0, one join row per slug.
 func TestExtractAllowedWorkspacesFromSessionExtra(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		in        string

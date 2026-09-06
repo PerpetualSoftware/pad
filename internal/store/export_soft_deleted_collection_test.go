@@ -58,6 +58,7 @@ func archivedCollectionFixture(t *testing.T, s *Store, name string) (*models.Wor
 // section is no longer filtered by a different rule than the collections
 // section.
 func TestExportCarriesSoftDeletedCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, archived, it := archivedCollectionFixture(t, s, "Export Shape 2884")
 
@@ -113,6 +114,7 @@ func TestExportCarriesSoftDeletedCollections(t *testing.T) {
 // item is live in the source (reachable by ref) and must be live in the
 // target, under a collection that is still archived there.
 func TestRoundTripPreservesItemsUnderSoftDeletedCollection(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "roundtrip2884@test.com", "Owner", "password123")
 	ws, _, it := archivedCollectionFixture(t, s, "Round Trip 2884")
@@ -183,6 +185,7 @@ func TestRoundTripPreservesItemsUnderSoftDeletedCollection(t *testing.T) {
 // for a different reason (comments/versions/reminders resolve through the item
 // map), so they are asserted together rather than trusted to follow.
 func TestRoundTripPreservesDependentsUnderSoftDeletedCollection(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "deps2884@test.com", "Owner", "password123")
 	ws, _, it := archivedCollectionFixture(t, s, "Dependents 2884")
@@ -255,6 +258,7 @@ func TestRoundTripPreservesDependentsUnderSoftDeletedCollection(t *testing.T) {
 // must not participate in the import's duplicate-declaration scan, and must
 // not be mistaken for the workspace's conventions collection.
 func TestImportRoutingIgnoresSoftDeletedCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "routing2884@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Routing 2884")
@@ -358,6 +362,7 @@ func TestImportRoutingIgnoresSoftDeletedCollections(t *testing.T) {
 // "" must mean live — the absent→live direction is what keeps every archive
 // ever written importable.
 func TestLegacyBundleWithoutDeletedAtImportsLive(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "legacy2884@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Legacy 2884")
@@ -426,6 +431,7 @@ func TestLegacyBundleWithoutDeletedAtImportsLive(t *testing.T) {
 // writes has no orphans — but not a hand-edited, foreign, or pre-fix archive,
 // which is exactly the population that needs to import.
 func TestImportSurvivesOrphanedItemDependents(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// seed hangs exactly ONE kind of dependent row off the orphaned item.
@@ -610,6 +616,7 @@ func TestImportSurvivesOrphanedItemDependents(t *testing.T) {
 // is what inference keys on, and slug uniqueness spans deleted rows, so an
 // archived "conventions" and a live one cannot coexist.
 func TestImportDoesNotInferTraitsForArchivedCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "inference2884@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Inference 2884")
@@ -706,6 +713,7 @@ func keepUnless[T any](in []T, keep bool, drop func(T) bool) []T {
 // and dropping the edge is what item_links already does for a missing
 // endpoint.
 func TestImportSurvivesOrphanedParent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "orphanparent2884@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Orphan Parent 2884")
@@ -815,6 +823,7 @@ func TestImportSurvivesOrphanedParent(t *testing.T) {
 // unique violation has already aborted the transaction, so COMMIT fails and
 // the entire restore is lost over a row the loop meant to ignore.
 func TestImportSurvivesDuplicateLinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "duplinks2884@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Duplicate Links 2884")

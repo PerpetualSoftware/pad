@@ -109,6 +109,7 @@ func seedBackfillRefresh(t *testing.T, s *Store, requestID, clientID, subject st
 }
 
 func TestBackfillOAuthConnections_EmptyDatabase(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	res, err := s.BackfillOAuthConnections()
 	if err != nil {
@@ -120,6 +121,7 @@ func TestBackfillOAuthConnections_EmptyDatabase(t *testing.T) {
 }
 
 func TestBackfillOAuthConnections_PreTASK952_WildcardSemantic(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "pre-952@example.com")
 	client := seedBackfillClient(t, s, "Pre-952 Client")
@@ -155,6 +157,7 @@ func TestBackfillOAuthConnections_PreTASK952_WildcardSemantic(t *testing.T) {
 }
 
 func TestBackfillOAuthConnections_Wildcard(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "wildcard@example.com")
 	client := seedBackfillClient(t, s, "Wildcard Client")
@@ -176,6 +179,7 @@ func TestBackfillOAuthConnections_Wildcard(t *testing.T) {
 }
 
 func TestBackfillOAuthConnections_ExplicitList(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "explicit@example.com")
 	client := seedBackfillClient(t, s, "Explicit Client")
@@ -214,6 +218,7 @@ func TestBackfillOAuthConnections_ExplicitList(t *testing.T) {
 }
 
 func TestBackfillOAuthConnections_UnresolvedSlugIsCounted(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "unresolved@example.com")
 	client := seedBackfillClient(t, s, "Unresolved Client")
@@ -238,6 +243,7 @@ func TestBackfillOAuthConnections_UnresolvedSlugIsCounted(t *testing.T) {
 }
 
 func TestBackfillOAuthConnections_NewestRowDrivesShape(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "rotation@example.com")
 	client := seedBackfillClient(t, s, "Rotation Client")
@@ -267,6 +273,7 @@ func TestBackfillOAuthConnections_NewestRowDrivesShape(t *testing.T) {
 }
 
 func TestBackfillOAuthConnections_RefreshOnlyChain(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "refresh-only@example.com")
 	client := seedBackfillClient(t, s, "Refresh Client")
@@ -295,6 +302,7 @@ func TestBackfillOAuthConnections_RefreshOnlyChain(t *testing.T) {
 // session.Extra payload is frozen reference data, not a source of
 // truth the backfill keeps reconciling against.
 func TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "resurrect@example.com")
 	client := seedBackfillClient(t, s, "Resurrect Client")
@@ -357,6 +365,7 @@ func TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace(t *testing.T)
 // the test exercises the same rollback path any other error would
 // trigger (network glitch, FK violation, etc.).
 func TestBackfillOAuthConnections_AtomicOnMidLoopFailure(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "atomic@example.com")
 	client := seedBackfillClient(t, s, "Atomic Client")
@@ -399,6 +408,7 @@ func TestBackfillOAuthConnections_AtomicOnMidLoopFailure(t *testing.T) {
 }
 
 func TestBackfillOAuthConnections_Idempotent(t *testing.T) {
+	t.Parallel()
 	s := newBackfillTestStore(t)
 	uid := seedBackfillUser(t, s, "idem@example.com")
 	client := seedBackfillClient(t, s, "Idem Client")

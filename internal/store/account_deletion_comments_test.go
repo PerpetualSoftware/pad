@@ -14,6 +14,7 @@ import (
 // admin-only to edit. testStore enables PRAGMA foreign_keys, so without the
 // detach step this fails with a FK violation.
 func TestDeleteAccountAtomic_DetachesAuthoredComments(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	user, err := s.CreateUser(models.UserCreate{

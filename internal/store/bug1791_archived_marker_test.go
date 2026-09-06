@@ -14,6 +14,7 @@ import (
 // surfaced by `all=true` looked identical to a live row, which read as
 // corruption when it then 404'd on get/update.
 func TestListItems_IncludeArchived_PopulatesDeletedAt(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

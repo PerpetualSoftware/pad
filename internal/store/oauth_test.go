@@ -61,6 +61,7 @@ func newTestRequest(clientID, signature, requestID string) models.OAuthRequest {
 // ------------------------------------------------------------
 
 func TestOAuth_ClientCRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	created, err := s.CreateOAuthClient(models.OAuthClientCreate{
@@ -102,6 +103,7 @@ func TestOAuth_ClientCRUD(t *testing.T) {
 }
 
 func TestOAuth_GetOAuthClient_NotFound(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	_, err := s.GetOAuthClient("does-not-exist")
 	if !errors.Is(err, ErrOAuthNotFound) {
@@ -117,6 +119,7 @@ func TestOAuth_GetOAuthClient_NotFound(t *testing.T) {
 // DELETE CASCADE on the migration) so its blast radius stays
 // obvious to future readers.
 func TestOAuth_DeleteOAuthClient_CascadesDependentRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -161,6 +164,7 @@ func TestOAuth_DeleteOAuthClient_CascadesDependentRows(t *testing.T) {
 }
 
 func TestOAuth_DeleteOAuthClient_Idempotent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 	if err := s.DeleteOAuthClient(c.ID); err != nil {
@@ -178,6 +182,7 @@ func TestOAuth_DeleteOAuthClient_Idempotent(t *testing.T) {
 }
 
 func TestOAuth_CreateClient_EmptySlicesNormalize(t *testing.T) {
+	t.Parallel()
 	// nil / empty slices must round-trip as empty (non-nil) so
 	// callers can range without nil-checking. Pinning this prevents
 	// a regression where Postgres's JSONB column returns null for
@@ -217,6 +222,7 @@ func TestOAuth_CreateClient_EmptySlicesNormalize(t *testing.T) {
 // ------------------------------------------------------------
 
 func TestOAuth_AuthorizationCode_CRUDAndInvalidate(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -255,6 +261,7 @@ func TestOAuth_AuthorizationCode_CRUDAndInvalidate(t *testing.T) {
 }
 
 func TestOAuth_GetAuthorizationCode_NotFound(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	_, err := s.GetAuthorizationCode("nope")
 	if !errors.Is(err, ErrOAuthNotFound) {
@@ -263,6 +270,7 @@ func TestOAuth_GetAuthorizationCode_NotFound(t *testing.T) {
 }
 
 func TestOAuth_InvalidateAuthorizationCode_Idempotent(t *testing.T) {
+	t.Parallel()
 	// Invalidating an absent / already-invalid row must not error.
 	// fosite's contract is "make it invalid"; our store doesn't
 	// distinguish "wasn't there" from "was already invalid".
@@ -277,6 +285,7 @@ func TestOAuth_InvalidateAuthorizationCode_Idempotent(t *testing.T) {
 // ------------------------------------------------------------
 
 func TestOAuth_AccessToken_CRUDAndDelete(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -307,6 +316,7 @@ func TestOAuth_AccessToken_CRUDAndDelete(t *testing.T) {
 // Verifies the count tracks insertions, ignores inactive rows, and
 // returns 0 when the table is empty.
 func TestOAuth_CountActiveOAuthAccessTokens(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -356,6 +366,7 @@ func TestOAuth_CountActiveOAuthAccessTokens(t *testing.T) {
 // the original issuance time gives the right "lifetime of this grant"
 // signal.
 func TestOAuth_OldestAccessTokenIssuedAtByRequestID(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -407,6 +418,7 @@ func TestOAuth_OldestAccessTokenIssuedAtByRequestID(t *testing.T) {
 // ------------------------------------------------------------
 
 func TestOAuth_RefreshToken_CRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -429,6 +441,7 @@ func TestOAuth_RefreshToken_CRUD(t *testing.T) {
 }
 
 func TestOAuth_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
+	t.Parallel()
 	// Per fosite's reference MemoryStore.RotateRefreshToken
 	// (storage/memory.go:497-504), rotation revokes BOTH the refresh
 	// family AND the access family for the grant's request_id, then
@@ -491,6 +504,7 @@ func TestOAuth_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
 }
 
 func TestOAuth_RevokeRefreshTokenFamily_RevokesEntireChain(t *testing.T) {
+	t.Parallel()
 	// The OAuth 2.1 BCP §4.14 "revoke the whole family on a replayed
 	// refresh" rule. fosite triggers this when GetRefreshToken on a
 	// previously-rotated (inactive) row signals replay.
@@ -531,6 +545,7 @@ func TestOAuth_RevokeRefreshTokenFamily_RevokesEntireChain(t *testing.T) {
 }
 
 func TestOAuth_RevokeAccessTokenFamily_RevokesEntireChain(t *testing.T) {
+	t.Parallel()
 	// Symmetric to RevokeRefreshTokenFamily — fosite revokes both
 	// access and refresh families when the user clicks "log out
 	// everywhere" or POSTs /oauth/revoke (sub-PR D).
@@ -561,6 +576,7 @@ func TestOAuth_RevokeAccessTokenFamily_RevokesEntireChain(t *testing.T) {
 // ------------------------------------------------------------
 
 func TestOAuth_PKCE_CRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -605,6 +621,7 @@ func TestOAuth_PKCE_CRUD(t *testing.T) {
 // readable as active. Without the fix, GetAccessToken would return
 // ErrOAuthInactiveToken here.
 func TestOAuth_Insert_AlwaysActive(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 
@@ -668,6 +685,7 @@ func TestOAuth_Insert_AlwaysActive(t *testing.T) {
 }
 
 func TestOAuth_Insert_RejectsEmptyRequiredFields(t *testing.T) {
+	t.Parallel()
 	// The store-level guards exist as defense in depth — fosite's
 	// adapter in sub-PR B will populate these fields, but the SQL
 	// schema's NOT NULL constraints would otherwise produce

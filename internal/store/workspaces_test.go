@@ -13,6 +13,7 @@ import (
 // collections underneath are never touched, just transitively hidden.
 // RestoreWorkspace clears deleted_at and everything comes back intact.
 func TestRestoreWorkspace_ResurfacesIntact(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Email: "owner@test.com", Name: "Owner", Password: "correct-horse-battery-staple"})
 	if err != nil {
@@ -80,6 +81,7 @@ func TestRestoreWorkspace_ResurfacesIntact(t *testing.T) {
 // idempotent-ish 404 semantics: restoring a live workspace, restoring
 // twice, and restoring an unknown slug all return sql.ErrNoRows.
 func TestRestoreWorkspace_ErrNoRowsWhenNothingToRestore(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Email: "owner@test.com", Name: "Owner", Password: "correct-horse-battery-staple"})
 	if err != nil {
@@ -119,6 +121,7 @@ func TestRestoreWorkspace_ErrNoRowsWhenNothingToRestore(t *testing.T) {
 // window boundary (29d IN, 31d OUT — the inverse of the purge boundary),
 // owner-scoping, live exclusion, and most-recently-deleted ordering.
 func TestListDeletedWorkspaces_WindowAndOwnerScope(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner, err := s.CreateUser(models.UserCreate{Email: "owner@test.com", Name: "Owner", Password: "correct-horse-battery-staple"})
 	if err != nil {

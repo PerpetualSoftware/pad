@@ -3,6 +3,7 @@ package store
 import "testing"
 
 func TestRebindQuery(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -26,6 +27,7 @@ func TestRebindQuery(t *testing.T) {
 }
 
 func TestDateBucket(t *testing.T) {
+	t.Parallel()
 	// Day/hour bucketing is fixed-width substring on the UTC RFC3339 TEXT, so
 	// both dialects emit the same expression. Verify each granularity.
 	for _, d := range []Dialect{&sqliteDialect{}, &postgresDialect{}} {
@@ -43,6 +45,7 @@ func TestDateBucket(t *testing.T) {
 }
 
 func TestSQLiteDialect(t *testing.T) {
+	t.Parallel()
 	d := &sqliteDialect{}
 
 	if d.Driver() != DriverSQLite {
@@ -63,6 +66,7 @@ func TestSQLiteDialect(t *testing.T) {
 }
 
 func TestPostgresDialect(t *testing.T) {
+	t.Parallel()
 	d := &postgresDialect{}
 
 	if d.Driver() != DriverPostgres {

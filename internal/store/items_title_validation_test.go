@@ -48,6 +48,7 @@ func asInvalidTitle(t *testing.T, err error) *InvalidItemTitleError {
 }
 
 func TestItemTitle_CreateRefuses(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleCreate")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -83,6 +84,7 @@ func TestItemTitle_CreateRefuses(t *testing.T) {
 // measured UpdateItem(target, {Title: ""}) returning err = nil and the item's
 // title becoming empty, while the create path refused the same input.
 func TestItemTitle_UpdateRefusesEmpty(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleUpdateEmpty")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -118,6 +120,7 @@ func TestItemTitle_UpdateRefusesEmpty(t *testing.T) {
 // the handler's generic error arm. Both dialects now refuse it the same way,
 // with a typed validation error rather than a driver error.
 func TestItemTitle_UpdateRefusesOverlong(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleUpdateLong")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -138,6 +141,7 @@ func TestItemTitle_UpdateRefusesOverlong(t *testing.T) {
 // bound whose accepted side is untested can be tightened by accident and
 // nothing fails.
 func TestItemTitle_BoundaryIsInclusive(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleBoundary")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -165,6 +169,7 @@ func TestItemTitle_BoundaryIsInclusive(t *testing.T) {
 // storing the raw one would leave the row holding something the validator never
 // saw. Both doors must persist what they checked.
 func TestItemTitle_StoresTheNormalizedValue(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleNormalize")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -202,6 +207,7 @@ func TestItemTitle_StoresTheNormalizedValue(t *testing.T) {
 // stored title predates the bound must stay editable; only a genuine rename is
 // a write-time door.
 func TestItemTitle_GrandfathersLegacyRows(t *testing.T) {
+	t.Parallel()
 	// RUNS ON BOTH DIALECTS. It used to skip on Postgres, on the stated ground
 	// that a legacy over-bound title implies a slug past the btree index-tuple
 	// cap — which is true of BUG-2804's 2 MiB fixture and FALSE of this one
@@ -254,6 +260,7 @@ func TestItemTitle_GrandfathersLegacyRows(t *testing.T) {
 // that would turn restoring a legacy archive into a hard failure for data this
 // product already accepted.
 func TestImportWorkspace_CoercesTitles(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner, err := s.CreateUser(models.UserCreate{
 		Name:     "Owner",
@@ -442,6 +449,7 @@ func highEntropySlug(n int) string {
 // The failure mode is the whole import aborting — the opposite of the
 // coerce-and-continue policy the title coercion exists to honour.
 func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner, err := s.CreateUser(models.UserCreate{
 		Name: "Owner", Email: "slug-collision-owner@example.com", Password: "passw0rd!",
@@ -545,6 +553,7 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 // comparing only the NORMALIZED form makes that false for exactly the rows the
 // exemption exists for.
 func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleEchoGrandfather")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -598,6 +607,7 @@ func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
 // this disjunct survived the rest of the suite, which is why the case is
 // pinned separately rather than folded into the test above.
 func TestItemTitle_GrandfathersAWriteThatNormalizesToTheStoredTitle(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleNormalizedEcho")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -627,6 +637,7 @@ func TestItemTitle_GrandfathersAWriteThatNormalizesToTheStoredTitle(t *testing.T
 // to protect legacy rows. No error is returned in that version, which is why
 // the assertion has to be on the stored bytes.
 func TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleNoMintEmpty")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -673,6 +684,7 @@ func TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle(t *testing.T) {
 // (The earlier grandfathering tests all derive the slug from the title, which
 // is exactly why they could not see this.)
 func TestItemTitle_GrandfatheredEchoDoesNotMoveTheSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "TitleEchoSlug")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

@@ -14,6 +14,7 @@ import (
 // upload-time behavior in WorkspaceStorageLimit, which returns -1
 // rather than rejecting the upload outright).
 func TestWorkspaceStorageInfo_NoOwner(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	wsID := newID()
@@ -51,6 +52,7 @@ func TestWorkspaceStorageInfo_NoOwner(t *testing.T) {
 //     pro/self-hosted bypass override resolution; the flag still
 //     surfaces the configured override for admin visibility)
 func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner, err := s.CreateUser(models.UserCreate{
@@ -128,6 +130,7 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 // in collections they can't access, and orphans (item_id IS NULL)
 // must be hidden as well so filenames don't leak.
 func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	wsID := newID()
@@ -248,6 +251,7 @@ func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
 //   - The row carries item_deleted=true so the UI can render the
 //     "(deleted)" badge.
 func TestWorkspaceAttachments_SurfacesSoftDeletedParents(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	wsID := newID()
@@ -341,6 +345,7 @@ func TestWorkspaceAttachments_SurfacesSoftDeletedParents(t *testing.T) {
 // Count and result queries must agree — a restricted caller's total
 // must match the rows they actually get back.
 func TestWorkspaceAttachments_ForeignParentYieldsNullMetadata(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	wsA, wsB := newID(), newID()
@@ -528,6 +533,7 @@ func TestWorkspaceAttachments_ForeignParentYieldsNullMetadata(t *testing.T) {
 // Again the predicate belongs in ON: the row must still list, with
 // only the collection columns nulled.
 func TestWorkspaceAttachments_ForeignCollectionYieldsNullCollectionMetadata(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	wsA, wsB := newID(), newID()
@@ -593,6 +599,7 @@ func TestWorkspaceAttachments_ForeignCollectionYieldsNullCollectionMetadata(t *t
 // the earlier prefix-only mapping silently passed those filters
 // through with no MIME predicate, returning the full list.
 func TestWorkspaceAttachments_CategoryFilters(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	wsID := newID()
@@ -669,6 +676,7 @@ func TestWorkspaceAttachments_CategoryFilters(t *testing.T) {
 // used_bytes — and that soft-deleted rows are excluded so the user
 // sees the post-delete value (Settings → Storage UX expectation).
 func TestWorkspaceStorageInfo_TracksLiveAttachments(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	wsID := newID()
@@ -721,6 +729,7 @@ func TestWorkspaceStorageInfo_TracksLiveAttachments(t *testing.T) {
 // the batched form at its own layer so the two cannot drift apart
 // silently.
 func TestAttachmentHashesWithRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Hash Rows")
 

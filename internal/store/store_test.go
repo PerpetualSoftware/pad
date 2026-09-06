@@ -516,6 +516,7 @@ func TestSQLiteConcurrentWritersNoBusy(t *testing.T) {
 }
 
 func TestNewStore(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("skipping SQLite-specific test when running against PostgreSQL")
 	}
@@ -534,6 +535,7 @@ func TestNewStore(t *testing.T) {
 }
 
 func TestNewStorePostgres(t *testing.T) {
+	t.Parallel()
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if pgURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set, skipping PostgreSQL test")
@@ -553,6 +555,7 @@ func TestNewStorePostgres(t *testing.T) {
 // --- Workspace Tests ---
 
 func TestWorkspaceCRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// Create
@@ -622,6 +625,7 @@ func TestWorkspaceCRUD(t *testing.T) {
 // of workspaces.updated_at and MAX(items.updated_at), so the freshness
 // signal answers "where is work happening?".
 func TestListWorkspaces_UpdatedAtReflectsItemActivity(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Active"})
@@ -686,6 +690,7 @@ func TestListWorkspaces_UpdatedAtReflectsItemActivity(t *testing.T) {
 // must surface item activity as its effective UpdatedAt, not just the
 // workspace row mtime.
 func TestGetUserWorkspaces_MemberFreshness(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Member-WS"})
@@ -911,6 +916,7 @@ func TestGetUserWorkspaces_MemberSpecificAccessFreshnessLimitedToVisibleItems(t 
 }
 
 func TestWorkspaceUniqueSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	ws1, _ := s.CreateWorkspace(models.WorkspaceCreate{Name: "Test"})
@@ -925,6 +931,7 @@ func TestWorkspaceUniqueSlug(t *testing.T) {
 }
 
 func TestWorkspaceSettingsHydrateStructuredContext(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	settings, err := models.SerializeWorkspaceSettings(&models.WorkspaceSettings{
@@ -980,6 +987,7 @@ func TestWorkspaceSettingsHydrateStructuredContext(t *testing.T) {
 // --- Document Tests ---
 
 func TestDocumentCRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1058,6 +1066,7 @@ func TestDocumentCRUD(t *testing.T) {
 }
 
 func TestDocumentListFilters(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1087,6 +1096,7 @@ func TestDocumentListFilters(t *testing.T) {
 }
 
 func TestVersionCreation(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1122,6 +1132,7 @@ func TestVersionCreation(t *testing.T) {
 }
 
 func TestVersionCreationActorChange(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1142,6 +1153,7 @@ func TestVersionCreationActorChange(t *testing.T) {
 }
 
 func TestVersionNotCreatedWithoutContentChange(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1158,6 +1170,7 @@ func TestVersionNotCreatedWithoutContentChange(t *testing.T) {
 }
 
 func TestDocumentLinkRename(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1178,6 +1191,7 @@ func TestDocumentLinkRename(t *testing.T) {
 }
 
 func TestFTSSearch(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1206,6 +1220,7 @@ func TestFTSSearch(t *testing.T) {
 }
 
 func TestFTSSearchScoped(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws1 := createTestWorkspace(t, s, "Workspace 1")
 	ws2 := createTestWorkspace(t, s, "Workspace 2")
@@ -1245,6 +1260,7 @@ func TestFTSSearchScoped(t *testing.T) {
 }
 
 func TestSearchCollectionFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1298,6 +1314,7 @@ func TestSearchCollectionFilter(t *testing.T) {
 }
 
 func TestSearchFieldFilters(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1359,6 +1376,7 @@ func TestSearchFieldFilters(t *testing.T) {
 }
 
 func TestSearchCollectionAndFieldFilters(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1397,6 +1415,7 @@ func TestSearchCollectionAndFieldFilters(t *testing.T) {
 }
 
 func TestSearchPagination(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1477,6 +1496,7 @@ func TestSearchPagination(t *testing.T) {
 }
 
 func TestSearchSorting(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1523,6 +1543,7 @@ func TestSearchSorting(t *testing.T) {
 }
 
 func TestSearchFacets(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1584,6 +1605,7 @@ func TestSearchFacets(t *testing.T) {
 }
 
 func TestActivity(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -1630,6 +1652,7 @@ func TestActivity(t *testing.T) {
 // item with that item_number. This lets the search palette double as a quick
 // "go to item N" jump. See BUG-910.
 func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1707,6 +1730,7 @@ func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
 // later pages. With the FTS WHERE-clause exclusion, the item appears
 // exactly once and Total counts it exactly once.
 func TestSearch_BareNumericQueryDedupsAgainstFTS(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	s.SeedDefaultCollections(ws.ID)
@@ -1762,6 +1786,7 @@ func TestSearch_BareNumericQueryDedupsAgainstFTS(t *testing.T) {
 // direct hits on page 0 ignoring `limit`, and not skip them entirely on
 // page 1.
 func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws1 := createTestWorkspace(t, s, "WS One")
 	ws2 := createTestWorkspace(t, s, "WS Two")
@@ -1853,6 +1878,7 @@ func TestSearch_BareNumericQueryPaginatesAcrossWorkspaces(t *testing.T) {
 
 // TestParseItemNumber covers the helper that gates the bare-numeric search path.
 func TestParseItemNumber(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in  string
 		num int
@@ -1880,6 +1906,7 @@ func TestParseItemNumber(t *testing.T) {
 }
 
 func TestSlugify(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected string

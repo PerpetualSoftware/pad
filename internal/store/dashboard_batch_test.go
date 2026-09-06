@@ -30,6 +30,7 @@ func linkBlocks(t *testing.T, s *Store, workspaceID, blockerID, blockedID string
 }
 
 func TestGetChildItemsForParents(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -83,6 +84,7 @@ func TestGetChildItemsForParents(t *testing.T) {
 }
 
 func TestGetChildItemsForParentsExcludesDeleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -110,6 +112,7 @@ func TestGetChildItemsForParentsExcludesDeleted(t *testing.T) {
 }
 
 func TestGetChildItemsForParentsEmpty(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	byParent, err := s.GetChildItemsForParents(nil)
 	if err != nil {
@@ -121,6 +124,7 @@ func TestGetChildItemsForParentsEmpty(t *testing.T) {
 }
 
 func TestGetBlocksEdges(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -157,6 +161,7 @@ func TestGetBlocksEdges(t *testing.T) {
 }
 
 func TestGetBlocksEdgesExcludesDeleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -179,6 +184,7 @@ func TestGetBlocksEdgesExcludesDeleted(t *testing.T) {
 }
 
 func TestGetItemsByIDsIncludeDeleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -217,6 +223,7 @@ func TestGetItemsByIDsIncludeDeleted(t *testing.T) {
 }
 
 func TestGetItemsByIDsIncludeDeletedEmpty(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	got, err := s.GetItemsByIDsIncludeDeleted(nil)
 	if err != nil {
@@ -228,6 +235,7 @@ func TestGetItemsByIDsIncludeDeletedEmpty(t *testing.T) {
 }
 
 func TestListItemsNoContentProjection(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

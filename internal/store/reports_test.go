@@ -28,6 +28,7 @@ func collCount(list []ReportCollectionCount, slug string) int {
 }
 
 func TestGetReport_ThroughputAndTotals(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 
@@ -73,6 +74,7 @@ func TestGetReport_ThroughputAndTotals(t *testing.T) {
 }
 
 func TestGetReport_NegativeTerminalNotCompleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "Doomed idea", "")
@@ -96,6 +98,7 @@ func TestGetReport_NegativeTerminalNotCompleted(t *testing.T) {
 }
 
 func TestGetReport_StatusDistribution(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	createTestItem(t, s, wsID, colID, "open1", "")
@@ -121,6 +124,7 @@ func TestGetReport_StatusDistribution(t *testing.T) {
 }
 
 func TestGetReport_CollectionFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, tasksID := newTransitionTestWorkspace(t, s)
 	bugs := createTestCollection(t, s, wsID, "Bugs")
@@ -141,6 +145,7 @@ func TestGetReport_CollectionFilter(t *testing.T) {
 }
 
 func TestGetReport_SoftDeletedExcludedFromCompleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "ship then delete", "")
@@ -170,6 +175,7 @@ func TestGetReport_SoftDeletedExcludedFromCompleted(t *testing.T) {
 }
 
 func TestGetReport_ScopeToVisibleExcludesHidden(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, tasksID := newTransitionTestWorkspace(t, s)
 	secret := createTestCollection(t, s, wsID, "Secret")
@@ -204,6 +210,7 @@ func TestGetReport_ScopeToVisibleExcludesHidden(t *testing.T) {
 }
 
 func TestGetReport_NonStatusDoneField(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, _ := s.CreateUser(models.UserCreate{Name: "H", Email: "h@example.com"})
 	ws, _ := s.CreateWorkspace(models.WorkspaceCreate{Name: "Hiring", Slug: "hiring", OwnerID: u.ID})
@@ -236,6 +243,7 @@ func TestGetReport_NonStatusDoneField(t *testing.T) {
 }
 
 func TestGetReport_ExcludesOutOfWindow(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	old := createTestItem(t, s, wsID, colID, "ancient", "")
@@ -256,6 +264,7 @@ func TestGetReport_ExcludesOutOfWindow(t *testing.T) {
 }
 
 func TestGetReport_DayWindowBucketsByHour(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, _ := newTransitionTestWorkspace(t, s)
 	rep, err := s.GetReport(wsID, ReportOptions{Window: "day", Now: time.Now().UTC()})
@@ -280,6 +289,7 @@ func backdateItem(t *testing.T, s *Store, itemID string, hoursAgo float64) {
 }
 
 func TestGetReport_CycleTime(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "slow task", "")
@@ -304,6 +314,7 @@ func TestGetReport_CycleTime(t *testing.T) {
 }
 
 func TestGetReport_WIPAndAging(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	a := createTestItem(t, s, wsID, colID, "old open", "")
@@ -344,6 +355,7 @@ func collDurMedian(list []ReportDuration, slug string) float64 {
 }
 
 func TestPercentile(t *testing.T) {
+	t.Parallel()
 	if got := percentile(nil, 0.5); got != 0 {
 		t.Errorf("empty percentile = %v, want 0", got)
 	}
@@ -360,6 +372,7 @@ func TestPercentile(t *testing.T) {
 }
 
 func TestGetReport_EmptyScopeWellFormedJSON(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, _ := newTransitionTestWorkspace(t, s)
 	// Empty visible set → no collections in scope (early-return path).
@@ -383,6 +396,7 @@ func TestGetReport_EmptyScopeWellFormedJSON(t *testing.T) {
 }
 
 func TestGetReport_OffsetShiftsWindow(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	createTestItem(t, s, wsID, colID, "recent", "") // created ~now
@@ -422,6 +436,7 @@ func TestGetReport_OffsetShiftsWindow(t *testing.T) {
 }
 
 func TestReportSnapshotAsOf(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s) // tasks; "done" is a default terminal
 	item := createTestItem(t, s, wsID, colID, "historical", "")
@@ -514,6 +529,7 @@ func TestReportSnapshotAsOf(t *testing.T) {
 }
 
 func TestGetReport_CompletedItems(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	a := createTestItem(t, s, wsID, colID, "Ship A", "")
@@ -569,6 +585,7 @@ func TestGetReport_CompletedItems(t *testing.T) {
 }
 
 func TestGetReport_CompletedItemsRespectsCurrentCollectionVisibility(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, _ := s.CreateUser(models.UserCreate{Name: "V", Email: "v@example.com"})
 	ws, _ := s.CreateWorkspace(models.WorkspaceCreate{Name: "Vis", Slug: "vis", OwnerID: u.ID})
@@ -611,6 +628,7 @@ func TestGetReport_CompletedItemsRespectsCurrentCollectionVisibility(t *testing.
 }
 
 func TestReportSnapshotAsOf_SameSecondSeqTiebreak(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "flipper", "")
@@ -651,6 +669,7 @@ func TestReportSnapshotAsOf_SameSecondSeqTiebreak(t *testing.T) {
 }
 
 func TestBackfillStatusTransitions_SeedSeqBelowHop(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
 	item := createTestItem(t, s, wsID, colID, "create-and-change", "")
@@ -699,6 +718,7 @@ func TestBackfillStatusTransitions_SeedSeqBelowHop(t *testing.T) {
 }
 
 func TestGetReport_DisabledConventionNotCompleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Name: "C", Email: "c@example.com"})
 	if err != nil {

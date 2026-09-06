@@ -211,6 +211,7 @@ func (s *Store) totalChildRows(t *testing.T, sw seededWorkspace) int {
 // completely untouched (no over-purge). mcp_audit_log is de-identified
 // (workspace_id nulled) rather than deleted.
 func TestPurgeWorkspaceData_RemovesAllChildDataNoOrphans(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Email: "owner@test.com", Name: "Owner", Password: "correct-horse-battery-staple"})
 	if err != nil {
@@ -270,6 +271,7 @@ func TestPurgeWorkspaceData_RemovesAllChildDataNoOrphans(t *testing.T) {
 // guard: PurgeWorkspaceData must refuse to touch a workspace that is not
 // soft-deleted, even if handed its ID directly — no child row is removed.
 func TestPurgeWorkspaceData_RefusesLiveWorkspace(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Email: "live@test.com", Name: "Live", Password: "correct-horse-battery-staple"})
 	if err != nil {
@@ -294,6 +296,7 @@ func TestPurgeWorkspaceData_RefusesLiveWorkspace(t *testing.T) {
 // workspace soft-deleted just past the cutoff is eligible; one deleted
 // just inside the window and a live workspace are NOT.
 func TestListPurgeableWorkspaces_Boundary(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Email: "b@test.com", Name: "B", Password: "correct-horse-battery-staple"})
 	if err != nil {

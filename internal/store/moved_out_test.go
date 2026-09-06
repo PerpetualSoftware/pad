@@ -11,6 +11,7 @@ import (
 // moved-out tombstone so the caller's local cache evicts it. The move
 // is recorded durably in item_collection_moves by MoveItem itself.
 func TestListMovedOutSince(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "MovedOutTest")
 	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
@@ -105,6 +106,7 @@ func TestListMovedOutSince(t *testing.T) {
 // seq. An item that moved out early but then churned in the hidden
 // collection (high current seq) must not be dropped past the limit.
 func TestListMovedOutSince_PaginatesByMoveSeq(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "MovedOutPaging")
 	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`

@@ -34,6 +34,7 @@ import (
 // costs in practice is recorded in the boundary note at the bottom of this
 // test, which is narrower than the filing predicted.
 func TestItemRename_LiteralSlashTitleIsNotRewrittenAsQualified(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -124,6 +125,7 @@ func TestItemRename_LiteralSlashTitleIsNotRewrittenAsQualified(t *testing.T) {
 // earlier fixture did not have: the decoy's title must contain the slash. The
 // link moves off the renamed item entirely, and nothing in the UI says so.
 func TestItemRename_LiteralSlashTitleRetargetsOntoALiteralSlashSibling(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -179,6 +181,7 @@ func TestItemRename_LiteralSlashTitleRetargetsOntoALiteralSlashSibling(t *testin
 // identical to the case above — "tasks/Setup" — so only the old title tells
 // them apart, and this one must KEEP its prefix across the rename.
 func TestItemRename_GenuinelyQualifiedBracketKeepsItsPrefix(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

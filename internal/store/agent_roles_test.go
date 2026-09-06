@@ -14,6 +14,7 @@ import (
 // / "unassigned" while still keeping role_id null (the marker that
 // distinguishes an unassigned bucket from a real role with that slug).
 func TestGetRoleBreakdown_UnassignedRowHasExplicitLabels(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := newTestWorkspace(t, s, "rb-bug987")
 

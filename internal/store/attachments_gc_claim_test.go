@@ -82,6 +82,7 @@ func (f *gcClaimFixture) rowExists(t *testing.T, id string) bool {
 }
 
 func TestStampAttachmentRefs_ItemContentAndFields(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	inContent := f.seedNeverAttached(t)
 	inFields := f.seedNeverAttached(t)
@@ -117,6 +118,7 @@ func TestStampAttachmentRefs_ItemContentAndFields(t *testing.T) {
 }
 
 func TestStampAttachmentRefs_Comments(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	inCreate := f.seedNeverAttached(t)
 	inEdit := f.seedNeverAttached(t)
@@ -143,6 +145,7 @@ func TestStampAttachmentRefs_Comments(t *testing.T) {
 }
 
 func TestStampAttachmentRefs_WorkspaceScoped(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	foreign := f.seedNeverAttached(t)
 
@@ -171,6 +174,7 @@ func TestStampAttachmentRefs_WorkspaceScoped(t *testing.T) {
 }
 
 func TestClaimNeverAttached_PredicateLegs(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	cutoff := time.Now().Add(-15 * time.Minute)
 
@@ -232,6 +236,7 @@ func TestClaimNeverAttached_PredicateLegs(t *testing.T) {
 }
 
 func TestClaimSoftDeleted_RefusesRestoredRow(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	a := f.seedNeverAttached(t)
 	oldTS := time.Now().Add(-40 * 24 * time.Hour).UTC().Format(time.RFC3339)
@@ -269,6 +274,7 @@ func TestClaimSoftDeleted_RefusesRestoredRow(t *testing.T) {
 // blob is only reclaimed after a successful claim (row-before-bytes in
 // the sweep), the bytes survive by construction.
 func TestClaimProtocol_FiledRaceSequence(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	a := f.seedNeverAttached(t)
 
@@ -311,6 +317,7 @@ func TestClaimProtocol_FiledRaceSequence(t *testing.T) {
 // (and, on Postgres, its own row lock) — not just the claim's parent
 // NOT EXISTS belt.
 func TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	orig := f.seedNeverAttached(t)
 
@@ -351,6 +358,7 @@ func TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal(t *testing.T) {
 // selection, must refuse — the parent-liveness re-read happens inside
 // the claim's own transaction, under a Postgres row lock.
 func TestClaimOrphanedVariant_RestoreRefusesAtClaimTime(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	parent := f.seedNeverAttached(t)
 
@@ -423,6 +431,7 @@ func TestClaimOrphanedVariant_RestoreRefusesAtClaimTime(t *testing.T) {
 // the claim, so the fix cannot have widened into reclaiming healthy
 // thumbnails.
 func TestOrphanedVariant_ForeignParentDoesNotShield(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 
 	// A LIVE parent in a different workspace.

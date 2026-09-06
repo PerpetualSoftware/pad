@@ -26,6 +26,7 @@ import (
 
 // TestLayerAAcceptsEveryRepairedCorpusValue — the driver guard.
 func TestLayerAAcceptsEveryRepairedCorpusValue(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "RepairLayerA")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -58,6 +59,7 @@ func TestLayerAAcceptsEveryRepairedCorpusValue(t *testing.T) {
 // raw handle so what is measured is the DATABASE's verdict rather than Layer
 // A's reflected back.
 func TestLayerBAcceptsEveryRepairedCorpusValue(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("Layer B is SQLite-only")
@@ -116,6 +118,7 @@ func TestLayerBAcceptsEveryRepairedCorpusValue(t *testing.T) {
 // PostgreSQL's own parser. That claim is only discharged by putting the
 // repaired values in front of a real Postgres.
 func TestNativePostgresAcceptsEveryRepairedCorpusValue(t *testing.T) {
+	t.Parallel()
 	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if dsn == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set; the native-Postgres leg needs a real server")

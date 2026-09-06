@@ -18,6 +18,7 @@ import (
 // The positive half of each assertion (same grant, correct workspace) is what
 // keeps the added predicate from being a silent lockout of legitimate guests.
 func TestResolveUserPermission_GrantsDoNotCrossWorkspaces(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")

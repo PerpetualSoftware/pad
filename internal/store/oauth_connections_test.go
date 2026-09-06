@@ -63,6 +63,7 @@ func seedWorkspaceForConn(t *testing.T, s *Store, name string) (id, slug string)
 }
 
 func TestOAuthConnections_CreateGetRoundTrip(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	u, err := s.CreateUser(models.UserCreate{
 		Email: "conn-create@example.com", Name: "C", Password: "pw-create-12345",
@@ -98,6 +99,7 @@ func TestOAuthConnections_CreateGetRoundTrip(t *testing.T) {
 }
 
 func TestOAuthConnections_GetMissingReturnsSentinel(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	_, err := s.GetOAuthConnection("nope")
 	if !errors.Is(err, ErrOAuthConnectionNotFound) {
@@ -106,6 +108,7 @@ func TestOAuthConnections_GetMissingReturnsSentinel(t *testing.T) {
 }
 
 func TestOAuthConnectionAccess_NoRowFallsBack(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	got, err := s.GetOAuthConnectionAccess("never-existed")
 	if err != nil {
@@ -120,6 +123,7 @@ func TestOAuthConnectionAccess_NoRowFallsBack(t *testing.T) {
 }
 
 func TestOAuthConnectionAccess_WildcardSkipsJoin(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	u, _ := s.CreateUser(models.UserCreate{
 		Email: "wc@example.com", Name: "W", Password: "pw-wild-12345",
@@ -152,6 +156,7 @@ func TestOAuthConnectionAccess_WildcardSkipsJoin(t *testing.T) {
 }
 
 func TestOAuthConnectionAccess_ExplicitListReturnsSortedSlugs(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	u, _ := s.CreateUser(models.UserCreate{
 		Email: "ex@example.com", Name: "E", Password: "pw-exp-12345",
@@ -188,6 +193,7 @@ func TestOAuthConnectionAccess_ExplicitListReturnsSortedSlugs(t *testing.T) {
 }
 
 func TestOAuthConnections_AddWorkspaceIdempotent(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	u, _ := s.CreateUser(models.UserCreate{
 		Email: "idem@example.com", Name: "I", Password: "pw-idem-12345",
@@ -214,6 +220,7 @@ func TestOAuthConnections_AddWorkspaceIdempotent(t *testing.T) {
 }
 
 func TestOAuthConnections_RemoveWorkspaceIdempotent(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	u, _ := s.CreateUser(models.UserCreate{
 		Email: "rem@example.com", Name: "R", Password: "pw-rem-12345",
@@ -241,6 +248,7 @@ func TestOAuthConnections_RemoveWorkspaceIdempotent(t *testing.T) {
 }
 
 func TestOAuthConnections_RenameAndScopeFlagsRequireExistingRow(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	if err := s.RenameConnection("ghost", "anything"); !errors.Is(err, ErrOAuthConnectionNotFound) {
 		t.Errorf("Rename missing: got %v, want ErrOAuthConnectionNotFound", err)
@@ -251,6 +259,7 @@ func TestOAuthConnections_RenameAndScopeFlagsRequireExistingRow(t *testing.T) {
 }
 
 func TestOAuthConnections_RenameAndScopeFlagsTouchUpdatedAt(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	u, _ := s.CreateUser(models.UserCreate{
 		Email: "u@example.com", Name: "U", Password: "pw-upd-12345",
@@ -279,6 +288,7 @@ func TestOAuthConnections_RenameAndScopeFlagsTouchUpdatedAt(t *testing.T) {
 }
 
 func TestOAuthConnections_DeleteCascadesJoinTable(t *testing.T) {
+	t.Parallel()
 	s := newOAuthConnTestStore(t)
 	u, _ := s.CreateUser(models.UserCreate{
 		Email: "del@example.com", Name: "D", Password: "pw-del-12345",

@@ -12,6 +12,7 @@ import (
 // (or as a "sql: expected N destination arguments" failure) rather than at
 // runtime.
 func TestWorkspaceSourcePersisted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	cli, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Agent WS", Source: "cli"})

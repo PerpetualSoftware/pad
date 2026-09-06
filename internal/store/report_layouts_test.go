@@ -7,6 +7,7 @@ import (
 )
 
 func TestReportLayout_SaveGetUpsert(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Name: "Lay", Email: "lay@example.com"})
 	if err != nil {
@@ -65,6 +66,7 @@ func TestReportLayout_SaveGetUpsert(t *testing.T) {
 }
 
 func TestReportLayout_IsolatedPerUserAndWorkspace(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	a, _ := s.CreateUser(models.UserCreate{Name: "A", Email: "a@example.com"})
 	b, _ := s.CreateUser(models.UserCreate{Name: "B", Email: "b@example.com"})
