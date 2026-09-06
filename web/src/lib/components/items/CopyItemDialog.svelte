@@ -48,6 +48,7 @@ user hunting for an item that provably does not exist.
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import { copyDropReasonMessage } from '$lib/items/copyDropReasons';
+	import { isCollectable } from '$lib/items/copyNeedsValue';
 	import { canEditCollection } from '$lib/utils/permissions';
 	import { parseSchema } from '$lib/types';
 	import type {
@@ -133,7 +134,11 @@ user hunting for an item that provably does not exist.
 	 * any uncollectable type renders an explicit blocked state naming the field
 	 * and its type, rather than a dead Confirm or a lying input.
 	 */
-	const COLLECTABLE_TYPES = new Set(['text', 'number', 'select', 'date', 'checkbox', 'url']);
+	// COLLECTABLE_TYPES and isCollectable now live in `$lib/items/copyNeedsValue`
+	// so they can be tested (TASK-2869, following IDEA-2894): the mutant that
+	// made `relation` unconditionally collectable survived every suite in the
+	// repo while this logic was inline here.
+
 
 	// ── Destination selection ─────────────────────────────────────────────
 	let workspaces = $state<Workspace[]>([]);
@@ -245,9 +250,7 @@ user hunting for an item that provably does not exist.
 
 	/** Required destination fields the dialog cannot safely collect a value for. */
 	let blockedFields = $derived(
-		(preflight?.fields.needs_value ?? []).filter(
-			(f) => !COLLECTABLE_TYPES.has(f.type ?? 'text')
-		)
+		(preflight?.fields.needs_value ?? []).filter((f) => !isCollectable(f))
 	);
 
 	let warnings = $derived(preflight?.warnings ?? null);
@@ -657,12 +660,37 @@ user hunting for an item that provably does not exist.
 		return applied;
 	}
 
+	/**
+	 * The workspace slug the relation picker searches in.
+	 *
+	 * The PREFLIGHT'S OWN destination slug, not `destWs`, and the difference
+	 * is not cosmetic: an item can be opened through a workspace-UUID URL, the
+	 * route parameter is passed through as `sourceWsSlug`, and a same-workspace
+	 * copy then puts that UUID in `destWs`. `/search` resolves a workspace by
+	 * SLUG only, so a picker handed a UUID searches nothing and silently
+	 * returns no results — a control that looks usable and cannot be used.
+	 *
+	 * The preflight response is the canonicalising round-trip: the server
+	 * resolved whatever it was given and answered with the real slug. Falls
+	 * back to `destWs` only before the first preflight has returned, at which
+	 * point no needs-value row is being rendered anyway (codex review,
+	 * TASK-2869).
+	 */
+	let pickerWsSlug = $derived(preflight?.destination.workspace_slug || destWs);
+
 	function toFieldDef(row: ItemCopyPreflightNeedsValue): FieldDef {
 		return {
 			key: row.key,
 			label: row.label || row.key,
 			type: (row.type ?? 'text') as FieldDef['type'],
 			options: row.options,
+			// The DESTINATION's target collection for a relation row, which is
+			// what FieldEditor scopes its picker to. The call site pairs it
+			// with wsSlug={destWs} — the DESTINATION workspace, never the
+			// source: the picker must list items the copy can actually point
+			// at, and a relation resolves at the destination (TASK-2869,
+			// day-55 ruling).
+			collection: row.collection,
 			required: row.required
 		};
 	}
@@ -1135,7 +1163,7 @@ user hunting for an item that provably does not exist.
 								{/if}
 								<div class="needs-list">
 									{#each overrideRows as row (row.key)}
-										{#if COLLECTABLE_TYPES.has(row.type ?? 'text')}
+										{#if isCollectable(row)}
 											<div class="needs-row">
 												<span class="k">
 													{row.label || row.key}
@@ -1144,6 +1172,7 @@ user hunting for an item that provably does not exist.
 												<div class="needs-control">
 													<FieldEditor
 														field={toFieldDef(row)}
+														wsSlug={pickerWsSlug}
 														ariaLabel={row.label || row.key}
 														value={overrides[row.key]}
 														readonly={submitting || preparing}

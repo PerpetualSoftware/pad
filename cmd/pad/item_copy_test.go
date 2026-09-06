@@ -1656,3 +1656,56 @@ func TestItemCopyCmd_IsRegisteredWithEveryFlag(t *testing.T) {
 		t.Fatal("pad item copy is not registered in the item group")
 	}
 }
+
+// A relation row tells the CLI user what to point at (TASK-2869).
+//
+// The dialog gets a picker; the CLI has no picker at all, so the target
+// collection is the only thing that makes `--field owner_ref=<ref>`
+// answerable. Without it the row reads "owner_ref (relation) required — no
+// value" and the user is told a value is needed but not what kind of value
+// exists.
+//
+// The `options:` line for a select is the exact analogue, and is asserted a
+// few tests above; this is that line for relations.
+func TestRenderItemCopyNeedsValue_RelationNamesItsTargetCollection(t *testing.T) {
+	pre := &cli.ItemCopyPreflight{
+		Destination: cli.ItemCopyPreflightDestination{
+			WorkspaceSlug: "dest-ws", CollectionSlug: "tasks",
+		},
+		Fields: cli.ItemCopyPreflightFields{
+			NeedsValue: []cli.ItemCopyPreflightNeedsValue{
+				{
+					Key: "owner_ref", Label: "Owner", Type: "relation",
+					Collection: "people", Required: true, Reason: "missing_required",
+				},
+				// A NON-relation row in the same render, so the assertion
+				// below cannot pass by printing the line unconditionally.
+				{
+					Key: "priority", Label: "Priority", Type: "select",
+					Options: []string{"low", "high"}, Required: true,
+					Reason: "missing_required",
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderItemCopyNeedsValue(&buf, pre, nil); err != nil {
+		t.Fatalf("renderItemCopyNeedsValue: %v", err)
+	}
+	got := buf.String()
+
+	if !strings.Contains(got, "target collection: people") {
+		t.Fatalf("the relation row does not name its target collection, so a CLI user is told a "+
+			"value is needed and not what kind exists:\n%s", got)
+	}
+	// Exactly once: the select row must NOT produce one.
+	if n := strings.Count(got, "target collection:"); n != 1 {
+		t.Fatalf("target collection printed %d times, want 1 — only the relation row has a "+
+			"target:\n%s", n, got)
+	}
+	// The select's own line still renders, so this change did not displace it.
+	if !strings.Contains(got, `options: "low", "high"`) {
+		t.Fatalf("the select row lost its options line:\n%s", got)
+	}
+}

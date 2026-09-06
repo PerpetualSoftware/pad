@@ -144,11 +144,17 @@ type ItemCopyPreflightDropped struct {
 // ItemCopyPreflightNeedsValue is one destination field the caller must
 // resolve with an override before the copy can proceed.
 type ItemCopyPreflightNeedsValue struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label,omitempty"`
-	Type     string   `json:"type,omitempty"`
-	Options  []string `json:"options,omitempty"`
-	Required bool     `json:"required"`
+	Key     string   `json:"key"`
+	Label   string   `json:"label,omitempty"`
+	Type    string   `json:"type,omitempty"`
+	Options []string `json:"options,omitempty"`
+	// Collection is the target collection SLUG for a `relation` field, empty
+	// otherwise (TASK-2869). Mirrored here because
+	// TestItemCopyMirrorsMatchServerShapes requires this struct to match the
+	// server's field for field — a mirror that silently lags is a mirror that
+	// lies, and the CLI renders these rows.
+	Collection string `json:"collection,omitempty"`
+	Required   bool   `json:"required"`
 	// Reason is "missing_required" or "invalid_value".
 	Reason  string `json:"reason"`
 	Message string `json:"message,omitempty"`

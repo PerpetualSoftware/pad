@@ -843,6 +843,17 @@ export interface ItemCopyPreflightNeedsValue {
 	label?: string;
 	type?: string;
 	options?: string[];
+	/**
+	 * Target collection SLUG for a `relation` field; absent for every other
+	 * type (TASK-2869).
+	 *
+	 * It names a collection in the DESTINATION workspace, which is what the
+	 * field editor scopes its picker to. Absent on a relation row means the
+	 * server could not say what to point at — render the non-editable state
+	 * rather than an unscoped picker, which would otherwise offer SOURCE
+	 * workspace items the copy cannot use.
+	 */
+	collection?: string;
 	required: boolean;
 	reason: 'missing_required' | 'invalid_value';
 	message?: string;
