@@ -133,6 +133,15 @@ user hunting for an item that provably does not exist.
 	 * the dangerous case: enterable and silently invalid. So a required field of
 	 * any uncollectable type renders an explicit blocked state naming the field
 	 * and its type, rather than a dead Confirm or a lying input.
+	 *
+	 * TYPE IS NO LONGER THE ONLY REASON A ROW IS BLOCKED (IDEA-2899). A
+	 * `relation` whose target collection is deleted or unreadable is blocked
+	 * too, and its message says which collection rather than blaming the type —
+	 * the type is fine, the target is gone. `uncollectableReason` is what tells
+	 * the two apart, and it also decides whether the CLI is worth suggesting:
+	 * it is for a type this dialog cannot collect, and it is NOT for an
+	 * unavailable target or an empty key, both of which the CLI refuses for the
+	 * same reason the dialog does.
 	 */
 	// COLLECTABLE_TYPES and isCollectable now live in `$lib/items/copyNeedsValue`
 	// so they can be tested (TASK-2869, following IDEA-2894): the mutant that
@@ -259,9 +268,15 @@ user hunting for an item that provably does not exist.
 	 * `blockedFields[0]` was fine while every blocked row was type-shaped. It
 	 * is not now: with a relation whose target is unavailable sorted first, the
 	 * printed command would name the ONE field the CLI cannot set either.
+	 *
+	 * An EMPTY KEY is excluded for the same reason and was the round-4 miss:
+	 * `--field =value` is rejected by the CLI's own parser, so a required
+	 * `json` field the destination reported with no key is type-shaped, blocked,
+	 * and still unfillable. The CLI has refused these since Codex round 6; the
+	 * dialog was printing the command anyway.
 	 */
 	let cliFillableField = $derived(
-		blockedFields.find((f) => uncollectableReason(f) === 'type') ?? null
+		blockedFields.find((f) => uncollectableReason(f) === 'type' && f.key.trim() !== '') ?? null
 	);
 
 	let warnings = $derived(preflight?.warnings ?? null);

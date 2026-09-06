@@ -225,7 +225,15 @@ type ItemCopyPreflightFields struct {
 
 	// NeedsValue are destination fields the copy cannot satisfy on its
 	// own: required-and-empty, or carrying a value the destination schema
-	// rejects. Supply an override for each and the entry clears.
+	// rejects. Supplying an override clears the entry — for the ones an
+	// override CAN clear.
+	//
+	// Some cannot be (IDEA-2899). A row whose `collection_unavailable` is set
+	// names a relation target that has been deleted or that this caller cannot
+	// read, so no value would resolve it; and a row the destination schema
+	// reported with an EMPTY key cannot be addressed by an override at all.
+	// Both are reported rather than hidden, because a caller that is told only
+	// "supply a value" will go looking for one that does not exist.
 	NeedsValue []ItemCopyPreflightNeedsValue `json:"needs_value"`
 }
 

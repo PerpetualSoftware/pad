@@ -2010,3 +2010,30 @@ func TestRunItemCopy_UnfillableExplanationMatchesTheActualReason(t *testing.T) {
 		}
 	}
 }
+
+// ONE row carrying BOTH faults — an empty key AND an unavailable relation
+// target. Review round 4, and the fixture that matters: the mixed-case test
+// above uses TWO rows with one fault each, and a `continue` between the two
+// counts made a single dual-fault row report only the relation reason. Two
+// rows with one fault each and one row with two are different inputs, and only
+// the second exercises the counting.
+func TestRunItemCopy_ARowWithBothFaultsReportsBoth(t *testing.T) {
+	p := fullPreflight()
+	p.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Type: "relation", Collection: "people",
+		CollectionUnavailable: true, Required: true, Reason: "missing_required",
+	}}
+
+	d := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	for _, want := range []string{"relation target", "empty key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("a row with BOTH faults omits %q, so one reason goes unexplained: %v",
+				want, err)
+		}
+	}
+}

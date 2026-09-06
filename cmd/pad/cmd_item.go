@@ -1841,7 +1841,8 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 		// and the error is the one line a script or a hurried reader sees.
 		hint := " (use --field key=value)"
 		if itemCopyUnfillable(pre.Fields.NeedsValue) == len(pre.Fields.NeedsValue) {
-			hint = fmt.Sprintf(" (no --field can supply it: %s)",
+			hint = fmt.Sprintf(" (no --field can supply %s: %s)",
+				map[bool]string{true: "it", false: "them"}[len(pre.Fields.NeedsValue) == 1],
 				itemCopyUnfillableWhy(pre.Fields.NeedsValue))
 		}
 		return fmt.Errorf("copy refused: %s in %s/%s %s a value%s",
@@ -2155,8 +2156,15 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 	return w.err
 }
 
-// renderItemCopyNeedsValue is the refusal. It names every unresolved field
-// and shows the exact flags to add.
+// renderItemCopyNeedsValue is the refusal. It names every unresolved field and
+// shows the flags to add FOR THE ONES A FLAG CAN ADDRESS.
+//
+// Not every one can (IDEA-2899). A field the destination reported with an empty
+// key cannot be named by `--field` at all, and a relation whose target
+// collection is unavailable to this caller has no value that would resolve it.
+// Those rows are named and explained, and deliberately left out of the `Add:`
+// line — printing a command that is refused for exactly the reason someone is
+// already stuck is worse than printing nothing.
 //
 // No MUTATING request was sent. The read-only preflight has of course
 // already run — that is where this information came from — so do not read
@@ -2348,13 +2356,19 @@ func itemCopyUnfillable(rows []cli.ItemCopyPreflightNeedsValue) int {
 // Widening what a rule ACTS on silently widens what it SAYS, and the tell is a
 // sentence that was true while the predicate was narrower.
 //
+// Counts the two faults INDEPENDENTLY — no `continue` between them — because
+// ONE row can carry both: a relation with an empty key whose target is also
+// unavailable. Skipping the second count made such a row report only the
+// relation reason, and a mixed-case test built from TWO rows could not see it
+// (review round 4). One row with both faults and two rows with one each are
+// different fixtures, and only the first exercises this.
+//
 // Returns "" when nothing is unfillable.
 func itemCopyUnfillableWhy(rows []cli.ItemCopyPreflightNeedsValue) string {
 	targets, keys := 0, 0
 	for _, f := range rows {
 		if f.CollectionUnavailable {
 			targets++
-			continue
 		}
 		if strings.TrimSpace(f.Key) == "" {
 			keys++
@@ -2362,11 +2376,13 @@ func itemCopyUnfillableWhy(rows []cli.ItemCopyPreflightNeedsValue) string {
 	}
 	switch {
 	case targets > 0 && keys > 0:
-		return "the relation target is not available to you, and the rest came back with an empty key"
+		return "some name a relation target that is not available to you, and some came back with an empty key"
 	case targets > 0:
 		return "the relation target is not available to you"
 	case keys > 0:
-		return "the destination reported them with an empty key, which --field cannot address"
+		// Neutral on number, since one call site says "it" and the other can be
+		// plural (review round 4): "an empty key" reads correctly after either.
+		return "an empty key came back from the destination, which --field cannot address"
 	}
 	return ""
 }

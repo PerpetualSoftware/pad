@@ -141,8 +141,14 @@ type ItemCopyPreflightDropped struct {
 	Reason string `json:"reason"`
 }
 
-// ItemCopyPreflightNeedsValue is one destination field the caller must
-// resolve with an override before the copy can proceed.
+// ItemCopyPreflightNeedsValue is one destination field the copy cannot satisfy
+// on its own.
+//
+// Usually the caller resolves it with an override. Not always: a row carrying
+// `CollectionUnavailable` names a relation target that is deleted or unreadable
+// by this caller, and a row with an EMPTY key cannot be named by `--field` — so
+// the copy cannot proceed at all, and the CLI says so instead of advising a
+// flag (IDEA-2899).
 type ItemCopyPreflightNeedsValue struct {
 	Key     string   `json:"key"`
 	Label   string   `json:"label,omitempty"`

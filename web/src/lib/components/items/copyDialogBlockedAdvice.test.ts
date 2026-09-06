@@ -35,6 +35,14 @@ describe('IDEA-2899 — the blocked-field notice advises only where advice works
 		expect(source).not.toMatch(/--field \{blockedFields\[0\]\.key\}=value/);
 	});
 
+	it('excludes a row whose KEY is empty, which --field cannot address either', () => {
+		// A required `json` field the destination reported with no key is
+		// type-shaped, blocked, and unfillable: `--field =value` is rejected by
+		// the CLI's own parser, which has refused these since Codex round 6.
+		// The dialog was printing the command anyway (review round 4).
+		expect(source).toMatch(/f\.key\.trim\(\) !== ''/);
+	});
+
 	it('branches the message on why the row is uncollectable', () => {
 		expect(source).toMatch(/uncollectableReason\(f\) === 'unavailable_target'/);
 	});
