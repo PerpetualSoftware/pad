@@ -31,7 +31,7 @@ describe('BUG-2609 end-to-end: stale snapshot does not clobber a newer persisted
 		const WS = 'ws-2609';
 
 		// 1) The SSE delta lands first — newer-seq row + cursor advance, atomic.
-		await persistDelta(U, WS, [row('x', 7)], 'cursor-7', false);
+		await persistDelta(U, WS, [row('x', 7)], 'cursor-7', false, null);
 		// 2) The stale RAM snapshot (older seq) lands LAST — the fire-and-forget
 		//    upsert that BUG-2609's evidence run captured mid-flight.
 		await persistUpserts(U, WS, [row('x', 5)]);
@@ -52,7 +52,7 @@ describe('BUG-2609 end-to-end: stale snapshot does not clobber a newer persisted
 		const U = null;
 		const WS = 'ws-2609-asym';
 
-		await persistDelta(U, WS, [row('x', 7)], 'cursor-7', false);
+		await persistDelta(U, WS, [row('x', 7)], 'cursor-7', false, null);
 		await persistUpserts(U, WS, [row('x', undefined)]); // seq-less snapshot lands last
 
 		expect((await rawItem(U, WS, 'x'))?.seq).toBe(7);

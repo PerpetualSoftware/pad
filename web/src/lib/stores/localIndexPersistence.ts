@@ -42,7 +42,9 @@ import { resolveRowWrite, type Tombstone } from './itemRowMerge';
  * store-creation migrations. Bumped 1 → 2 in PLAN-2636 unit 2 to add the
  * `tombstones` object store (BUG-2633). Distinct from
  * `LOCAL_INDEX_SCHEMA_VERSION`, which versions the ROW SHAPE: the row shape did
- * not change, so that constant stays 3. A v1 DB reopening under v2 gets the
+ * not change in that unit, so the constant stayed 3 there. (It is 4 now — the
+ * meta row gained `accessEpoch` in IDEA-2898. Two independent counters, and
+ * neither implies the other.) A v1 DB reopening under v2 gets the
  * upgrade callback with `oldVersion === 1`; `items`/`meta` data is RETAINED and
  * only the new store is created (empty — old exposure until first resync, not
  * corruption). An OLD build reopening a v2 DB at version 1 gets a VersionError,
@@ -63,13 +65,23 @@ export const IDB_FORMAT_VERSION = 2;
  * `/items-index`. Server truth (items.content) is never persisted
  * here, so a cache wipe loses nothing.
  */
-export const LOCAL_INDEX_SCHEMA_VERSION = 3;
+export const LOCAL_INDEX_SCHEMA_VERSION = 4;
 
 /** Result of a `hydrate()` call. Empty payload when there's no cache yet. */
 export interface HydrateResult {
 	items: ItemIndexRow[];
 	cursor: string;
 	includesUnparentedMetadata: boolean | null;
+	/**
+	 * The caller's access fingerprint at the time this cache was written
+	 * (IDEA-2898). Persisted for one reason: a revocation that lands while the
+	 * tab is CLOSED writes no row, so the cached rows are stale and nothing in
+	 * the delta stream says so. Comparing the persisted epoch against the next
+	 * response's is what turns that into a resync instead of a silent adopt.
+	 * Null only for a cache with no epoch yet — which the version bump to 4
+	 * makes unreachable for caches written by this build or later.
+	 */
+	accessEpoch: string | null;
 	/**
 	 * The durable retag overlay applied to `items` before return (BUG-2634):
 	 * `collection_id → newSlug`. Returned for inspection; `items` already
@@ -85,6 +97,8 @@ interface MetaRow {
 	cursor: string;
 	schemaVersion: number;
 	includesUnparentedMetadata: boolean;
+	/** See HydrateResult.accessEpoch (IDEA-2898). */
+	accessEpoch: string | null;
 }
 
 /**
@@ -228,6 +242,7 @@ export async function hydrate(
 		items: [],
 		cursor: '0',
 		includesUnparentedMetadata: null,
+		accessEpoch: null,
 		retags: {},
 	};
 	if (!isSupported()) return empty;
@@ -292,6 +307,7 @@ export async function hydrate(
 			items,
 			cursor: meta?.cursor ?? '0',
 			includesUnparentedMetadata: meta?.includesUnparentedMetadata ?? null,
+			accessEpoch: meta?.accessEpoch ?? null,
 			retags,
 		};
 	} catch {
@@ -466,6 +482,7 @@ export async function persistDelta(
 	rows: ItemIndexRow[],
 	cursor: string,
 	includesUnparentedMetadata: boolean,
+	accessEpoch: string | null,
 	removeIds: string[] = [],
 ): Promise<void> {
 	if (!isSupported()) return;
@@ -505,6 +522,7 @@ export async function persistDelta(
 				cursor,
 				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
 				includesUnparentedMetadata,
+				accessEpoch,
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;
@@ -543,6 +561,7 @@ export async function persistReplace(
 	rows: ItemIndexRow[],
 	cursor: string,
 	includesUnparentedMetadata: boolean,
+	accessEpoch: string | null,
 ): Promise<void> {
 	if (!isSupported()) return;
 	const db = await open(userId, ws);
@@ -570,6 +589,7 @@ export async function persistReplace(
 				cursor,
 				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
 				includesUnparentedMetadata,
+				accessEpoch,
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;
