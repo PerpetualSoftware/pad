@@ -1795,3 +1795,95 @@ func TestRenderItemCopyNeedsValue_AvailableRelationTargetIsUnchanged(t *testing.
 		t.Fatalf("a fillable relation lost its suggestion:\n%s", got)
 	}
 }
+
+// unfillableOnlyPreflight is a refusal whose ONLY unresolved field is a
+// relation nobody can supply (IDEA-2899).
+func unfillableOnlyPreflight() *cli.ItemCopyPreflight {
+	p := fullPreflight()
+	p.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "owner_ref", Label: "Owner", Type: "relation",
+		Collection: "people", CollectionUnavailable: true,
+		Required: true, Reason: "missing_required",
+	}}
+	return p
+}
+
+// IDEA-2899, found by review AFTER the render was fixed and the reason the
+// advice now goes through ONE predicate. Three places tell a user how to supply
+// a value — the detailed render, the --dry-run summary, and the returned error
+// — and fixing only the first left the other two printing `--field key=value`
+// at someone for whom no value exists. The error is the line a script or a
+// hurried reader actually sees.
+func TestRunItemCopy_ErrorDoesNotSuggestFieldWhenNothingCanSupplyIt(t *testing.T) {
+	d := &recordingDeps{t: t, preflight: unfillableOnlyPreflight(), forbidCopy: true}
+
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error so the command exits non-zero")
+	}
+	if strings.Contains(err.Error(), "use --field key=value") {
+		t.Fatalf("the error tells the user to supply a value for a field no value can satisfy: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not available to you") {
+		t.Fatalf("the error does not say WHY the field cannot be supplied: %v", err)
+	}
+	if len(d.copyCalls) != 0 {
+		t.Fatalf("no mutating request may be sent; got %d", len(d.copyCalls))
+	}
+}
+
+// The CONTROL for the above, on the same command path: an ordinary refusal
+// still carries the hint, so the change did not simply delete it.
+func TestRunItemCopy_ErrorKeepsTheFieldHintWhenAFieldCanBeSupplied(t *testing.T) {
+	d := &recordingDeps{t: t, preflight: fullPreflight(), forbidCopy: true}
+
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	if !strings.Contains(err.Error(), "use --field key=value") {
+		t.Fatalf("an ordinary refusal lost its hint: %v", err)
+	}
+}
+
+// The third site: the --dry-run summary, which is a different function again.
+func TestRunItemCopy_DryRunSummaryDoesNotSuggestAnImpossibleField(t *testing.T) {
+	d := &recordingDeps{t: t, preflight: unfillableOnlyPreflight(), forbidCopy: true}
+	opts := baseOpts()
+	opts.DryRun = true
+
+	var out, errOut bytes.Buffer
+	if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "Supply with --field key=value") {
+		t.Fatalf("the dry-run summary still tells the user to supply a value nothing can satisfy:\n%s", got)
+	}
+	if !strings.Contains(got, "not available to you") {
+		t.Fatalf("the dry-run summary does not say why the field cannot be supplied:\n%s", got)
+	}
+
+	// MIXED CASE, which is the one a switch gets wrong: one fillable field and
+	// one that is not. The advice must survive for the fillable one and the
+	// caveat must appear for the other.
+	mixed := unfillableOnlyPreflight()
+	mixed.Fields.NeedsValue = append(mixed.Fields.NeedsValue, cli.ItemCopyPreflightNeedsValue{
+		Key: "priority", Label: "Priority", Type: "select",
+		Options: []string{"low", "high"}, Required: true, Reason: "missing_required",
+	})
+	d2 := &recordingDeps{t: t, preflight: mixed, forbidCopy: true}
+	var out2, errOut2 bytes.Buffer
+	if err := runItemCopy(opts, d2.deps(), &out2, &errOut2); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	got2 := out2.String()
+	if !strings.Contains(got2, "--field key=value") {
+		t.Fatalf("the mixed case lost the advice for the field that CAN be supplied:\n%s", got2)
+	}
+	if !strings.Contains(got2, "cannot be supplied at all") {
+		t.Fatalf("the mixed case does not flag the field that cannot be supplied:\n%s", got2)
+	}
+}

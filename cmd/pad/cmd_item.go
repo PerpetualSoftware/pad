@@ -1834,10 +1834,19 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 			// that cannot be written to has nowhere to report that.
 			_ = renderItemCopyNeedsValue(stderr, pre, req.FieldOverrides)
 		}
-		return fmt.Errorf("copy refused: %s in %s/%s %s a value (use --field key=value)",
+		// The hint is CONDITIONAL for the same reason the render's Add: line
+		// is (IDEA-2899): when every unresolved field is a relation whose
+		// target is unavailable, `--field` cannot resolve any of them, and the
+		// error is the one line a script or a hurried reader actually sees.
+		hint := " (use --field key=value)"
+		if itemCopyUnfillable(pre.Fields.NeedsValue) == len(pre.Fields.NeedsValue) {
+			hint = " (no --field can supply it: the relation target is not available to you)"
+		}
+		return fmt.Errorf("copy refused: %s in %s/%s %s a value%s",
 			pluralize(len(pre.Fields.NeedsValue), "field", "fields"),
 			targetWorkspace, targetCollection,
-			map[bool]string{true: "needs", false: "need"}[len(pre.Fields.NeedsValue) == 1])
+			map[bool]string{true: "needs", false: "need"}[len(pre.Fields.NeedsValue) == 1],
+			hint)
 	}
 	if !pre.Valid {
 		// needs_value is empty but the server still says the mapping is
@@ -2111,9 +2120,28 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 
 	fmt.Fprintln(w)
 	if len(p.Fields.NeedsValue) > 0 {
-		fmt.Fprintf(w, "%s still %s a value. Supply with --field key=value, then re-run without --dry-run.\n",
-			pluralize(len(p.Fields.NeedsValue), "field", "fields"),
-			map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1])
+		// IDEA-2899. "Supply with --field key=value" is advice, and advice that
+		// cannot be followed is worse than none: a relation whose target
+		// collection is unavailable has no value that satisfies it, so telling
+		// someone to supply one sends them to run a command that is refused for
+		// exactly the reason they are stuck.
+		unfillable := itemCopyUnfillable(p.Fields.NeedsValue)
+		switch {
+		case unfillable == len(p.Fields.NeedsValue):
+			fmt.Fprintf(w, "%s still %s a value, and no --field can supply %s: the relation target is not available to you.\n",
+				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
+				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1],
+				map[bool]string{true: "it", false: "them"}[len(p.Fields.NeedsValue) == 1])
+		case unfillable > 0:
+			fmt.Fprintf(w, "%s still %s a value. Supply the rest with --field key=value, then re-run without --dry-run — but %d of them cannot be supplied at all (the relation target is not available to you).\n",
+				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
+				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1],
+				unfillable)
+		default:
+			fmt.Fprintf(w, "%s still %s a value. Supply with --field key=value, then re-run without --dry-run.\n",
+				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
+				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1])
+		}
 		return w.err
 	}
 	// `valid` is the server's own gate, and it means only that
@@ -2221,7 +2249,7 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	// instead (Codex round 6). Empty keys are not currently rejected by
 	// collection-schema validation, so this is reachable.
 	unnamed := 0
-	unfillable := 0
+	unfillable := itemCopyUnfillable(p.Fields.NeedsValue)
 	var toAdd, toFix []string
 	for _, f := range p.Fields.NeedsValue {
 		if strings.TrimSpace(f.Key) == "" {
@@ -2236,7 +2264,6 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 		// handing someone a command that cannot work — the exact failure the
 		// empty-key branch was written to avoid.
 		if f.CollectionUnavailable {
-			unfillable++
 			continue
 		}
 		if _, ok := supplied(f.Key); ok {
@@ -2276,6 +2303,25 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug)
 	}
 	return w.err
+}
+
+// itemCopyUnfillable counts needs_value rows no `--field` can satisfy — a
+// relation whose target collection is not available to this caller (IDEA-2899).
+//
+// ONE definition, consulted by all three places that tell a user to supply a
+// value: the detailed render, the --dry-run summary, and the returned error.
+// The first version of this fix touched only the render, and a review found the
+// other two still printing `--field key=value` at someone for whom no value
+// exists. Three sites independently answering "how do I supply this" is exactly
+// how they diverge, so they now ask one function instead.
+func itemCopyUnfillable(rows []cli.ItemCopyPreflightNeedsValue) int {
+	n := 0
+	for _, f := range rows {
+		if f.CollectionUnavailable {
+			n++
+		}
+	}
+	return n
 }
 
 // renderItemCopyResult writes the outcome of a completed copy.

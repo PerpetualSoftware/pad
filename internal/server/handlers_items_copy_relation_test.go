@@ -1343,3 +1343,40 @@ func TestCopyPreflight_OnlyRelationRowsCarryTheUnavailableFlag(t *testing.T) {
 			"can perfectly well collect: %+v", bucket.Type, bucket)
 	}
 }
+
+// THE BOUNDARY, pinned deliberately rather than left to be rediscovered.
+//
+// A review asked whether a target collection that is live and readable but
+// holds NO items the caller can pick should be flagged too: the picker is empty
+// either way, so the symptom looks identical. It must NOT be, and the reason is
+// the one that shaped this whole change — over-blocking is the worse failure.
+//
+// An unavailable target is unfixable from inside the dialog: nothing the user
+// does makes a deleted or unreadable collection pickable, so refusing the copy
+// costs them nothing they had. An EMPTY collection is a "nothing to pick YET"
+// state that the user can resolve by creating the item and retrying, and
+// blocking would refuse a copy they were about to be able to complete. Testing
+// for it would also cost a live-visible-item COUNT per relation target on a
+// dry-run the UI calls on every keystroke.
+//
+// The weaker case — an empty picker that says nothing about why it is empty —
+// is IDEA-2905, and it belongs to the picker rather than to this flag.
+func TestCopyPreflight_AnEmptyButReadableTargetIsNotReportedUnavailable(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	// targetsB is live and readable; remove its only item so the picker there
+	// would come back empty.
+	if err := f.srv.store.DeleteItem(f.targetB.ID); err != nil {
+		t.Fatalf("DeleteItem(targetB): %v", err)
+	}
+
+	row := needsValueRow(f.ok(f.baseBody()), "owner_ref")
+	if row == nil {
+		t.Fatalf("a REQUIRED relation with no value produced no needs_value row")
+	}
+	if row.CollectionUnavailable {
+		t.Fatalf("an EMPTY but readable target was reported unavailable: %+v\n"+
+			"blocking here refuses a copy the user could complete by creating the target item",
+			row)
+	}
+}
