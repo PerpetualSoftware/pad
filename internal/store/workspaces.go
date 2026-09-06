@@ -65,7 +65,35 @@ func effectiveWorkspaceUpdatedAt(workspaceUpdatedAt string, lastItemActivity sql
 	return wsTS
 }
 
+// execQueryer is the subset of *sql.DB / *sql.Tx that createWorkspaceQ needs.
+// Minting a workspace is one Exec between two reads — the slug probe before
+// it and the read-back after — so it needs both halves, unlike the read-only
+// Queryer and the write-only sqlExecer that already exist here.
+type execQueryer interface {
+	sqlExecer
+	rowQueryer
+}
+
+// CreateWorkspace mints a workspace against the pool. Callers already inside a
+// transaction want createWorkspaceQ instead.
 func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace, error) {
+	return s.createWorkspaceQ(s.db, input)
+}
+
+// createWorkspaceQ is CreateWorkspace against a caller-supplied executor.
+//
+// It exists for ImportWorkspace (BUG-2892), which has to mint the workspace on
+// the SAME transaction that carries the collections and items: minting it
+// first as a committed write left the row behind on every one of the eight
+// error paths between there and the commit, and the husk went on holding the
+// slug, so the retry that finally worked landed on `name-2`.
+//
+// Both reads take the caller's executor rather than reaching for s.db, and
+// that is load-bearing rather than tidy. A read routed through the POOL while
+// the caller's transaction holds its own connection can wait for a free one,
+// and under MaxOpenConns(1) there is none to wait for — the deadlock class
+// BUG-2778 and BUG-2409 are both instances of.
+func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate) (*models.Workspace, error) {
 	id := newID()
 	ts := now()
 
@@ -77,7 +105,7 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace
 	// Workspace slugs are globally unique (not scoped to a workspace
 	// like collection/item slugs), so we use a workspace-specific
 	// uniqueness check rather than the generic uniqueSlug helper.
-	finalSlug, err := s.uniqueWorkspaceSlug(slug)
+	finalSlug, err := s.uniqueWorkspaceSlug(q, slug)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +125,7 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace
 		}
 	}
 
-	_, err = s.db.Exec(s.q(`
+	_, err = q.Exec(s.q(`
 		INSERT INTO workspaces (id, name, slug, owner_id, description, settings, source, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), id, input.Name, finalSlug, input.OwnerID, input.Description, settings, input.Source, ts, ts)
@@ -105,14 +133,17 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace
 		return nil, fmt.Errorf("insert workspace: %w", err)
 	}
 
-	return s.GetWorkspaceBySlug(finalSlug)
+	return s.getWorkspaceBySlugQ(q, finalSlug)
 }
 
-func (s *Store) uniqueWorkspaceSlug(baseSlug string) (string, error) {
+// uniqueWorkspaceSlug probes on the caller's executor for the same reason
+// createWorkspaceQ does: inside an import it must see that transaction's own
+// uncommitted rows, and it must not reach for the pool from inside one.
+func (s *Store) uniqueWorkspaceSlug(q rowQueryer, baseSlug string) (string, error) {
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
-		err := s.db.QueryRow(s.q("SELECT COUNT(*) FROM workspaces WHERE slug = ? AND deleted_at IS NULL"), slug).Scan(&count)
+		err := q.QueryRow(s.q("SELECT COUNT(*) FROM workspaces WHERE slug = ? AND deleted_at IS NULL"), slug).Scan(&count)
 		if err != nil {
 			return "", err
 		}
