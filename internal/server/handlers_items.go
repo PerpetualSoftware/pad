@@ -139,6 +139,12 @@ type itemsIndexResponse struct {
 	Total                      int           `json:"total"`
 	Cursor                     string        `json:"cursor"`
 	IncludesUnparentedMetadata bool          `json:"includes_unparented_metadata"`
+	// AccessEpoch fingerprints the caller's effective visible set so the
+	// client can detect a revocation that wrote no row (IDEA-2898). See
+	// computeAccessEpoch. Carried on BOTH doors, and they must agree: a
+	// cold bootstrap and a delta poll that disagreed about the caller's
+	// scope would resync each other in a loop.
+	AccessEpoch string `json:"access_epoch"`
 }
 
 // handleListItemsIndex returns the skinny-projection of every item in a
@@ -258,6 +264,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		Total:                      len(result),
 		Cursor:                     cursor,
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
+		AccessEpoch:                computeAccessEpoch(visibleIDs, grantedItemIDs),
 	})
 }
 
@@ -293,6 +300,10 @@ type itemsChangesResponse struct {
 	Changes                    []itemChangeRow `json:"changes"`
 	Cursor                     string          `json:"cursor"`
 	IncludesUnparentedMetadata bool            `json:"includes_unparented_metadata"`
+	// AccessEpoch — see itemsIndexResponse.AccessEpoch. This is the door
+	// that matters most for IDEA-2898: it is the one a warm client polls,
+	// and the one a revocation is otherwise invisible on.
+	AccessEpoch string `json:"access_epoch"`
 }
 
 // handleListItemsChanges is the delta-fetch sibling of
@@ -446,6 +457,7 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		Changes:                    changes,
 		Cursor:                     strconv.FormatInt(cursorSeq, 10),
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
+		AccessEpoch:                computeAccessEpoch(visibleIDs, grantedItemIDs),
 	})
 }
 
