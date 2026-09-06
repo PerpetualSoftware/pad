@@ -64,4 +64,35 @@ describe('IDEA-2898 F2 — a writer under a superseded epoch cannot reinsert int
 			'unclaimed',
 		]);
 	});
+
+	it('fences persistDelta too, and refuses its meta write rather than regressing the epoch', async () => {
+		// Round 2. An AUTHORITATIVE delta is not exempt from the cross-tab
+		// race, and it is the worse case of the two: `persistUpserts` writing
+		// late leaves a stale row under the current epoch, while `persistDelta`
+		// writing late leaves a stale row AND drags the meta row back to the
+		// old epoch. That second part disables the fence for every writer that
+		// follows — one late delta and the cache stops defending itself.
+		const U = null;
+		const WS = 'ws-epoch-fence-delta';
+		const { persistReplace, persistDelta, hydrate } = await loadPersistence();
+
+		await persistReplace(U, WS, [row('keeper', 1)], '5', false, 'e2');
+
+		// The old tab's delta, built under e1, committing after the replace.
+		await persistDelta(U, WS, [row('secret', 6)], '6', false, 'e1');
+
+		const after = await hydrate(U, WS);
+		expect(after.items.map((r) => r.id).sort()).toEqual(['keeper']);
+		// The meta row is the part that matters most: a regressed epoch here is
+		// not one bad row, it is the fence switched off.
+		expect(after.accessEpoch).toBe('e2');
+		expect(after.cursor).toBe('5');
+
+		// CONTROL LEG. A current-epoch delta must still land, or every
+		// authoritative write after a resync would be silently dropped.
+		await persistDelta(U, WS, [row('fresh', 7)], '7', false, 'e2');
+		const healthy = await hydrate(U, WS);
+		expect(healthy.items.map((r) => r.id).sort()).toEqual(['fresh', 'keeper']);
+		expect(healthy.cursor).toBe('7');
+	});
 });

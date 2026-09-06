@@ -7,6 +7,112 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// TestAccessEpoch_DoorsAgreeForAGrantOnASoftDeletedItem is the review-round-2
+// regression, and it exists because the fixture that was supposed to prove the
+// doors agree could not have caught this: it had no item grants at all, so both
+// doors hashed the same empty list and agreed for the wrong reason.
+//
+// The two doors resolve grants with DIFFERENT resolvers, deliberately:
+// /items-changes includes soft-deleted granted items so a tombstone still
+// reaches the client (TASK-1354), /items-index does not. Computing the
+// fingerprint from whatever each door happened to resolve made the two
+// permanently disagree for a caller holding a grant on a soft-deleted item —
+// and permanent disagreement between the value the client STORES and the value
+// it COMPARES is not a stale row, it is a resync loop: the snapshot restores
+// the index door's epoch, the next delta contradicts it, and the client runs
+// its reconcile to the 50-page cap on every sync trigger, forever.
+//
+// The fix is that the epoch has ONE definition — the live grant set, which is
+// also what the SSE tick holds. This test's fixture is the discriminating one:
+// a grant on an item that has been soft-deleted, which is exactly the input
+// that made the two resolvers differ.
+func TestAccessEpoch_DoorsAgreeForAGrantOnASoftDeletedItem(t *testing.T) {
+	srv := testServer(t)
+
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "owner@example.com", Name: "Owner", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	guest, err := srv.store.CreateUser(models.UserCreate{
+		Email: "guest@example.com", Name: "Guest", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create guest: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "GrantEpoch", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("add owner: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, guest.ID, "editor"); err != nil {
+		t.Fatalf("add guest: %v", err)
+	}
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	kept, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Kept", Slug: "kept", Prefix: "KEP", Schema: schema})
+	if err != nil {
+		t.Fatalf("create kept: %v", err)
+	}
+	other, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Other", Slug: "other", Prefix: "OTH", Schema: schema})
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	// Restricted to `kept`, plus an item-level grant into `other`.
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, guest.ID, "specific", []string{kept.ID}); err != nil {
+		t.Fatalf("set collection access: %v", err)
+	}
+	granted, err := srv.store.CreateItem(ws.ID, other.ID, models.ItemCreate{Title: "Granted", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatalf("create granted item: %v", err)
+	}
+	if _, err := srv.store.CreateItemGrant(ws.ID, granted.ID, guest.ID, "view", owner.ID); err != nil {
+		t.Fatalf("create item grant: %v", err)
+	}
+	token, err := srv.store.CreateSession(guest.ID, "test", "192.0.2.1", testSessionUA, webSessionTTL)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	epochs := func(when string) (string, string) {
+		t.Helper()
+		rr := getAuthedSession(t, srv, "/api/v1/workspaces/"+ws.Slug+"/items-index", token)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s items-index: %d: %s", when, rr.Code, rr.Body.String())
+		}
+		var index itemsIndexResponse
+		parseJSON(t, rr, &index)
+
+		rr = getAuthedSession(t, srv, "/api/v1/workspaces/"+ws.Slug+"/items-changes?since=0", token)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s items-changes: %d: %s", when, rr.Code, rr.Body.String())
+		}
+		var delta itemsChangesResponse
+		parseJSON(t, rr, &delta)
+		return index.AccessEpoch, delta.AccessEpoch
+	}
+
+	// Baseline: a LIVE grant. Both resolvers return it, so this leg agrees even
+	// on the unfixed code — it is here as the control that says the fixture
+	// reaches the grant path at all.
+	if idx, chg := epochs("live grant"); idx != chg {
+		t.Fatalf("doors disagree with a live grant: /items-index %q vs /items-changes %q", idx, chg)
+	}
+
+	// The discriminating leg: soft-delete the granted item. /items-changes'
+	// resolver still returns the grant; /items-index's does not.
+	if err := srv.store.DeleteItem(granted.ID); err != nil {
+		t.Fatalf("soft-delete granted item: %v", err)
+	}
+	idx, chg := epochs("soft-deleted grant")
+	if idx != chg {
+		t.Errorf("doors disagree after the granted item was soft-deleted: /items-index %q vs /items-changes %q\n"+
+			"a client storing one and comparing the other resyncs on every poll, forever", idx, chg)
+	}
+}
+
 // TestItemsChanges_AccessEpochChangesOnRevocation is the IDEA-2898 repro.
 //
 // The defect: a member's collection access is narrowed with NO accompanying

@@ -520,6 +520,23 @@ export async function persistDelta(
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
+		// EPOCH FENCE, same as persistUpserts (round 2). An authoritative
+		// delta is not exempt from the cross-tab race: an old tab's
+		// `persistDelta` committing after another tab's `persistReplace`
+		// writes BOTH the old row and the old epoch, which is worse than the
+		// upsert case — it regresses the meta row, and a null or stale meta
+		// epoch disables this fence for every writer that follows.
+		if (accessEpoch !== null) {
+			const existing = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+			if (
+				existing &&
+				existing.accessEpoch !== null &&
+				existing.accessEpoch !== accessEpoch
+			) {
+				await tx.done.catch(() => undefined);
+				return;
+			}
+		}
 		// Same policy as persistUpserts (resolveRowWrite): the race runs in both
 		// directions, so a delta must not overwrite a row that is already NEWER
 		// in the cache, and a tombstone must refuse a stale resurrection.

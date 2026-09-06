@@ -303,7 +303,20 @@ function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
 	localSearch.rebuild(ws, state.items.values());
 }
 
-async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise<void> {
+async function resyncProjectionScope(
+	ws: string,
+	state: WorkspaceState,
+	// The epoch the SERVER most recently told this caller, when the caller has
+	// one. Used only if the authoritative snapshot carries none — an older
+	// server answering /items-index during a mixed deployment. Passing it in
+	// rather than patching `state.accessEpoch` after the resync returns is what
+	// keeps RAM and IDB agreeing: `persistReplace` happens inside this
+	// function, so a post-hoc assignment would leave the durable meta row a
+	// version behind the in-memory baseline, and a cross-tab writer claiming
+	// the newer value would then be refused by a meta row still holding the
+	// older one (round 2).
+	fallbackEpoch?: string,
+): Promise<void> {
 	const pending = projectionResyncs.get(ws);
 	if (pending) return pending;
 	const generation = state.generation;
@@ -399,6 +412,8 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		// which records the epoch it was TOLD once a resync has run.
 		if (resp.access_epoch !== undefined) {
 			state.accessEpoch = resp.access_epoch;
+		} else if (fallbackEpoch !== undefined) {
+			state.accessEpoch = fallbackEpoch;
 		}
 		for (const row of resp.items) {
 			const next = toSkinny(row);
@@ -452,7 +467,14 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 			snapshot,
 			state.cursor,
 			resp.includes_unparented_metadata,
-			resp.access_epoch ?? null,
+			// The state's baseline, NOT `resp.access_epoch ?? null` (round 2).
+			// F3 deliberately keeps a known baseline when the snapshot carries
+			// no epoch; writing null here would contradict it in the durable
+			// copy — and a null meta epoch disables the cross-tab fence
+			// entirely, since a writer cannot be stale relative to nothing. The
+			// fix for an absent epoch on the wire must not become an absent
+			// epoch on disk.
+			state.accessEpoch,
 		);
 	})();
 	projectionResyncs.set(ws, promise);
@@ -707,6 +729,12 @@ export const localIndex = {
 								delta.changes,
 								delta.cursor,
 								delta.includes_unparented_metadata,
+								// Same reason as the page's caller (round 2):
+								// `ensureAccessScope` awaits, so a concurrent
+								// resync can land between the scope check above
+								// and this line, and these rows would then be
+								// applied under a scope that no longer holds.
+								delta.access_epoch,
 							);
 							if (delta.cursor === since) {
 								caughtUp = true;
@@ -787,6 +815,10 @@ export const localIndex = {
 					}
 				} else {
 					// Stage 2: cold path. /items-index full snapshot.
+					// Captured BEFORE the await: a concurrent delta can record a
+					// newer baseline while this request is in flight, and the
+					// response must not walk it backwards (round 2).
+					const coldEpochAtStart = state.accessEpoch;
 					const resp = await api.items.listIndex(ws, {
 						includeArchived: true,
 					});
@@ -811,10 +843,11 @@ export const localIndex = {
 					// permanently lost, while a row the snapshot omits stays
 					// gone. Fenced for the same reason too — an in-flight
 					// optimistic write must not resurrect it.
+					const coldDropped: string[] = [];
 					if (state.items.size > 0) {
 						const snapshotIds = new Set<string>();
 						for (const row of resp.items) snapshotIds.add(row.id);
-						const toDrop: string[] = [];
+						const toDrop = coldDropped;
 						for (const id of state.items.keys()) {
 							if (!snapshotIds.has(id)) toDrop.push(id);
 						}
@@ -839,18 +872,44 @@ export const localIndex = {
 					// The snapshot is authoritative under the CURRENT scope, so
 					// its epoch is the baseline. Absent means unknown and must
 					// not erase a known value (F3).
-					if (resp.access_epoch !== undefined) {
+					//
+					// NOT authoritative over a NEWER epoch, though (round 2).
+					// This request may have been in flight while a concurrent
+					// delta learned a newer scope — `ensureAccessScope` records
+					// one without resyncing when RAM is empty, which is exactly
+					// the state a cold boot is in. Adopting the snapshot's
+					// older value there would walk the baseline BACKWARDS and
+					// re-open the window this whole change closes. The delta's
+					// value wins; this snapshot's rows are then the stale ones,
+					// so a reconcile is owed and `pendingResync` says so below.
+					const coldEpochSuperseded =
+						coldEpochAtStart !== state.accessEpoch;
+					if (resp.access_epoch !== undefined && !coldEpochSuperseded) {
 						state.accessEpoch = resp.access_epoch;
 					}
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
-					if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
+					// CURSOR PIN (round 2). Forward-only is right when nothing
+					// was dropped. It is WRONG when this snapshot dropped a row
+					// that a concurrent delta had legitimately added: the row is
+					// gone from RAM, the cursor is past the seq that carried it,
+					// and no future `/items-changes?since=cursor` can return it
+					// — a visible item vanishes until a full resync. Pinning to
+					// the snapshot's cursor makes the replay refetch it, which
+					// is the same reason `resyncProjectionScope` pins rather
+					// than advances.
+					if (coldDropped.length > 0) {
+						state.cursor = resp.cursor;
+					} else if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
 						state.cursor = resp.cursor;
 					}
 					state.bootstrapState = 'ready';
-					// Cold path is a full snapshot — nothing pending.
-					state.pendingResync = false;
+					// Cold path is a full snapshot — nothing pending, UNLESS
+					// this snapshot pinned the cursor back to replay dropped
+					// rows, or landed under a superseded epoch. Either way a
+					// reconcile is owed and the next bootstrap must not no-op.
+					state.pendingResync = coldDropped.length > 0 || coldEpochSuperseded;
 					// Server rows carry the live collection slug — drop any
 					// rename recorded pre-snapshot rather than re-applying
 					// it over fresher server truth (BUG-2601).
@@ -879,6 +938,16 @@ export const localIndex = {
 						state.cursor,
 						resp.includes_unparented_metadata,
 						state.accessEpoch,
+						// The rows this snapshot dropped must leave IDB too
+						// (round 2). Repairing only RAM left the durable cache
+						// holding an old-scope row while the meta row advertised
+						// the new epoch — which survives a reload and which no
+						// later delta can detect, because every later delta
+						// agrees with the epoch the cache is claiming.
+						// `removeIds` also raises a tombstone stamped at this
+						// cursor, so a delayed write for the same id cannot
+						// reinsert it behind the cursor (BUG-2633).
+						coldDropped,
 					).catch(
 						() => undefined,
 					);
@@ -1169,32 +1238,22 @@ export const localIndex = {
 			// branch exactly, including the "empty cache adopts silently" case,
 			// which costs nothing because there is nothing to evict.
 			if (state.items.size > 0 || cursorAsNum(state.cursor) > 0) {
-				await resyncProjectionScope(ws, state);
-				// Same termination as below: a snapshot that carried no epoch
-				// would leave the baseline null and re-enter this branch on
-				// every poll (review round 1 F3).
-				if (state.accessEpoch === null) {
-					state.accessEpoch = accessEpoch;
-				}
+				await resyncProjectionScope(ws, state, accessEpoch);
 				return true;
 			}
 			state.accessEpoch = accessEpoch;
 			return false;
 		}
 		if (state.accessEpoch === accessEpoch) return false;
-		const before = state.accessEpoch;
-		await resyncProjectionScope(ws, state);
-		// TERMINATION (review round 1 F3). The resync adopts the snapshot's
-		// epoch when it has one. When it does not — an older server answering
-		// the snapshot while a newer one answers the delta — the baseline is
-		// still whatever it was, so the very next poll would compare it against
-		// the same incoming epoch and resync again, forever. Record the epoch
-		// the server TOLD us instead: it is the value the comparison uses, and
-		// it is a true statement about what we were last told, which is all the
-		// baseline has ever claimed to be.
-		if (state.accessEpoch === before) {
-			state.accessEpoch = accessEpoch;
-		}
+		// TERMINATION (round 1 F3). The resync adopts the snapshot's epoch when
+		// it has one. When it does not — an older server answering the snapshot
+		// while a newer one answers the delta — the baseline would be unchanged,
+		// the very next poll would compare it against the same incoming epoch,
+		// and it would resync again, forever. So the epoch we were TOLD goes in
+		// as the fallback: a true statement about what the server last said,
+		// which is all the baseline has ever claimed to be, and it lands in RAM
+		// and IDB together.
+		await resyncProjectionScope(ws, state, accessEpoch);
 		return true;
 	},
 

@@ -258,6 +258,80 @@ describe('localIndex access-epoch scope', () => {
 		expect(localIndex.pendingResyncFor(ws)).toBe(true);
 	});
 
+	it('pins the cursor back when the cold snapshot drops a row, so the row can come back', async () => {
+		// Round 2. F1 made the cold path drop rows the snapshot omits. Forward-
+		// only cursor adoption then loses a row that was legitimately ADDED by
+		// a delta while /items-index was in flight: dropped from RAM, and the
+		// cursor already past the seq that carried it, so no future
+		// `?since=cursor` can return it. A visible item disappears until a full
+		// resync — a data-loss regression introduced by a security fix.
+		//
+		// The assertion is the cursor, not the row: the row is correctly gone
+		// at this instant either way, and only the cursor decides whether it
+		// can come back.
+		localIndex.upsert(ws, row('added-while-in-flight', 2, 'kept'));
+		localIndex.applyDelta(ws, [], '2', false);
+		expect(localIndex.cursorFor(ws)).toBe('2');
+
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+
+		expect(localIndex.cursorFor(ws)).toBe('1');
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
+	it('does not let a delayed cold snapshot walk the baseline backwards', async () => {
+		// Round 2. A cold /items-index can be in flight while a concurrent
+		// delta learns a NEWER scope — and `ensureAccessScope` records one
+		// without resyncing when RAM is empty, which is exactly a cold boot's
+		// state. Adopting the older snapshot's epoch there would reopen the
+		// window this whole change closes, and silently: the cache would then
+		// hold the snapshot's rows under a baseline the server has already
+		// moved past.
+		// The delta must land AFTER the request is ISSUED, not merely after
+		// bootstrap is called — bootstrap awaits its IDB hydrate first, so a
+		// delta racing that earlier await is a different (and benign) ordering.
+		// Getting this wrong is what made the first version of this test fail
+		// against correct code, which is the useful kind of test failure.
+		let resolveIndex: ((v: never) => void) | null = null;
+		let requestIssued: () => void = () => {};
+		const issued = new Promise<void>((res) => {
+			requestIssued = res;
+		});
+		vi.spyOn(api.items, 'listIndex').mockImplementationOnce(() => {
+			requestIssued();
+			return new Promise((res) => {
+				resolveIndex = res as (v: never) => void;
+			}) as never;
+		});
+
+		const boot = localIndex.bootstrap(ws, { userId: null });
+		await issued;
+		// The concurrent delta, landing while the snapshot is in flight.
+		await localIndex.ensureAccessScope(ws, 'newer');
+		expect(localIndex.accessEpochFor(ws)).toBe('newer');
+
+		resolveIndex!({
+			items: [row('stale', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'older',
+		} as never);
+		await boot;
+
+		expect(localIndex.accessEpochFor(ws)).toBe('newer');
+		// And a reconcile is owed, because the rows that DID land are the ones
+		// from the superseded scope.
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
 	it('adopts silently when there is no baseline and nothing cached', async () => {
 		// Nothing to evict, so a resync would buy nothing and cost a full
 		// index fetch on every cold start.

@@ -1139,6 +1139,15 @@
 					delta.changes,
 					delta.cursor,
 					delta.includes_unparented_metadata,
+					// Pass the epoch this response was built under (round 2).
+					// The scope check above happens BEFORE `ensureAccessScope`
+					// awaits, so a resync can land in between and this response
+					// then applies rows from the scope that resync just dropped
+					// — re-adding them, clearing their fence, and persisting
+					// them under the NEW epoch, which no later delta can
+					// detect. The guard inside `applyDelta` was written for a
+					// hypothetical future caller; this is the real one.
+					delta.access_epoch,
 				);
 				if (delta.cursor === since) {
 					deltaSyncFailed = false;
