@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ItemIndexRow } from '$lib/types';
-import { loadPersistence, openSecondConnection } from '../../test/idbHarness';
+import { openDB } from 'idb';
+import { loadPersistence, openSecondConnection, harnessDbName } from '../../test/idbHarness';
 
 /**
  * IDEA-2898 — the durable half of the access baseline.
@@ -76,7 +77,7 @@ describe('IDEA-2898 — the access epoch survives a reload', () => {
 		const { persistReplace, persistAccessEpoch, hydrate } = await loadPersistence();
 
 		await persistReplace(U, WS, [row('a', 1)], '5', false, 'e1');
-		await persistAccessEpoch(U, WS, 'e2');
+		await persistAccessEpoch(U, WS, 'e2', 'e1');
 
 		const after = await hydrate(U, WS);
 		expect(after.accessEpoch).toBe('e2');
@@ -93,7 +94,7 @@ describe('IDEA-2898 — the access epoch survives a reload', () => {
 		const WS = 'ws-epoch-patch-empty';
 		const { persistAccessEpoch, hydrate } = await loadPersistence();
 
-		await persistAccessEpoch(U, WS, 'e1');
+		await persistAccessEpoch(U, WS, 'e1', null);
 
 		// A cache with no meta row has nothing to describe. Writing one here
 		// would invent a cursor — and a cursor is a claim that everything up to
@@ -101,6 +102,91 @@ describe('IDEA-2898 — the access epoch survives a reload', () => {
 		const after = await hydrate(U, WS);
 		expect(after.accessEpoch).toBeNull();
 		expect(after.cursor).toBe('0');
+	});
+
+	it('refuses to patch a meta row another writer has already moved on', async () => {
+		const U = null;
+		const WS = 'ws-epoch-cas';
+		const { persistReplace, persistAccessEpoch, hydrate } = await loadPersistence();
+
+		await persistReplace(U, WS, [row('a', 1)], '5', false, 'e1');
+		// A newer authoritative write lands first — rows fetched under e3.
+		await persistReplace(U, WS, [row('b', 9)], '9', false, 'e3');
+
+		// The late joined-resync patch still believes it is repairing e1.
+		await persistAccessEpoch(U, WS, 'e2', 'e1');
+
+		// Blind overwrite would stamp e2 onto rows fetched under e3, so the
+		// next comparison would report a change that never happened and pay a
+		// full resync for it.
+		const after = await hydrate(U, WS);
+		expect(after.accessEpoch).toBe('e3');
+		expect(after.cursor).toBe('9');
+	});
+
+	it('reports whether the durable cache was actually READ', async () => {
+		const U = null;
+		const WS = 'ws-epoch-durable-read';
+		const { persistReplace, hydrate } = await loadPersistence();
+
+		// A cache that has never been written still counts as READ: the answer
+		// "there is nothing stored" is a real answer.
+		expect((await hydrate(U, WS)).durableRead).toBe(true);
+
+		await persistReplace(U, WS, [row('a', 1)], '5', false, 'e1');
+		expect((await hydrate(U, WS)).durableRead).toBe(true);
+	});
+
+	it('reports a FAILED read as not-read, with the same empty payload', async () => {
+		const U = null;
+		const WS = 'ws-epoch-unreadable';
+		const { hydrate } = await loadPersistence();
+
+		// A database at a HIGHER format version than this build knows: the
+		// module's own open() gets a VersionError and gives up. This is the
+		// real shape of the failure — a newer tab upgraded the store — and it
+		// is deterministic, unlike simulating a transaction abort.
+		const ahead = await openDB(harnessDbName(U, WS), 99, {
+			upgrade(db) {
+				if (!db.objectStoreNames.contains('items')) {
+					db.createObjectStore('items', { keyPath: 'id' });
+				}
+				if (!db.objectStoreNames.contains('meta')) {
+					db.createObjectStore('meta', { keyPath: 'key' });
+				}
+			},
+		});
+		ahead.close();
+
+		const after = await hydrate(U, WS);
+		// The payload is INDISTINGUISHABLE from an empty cache — that is the
+		// whole point, and why the flag has to carry the difference.
+		expect(after.items).toEqual([]);
+		expect(after.cursor).toBe('0');
+		expect(after.accessEpoch).toBeNull();
+		expect(after.durableRead).toBe(false);
+	});
+
+	it('reports a read that THREW as not-read, on the other failure path', async () => {
+		const U = null;
+		const WS = 'ws-epoch-throwing-read';
+		const { hydrate } = await loadPersistence();
+
+		// The sibling of the test above, and a different code path: here the
+		// database OPENS (same format version, so no upgrade runs) and the read
+		// itself throws, because the store the transaction names is not there.
+		// Both paths must report not-read; they are one statement written
+		// twice, and a mutation on either is invisible to a test of the other.
+		const crippled = await openDB(harnessDbName(U, WS), 2, {
+			upgrade(db) {
+				db.createObjectStore('meta', { keyPath: 'key' });
+			},
+		});
+		crippled.close();
+
+		const after = await hydrate(U, WS);
+		expect(after.items).toEqual([]);
+		expect(after.durableRead).toBe(false);
 	});
 
 	it('reads a meta row with no epoch key as null, not undefined', async () => {

@@ -83,6 +83,22 @@ export interface HydrateResult {
 	 */
 	accessEpoch: string | null;
 	/**
+	 * Did this call actually READ the durable cache? (IDEA-2898, review round 2
+	 * of the reduced tip.)
+	 *
+	 * Every failure here returns the same empty payload as a genuinely empty
+	 * cache — deliberately, because a best-effort cache that throws should not
+	 * take the app down with it. But "there is nothing stored" and "I could not
+	 * find out" are opposite facts for a caller deciding whether it is safe to
+	 * adopt a new access epoch, and the empty payload cannot tell them apart.
+	 *
+	 * TRUE when the read succeeded, AND when IndexedDB is unsupported — with no
+	 * durable cache in the picture there is nothing that could later contradict
+	 * an adopted epoch. FALSE only when a database that might hold rows could
+	 * not be opened or read.
+	 */
+	durableRead: boolean;
+	/**
 	 * The durable retag overlay applied to `items` before return (BUG-2634):
 	 * `collection_id → newSlug`. Returned for inspection; `items` already
 	 * reflect it, so the warm-boot caller needs no further action. Empty when
@@ -243,9 +259,12 @@ export async function hydrate(
 		cursor: '0',
 		includesUnparentedMetadata: null,
 		accessEpoch: null,
+		durableRead: false,
 		retags: {},
 	};
-	if (!isSupported()) return empty;
+	// Unsupported is not a failed read: there is no durable cache to be wrong
+	// about, now or later.
+	if (!isSupported()) return { ...empty, durableRead: true };
 
 	const db = await open(userId, ws);
 	if (!db) return empty;
@@ -261,7 +280,9 @@ export async function hydrate(
 		if (meta && meta.schemaVersion !== LOCAL_INDEX_SCHEMA_VERSION) {
 			await tx.done.catch(() => undefined);
 			await wipe(userId, ws);
-			return empty;
+			// A successful read that found an incompatible cache and destroyed
+			// it. There is now genuinely nothing stored, so this is `true`.
+			return { ...empty, durableRead: true };
 		}
 
 		const retagsRow = (await metaStore.get('retags')) as RetagsRow | undefined;
@@ -308,6 +329,7 @@ export async function hydrate(
 			cursor: meta?.cursor ?? '0',
 			includesUnparentedMetadata: meta?.includesUnparentedMetadata ?? null,
 			accessEpoch: meta?.accessEpoch ?? null,
+			durableRead: true,
 			retags,
 		};
 	} catch {
@@ -610,12 +632,18 @@ export async function persistReplace(
  * baseline and pays a full resync for a scope that has not changed since.
  *
  * Deliberately a no-op when there is no meta row. A cache that has never synced
- * has nothing to describe, and minting a meta row here would invent a cursor.
+ * has nothing to describe, and minting a meta row here would invent a cursor —
+ * and a cursor is the claim that everything up to it has been seen, which is
+ * precisely the claim such a cache cannot make.
+ *
+ * `expectedPrevious` makes the patch a COMPARE-AND-SET rather than a blind
+ * overwrite; see the comment at the check.
  */
 export async function persistAccessEpoch(
 	userId: string | null,
 	ws: string,
 	accessEpoch: string | null,
+	expectedPrevious: string | null,
 ): Promise<void> {
 	if (!isSupported()) return;
 	const db = await open(userId, ws);
@@ -625,6 +653,17 @@ export async function persistAccessEpoch(
 		const store = tx.objectStore('meta');
 		const cached = (await store.get('sync')) as MetaRow | undefined;
 		if (!cached) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
+		// COMPARE-AND-SET, because this is a read-modify-write on a row other
+		// writers own. IDB serializes the transactions, but a `persistDelta` or
+		// `persistReplace` carrying a NEWER epoch can commit between the resync
+		// this caller joined and this patch — and a blind overwrite would then
+		// stamp the older epoch onto rows fetched under the newer one, so the
+		// next comparison reports a change that never happened and pays a full
+		// resync for it. Patch only the row this caller is actually repairing.
+		if ((cached.accessEpoch ?? null) !== expectedPrevious) {
 			await tx.done.catch(() => undefined);
 			return;
 		}

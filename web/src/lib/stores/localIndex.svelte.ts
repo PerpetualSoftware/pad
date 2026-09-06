@@ -115,8 +115,13 @@ class WorkspaceState {
 	// The caller's access fingerprint as of the last authoritative snapshot or
 	// delta (IDEA-2898). Persisted with the cursor for the same reason
 	// `includesUnparentedMetadata` is: the cache outlives a permission change,
-	// and a revocation that writes no row leaves no other trace. Null only
-	// before the first response of a session lands.
+	// and a revocation that writes no row leaves no other trace.
+	//
+	// Null means NO BASELINE, and that outlives the first response: a server
+	// that sends no epoch never supplies one, and the guard below declines to
+	// adopt until the durable cache has been read. A null baseline over a
+	// populated cache resyncs, which is the safe reading of "we cannot know
+	// what this was authorised for".
 	accessEpoch = $state<string | null>(null);
 	// Has the DURABLE cache been read yet this session? (IDEA-2898, review of
 	// the reduced tip.) `accessEpoch === null` and `items.size === 0` say what
@@ -595,6 +600,9 @@ export const localIndex = {
 							cursor: state.cursor,
 							includesUnparentedMetadata: state.includesUnparentedMetadata,
 							accessEpoch: state.accessEpoch,
+							// A reentry is not a read; the durable cache was
+							// read on the bootstrap that set this state up.
+							durableRead: state.cacheRead,
 							retags: {},
 						}
 					: await persistHydrate(userId, ws);
@@ -602,7 +610,13 @@ export const localIndex = {
 				// The durable cache has now answered, whatever it said. From
 				// here an empty RAM state is evidence about the cache and not
 				// merely about how far bootstrap has got.
-				state.cacheRead = true;
+				// `durableRead`, NOT an unconditional true: every failure inside
+				// `hydrate` returns the same empty payload a genuinely empty
+				// cache does, and treating a failed read as an empty cache is
+				// how a silent adopt gets back in through the front door
+				// (review round 2). A transient IDB failure now leaves the
+				// baseline unacquired, which costs a resync and hides nothing.
+				state.cacheRead = cached.durableRead;
 				// A populated cache is one we've successfully synced
 				// from before — either there are rows, or the cursor
 				// has moved off the "0" floor (empty workspaces /
@@ -1141,7 +1155,7 @@ export const localIndex = {
 				// Same joined-resync case as below.
 				if (state.accessEpoch === null) {
 					state.accessEpoch = accessEpoch;
-					await persistAccessEpoch(state.userId, ws, accessEpoch);
+					await persistAccessEpoch(state.userId, ws, accessEpoch, null);
 				}
 				return true;
 			}
@@ -1190,7 +1204,7 @@ export const localIndex = {
 			// and resync again — every reload, for a scope that has not changed
 			// since. The started-resync path has no such gap, because its
 			// fallback is applied BEFORE the persist that happens inside it.
-			await persistAccessEpoch(state.userId, ws, accessEpoch);
+			await persistAccessEpoch(state.userId, ws, accessEpoch, beforeResync);
 		}
 		return true;
 	},

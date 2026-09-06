@@ -24,6 +24,7 @@ const persistence = vi.hoisted(() => ({
 		cursor: '0',
 		includesUnparentedMetadata: null,
 		accessEpoch: null,
+		durableRead: true,
 		retags: {},
 	})),
 	persistDelta: vi.fn(async () => undefined),
@@ -73,6 +74,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 			cursor: '1',
 			includesUnparentedMetadata: false,
 			accessEpoch: 'persisted-e1',
+			durableRead: true,
 			retags: {},
 		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
 		const listIndex = vi.spyOn(api.items, 'listIndex');
@@ -104,6 +106,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 			cursor: '1',
 			includesUnparentedMetadata: false,
 			accessEpoch: 'e1',
+			durableRead: true,
 			retags: {},
 		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
 		vi.spyOn(api.items, 'changes').mockResolvedValue({
@@ -153,6 +156,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 			cursor: '1',
 			includesUnparentedMetadata: false,
 			accessEpoch: null,
+			durableRead: true,
 			retags: {},
 		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
 		vi.spyOn(api.items, 'changes').mockResolvedValue({
@@ -187,6 +191,55 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(
 			(persistence.persistAccessEpoch.mock.calls.at(-1) as unknown[])[2],
 		).toBe('told');
+	});
+
+	it('does NOT adopt when the durable read FAILED, only when it answered', async () => {
+		// `hydrate` returns the same empty payload for a real IDB failure as for
+		// a genuinely empty cache — deliberately, since a best-effort cache
+		// should not take the app down. But those are opposite facts here, and
+		// reading a failure as "nothing stored" puts the silent adopt straight
+		// back: the durable cache may hold rows from a scope nobody checked,
+		// and adopting stamps the new epoch onto them through the next delta.
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [],
+			cursor: '0',
+			includesUnparentedMetadata: null,
+			accessEpoch: null,
+			durableRead: false,
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [],
+			total: 0,
+			cursor: '0',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+
+		expect(await localIndex.ensureAccessScope(ws, 'e2')).toBe(false);
+		expect(localIndex.accessEpochFor(ws)).toBeNull();
+
+		// CONTROL LEG. The same shape with a SUCCESSFUL read adopts, so this is
+		// a test of the read's outcome and not of the bootstrap generally.
+		localIndex.reset(ws);
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [],
+			cursor: '0',
+			includesUnparentedMetadata: null,
+			accessEpoch: null,
+			durableRead: true,
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [],
+			total: 0,
+			cursor: '0',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+
+		expect(await localIndex.ensureAccessScope(ws, 'e2')).toBe(false);
+		expect(localIndex.accessEpochFor(ws)).toBe('e2');
 	});
 
 	it('hands persistDelta the baseline the rows were applied under', async () => {
