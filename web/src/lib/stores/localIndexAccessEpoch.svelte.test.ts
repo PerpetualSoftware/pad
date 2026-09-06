@@ -181,6 +181,83 @@ describe('localIndex access-epoch scope', () => {
 		expect(localIndex.accessEpochFor(ws)).toBe('e3');
 	});
 
+	it('drops rows the cold snapshot omits before adopting its epoch', async () => {
+		// Review round 1, F1. The cold path MERGES, which is right when RAM is
+		// empty and wrong when a concurrent delta or optimistic write populated
+		// it while /items-index was in flight: the omitted row survives and the
+		// snapshot's epoch is stamped over it. The cache then advertises a
+		// scope it does not hold, and because the next delta agrees with that
+		// epoch, no resync ever fires again.
+		//
+		// The assertion that matters is the PAIR: the row is gone AND the epoch
+		// is the snapshot's. Asserting only the epoch would pass on the
+		// unfixed code, which is exactly how this got past four mutants.
+		localIndex.upsert(ws, row('secret', 2, 'revoked'));
+		expect(pickerCanSee('secret', 'revoked')).toBe(true);
+
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'cold-epoch',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+
+		expect(pickerCanSee('secret', 'revoked')).toBe(false);
+		expect(pickerCanSee('keeper', 'kept')).toBe(true);
+		expect(localIndex.accessEpochFor(ws)).toBe('cold-epoch');
+	});
+
+	it('keeps a known baseline when a snapshot carries no epoch, and stops asking', async () => {
+		// Review round 1, F3. Mixed deployment: the delta comes from a server
+		// that sends the field, the resync's snapshot from one that does not.
+		// `?? null` read absent as "no baseline", so the null-baseline branch
+		// resynced again on the next poll — a full snapshot per iteration up to
+		// the 50-page cap.
+		//
+		// The counterfactual is the whole test: ONE resync, not two. Asserting
+		// only that the first resync happened would pass on the unfixed code.
+		await seedUnder('old', [row('keeper', 1, 'kept')]);
+
+		const listIndex = vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+			// No access_epoch: an older server answering the snapshot.
+		});
+
+		expect(await localIndex.ensureAccessScope(ws, 'new')).toBe(true);
+		// The baseline is what the server TOLD us, not null — a true statement
+		// about what we were last told, which is all the baseline ever claims.
+		expect(localIndex.accessEpochFor(ws)).toBe('new');
+
+		expect(await localIndex.ensureAccessScope(ws, 'new')).toBe(false);
+		expect(listIndex).toHaveBeenCalledTimes(1);
+	});
+
+	it('refuses a delta whose epoch disagrees with the baseline, rather than applying it', async () => {
+		// Review round 1, P3. Both of today's callers compare before applying,
+		// so this guard is unreachable in production — it exists so that a
+		// future caller handing an ItemChangesResponse straight in gets a
+		// dropped batch and a pending resync instead of rows persisted under a
+		// baseline that no longer describes them.
+		await seedUnder('current', [row('keeper', 1, 'kept')]);
+
+		localIndex.applyDelta(
+			ws,
+			[{ ...row('smuggled', 9, 'revoked'), deleted: false } as never],
+			'9',
+			false,
+			'stale',
+		);
+
+		expect(pickerCanSee('smuggled', 'revoked')).toBe(false);
+		expect(localIndex.cursorFor(ws)).toBe('1');
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
 	it('adopts silently when there is no baseline and nothing cached', async () => {
 		// Nothing to evict, so a resync would buy nothing and cost a full
 		// index fetch on every cold start.

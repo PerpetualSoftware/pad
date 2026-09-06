@@ -388,7 +388,18 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		// here rather than at the call sites: every route into a resync ends
 		// here, and a baseline left stale would re-fire the resync on the very
 		// next poll.
-		state.accessEpoch = resp.access_epoch ?? null;
+		//
+		// ABSENT means UNKNOWN, and unknown must not erase what we know
+		// (review round 1 F3). `?? null` here read "no epoch on the snapshot"
+		// as "this workspace has no baseline", which during a mixed deployment
+		// — a delta from a new server, a snapshot from an old one — sent the
+		// reconcile loop into the null-baseline branch and resynced again, up
+		// to the 50-page cap, a full snapshot per iteration. Keeping the prior
+		// value leaves the loop's own termination to `ensureAccessScope`,
+		// which records the epoch it was TOLD once a resync has run.
+		if (resp.access_epoch !== undefined) {
+			state.accessEpoch = resp.access_epoch;
+		}
 		for (const row of resp.items) {
 			const next = toSkinny(row);
 			const existing = state.items.get(next.id);
@@ -754,10 +765,17 @@ export const localIndex = {
 						// state stays 'ready' so the UI keeps working.
 						// `pendingResync` remains true so the next
 						// bootstrap() call retries (Codex P2 round 5).
-						// Permission revocation that doesn't change
-						// row data is NOT covered here — TASK-1360 and
-						// DOC-1342 decision #3 explicitly punt that in
-						// favor of the 403-on-click purge path.
+						// Permission revocation that doesn't change row
+						// data used to be uncovered here — TASK-1360 and
+						// DOC-1342 decision #3 punted it in favour of the
+						// 403-on-click purge. IDEA-2898 covers it now, and
+						// not from this branch: the caller's access
+						// fingerprint rides on the delta response, and a
+						// change routes through `ensureAccessScope` above
+						// into an authoritative resync. What decision #3
+						// still owns is the item READ — a 403 on click. What
+						// it never reached is the LISTING, which is what
+						// ItemPicker does with these rows.
 						//
 						// A `rate_limited` (429) error lands here too and is
 						// intentionally treated as transient: the per-request
@@ -774,10 +792,56 @@ export const localIndex = {
 					});
 					if (isStale()) return;
 					state.includesUnparentedMetadata = resp.includes_unparented_metadata;
-					// A cold snapshot is authoritative under the CURRENT scope,
-					// so its epoch is the baseline with nothing to compare
-					// against — there is no prior cache to have gone stale.
-					state.accessEpoch = resp.access_epoch ?? null;
+					// DROP ROWS THE SNAPSHOT OMITS BEFORE ADOPTING ITS EPOCH
+					// (review round 1 F1). The cold path merges, which is right
+					// when RAM is empty — the usual case, and then this loop
+					// finds nothing. It is not right when a concurrent delta or
+					// optimistic write populated RAM while `/items-index` was in
+					// flight: merging keeps a row the snapshot omits, and the
+					// line below then stamps the cache with the snapshot's
+					// epoch. The result is a cache that ADVERTISES a scope it
+					// does not hold, and since the next delta agrees with that
+					// epoch, no resync ever fires — the same permanently-inert
+					// state as F2, reached from the other side.
+					//
+					// Same disposition as `resyncProjectionScope`'s step 1, and
+					// for the same reason: a post-snapshot mutation this caller
+					// can still see comes back on the very next
+					// `/items-changes?since=cursor`, so nothing visible is
+					// permanently lost, while a row the snapshot omits stays
+					// gone. Fenced for the same reason too — an in-flight
+					// optimistic write must not resurrect it.
+					if (state.items.size > 0) {
+						const snapshotIds = new Set<string>();
+						for (const row of resp.items) snapshotIds.add(row.id);
+						const toDrop: string[] = [];
+						for (const id of state.items.keys()) {
+							if (!snapshotIds.has(id)) toDrop.push(id);
+						}
+						for (const id of toDrop) {
+							state.items.delete(id);
+							localSearch.remove(ws, id);
+						}
+						// CONDITIONAL, where `resyncProjectionScope` replaces
+						// unconditionally — a deliberate divergence, not an
+						// oversight. Replacing there clears the fence on a
+						// re-UPGRADE, when the rows are legitimately back. Here
+						// an empty `toDrop` says only that RAM held nothing the
+						// snapshot omits; a fence from an earlier resync may
+						// still be guarding ids that are in neither, and
+						// clearing it would let an in-flight optimistic write
+						// resurrect one. Keeping it costs nothing: `applyDelta`
+						// lifts the fence per id as soon as an authoritative
+						// delta carries that row, so a genuine re-upgrade
+						// self-heals.
+						if (toDrop.length > 0) state.fencedIds = new Set(toDrop);
+					}
+					// The snapshot is authoritative under the CURRENT scope, so
+					// its epoch is the baseline. Absent means unknown and must
+					// not erase a known value (F3).
+					if (resp.access_epoch !== undefined) {
+						state.accessEpoch = resp.access_epoch;
+					}
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
@@ -954,8 +1018,33 @@ export const localIndex = {
 		changes: ItemChangeRow[],
 		newCursor: string,
 		includesUnparentedMetadata: boolean,
+		deltaAccessEpoch?: string,
 	): void {
 		const state = ensureState(ws);
+		// PAIRING GUARD (IDEA-2898, review round 1 P3). A delta must be
+		// compared against the caller's access baseline BEFORE its rows are
+		// applied — `ensureAccessScope` does that, and both of today's callers
+		// call it first. Nothing in this signature could enforce it, though, so
+		// a future caller handing an `ItemChangesResponse` straight in would
+		// persist rows under a baseline that no longer describes them, which is
+		// the inert-signal state F1 and F2 are about.
+		//
+		// So the epoch is accepted here as an OPTIONAL declaration. Omitted
+		// (both current callers, which have already compared) is unchanged
+		// behaviour. Supplied and disagreeing means the caller skipped the
+		// comparison: drop the batch and leave `pendingResync` set, so the next
+		// bootstrap reconciles instead of the rows landing unchecked. Not
+		// resyncing from here on purpose — this is a synchronous function and
+		// starting async work inside it is how the fences it already carries
+		// would get raced.
+		if (
+			deltaAccessEpoch !== undefined &&
+			state.accessEpoch !== null &&
+			state.accessEpoch !== deltaAccessEpoch
+		) {
+			state.pendingResync = true;
+			return;
+		}
 		state.includesUnparentedMetadata = includesUnparentedMetadata;
 		const startCursorNum = cursorAsNum(state.cursor);
 		const newCursorNum = cursorAsNum(newCursor);
@@ -1081,13 +1170,31 @@ export const localIndex = {
 			// which costs nothing because there is nothing to evict.
 			if (state.items.size > 0 || cursorAsNum(state.cursor) > 0) {
 				await resyncProjectionScope(ws, state);
+				// Same termination as below: a snapshot that carried no epoch
+				// would leave the baseline null and re-enter this branch on
+				// every poll (review round 1 F3).
+				if (state.accessEpoch === null) {
+					state.accessEpoch = accessEpoch;
+				}
 				return true;
 			}
 			state.accessEpoch = accessEpoch;
 			return false;
 		}
 		if (state.accessEpoch === accessEpoch) return false;
+		const before = state.accessEpoch;
 		await resyncProjectionScope(ws, state);
+		// TERMINATION (review round 1 F3). The resync adopts the snapshot's
+		// epoch when it has one. When it does not — an older server answering
+		// the snapshot while a newer one answers the delta — the baseline is
+		// still whatever it was, so the very next poll would compare it against
+		// the same incoming epoch and resync again, forever. Record the epoch
+		// the server TOLD us instead: it is the value the comparison uses, and
+		// it is a true statement about what we were last told, which is all the
+		// baseline has ever claimed to be.
+		if (state.accessEpoch === before) {
+			state.accessEpoch = accessEpoch;
+		}
 		return true;
 	},
 
@@ -1205,7 +1312,11 @@ export const localIndex = {
 		localSearch.upsert(ws, next);
 		// Write-through to IDB. Fire-and-forget; storage failures
 		// degrade silently.
-		persistUpserts(state.userId, ws, [next]).catch(() => undefined);
+		// The epoch this tab believes it is writing under — see the fence in
+		// persistUpserts (IDEA-2898 F2). Passing it is what lets the write be
+		// refused if another tab has resynced the cache to a narrower scope
+		// since this row was read.
+		persistUpserts(state.userId, ws, [next], state.accessEpoch).catch(() => undefined);
 	},
 
 	/**

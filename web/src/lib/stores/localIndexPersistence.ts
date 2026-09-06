@@ -346,14 +346,42 @@ export async function persistUpserts(
 	userId: string | null,
 	ws: string,
 	rows: ItemIndexRow[],
+	writerAccessEpoch: string | null = null,
 ): Promise<void> {
 	if (!isSupported() || rows.length === 0) return;
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
-		const tx = db.transaction(['items', 'tombstones'], 'readwrite');
+		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
+		// EPOCH FENCE (IDEA-2898, review round 1 F2). The in-RAM `fencedIds`
+		// guard stops a stale optimistic write from resurrecting a
+		// resync-dropped row WITHIN one tab. It cannot see another tab, and
+		// this is where the two meet: tab A resyncs under a narrowed scope
+		// (persistReplace clears the items store, clears the tombstones, and
+		// stamps the new epoch), then tab B's already-queued write for a row
+		// it saw under the OLD scope commits into the cleared store.
+		//
+		// What makes that worse than an ordinary stale row is the meta row:
+		// this function does not touch it, so the cache goes on advertising
+		// the NEW epoch while holding a row from the old one. On warm boot
+		// hydrate returns the revoked row, the next delta reports the same
+		// epoch, and no resync ever fires again — the signal is not just
+		// wrong, it is permanently inert.
+		//
+		// So a writer declares the epoch it believes it is writing under, and
+		// the transaction refuses the whole batch if the cache has moved on.
+		// Null (the default, and the value a caller with no baseline yet has)
+		// means "no claim" and is not fenced: a workspace with no recorded
+		// epoch has had no resync to be stale relative to.
+		if (writerAccessEpoch !== null) {
+			const meta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+			if (meta && meta.accessEpoch !== null && meta.accessEpoch !== writerAccessEpoch) {
+				await tx.done.catch(() => undefined);
+				return;
+			}
+		}
 		for (const row of rows) {
 			const stored = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
 			const tombstone = (await tombstones.get(row.id)) as TombstoneRow | undefined;
