@@ -91,6 +91,42 @@ export interface HydrateResult {
 	retags: Record<string, string>;
 }
 
+/**
+ * Can this writer confirm it is writing under the scope the cache already
+ * records? (IDEA-2898, round 4 — the lead's ruling on the shape.)
+ *
+ * `accessEpoch` is a HASH. It answers "is this the same scope?" and NOTHING
+ * else. Two epochs are not earlier and later, they are merely different, so
+ * every "stale writer", "older snapshot" and "slower tab" this module used to
+ * talk about was an ordering claim resting on an equality test — and a writer
+ * refused as stale might have been carrying the BROADER scope, in which case
+ * its removal deleted a row the caller could legitimately still see, with the
+ * cursor left ahead so no delta ever replayed it.
+ *
+ * So nothing here judges direction any more. There are two answers:
+ *
+ *   AGREE       — the cache records no epoch (nothing to contradict), or it
+ *                 records this writer's. The write proceeds in full.
+ *   UNCONFIRMED — the epochs differ, or this writer claims none against a
+ *                 cache that records one. The writer CANNOT KNOW which side is
+ *                 right; the server can. So the write leaves the meta row
+ *                 alone — a writer that cannot write meta cannot make the
+ *                 cache LIE about its scope, which is the property that
+ *                 actually matters — and the caller schedules an authoritative
+ *                 resync. Whether this writer's rows survive is then decided by
+ *                 the resync's drop-absent pass, which is the only authority
+ *                 that can decide it.
+ *
+ * This converges. The server's epoch is stable across the race, and an ABSENT
+ * epoch is "no claim" rather than "different", so a mixed deployment does not
+ * loop.
+ */
+function metaAgrees(cached: MetaRow | undefined, writerAccessEpoch: string | null): boolean {
+	const cachedEpoch = cached ? (cached.accessEpoch ?? null) : null;
+	if (cachedEpoch === null) return true;
+	return cachedEpoch === writerAccessEpoch;
+}
+
 /** Shape of the sync row stored in the `meta` store (keyed by `key: 'sync'`). */
 interface MetaRow {
 	key: 'sync';
@@ -347,53 +383,20 @@ export async function persistUpserts(
 	ws: string,
 	rows: ItemIndexRow[],
 	writerAccessEpoch: string | null = null,
-): Promise<void> {
-	if (!isSupported() || rows.length === 0) return;
+): Promise<boolean> {
+	if (!isSupported() || rows.length === 0) return false;
 	const db = await open(userId, ws);
-	if (!db) return;
+	if (!db) return false;
 	try {
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
-		// EPOCH FENCE (IDEA-2898, review round 1 F2). The in-RAM `fencedIds`
-		// guard stops a stale optimistic write from resurrecting a
-		// resync-dropped row WITHIN one tab. It cannot see another tab, and
-		// this is where the two meet: tab A resyncs under a narrowed scope
-		// (persistReplace clears the items store, clears the tombstones, and
-		// stamps the new epoch), then tab B's already-queued write for a row
-		// it saw under the OLD scope commits into the cleared store.
-		//
-		// What makes that worse than an ordinary stale row is the meta row:
-		// this function does not touch it, so the cache goes on advertising
-		// the NEW epoch while holding a row from the old one. On warm boot
-		// hydrate returns the revoked row, the next delta reports the same
-		// epoch, and no resync ever fires again — the signal is not just
-		// wrong, it is permanently inert.
-		//
-		// So a writer declares the epoch it believes it is writing under, and
-		// the transaction refuses the batch if the cache has moved on.
-		//
-		// A NULL WRITER IS NOT EXEMPT (round 3). Round 2 read null as "no
-		// claim" and let it through, which made it the way in: a delayed
-		// callback from before this tab had a baseline, or a fresh state after
-		// a `reset()`, could insert a row into a cache that had already
-		// resynced past it. What null actually means is that the WRITER knows
-		// nothing about scope — which is a reason to refuse it against a cache
-		// that does know, not a reason to trust it.
-		//
-		// The exemption that IS legitimate is the other side: a cache with no
-		// recorded epoch has had no resync, so nothing can be stale relative to
-		// it, and the first write of a session must land.
-		const meta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
-		// `?? null` because a meta row written before this field existed has it
-		// ABSENT, not null — and `undefined !== null` would have fenced out
-		// every writer against a pre-IDEA-2898 cache. Caught by the v1-migration
-		// test, which is the only fixture that produces that shape.
-		const cachedEpoch = meta ? (meta.accessEpoch ?? null) : null;
-		if (cachedEpoch !== null && cachedEpoch !== writerAccessEpoch) {
-			await tx.done.catch(() => undefined);
-			return;
-		}
+		// See `metaAgrees`. This function never writes the meta row, so an
+		// unconfirmed writer's rows land exactly as a confirmed one's do — what
+		// it returns is the ask for an authoritative resync, which is the only
+		// thing that can decide whether those rows belong.
+		const cached = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+		const unconfirmed = !metaAgrees(cached, writerAccessEpoch);
 		for (const row of rows) {
 			const stored = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
 			const tombstone = (await tombstones.get(row.id)) as TombstoneRow | undefined;
@@ -406,9 +409,11 @@ export async function persistUpserts(
 			if (tombstone) tombstones.delete(row.id).catch(() => undefined);
 		}
 		await tx.done;
+		return unconfirmed;
 	} catch {
 		/* swallow — best-effort cache */
 	}
+	return false;
 }
 
 /**
@@ -524,53 +529,28 @@ export async function persistDelta(
 	includesUnparentedMetadata: boolean,
 	accessEpoch: string | null,
 	removeIds: string[] = [],
-): Promise<void> {
-	if (!isSupported()) return;
+): Promise<boolean> {
+	if (!isSupported()) return false;
 	const db = await open(userId, ws);
-	if (!db) return;
+	if (!db) return false;
 	try {
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
-		// EPOCH FENCE — AND A FENCE NEVER BLOCKS A REMOVAL (round 3).
+		// See `metaAgrees`. Round 3 had this refuse the row writes and apply the
+		// removals, on a rule I wrote — "a removal only narrows what the cache
+		// asserts" — that round 4 refuted: with an unordered epoch, the refused
+		// batch may be the BROADER scope, so applying its removal deleted a row
+		// the caller could legitimately see, permanently, because the cursor
+		// stayed ahead of it.
 		//
-		// An authoritative delta is not exempt from the cross-tab race: an old
-		// tab's `persistDelta` committing after another tab's `persistReplace`
-		// writes BOTH the old row and the old epoch, which is worse than the
-		// upsert case, because a regressed meta row disables this fence for
-		// every writer that follows.
-		//
-		// But round 2's version refused the WHOLE transaction, `removeIds`
-		// included — and that made the fence cause the exact state it exists to
-		// prevent. A `moved_out` eviction or a snapshot's repair carried by a
-		// stale-epoch batch was dropped, the row stayed in IDB, and no later
-		// delta re-sends a removal for a sequence already behind the persisted
-		// cursor. The fence blocked the only thing that could have cleaned up.
-		//
-		// The asymmetry is the rule, and it generalises past this function: a
-		// stale writer may not ADD or claim, because adding stale data is how a
-		// cache goes wrong. It may always REMOVE, because removal can only ever
-		// narrow what the cache asserts, and a removal that was correct under an
-		// older scope is still correct under a narrower one.
-		let fencedOut = false;
-		if (accessEpoch !== null) {
-			const existing = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
-			const cached = existing ? (existing.accessEpoch ?? null) : null;
-			if (cached !== null && cached !== accessEpoch) {
-				fencedOut = true;
-			}
-		}
-		if (fencedOut) {
-			// Removals only, no row writes and no cursor/epoch advance.
-			const tombstones = tx.objectStore('tombstones');
-			const deletedAtSeq = seqFromCursor(cursor);
-			for (const id of removeIds) {
-				tx.objectStore('items').delete(id).catch(() => undefined);
-				await raiseTombstone(tombstones, id, deletedAtSeq);
-			}
-			await tx.done.catch(() => undefined);
-			return;
-		}
+		// So an unconfirmed writer now judges nothing. Its row upserts land
+		// (they are server rows either way), its REMOVALS and its meta write do
+		// not — a removal is a claim about what is gone, and this writer cannot
+		// substantiate one — and the caller is told to resync, which is the only
+		// authority that can decide both.
+		const cachedMeta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+		const unconfirmed = !metaAgrees(cachedMeta, accessEpoch);
 		// Same policy as persistUpserts (resolveRowWrite): the race runs in both
 		// directions, so a delta must not overwrite a row that is already NEWER
 		// in the cache, and a tombstone must refuse a stale resurrection.
@@ -590,24 +570,28 @@ export async function persistDelta(
 		// right stamp: a delayed snapshot for this id at seq <= cursor is stale
 		// and resolveRowWrite refuses it; a genuinely newer one (seq > cursor)
 		// supersedes and clears the tombstone.
-		const deletedAtSeq = seqFromCursor(cursor);
-		for (const id of removeIds) {
-			itemsStore.delete(id).catch(() => undefined);
-			await raiseTombstone(tombstones, id, deletedAtSeq);
+		if (!unconfirmed) {
+			const deletedAtSeq = seqFromCursor(cursor);
+			for (const id of removeIds) {
+				itemsStore.delete(id).catch(() => undefined);
+				await raiseTombstone(tombstones, id, deletedAtSeq);
+			}
+			tx.objectStore('meta')
+				.put({
+					key: 'sync',
+					cursor,
+					schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+					includesUnparentedMetadata,
+					accessEpoch,
+				} satisfies MetaRow)
+				.catch(() => undefined);
 		}
-		tx.objectStore('meta')
-			.put({
-				key: 'sync',
-				cursor,
-				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
-				includesUnparentedMetadata,
-				accessEpoch,
-			} satisfies MetaRow)
-			.catch(() => undefined);
 		await tx.done;
+		return unconfirmed;
 	} catch {
 		/* swallow — best-effort cache */
 	}
+	return false;
 }
 
 /**
@@ -641,31 +625,23 @@ export async function persistReplace(
 	cursor: string,
 	includesUnparentedMetadata: boolean,
 	accessEpoch: string | null,
-): Promise<void> {
-	if (!isSupported()) return;
+): Promise<boolean> {
+	if (!isSupported()) return false;
 	const db = await open(userId, ws);
-	if (!db) return;
+	if (!db) return false;
 	try {
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
-		// A SLOWER TAB MUST NOT CLOBBER A NEWER SNAPSHOT (round 3). Two tabs
-		// can resync at once; if tab A started under an older scope and lands
-		// second, it clears the store and writes its own rows and epoch over
-		// tab B's newer ones. That is transient rather than permanently inert —
-		// a later delta contradicts the regressed epoch and forces another
-		// resync — but it is a full round trip and a window of visibly wrong
-		// rows, for no gain.
-		//
-		// Unlike the delta fence there is nothing to salvage from a refused
-		// replace: its removals are expressed as "everything not in this
-		// snapshot", which is a claim about a scope that has already been
-		// superseded, and applying it would be the clobber.
-		if (accessEpoch !== null) {
-			const existing = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
-			const cached = existing ? (existing.accessEpoch ?? null) : null;
-			if (cached !== null && cached !== accessEpoch) {
-				await tx.done.catch(() => undefined);
-				return;
-			}
+		// See `metaAgrees`. A replace is the strongest claim this module makes —
+		// "these are the rows, everything else is gone, and this is the scope" —
+		// so an unconfirmed writer makes none of it: no clear, no rows, no meta.
+		// There is nothing here worth salvaging under an epoch the cache does
+		// not share, and the resync the caller then runs fetches a snapshot
+		// under the scope the SERVER currently reports, which is the claim this
+		// one could not make.
+		const cachedMeta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
+		if (!metaAgrees(cachedMeta, accessEpoch)) {
+			await tx.done.catch(() => undefined);
+			return true;
 		}
 		const itemsStore = tx.objectStore('items');
 		// Queued before the puts; IDB executes requests against a store in
@@ -692,9 +668,11 @@ export async function persistReplace(
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;
+		return false;
 	} catch {
 		/* swallow — best-effort cache */
 	}
+	return false;
 }
 
 /**

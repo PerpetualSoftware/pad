@@ -27,137 +27,121 @@ function row(id: string, seq: number): ItemIndexRow {
 	return { id, seq, collection_slug: 'revoked' } as unknown as ItemIndexRow;
 }
 
-describe('IDEA-2898 F2 — a writer under a superseded epoch cannot reinsert into the cache', () => {
-	it('refuses a stale-epoch upsert, accepts a current-epoch one, and lets an unclaimed writer through', async () => {
+describe('IDEA-2898 — a writer that cannot confirm the scope may not speak for it', () => {
+	it('lets an unconfirmed writer store rows but not touch the meta row, and asks for a resync', async () => {
+		// ROUND 4 CHANGED THIS PROPERTY, and the change is the point rather
+		// than a detail. Rounds 1-3 refused the unconfirmed writer's ROWS, on
+		// the reading that a differing epoch means a STALE writer. It does not:
+		// an epoch is a hash, two epochs are merely different, and the writer
+		// this refused might have been carrying the broader scope.
+		//
+		// What is actually protected is the META ROW. A writer that cannot
+		// write meta cannot make the cache LIE about which scope it holds, and
+		// a cache whose epoch is honest gets repaired by the resync this write
+		// asks for. Whether the row belongs is the resync's decision, because
+		// it is the only party that can make it.
 		const U = null;
-		const WS = 'ws-epoch-fence';
+		const WS = 'ws-epoch-unconfirmed';
 		const { persistReplace, persistUpserts, hydrate } = await loadPersistence();
 
-		// Tab A resyncs under the narrowed scope: 'secret' is gone, epoch e2.
 		await persistReplace(U, WS, [row('keeper', 1)], '5', false, 'e2');
-		expect((await rawItems(U, WS)).map((r) => r.id).sort()).toEqual(['keeper']);
 
-		// Tab B, still believing it is under e1, writes the row it saw then.
-		await persistUpserts(U, WS, [row('secret', 2)], 'e1');
-		expect((await rawItems(U, WS)).map((r) => r.id).sort()).toEqual(['keeper']);
+		const unconfirmed = await persistUpserts(U, WS, [row('secret', 2)], 'e1');
+		expect(unconfirmed).toBe(true); // the ask for an authoritative resync
 
-		// And the meta row still says e2 — the check that the fence protected
-		// the SIGNAL, not just this one row. A cache holding 'secret' while
-		// advertising e2 is the state no later delta can detect.
-		const afterRefusal = await hydrate(U, WS);
-		expect(afterRefusal.accessEpoch).toBe('e2');
-		expect(afterRefusal.items.map((r) => r.id).sort()).toEqual(['keeper']);
+		const after = await hydrate(U, WS);
+		expect(after.items.map((r) => r.id).sort()).toEqual(['keeper', 'secret']);
+		// The half that matters: the cache still says what it actually holds.
+		expect(after.accessEpoch).toBe('e2');
+		expect(after.cursor).toBe('5');
 
-		// CONTROL LEG. The fence must not refuse a writer that is current —
-		// otherwise every optimistic write after any resync would be silently
-		// dropped, which no assertion above would catch.
-		await persistUpserts(U, WS, [row('allowed', 3)], 'e2');
-		expect((await rawItems(U, WS)).map((r) => r.id).sort()).toEqual(['allowed', 'keeper']);
-
-		// SECOND LEG — CHANGED IN ROUND 3, because the PROPERTY changed.
-		//
-		// This used to assert that a writer with no baseline is let through
-		// against any cache, on the reading that null means "no claim". Round 3
-		// showed that is the way IN: a delayed callback from before this tab had
-		// a baseline, or a fresh state after a `reset()`, could insert into a
-		// cache that had already resynced past it. Null does not mean the write
-		// is safe; it means the WRITER knows nothing about scope, which is a
-		// reason to refuse it against a cache that does know.
-		await persistUpserts(U, WS, [row('unclaimed', 4)], null);
-		expect((await rawItems(U, WS)).map((r) => r.id).sort()).toEqual(['allowed', 'keeper']);
+		// CONTROL LEG. A confirmed writer asks for nothing — otherwise every
+		// ordinary write would drag a full resync behind it.
+		expect(await persistUpserts(U, WS, [row('allowed', 3)], 'e2')).toBe(false);
 	});
 
-	it('refuses a slower tab\'s older snapshot rather than clobbering a newer one', async () => {
-		// Two tabs can resync at once. If tab A started under an older scope and
-		// lands second, an unfenced `persistReplace` clears the store and writes
-		// its own rows and epoch over tab B's newer ones — transient rather than
-		// permanently inert, since a later delta contradicts the regressed
-		// epoch, but that is a full round trip and a window of visibly wrong
-		// rows for no gain.
-		//
-		// Unlike the delta fence there is nothing to salvage from a refused
-		// replace: its removals are expressed as "everything not in this
-		// snapshot", a claim about a scope that has already been superseded.
+	it('lets an unconfirmed delta store rows but apply no removals and no cursor', async () => {
+		// The removals are the sharpest half. Round 3 applied them on a rule I
+		// wrote — "a removal only narrows what the cache asserts" — which round
+		// 4 refuted: with an unordered epoch the refused batch may be the
+		// BROADER scope, so its removal deletes a row the caller can still see,
+		// permanently, because the cursor stays ahead of the sequence that
+		// carried it. A removal is a claim about what is GONE, and an
+		// unconfirmed writer cannot substantiate one.
 		const U = null;
-		const WS = 'ws-replace-fence';
+		const WS = 'ws-epoch-unconfirmed-delta';
+		const { persistReplace, persistDelta, hydrate } = await loadPersistence();
+
+		await persistReplace(U, WS, [row('keeper', 1)], '20', false, 'e2');
+
+		const unconfirmed = await persistDelta(U, WS, [row('added', 6)], '15', false, 'e1', [
+			'keeper',
+		]);
+		expect(unconfirmed).toBe(true);
+
+		const after = await hydrate(U, WS);
+		// The row landed; the REMOVAL did not.
+		expect(after.items.map((r) => r.id).sort()).toEqual(['added', 'keeper']);
+		// And neither the cursor nor the epoch moved backwards.
+		expect(after.cursor).toBe('20');
+		expect(after.accessEpoch).toBe('e2');
+
+		// CONTROL LEG: a confirmed delta applies its removal and advances.
+		expect(await persistDelta(U, WS, [], '21', false, 'e2', ['keeper'])).toBe(false);
+		const healthy = await hydrate(U, WS);
+		expect(healthy.items.map((r) => r.id)).toEqual(['added']);
+		expect(healthy.cursor).toBe('21');
+	});
+
+	it('refuses an unconfirmed REPLACE outright, because a replace claims the whole scope', async () => {
+		// The one writer whose rows are also refused, and for a reason that is
+		// not about staleness: a replace says "these are the rows, everything
+		// else is gone, and this is the scope". None of that is separable, and
+		// none of it is sayable by a writer whose epoch the cache does not
+		// share.
+		const U = null;
+		const WS = 'ws-epoch-unconfirmed-replace';
 		const { persistReplace, hydrate } = await loadPersistence();
 
 		await persistReplace(U, WS, [row('newer', 9)], '9', false, 'e2');
-		await persistReplace(U, WS, [row('older', 1)], '1', false, 'e1');
+		expect(await persistReplace(U, WS, [row('other', 1)], '1', false, 'e1')).toBe(true);
 
 		const after = await hydrate(U, WS);
 		expect(after.items.map((r) => r.id)).toEqual(['newer']);
 		expect(after.accessEpoch).toBe('e2');
 		expect(after.cursor).toBe('9');
 
-		// CONTROL LEG: a replace under the CURRENT epoch must still land, or
-		// every resync after the first would be a no-op.
-		await persistReplace(U, WS, [row('newest', 12)], '12', false, 'e2');
-		const healthy = await hydrate(U, WS);
-		expect(healthy.items.map((r) => r.id)).toEqual(['newest']);
-		expect(healthy.cursor).toBe('12');
+		// CONTROL LEG: a confirmed replace still lands, or no resync could ever
+		// install its snapshot.
+		expect(await persistReplace(U, WS, [row('newest', 12)], '12', false, 'e2')).toBe(false);
+		expect((await hydrate(U, WS)).items.map((r) => r.id)).toEqual(['newest']);
 	});
 
-	it('lets an unclaimed writer through only when the CACHE has no epoch either', async () => {
-		// The exemption that is legitimate, and the reason the fence cannot
-		// simply refuse every null writer: a cache with no recorded epoch has
-		// had no resync, so nothing can be stale relative to it. Refusing here
-		// would drop the first write of every session.
+	it('treats a cache with no epoch as nothing to contradict', async () => {
+		// The exemption that has survived every round: a cache with no recorded
+		// epoch has had no resync, so no writer can fail to match it. Refusing
+		// here would drop the first write of every session.
 		const U = null;
-		const WS = 'ws-epoch-fence-virgin';
+		const WS = 'ws-epoch-virgin';
 		const { persistUpserts, hydrate } = await loadPersistence();
 
-		await persistUpserts(U, WS, [row('first', 1)], null);
+		expect(await persistUpserts(U, WS, [row('first', 1)], null)).toBe(false);
+		expect(await persistUpserts(U, WS, [row('second', 2)], 'e1')).toBe(false);
 		const after = await hydrate(U, WS);
-		expect(after.items.map((r) => r.id)).toEqual(['first']);
+		expect(after.items.map((r) => r.id).sort()).toEqual(['first', 'second']);
 		expect(after.accessEpoch).toBeNull();
 	});
 
-	it('fences persistDelta too, and refuses its meta write rather than regressing the epoch', async () => {
-		// Round 2. An AUTHORITATIVE delta is not exempt from the cross-tab
-		// race, and it is the worse case of the two: `persistUpserts` writing
-		// late leaves a stale row under the current epoch, while `persistDelta`
-		// writing late leaves a stale row AND drags the meta row back to the
-		// old epoch. That second part disables the fence for every writer that
-		// follows — one late delta and the cache stops defending itself.
+	it('treats a writer with no epoch against a cache that has one as unconfirmed', async () => {
+		// Null does not mean "safe"; it means the WRITER knows nothing about
+		// scope. Against a cache that does know, that is exactly the case where
+		// the server has to be asked.
 		const U = null;
-		const WS = 'ws-epoch-fence-delta';
-		const { persistReplace, persistDelta, hydrate } = await loadPersistence();
+		const WS = 'ws-epoch-null-writer';
+		const { persistReplace, persistUpserts, hydrate } = await loadPersistence();
 
 		await persistReplace(U, WS, [row('keeper', 1)], '5', false, 'e2');
-
-		// The old tab's delta, built under e1, committing after the replace.
-		await persistDelta(U, WS, [row('secret', 6)], '6', false, 'e1');
-
-		const after = await hydrate(U, WS);
-		expect(after.items.map((r) => r.id).sort()).toEqual(['keeper']);
-		// The meta row is the part that matters most: a regressed epoch here is
-		// not one bad row, it is the fence switched off.
-		expect(after.accessEpoch).toBe('e2');
-		expect(after.cursor).toBe('5');
-
-		// A FENCE NEVER BLOCKS A REMOVAL (round 3). The stale batch's row write
-		// is refused above; its REMOVALS must still apply, because a removal
-		// can only narrow what the cache asserts and no later delta re-sends a
-		// removal for a sequence already behind the persisted cursor. Round 2's
-		// version refused the whole transaction and so caused the exact
-		// permanent state the fence exists to prevent.
-		await persistDelta(U, WS, [], '6', false, 'e1', ['keeper']);
-		const afterRemoval = await hydrate(U, WS);
-		expect(afterRemoval.items.map((r) => r.id)).toEqual([]);
-		// ...and the refused batch still may not advance the cursor or the
-		// epoch, which is the half that must NOT leak through with it.
-		expect(afterRemoval.cursor).toBe('5');
-		expect(afterRemoval.accessEpoch).toBe('e2');
-
-		// CONTROL LEG. A current-epoch delta must still land, or every
-		// authoritative write after a resync would be silently dropped.
-		await persistDelta(U, WS, [row('fresh', 7)], '7', false, 'e2');
-		const healthy = await hydrate(U, WS);
-		// 'keeper' is gone because the refused batch's REMOVAL was applied — the
-		// leg above. Only 'fresh' remains, which is what a current-epoch write
-		// landing proves.
-		expect(healthy.items.map((r) => r.id)).toEqual(['fresh']);
-		expect(healthy.cursor).toBe('7');
+		expect(await persistUpserts(U, WS, [row('unclaimed', 4)], null)).toBe(true);
+		expect((await hydrate(U, WS)).accessEpoch).toBe('e2');
 	});
 });

@@ -402,6 +402,45 @@ describe('localIndex access-epoch scope', () => {
 		expect(localIndex.accessEpochFor(ws)).toBe('told');
 	});
 
+	it('discards a cold snapshot whose cursor is behind what RAM has already applied', async () => {
+		// Round 4. The two checks above ask what RAM holds that the snapshot
+		// omits. The inverse — a row the snapshot holds that RAM deliberately
+		// REMOVED, via a moved_out applied while /items-index was in flight —
+		// is invisible to both, and merging puts the hidden row back with the
+		// cursor already past the move, so no later delta re-sends it and it
+		// survives a reload.
+		//
+		// RAM cannot answer "did I remove this", but the cursor answers the
+		// general question, which is the better instrument: it covers every
+		// mutation applied during the request, not the one shape I thought of.
+		localIndex.applyDelta(ws, [], '9', false);
+		expect(localIndex.cursorFor(ws)).toBe('9');
+
+		const stale = {
+			items: [row('moved-out', 3, 'revoked')],
+			total: 1,
+			cursor: '4',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		};
+		const fresh = {
+			items: [row('keeper', 9, 'kept')],
+			total: 1,
+			cursor: '9',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		};
+		vi.spyOn(api.items, 'listIndex')
+			.mockResolvedValueOnce(stale)
+			.mockResolvedValueOnce(fresh);
+
+		await localIndex.bootstrap(ws, { userId: null });
+
+		// The behind-snapshot's row never entered the store; the resync's did.
+		expect(pickerCanSee('moved-out', 'revoked')).toBe(false);
+		expect(pickerCanSee('keeper', 'kept')).toBe(true);
+	});
+
 	it('adopts silently when there is no baseline and nothing cached', async () => {
 		// Nothing to evict, so a resync would buy nothing and cost a full
 		// index fetch on every cold start.

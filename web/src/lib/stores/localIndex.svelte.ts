@@ -299,6 +299,26 @@ function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
  * Steady-state mutations (`applyDelta`, `upsert`, `remove`) update the
  * search index incrementally inside those methods themselves.
  */
+/**
+ * A persistence call reported that it could not confirm the cache's scope
+ * (IDEA-2898, round 4). It wrote no meta row, so the cache is not lying about
+ * what it holds — but nobody local can decide whether the rows it did write
+ * belong. Only the server can, so ask it: `pendingResync` is the existing way
+ * to say a reconcile is owed, and the next bootstrap drains it.
+ *
+ * Guarded on generation because these calls are fire-and-forget: a `reset()`
+ * may have replaced the state entirely while the transaction was open, and
+ * setting a flag on a state nobody holds is a slow leak of confusion.
+ */
+function noteUnconfirmedWrite(ws: string, generation: number): (unconfirmed: boolean) => void {
+	return (unconfirmed) => {
+		if (!unconfirmed) return;
+		const state = workspaces.get(ws);
+		if (!state || state.generation !== generation) return;
+		state.pendingResync = true;
+	};
+}
+
 function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
 	localSearch.rebuild(ws, state.items.values());
 }
@@ -461,7 +481,7 @@ async function resyncProjectionScope(
 		// hydrate.
 		if (state.generation !== generation) return;
 		const snapshot = [...state.items.values()];
-		await persistReplace(
+		const replaceUnconfirmed = await persistReplace(
 			userId,
 			ws,
 			snapshot,
@@ -476,6 +496,12 @@ async function resyncProjectionScope(
 			// epoch on disk.
 			state.accessEpoch,
 		);
+		// Even an authoritative snapshot can meet a cache another tab has moved
+		// on: it wrote nothing, so this resync has not landed durably and a
+		// further one is owed.
+		if (replaceUnconfirmed && state.generation === generation) {
+			state.pendingResync = true;
+		}
 	})();
 	projectionResyncs.set(ws, promise);
 	try {
@@ -865,7 +891,22 @@ export const localIndex = {
 							}
 						}
 					}
-					if (supersededEpoch || ramHasOmittedRows) {
+					// THE INVERSE, which the two checks above cannot see (round
+					// 4). They ask what RAM holds that the snapshot omits. The
+					// other direction is a row the snapshot holds that RAM
+					// deliberately REMOVED — a `moved_out` eviction applied
+					// while this request was in flight. Merging then puts the
+					// hidden row back, and because RAM's cursor is already past
+					// the move, no later delta re-sends it: it survives a
+					// reload. RAM cannot answer "did I remove this", but the
+					// CURSOR can answer the general question, and it covers
+					// every mutation applied during the request rather than the
+					// one shape I happened to think of: a snapshot whose cursor
+					// is behind RAM's is a description of an earlier moment, and
+					// an earlier moment is not the one we are in.
+					const snapshotIsBehind =
+						cursorAsNum(resp.cursor) < cursorAsNum(state.cursor);
+					if (supersededEpoch || ramHasOmittedRows || snapshotIsBehind) {
 						await resyncProjectionScope(ws, state);
 						if (isStale()) return;
 						// The resync leaves `pendingResync` set on purpose: it
@@ -921,7 +962,7 @@ export const localIndex = {
 						state.cursor,
 						resp.includes_unparented_metadata,
 						state.accessEpoch,
-					).catch(
+					).then(noteUnconfirmedWrite(ws, bootstrapGen)).catch(
 						() => undefined,
 					);
 				}
@@ -1182,7 +1223,7 @@ export const localIndex = {
 			includesUnparentedMetadata,
 			state.accessEpoch,
 			toRemove,
-		).catch(
+		).then(noteUnconfirmedWrite(ws, state.generation)).catch(
 			() => undefined,
 		);
 	},
@@ -1364,7 +1405,9 @@ export const localIndex = {
 		// persistUpserts (IDEA-2898 F2). Passing it is what lets the write be
 		// refused if another tab has resynced the cache to a narrower scope
 		// since this row was read.
-		persistUpserts(state.userId, ws, [next], state.accessEpoch).catch(() => undefined);
+		persistUpserts(state.userId, ws, [next], state.accessEpoch)
+			.then(noteUnconfirmedWrite(ws, state.generation))
+			.catch(() => undefined);
 	},
 
 	/**

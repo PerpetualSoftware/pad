@@ -108,6 +108,40 @@ describe('IDEA-2898 round 2 — what the callers hand on', () => {
 		expect(args[5]).toBe(localIndex.accessEpochFor(ws));
 	});
 
+	it('turns a persistence layer that could not confirm the scope into a pending resync', async () => {
+		// Round 4, and the wiring half of the ruling (CONVE-19). The
+		// persistence layer decides it cannot confirm the cache's scope and
+		// says so by returning true; that value is worth nothing unless the
+		// store acts on it. A mutation run proved the gap rather than assuming
+		// it — making `noteUnconfirmedWrite` a no-op left every other test in
+		// this unit green, because they all assert what the DATABASE does.
+		//
+		// The ask is the whole repair under this design: the write left the
+		// meta row alone, so the cache is honest but may be holding rows nobody
+		// local can adjudicate, and only a resync can.
+		persistence.persistUpserts.mockResolvedValueOnce(true as never);
+
+		localIndex.upsert(ws, row('optimistic', 3, 'kept'));
+		// The persistence call is fire-and-forget; let its promise settle.
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
+	it('does NOT schedule a resync when the persistence layer confirmed the scope', async () => {
+		// The control leg. Without it, a `noteUnconfirmedWrite` that set
+		// `pendingResync` unconditionally would pass the test above and drag a
+		// full authoritative resync behind every optimistic write in the app.
+		persistence.persistUpserts.mockResolvedValueOnce(false as never);
+
+		localIndex.upsert(ws, row('optimistic', 3, 'kept'));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+	});
+
 	it("declares the delta's epoch when the bootstrap loop applies one", async () => {
 		// The scope check in that loop runs BEFORE `ensureAccessScope` awaits,
 		// so a resync can land in between and the rows would then be applied
