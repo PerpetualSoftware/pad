@@ -57,6 +57,54 @@ afterEach(() => {
 });
 
 describe('IDEA-2898 — what the resync hands on', () => {
+	it('adopts the PERSISTED epoch on a warm hydrate, so an unchanged scope costs nothing', async () => {
+		// The offline-revocation case turns on this line, and its absence is
+		// almost invisible: with no baseline adopted, a populated cache resyncs
+		// on the first delta, which looks like detection working. The
+		// discriminating case is the QUIET one — a cache whose scope has NOT
+		// changed must not pay a full snapshot on every reload.
+		//
+		// Needs the mocked persistence module: jsdom has no IndexedDB, so the
+		// real `hydrate` always returns an empty cache and the warm branch is
+		// unreachable in the behavioural file.
+		persistence.hydrate.mockResolvedValueOnce({
+			items: [row('cached', 1, 'kept')],
+			cursor: '1',
+			includesUnparentedMetadata: false,
+			accessEpoch: 'persisted-e1',
+			retags: {},
+		} as unknown as Awaited<ReturnType<typeof persistence.hydrate>>);
+		const listIndex = vi.spyOn(api.items, 'listIndex');
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'persisted-e1',
+		});
+
+		await localIndex.bootstrap(ws, { userId: null });
+
+		expect(localIndex.accessEpochFor(ws)).toBe('persisted-e1');
+		// The scope the cache was written under is the scope the server still
+		// reports, so no authoritative snapshot was needed.
+		expect(listIndex).not.toHaveBeenCalled();
+	});
+
+	it('hands persistDelta the baseline the rows were applied under', async () => {
+		// `applyDelta` writes through to IDB, and the meta row it stamps is the
+		// ONLY record of the scope for the next session. Passing null there
+		// leaves every reload with no baseline over a populated cache, which
+		// resyncs on the first delta — a full snapshot per reload, forever, for
+		// a scope that never changed. Invisible in jsdom, where persistence is
+		// a no-op, so it is asserted as an ARGUMENT.
+		await localIndex.ensureAccessScope(ws, 'e1');
+		localIndex.applyDelta(ws, [], '7', false);
+
+		expect(persistence.persistDelta).toHaveBeenCalled();
+		const args = persistence.persistDelta.mock.calls.at(-1) as unknown[];
+		expect(args[5]).toBe('e1');
+	});
+
 	it('writes the PRESERVED baseline to IDB when a resync snapshot carries no epoch', async () => {
 		// F3 keeps a known baseline in RAM when the snapshot has none. Writing
 		// `null` to the durable copy would contradict it, and the contradiction

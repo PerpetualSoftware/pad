@@ -182,6 +182,30 @@ describe('localIndex access-epoch scope', () => {
 		expect(localIndex.accessEpochFor(ws)).toBe('e3');
 	});
 
+	it('adopts the COLD snapshot\'s epoch, so the next quiet poll does not resync', async () => {
+		// The cold bootstrap path is the only place a first-ever session gets a
+		// baseline. Dropping it there is invisible to every eviction test in
+		// this file — the cache would simply have no baseline, and a
+		// null baseline over a populated cache resyncs, which LOOKS like the
+		// change working. The discriminating case is the QUIET one: an
+		// unchanged scope must cost nothing.
+		const listIndex = vi.spyOn(api.items, 'listIndex');
+		listIndex.mockResolvedValueOnce({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'cold-e1',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+		expect(localIndex.accessEpochFor(ws)).toBe('cold-e1');
+
+		listIndex.mockClear();
+		// Same scope as the snapshot just installed. Nothing to do.
+		expect(await localIndex.ensureAccessScope(ws, 'cold-e1')).toBe(false);
+		expect(listIndex).not.toHaveBeenCalled();
+	});
+
 	it('keeps a known baseline when a snapshot carries no epoch, and stops asking', async () => {
 		// Review round 1, F3. Mixed deployment: the delta comes from a server
 		// that sends the field, the resync's snapshot from one that does not.
