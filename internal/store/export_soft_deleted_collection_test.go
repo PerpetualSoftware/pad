@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -257,26 +258,38 @@ func TestImportRoutingIgnoresSoftDeletedCollections(t *testing.T) {
 	s := testStore(t)
 	owner := createTestUser(t, s, "routing2884@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Routing 2884")
-	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
 
-	// An archived collection carrying the conventions declaration, alongside
-	// the live seeded conventions collection.
-	convs, err := s.GetCollectionBySlug(ws.ID, "conventions")
-	if err != nil || convs == nil {
-		t.Fatalf("GetCollectionBySlug(conventions): %v (nil=%v)", err, convs == nil)
+	// An archived collection carrying the conventions declaration, alongside a
+	// live conventions collection.
+	//
+	// Built in THIS order — declare, archive, then seed — because TASK-2710's
+	// unique index refuses two LIVE collections declaring one kind, and the
+	// order is not a workaround for it: it is the production path that mints
+	// this state. A workspace whose conventions collection is deleted and then
+	// re-seeded ends up here, and every step is legal under the invariant,
+	// which is the point. Seeding does not skip, because traitDeclarationTaken
+	// reads ListTraitedCollections and the archived row is not in it.
+	convTraits, terr := collections.CanonicalTraitsForSlug("conventions").JSON()
+	if terr != nil {
+		t.Fatalf("encode canonical conventions traits: %v", terr)
 	}
 	ghost, err := s.CreateCollection(ws.ID, models.CollectionCreate{
 		Name:   "Old Conventions",
 		Prefix: "OCONV",
-		Traits: convs.Traits,
+		Traits: convTraits,
 	})
 	if err != nil {
 		t.Fatalf("CreateCollection(ghost): %v", err)
 	}
 	if err := s.DeleteCollection(ghost.ID, ""); err != nil {
 		t.Fatalf("DeleteCollection(ghost): %v", err)
+	}
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	convs, err := s.GetCollectionBySlug(ws.ID, "conventions")
+	if err != nil || convs == nil {
+		t.Fatalf("control leg failed: seeding skipped conventions even though the only other declarer is archived: %v (nil=%v)", err, convs == nil)
 	}
 
 	exp, err := s.ExportWorkspace(ws.Slug)

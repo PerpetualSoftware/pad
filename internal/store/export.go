@@ -399,40 +399,48 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	// declarations live, which collection receives an imported artifact or
 	// answers an invocation slug depends on collection order. Warn so the
 	// operator can fix it. Codex round 8.
+	// DE-DUPLICATED ON THE WAY IN, not warned about and inserted (TASK-2710
+	// item 4, and codex round 2's P1 when it was still the latter).
 	//
-	// ARCHIVED collections are excluded from this scan (BUG-2884). Since the
-	// bundle started carrying soft-deleted collections, a workspace whose
-	// archived collection still declares the kind its live replacement
-	// declares would warn on every import about an ambiguity that does not
-	// exist: routing is live-only (ListTraitedCollections filters
-	// deleted_at IS NULL), so an archived declaration resolves nothing. Worse
-	// than the noise, the archived slug could win `seenKinds` and the warning
-	// would name the LIVE collection as the duplicate.
+	// Import used to warn and insert both, which was right while nothing
+	// forbade the pair. With the partial unique indexes the second INSERT is
+	// refused, the whole transaction rolls back, and the workspace minted
+	// before it survives as a husk ([[BUG-2892]]) — so an archive carrying a
+	// duplicate would be unimportable, and archives carrying duplicates are
+	// exactly the ones this release repairs.
+	//
+	// THE CHECK HAPPENS IN THE INSERT LOOP, ON THE FINAL BYTES, and that
+	// placement is the fix for codex round 3's P1 rather than a style choice.
+	// An earlier version pre-computed the strips from the traits the BUNDLE
+	// carries, which is not what gets written: coercion, validation-discard and
+	// canonical inference all run afterwards. A pre-traits archive carrying
+	// `conventions` with an EMPTY blob has its declaration INFERRED from the
+	// slug (BUG-2702), so a bundle pairing that with an explicit declarer
+	// showed the pre-pass one declaration and the database two — and the index
+	// aborted the import. Checking immediately before the INSERT makes the
+	// question "what am I about to write" instead of "what did the file say".
+	//
+	// The FIRST declaring collection in bundle order keeps the declaration and
+	// later ones are stripped, which is the disposition dedupeTraitDeclarations
+	// applies to an existing database. It cannot use that pass's primary rule —
+	// most user-written items — because items are inserted after collections
+	// and every count here is zero; bundle order IS the terminator, and the log
+	// says so rather than implying a considered choice. The loser keeps every
+	// item; only the declaration is dropped.
+	//
+	// ARCHIVED collections take no part in this (BUG-2884). Since the bundle
+	// started carrying soft-deleted collections, an archived collection can
+	// travel alongside the live one that replaced it, still declaring the same
+	// kind — and it arrives FIRST if it was created first, because the bundle
+	// is in creation order. It must neither CLAIM the kind, which would strip
+	// the live collection later in the bundle and leave the workspace with
+	// routing owned by a row every resolver filters out
+	// (ListTraitedCollections is deleted_at IS NULL), nor LOSE its own, which
+	// would edit data the operator archived rather than deleted. Both partial
+	// unique indexes carry `AND deleted_at IS NULL`, so an archived row is
+	// outside the constraint and can conflict with nothing.
 	seenKinds := map[string]string{}
 	invocationCollection := ""
-	for _, c := range data.Collections {
-		if c.DeletedAt != "" {
-			continue
-		}
-		if t, err := models.ParseCollectionTraits(c.Traits); err == nil {
-			if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
-				if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
-					slog.Warn("import: archive declares one artifact kind on two collections; artifact routing will depend on collection order until one is changed",
-						"kind", t.ArtifactKind.Kind, "collections", prev+","+c.Slug, "workspace_id", ws.ID)
-				} else {
-					seenKinds[t.ArtifactKind.Kind] = c.Slug
-				}
-			}
-			if t.InvocationField != "" {
-				if invocationCollection != "" {
-					slog.Warn("import: archive declares invocation routing on two collections; playbook resolution will depend on collection order until one is changed",
-						"collections", invocationCollection+","+c.Slug, "workspace_id", ws.ID)
-				} else {
-					invocationCollection = c.Slug
-				}
-			}
-		}
-	}
 
 	for _, c := range data.Collections {
 		newCollID := newID()
@@ -533,6 +541,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 					traits = encoded
 				}
 			}
+		}
+
+		// Now that `traits` is final — coerced, validated, and inferred — drop
+		// any declaration another collection in this bundle already took.
+		var derr error
+		traits, derr = dropDuplicateImportDeclarations(traits, c.Slug, c.DeletedAt, ws.ID, seenKinds, &invocationCollection)
+		if derr != nil {
+			return nil, fmt.Errorf("de-duplicate declarations for %s: %w", c.Slug, derr)
 		}
 
 		// NULLIF so an ABSENT deleted_at — every archive written before
@@ -1010,4 +1026,64 @@ func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string
 		result = strings.ReplaceAll(result, `"`+oldID+`"`, `"`+newID+`"`)
 	}
 	return result
+}
+
+// dropDuplicateImportDeclarations returns traits with any declaration already
+// claimed by an earlier collection in the same bundle removed, recording the
+// claims it does allow. Called with the FINAL blob, immediately before the
+// INSERT that writes it — see the note at the import loop for why that
+// placement is load-bearing rather than incidental.
+//
+// A blob that does not parse is returned untouched: it declares nothing to
+// every other reader, and it is outside the indexes' json_valid guard too.
+//
+// So is an ARCHIVED collection's, for the same reason one step further out: a
+// soft-deleted row is outside both partial unique indexes (`AND deleted_at IS
+// NULL`) and outside every trait resolver, so it can neither create the
+// conflict this function exists to prevent nor be harmed by holding a stale
+// declaration. Letting it take a claim would be the actual damage — the live
+// collection later in the bundle would be stripped and the workspace would
+// import with no routing for that kind at all (BUG-2884; the pre-pass this
+// replaced grew the same condition).
+func dropDuplicateImportDeclarations(traits, slug, deletedAt, workspaceID string, seenKinds map[string]string, invocationCollection *string) (string, error) {
+	if deletedAt != "" {
+		return traits, nil
+	}
+	t, err := models.ParseCollectionTraits(traits)
+	if err != nil {
+		return traits, nil
+	}
+	changed := false
+	if t.ArtifactKind != nil && t.ArtifactKind.Kind != "" {
+		if prev, dup := seenKinds[t.ArtifactKind.Kind]; dup {
+			slog.Warn("import: archive declares one artifact kind on two collections; the later one is imported WITHOUT the declaration and keeps its items",
+				"kind", t.ArtifactKind.Kind, "keeps_declaration", prev, "stripped", slug,
+				"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
+				"workspace_id", workspaceID)
+			t.ArtifactKind = nil
+			changed = true
+		} else {
+			seenKinds[t.ArtifactKind.Kind] = slug
+		}
+	}
+	if t.InvocationField != "" {
+		if *invocationCollection != "" {
+			slog.Warn("import: archive declares invocation routing on two collections; the later one is imported WITHOUT the declaration and keeps its items",
+				"keeps_declaration", *invocationCollection, "stripped", slug,
+				"decided_by", "bundle order (arbitrary — the archive carries no basis for preferring either)",
+				"workspace_id", workspaceID)
+			t.InvocationField = ""
+			changed = true
+		} else {
+			*invocationCollection = slug
+		}
+	}
+	if !changed {
+		return traits, nil
+	}
+	encoded, eerr := t.JSON()
+	if eerr != nil {
+		return "", eerr
+	}
+	return encoded, nil
 }

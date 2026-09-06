@@ -252,6 +252,14 @@ func TestResolvePlaybookIgnoresInvisibleCollections(t *testing.T) {
 	var second models.Collection
 	parseJSON(t, rr, &second)
 	secondTraits := `{"bootstrap_include":[{"mode":"metadata","key":"playbooks"}],"invocation_field":"invocation_slug"}`
+	// TASK-2710's unique indexes forbid this state; it is built anyway because
+	// LEGACY databases hold it and what this test verifies is how resolution
+	// HANDLES it. The restore is expected to fail here — the duplicate stays
+	// live for the whole test, which is exactly the condition that makes
+	// recreating a unique index impossible — so its error is ignored
+	// deliberately rather than by omission.
+	restoreTraitUniqueness := srv.store.SuspendTraitUniquenessForTesting()
+	defer func() { _ = restoreTraitUniqueness() }()
 	if _, err := srv.store.UpdateCollection(second.ID, models.CollectionUpdate{Traits: &secondTraits}); err != nil {
 		t.Fatalf("attach traits to second collection: %v", err)
 	}
@@ -325,6 +333,14 @@ func TestCollectionIDForKindIgnoresInvisibleCollections(t *testing.T) {
 	var second models.Collection
 	parseJSON(t, rr, &second)
 	secondTraits := `{"artifact_kind":{"kind":"convention"}}`
+	// TASK-2710's unique indexes forbid this state; it is built anyway because
+	// LEGACY databases hold it and what this test verifies is how resolution
+	// HANDLES it. The restore is expected to fail here — the duplicate stays
+	// live for the whole test, which is exactly the condition that makes
+	// recreating a unique index impossible — so its error is ignored
+	// deliberately rather than by omission.
+	restoreTraitUniqueness := srv.store.SuspendTraitUniquenessForTesting()
+	defer func() { _ = restoreTraitUniqueness() }()
 	if _, err := srv.store.UpdateCollection(second.ID, models.CollectionUpdate{Traits: &secondTraits}); err != nil {
 		t.Fatalf("attach traits to second collection: %v", err)
 	}
