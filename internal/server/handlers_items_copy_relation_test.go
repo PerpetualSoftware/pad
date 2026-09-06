@@ -1299,3 +1299,47 @@ func TestCopyPreflight_AvailableRelationTargetOmitsTheFlagEntirely(t *testing.T)
 			"to before this change:\n%s", rr.Body.String())
 	}
 }
+
+// The flag's meaning is defined for RELATION rows only, so the builder gates
+// on the field TYPE as well as on the unavailable-target set. Nothing stops a
+// schema declaring `collection` on a field of another type — the validator does
+// not police keys it has no use for — and such a field would otherwise pick up
+// a flag that says nothing true about it: the dialog would block a perfectly
+// collectable `select` because some relation elsewhere in the schema points at
+// a collection that happens to be gone.
+//
+// Found by a surviving mutant, not by inspection: dropping the type gate left
+// every other test in this file green.
+func TestCopyPreflight_OnlyRelationRowsCarryTheUnavailableFlag(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	// A destination schema where a NON-relation required field names the same
+	// target slug as the relation does. One deleted collection, two rows that
+	// mention it, and only one of them means anything by it.
+	schema := fmt.Sprintf(`{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"],"required":true},
+		{"key":"owner_ref","label":"Owner","type":"relation","collection":%q,"required":true},
+		{"key":"bucket","label":"Bucket","type":"select","options":["a","b"],"collection":%q,"required":true}
+	]}`, f.targetsB.Slug, f.targetsB.Slug)
+	if _, err := f.srv.store.UpdateCollection(f.collB.ID, models.CollectionUpdate{Schema: &schema}); err != nil {
+		t.Fatalf("UpdateCollection(collB): %v", err)
+	}
+	if err := f.srv.store.DeleteCollection(f.targetsB.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection(targetsB): %v", err)
+	}
+
+	pre := f.ok(f.baseBody())
+	rel := needsValueRow(pre, "owner_ref")
+	if rel == nil || !rel.CollectionUnavailable {
+		t.Fatalf("the RELATION row should report its deleted target: %+v", pre.Fields.NeedsValue)
+	}
+	bucket := needsValueRow(pre, "bucket")
+	if bucket == nil {
+		t.Fatalf("the required select produced no needs_value row: %+v", pre.Fields.NeedsValue)
+	}
+	if bucket.CollectionUnavailable {
+		t.Fatalf("a %s row carries collection_unavailable; the flag is defined for "+
+			"relations only, and blocking this row would refuse a value the dialog "+
+			"can perfectly well collect: %+v", bucket.Type, bucket)
+	}
+}
