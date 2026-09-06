@@ -7,6 +7,7 @@ import {
 	versionErrorOnDowngradeOpen,
 	rawItem,
 } from './idbHarness';
+import { LOCAL_INDEX_SCHEMA_VERSION } from '$lib/stores/localIndexPersistence';
 
 /**
  * PLAN-2636 unit 1 — capability pins for the two things the lead named as
@@ -47,7 +48,12 @@ describe('format-version migration (unit-2 v1→v2 prerequisite)', () => {
 		const WS = 'ws-migrate';
 		await seedV1Database(U, WS, [row('keep', 3)], {
 			cursor: 'c1',
-			schemaVersion: 3,
+			// The CURRENT cache-shape version, not a literal: these fixtures
+			// exercise the IDB FORMAT migration (v1 → v2), and a hard-coded
+			// version silently becomes a STALE-cache fixture the next time
+			// LOCAL_INDEX_SCHEMA_VERSION moves — which is how IDEA-2898's bump
+			// to 4 turned this into a wipe and failed the hydrate assertion.
+			schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
 			includesUnparentedMetadata: true,
 		});
 

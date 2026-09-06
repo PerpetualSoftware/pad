@@ -1069,6 +1069,7 @@ export const api = {
 				total: number;
 				cursor: string;
 				includes_unparented_metadata: boolean;
+				access_epoch?: string;
 			}>(
 				`/workspaces/${ws}/items-index${qs({
 					collection: opts?.collection,
@@ -1089,6 +1090,12 @@ export const api = {
 				total: raw.total,
 				cursor: raw.cursor,
 				includes_unparented_metadata: raw.includes_unparented_metadata === true,
+				// Passed through UNNORMALIZED, deliberately: the value is
+				// opaque and only ever compared for equality, and coercing an
+				// absent field to a string would turn "this server does not
+				// send it" into a value that can differ from a real one
+				// (IDEA-2898).
+				access_epoch: raw.access_epoch,
 			};
 		},
 
@@ -1122,6 +1129,7 @@ export const api = {
 				changes: (ItemChangeRow & { content?: string })[];
 				cursor: string;
 				includes_unparented_metadata: boolean;
+				access_epoch?: string;
 			}>(
 				`/workspaces/${ws}/items-changes${qs({
 					since: sinceCursor,
@@ -1142,6 +1150,12 @@ export const api = {
 				changes,
 				cursor: raw.cursor,
 				includes_unparented_metadata: raw.includes_unparented_metadata === true,
+				// Passed through UNNORMALIZED, deliberately: the value is
+				// opaque and only ever compared for equality, and coercing an
+				// absent field to a string would turn "this server does not
+				// send it" into a value that can differ from a real one
+				// (IDEA-2898).
+				access_epoch: raw.access_epoch,
 			};
 		},
 

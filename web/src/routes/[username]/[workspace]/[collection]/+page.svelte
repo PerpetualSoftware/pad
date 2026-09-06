@@ -1100,6 +1100,14 @@
 					// reporting catch-up on stale data (Codex P2 round 8).
 					continue;
 				}
+				if (await localIndex.ensureAccessScope(ws, delta.access_epoch)) {
+					// IDEA-2898: the caller's visible set changed with no row
+					// change to carry it. Same `continue` discipline as the
+					// projection branch below and for the same reason — the
+					// resync pinned the cursor, so post-snapshot mutations are
+					// only replayed if we keep looping.
+					continue;
+				}
 				if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
 					// A resync just pinned the cursor to the snapshot cursor to
 					// replay post-snapshot mutations under the new scope. Keep

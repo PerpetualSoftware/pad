@@ -55,8 +55,14 @@ describe('localIndex unparented projection compatibility', () => {
 		expect(localIndex.findByIdOrSlug(ws, 'created')?.is_unparented).toBe(true);
 	});
 
-	it('bumps the persistent cache contract so version-1 rows are fully resynced', () => {
-		expect(LOCAL_INDEX_SCHEMA_VERSION).toBe(3);
+	it('bumps the persistent cache contract so older caches are fully resynced', () => {
+		// 4 since IDEA-2898: the meta row gained `accessEpoch`, and a cache
+		// written without one has no baseline to compare a revocation against.
+		// Adopting the incoming epoch for such a cache would be the silent
+		// adopt the whole change exists to prevent, so the bump makes those
+		// caches unreachable — they wipe and re-bootstrap from an
+		// authoritative snapshot instead.
+		expect(LOCAL_INDEX_SCHEMA_VERSION).toBe(4);
 	});
 
 	it('fully resyncs when projection permission is downgraded or upgraded', async () => {

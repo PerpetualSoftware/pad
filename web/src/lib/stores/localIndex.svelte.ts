@@ -111,6 +111,12 @@ class WorkspaceState {
 	// persisted with the cursor because the same user/workspace cache can
 	// outlive a permission upgrade or downgrade.
 	includesUnparentedMetadata = $state<boolean | null>(null);
+	// The caller's access fingerprint as of the last authoritative snapshot or
+	// delta (IDEA-2898). Persisted with the cursor for the same reason
+	// `includesUnparentedMetadata` is: the cache outlives a permission change,
+	// and a revocation that writes no row leaves no other trace. Null only
+	// before the first response of a session lands.
+	accessEpoch = $state<string | null>(null);
 
 	// `scopeEpoch` bumps every time a projection resync installs a new
 	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
@@ -378,6 +384,11 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		// for them. (The scope epoch was already bumped before the fetch above.)
 		state.fencedIds = new Set(toDrop);
 		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
+		// The snapshot IS the new scope, so its epoch is the new baseline. Set
+		// here rather than at the call sites: every route into a resync ends
+		// here, and a baseline left stale would re-fire the resync on the very
+		// next poll.
+		state.accessEpoch = resp.access_epoch ?? null;
 		for (const row of resp.items) {
 			const next = toSkinny(row);
 			const existing = state.items.get(next.id);
@@ -430,6 +441,7 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 			snapshot,
 			state.cursor,
 			resp.includes_unparented_metadata,
+			resp.access_epoch ?? null,
 		);
 	})();
 	projectionResyncs.set(ws, promise);
@@ -538,6 +550,7 @@ export const localIndex = {
 							items: [],
 							cursor: state.cursor,
 							includesUnparentedMetadata: state.includesUnparentedMetadata,
+							accessEpoch: state.accessEpoch,
 							retags: {},
 						}
 					: await persistHydrate(userId, ws);
@@ -554,6 +567,13 @@ export const localIndex = {
 				const hasCache = reentry || cacheIsPopulated;
 				if (!reentry && cacheIsPopulated) {
 					state.includesUnparentedMetadata = cached.includesUnparentedMetadata;
+					// Adopt the PERSISTED epoch, not a fresh one — it is the
+					// baseline the first reconcile compares against, and it is
+					// the only record of what this cache was authorised for
+					// when it was written. Overwriting it with the incoming
+					// response's value is exactly the silent adopt that leaves
+					// an offline revocation undetected.
+					state.accessEpoch = cached.accessEpoch;
 					for (const row of cached.items) {
 						mergeRow(state, row);
 					}
@@ -628,6 +648,26 @@ export const localIndex = {
 								// data (Codex P2 round 8).
 								continue;
 							}
+							// IDEA-2898. The caller's visible set changed with no row
+							// change to carry it — a revocation writes no item, so
+							// nothing else in this response could evict the rows it
+							// hid. Delegated to `ensureAccessScope` rather than
+							// re-implemented here: an inline copy is a second
+							// definition of the same rule, and the first draft of it
+							// already diverged (it skipped the null-baseline case,
+							// which is precisely the offline-revocation cache this
+							// exists for). One tested function, two call sites.
+							//
+							// `continue`, never `break`, for the same reason as the
+							// projection branch below: the resync pins the cursor to
+							// the snapshot's, so post-snapshot mutations are only
+							// replayed if the loop polls again. It cannot re-fire,
+							// because the resync set the epoch to the snapshot's.
+							if (await localIndex.ensureAccessScope(ws, delta.access_epoch)) {
+								if (isStale()) return;
+								continue;
+							}
+							if (isStale()) return;
 							if (
 								state.includesUnparentedMetadata !== null &&
 								state.includesUnparentedMetadata !== delta.includes_unparented_metadata
@@ -734,6 +774,10 @@ export const localIndex = {
 					});
 					if (isStale()) return;
 					state.includesUnparentedMetadata = resp.includes_unparented_metadata;
+					// A cold snapshot is authoritative under the CURRENT scope,
+					// so its epoch is the baseline with nothing to compare
+					// against — there is no prior cache to have gone stale.
+					state.accessEpoch = resp.access_epoch ?? null;
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
@@ -770,6 +814,7 @@ export const localIndex = {
 						snapshot,
 						state.cursor,
 						resp.includes_unparented_metadata,
+						state.accessEpoch,
 					).catch(
 						() => undefined,
 					);
@@ -1004,10 +1049,51 @@ export const localIndex = {
 			toPersist,
 			newCursor,
 			includesUnparentedMetadata,
+			state.accessEpoch,
 			toRemove,
 		).catch(
 			() => undefined,
 		);
+	},
+
+	/**
+	 * Force a full snapshot when the caller's ACCESS set changes (IDEA-2898).
+	 *
+	 * The sibling of `ensureProjectionScope`, and deliberately the same shape:
+	 * both answer "the server just told me my scope is not what this cache was
+	 * built under". This one exists for the page-driven `/items-changes` poll,
+	 * which is the path a long-lived session uses after bootstrap has settled
+	 * — bootstrap's own reconcile loop carries the same comparison inline.
+	 *
+	 * Returns true when a resync ran, so the caller can skip applying a delta
+	 * that the snapshot has already superseded.
+	 */
+	async ensureAccessScope(ws: string, accessEpoch: string | undefined): Promise<boolean> {
+		// A server that does not send the field (an older build, mid-deploy)
+		// must not be read as "the set changed". Absence is not a value.
+		if (accessEpoch === undefined) return false;
+		const state = ensureState(ws);
+		if (state.accessEpoch === null) {
+			// No baseline. If this cache holds anything, we cannot know what it
+			// was authorised for, so the safe reading is that it may be stale —
+			// resync rather than adopt. Mirrors ensureProjectionScope's null
+			// branch exactly, including the "empty cache adopts silently" case,
+			// which costs nothing because there is nothing to evict.
+			if (state.items.size > 0 || cursorAsNum(state.cursor) > 0) {
+				await resyncProjectionScope(ws, state);
+				return true;
+			}
+			state.accessEpoch = accessEpoch;
+			return false;
+		}
+		if (state.accessEpoch === accessEpoch) return false;
+		await resyncProjectionScope(ws, state);
+		return true;
+	},
+
+	/** The access fingerprint this workspace's cache was last built under. */
+	accessEpochFor(ws: string): string | null {
+		return workspaces.get(ws)?.accessEpoch ?? null;
 	},
 
 	/** Force a full snapshot when the server's projection capability changes. */

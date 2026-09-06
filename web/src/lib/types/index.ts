@@ -1052,6 +1052,18 @@ export interface ItemIndexResponse {
 	items: ItemIndexRow[];
 	total: number;
 	includes_unparented_metadata: boolean;
+	/**
+	 * Opaque fingerprint of the CALLER's effective visible set (IDEA-2898).
+	 * It does not describe the data in this response; it describes what the
+	 * caller was allowed to see when the server built it. A changed value
+	 * means the local cache was built under a scope that no longer holds —
+	 * which is the only signal a revocation that wrote no row produces.
+	 *
+	 * Optional on the TYPE, not on the wire: a client can meet a server that
+	 * predates this field during a deploy, and `undefined` must read as "no
+	 * information", never as "the set changed".
+	 */
+	access_epoch?: string;
 	// `cursor` is the workspace-scoped monotonic `seq` cursor (TASK-1353).
 	// Holds MAX(seq) across the requested scope as a decimal-encoded
 	// string. When the result set is empty but the workspace has items,
@@ -1095,6 +1107,8 @@ export interface ItemChangesResponse {
 	changes: ItemChangeRow[];
 	cursor: string;
 	includes_unparented_metadata: boolean;
+	/** See `ItemIndexResponse.access_epoch` (IDEA-2898). */
+	access_epoch?: string;
 }
 
 export interface ItemCreate {
