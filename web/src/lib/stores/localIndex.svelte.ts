@@ -117,6 +117,15 @@ class WorkspaceState {
 	// and a revocation that writes no row leaves no other trace. Null only
 	// before the first response of a session lands.
 	accessEpoch = $state<string | null>(null);
+	// A persistence write could not confirm the cache's scope, so an
+	// authoritative resync is OWED (IDEA-2898 round 5). Deliberately NOT
+	// `pendingResync`: that flag means "the replay has not caught up", and
+	// `markCaughtUp` clears it the moment a delta comes back empty — which is
+	// exactly what an unconfirmed write is not evidence about. Reusing it let
+	// the ask be swallowed by an unrelated quiet poll, after which a reload
+	// could treat the durable snapshot as authoritative with the unconfirmed
+	// write still in it. Only `resyncProjectionScope` clears this one.
+	scopeUnconfirmed = $state(false);
 
 	// `scopeEpoch` bumps every time a projection resync installs a new
 	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
@@ -316,6 +325,7 @@ function noteUnconfirmedWrite(ws: string, generation: number): (unconfirmed: boo
 		const state = workspaces.get(ws);
 		if (!state || state.generation !== generation) return;
 		state.pendingResync = true;
+		state.scopeUnconfirmed = true;
 	};
 }
 
@@ -353,6 +363,11 @@ async function resyncProjectionScope(
 		// catch up leaves it set too — the next bootstrap runs one harmless,
 		// idempotent reconcile pass and clears it.)
 		state.pendingResync = true;
+		// This IS the authoritative answer an unconfirmed write asked for, so
+		// it is the only thing that clears the ask. Set here, at the START,
+		// rather than after the fetch: a resync that fails transiently has
+		// still not answered, and leaving the flag up is what makes the next
+		// bootstrap try again.
 		// Advance the scope epoch NOW — before the network await, not after the
 		// snapshot installs. A reconcile response that races this fetch must see
 		// the epoch already changed so it can't declare catch-up and clear the
@@ -468,6 +483,7 @@ async function resyncProjectionScope(
 		// replay that later fails transiently or hits the 50-page cap leaves
 		// pendingResync=true and the next bootstrap() resumes instead of
 		// no-opping with racing mutations still missing.
+		state.scopeUnconfirmed = false;
 		rebuildSearchIndex(ws, state);
 
 		// Reconcile the persisted cache after the successful fetch via a single
@@ -562,7 +578,7 @@ export const localIndex = {
 		// (network blip) leaves `pendingResync = true`; the next
 		// bootstrap call must retry the reconcile, not no-op. Codex P2
 		// round 5.
-		if (state.bootstrapState === 'ready' && !state.pendingResync) return;
+		if (state.bootstrapState === 'ready' && !state.pendingResync && !state.scopeUnconfirmed) return;
 		const pending = inflight.get(ws);
 		if (pending) return pending;
 
@@ -579,7 +595,7 @@ export const localIndex = {
 		// removed but whose IDB delete hasn't landed would resurrect
 		// them. Codex P2 round 7.
 		const reentry =
-			state.bootstrapState === 'ready' && state.pendingResync;
+			state.bootstrapState === 'ready' && (state.pendingResync || state.scopeUnconfirmed);
 		// Only flip to 'loading' for first-time bootstrap. A reentry
 		// keeps state='ready' throughout so the UI never blanks while
 		// retrying the reconcile.
@@ -692,6 +708,14 @@ export const localIndex = {
 						// something pathological loops without cursor
 						// advance, give up after 50 and let the user's
 						// next visit retry.
+						// An outstanding ask is answered by a RESYNC, not by a
+						// replay: the writer could not confirm the scope, and no
+						// number of deltas can settle that question — only an
+						// authoritative snapshot can (round 5).
+						if (state.scopeUnconfirmed) {
+							await resyncProjectionScope(ws, state);
+							if (isStale()) return;
+						}
 						let caughtUp = false;
 						for (let i = 0; i < 50; i++) {
 							const epochBefore = state.scopeEpoch;
@@ -1607,7 +1631,16 @@ export const localIndex = {
 		const state = workspaces.get(ws);
 		if (!state) return;
 		if (state.scopeEpoch !== epoch) return;
+		// `scopeUnconfirmed` is deliberately NOT cleared here (round 5). An
+		// empty delta says the replay is caught up; it says nothing about
+		// whether a write that could not confirm the cache's scope was right to
+		// land. Only an authoritative resync answers that.
 		state.pendingResync = false;
+	},
+
+	/** Is an authoritative resync owed because a write could not confirm scope? */
+	scopeUnconfirmedFor(ws: string): boolean {
+		return workspaces.get(ws)?.scopeUnconfirmed ?? false;
 	},
 
 	/**

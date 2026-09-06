@@ -60,14 +60,18 @@ describe('IDEA-2898 — a writer that cannot confirm the scope may not speak for
 		expect(await persistUpserts(U, WS, [row('allowed', 3)], 'e2')).toBe(false);
 	});
 
-	it('lets an unconfirmed delta store rows but apply no removals and no cursor', async () => {
-		// The removals are the sharpest half. Round 3 applied them on a rule I
-		// wrote — "a removal only narrows what the cache asserts" — which round
-		// 4 refuted: with an unordered epoch the refused batch may be the
-		// BROADER scope, so its removal deletes a row the caller can still see,
-		// permanently, because the cursor stays ahead of the sequence that
-		// carried it. A removal is a claim about what is GONE, and an
-		// unconfirmed writer cannot substantiate one.
+	it('refuses an unconfirmed delta ENTIRELY, rows included', async () => {
+		// THE THIRD REVISION OF THIS PROPERTY, and each one is on the trail.
+		// Round 3 refused the rows and applied the removals. Round 4 refused
+		// the removals and applied the rows. Round 5 refuses everything, and
+		// this is the version with an argument rather than an intuition behind
+		// it: a delta's rows and its CURSOR are ONE STATEMENT — "the cache is
+		// current through here". Splitting them leaves a half nothing can
+		// replay, because a later confirmed writer advances the durable cursor
+		// past the withheld interval and no delta re-sends it. A withheld
+		// removal leaves a revoked row forever; a withheld row is missing
+		// forever. All-or-nothing is the only disposition that keeps the
+		// statement true.
 		const U = null;
 		const WS = 'ws-epoch-unconfirmed-delta';
 		const { persistReplace, persistDelta, hydrate } = await loadPersistence();
@@ -80,14 +84,17 @@ describe('IDEA-2898 — a writer that cannot confirm the scope may not speak for
 		expect(unconfirmed).toBe(true);
 
 		const after = await hydrate(U, WS);
-		// The row landed; the REMOVAL did not.
-		expect(after.items.map((r) => r.id).sort()).toEqual(['added', 'keeper']);
-		// And neither the cursor nor the epoch moved backwards.
+		// Nothing from that batch is in the cache: not the row, not the removal.
+		expect(after.items.map((r) => r.id)).toEqual(['keeper']);
 		expect(after.cursor).toBe('20');
 		expect(after.accessEpoch).toBe('e2');
 
-		// CONTROL LEG: a confirmed delta applies its removal and advances.
-		expect(await persistDelta(U, WS, [], '21', false, 'e2', ['keeper'])).toBe(false);
+		// CONTROL LEG: a confirmed delta applies BOTH halves — its row and its
+		// removal — and advances the cursor. Without this leg, a persistDelta
+		// that refused every batch would pass everything above.
+		expect(
+			await persistDelta(U, WS, [row('added', 21)], '21', false, 'e2', ['keeper']),
+		).toBe(false);
 		const healthy = await hydrate(U, WS);
 		expect(healthy.items.map((r) => r.id)).toEqual(['added']);
 		expect(healthy.cursor).toBe('21');

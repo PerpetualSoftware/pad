@@ -537,20 +537,29 @@ export async function persistDelta(
 		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
-		// See `metaAgrees`. Round 3 had this refuse the row writes and apply the
-		// removals, on a rule I wrote — "a removal only narrows what the cache
-		// asserts" — that round 4 refuted: with an unordered epoch, the refused
-		// batch may be the BROADER scope, so applying its removal deleted a row
-		// the caller could legitimately see, permanently, because the cursor
-		// stayed ahead of it.
+		// See `metaAgrees`. An unconfirmed delta writes NOTHING — not even its
+		// rows (round 5, correcting round 4).
 		//
-		// So an unconfirmed writer now judges nothing. Its row upserts land
-		// (they are server rows either way), its REMOVALS and its meta write do
-		// not — a removal is a claim about what is gone, and this writer cannot
-		// substantiate one — and the caller is told to resync, which is the only
-		// authority that can decide both.
+		// Round 4 let the rows land on the reasoning that they are server rows
+		// either way and the resync would adjudicate them. That is true of a
+		// row in isolation and false of a DELTA, because a delta's rows and its
+		// CURSOR are one statement: "the cache is current through here". Writing
+		// rows while withholding the cursor breaks the statement in half, and
+		// the half that stays behind cannot be replayed — a later confirmed
+		// writer advances the durable cursor past the withheld interval, and
+		// nothing re-sends it. Both directions lose: a withheld REMOVAL leaves a
+		// revoked row in the cache forever, and a withheld row is missing from
+		// it forever.
+		//
+		// So the batch is all-or-nothing, and the ask for a resync is what
+		// recovers it. Same disposition as `persistReplace` below, for the same
+		// reason: what these writers persist is not a set of rows, it is a claim
+		// about the state of the cache.
 		const cachedMeta = (await tx.objectStore('meta').get('sync')) as MetaRow | undefined;
-		const unconfirmed = !metaAgrees(cachedMeta, accessEpoch);
+		if (!metaAgrees(cachedMeta, accessEpoch)) {
+			await tx.done.catch(() => undefined);
+			return true;
+		}
 		// Same policy as persistUpserts (resolveRowWrite): the race runs in both
 		// directions, so a delta must not overwrite a row that is already NEWER
 		// in the cache, and a tombstone must refuse a stale resurrection.
@@ -570,24 +579,22 @@ export async function persistDelta(
 		// right stamp: a delayed snapshot for this id at seq <= cursor is stale
 		// and resolveRowWrite refuses it; a genuinely newer one (seq > cursor)
 		// supersedes and clears the tombstone.
-		if (!unconfirmed) {
-			const deletedAtSeq = seqFromCursor(cursor);
-			for (const id of removeIds) {
-				itemsStore.delete(id).catch(() => undefined);
-				await raiseTombstone(tombstones, id, deletedAtSeq);
-			}
-			tx.objectStore('meta')
-				.put({
-					key: 'sync',
-					cursor,
-					schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
-					includesUnparentedMetadata,
-					accessEpoch,
-				} satisfies MetaRow)
-				.catch(() => undefined);
+		const deletedAtSeq = seqFromCursor(cursor);
+		for (const id of removeIds) {
+			itemsStore.delete(id).catch(() => undefined);
+			await raiseTombstone(tombstones, id, deletedAtSeq);
 		}
+		tx.objectStore('meta')
+			.put({
+				key: 'sync',
+				cursor,
+				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+				includesUnparentedMetadata,
+				accessEpoch,
+			} satisfies MetaRow)
+			.catch(() => undefined);
 		await tx.done;
-		return unconfirmed;
+		return false;
 	} catch {
 		/* swallow — best-effort cache */
 	}

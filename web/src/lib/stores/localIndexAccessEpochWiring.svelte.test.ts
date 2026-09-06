@@ -142,6 +142,54 @@ describe('IDEA-2898 round 2 — what the callers hand on', () => {
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 
+	it('keeps the resync ask alive through a quiet poll, and answers it with a resync', async () => {
+		// Round 5. The ask was `pendingResync`, which `markCaughtUp` clears the
+		// moment a delta comes back empty — and an empty delta is not evidence
+		// about whether a write that could not confirm the cache's scope was
+		// right to land. The ask was being swallowed by an unrelated quiet
+		// poll, after which a reload could treat the durable snapshot as
+		// authoritative with the unconfirmed write still in it.
+		// Bootstrap FIRST, so the workspace is in the `ready` state a real
+		// session is in when this happens. Without that the second bootstrap
+		// below never reaches its early-return guard, and the guard is then
+		// untested — which a mutation run caught: removing `scopeUnconfirmed`
+		// from that condition left this test green.
+		const listIndex = vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [],
+			total: 0,
+			cursor: '3',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		});
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '3',
+			includes_unparented_metadata: false,
+			access_epoch: 'e1',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+		listIndex.mockClear();
+
+		persistence.persistUpserts.mockResolvedValueOnce(true as never);
+		localIndex.upsert(ws, row('optimistic', 3, 'kept'));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(localIndex.scopeUnconfirmedFor(ws)).toBe(true);
+
+		// A quiet poll clears the replay flag and MUST NOT clear the ask.
+		localIndex.markCaughtUp(ws, localIndex.scopeEpochFor(ws));
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+		expect(localIndex.scopeUnconfirmedFor(ws)).toBe(true);
+
+		// And the ask is answered by an authoritative snapshot, not a replay —
+		// which also proves bootstrap did not early-return on a `ready`
+		// workspace whose replay flag is clear.
+		await localIndex.bootstrap(ws, { userId: null });
+
+		expect(listIndex).toHaveBeenCalled();
+		expect(localIndex.scopeUnconfirmedFor(ws)).toBe(false);
+	});
+
 	it("declares the delta's epoch when the bootstrap loop applies one", async () => {
 		// The scope check in that loop runs BEFORE `ensureAccessScope` awaits,
 		// so a resync can land in between and the rows would then be applied
