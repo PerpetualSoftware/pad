@@ -1887,3 +1887,56 @@ func TestRunItemCopy_DryRunSummaryDoesNotSuggestAnImpossibleField(t *testing.T) 
 		t.Fatalf("the mixed case does not flag the field that cannot be supplied:\n%s", got2)
 	}
 }
+
+// The OTHER reason a row cannot be supplied, and the one that was already here:
+// an empty key. `--field =value` is rejected by this command's own parser, and
+// the detailed render has explained that since Codex round 6 — but the summary
+// and the error went on advising `--field` for those rows, because the first
+// version of `itemCopyUnfillable` answered for the relation reason only.
+//
+// Review round 2. A predicate named "unfillable" that covered one of two
+// reasons is a worse trap than no predicate: correct at the site that defined
+// it, wrong everywhere it was reused.
+func TestRunItemCopy_EmptyKeyRowsAreUnfillableToo(t *testing.T) {
+	p := fullPreflight()
+	p.Fields.NeedsValue = []cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Label: "", Type: "text", Required: true, Reason: "missing_required",
+	}}
+	d := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+
+	var out, errOut bytes.Buffer
+	err := runItemCopy(baseOpts(), d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+	if strings.Contains(err.Error(), "use --field key=value") {
+		t.Fatalf("the error advises --field for a row whose key is empty; `--field =value` is "+
+			"rejected by this command's own parser: %v", err)
+	}
+
+	// The --dry-run summary is the third site and a different function.
+	opts := baseOpts()
+	opts.DryRun = true
+	d2 := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+	var out2, errOut2 bytes.Buffer
+	if err := runItemCopy(opts, d2.deps(), &out2, &errOut2); err != nil {
+		t.Fatalf("dry run should not error: %v", err)
+	}
+	if strings.Contains(out2.String(), "Supply with --field key=value") {
+		t.Fatalf("the dry-run summary advises --field for an empty-key row:\n%s", out2.String())
+	}
+
+	// AND the detailed render still describes it as an empty key rather than as
+	// an unavailable relation target — one predicate for the advice, two
+	// explanations, because the two reasons are not interchangeable to a reader.
+	var out3, errOut3 bytes.Buffer
+	d3 := &recordingDeps{t: t, preflight: p, forbidCopy: true}
+	_ = runItemCopy(baseOpts(), d3.deps(), &out3, &errOut3)
+	stderr := errOut3.String()
+	if !strings.Contains(stderr, "empty key") {
+		t.Fatalf("the detailed render stopped explaining the empty-key case:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "not available to you") {
+		t.Fatalf("an empty-key row is described as an unavailable relation target:\n%s", stderr)
+	}
+}

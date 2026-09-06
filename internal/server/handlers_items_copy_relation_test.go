@@ -1342,6 +1342,15 @@ func TestCopyPreflight_OnlyRelationRowsCarryTheUnavailableFlag(t *testing.T) {
 			"relations only, and blocking this row would refuse a value the dialog "+
 			"can perfectly well collect: %+v", bucket.Type, bucket)
 	}
+	// AND IT CARRIES NO TARGET AT ALL (review round 2). The field's doc says
+	// `collection` is empty for every non-relation type; until this unit that
+	// was a claim about the schemas people write rather than a property of the
+	// response, and the CLI rendered "target collection: people" beneath a
+	// select because it checks only for a non-empty slug.
+	if bucket.Collection != "" {
+		t.Fatalf("a %s row carries collection %q; only a relation names a target, and the "+
+			"CLI prints this as one: %+v", bucket.Type, bucket.Collection, bucket)
+	}
 }
 
 // THE BOUNDARY, pinned deliberately rather than left to be rediscovered.

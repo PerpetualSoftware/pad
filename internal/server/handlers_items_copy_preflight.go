@@ -992,14 +992,21 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 				reason = "missing_required"
 			}
 			resp.Fields.NeedsValue = append(resp.Fields.NeedsValue, ItemCopyPreflightNeedsValue{
-				Key:        def.Key,
-				Label:      def.Label,
-				Type:       def.Type,
-				Options:    def.Options,
-				Collection: def.Collection,
-				// Gated on the TYPE as well as the map, so a non-relation field
-				// that happens to carry a `collection` in its schema can never
-				// pick up a flag whose meaning is defined only for relations.
+				Key:     def.Key,
+				Label:   def.Label,
+				Type:    def.Type,
+				Options: def.Options,
+				// GATED ON THE TYPE, both of them. The doc on this field says
+				// `collection` is empty for every non-relation type, and until
+				// now that was a claim about schemas rather than about this
+				// code: nothing stops a schema declaring `collection` on a
+				// `select` — the validator does not police keys it has no use
+				// for — and the value was copied straight through. The CLI then
+				// printed "target collection: people" under a select, which is
+				// a relation fact asserted about a field that has none (review
+				// round 2). Gating here makes the documented contract true at
+				// the only place that can make it true.
+				Collection:            relationTargetSlug(def),
 				CollectionUnavailable: def.Type == "relation" && unavailableTargets[def.Collection],
 				Required:              def.Required,
 				Reason:                reason,

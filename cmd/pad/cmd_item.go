@@ -2249,7 +2249,7 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	// instead (Codex round 6). Empty keys are not currently rejected by
 	// collection-schema validation, so this is reachable.
 	unnamed := 0
-	unfillable := itemCopyUnfillable(p.Fields.NeedsValue)
+	unfillable := itemCopyUnavailableTarget(p.Fields.NeedsValue)
 	var toAdd, toFix []string
 	for _, f := range p.Fields.NeedsValue {
 		if strings.TrimSpace(f.Key) == "" {
@@ -2305,16 +2305,44 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	return w.err
 }
 
-// itemCopyUnfillable counts needs_value rows no `--field` can satisfy — a
-// relation whose target collection is not available to this caller (IDEA-2899).
+// itemCopyUnfillable counts needs_value rows NO `--field` can satisfy, for
+// EITHER reason (IDEA-2899).
 //
 // ONE definition, consulted by all three places that tell a user to supply a
 // value: the detailed render, the --dry-run summary, and the returned error.
 // The first version of this fix touched only the render, and a review found the
 // other two still printing `--field key=value` at someone for whom no value
 // exists. Three sites independently answering "how do I supply this" is exactly
-// how they diverge, so they now ask one function instead.
+// how they diverge, so they ask one function instead.
+//
+// TWO reasons, not one, and the second was already here: an EMPTY KEY cannot be
+// supplied because `--field =value` is rejected by this command's own parser,
+// which the detailed render has explained since Codex round 6. That render is
+// the only site that knew; the summary and the error went on advising `--field`
+// for those rows too. A predicate named "unfillable" that answered for one of
+// the two reasons would have been a worse trap than no predicate — right at the
+// site that defined it, wrong everywhere it was reused.
 func itemCopyUnfillable(rows []cli.ItemCopyPreflightNeedsValue) int {
+	n := 0
+	for _, f := range rows {
+		if f.CollectionUnavailable || strings.TrimSpace(f.Key) == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// itemCopyUnavailableTarget counts only the relation half, for the detailed
+// render's own sentence about it — that render explains the empty-key case
+// separately, and the two sentences say different things.
+//
+// DELIBERATELY NOT also excluding empty keys, though the first version did. A
+// row can carry BOTH faults, and a mutant removing that exclusion survived
+// every test — correctly, because the behaviour it changes is printing two
+// sentences that are both TRUE about such a row instead of one. The guard was
+// tidiness dressed as a rule, and a condition nothing can distinguish is a
+// condition the next reader has to re-derive.
+func itemCopyUnavailableTarget(rows []cli.ItemCopyPreflightNeedsValue) int {
 	n := 0
 	for _, f := range rows {
 		if f.CollectionUnavailable {

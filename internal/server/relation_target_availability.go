@@ -83,3 +83,20 @@ func (s *Server) relationTargetsUnavailable(
 	}
 	return unavailable, nil
 }
+
+// relationTargetSlug is the target collection slug a field def declares, and
+// the empty string for any field that is not a relation.
+//
+// `ItemCopyPreflightNeedsValue.Collection` documents itself as empty for every
+// non-relation type. That was a claim about the schemas anyone would write, not
+// a property this code enforced: a `select` carrying `"collection": "people"`
+// is storable — field validation has no use for the key and does not police it
+// — and the value was copied into the response unchanged, so the CLI rendered
+// "target collection: people" beneath a select. One line, at the only place
+// that can make the documented contract true.
+func relationTargetSlug(def models.FieldDef) string {
+	if def.Type != "relation" {
+		return ""
+	}
+	return def.Collection
+}
