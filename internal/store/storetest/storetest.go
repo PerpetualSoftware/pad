@@ -107,15 +107,24 @@ func lockedCopyFromTemplate(dst string) error {
 	return nil
 }
 
-// Cleanup removes the process-wide template database, if one was built.
-// Call it from TestMain after m.Run() so a lazily-built template file
-// doesn't linger past the test binary's lifetime.
+// Cleanup removes the process-wide template databases, if any were built.
+// Call it from TestMain after m.Run() so a lazily-built template doesn't
+// linger past the test binary's lifetime.
+//
+// Both templates: the SQLite template FILE (IDEA-1914) and, since TASK-2900,
+// the Postgres template DATABASE built by NewPostgres. Existing callers need
+// no change — the invariant they already rely on is "Cleanup tears down
+// whatever templates this binary built", and that is what widened.
 func Cleanup() {
 	templateMu.Lock()
-	defer templateMu.Unlock()
 	if templatePath != "" {
 		_ = os.RemoveAll(filepath.Dir(templatePath))
 	}
+	templateMu.Unlock()
+
+	pgTemplateMu.Lock()
+	dropPGTemplate()
+	pgTemplateMu.Unlock()
 }
 
 // buildTemplate runs the full migration chain once into a process-wide
