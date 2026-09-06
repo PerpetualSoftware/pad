@@ -354,7 +354,30 @@ type ItemCopyPreflightNeedsValue struct {
 	// before. Not a wire-version question for the same reason
 	// `models.ItemWriteWarnings` was not.
 	Collection string `json:"collection,omitempty"`
-	Required   bool   `json:"required"`
+	// CollectionUnavailable is true when `Collection` names a target this
+	// caller cannot actually use in the destination — the slug names no live
+	// collection, or names one they cannot read (IDEA-2899).
+	//
+	// Naming a target is not the same as having one. Without this the dialog
+	// offers the row a picker that can return nothing, and since the row is not
+	// blocked, Confirm stays disabled with only the generic required-field
+	// message: the user is told a value is missing and never told that no value
+	// is reachable.
+	//
+	// DELETED and UNREADABLE are deliberately NOT distinguished. They are
+	// different facts with the same consequence — no picker can be built — and
+	// the client has no branch that would differ between them. Distinguishing
+	// them would also disclose to a caller who cannot read a collection that it
+	// nonetheless exists, which is a fact this endpoint has no reason to leak.
+	//
+	// `omitempty` on a BOOL drops `false`, which is why the field is phrased
+	// negatively. Present-and-true means the server checked and the target is
+	// unusable; ABSENT means available, or a server that does not report. The
+	// client must block only on an explicit true, so absence stays "no
+	// information" rather than becoming a value — the same rule
+	// `access_epoch` follows on the item doors.
+	CollectionUnavailable bool `json:"collection_unavailable,omitempty"`
+	Required              bool `json:"required"`
 	// Reason is "missing_required" (no value and no default) or
 	// "invalid_value" (a value carried across that the destination schema
 	// rejects — only reachable for non-override values; an INVALID
@@ -942,6 +965,17 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		},
 	}
 
+	// Which relation targets the destination schema names that this caller
+	// cannot use (IDEA-2899). Computed once for the whole response rather than
+	// per row: a schema can declare several relations onto one collection, and
+	// the answer does not vary between them. Runs no query at all when the
+	// destination declares no relation field.
+	unavailableTargets, err := s.relationTargetsUnavailable(r, dst.Workspace.ID, targetSchema)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	// carried / needs_value, walked in destination-schema order so the
 	// response is stable across identical calls.
 	//
@@ -963,9 +997,13 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 				Type:       def.Type,
 				Options:    def.Options,
 				Collection: def.Collection,
-				Required:   def.Required,
-				Reason:     reason,
-				Message:    iss.Message,
+				// Gated on the TYPE as well as the map, so a non-relation field
+				// that happens to carry a `collection` in its schema can never
+				// pick up a flag whose meaning is defined only for relations.
+				CollectionUnavailable: def.Type == "relation" && unavailableTargets[def.Collection],
+				Required:              def.Required,
+				Reason:                reason,
+				Message:               iss.Message,
 			})
 			continue
 		}
