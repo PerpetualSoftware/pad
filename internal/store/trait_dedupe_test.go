@@ -363,10 +363,13 @@ func TestMalformedTraitsDoNotBreakTheInvariant(t *testing.T) {
 
 // TestImportDeduplicatesAConflictingArchive covers TASK-2710 item 4. Before
 // the indexes, import warned about a duplicate declaration and inserted both.
-// With them the second INSERT is refused, the whole transaction rolls back and
-// the workspace minted beforehand survives as a husk — so an archive carrying
-// a duplicate would become unimportable, and those archives are exactly the
-// ones this release exists to repair.
+// With them the second INSERT is refused and the whole transaction rolls back
+// — so an archive carrying a duplicate would become unimportable, and those
+// archives are exactly the ones this release exists to repair.
+//
+// The rollback used to leave the workspace behind as well, because it was
+// minted before the transaction opened; BUG-2892 moved it inside. That changed
+// what a failure COSTS, not whether this de-duplication is needed.
 func TestImportDeduplicatesAConflictingArchive(t *testing.T) {
 	s := testStore(t)
 	owner := createTestUser(t, s, "importdedupe@test.com", "Owner", "password123")

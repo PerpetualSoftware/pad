@@ -366,7 +366,33 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		wsSlug = newName
 	}
 
-	ws, err := s.CreateWorkspace(models.WorkspaceCreate{
+	// Run all data inserts in a single transaction for atomicity — INCLUDING
+	// the workspace row itself (BUG-2892).
+	//
+	// The workspace used to be minted first, by a CreateWorkspace call that
+	// committed on its own. Eight error returns sit between that write and the
+	// commit below (begin, de-duplicate declarations, import collection, item
+	// slug-after-truncation, import item, remap item, import comment, and the
+	// commit itself), and every one of them returned an error while leaving the
+	// workspace row behind: named, slugged, owned by the caller, holding no
+	// collections and no items.
+	//
+	// The husk was not only clutter. uniqueWorkspaceSlug probes
+	// `WHERE slug = ? AND deleted_at IS NULL`, and a husk is not soft-deleted,
+	// so it kept the slug: an operator who fixed the bundle and retried landed
+	// on `name-2`, and that slug is in every URL for the workspace afterwards.
+	// The attempt that stored nothing took the name from the one that worked.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// createWorkspaceQ rather than CreateWorkspace: the slug probe and the
+	// read-back must run on THIS transaction, both so they see its own
+	// uncommitted row and so neither reaches for the pool while the
+	// transaction holds its connection (BUG-2778's deadlock class).
+	ws, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{
 		Name:        wsName,
 		Slug:        wsSlug,
 		Description: data.Workspace.Description,
@@ -376,13 +402,6 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
-
-	// Run all data inserts in a single transaction for atomicity
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
 
 	// ID mapping: old ID -> new ID
 	collMap := make(map[string]string)
@@ -404,10 +423,16 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 	//
 	// Import used to warn and insert both, which was right while nothing
 	// forbade the pair. With the partial unique indexes the second INSERT is
-	// refused, the whole transaction rolls back, and the workspace minted
-	// before it survives as a husk ([[BUG-2892]]) — so an archive carrying a
+	// refused and the whole transaction rolls back — so an archive carrying a
 	// duplicate would be unimportable, and archives carrying duplicates are
 	// exactly the ones this release repairs.
+	//
+	// That rollback now takes the workspace row with it (BUG-2892); when this
+	// paragraph was written the workspace was minted before the transaction
+	// and survived the failure as a husk, which made the same archive both
+	// unimportable AND a source of empty workspaces. The de-duplication is
+	// what keeps it importable; the transaction boundary only decides how
+	// cleanly the other failures fail.
 	//
 	// THE CHECK HAPPENS IN THE INSERT LOOP, ON THE FINAL BYTES, and that
 	// placement is the fix for codex round 3's P1 rather than a style choice.
