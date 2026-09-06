@@ -38,26 +38,41 @@ describe('ItemDetail gives FieldEditor the relation link context', () => {
 	});
 });
 
-describe('CopyItemDialog stays on the read-only side of the gate', () => {
-	// Not an oversight to fix later — the assertion IS the behaviour. Its
-	// FieldDef comes from a preflight row that carries no `collection`
-	// (`ItemCopyPreflightNeedsValue`), so a picker mounted here would be
-	// unscoped, and this dialog copies ACROSS workspaces: it would offer
-	// source-workspace items as the value for a destination-workspace field and
-	// look authoritative doing it. TASK-2869 (U2b) fixes the contract end;
-	// until then, no wsSlug here is what keeps the picker out.
+describe('CopyItemDialog is now on the EDITABLE side of the gate (TASK-2869 / U2b)', () => {
+	// THIS BLOCK USED TO ASSERT THE OPPOSITE, and that was correct at the time:
+	// the preflight row carried no `collection`, so a picker mounted here would
+	// have been unscoped — and this dialog copies ACROSS workspaces, so it would
+	// have offered SOURCE-workspace items as the value for a DESTINATION field
+	// and looked authoritative doing it. Withholding `wsSlug` is what kept the
+	// picker out.
+	//
+	// U2b closed the contract end the old block named by ref: the row now
+	// carries its target collection, so both halves of FieldEditor's gate can
+	// be satisfied honestly. The old version told its successor to revisit the
+	// gate WITH that change rather than let it drift, which is this block.
 	const tag = mountTag(copyDialog);
 
-	it('does not pass a workspace slug', () => {
-		expect(tag).not.toMatch(/\bwsSlug\b/);
+	it('passes the DESTINATION workspace slug, not the source', () => {
+		// destWs, never sourceWsSlug: a relation resolves at the destination,
+		// so the picker must list items the copy can actually point at.
+		expect(tag).toMatch(/wsSlug=\{destWs\}/);
+		expect(tag).not.toMatch(/wsSlug=\{sourceWsSlug\}/);
 	});
 
-	it('still builds its FieldDef from a shape with no target collection', () => {
-		// If this ever fails, the preflight row grew `collection` — which is
-		// exactly U2b's change, and the gate above should be revisited WITH it
-		// rather than left to drift.
+	it('carries the row\'s target collection into the FieldDef', () => {
 		const toFieldDef = copyDialog.match(/function toFieldDef\([\s\S]*?\n\t\}/);
 		expect(toFieldDef).not.toBeNull();
-		expect(toFieldDef![0]).not.toMatch(/\bcollection\b/);
+		expect(toFieldDef![0]).toMatch(/collection: row\.collection/);
+	});
+
+	it('still refuses to mount a picker for a relation row with NO collection', () => {
+		// The other half of the gate, and the half that is easy to lose: the
+		// dialog delegates that decision to isCollectable, which is unit-tested
+		// in copyNeedsValue.test.ts. Asserting the DELEGATION here means the
+		// two cannot drift apart — a dialog that inlined its own predicate
+		// again would pass those unit tests and fail this.
+		expect(copyDialog).toMatch(/from '\$lib\/items\/copyNeedsValue'/);
+		expect(copyDialog).toMatch(/\{#if isCollectable\(row\)\}/);
 	});
 });
+

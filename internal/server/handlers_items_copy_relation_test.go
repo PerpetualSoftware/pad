@@ -1122,3 +1122,64 @@ func TestCopyEndpoint_PreflightAndCopyAgreeOnOverridePrecedence(t *testing.T) {
 		})
 	}
 }
+
+// A required RELATION in the destination reaches the dialog with its target
+// collection, so the picker can be scoped to it (TASK-2869 / U2b).
+//
+// `ItemCopyPreflightNeedsValue` carried `type: "relation"` and no target, so
+// the dialog had a field it knew was a relation and no idea what to point at.
+// Its editor gates the relation branch on `wsSlug` AND `field.collection`, so
+// the row rendered as free text — and before U1's referent validation, a copy
+// with anything typed into it was STORED.
+//
+// The proving test from the task, both legs. The negative leg is the one that
+// matters: with `collection` absent the row must be treated as uncollectable,
+// which is what makes the dialog show an honest blocked state rather than an
+// unscoped picker offering SOURCE-workspace items.
+func TestCopyPreflight_RequiredRelationNeedsValueCarriesItsCollection(t *testing.T) {
+	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
+
+	pre := f.ok(f.baseBody())
+	var row *ItemCopyPreflightNeedsValue
+	for i := range pre.Fields.NeedsValue {
+		if pre.Fields.NeedsValue[i].Key == "owner_ref" {
+			row = &pre.Fields.NeedsValue[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("a REQUIRED relation with no value produced no needs_value row: %+v", pre.Fields)
+	}
+	if row.Type != "relation" {
+		t.Fatalf("needs_value row type = %q, want relation", row.Type)
+	}
+	if row.Collection != f.targetsB.Slug {
+		t.Fatalf("needs_value row carries collection %q, want the DESTINATION's target %q — "+
+			"without it the dialog knows the field is a relation and not what it may point at",
+			row.Collection, f.targetsB.Slug)
+	}
+	if !row.Required {
+		t.Fatalf("the row does not report the field as required: %+v", row)
+	}
+
+	// The collection named is the DESTINATION's, not the source's. Those are
+	// different collections in this fixture, which is what makes the assertion
+	// above discriminate rather than pass on a coincidence of naming.
+	if f.targetsB.Slug == f.targetsA.Slug {
+		t.Fatalf("fixture defect: source and destination relation targets share the slug %q, "+
+			"so this test cannot tell which one the row names", f.targetsA.Slug)
+	}
+
+	// NEGATIVE LEG: a NON-relation needs-value row carries no collection, so
+	// the field is omitted rather than sent empty — `omitempty` is what keeps
+	// a response for an ordinary field byte-identical to before this change.
+	f2 := newCopyRelationFixtureWith(t, noDestDefault, nil, false)
+	body := f2.baseBody()
+	body["field_overrides"] = map[string]any{"status": ""}
+	pre2 := f2.ok(body)
+	for _, r := range pre2.Fields.NeedsValue {
+		if r.Type != "relation" && r.Collection != "" {
+			t.Fatalf("a %s row carries collection %q; only relation rows name a target",
+				r.Type, r.Collection)
+		}
+	}
+}

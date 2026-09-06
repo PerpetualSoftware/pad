@@ -335,11 +335,26 @@ type ItemCopyPreflightDropped struct {
 // ItemCopyPreflightNeedsValue is one destination field the caller must
 // resolve with an override before the copy can proceed.
 type ItemCopyPreflightNeedsValue struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label,omitempty"`
-	Type     string   `json:"type,omitempty"`
-	Options  []string `json:"options,omitempty"`
-	Required bool     `json:"required"`
+	Key     string   `json:"key"`
+	Label   string   `json:"label,omitempty"`
+	Type    string   `json:"type,omitempty"`
+	Options []string `json:"options,omitempty"`
+	// Collection is the target collection SLUG for a `relation` field, and
+	// empty for every other type (TASK-2869).
+	//
+	// Without it the dialog receives `type: "relation"` and no target, so its
+	// field editor has nothing to scope a picker to. The old fallback was a
+	// free-text box, which let a user type anything and — before U1's referent
+	// validation — the copy stored it. The picker needs the DESTINATION's
+	// collection, which is the only place this is known: the row is built from
+	// the destination schema.
+	//
+	// Additive and `omitempty`, so a client that does not read it is
+	// unaffected and a response for a non-relation field is byte-identical to
+	// before. Not a wire-version question for the same reason
+	// `models.ItemWriteWarnings` was not.
+	Collection string `json:"collection,omitempty"`
+	Required   bool   `json:"required"`
 	// Reason is "missing_required" (no value and no default) or
 	// "invalid_value" (a value carried across that the destination schema
 	// rejects — only reachable for non-override values; an INVALID
@@ -943,13 +958,14 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 				reason = "missing_required"
 			}
 			resp.Fields.NeedsValue = append(resp.Fields.NeedsValue, ItemCopyPreflightNeedsValue{
-				Key:      def.Key,
-				Label:    def.Label,
-				Type:     def.Type,
-				Options:  def.Options,
-				Required: def.Required,
-				Reason:   reason,
-				Message:  iss.Message,
+				Key:        def.Key,
+				Label:      def.Label,
+				Type:       def.Type,
+				Options:    def.Options,
+				Collection: def.Collection,
+				Required:   def.Required,
+				Reason:     reason,
+				Message:    iss.Message,
 			})
 			continue
 		}
