@@ -563,7 +563,36 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// access tightened to "specific", item grants revoked). Rebuild
 			// the filter set so the next event dispatched respects the
 			// current grants rather than the ones captured at connect time.
+			epochBefore := vis.accessEpoch()
 			vis = s.computeSSEVisibility(r, ws.ID)
+			// IDEA-2898. Rebuilding the filter set stops the LEAK — no further
+			// event for a revoked collection is dispatched — but it says
+			// nothing to the client, whose local index is still holding the
+			// rows it was sent before the revocation. A revocation writes no
+			// item, so no delta will ever carry an eviction for them.
+			//
+			// The existing sync_required is exactly the right signal: it means
+			// "your view may be behind, go reconcile", and reconciling is what
+			// evicts. No new event type, and no extra query — both epochs come
+			// from visibility sets this tick already computed.
+			//
+			// Deliberately NOT writeSSEResetCursorEvent: that form blanks the
+			// client's Last-Event-ID because the STREAM has a hole. This stream
+			// has none. The caller's scope changed, which is a different fact,
+			// and clearing a healthy resume cursor would cost a full replay on
+			// the next reconnect for nothing.
+			if vis.accessEpoch() != epochBefore {
+				slog.Info("SSE: subscriber access scope changed mid-stream, sending sync_required",
+					"workspace", ws.Slug, "user_id", sseUserID)
+				if err := writeSSEEvent(w, "sync_required", 0, map[string]string{
+					"reason": "Your access to this workspace changed. Full sync required.",
+				}); err != nil {
+					slog.Debug("SSE: access-change sync_required write failed, closing",
+						"workspace", ws.Slug, "error", err)
+					return
+				}
+				flusher.Flush()
+			}
 			// Re-arm the timer at the regular cadence. The first fire was
 			// jittered; subsequent fires can be evenly spaced without
 			// introducing a stampede because connect-time variance has
@@ -657,6 +686,33 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 		return false
 	}
 	return true
+}
+
+// accessEpoch fingerprints this snapshot's effective visible set, so two
+// revalidation ticks can be compared without re-querying anything (IDEA-2898).
+//
+// It reuses the same function the item doors use, for one reason worth stating:
+// the client compares the epoch it got from /items-changes against the one it
+// stored, and this signal only tells it to go and do that. If the two sides
+// disagreed about what "the same set" means, this tick would announce changes
+// that the delta then declared unchanged, or stay silent on ones it did not.
+// They are separate values on separate wires; they must be one definition.
+func (v sseVisibility) accessEpoch() string {
+	if v.visibleSlugSet == nil {
+		// Mirrors computeAccessEpoch's nil case: no filtering at all.
+		return computeAccessEpoch(nil, nil)
+	}
+	collIDs := make([]string, 0, len(v.visibleCollIDSet))
+	for id := range v.visibleCollIDSet {
+		collIDs = append(collIDs, id)
+	}
+	itemIDs := make([]string, 0, len(v.grantedItemSet))
+	for id := range v.grantedItemSet {
+		itemIDs = append(itemIDs, id)
+	}
+	// Map iteration order is randomized; computeAccessEpoch sorts, which is
+	// what makes this comparable across ticks at all.
+	return computeAccessEpoch(collIDs, itemIDs)
 }
 
 type sseVisibility struct {
