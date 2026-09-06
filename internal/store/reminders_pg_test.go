@@ -56,6 +56,7 @@ func firePathPGStore(t *testing.T) (*Store, string, string, string) {
 }
 
 func TestFireOneReminderBlocksOnAnArchivingWorkspace(t *testing.T) {
+	t.Parallel()
 	s, wsID, _, id := firePathPGStore(t)
 
 	tx, err := s.db.Begin()
@@ -96,6 +97,7 @@ func TestFireOneReminderBlocksOnAnArchivingWorkspace(t *testing.T) {
 }
 
 func TestFireOneReminderBlocksOnAnArchivingItem(t *testing.T) {
+	t.Parallel()
 	s, wsID, itemID, id := firePathPGStore(t)
 
 	tx, err := s.db.Begin()

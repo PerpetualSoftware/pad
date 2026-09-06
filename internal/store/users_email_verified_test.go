@@ -66,6 +66,7 @@ func insertLegacyUnverifiedUser(t *testing.T, s *Store, email string) string {
 // self-host account is write-locked on deploy. Runs the real migration DML
 // against pre-existing NULL rows (both dialects via make test-pg).
 func TestEmailVerifiedBackfill(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	legacy := []string{
@@ -110,6 +111,7 @@ func TestEmailVerifiedBackfill(t *testing.T) {
 // CreateUser yields a VERIFIED user, and only an explicit Unverified request
 // (the future cloud self-serve branch) produces an unverified one.
 func TestCreateUserEmailVerifiedDefault(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// Default: verified.
@@ -139,6 +141,7 @@ func TestCreateUserEmailVerifiedDefault(t *testing.T) {
 
 // TestCreateOAuthUserVerified covers DR-3's "OAuth = verified" rule.
 func TestCreateOAuthUserVerified(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateOAuthUser("oauth@example.com", "OAuth User", "https://example.com/a.png")
 	if err != nil {
@@ -154,6 +157,7 @@ func TestCreateOAuthUserVerified(t *testing.T) {
 // SearchUsers. Missing the second breaks the admin user list at runtime with a
 // column/target mismatch, which a compile check would NOT catch.
 func TestEmailVerifiedBothScanPaths(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	verified := createTestUser(t, s, "scanverified@example.com", "V", "password123")
@@ -188,6 +192,7 @@ func TestEmailVerifiedBothScanPaths(t *testing.T) {
 // ListUsers scanUser path also surfaces the field (defensive; scanUser is
 // shared, but ListUsers is the admin-facing bulk reader).
 func TestListUsersEmailVerified(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	for i := 0; i < 3; i++ {
 		createTestUser(t, s, fmt.Sprintf("list%d@example.com", i), "L", "password123")

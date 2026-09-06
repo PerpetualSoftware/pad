@@ -43,6 +43,7 @@ func assertSameFields(t *testing.T, label, got, want, why string) {
 // that is correct but never consumed fixes nothing (CONVE-19).
 
 func TestUpdateItem_PreUpdateIsTheLockedPreWriteView(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "PreImage")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")
@@ -81,6 +82,7 @@ func TestUpdateItem_PreUpdateIsTheLockedPreWriteView(t *testing.T) {
 // "assigned:  → Someone" on every update — a louder version of the bug this
 // field exists to fix.
 func TestUpdateItem_PreUpdateCarriesJoinedDisplayNames(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "PreImageJoins")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")
@@ -122,6 +124,7 @@ func TestUpdateItem_PreUpdateCarriesJoinedDisplayNames(t *testing.T) {
 // lands before the store call begins, so both reads see the same thing and
 // the two implementations are indistinguishable. That is why the seam exists.
 func TestUpdateItem_PreUpdateComesFromTheLockedReRead(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "PreImageLock")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")
@@ -171,6 +174,7 @@ func TestUpdateItem_PreUpdateComesFromTheLockedReRead(t *testing.T) {
 // round 3) — and would make the handler report "assigned:  → Dave" on any
 // update to an already-assigned item.
 func TestUpdateItem_PreUpdateCarriesTheAssignedUser(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "PreImageAssignee")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")

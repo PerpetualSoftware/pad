@@ -53,6 +53,7 @@ func setupPermissionTest(t *testing.T) (*Store, *models.Workspace, *models.User,
 }
 
 func TestVisibleCollectionIDs_AllAccess(t *testing.T) {
+	t.Parallel()
 	s, ws, _, member := setupPermissionTest(t)
 
 	// Default: member has "all" access
@@ -66,6 +67,7 @@ func TestVisibleCollectionIDs_AllAccess(t *testing.T) {
 }
 
 func TestVisibleCollectionIDs_SpecificAccess(t *testing.T) {
+	t.Parallel()
 	s, ws, _, member := setupPermissionTest(t)
 
 	// Get collection IDs
@@ -109,6 +111,7 @@ func TestVisibleCollectionIDs_SpecificAccess(t *testing.T) {
 }
 
 func TestVisibleCollectionIDs_SystemCollectionsAlwaysVisible(t *testing.T) {
+	t.Parallel()
 	s, ws, _, member := setupPermissionTest(t)
 
 	colls, _ := s.ListCollections(ws.ID)
@@ -142,6 +145,7 @@ func TestVisibleCollectionIDs_SystemCollectionsAlwaysVisible(t *testing.T) {
 }
 
 func TestVisibleCollectionIDs_NonMember(t *testing.T) {
+	t.Parallel()
 	s, ws, _, _ := setupPermissionTest(t)
 
 	// Create a user who is NOT a member
@@ -161,6 +165,7 @@ func TestVisibleCollectionIDs_NonMember(t *testing.T) {
 }
 
 func TestSetMemberCollectionAccess_ReplaceGrants(t *testing.T) {
+	t.Parallel()
 	s, ws, _, member := setupPermissionTest(t)
 
 	colls, _ := s.ListCollections(ws.ID)
@@ -192,6 +197,7 @@ func TestSetMemberCollectionAccess_ReplaceGrants(t *testing.T) {
 }
 
 func TestSetMemberCollectionAccess_BackToAll(t *testing.T) {
+	t.Parallel()
 	s, ws, _, member := setupPermissionTest(t)
 
 	colls, _ := s.ListCollections(ws.ID)
@@ -233,6 +239,7 @@ func TestSetMemberCollectionAccess_BackToAll(t *testing.T) {
 }
 
 func TestListItems_FilteredByCollectionIDs(t *testing.T) {
+	t.Parallel()
 	s, ws, _, _ := setupPermissionTest(t)
 
 	colls, _ := s.ListCollections(ws.ID)
@@ -283,6 +290,7 @@ func TestListItems_FilteredByCollectionIDs(t *testing.T) {
 }
 
 func TestCollectionAccess_DefaultIsAll(t *testing.T) {
+	t.Parallel()
 	s, ws, _, member := setupPermissionTest(t)
 
 	m, err := s.GetWorkspaceMember(ws.ID, member.ID)
@@ -295,6 +303,7 @@ func TestCollectionAccess_DefaultIsAll(t *testing.T) {
 }
 
 func TestIsSystemCollection(t *testing.T) {
+	t.Parallel()
 	s, ws, _, _ := setupPermissionTest(t)
 
 	colls, _ := s.ListCollections(ws.ID)

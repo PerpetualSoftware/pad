@@ -13,6 +13,7 @@ import (
 // runs the same queries against each, and reports ranking differences.
 // This test requires PAD_TEST_POSTGRES_URL to be set — otherwise it skips.
 func TestSearchQualityComparison(t *testing.T) {
+	t.Parallel()
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if pgURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set — skipping search quality comparison")
@@ -189,6 +190,7 @@ func containsTitle(results []ItemSearchResult, title string, topN int) bool {
 
 // TestSearchEdgeCases tests tricky search scenarios on both backends.
 func TestSearchEdgeCases(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	ws := createTestWorkspace(t, s, "search-edge")

@@ -18,6 +18,7 @@ import (
 // list disagree, and the right response is usually to fix whichever is wrong —
 // regenerate only after deciding the LIST is right.
 func TestGenerateNULTriggerMigration(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("GEN_NUL_TRIGGERS") == "" {
 		t.Skip("generator; run with GEN_NUL_TRIGGERS=1 after changing nulcolumns.go")
 	}

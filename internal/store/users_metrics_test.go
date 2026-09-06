@@ -10,6 +10,7 @@ import (
 // TestGetUserMetrics covers the three engagement metrics from T1547:
 // days_since_write, writes_7d, collections_touched_30d.
 func TestGetUserMetrics(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	alice := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Acme", Slug: "acme", OwnerID: alice.ID})
@@ -73,6 +74,7 @@ func TestGetUserMetrics(t *testing.T) {
 // TestGetUserMetricsEmptyUser ensures a user with no activity returns
 // zero counts and a nil days_since_write rather than an error.
 func TestGetUserMetricsEmptyUser(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "fresh@example.com", "Fresh", "password123")
 	m, err := s.GetUserMetrics(u.ID)

@@ -43,6 +43,7 @@ func reminderConstraintFixture(t *testing.T, s *Store) (item *models.Item, ownWo
 // forbid — testing through it would assert that a correct writer writes
 // correctly, which is the thing already true before the migration.
 func TestReminderWorkspaceMustMatchItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	item, own, other := reminderConstraintFixture(t, s)
 	ts := now()
@@ -72,6 +73,7 @@ func TestReminderWorkspaceMustMatchItem(t *testing.T) {
 // can drop ON DELETE CASCADE without anything else noticing, and a reminder
 // for a deleted item is a notification nobody can act on (085's rationale).
 func TestReminderCascadeSurvivesTheCompositeKey(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	item, own, _ := reminderConstraintFixture(t, s)
 
@@ -114,6 +116,7 @@ func TestReminderCascadeSurvivesTheCompositeKey(t *testing.T) {
 // against the real items table. The one hand-written piece is the pre-086
 // item_reminders shape, copied from 085.
 func TestMigration086DropsPreExistingDisagreeingRows(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite rebuild path; the Postgres half of 086 is a DELETE + ADD CONSTRAINT")
 	}
@@ -235,6 +238,7 @@ func TestMigration086DropsPreExistingDisagreeingRows(t *testing.T) {
 // both, and the untested half is the one that would fail a deployment's
 // startup.
 func TestMigration063DropsPreExistingDisagreeingRows(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("Postgres half of IDEA-2883; the SQLite rebuild has its own test")
 	}
@@ -323,6 +327,7 @@ func TestMigration063DropsPreExistingDisagreeingRows(t *testing.T) {
 // handle a case no other test reaches, and an untested branch that only runs
 // on a database nobody has is worse than no branch at all.
 func TestMigration063DropsEveryLegacyItemIdConstraint(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("Postgres-only: the DO block has no SQLite counterpart (the rebuild replaces the FK wholesale)")
 	}

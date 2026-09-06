@@ -29,6 +29,7 @@ func bigLinker(t *testing.T, title string, bodyBytes int) string {
 // cross it. Sizes are derived from MaxItemRenameCascadeBytes rather than
 // hardcoded, so the test follows the constant if it is ever retuned.
 func TestItemRenameCascade_RefusesWhenTheCascadeExceedsTheBound(t *testing.T) {
+	t.Parallel()
 	const body = 2 << 20 // the largest body one JSON request can carry
 	perLinker := int64(body) * 2
 	linkers := int(MaxItemRenameCascadeBytes/perLinker) + 2
@@ -91,6 +92,7 @@ func TestItemRenameCascade_RefusesWhenTheCascadeExceedsTheBound(t *testing.T) {
 // across 23 sources. This uses 30 sources at the measured p99.9 body size
 // (51,000 bytes), which is ~9x that worst case and still ~21x under the cap.
 func TestItemRenameCascade_AllowsARealisticCascade(t *testing.T) {
+	t.Parallel()
 	const p999Body = 51000
 	const sources = 30
 
@@ -141,6 +143,7 @@ func TestItemRenameCascade_AllowsARealisticCascade(t *testing.T) {
 // by one whole unit: refusing before the build yields N, refusing after yields
 // N+1. Found by make test-pg, which is the whole reason that gate exists.
 func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
+	t.Parallel()
 	// Body size chosen so perLinker does NOT divide the cap evenly. With an
 	// exact division the assertion below cannot discriminate: refusing after
 	// the build would total exactly the cap rather than exceeding it. It also
@@ -203,6 +206,7 @@ func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 // without the index being re-parsed. The test writes items.content directly so
 // replaceWikiLinks does not run.
 func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T) {
+	t.Parallel()
 	const body = 2 << 20
 	live := 12
 	drifted := 6
@@ -271,6 +275,7 @@ func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T
 // linker count and attributed the remaining k-linear growth to the outbox
 // (BUG-2827), which is a different vector entirely.
 func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
+	t.Parallel()
 	// The largest title one JSON request can deliver (server.defaultJSONBodyLimit
 	// is 2 MiB). This is no longer reachable through the ordinary create path —
 	// models.MaxItemTitleRunes refuses it — so the fixture is seeded as legacy
@@ -427,6 +432,7 @@ func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 // worst real cascade was 23 sources, and item titles there are ordinary
 // sentence-length strings.
 func TestItemRenameCascade_ScanBoundAllowsRealisticTitles(t *testing.T) {
+	t.Parallel()
 	const sources = 50
 	title := "A Perfectly Ordinary Item Title Of The Kind Real Workspaces Contain"
 

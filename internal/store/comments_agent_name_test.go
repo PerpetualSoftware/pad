@@ -54,6 +54,7 @@ func agentNamesByID(comments []models.Comment) map[string]string {
 }
 
 func TestListComments_AgentNameFromLinkedActivity(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 
 	named := commentWithActivity(t, s, item, `{"agent":"wren"}`, "named", "")
@@ -146,6 +147,7 @@ func TestListComments_AgentNameFromLinkedActivity(t *testing.T) {
 // comment query still carries the name, because it does not depend on that
 // window at all. A handler-side join of the two lists would have lost it here.
 func TestListCommentsBeforeTime_AgentNameSurvivesActivityWindow(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 
 	c := commentWithActivity(t, s, item, `{"agent":"wren"}`, "early", "")
@@ -206,6 +208,7 @@ func equalStringMaps(a, b map[string]string) bool {
 // activity query now excludes comment-linked rows itself, so the outcome does
 // not depend on which comments happened to be fetched alongside.
 func TestListDocumentActivityBeforeTime_ExcludesCommentLinkedRows(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 
 	linked := commentWithActivity(t, s, item, `{"agent":"wren"}`, "linked", "")
@@ -243,6 +246,7 @@ func TestListDocumentActivityBeforeTime_ExcludesCommentLinkedRows(t *testing.T) 
 // activity id alone, and nothing in the schema says a comment's activity
 // belongs to the comment's item.
 func TestListComments_AgentNameNeverReadAcrossItems(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 	other := createTestItem(t, s, item.WorkspaceID, item.CollectionID, "Other", "")
 
@@ -305,6 +309,7 @@ func TestListComments_AgentNameNeverReadAcrossItems(t *testing.T) {
 // shape this test used to carry is now the BUG-2763 identity matrix's, in
 // activities_test.go.
 func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 	user, err := s.CreateUser(models.UserCreate{Email: "shared@test.com", Name: "Dave", Password: "correct-horse-battery-staple"})
 	if err != nil {
@@ -379,6 +384,7 @@ func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 // is still the right shape for THIS test: it pins the predicate itself,
 // independently of any caller.)
 func TestMergeIntoUnlinkedActivity_RefusesLinkedRow(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 	mk := func(meta string) string {
 		id, err := s.CreateActivity(models.Activity{

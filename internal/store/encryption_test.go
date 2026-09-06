@@ -8,6 +8,7 @@ import (
 )
 
 func TestEncryptDecrypt(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// Generate a random 32-byte key
@@ -40,6 +41,7 @@ func TestEncryptDecrypt(t *testing.T) {
 }
 
 func TestDecryptPlaintext(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	key := make([]byte, 32)
@@ -58,6 +60,7 @@ func TestDecryptPlaintext(t *testing.T) {
 }
 
 func TestEncryptWithoutKey(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// No encryption key — encrypt should return plaintext
@@ -72,6 +75,7 @@ func TestEncryptWithoutKey(t *testing.T) {
 }
 
 func TestEncryptDecryptEmpty(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	key := make([]byte, 32)
@@ -97,6 +101,7 @@ func TestEncryptDecryptEmpty(t *testing.T) {
 }
 
 func TestTOTPEncryptionRoundTrip(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	key := make([]byte, 32)

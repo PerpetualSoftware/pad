@@ -34,6 +34,7 @@ func newWebhookTestWorkspace(t *testing.T, s *Store) string {
 // must be encrypted in the DB, round-trip to plaintext on read (so the
 // dispatcher can sign), and that plaintext must produce a valid HMAC.
 func TestWebhookSecret_EncryptedAtRest(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -88,6 +89,7 @@ func TestWebhookSecret_EncryptedAtRest(t *testing.T) {
 // TestWebhookSecret_ListRoundTrips confirms ListWebhooks also decrypts the
 // secret for internal/dispatch use.
 func TestWebhookSecret_ListRoundTrips(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	key := make([]byte, 32)
 	rand.Read(key)
@@ -118,6 +120,7 @@ func TestWebhookSecret_ListRoundTrips(t *testing.T) {
 // pre-encryption plaintext row (inserted before a key was configured) still
 // signs correctly, and BackfillEncryptWebhookSecrets encrypts it in place.
 func TestWebhookSecret_BackfillEncryptsPlaintext(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID := newWebhookTestWorkspace(t, s)
 
@@ -186,6 +189,7 @@ func insertRawWebhook(t *testing.T, s *Store, wsID, secret string) string {
 // marker must be encrypted by the one-time migration (first run encrypts every
 // pre-encryption value) and round-trip on read.
 func TestWebhookSecret_MigratesEncPrefixedLegacyPlaintext(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID := newWebhookTestWorkspace(t, s)
 
@@ -231,6 +235,7 @@ func TestWebhookSecret_MigratesEncPrefixedLegacyPlaintext(t *testing.T) {
 // wrong key (which would corrupt the secret). Steady-state skips "enc:" rows and
 // a wrong key surfaces as a loud decrypt error instead.
 func TestWebhookSecret_DoesNotRewrapCiphertextOnKeyChange(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID := newWebhookTestWorkspace(t, s)
 

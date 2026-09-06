@@ -61,6 +61,7 @@ func relationTargetOf(t *testing.T, s *Store, collID, key string) string {
 }
 
 func TestRenameMigratesRelationTargetsInSiblingCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "RelRenameSibling")
 
@@ -90,6 +91,7 @@ func TestRenameMigratesRelationTargetsInSiblingCollections(t *testing.T) {
 }
 
 func TestRenameMigratesASelfReferencingRelation(t *testing.T) {
+	t.Parallel()
 	// The renamed collection is also the row being UPDATEd, so its own schema
 	// rewrite has to compose with the update rather than be clobbered by it.
 	s := testStore(t)
@@ -117,6 +119,7 @@ func TestRenameMigratesASelfReferencingRelation(t *testing.T) {
 }
 
 func TestRenameWithASimultaneousSchemaWriteMigratesTheSuppliedSchema(t *testing.T) {
+	t.Parallel()
 	// A caller that renames AND supplies a new schema in one call: the
 	// migration must apply to what the caller sent, not to what was stored,
 	// or the rewrite silently reverts their edit.
@@ -161,6 +164,7 @@ func TestRenameWithASimultaneousSchemaWriteMigratesTheSuppliedSchema(t *testing.
 }
 
 func TestRenameLeavesUnrelatedFieldsAndCollectionsAlone(t *testing.T) {
+	t.Parallel()
 	// CONTROL. Without this the propagation tests are satisfied by a change
 	// that rewrites the string everywhere it appears.
 	s := testStore(t)
@@ -277,6 +281,7 @@ func TestConcurrentRenamesOfMutuallyReferencingCollectionsDoNotDeadlock(t *testi
 }
 
 func TestRenameAdvancesTheMigratedSiblingsConcurrencyToken(t *testing.T) {
+	t.Parallel()
 	// codex round 1 P1. `collections.updated_at` doubles as the OCC token
 	// (BUG-2265). Rewriting a sibling's schema without advancing it lets a
 	// client still holding the PRE-rename schema — and a token that still
@@ -325,6 +330,7 @@ func TestRenameAdvancesTheMigratedSiblingsConcurrencyToken(t *testing.T) {
 }
 
 func TestRenamePreservesSchemaPropertiesItDoesNotUnderstand(t *testing.T) {
+	t.Parallel()
 	// codex round 1 P2. Round-tripping through `models.CollectionSchema` drops
 	// every property that struct does not declare, so a rename would silently
 	// erase forward-compatible metadata from any relation-bearing schema.
@@ -374,6 +380,7 @@ func TestRenamePreservesSchemaPropertiesItDoesNotUnderstand(t *testing.T) {
 }
 
 func TestConcurrentRenamesOfTheSameCollectionLeaveRelationsPointingAtIt(t *testing.T) {
+	t.Parallel()
 	// codex round 1 P1 (the third one). Both racers read the collection's slug
 	// via the pre-transaction GetCollection. If the retarget uses THAT value
 	// rather than the one re-read under the row lock, the loser migrates
@@ -425,6 +432,7 @@ func TestConcurrentRenamesOfTheSameCollectionLeaveRelationsPointingAtIt(t *testi
 }
 
 func TestRenameNeverRegressesAMigratedSiblingsToken(t *testing.T) {
+	t.Parallel()
 	// codex round 2 P1. A sibling updated between the rename's timestamp and
 	// the scan already holds a NEWER token; stamping the rename's value on it
 	// moves the OCC token BACKWARDS, breaking the strictly-increasing invariant
@@ -473,6 +481,7 @@ func TestRenameNeverRegressesAMigratedSiblingsToken(t *testing.T) {
 }
 
 func TestRenamePreservesLargeIntegersInUnknownSchemaProperties(t *testing.T) {
+	t.Parallel()
 	// codex round 2 P2. Decoding into `interface{}` turns every JSON number
 	// into float64, so an integer past 2^53 comes back CHANGED and the rename
 	// silently corrupts a property it was only meant to carry through.
@@ -507,6 +516,7 @@ func TestRenamePreservesLargeIntegersInUnknownSchemaProperties(t *testing.T) {
 }
 
 func TestRenameLeavesASchemaWithTrailingJunkUntouched(t *testing.T) {
+	t.Parallel()
 	// codex round 3 P2. `json.Decoder.Decode` stops at the end of the first
 	// value and ignores the rest, where `json.Unmarshal` refuses it — so
 	// re-marshaling such a document would silently discard the trailing bytes.

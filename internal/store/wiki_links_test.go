@@ -14,6 +14,7 @@ import (
 // backlinks for the target item. End-to-end coverage of the write
 // path → resolver → GetBacklinks read path.
 func TestWikiLinks_CreateItemIndexesRefs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -48,6 +49,7 @@ func TestWikiLinks_CreateItemIndexesRefs(t *testing.T) {
 // on UpdateItem: changing the body to remove a [[]] removes its
 // backlink row, and adding a new [[]] adds a row.
 func TestWikiLinks_UpdateItemReplacesIndex(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -83,6 +85,7 @@ func TestWikiLinks_UpdateItemReplacesIndex(t *testing.T) {
 // items) doesn't trigger this — the rows persist but GetBacklinks
 // filters via items.deleted_at IS NULL on the source.
 func TestWikiLinks_DeleteItemCascadesOutboundRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -110,6 +113,7 @@ func TestWikiLinks_DeleteItemCascadesOutboundRows(t *testing.T) {
 // ref/title in its own body shouldn't appear in its own "Mentioned
 // in" panel (PLAN-1593 behavior decision).
 func TestWikiLinks_SelfLinkHidden(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -136,6 +140,7 @@ func TestWikiLinks_SelfLinkHidden(t *testing.T) {
 // table even though it can't be queried via the target-id index.
 // Feeds the future broken-links report.
 func TestWikiLinks_BrokenRefPersisted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -161,6 +166,7 @@ func TestWikiLinks_BrokenRefPersisted(t *testing.T) {
 // Display-side dedupe is the renderer's job; storage keeps every
 // occurrence so future "show me where" features can highlight each.
 func TestWikiLinks_RepeatedRefStoresMultipleRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -197,6 +203,7 @@ func TestWikiLinks_RepeatedRefStoresMultipleRows(t *testing.T) {
 // counterpart to the parser test: a fenced block with [[REF]] inside
 // must NOT produce a backlink row. Parser exclusion proven end-to-end.
 func TestWikiLinks_CodeBlocksExcludedAtIndexTime(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -223,6 +230,7 @@ func TestWikiLinks_CodeBlocksExcludedAtIndexTime(t *testing.T) {
 // produces the same final state. The first call populates rows; the
 // second short-circuits via the EXISTS check and inserts nothing new.
 func TestWikiLinks_BackfillIdempotent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -264,6 +272,7 @@ func TestWikiLinks_BackfillIdempotent(t *testing.T) {
 // rows. Empty override → display_text=”, no override → display_text
 // IS NULL.
 func TestWikiLinks_EmptyDisplayDistinct(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -333,6 +342,7 @@ func TestWikiLinks_EmptyDisplayDistinct(t *testing.T) {
 // extend both edges to rune boundaries so the snippet is always
 // valid UTF-8. Codex round-8 P3.
 func TestWikiLinks_SnippetIsValidUTF8(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -365,6 +375,7 @@ func TestWikiLinks_SnippetIsValidUTF8(t *testing.T) {
 // indexer behavior have to agree, otherwise users see broken silent
 // data divergence.
 func TestWikiLinks_MixedCaseRefIndexed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -410,6 +421,7 @@ func TestWikiLinks_MixedCaseRefIndexed(t *testing.T) {
 //     [src3, src1] (newest-first), NOT [src3] (which would be the
 //     bug — hidden src2 silently consuming a slot).
 func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	visible := createTestCollection(t, s, ws.ID, "Visible")
@@ -485,6 +497,7 @@ func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
 // rows from B. The bad-pagination version returned 0 or 1 depending
 // on how the hidden rows interleaved.
 func TestWikiLinks_ItemGrantPagination(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	a := createTestCollection(t, s, ws.ID, "A")
@@ -554,6 +567,7 @@ func refOf(item *models.Item) string {
 // `[[Title]]` in a source's body produces a backlink for the target
 // when the target's title matches (case-insensitive).
 func TestWikiLinks_TitleFormIndexed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -579,6 +593,7 @@ func TestWikiLinks_TitleFormIndexed(t *testing.T) {
 // writes `[[project goals]]` must still resolve to an item titled
 // "Project Goals".
 func TestWikiLinks_TitleFormCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -601,6 +616,7 @@ func TestWikiLinks_TitleFormCaseInsensitive(t *testing.T) {
 //     the row to point at it — backlinks resolve on next query without
 //     waiting for a content rewrite or a backfill run.
 func TestWikiLinks_BrokenTitlePersistedThenResolved(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -627,6 +643,7 @@ func TestWikiLinks_BrokenTitlePersistedThenResolved(t *testing.T) {
 // index rows refresh, (c) "who mentions me?" still finds them under
 // the new title.
 func TestWikiLinks_TitleRenameCascadesContentAndBacklinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -682,6 +699,7 @@ func TestWikiLinks_TitleRenameCascadesContentAndBacklinks(t *testing.T) {
 // case) both index via target_item_id, so without alias-aware /
 // case-insensitive rewrite, the trailing re-parse drops them.
 func TestWikiLinks_TitleRenameCascadesAliasedForms(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -736,6 +754,7 @@ func TestWikiLinks_TitleRenameCascadesAliasedForms(t *testing.T) {
 // because no item is literally titled "tasks/Setup"; stage 2 (split
 // fallback) finds the item titled "Setup" in collection "tasks".
 func TestWikiLinks_CollectionQualifiedTitleResolved(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks") // slug = "tasks"
@@ -756,6 +775,7 @@ func TestWikiLinks_CollectionQualifiedTitleResolved(t *testing.T) {
 // and looks up by collection slug. If we split first, the wrong item
 // would resolve.
 func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks") // slug = "tasks"
@@ -788,6 +808,7 @@ func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
 // stale while the renderer's full-body interpretation would resolve
 // the link correctly.
 func TestWikiLinks_BrokenPipeInBodyRetargetsOnLiteralArrival(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -812,6 +833,7 @@ func TestWikiLinks_BrokenPipeInBodyRetargetsOnLiteralArrival(t *testing.T) {
 // different item or fail to resolve at all, leaving a backlink the
 // UI shows but the index can't surface.
 func TestWikiLinks_LiteralPipeInTitleResolves(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -832,6 +854,7 @@ func TestWikiLinks_LiteralPipeInTitleResolves(t *testing.T) {
 // kicks in (title="A", display="B"). The candidate-order in
 // replaceWikiLinks tries full body first, then falls through.
 func TestWikiLinks_LiteralPipeInTitleFallsThroughToSplit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -855,6 +878,7 @@ func TestWikiLinks_LiteralPipeInTitleFallsThroughToSplit(t *testing.T) {
 // Stage 3 (literal-arrival retarget) is gated to titles containing
 // `/` for exactly this reason.
 func TestWikiLinks_SecondItemSameTitleDoesNotStealBacklinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -895,6 +919,7 @@ func TestWikiLinks_SecondItemSameTitleDoesNotStealBacklinks(t *testing.T) {
 // Without the stage-1 NULL-constraint drop, the index would stay
 // stale until the source's content was rewritten.
 func TestWikiLinks_LiteralTitleArrivalRetargetsQualifiedFallback(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks") // slug = "tasks"
@@ -926,6 +951,7 @@ func TestWikiLinks_LiteralTitleArrivalRetargetsQualifiedFallback(t *testing.T) {
 // should resolve when an existing item gets renamed TO "New Title".
 // No content rewrite needed; only the target_item_id flip.
 func TestWikiLinks_TitleRenameResolvesPreExistingBrokenRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -953,6 +979,7 @@ func TestWikiLinks_TitleRenameResolvesPreExistingBrokenRows(t *testing.T) {
 // the cascade. Cheap path that paid nothing pre-Phase-2a should pay
 // nothing now either.
 func TestWikiLinks_TitleRenameNoChangeIsNoOp(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -983,6 +1010,7 @@ func TestWikiLinks_TitleRenameNoChangeIsNoOp(t *testing.T) {
 // renderer drift apart. Self-link visibility filtering happens at
 // GetBacklinks query time, so the panel still hides it.
 func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1026,6 +1054,7 @@ func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 // literally titled " TASK-5 " (with spaces) must resolve via the
 // fallback when no real TASK-5 ref exists.
 func TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks") // prefix "TASKS"
@@ -1056,6 +1085,7 @@ func TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle(t *testing.T) {
 // index that keeps pointing at deleted A means GetBacklinks(B)
 // misses the link the UI would actually render to B.
 func TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1089,6 +1119,7 @@ func TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem(t *testing.T) {
 // corrupting the B link. Position-based per-row cascade fixes this
 // — only the brackets whose wl row resolves to A get rewritten.
 func TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1145,6 +1176,7 @@ func TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor(t *testing.T) {
 // index must too. Without the fallback, GetBacklinks would never
 // find the backlink even though the renderer renders the link.
 func TestWikiLinks_RefShapedFallsThroughToTitle(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks") // prefix "TASKS"
@@ -1176,6 +1208,7 @@ func TestWikiLinks_RefShapedFallsThroughToTitle(t *testing.T) {
 // stale `[[Old Title]]` would otherwise go broken. Covered by
 // TestWikiLinks_TitleRenameRewritesSelfReferences.
 func TestWikiLinks_TitleAndContentRenameLeavesUserContentVerbatim(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1221,6 +1254,7 @@ func TestWikiLinks_TitleAndContentRenameLeavesUserContentVerbatim(t *testing.T) 
 // i.e. rows resolved via stage-2 qualified fallback to a different
 // item, not via stage-1 to a literal twin.
 func TestWikiLinks_DuplicateSlashTitleNoTheft(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1282,6 +1316,7 @@ func createChildItem(t *testing.T, s *Store, workspaceID, collectionID, parentID
 // already listed in the Child Items section above. Symmetric with
 // the long-standing self-link suppression.
 func TestWikiLinks_ChildMentionOfParentSuppressed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1333,6 +1368,7 @@ func TestWikiLinks_ChildMentionOfParentSuppressed(t *testing.T) {
 // the parent relationship from item_links directly, so the caller
 // doesn't need to pass parent context through the visibility shape.
 func TestWikiLinks_ParentMentionOnChildPageSuppressed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1370,6 +1406,7 @@ func TestWikiLinks_ParentMentionOnChildPageSuppressed(t *testing.T) {
 // cross-references — they aren't implied by any other UI surface, so
 // they must still appear in "Mentioned in".
 func TestWikiLinks_SiblingMentionsNotSuppressed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1405,6 +1442,7 @@ func TestWikiLinks_SiblingMentionsNotSuppressed(t *testing.T) {
 // match, no suppression — but the test pins the behavior in case
 // a future refactor inverts the predicate.
 func TestWikiLinks_OrphanBacklinksUnaffected(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1437,6 +1475,7 @@ func TestWikiLinks_OrphanBacklinksUnaffected(t *testing.T) {
 // change reroutes the filter back through items.parent_id, this
 // test will catch it.
 func TestWikiLinks_SuppressionUsesItemLinksNotParentIDColumn(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1503,6 +1542,7 @@ func TestWikiLinks_SuppressionUsesItemLinksNotParentIDColumn(t *testing.T) {
 // duplicate. The suppression filter uses childLinkTypeSQL() to
 // stay in lockstep with the canonical inclusion rule.
 func TestWikiLinks_SuppressionCoversImplementsChildLinkType(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1553,6 +1593,7 @@ func TestWikiLinks_SuppressionCoversImplementsChildLinkType(t *testing.T) {
 // suppression filter consults both storage mechanisms so neither
 // write path can leave the duplication visible.
 func TestWikiLinks_SuppressionFallsBackToItemsParentIDColumn(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1634,6 +1675,7 @@ func TestWikiLinks_SuppressionFallsBackToItemsParentIDColumn(t *testing.T) {
 // for the GetBacklinks/CountBacklinks lockstep that the
 // handlers_backlinks.go same-ws/cross-ws math depends on.
 func TestWikiLinks_PaginationStableAfterSuppression(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

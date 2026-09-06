@@ -7,6 +7,7 @@ import (
 )
 
 func TestCreateItemLinkNormalizesLineageTypes(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -27,6 +28,7 @@ func TestCreateItemLinkNormalizesLineageTypes(t *testing.T) {
 }
 
 func TestCreateItemLinkRejectsInvalidLineageType(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -44,6 +46,7 @@ func TestCreateItemLinkRejectsInvalidLineageType(t *testing.T) {
 }
 
 func TestCreateItemLinkRejectsSelfLinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

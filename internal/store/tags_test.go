@@ -21,6 +21,7 @@ func createTaggedItem(t *testing.T, s *Store, wsID, collID, title, tags string) 
 }
 
 func TestListWorkspaceTags(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Tags WS")
 	ideas := createTestCollection(t, s, ws.ID, "Ideas")

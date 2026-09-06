@@ -10,6 +10,7 @@ import (
 // verifies the per-user filter + ordering + pagination behavior backing
 // the /admin/users/{id}/activity endpoint. PLAN-1542 / TASK-1546.
 func TestListUserActivity(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	alice := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 	bob := createTestUser(t, s, "bob@example.com", "Bob", "password123")

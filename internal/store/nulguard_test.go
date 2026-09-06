@@ -31,6 +31,7 @@ import (
 // whether anything binds TEXT to it, or text to any other column as []byte,
 // then add it below.
 func TestBinaryColumnCensus(t *testing.T) {
+	t.Parallel()
 	want := map[string]bool{"item_yjs_updates.update_data": true}
 
 	// One pattern per dialect spelling, applied to the raw migration text so
@@ -111,6 +112,7 @@ func TestBinaryColumnCensus(t *testing.T) {
 // covers the predicate. What this asserts is that a value reaching the driver
 // is refused there, whichever of the four receivers carried it.
 func TestWriteGuardRefusesTheCorpus(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "NulGuard")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -182,6 +184,7 @@ func models_ItemUpdateFields(v string) (u models.ItemUpdate)  { u.Fields = &v; r
 // RETURNING statement, so it keeps guarding the path against the day someone
 // adds the next one.
 func TestWriteGuardCoversTheQueryPath(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "NulGuardQueryPath")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -240,6 +243,7 @@ func TestWriteGuardCoversTheQueryPath(t *testing.T) {
 // rather than borrowing one: what is under test is the ROUTE, and it must stay
 // covered when the next prepared statement does carry text.
 func TestWriteGuardCoversPreparedStatements(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "NulGuardPrepared")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -308,6 +312,7 @@ func TestWriteGuardCoversPreparedStatements(t *testing.T) {
 // means the guard gained real column knowledge, and the case should move into
 // textguard.Corpus where every layer is held to it.
 func TestStoreOverRefusalsStillOverRefuse(t *testing.T) {
+	t.Parallel()
 	// NOT a skip, for the same reason as KnownGaps: an empty slice would let
 	// someone delete the record of a divergence and see green (codex round 2).
 	const wantOverRefusals = 1
@@ -349,6 +354,7 @@ func TestStoreOverRefusalsStillOverRefuse(t *testing.T) {
 // So the property is pinned rather than reasoned about: for every optional
 // interface the wrapper varies over, wrapped and base must agree exactly.
 func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
+	t.Parallel()
 	if err := registerGuardedDrivers(); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -468,6 +474,7 @@ func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
 // internal/store/wiki_links.go binds sql.NullString today, so this is a live
 // parameter shape rather than a constructed one.
 func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "ValuerGuard")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -518,6 +525,7 @@ func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
 // the guard ever runs. That made it pass for the wrong reason by default
 // (codex round 3), and these do not depend on which driver is present.
 func TestWriteGuardResolvesValuerOnce(t *testing.T) {
+	t.Parallel()
 	t.Run("typed-nil valuer binds NULL instead of panicking", func(t *testing.T) {
 		args := []driver.NamedValue{{Ordinal: 1, Value: (*sql.NullString)(nil)}}
 		if err := normalizeAndCheck(args); err != nil {

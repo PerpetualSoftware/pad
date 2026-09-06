@@ -80,6 +80,7 @@ func maxWorkspaceSeq(t *testing.T, s *Store, workspaceID string) int64 {
 // --- Parity: slug allocation, scoped to the destination workspace ---
 
 func TestCreateItemTx_AllocatesWorkspaceScopedSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "Slug Source")
 	wsB := createTestWorkspace(t, s, "Slug Dest")
@@ -96,6 +97,7 @@ func TestCreateItemTx_AllocatesWorkspaceScopedSlug(t *testing.T) {
 }
 
 func TestCreateItemTx_SlugCollisionResolvesToDistinctSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Slug Collision")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -122,6 +124,7 @@ func TestCreateItemTx_SlugCollisionResolvesToDistinctSlug(t *testing.T) {
 }
 
 func TestCreateItemTx_UntitledFallbackSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Untitled Slug")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -136,6 +139,7 @@ func TestCreateItemTx_UntitledFallbackSlug(t *testing.T) {
 // --- Parity: item_number ---
 
 func TestCreateItemTx_AssignsNextItemNumber(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Item Numbers")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -153,6 +157,7 @@ func TestCreateItemTx_AssignsNextItemNumber(t *testing.T) {
 }
 
 func TestCreateItemTx_ItemNumberIsWorkspaceScoped(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "Numbers A")
 	wsB := createTestWorkspace(t, s, "Numbers B")
@@ -171,6 +176,7 @@ func TestCreateItemTx_ItemNumberIsWorkspaceScoped(t *testing.T) {
 // --- Parity: workspace seq (delta sync cursor) ---
 
 func TestCreateItemTx_AdvancesWorkspaceSeq(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Seq")
 	other := createTestWorkspace(t, s, "Seq Other")
@@ -198,6 +204,7 @@ func TestCreateItemTx_AdvancesWorkspaceSeq(t *testing.T) {
 // --- Parity: content flush watermarks ---
 
 func TestCreateItemTx_ContentFlushWatermarks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Watermarks")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -232,6 +239,7 @@ func TestCreateItemTx_ContentFlushWatermarks(t *testing.T) {
 // --- Parity: initial item_versions row ---
 
 func TestCreateItemTx_WritesInitialVersionForNonEmptyContent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Versions")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -266,6 +274,7 @@ func TestCreateItemTx_WritesInitialVersionForNonEmptyContent(t *testing.T) {
 }
 
 func TestCreateItemTx_NoVersionForEmptyContent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Versions Empty")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -279,6 +288,7 @@ func TestCreateItemTx_NoVersionForEmptyContent(t *testing.T) {
 // --- Parity: wiki-link indexing ---
 
 func TestCreateItemTx_IndexesWikiLinksFromContent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Wiki Index")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -306,6 +316,7 @@ func TestCreateItemTx_IndexesWikiLinksFromContent(t *testing.T) {
 }
 
 func TestCreateItemTx_ResolvesBrokenTitleLinksInDestination(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Broken Titles")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -335,6 +346,7 @@ func TestCreateItemTx_ResolvesBrokenTitleLinksInDestination(t *testing.T) {
 // --- Parity: create-time status_transitions row ---
 
 func TestCreateItemTx_SeedsCreateTimeStatusTransition(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Transitions")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -360,6 +372,7 @@ func TestCreateItemTx_SeedsCreateTimeStatusTransition(t *testing.T) {
 }
 
 func TestCreateItemTx_NoStatusTransitionWhenDoneFieldUnset(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "No Transition")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -373,6 +386,7 @@ func TestCreateItemTx_NoStatusTransitionWhenDoneFieldUnset(t *testing.T) {
 // --- Parity: CreateItem's defaults ---
 
 func TestCreateItemTx_AppliesCreateItemDefaults(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Defaults")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -397,6 +411,7 @@ func TestCreateItemTx_AppliesCreateItemDefaults(t *testing.T) {
 }
 
 func TestCreateItemTx_DefaultsMatchCreateItemExactly(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "Parity A")
 	wsB := createTestWorkspace(t, s, "Parity B")
@@ -447,6 +462,7 @@ func TestCreateItemTx_DefaultsMatchCreateItemExactly(t *testing.T) {
 // --- Parity: assignment-scope validation ---
 
 func TestCreateItemTx_RejectsForeignAssignedUser(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Assign Scope")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -463,6 +479,7 @@ func TestCreateItemTx_RejectsForeignAssignedUser(t *testing.T) {
 }
 
 func TestCreateItemTx_AcceptsMemberAssignedUser(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Assign Member")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -479,6 +496,7 @@ func TestCreateItemTx_AcceptsMemberAssignedUser(t *testing.T) {
 }
 
 func TestCreateItemTx_RejectsForeignAgentRole(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "Role Owner")
 	wsB := createTestWorkspace(t, s, "Role Borrower")
@@ -500,6 +518,7 @@ func TestCreateItemTx_RejectsForeignAgentRole(t *testing.T) {
 }
 
 func TestCreateItemTx_AcceptsLocalAgentRole(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Role Local")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -518,6 +537,7 @@ func TestCreateItemTx_AcceptsLocalAgentRole(t *testing.T) {
 // --- The transaction-participation test ---
 
 func TestCreateItemTx_RollbackPersistsNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Rollback")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -620,6 +640,7 @@ func TestCreateItemTx_RollbackPersistsNothing(t *testing.T) {
 // and duplicate item_numbers or duplicate slugs. Runs on both dialects:
 // Postgres exercises pg_advisory_xact_lock, SQLite exercises BEGIN IMMEDIATE.
 func TestCreateItemTx_ConcurrentCreatesGetDistinctNumbersAndSlugs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Concurrent Create")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -709,6 +730,7 @@ func TestCreateItemTx_ConcurrentCreatesGetDistinctNumbersAndSlugs(t *testing.T) 
 // stale value on every retry, so a concurrent same-title create made it burn
 // all ten attempts and fail with a unique-constraint error.
 func TestCreateItemTx_MixedWithCreateItemConcurrently(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Mixed Concurrent")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -774,6 +796,7 @@ func TestCreateItemTx_MixedWithCreateItemConcurrently(t *testing.T) {
 // A caller doing more work in the same transaction sees the created item, and
 // its own later failure takes the create down with it.
 func TestCreateItemTx_VisibleToCallerBeforeCommit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "In-tx Visibility")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

@@ -81,6 +81,7 @@ func clearOutbox(t *testing.T, s *Store) {
 }
 
 func TestOutbox_CreateEmitsItemCreatedWithSnapshot(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox create")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -108,6 +109,7 @@ func TestOutbox_CreateEmitsItemCreatedWithSnapshot(t *testing.T) {
 }
 
 func TestOutbox_BareStatusFlipEmitsStatusChangedOnly(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox status")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -137,6 +139,7 @@ func TestOutbox_BareStatusFlipEmitsStatusChangedOnly(t *testing.T) {
 }
 
 func TestOutbox_MixedUpdateEmitsBothSlices(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox mixed")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -161,6 +164,7 @@ func TestOutbox_MixedUpdateEmitsBothSlices(t *testing.T) {
 }
 
 func TestOutbox_NonStatusUpdateEmitsUpdatedOnly(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox plain")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -179,6 +183,7 @@ func TestOutbox_NonStatusUpdateEmitsUpdatedOnly(t *testing.T) {
 }
 
 func TestOutbox_NoOpUpdateEmitsNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox noop")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -219,6 +224,7 @@ func TestOutbox_NoOpUpdateEmitsNothing(t *testing.T) {
 // two snapshots differing ONLY in the per-mutation bookkeeping columns must
 // compare equal, and one differing in a real field must not.
 func TestItemUpdatedSliceChanged_IgnoresPerMutationBookkeeping(t *testing.T) {
+	t.Parallel()
 	base := &models.Item{
 		ID:          "item-1",
 		WorkspaceID: "ws-1",
@@ -283,6 +289,7 @@ func TestItemUpdatedSliceChanged_IgnoresPerMutationBookkeeping(t *testing.T) {
 }
 
 func TestWriteOutboxTx_RejectsNonCanonicalEvent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox reject")
 
@@ -306,6 +313,7 @@ func TestWriteOutboxTx_RejectsNonCanonicalEvent(t *testing.T) {
 }
 
 func TestWriteOutboxTx_RejectsEmptyPayload(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox empty")
 
@@ -328,6 +336,7 @@ func TestWriteOutboxTx_RejectsEmptyPayload(t *testing.T) {
 }
 
 func TestWriteOutboxTx_DropsPastCascadeBound(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox hop")
 
@@ -402,6 +411,7 @@ func TestWriteOutboxTx_DropsPastCascadeBound(t *testing.T) {
 }
 
 func TestOutbox_DeleteEmitsPreArchiveSnapshot(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox delete")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -430,6 +440,7 @@ func TestOutbox_DeleteEmitsPreArchiveSnapshot(t *testing.T) {
 }
 
 func TestOutbox_RedeleteEmitsNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox redelete")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -452,6 +463,7 @@ func TestOutbox_RedeleteEmitsNothing(t *testing.T) {
 }
 
 func TestOutbox_RestoreEmitsItemRestored(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox restore")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -472,6 +484,7 @@ func TestOutbox_RestoreEmitsItemRestored(t *testing.T) {
 }
 
 func TestOutbox_MoveEmitsMovedOnlyWhenNothingElseChanged(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox move")
 	from := createTestCollection(t, s, ws.ID, "Tasks")
@@ -490,6 +503,7 @@ func TestOutbox_MoveEmitsMovedOnlyWhenNothingElseChanged(t *testing.T) {
 }
 
 func TestOutbox_CommentCreateAndUpdateEmit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox comments")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -535,6 +549,7 @@ func TestOutbox_CommentCreateAndUpdateEmit(t *testing.T) {
 }
 
 func TestOutbox_AttachmentAddedSkipsVariants(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox attachments")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -581,6 +596,7 @@ func TestOutbox_AttachmentAddedSkipsVariants(t *testing.T) {
 }
 
 func TestOutbox_MemberJoinedEmits(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox members")
 	user := createTestUser(t, s, "joiner@example.com", "Joiner", "pw-joiner-123")
@@ -613,6 +629,7 @@ func TestOutbox_MemberJoinedEmits(t *testing.T) {
 // ordinary archive of the same item announces itself. Invisible until something
 // consumes the outbox, at which point moves just stop being observable.
 func TestOutbox_CrossWorkspaceMoveEmitsSourceArchive(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Moving out", "body")
 	clearOutbox(t, f.s)
@@ -670,6 +687,7 @@ func outboxBulkPayload(t *testing.T, s *Store) map[string]any {
 }
 
 func TestOutbox_CollectionOptionRenameEmitsOneBulkEvent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox option rename")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -745,6 +763,7 @@ func TestOutbox_CollectionOptionRenameEmitsOneBulkEvent(t *testing.T) {
 }
 
 func TestOutbox_WikiTitleCascadeEmitsOneBulkEvent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox cascade")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -786,6 +805,7 @@ func TestOutbox_WikiTitleCascadeEmitsOneBulkEvent(t *testing.T) {
 // pass them all; and none of them exercise a done-key value the status
 // machinery cannot read.
 func TestItemUpdatedSliceChanged_NonDefaultAndNonStringDoneKey(t *testing.T) {
+	t.Parallel()
 	// A CUSTOM done-field key must behave exactly as "status" does. A
 	// classifier that masks the literal "status" instead of the collection's
 	// declared key fails here and nowhere else.
@@ -838,6 +858,7 @@ func TestItemUpdatedSliceChanged_NonDefaultAndNonStringDoneKey(t *testing.T) {
 }
 
 func TestWriteOutboxTx_RejectsMalformedJSONPayload(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox malformed")
 
@@ -865,6 +886,7 @@ func TestWriteOutboxTx_RejectsMalformedJSONPayload(t *testing.T) {
 }
 
 func TestOutbox_NoOpCommentEditEmitsNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox comment noop")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -907,6 +929,7 @@ func TestOutbox_NoOpCommentEditEmitsNothing(t *testing.T) {
 // workspace's webhook — so the emitter partitions rather than trusting that
 // today's queries happen never to produce one.
 func TestEmitBulkItemEventTx_PartitionsByMemberWorkspace(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsA := createTestWorkspace(t, s, "Partition A")
 	wsB := createTestWorkspace(t, s, "Partition B")
@@ -981,6 +1004,7 @@ func TestEmitBulkItemEventTx_PartitionsByMemberWorkspace(t *testing.T) {
 // "this event carries no prior status" — which is exactly the distinction the
 // envelope pseudo-field exists to make.
 func TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox empty prior")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1033,6 +1057,7 @@ func TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus(t *testing.T) {
 // TASK-2714 bounded that window with the drain and its two prunes; bounded is
 // not zero, so the scrub is still what does the work.
 func TestOutbox_PayloadsOmitAssigneeIdentity(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox PII")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1072,6 +1097,7 @@ func TestOutbox_PayloadsOmitAssigneeIdentity(t *testing.T) {
 }
 
 func TestOutbox_CommentDeleteEmitsRefOnly(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox comment delete")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1112,6 +1138,7 @@ func TestOutbox_CommentDeleteEmitsRefOnly(t *testing.T) {
 }
 
 func TestOutbox_SoftDeletedAttachmentClaimEmitsRefOnly(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox attachment removed")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1162,6 +1189,7 @@ func TestOutbox_SoftDeletedAttachmentClaimEmitsRefOnly(t *testing.T) {
 }
 
 func TestOutbox_NeverAttachedClaimEmitsNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox never attached")
 
@@ -1204,6 +1232,7 @@ func TestOutbox_NeverAttachedClaimEmitsNothing(t *testing.T) {
 // row. Before the gates were made symmetric it announced a removal for a subject
 // no consumer had ever been told about.
 func TestOutbox_VariantClaimEmitsNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox variant removal")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1268,6 +1297,7 @@ func TestOutbox_VariantClaimEmitsNothing(t *testing.T) {
 // test passed either the correct value or none, which is precisely why this
 // survived eight rounds of review.
 func TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox subject kind")
 
@@ -1314,6 +1344,7 @@ func TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted(t *testing.T) {
 // finding: canonical membership validates the NAME, and said nothing about
 // whether the bytes attached to it were the right shape.
 func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox family")
 
@@ -1373,6 +1404,7 @@ func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 // TASK-2714 edits this table (the handler-path bulk mapping), which is why the
 // independent copy lands as this unit's first commit.
 func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
+	t.Parallel()
 	// The events/1 set at SPEC-3 v1.7. Adding, removing or re-homing an entry
 	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
 	// doc comment in the same commit.
@@ -1553,6 +1585,7 @@ func outboxRowIDs(t *testing.T, s *Store) []string {
 // and one that ignored the cutoff would take the young pending row that a
 // retry is still owed.
 func TestOutbox_PruneUndispatchedBoundsTheFrozenPayloadWindow(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox retention")
 	clearOutbox(t, s)
@@ -1635,6 +1668,7 @@ func outboxBatchIDsFor(t *testing.T, s *Store, itemID string) []string {
 // Each leg asserts the unstamped control too. Without it the test would pass
 // for an implementation that stamped every event ever written.
 func TestOutbox_WithEventBatchStampsEveryMutationPath(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox batch")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1736,6 +1770,7 @@ func claimedIDs(evs []OutboxEvent) []string {
 // each pending row is delivered once PER INSTANCE — by construction, not by
 // accident.
 func TestOutbox_ClaimIsExclusiveUntilTheLeaseExpires(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox claim")
 	clearOutbox(t, s)
@@ -1779,6 +1814,7 @@ func TestOutbox_ClaimIsExclusiveUntilTheLeaseExpires(t *testing.T) {
 // a batch would make one bulk operation arrive as two events each reporting a
 // partial member count.
 func TestOutbox_ClaimTakesWholeBatchesPastTheLimit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox batch claim")
 	clearOutbox(t, s)
@@ -1823,6 +1859,7 @@ func TestOutbox_ClaimTakesWholeBatchesPastTheLimit(t *testing.T) {
 // the whole window — and on a single-instance deployment that is the only
 // reason it would ever wait at all.
 func TestOutbox_FailedAttemptReleasesTheClaim(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox claim release")
 	clearOutbox(t, s)
@@ -1872,6 +1909,7 @@ func TestOutbox_FailedAttemptReleasesTheClaim(t *testing.T) {
 // at the same moment, which is precisely the multi-instance bug the claim
 // exists to prevent.
 func TestOutbox_ClaimArbitratesTheRaceNotJustTheQuery(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox claim race")
 	clearOutbox(t, s)
@@ -1938,6 +1976,7 @@ func sameStrings(got, want []string) bool {
 // Without dedup the members list disagrees with the count in the same
 // payload — the wire event contradicting itself (codex round 1).
 func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
+	t.Parallel()
 	header := []byte(`{"batch_id":"b1","op":"move","count":2,"item_ids":["i1","i2"]}`)
 	members := [][]byte{
 		[]byte(`{"id":"i1","status":"open"}`),
@@ -2029,6 +2068,7 @@ func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
 // holder is mid-delivery on, and a late release would clear a live claim and
 // hand the event to a third pass.
 func TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox stale claim")
 	clearOutbox(t, s)
@@ -2096,6 +2136,7 @@ func TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass(t *testing.T) {
 // matches zero rows, and a crash in that window loses an event the outbox had
 // already committed (codex round 4).
 func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox prune vs claim")
 	clearOutbox(t, s)
@@ -2145,6 +2186,7 @@ func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
 // (seq, the unparented bit), so it emits. A relationship-graph link writes only
 // the links table and stays silent.
 func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox parent link")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2211,6 +2253,7 @@ func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
 // nothing. The same criterion that made SetParentLink emit applies here; the
 // difference is only which transaction does the write.
 func TestOutbox_ParentOnlyUpdateStillEmits(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox parent-only update")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2267,6 +2310,7 @@ func TestOutbox_ParentOnlyUpdateStillEmits(t *testing.T) {
 // item-update transaction), and DeleteItemLink on the parent link row (the
 // links handler's route).
 func TestOutbox_ParentDetachEmitsOnEveryRoute(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Outbox detach")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

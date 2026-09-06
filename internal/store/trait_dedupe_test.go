@@ -107,6 +107,7 @@ func declaringConvention(t *testing.T, s *Store, workspaceID string) []string {
 // the declaration every time. Measured 8/8 before this shipped; the point of
 // the test is that it is not 7/8.
 func TestDedupeKeepsTheCollectionTheUserWroteIn(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, dupID := duplicateTraitFixture(t, s, "Dedupe User Wrote", true)
 
@@ -146,6 +147,7 @@ func TestDedupeKeepsTheCollectionTheUserWroteIn(t *testing.T) {
 // one does and that the log says the choice was arbitrary rather than dressing
 // it up as age.
 func TestDedupeReportsAnArbitraryTieAsArbitrary(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _ := duplicateTraitFixture(t, s, "Dedupe Arbitrary Tie", false)
 	if got := declaringConvention(t, s, ws.ID); len(got) != 2 {
@@ -199,6 +201,7 @@ func TestDedupeReportsAnArbitraryTieAsArbitrary(t *testing.T) {
 // Raw SQL on purpose — the API gate refuses this too, so going through it
 // would assert that the gate works rather than that the constraint does.
 func TestTraitUniquenessIsEnforcedByTheDatabase(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Trait Uniqueness")
 	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
@@ -234,6 +237,7 @@ func TestTraitUniquenessIsEnforcedByTheDatabase(t *testing.T) {
 // have failed on it — which is precisely the failure the de-dup pass exists to
 // prevent, so it would have surfaced as a broken upgrade rather than a test.
 func TestDedupeStripsEveryDeclarationALoserHolds(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Dedupe Both Declarations")
 	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
@@ -306,6 +310,7 @@ func TestDedupeStripsEveryDeclarationALoserHolds(t *testing.T) {
 // blob. Every other reader treats malformed traits as declaring nothing, and
 // the guard makes these two agree with that rather than being fatal.
 func TestMalformedTraitsDoNotBreakTheInvariant(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Malformed Traits")
 	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
@@ -371,6 +376,7 @@ func TestMalformedTraitsDoNotBreakTheInvariant(t *testing.T) {
 // minted before the transaction opened; BUG-2892 moved it inside. That changed
 // what a failure COSTS, not whether this de-duplication is needed.
 func TestImportDeduplicatesAConflictingArchive(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "importdedupe@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Import Dedupe Source")
@@ -446,6 +452,7 @@ func TestImportDeduplicatesAConflictingArchive(t *testing.T) {
 // So the pass has to run on the traits each collection will ACTUALLY be
 // inserted with, not on the ones the bundle carries.
 func TestImportDeduplicatesAfterCanonicalInference(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "inferdedupe@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Infer Dedupe Source")
@@ -517,6 +524,7 @@ func TestImportDeduplicatesAfterCanonicalInference(t *testing.T) {
 // the partial unique indexes exclude it (`AND deleted_at IS NULL`), and
 // stripping it would edit data the operator archived rather than deleted.
 func TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "archivedtrait@test.com", "Owner", "password123")
 	ws := createTestWorkspace(t, s, "Archived Trait Source")
@@ -608,6 +616,7 @@ func TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt(t *testin
 // SQLite only. Postgres takes no snapshot — backups there are the operator's
 // pg_dump/PITR job — so on that dialect there is no ordering to pin.
 func TestTheSnapshotIsTakenBeforeTheRepairWrites(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("no pre-migration snapshot on Postgres; the ordering this pins does not exist there")

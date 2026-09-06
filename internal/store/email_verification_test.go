@@ -57,6 +57,7 @@ func countVerificationTokens(t *testing.T, s *Store) int {
 // TestEmailVerification_CreateLookupConsume covers the happy path: mint →
 // non-destructive lookup → consume flips users.email_verified_at → single-use.
 func TestEmailVerification_CreateLookupConsume(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "verify@example.com")
 
@@ -115,6 +116,7 @@ func TestEmailVerification_CreateLookupConsume(t *testing.T) {
 // TestEmailVerification_ExpiredRejected: an expired token validates as nil and
 // cannot be consumed, and its consume leaves the user unverified.
 func TestEmailVerification_ExpiredRejected(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "expired@example.com")
 
@@ -135,6 +137,7 @@ func TestEmailVerification_ExpiredRejected(t *testing.T) {
 // TestEmailVerification_ResendInvalidatesPrior: minting a new token invalidates
 // the previous unused one (so resend-verification burns the old link).
 func TestEmailVerification_ResendInvalidatesPrior(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "resend@example.com")
 
@@ -166,6 +169,7 @@ func TestEmailVerification_ResendInvalidatesPrior(t *testing.T) {
 // TestEmailVerification_HashAtRest: the plaintext is never stored — the column
 // holds the SHA-256 hex of the plaintext.
 func TestEmailVerification_HashAtRest(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "hash@example.com")
 
@@ -193,6 +197,7 @@ func TestEmailVerification_HashAtRest(t *testing.T) {
 // TestCleanExpiredEmailVerifications: the reaper's store method deletes expired
 // AND used rows but keeps live ones. Exercised on both dialects via test-pg.
 func TestCleanExpiredEmailVerifications(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "clean@example.com")
 

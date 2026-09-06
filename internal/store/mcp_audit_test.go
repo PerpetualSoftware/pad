@@ -50,6 +50,7 @@ func auditUser(t *testing.T, s *Store, email string) string {
 }
 
 func TestInsertMCPAuditEntry_RequiredFields(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	uid := auditUser(t, s, "req-fields@example.com")
 
@@ -75,6 +76,7 @@ func TestInsertMCPAuditEntry_RequiredFields(t *testing.T) {
 }
 
 func TestInsertMCPAuditEntry_RoundTrip(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	uid := auditUser(t, s, "roundtrip@example.com")
 	wsID := "" // workspace nullable; leave empty so the column is NULL
@@ -123,6 +125,7 @@ func TestInsertMCPAuditEntry_RoundTrip(t *testing.T) {
 }
 
 func TestInsertMCPAuditEntry_NullableFieldsPopulated(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	uid := auditUser(t, s, "nullable@example.com")
 	// Need an actual workspace row for the FK on workspace_id
@@ -162,6 +165,7 @@ func TestInsertMCPAuditEntry_NullableFieldsPopulated(t *testing.T) {
 }
 
 func TestListMCPAuditByUser_OrderingAndPagination(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	uid := auditUser(t, s, "ordering@example.com")
 	base := time.Now().UTC().Truncate(time.Second)
@@ -213,6 +217,7 @@ func TestListMCPAuditByUser_OrderingAndPagination(t *testing.T) {
 }
 
 func TestListMCPAuditByConnection_FiltersByOwner(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	alice := auditUser(t, s, "alice@example.com")
 	bob := auditUser(t, s, "bob@example.com")
@@ -249,6 +254,7 @@ func TestListMCPAuditByConnection_FiltersByOwner(t *testing.T) {
 }
 
 func TestMCPConnectionStatsForUser_LastUsedAndCalls30d(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	uid := auditUser(t, s, "stats@example.com")
 
@@ -327,6 +333,7 @@ func TestMCPConnectionStatsForUser_LastUsedAndCalls30d(t *testing.T) {
 }
 
 func TestSweepMCPAuditOlderThan_DeletesOldRowsOnly(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	uid := auditUser(t, s, "sweep@example.com")
 	now := time.Now().UTC()
@@ -368,6 +375,7 @@ func TestSweepMCPAuditOlderThan_DeletesOldRowsOnly(t *testing.T) {
 }
 
 func TestListAllMCPAudit_ReturnsAcrossUsers(t *testing.T) {
+	t.Parallel()
 	s := newAuditTestStore(t)
 	a := auditUser(t, s, "all-a@example.com")
 	b := auditUser(t, s, "all-b@example.com")

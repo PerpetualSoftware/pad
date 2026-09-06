@@ -9,6 +9,7 @@ import (
 )
 
 func TestSessionCreateAndValidate(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -50,6 +51,7 @@ func TestSessionCreateAndValidate(t *testing.T) {
 }
 
 func TestSessionInvalidToken(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	session, err := s.ValidateSession("padsess_invalidtoken")
@@ -62,6 +64,7 @@ func TestSessionInvalidToken(t *testing.T) {
 }
 
 func TestSessionExpired(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -82,6 +85,7 @@ func TestSessionExpired(t *testing.T) {
 }
 
 func TestSessionDelete(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -101,6 +105,7 @@ func TestSessionDelete(t *testing.T) {
 }
 
 func TestDeleteUserSessions(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -122,6 +127,7 @@ func TestDeleteUserSessions(t *testing.T) {
 }
 
 func TestCleanExpiredSessions(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -143,6 +149,7 @@ func TestCleanExpiredSessions(t *testing.T) {
 }
 
 func TestSessionBindingMetadata(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -174,6 +181,7 @@ func TestSessionBindingMetadata(t *testing.T) {
 }
 
 func TestWorkspaceMemberCRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test Workspace")
 	u := createTestUser(t, s, "test@test.com", "Test User", "password123")
@@ -241,6 +249,7 @@ func TestWorkspaceMemberCRUD(t *testing.T) {
 }
 
 func TestGetUserWorkspaces(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws1 := createTestWorkspace(t, s, "Workspace A")
 	ws2 := createTestWorkspace(t, s, "Workspace B")
@@ -261,6 +270,7 @@ func TestGetUserWorkspaces(t *testing.T) {
 }
 
 func TestWorkspaceMemberNotFound(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -281,6 +291,7 @@ func TestWorkspaceMemberNotFound(t *testing.T) {
 // Ensure createTestUser helper is usable from other test files
 // by verifying it works correctly with the workspace member pattern
 func TestCreateTestUserHelper(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "helper@test.com", "Helper", "pass")
 
@@ -324,6 +335,7 @@ func setSessionTimes(t *testing.T, s *Store, userID string, expiresAt, createdAt
 }
 
 func TestRenewSessionExtendsWhenStale(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "renew@test.com", "Renew", "password123")
 
@@ -353,6 +365,7 @@ func TestRenewSessionExtendsWhenStale(t *testing.T) {
 }
 
 func TestRenewSessionSkipsWhenFresh(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "fresh@test.com", "Fresh", "password123")
 
@@ -372,6 +385,7 @@ func TestRenewSessionSkipsWhenFresh(t *testing.T) {
 }
 
 func TestRenewSessionRespectsMaxLifetime(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "cap@test.com", "Cap", "password123")
 
@@ -399,6 +413,7 @@ func TestRenewSessionRespectsMaxLifetime(t *testing.T) {
 }
 
 func TestRenewSessionLegacyZeroTTLNotRenewed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "legacy@test.com", "Legacy", "password123")
 

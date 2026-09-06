@@ -50,6 +50,7 @@ func timelineFixture(t *testing.T, s *Store) (*models.Item, []models.Comment) {
 }
 
 func TestListCommentsBeforeTime_NoCursor(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	item, comments := timelineFixture(t, s)
 
@@ -69,6 +70,7 @@ func TestListCommentsBeforeTime_NoCursor(t *testing.T) {
 }
 
 func TestListCommentsBeforeTime_WithCursor(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	item, comments := timelineFixture(t, s)
 
@@ -92,6 +94,7 @@ func TestListCommentsBeforeTime_WithCursor(t *testing.T) {
 // rows whose created_at equals that second — equivalent to the legacy
 // "before=now,beforeID=\xff" semantics that BUG-1086 broke.
 func TestListCommentsBeforeTime_SameSecondCursor(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "SameSecond")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")
@@ -121,6 +124,7 @@ func TestListCommentsBeforeTime_SameSecondCursor(t *testing.T) {
 }
 
 func TestListCommentsBeforeTime_LimitRespected(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	item, _ := timelineFixture(t, s)
 
@@ -134,6 +138,7 @@ func TestListCommentsBeforeTime_LimitRespected(t *testing.T) {
 }
 
 func TestListDocumentActivityBeforeTime_NoCursor(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Activity")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")

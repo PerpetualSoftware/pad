@@ -11,6 +11,7 @@ import (
 // retries can re-run the handler. A bug that made unmark a no-op (e.g.
 // wrong WHERE clause) would break this invariant.
 func TestUnmarkStripeEventProcessed_RoundTrip(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// Mark a fresh event.
@@ -124,6 +125,7 @@ func TestUnmarkStripeEventProcessed_StaleTokenIsNoOp(t *testing.T) {
 // event that was already cleaned up; a hard error in that case would mask
 // real problems in the sidecar logs.
 func TestUnmarkStripeEventProcessed_MissingRow(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	unmarked, err := s.UnmarkStripeEventProcessed("evt_never_marked", "2025-01-01T00:00:00Z")
@@ -140,6 +142,7 @@ func TestUnmarkStripeEventProcessed_MissingRow(t *testing.T) {
 // already rejects at the HTTP layer, but the store method is exported
 // and called in tests, so defensive empty-input rejection matters.
 func TestUnmarkStripeEventProcessed_RejectsEmptyID(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	_, err := s.UnmarkStripeEventProcessed("", "2025-01-01T00:00:00Z")
@@ -153,6 +156,7 @@ func TestUnmarkStripeEventProcessed_RejectsEmptyID(t *testing.T) {
 // race-protection contract falls back to "delete by event_id alone", which
 // is exactly the unsafe shape the composite key exists to prevent.
 func TestUnmarkStripeEventProcessed_RejectsEmptyProcessedAt(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	_, err := s.UnmarkStripeEventProcessed("evt_missing_token", "")

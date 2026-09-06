@@ -22,6 +22,7 @@ import (
 // package). A wrong assumption on either half fails in the worst direction —
 // silently accepting a value the migration will choke on.
 func TestDestinationOracleClassifiesRealPostgresErrors(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverPostgres {
 		t.Skip("the destination oracle needs a real PostgreSQL (set PAD_TEST_POSTGRES_URL)")
@@ -112,6 +113,7 @@ func TestDestinationOracleClassifiesRealPostgresErrors(t *testing.T) {
 // A CLOSED POOL rather than a fabricated error string, so what is measured is
 // what pgx actually produces when the database cannot be reached.
 func TestDestinationOracleFailsClosedOnAnUnusableConnection(t *testing.T) {
+	t.Parallel()
 	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if dsn == "" {
 		t.Skip("needs a real PostgreSQL (set PAD_TEST_POSTGRES_URL)")
@@ -164,6 +166,7 @@ func TestDestinationOracleFailsClosedOnAnUnusableConnection(t *testing.T) {
 // TestDestinationOracleFailsClosedOnAnUnusableConnection. Neither half is
 // assumed alone.
 func TestClassifyDestinationErrorTreatsOperationalCodesAsUnverified(t *testing.T) {
+	t.Parallel()
 	pgxish := func(code, text string) error {
 		return errors.New("ERROR: " + text + " (SQLSTATE " + code + ")")
 	}
@@ -208,6 +211,7 @@ func TestClassifyDestinationErrorTreatsOperationalCodesAsUnverified(t *testing.T
 
 // TestSQLStateExtractionEdges covers the parser the classification rests on.
 func TestSQLStateExtractionEdges(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -256,6 +260,7 @@ func TestSQLStateExtractionEdges(t *testing.T) {
 // Reflection over the struct is the maintainable version of the question: every
 // slice section, plus the workspace row itself, must map to a listed table.
 func TestMigratedTablesCoversTheExport(t *testing.T) {
+	t.Parallel()
 	// Section field name -> the table it is read from. Adding a section to
 	// WorkspaceExport fails the loop below until it is named here AND in
 	// MigratedTables, which is the point.

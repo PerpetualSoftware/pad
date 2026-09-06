@@ -55,6 +55,7 @@ func insertRawOutboxRow(t *testing.T, s *Store, id, workspaceID, occurredAt stri
 }
 
 func TestOutboxLimitSeamsDefaultToTheProductionConstants(t *testing.T) {
+	t.Parallel()
 	// A ZERO-VALUE Store, not just a constructed one. The seams are plain int
 	// fields, so the failure worth excluding is a Store that skipped the
 	// constructor and thereby enforced no bound at all — which is what a
@@ -102,6 +103,7 @@ func TestOutboxLimitSeamsDefaultToTheProductionConstants(t *testing.T) {
 }
 
 func TestOutboxRefusesAPayloadOverTheRowCap(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 4096
 	ws := createTestWorkspace(t, s, "OutboxRowCap")
@@ -168,6 +170,7 @@ func TestOutboxRefusesAPayloadOverTheRowCap(t *testing.T) {
 }
 
 func TestOutboxClaimStopsAtTheByteBudget(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 8192
 	s.outboxClaimBudgetOverride = 10000
@@ -215,6 +218,7 @@ func TestOutboxClaimStopsAtTheByteBudget(t *testing.T) {
 }
 
 func TestOutboxClaimAlwaysTakesOneRowOverBudget(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 65536
 	s.outboxClaimBudgetOverride = 1024
@@ -237,6 +241,7 @@ func TestOutboxClaimAlwaysTakesOneRowOverBudget(t *testing.T) {
 }
 
 func TestOutboxClaimSkipsRowsOverTheRowCapWithoutJamming(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 4096 // claimable ceiling is 8192
 	ws := createTestWorkspace(t, s, "OutboxClaimJam")
@@ -287,6 +292,7 @@ func idsOf(events []OutboxEvent) []string {
 }
 
 func TestOutboxClaimSpendsTheBudgetOnBatchSiblingsToo(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 8192
 	s.outboxClaimBudgetOverride = 10000
@@ -340,6 +346,7 @@ func TestOutboxClaimSpendsTheBudgetOnBatchSiblingsToo(t *testing.T) {
 }
 
 func TestScrubOutboxUserRefsBatchesWithoutLosingRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	// Force many small batches so the cursor, the lock ordering and the
 	// termination condition are all exercised rather than skipped by a single
@@ -442,6 +449,7 @@ func scrubInTxErr(s *Store, userID string) error {
 }
 
 func TestARowWrittenAtTheCapIsStillClaimable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 4096
 	ws := createTestWorkspace(t, s, "OutboxCapRoundTrip")
@@ -485,6 +493,7 @@ func TestARowWrittenAtTheCapIsStillClaimable(t *testing.T) {
 }
 
 func TestOutboxClaimStopsAtTheRowCap(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 8192
 	s.outboxClaimRowsOverride = 3
@@ -516,6 +525,7 @@ func TestOutboxClaimStopsAtTheRowCap(t *testing.T) {
 }
 
 func TestBulkEventIsRefusedBeforeItIsMarshalled(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 4096
 	ws := createTestWorkspace(t, s, "BulkPreMarshal")
@@ -566,6 +576,7 @@ func TestBulkEventIsRefusedBeforeItIsMarshalled(t *testing.T) {
 }
 
 func TestEverythingWrittenIsClaimable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 4096 // claimable ceiling 8192
 	ws := createTestWorkspace(t, s, "OutboxWriteReadAgreement")
@@ -651,6 +662,7 @@ func TestEverythingWrittenIsClaimable(t *testing.T) {
 }
 
 func TestBatchSiblingQueryIsBoundedInSQL(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 8192
 	s.outboxClaimRowsOverride = 3
@@ -680,6 +692,7 @@ func TestBatchSiblingQueryIsBoundedInSQL(t *testing.T) {
 }
 
 func TestScrubSpendsItsByteBudgetNotJustItsRowLimit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	// Row limit high enough that only the BYTE budget can split the work.
 	s.outboxScrubRowsOverride = 100
@@ -716,6 +729,7 @@ func TestScrubSpendsItsByteBudgetNotJustItsRowLimit(t *testing.T) {
 }
 
 func TestScrubOnlyEverShrinksAPayload(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	deleted, _ := scrubTestUsers(t, s)
 	ws := createTestWorkspace(t, s, "ScrubShrinks")
@@ -769,6 +783,7 @@ func TestScrubOnlyEverShrinksAPayload(t *testing.T) {
 }
 
 func TestAnOversizedEventPastTheHopBoundIsDroppedNotRefused(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	s.outboxRowCapOverride = 4096
 	ws := createTestWorkspace(t, s, "OutboxHopVsSize")

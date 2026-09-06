@@ -50,6 +50,7 @@ func countParentLinks(t *testing.T, s *Store, itemID string) int {
 //
 // The invariant asserted: for every pair, A->B and B->A must NEVER both exist.
 func TestSetParentLink_ConcurrentOpposingNoCycle(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)
@@ -127,6 +128,7 @@ func TestSetParentLink_ConcurrentOpposingNoCycle(t *testing.T) {
 // re-reads the old parent under the child lock before detaching, so it always
 // detaches from (and holds the lock for) the child's real current parent.
 func TestSetParentLink_ConcurrentReparentSingleParent(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)
@@ -223,6 +225,7 @@ func parentChainCycles(t *testing.T, s *Store, startID string, maxHops int) bool
 // Invariant asserted: after both goroutines finish, NO node's parent chain
 // forms a cycle, and the two closing edges never BOTH exist.
 func TestSetParentLink_ConcurrentNHopNoCycle(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)
@@ -311,6 +314,7 @@ func TestSetParentLink_ConcurrentNHopNoCycle(t *testing.T) {
 // shared workspace cycle lock and CreateItemLink's own cycle check rejects the
 // loser, so A→B→C→D→A can't form across the two APIs.
 func TestCreateItemLink_ConcurrentNHopNoCycle(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)
@@ -383,6 +387,7 @@ func TestCreateItemLink_ConcurrentNHopNoCycle(t *testing.T) {
 // and the cycle walk (which follows one arbitrary parent per source) could miss
 // a cycle. Dialect-agnostic: the invariant holds on SQLite and Postgres alike.
 func TestCreateItemLink_ParentSingleParentAndCycle(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

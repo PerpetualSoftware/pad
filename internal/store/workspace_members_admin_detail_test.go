@@ -15,6 +15,7 @@ import (
 // And verifies all six aggregations land correctly.
 // PLAN-1542 / TASK-1545.
 func TestGetUserWorkspacesDetailed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
 	guest := createTestUser(t, s, "guest@example.com", "Guest", "password123")

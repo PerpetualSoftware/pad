@@ -21,6 +21,7 @@ import (
 // Runs against whichever dialect testStore provides, so `make test-pg` covers
 // the Postgres statements and the default suite covers SQLite.
 func TestCollectionTraitsBackfill(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Backfill Test")
 	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
@@ -209,6 +210,7 @@ func mustTraits(t *testing.T, s *Store, collID string) models.CollectionTraits {
 // have its filter silently discarded, shipping an unfiltered payload. This
 // test fails the moment the two rules disagree.
 func TestFilterKeyRuleMatchesStoreSanitizer(t *testing.T) {
+	t.Parallel()
 	keys := []string{
 		"status", "trigger", "invocation_slug", "agent-role", "a1", "_leading",
 		"", " ", "stat us", "status;drop", "sta.tus", "status'", "état", "a\tb",
@@ -237,6 +239,7 @@ func TestFilterKeyRuleMatchesStoreSanitizer(t *testing.T) {
 // artifact export. The archive looks fine and the workspace is quietly inert:
 // exactly the BUG-2702 failure mode, reintroduced through a different door.
 func TestImportLegacyArchiveInfersTraits(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "legacy-archive-owner@test.com", "Legacy Owner", "password123")
 	src := createTestWorkspace(t, s, "Legacy Archive Source")
@@ -319,6 +322,7 @@ func TestImportLegacyArchiveInfersTraits(t *testing.T) {
 // The custom declarations below differ from the canonical set on purpose; a
 // test using the canonical values would pass whether or not the guard exists.
 func TestImportDoesNotOverrideSurvivingTraits(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "custom-traits-owner@test.com", "Custom Owner", "password123")
 	src := createTestWorkspace(t, s, "Custom Traits Source")
@@ -383,6 +387,7 @@ func TestImportDoesNotOverrideSurvivingTraits(t *testing.T) {
 // Go constant, so this is the only thing stopping the two from drifting — and
 // a drift would be silent, since both sides independently produce valid traits.
 func TestBackfillSQLMatchesCanonicalTraits(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Backfill Parity")
 	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {

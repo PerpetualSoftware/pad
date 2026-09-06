@@ -10,6 +10,7 @@ import (
 // TestCreateInvitation_SetsExpiresAt verifies new invitations get an expires_at
 // ~InvitationTTL in the future, round-tripped through store hydration.
 func TestCreateInvitation_SetsExpiresAt(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// Minimal workspace + user fixtures
@@ -61,6 +62,7 @@ func TestCreateInvitation_SetsExpiresAt(t *testing.T) {
 // the backfill UPDATE manually (since it only runs during migration time for
 // rows that exist AT migration time), and re-hydrates via the usual store API.
 func TestMigration044_BackfillProducesRFC3339(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	u, err := s.CreateUser(models.UserCreate{

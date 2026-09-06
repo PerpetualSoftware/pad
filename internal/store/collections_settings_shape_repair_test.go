@@ -33,6 +33,7 @@ import (
 // SQLite rebuild's INSERT…SELECT preserves the literal bytes). Finally
 // 058 runs and is the migration under test.
 func TestCollectionsSettingsShapeRepair_SQLite(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific (json_valid / json_type)")
 	}
@@ -163,6 +164,7 @@ func TestCollectionsSettingsShapeRepair_SQLite(t *testing.T) {
 // helpers' normalizers) then re-run pgmigrations/037's UPDATE clause and
 // assert every malformed row is repaired to '{}'::jsonb.
 func TestCollectionsSettingsShapeRepair_Postgres(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
 	}

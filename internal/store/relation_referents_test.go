@@ -49,6 +49,7 @@ func relationFixture(t *testing.T, s *Store) (*models.Workspace, *models.Collect
 }
 
 func TestResolveRelationReferents_AcceptsIDAndRefAndCanonicalises(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, red := relationFixture(t, s)
 
@@ -71,6 +72,7 @@ func TestResolveRelationReferents_AcceptsIDAndRefAndCanonicalises(t *testing.T) 
 }
 
 func TestResolveRelationReferents_RejectsUnresolvableValues(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, cars, _ := relationFixture(t, s)
 	// A live item in the WRONG collection, and a live item in ANOTHER
@@ -138,6 +140,7 @@ func TestResolveRelationReferents_RejectsUnresolvableValues(t *testing.T) {
 }
 
 func TestResolveRelationReferents_LeavesNonWritesAlone(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, _ := relationFixture(t, s)
 
@@ -167,6 +170,7 @@ func TestResolveRelationReferents_LeavesNonWritesAlone(t *testing.T) {
 }
 
 func TestResolveRelationReferents_SoftDeletedTargetDoesNotResolve(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, colors, _, _ := relationFixture(t, s)
 	gone := createTestItem(t, s, ws.ID, colors.ID, "Retired Blue", "")
@@ -189,6 +193,7 @@ func TestResolveRelationReferents_SoftDeletedTargetDoesNotResolve(t *testing.T) 
 }
 
 func TestResolveRelationReferents_TargetCollectionProblems(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, red := relationFixture(t, s)
 
@@ -218,6 +223,7 @@ func TestResolveRelationReferents_TargetCollectionProblems(t *testing.T) {
 }
 
 func TestResolveRelationReferents_IsDeterministicAndBatched(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, _ := relationFixture(t, s)
 	// Two relation fields, both broken, both aimed at the same collection.
@@ -256,6 +262,7 @@ func TestResolveRelationReferents_IsDeterministicAndBatched(t *testing.T) {
 // --- Migrate doors (PLAN-2857 U1, lead ruling: provenance, not door) ---
 
 func TestMigrateRelationReferents_SameWorkspaceKeepsWhatResolves(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, red := relationFixture(t, s)
 
@@ -276,6 +283,7 @@ func TestMigrateRelationReferents_SameWorkspaceKeepsWhatResolves(t *testing.T) {
 }
 
 func TestMigrateRelationReferents_SameWorkspaceDropsWhatDoesNot(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, _ := relationFixture(t, s)
 
@@ -302,6 +310,7 @@ func TestMigrateRelationReferents_SameWorkspaceDropsWhatDoesNot(t *testing.T) {
 }
 
 func TestMigrateRelationReferents_CrossWorkspaceDropsEveryCarriedRelation(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, red := relationFixture(t, s)
 
@@ -326,6 +335,7 @@ func TestMigrateRelationReferents_CrossWorkspaceDropsEveryCarriedRelation(t *tes
 }
 
 func TestMigrateRelationReferents_SuppliedOverrideRefusesOnEitherMode(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, red := relationFixture(t, s)
 
@@ -390,6 +400,7 @@ func carriedFrom(fields map[string]any) map[string]any {
 // corruption this whole unit exists to stop, reached through the parser rather
 // than through the lookup.
 func TestResolveRelationReferents_OverflowingRefDoesNotResolve(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, _, _, red := relationFixture(t, s)
 
@@ -436,6 +447,7 @@ func TestResolveRelationReferents_OverflowingRefDoesNotResolve(t *testing.T) {
 // byte-identical output for the junk rows. The control is the only leg whose
 // expected output DIFFERS from its input.
 func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner, err := s.CreateUser(models.UserCreate{
 		Name:     "Owner",
@@ -588,6 +600,7 @@ func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
 // assertion could not fail for this reason — which is how the defect went
 // unexamined: the fixture was engineered around it instead of at it.
 func TestImportWorkspace_UnresolvableRelationValueSurvivesAPrefixCollision(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner, err := s.CreateUser(models.UserCreate{
 		Name: "Owner", Email: "prefix-collision-owner@example.com", Password: "passw0rd!",

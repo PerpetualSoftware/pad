@@ -24,6 +24,7 @@ import (
 // partially-mutated schema — exactly the data-loss window described in
 // the IDEA's "Problem" section.
 func TestMigrationAtomicity_FailedSQLite_RollsBackPartialDDLAndBookkeeping(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific atomicity test; Postgres has its own counterpart below")
 	}
@@ -79,6 +80,7 @@ INSERT INTO no_such_table_xyz (id) VALUES ('boom');
 // positive control: a normal multi-statement migration commits both the
 // DDL and the schema_migrations row together.
 func TestMigrationAtomicity_SuccessfulSQLite_RecordsBookkeeping(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific")
 	}
@@ -130,6 +132,7 @@ CREATE TABLE atomic_ok_t2 (id TEXT PRIMARY KEY);
 // drops parent_t and recreates it; without FK-off this would fail
 // because child_t still references it.
 func TestMigrationAtomicity_PragmaForeignKeysLifted(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific (PRAGMA semantics)")
 	}
@@ -216,6 +219,7 @@ PRAGMA foreign_keys = ON;
 
 // TestExtractPragmas validates the lifter in isolation.
 func TestExtractPragmas(t *testing.T) {
+	t.Parallel()
 	in := `-- header comment
 PRAGMA foreign_keys = OFF;
 CREATE TABLE x (id TEXT);
@@ -247,6 +251,7 @@ PRAGMA foreign_keys = ON;
 // is the Postgres counterpart to the SQLite atomicity test. It only
 // runs when PAD_TEST_POSTGRES_URL is set.
 func TestMigrationAtomicity_FailedPostgres_RollsBackPartialDDLAndBookkeeping(t *testing.T) {
+	t.Parallel()
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if pgURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
@@ -304,6 +309,7 @@ INSERT INTO no_such_table_xyz (id) VALUES ('boom');
 // post-failure FK check is deterministically against the same physical
 // connection that ran the failed migration.
 func TestMigrationAtomicity_FailedSQLite_RestoresForeignKeysOnError(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific (PRAGMA foreign_keys is a SQLite construct)")
 	}

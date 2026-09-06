@@ -64,6 +64,7 @@ func dr15CopyOneAttachment(t *testing.T) (copyFixture, *models.Attachment, *mode
 // otherwise a delete in workspace B would silently remove the file from
 // workspace A, which content-addressed sharing makes plausible-looking.
 func TestDR15_DeletingCloneLeavesSourceLive(t *testing.T) {
+	t.Parallel()
 	f, orig, clone := dr15CopyOneAttachment(t)
 
 	if err := f.s.SoftDeleteAttachment(clone.ID); err != nil {
@@ -92,6 +93,7 @@ func TestDR15_DeletingCloneLeavesSourceLive(t *testing.T) {
 // independence is pinned via delete in both directions; restore would ride the
 // same row separation.)
 func TestDR15_DeletingSourceLeavesCloneLive(t *testing.T) {
+	t.Parallel()
 	f, orig, clone := dr15CopyOneAttachment(t)
 
 	if err := f.s.SoftDeleteAttachment(orig.ID); err != nil {
@@ -121,6 +123,7 @@ func TestDR15_DeletingSourceLeavesCloneLive(t *testing.T) {
 // isn't a surprise, and so a change that started charging only one side fails
 // here.
 func TestDR15_MoveLeavesSourceAttachmentsLiveAndChargesBoth(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	// The source item comes first so the original can be ATTACHED to it
 	// (item_id = src.ID) — which is what makes the "move leaves source
@@ -258,6 +261,7 @@ func TestDR15_MoveLeavesSourceAttachmentsLiveAndChargesBoth(t *testing.T) {
 // This pins the store-level divergence that is the root of that orphan; it is
 // known behavior, not fixed here.
 func TestDR15_BundleExportOrphansAttachmentOfSoftDeletedParent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Bundle Orphan")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

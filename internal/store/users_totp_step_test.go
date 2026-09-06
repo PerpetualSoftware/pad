@@ -12,6 +12,7 @@ const totpStepTestSecret = "JBSWY3DPEHPK3PXP" // canonical base32 test secret
 // the same (or an older) step is rejected, and a fresh higher step succeeds
 // and advances the stored value.
 func TestConsumeTOTPStep_SingleUse(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "totp@example.com", "TOTP User", "password123")
 	if err := s.SetTOTPSecret(u.ID, totpStepTestSecret); err != nil {
@@ -68,6 +69,7 @@ func TestConsumeTOTPStep_SingleUse(t *testing.T) {
 // disable/re-enroll racing an in-flight login) does NOT advance the watermark,
 // so it can't spuriously lock out the freshly-enrolled authenticator.
 func TestConsumeTOTPStep_SecretMismatch(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "mismatch@example.com", "Mismatch User", "password123")
 	if err := s.SetTOTPSecret(u.ID, "SECRETAAAAAAAAAA"); err != nil {
@@ -98,6 +100,7 @@ func TestConsumeTOTPStep_SecretMismatch(t *testing.T) {
 // when the secret changes (BUG-2054 Codex follow-up): a time-step counter from
 // an old secret must not reject a freshly-enrolled authenticator's codes.
 func TestTOTPStep_ResetOnSecretChange(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	stepIsSet := func(userID string) bool {
@@ -148,6 +151,7 @@ func TestTOTPStep_ResetOnSecretChange(t *testing.T) {
 // claim the SAME step, exactly one wins — the compare-and-set closes the
 // concurrent-replay window.
 func TestConsumeTOTPStep_ConcurrentCAS(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "race@example.com", "Race User", "password123")
 	if err := s.SetTOTPSecret(u.ID, totpStepTestSecret); err != nil {

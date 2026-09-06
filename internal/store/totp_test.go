@@ -13,6 +13,7 @@ func hashCode(code string) string {
 }
 
 func TestTOTPSetupAndEnable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -56,6 +57,7 @@ func TestTOTPSetupAndEnable(t *testing.T) {
 }
 
 func TestTOTPEnableSecretMismatch(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -75,6 +77,7 @@ func TestTOTPEnableSecretMismatch(t *testing.T) {
 }
 
 func TestTOTPDisable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -106,6 +109,7 @@ func TestTOTPDisable(t *testing.T) {
 }
 
 func TestConsumeRecoveryCode(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -153,6 +157,7 @@ func TestConsumeRecoveryCode(t *testing.T) {
 }
 
 func TestUserFieldsSurviveTOTP(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 

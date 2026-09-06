@@ -24,6 +24,7 @@ func decodeFields(t *testing.T, fieldsJSON string) map[string]any {
 // TestMergeFieldsPatch exercises the pure shallow-merge helper directly:
 // set, delete-on-null, orphan-key preservation, and empty-base handling.
 func TestMergeFieldsPatch(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		current string
@@ -94,6 +95,7 @@ func TestMergeFieldsPatch(t *testing.T) {
 // rest of the fields blob intact, unlike a full `fields` write which replaces
 // everything.
 func TestUpdateItemFieldsPatchMergesNotReplaces(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "FieldPatch")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -125,6 +127,7 @@ func TestUpdateItemFieldsPatchMergesNotReplaces(t *testing.T) {
 // TestUpdateItemFieldsPatchNullDeletes verifies the JSON-null delete sentinel
 // removes a single key while preserving the others.
 func TestUpdateItemFieldsPatchNullDeletes(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "FieldPatchDelete")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -158,6 +161,7 @@ func TestUpdateItemFieldsPatchNullDeletes(t *testing.T) {
 // Before field-level merge, the second full-blob write would have overwritten
 // the first if it had been built from a stale read.
 func TestUpdateItemFieldsPatchSequentialNoClobber(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "FieldPatchSeq")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -193,6 +197,7 @@ func TestUpdateItemFieldsPatchSequentialNoClobber(t *testing.T) {
 // TestUpdateItemExpectedUpdatedAtMatch: a matching optimistic-concurrency
 // token lets the update through.
 func TestUpdateItemExpectedUpdatedAtMatch(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCMatch")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -215,6 +220,7 @@ func TestUpdateItemExpectedUpdatedAtMatch(t *testing.T) {
 // TestUpdateItemExpectedUpdatedAtConflict: a stale token is rejected with
 // *UpdateConflictError, and the item is left unchanged.
 func TestUpdateItemExpectedUpdatedAtConflict(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCConflict")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

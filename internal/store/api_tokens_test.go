@@ -13,6 +13,7 @@ import (
 // constraint on api_tokens.workspace_id fixed in migration
 // 068_api_tokens_workspace_nullable.sql (Postgres already allowed NULL).
 func TestCreateAPITokenUserScoped(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 
@@ -42,6 +43,7 @@ func TestCreateAPITokenUserScoped(t *testing.T) {
 }
 
 func TestCreateAPITokenWithExpiry(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -69,6 +71,7 @@ func TestCreateAPITokenWithExpiry(t *testing.T) {
 }
 
 func TestCreateAPITokenExpiryOverride(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -88,6 +91,7 @@ func TestCreateAPITokenExpiryOverride(t *testing.T) {
 }
 
 func TestCreateAPITokenMaxLifetimeEnforced(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -107,6 +111,7 @@ func TestCreateAPITokenMaxLifetimeEnforced(t *testing.T) {
 }
 
 func TestCreateAPITokenNoExpiry(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -125,6 +130,7 @@ func TestCreateAPITokenNoExpiry(t *testing.T) {
 }
 
 func TestValidateTokenExpired(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -164,6 +170,7 @@ func TestValidateTokenExpired(t *testing.T) {
 }
 
 func TestRotateAPIToken(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -217,6 +224,7 @@ func TestRotateAPIToken(t *testing.T) {
 }
 
 func TestRotateAPITokenWrongUser(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u1 := createTestUser(t, s, "user1@test.com", "User 1", "password123")
 	u2 := createTestUser(t, s, "user2@test.com", "User 2", "password123")
@@ -239,6 +247,7 @@ func TestRotateAPITokenWrongUser(t *testing.T) {
 }
 
 func TestRotateAPITokenWithNewExpiry(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -268,6 +277,7 @@ func TestRotateAPITokenWithNewExpiry(t *testing.T) {
 }
 
 func TestListAndDeleteAPITokens(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")
@@ -299,6 +309,7 @@ func TestListAndDeleteAPITokens(t *testing.T) {
 }
 
 func TestValidateTokenUpdatesLastUsed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
 	ws := createTestWorkspace(t, s, "TokenTest")

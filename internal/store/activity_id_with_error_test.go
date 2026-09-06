@@ -21,6 +21,7 @@ import (
 // cheapest way to make every write fail deterministically, and what is under
 // test is the pairing of the two return values, not which error occurs.
 func TestActivityWriters_ErrorNeverCarriesAnID(t *testing.T) {
+	t.Parallel()
 	base := testStore(t)
 	ws := createTestWorkspace(t, base, "IDContract")
 	doc := createTestDoc(t, base, ws.ID, "Doc", "content")
@@ -70,6 +71,7 @@ func TestActivityWriters_ErrorNeverCarriesAnID(t *testing.T) {
 // change that returned "" unconditionally would satisfy every assertion
 // above, and break every caller.
 func TestActivityWriters_SuccessStillReturnsTheID(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "IDContractOK")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -123,6 +125,7 @@ func TestActivityWriters_SuccessStillReturnsTheID(t *testing.T) {
 // and finds the row, then the write fails. That is the state in which the old
 // code handed back a real id for a PREVIOUS activity.
 func TestActivityDebounce_MergeFailureCarriesNoID(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "MergeFailure")
 	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
@@ -182,6 +185,7 @@ func TestActivityDebounce_MergeFailureCarriesNoID(t *testing.T) {
 // it in production: a comment linked to the candidate row freezes it
 // (TASK-2760), so the merge's NOT EXISTS arm declines the write.
 func TestActivityDebounce_ClassifierFailureCarriesNoID(t *testing.T) {
+	t.Parallel()
 	s, item := agentNameFixture(t)
 
 	writer := models.Activity{

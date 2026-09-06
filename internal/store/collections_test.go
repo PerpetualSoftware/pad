@@ -42,6 +42,7 @@ import (
 // not-null constraint", SQLSTATE 23502), so we only assert that an error
 // surfaces — not its content.
 func TestCollectionsSettingsNotNullEnforced(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "NOT NULL Enforcement")
 
@@ -60,6 +61,7 @@ func TestCollectionsSettingsNotNullEnforced(t *testing.T) {
 // TEXT and Postgres stores it as JSONB (which normalizes to `{}` on
 // readback); both surface through GetCollection as the Go string `{}`.
 func TestCollectionsSettingsDefaultsToEmptyObject(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Settings Default")
 
@@ -93,6 +95,7 @@ func TestCollectionsSettingsDefaultsToEmptyObject(t *testing.T) {
 // `collections.settings always holds valid JSON` invariant at the API
 // boundary, where the schema constraint alone is not sufficient.
 func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Update Coerce Empty Settings")
 
@@ -124,6 +127,7 @@ func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
 // token (BUG-2265) lets the settings write through unchanged. Mirrors the item
 // path's TestUpdateItemExpectedUpdatedAtMatch.
 func TestUpdateCollectionExpectedUpdatedAtMatch(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCCollMatch")
 
@@ -163,6 +167,7 @@ func TestUpdateCollectionExpectedUpdatedAtMatch(t *testing.T) {
 // *CollectionUpdateConflictError and the write does NOT land — the BUG-2265
 // last-write-wins fix. Mirrors TestUpdateItemExpectedUpdatedAtConflict.
 func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCCollConflict")
 
@@ -217,6 +222,7 @@ func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
 // advances once. (Failure-rollback is covered structurally: the migration runs
 // inside the same tx, so an error returns before commit.)
 func TestUpdateCollectionAppliesMigrationsAtomically(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCCollMigrate")
 
@@ -281,6 +287,7 @@ func TestUpdateCollectionAppliesMigrationsAtomically(t *testing.T) {
 // serializes everything. Either way, with the correct order every worker
 // succeeds.
 func TestUpdateCollectionMigrationNoDeadlockWithItemCreate(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCCollDeadlock")
 	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
@@ -341,6 +348,7 @@ func TestUpdateCollectionMigrationNoDeadlockWithItemCreate(t *testing.T) {
 // strictly past the token, so replaying the stale token conflicts — DETERMINISTIC
 // regardless of timing.
 func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCCollSameSecond")
 
@@ -399,6 +407,7 @@ func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
 // the row's current value, so it can't regress the concurrency token in the
 // same wall-clock second and let a stale guarded token clobber newer data.
 func TestUpdateCollectionTokenlessWriteStillAdvancesToken(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCCollTokenlessMono")
 
@@ -439,6 +448,7 @@ func TestUpdateCollectionTokenlessWriteStillAdvancesToken(t *testing.T) {
 // the legacy last-write-wins path — an unconditional write that always lands
 // (CLI / MCP / API callers that don't opt in). BUG-2265 is additive.
 func TestUpdateCollectionNoTokenSkipsConcurrencyCheck(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "OCCCollNoToken")
 
@@ -470,6 +480,7 @@ func TestUpdateCollectionNoTokenSkipsConcurrencyCheck(t *testing.T) {
 // a collection with non-NULL JSON settings round-trips through the minimal
 // query intact on both drivers.
 func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "ListCollectionsMinimal JSON Settings")
 
@@ -528,6 +539,7 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 // to inject "" settings, then asserts ImportWorkspace materializes them
 // back to valid JSON on the destination side.
 func TestExportImportRoundTripWithEmptyStringSettings(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "round-trip-owner@test.com", "Round Trip Owner", "password123")
 	src := createTestWorkspace(t, s, "Export-Import Round Trip Empty Settings")
@@ -581,6 +593,7 @@ func TestExportImportRoundTripWithEmptyStringSettings(t *testing.T) {
 // (or shrunk) its starter pack and the motivating "agent-self workspace
 // with no ghost collections" use case is no longer protected.
 func TestSeedFromBlankTemplate(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Blank Test")
 
@@ -636,6 +649,7 @@ func TestSeedFromBlankTemplate(t *testing.T) {
 // dashboard / list-items tests in internal/server/ which all rely on
 // "empty Template + zero items" semantics.
 func TestSeedFromTemplateAlwaysIncludesOnboardPlaybook(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"blank", "startup", "scrum", "product", "hiring", "interviewing"} {
 		t.Run(name, func(t *testing.T) {
 			s := testStore(t)
@@ -670,6 +684,7 @@ func TestSeedFromTemplateAlwaysIncludesOnboardPlaybook(t *testing.T) {
 // the onboard playbook. This is the path tests and direct API
 // callers use to get a bare workspace.
 func TestSeedWithEmptyTemplateNameSkipsOnboard(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Empty-Template Onboard Skip Test")
 	if err := s.SeedCollectionsFromTemplate(ws.ID, ""); err != nil {
@@ -697,6 +712,7 @@ func TestSeedWithEmptyTemplateNameSkipsOnboard(t *testing.T) {
 // every server restart. The fix gates the rescue on "workspace has zero
 // collections" so blank (which ships 2 system collections) is a no-op.
 func TestBlankWorkspaceSurvivesSeedDefaultCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Blank Survival Test")
 
@@ -740,6 +756,7 @@ func TestBlankWorkspaceSurvivesSeedDefaultCollections(t *testing.T) {
 // collection landed, the auto-upgrade must still materialize the Software
 // defaults.
 func TestEmptyWorkspaceStillGetsDefaults(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Empty Rescue Test")
 
@@ -791,6 +808,7 @@ func collectionSlugs(colls []models.Collection) []string {
 // predicates that differ still differ — soft-delete state and workspace scope
 // are checked below.
 func TestCollectionAccessorsShareOneHydration(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Hydration")
 	other := createTestWorkspace(t, s, "Elsewhere")

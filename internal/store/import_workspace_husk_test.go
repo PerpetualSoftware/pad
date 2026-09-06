@@ -78,6 +78,7 @@ func validImportBundle(name, slug string) *models.WorkspaceExport {
 // collection INSERT, not a decode or a version check) and that the import did
 // fail rather than quietly succeeding.
 func TestImportWorkspaceFailureLeavesNoWorkspace(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	ws, err := s.ImportWorkspace(failingImportBundle("Husk Probe", "husk-probe"), "", "")
@@ -106,6 +107,7 @@ func TestImportWorkspaceFailureLeavesNoWorkspace(t *testing.T) {
 // `retry-slug-2` — a degraded slug in every URL, caused by an attempt that
 // stored nothing.
 func TestImportWorkspaceRetryKeepsOriginalSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	if _, err := s.ImportWorkspace(failingImportBundle("Retry Probe", "retry-slug"), "", ""); err == nil {

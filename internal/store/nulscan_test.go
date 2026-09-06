@@ -48,6 +48,7 @@ func plantLegacyRows(t *testing.T, s *Store, plant func(raw *sql.DB)) {
 // TestScanNULFindsThePlantedPopulation drives every shape the counter has to
 // tell apart, including the two it must NOT report.
 func TestScanNULFindsThePlantedPopulation(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("the scan is SQLite-only; Postgres cannot hold the state")
@@ -167,6 +168,7 @@ func TestScanNULFindsThePlantedPopulation(t *testing.T) {
 // repair the database satisfies the invariant, and the values that were never
 // violating are byte-identical.
 func TestRepairNULRepairsThePopulationAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -250,6 +252,7 @@ func TestRepairNULRepairsThePopulationAndIsIdempotent(t *testing.T) {
 // an existing row — silently merging two opt-out records, which in this table
 // means somebody starts receiving mail again.
 func TestRepairNULRefusesToRewriteAPrimaryKey(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -295,6 +298,7 @@ func TestRepairNULRefusesToRewriteAPrimaryKey(t *testing.T) {
 // TestScanNULOnPostgresSaysWhyItDidNotLook guards the one thing a zero report
 // must never be mistaken for.
 func TestScanNULOnPostgresSaysWhyItDidNotLook(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() == DriverSQLite {
 		t.Skip("this leg is about the Postgres arm")
@@ -330,6 +334,7 @@ func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 // round. If this fails, update the comment rather than the numbers here: the
 // list is the source and the comment is the copy.
 func TestScanCostFiguresMatchTheList(t *testing.T) {
+	t.Parallel()
 	const (
 		wantTotal = 131
 		wantJSON  = 24
@@ -363,6 +368,7 @@ func TestScanCostFiguresMatchTheList(t *testing.T) {
 // id-addressed rows, and a leg that never exercises the rowid path would let
 // that binding break without a failure.
 func TestRepairNULAddressesARowidOnlyTable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -427,6 +433,7 @@ func TestRepairNULAddressesARowidOnlyTable(t *testing.T) {
 // Verified to fail against the unfixed code: the scan returned
 // `scan activities.actor row: sql: Scan error ... converting NULL to string`.
 func TestScanNULSurvivesANullWorkspaceID(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -492,6 +499,7 @@ func TestScanNULSurvivesANullWorkspaceID(t *testing.T) {
 // platform_settings is the fixture because its key IS its primary key and is
 // NOT in the protected list, while its `value` column is: exactly the shape.
 func TestRepairNULSkipsARowItCannotAddress(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -562,6 +570,7 @@ func TestRepairNULSkipsARowItCannotAddress(t *testing.T) {
 // direction, and the same reason, as textguard's TestKnownGapsStillGap. See
 // also TestSuspectsCollapseWhenBUG2812Lands, which names what to delete.
 func TestScanNULInheritsTheRecordedKnownGaps(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -611,6 +620,7 @@ func TestScanNULInheritsTheRecordedKnownGaps(t *testing.T) {
 // decides. This test pins that both LAND in the suspect list and neither lands
 // in the violations, which is what makes the preflight's oracle reachable.
 func TestScanNULReportsSuspectsSeparately(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -680,6 +690,7 @@ func TestScanNULReportsSuspectsSeparately(t *testing.T) {
 // a repair broad enough to catch the shadowed value must still leave a value
 // that merely writes ABOUT the escape byte-identical.
 func TestRepairSuspectFixesOnlyTheFatalShape(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("SQLite only")
@@ -762,6 +773,7 @@ func TestRepairSuspectFixesOnlyTheFatalShape(t *testing.T) {
 // Nothing would otherwise tell anyone. This fails at that moment and says what
 // to remove.
 func TestSuspectsCollapseWhenBUG2812Lands(t *testing.T) {
+	t.Parallel()
 	shadowed := `{"a":"` + textguard.EscNUL + `","a":"clean"}`
 
 	if textguard.ParameterRefused(shadowed, true) {

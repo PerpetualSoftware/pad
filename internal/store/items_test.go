@@ -77,6 +77,7 @@ func createLegacyTitledItem(t *testing.T, s *Store, workspaceID, collectionID, t
 }
 
 func TestListItems_UnparentedStructuralParity(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Unparented")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -138,6 +139,7 @@ func TestListItems_UnparentedStructuralParity(t *testing.T) {
 }
 
 func TestStructuralItemLinksAdvanceSourceSeqAndMetadata(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Unparented metadata")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -213,6 +215,7 @@ func TestStructuralItemLinksAdvanceSourceSeqAndMetadata(t *testing.T) {
 // --- Collection Tests ---
 
 func TestCollectionCRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -303,6 +306,7 @@ func TestCollectionCRUD(t *testing.T) {
 }
 
 func TestCollectionDeleteDefaultRefused(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -326,6 +330,7 @@ func TestCollectionDeleteDefaultRefused(t *testing.T) {
 }
 
 func TestCollectionListWithItemCounts(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -346,6 +351,7 @@ func TestCollectionListWithItemCounts(t *testing.T) {
 }
 
 func TestSeedDefaultCollections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -388,6 +394,7 @@ func TestSeedDefaultCollections(t *testing.T) {
 }
 
 func TestSeedCollectionsFromTemplateAddsConventionsRoleField(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Template Test")
 
@@ -421,6 +428,7 @@ func TestSeedCollectionsFromTemplateAddsConventionsRoleField(t *testing.T) {
 // the newly-created conventions/playbooks collections. This is what makes
 // templates "batteries included" rather than empty shells.
 func TestSeedCollectionsFromTemplateSeedsStarterPack(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Starter Pack")
 
@@ -456,6 +464,7 @@ func TestSeedCollectionsFromTemplateSeedsStarterPack(t *testing.T) {
 // TestSeedCollectionsFromTemplateHiring verifies end-to-end that the hiring
 // template creates the right collections and seeds its starter pack.
 func TestSeedCollectionsFromTemplateHiring(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Hiring")
 
@@ -521,6 +530,7 @@ func TestSeedCollectionsFromTemplateHiring(t *testing.T) {
 // TestSeedCollectionsFromTemplateInterviewing verifies end-to-end that the
 // interviewing template creates its collections and seeds the starter pack.
 func TestSeedCollectionsFromTemplateInterviewing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Interviewing")
 
@@ -577,6 +587,7 @@ func TestSeedCollectionsFromTemplateInterviewing(t *testing.T) {
 // partially-initialized workspaces because the second pass saw existing
 // collections and skipped all items.
 func TestSeedCollectionsFromTemplateRecoversPartialInit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Recover")
 
@@ -608,6 +619,7 @@ func TestSeedCollectionsFromTemplateRecoversPartialInit(t *testing.T) {
 // This invariant is what lets the server's startup auto-upgrade safely iterate
 // every workspace without creating duplicate convention/playbook items each boot.
 func TestSeedCollectionsFromTemplateIdempotentWithSeedItems(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Idempotent")
 
@@ -641,6 +653,7 @@ func TestSeedCollectionsFromTemplateIdempotentWithSeedItems(t *testing.T) {
 // --- Item Tests ---
 
 func TestItemCRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -740,6 +753,7 @@ func TestItemCRUD(t *testing.T) {
 }
 
 func TestItemCodeContextIsHydratedOnRead(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -768,6 +782,7 @@ func TestItemCodeContextIsHydratedOnRead(t *testing.T) {
 }
 
 func TestListItemsIncludesCodeContext(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -796,6 +811,7 @@ func TestListItemsIncludesCodeContext(t *testing.T) {
 }
 
 func TestItemStructuredMetadataIsHydratedOnRead(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -827,6 +843,7 @@ func TestItemStructuredMetadataIsHydratedOnRead(t *testing.T) {
 }
 
 func TestConventionMetadataIsHydratedOnRead(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Conventions")
@@ -855,6 +872,7 @@ func TestConventionMetadataIsHydratedOnRead(t *testing.T) {
 }
 
 func TestItemListByCollection(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	tasks := createTestCollection(t, s, ws.ID, "Tasks")
@@ -883,6 +901,7 @@ func TestItemListByCollection(t *testing.T) {
 }
 
 func TestItemListByFieldFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -924,6 +943,7 @@ func TestItemListByFieldFilter(t *testing.T) {
 }
 
 func TestItemListByTag(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -947,6 +967,7 @@ func TestItemListByTag(t *testing.T) {
 }
 
 func TestItemListPagination(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -977,6 +998,7 @@ func TestItemListPagination(t *testing.T) {
 }
 
 func TestItemFTSSearch(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1007,6 +1029,7 @@ func TestItemFTSSearch(t *testing.T) {
 }
 
 func TestItemFTSSearchViaListItems(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1024,6 +1047,7 @@ func TestItemFTSSearchViaListItems(t *testing.T) {
 }
 
 func TestItemSlugUniqueness(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1046,6 +1070,7 @@ func TestItemSlugUniqueness(t *testing.T) {
 }
 
 func TestCollectionSlugUniqueness(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1069,6 +1094,7 @@ func TestCollectionSlugUniqueness(t *testing.T) {
 // --- Item Link Tests ---
 
 func TestItemLinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1136,6 +1162,7 @@ func TestItemLinks(t *testing.T) {
 // deleted item should resurrect the link automatically — the row is preserved
 // on disk; only the query layer filters it.
 func TestItemLinks_HidesSoftDeletedEndpoints(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1203,6 +1230,7 @@ func TestItemLinks_HidesSoftDeletedEndpoints(t *testing.T) {
 // TestGetParentForItem_HidesSoftDeletedParent ensures lineage / breadcrumb
 // queries don't surface a soft-deleted ancestor. See BUG-734.
 func TestGetParentForItem_HidesSoftDeletedParent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1251,6 +1279,7 @@ func TestGetParentForItem_HidesSoftDeletedParent(t *testing.T) {
 // write fails (here, because it would create a cycle), the field update must
 // roll back too — no partial commit, no half-applied patch.
 func TestUpdateItemWithParentLink_AtomicRollback(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1298,6 +1327,7 @@ func TestUpdateItemWithParentLink_AtomicRollback(t *testing.T) {
 // when the parent-link write succeeds, BOTH the field change and the link
 // change commit together.
 func TestUpdateItemWithParentLink_AtomicCommit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1351,6 +1381,7 @@ func TestUpdateItemWithParentLink_AtomicCommit(t *testing.T) {
 // NOT appear in GetParentMap, so handlers_dashboard.go correctly flags the
 // task as orphaned. See BUG-734 / Codex review on PR #259.
 func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1413,6 +1444,7 @@ func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
 // a single WHERE id IN (...) query hydrates many parents at once, scopes to
 // only the requested IDs, computes refs, and drops soft-deleted parents.
 func TestGetItemLineageByIDs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1471,6 +1503,7 @@ func TestGetItemLineageByIDs(t *testing.T) {
 // path needs to enforce the same deleted-parent rejection. See BUG-734 /
 // Codex review on PR #259 (3rd pass).
 func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1533,6 +1566,7 @@ func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
 // GetItem/GetItemBySlug, but raw-UUID input bypasses that path. See
 // BUG-734 / Codex review on PR #259.
 func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1594,6 +1628,7 @@ func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
 //     would search for `842` and miss. The OR-combined query keeps the
 //     raw form alive too, so `-842` matches.
 func TestListItems_FTS_HyphenatedSearchTerm(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1639,6 +1674,7 @@ func TestListItems_FTS_HyphenatedSearchTerm(t *testing.T) {
 // /api/v1/search code path, which routes through Store.SearchItems instead
 // of Store.listItemsFTS.
 func TestSearchItems_HyphenatedQuery(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -1667,6 +1703,7 @@ func TestSearchItems_HyphenatedQuery(t *testing.T) {
 // Same root cause as items: hyphenated queries hit FTS5's boolean parser and
 // 500 unless sanitized. Surfaces /documents?q=task-5 and the web UI doc list.
 func TestListDocuments_HyphenatedQuery(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1709,6 +1746,7 @@ func TestListDocuments_HyphenatedQuery(t *testing.T) {
 // inadvertently breaks one of these will fail this test, before it can
 // silently drift on production DBs the way BUG-822 did.
 func TestStartupInvariants_AllFTSTriggersExist(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	if s.dialect.Driver() != DriverSQLite {
@@ -1740,6 +1778,7 @@ func TestStartupInvariants_AllFTSTriggersExist(t *testing.T) {
 // either add it to expectedFTSTriggers (if it serves an FTS-like role) or
 // extend the exclusion below.
 func TestExpectedFTSTriggers_MatchesActual(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	if s.dialect.Driver() != DriverSQLite {
@@ -1791,6 +1830,7 @@ func TestExpectedFTSTriggers_MatchesActual(t *testing.T) {
 // SELECT, a dialect check that always returns early) and the BUG-822
 // class of drift would go undetected again.
 func TestStartupInvariants_LogsOnMissingTrigger(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	if s.dialect.Driver() != DriverSQLite {
@@ -1876,6 +1916,7 @@ func (h *recordCapturingHandler) WithGroup(_ string) slog.Handler {
 // triggers (likely from a transient quirk during migration 025), and
 // migration 046 restores them.
 func TestMigration046_DocumentsFTSTriggersExist(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// SQLite-only — Postgres uses a different tsvector trigger setup and
@@ -1905,6 +1946,7 @@ func TestMigration046_DocumentsFTSTriggersExist(t *testing.T) {
 // removing the rebuild step would not break either of the other two BUG-822
 // tests — flagged in Codex review.
 func TestMigration046_RebuildRecoversUnindexedDocs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	if s.dialect.Driver() != DriverSQLite {
@@ -1961,6 +2003,7 @@ func TestMigration046_RebuildRecoversUnindexedDocs(t *testing.T) {
 // after-insert trigger never fired to populate documents_fts, leaving the
 // new doc invisible to ListDocuments(Query=...).
 func TestCreateDocument_IsSearchableImmediately(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -1996,6 +2039,7 @@ func TestCreateDocument_IsSearchableImmediately(t *testing.T) {
 // BUG-812). Before the fix, /documents?q=foo&tag=bar returned all docs
 // matching "foo" regardless of tag.
 func TestListDocuments_FTS_TagFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -2036,6 +2080,7 @@ func TestListDocuments_FTS_TagFilter(t *testing.T) {
 // /documents?q=foo&pinned=true used to ignore the pin bit when the FTS
 // branch took over. Documents analog of BUG-812.
 func TestListDocuments_FTS_PinnedFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 
@@ -2079,6 +2124,7 @@ func TestListDocuments_FTS_PinnedFilter(t *testing.T) {
 // routing/guard has to short-circuit before binding.
 // See BUG-818 / Codex follow-up.
 func TestFTS_WhitespaceOnlyQuery_DoesNotCrash(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2104,6 +2150,7 @@ func TestFTS_WhitespaceOnlyQuery_DoesNotCrash(t *testing.T) {
 // produces the second leg of the OR-combined PG FTS query (raw +
 // hyphen-as-space). See internal/store/search.go.
 func TestSanitizePGFTSQuery(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -2131,6 +2178,7 @@ func TestSanitizePGFTSQuery(t *testing.T) {
 // double quotes so SQLite FTS5 treats special characters as literals. See
 // internal/store/search.go and BUG-818.
 func TestSanitizeFTSQuery(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -2167,6 +2215,7 @@ func TestSanitizeFTSQuery(t *testing.T) {
 // items, must narrow the result to only the matching item.
 
 func TestListItems_FTS_TagFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2207,6 +2256,7 @@ func TestListItems_FTS_TagFilter(t *testing.T) {
 }
 
 func TestListItems_FTS_ParentIDFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2239,6 +2289,7 @@ func TestListItems_FTS_ParentIDFilter(t *testing.T) {
 }
 
 func TestListItems_FTS_AssignedUserFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2273,6 +2324,7 @@ func TestListItems_FTS_AssignedUserFilter(t *testing.T) {
 }
 
 func TestListItems_FTS_AgentRoleFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2320,6 +2372,7 @@ func TestListItems_FTS_AgentRoleFilter(t *testing.T) {
 }
 
 func TestListItems_FTS_FieldFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2390,6 +2443,7 @@ func TestListItems_FTS_FieldFilter(t *testing.T) {
 }
 
 func TestItemLinkDefaultType(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2412,6 +2466,7 @@ func TestItemLinkDefaultType(t *testing.T) {
 // --- Workspace-Global Item Numbering Tests ---
 
 func TestItemNumbersAreWorkspaceGlobal(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	tasks := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2438,6 +2493,7 @@ func TestItemNumbersAreWorkspaceGlobal(t *testing.T) {
 }
 
 func TestMoveItemPreservesNumber(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	tasks := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2466,6 +2522,7 @@ func TestMoveItemPreservesNumber(t *testing.T) {
 }
 
 func TestOldRefResolvesAfterMove(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	plans := createTestCollection(t, s, ws.ID, "Plans")
@@ -2515,6 +2572,7 @@ func TestOldRefResolvesAfterMove(t *testing.T) {
 }
 
 func TestWorkspaceNumberingIsolation(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws1 := createTestWorkspace(t, s, "Workspace 1")
 	ws2 := createTestWorkspace(t, s, "Workspace 2")
@@ -2534,6 +2592,7 @@ func TestWorkspaceNumberingIsolation(t *testing.T) {
 }
 
 func TestItemVersionCreation(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2565,6 +2624,7 @@ func TestItemVersionCreation(t *testing.T) {
 // no version anchoring the reverse-patch chain (and losing the restore's undo
 // point).
 func TestItemVersionForceBypassesThrottle(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2640,6 +2700,7 @@ func TestItemVersionForceBypassesThrottle(t *testing.T) {
 }
 
 func TestWorkspaceHasAgentActivity(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Connect Banner")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2753,6 +2814,7 @@ func TestWorkspaceHasAgentActivity(t *testing.T) {
 // filtering, has_agent_activity reflected the whole workspace regardless
 // of caller visibility.
 func TestWorkspaceHasAgentActivityVisibility(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Visibility")
 	visibleColl := createTestCollection(t, s, ws.ID, "Visible")
@@ -2828,6 +2890,7 @@ func TestWorkspaceHasAgentActivityVisibility(t *testing.T) {
 // We compare both helpers side by side so a future regression on
 // either path fails this test loudly.
 func TestGuestVisibleResourcesIncludeDeleted_SurfacesTombstones(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	user := createTestUser(t, s, "guest@example.com", "Guest", "password123")
 	ws := createTestWorkspace(t, s, "Test")
@@ -2906,6 +2969,7 @@ func stringInSlice(xs []string, want string) bool {
 // migration transaction so every row ends up with a strictly
 // unique seq.
 func TestMigrateItemFieldValues_PerRowUniqueSeq(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -2957,6 +3021,7 @@ func TestMigrateItemFieldValues_PerRowUniqueSeq(t *testing.T) {
 // mechanic the local-first read model relies on for delta sync
 // (PLAN-1343 / TASK-1352).
 func TestItemSeqMonotonic(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -3031,6 +3096,7 @@ func TestItemSeqMonotonic(t *testing.T) {
 // affect another workspace's monotonic floor (DOC-1342 design
 // decision #1).
 func TestItemSeqWorkspaceScoped(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws1 := createTestWorkspace(t, s, "WS1")
 	ws2 := createTestWorkspace(t, s, "WS2")
@@ -3058,6 +3124,7 @@ func TestItemSeqWorkspaceScoped(t *testing.T) {
 // store init), so this test inserts a fresh batch and confirms each
 // row's seq is non-zero and unique within the workspace.
 func TestItemSeqBackfillNonZero(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

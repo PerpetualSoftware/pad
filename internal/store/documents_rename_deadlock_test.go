@@ -126,6 +126,7 @@ func TestUpdateDocument_ConcurrentMutualRenamesDoNotDeadlock(t *testing.T) {
 // nothing carries any more, and every backlink is left pointing at a title
 // that no longer resolves.
 func TestUpdateDocument_CascadeUsesTheTitleUnderTheLock(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "CascadeTitle")
 	target := createTestDoc(t, s, ws.ID, "One", "the subject")
@@ -180,6 +181,7 @@ func TestUpdateDocument_CascadeUsesTheTitleUnderTheLock(t *testing.T) {
 // is still written, so the document ends up titled One with every backlink
 // pointing at [[Two]]: a rename that silently breaks its own links.
 func TestUpdateDocument_RenameBackToTheStaleTitleStillCascades(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "RenameBack")
 	target := createTestDoc(t, s, ws.ID, "One", "the subject")
@@ -238,6 +240,7 @@ func TestUpdateDocument_RenameBackToTheStaleTitleStillCascades(t *testing.T) {
 // TestUpdateDocument_DeleteLandingBeforeTheWriteIsNotOverwritten, on a path
 // where it is the only mechanism.
 func TestUpdateDocument_DeletedArchivedBeforeTheLockIsNotRenamed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "DeleteRace")
 	target := createTestDoc(t, s, ws.ID, "Doomed", "the subject")
@@ -288,6 +291,7 @@ func TestUpdateDocument_DeletedArchivedBeforeTheLockIsNotRenamed(t *testing.T) {
 // (that is the property), and the rename key must be TAKEN (otherwise the
 // first leg passes against an implementation that acquires nothing at all).
 func TestDocumentRenameLock_DoesNotContendWithTheSeqLock(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverPostgres {
 		t.Skip("advisory locks are a Postgres construct; the helper is a no-op elsewhere")
@@ -334,6 +338,7 @@ func TestDocumentRenameLock_DoesNotContendWithTheSeqLock(t *testing.T) {
 // write to an archived row, and it is tested where it is the sole mechanism
 // rather than where another one would mask it.
 func TestUpdateDocument_DeleteLandingBeforeTheWriteIsNotOverwritten(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverPostgres {
 		// SQLite cannot reach this interleaving at all: the open transaction

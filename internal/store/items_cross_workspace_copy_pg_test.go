@@ -349,6 +349,7 @@ func deadlocksSettled(t *testing.T, s *Store, before int64) int64 {
 // file header for why the barrier sits BEFORE the first acquisition and for
 // mutation B, which this test is the one to catch.
 func TestCopyItemAcrossWorkspaces_OpposingDirectionsDoNotDeadlock(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)
@@ -460,6 +461,7 @@ func TestCopyItemAcrossWorkspaces_OpposingDirectionsDoNotDeadlock(t *testing.T) 
 // ID is a separate requirement, defended by the collision test rather than by
 // either of these — see mutation B in the file header.
 func TestCopyItemAcrossWorkspaces_OpposingMovesDoNotDeadlock(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)
@@ -560,6 +562,7 @@ func TestCopyItemAcrossWorkspaces_OpposingMovesDoNotDeadlock(t *testing.T) {
 // transaction, or before the destination lock is acquired — either of which
 // lets both copies read the same pre-copy count and both commit.
 func TestCopyItemAcrossWorkspaces_ConcurrentCopiesCannotJointlyExceedQuota(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)
@@ -645,6 +648,7 @@ func TestCopyItemAcrossWorkspaces_ConcurrentCopiesCannotJointlyExceedQuota(t *te
 // the only source of truth for what collides), creates two workspaces with
 // those IDs, and asserts that acquiring both workspaces' locks yields ONE key.
 func TestAcquireWorkspaceLocksOrdered_CollidingKeysTakeOneLock(t *testing.T) {
+	t.Parallel()
 	requirePostgresForConcurrency(t)
 
 	s := testStore(t)

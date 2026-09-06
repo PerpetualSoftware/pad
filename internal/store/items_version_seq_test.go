@@ -28,6 +28,7 @@ import (
 //   - ListItemVersionsResolved reconstructs the correct pre-update content
 //     for each row — which only holds if the newest→oldest walk is ordered.
 func TestItemVersionSeqBreaksSameSecondTies(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Version Seq Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

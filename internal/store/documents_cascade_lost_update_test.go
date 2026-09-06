@@ -48,6 +48,7 @@ import (
 //   - the old title is gone. Without it, a rewrite that APPENDED rather than
 //     replaced would pass the second assertion.
 func TestUpdateDocument_CascadeDoesNotOverwriteConcurrentEdit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverPostgres {
 		t.Skip("asserts a Postgres READ COMMITTED lost-update property; SQLite's BEGIN IMMEDIATE closes the window structurally")
@@ -119,6 +120,7 @@ func TestUpdateDocument_CascadeDoesNotOverwriteConcurrentEdit(t *testing.T) {
 // So the assertion is that the rename SUCCEEDS, and the counterfactual is
 // specific: with the probe removed, this returns the exhaustion error.
 func TestUpdateDocument_CascadeTreatsSoftDeletedLinkerAsDone(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverPostgres {
 		t.Skip("needs a write to commit inside the cascade's window, which SQLite's BEGIN IMMEDIATE prevents")
@@ -180,6 +182,23 @@ func TestUpdateDocument_CascadeExhaustionRollsBackTheWholeRename(t *testing.T) {
 	target := createTestDoc(t, s, ws.ID, originalTitle, "the document being renamed")
 	linker := createTestDoc(t, s, ws.ID, "EpsilonLinker", "before [[Epsilon]] after")
 
+	// THIS TEST MUST NOT CALL t.Parallel() (TASK-2900), and the line below is
+	// why: cascadeRewriteAttempts is a PACKAGE-LEVEL global, so the window
+	// between this assignment and the deferred restore is visible to every
+	// other test running at the same time. This test would not flake; the
+	// other cascade tests would, intermittently.
+	//
+	// It is safe as written because Go holds a test that calls t.Parallel()
+	// and resumes it only after the sequential pass over the package's
+	// top-level tests has finished — so a test that does NOT call it runs with
+	// no parallel test in flight. That is MEASURED, not assumed: a probe with
+	// serial mutators either side of eight parallel observers, including a
+	// serial test declared AFTER them, recorded zero observations of the
+	// mutation across a 300ms window.
+	//
+	// TestCascadeExhaustionStaysSerial enforces the "must not" above, because
+	// a comment protects nobody against the next sweep — and this repository
+	// just ran one that touched 844 test functions.
 	restore := cascadeRewriteAttempts
 	cascadeRewriteAttempts = 1
 	defer func() { cascadeRewriteAttempts = restore }()
@@ -246,6 +265,7 @@ func TestUpdateDocument_CascadeExhaustionRollsBackTheWholeRename(t *testing.T) {
 // Multiple links in one body, and a second linker, so it also covers the loop
 // rather than a single-row happy path.
 func TestUpdateDocument_CascadeRewritesEveryLinkOnBothDialects(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "CascadeBothDialects")
 

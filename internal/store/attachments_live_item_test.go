@@ -44,6 +44,7 @@ func countLiveAttachments(t *testing.T, s *Store, wsID string) int {
 }
 
 func TestCreateAttachmentForLiveItem_LiveParentInserts(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, _, row := liveItemAttachmentFixture(t, s)
 
@@ -59,6 +60,7 @@ func TestCreateAttachmentForLiveItem_LiveParentInserts(t *testing.T) {
 }
 
 func TestCreateAttachmentForLiveItem_ArchivedParentRefuses(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, itemID, row := liveItemAttachmentFixture(t, s)
 
@@ -77,6 +79,7 @@ func TestCreateAttachmentForLiveItem_ArchivedParentRefuses(t *testing.T) {
 // A non-null item_id that names nothing at all is refused, not silently
 // written as if it were an orphan.
 func TestCreateAttachmentForLiveItem_MalformedParentRefuses(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, _, row := liveItemAttachmentFixture(t, s)
 
@@ -93,6 +96,7 @@ func TestCreateAttachmentForLiveItem_MalformedParentRefuses(t *testing.T) {
 // item_id carries no FK or same-workspace constraint, so a live item in
 // ANOTHER workspace would pass a liveness-only re-check.
 func TestCreateAttachmentForLiveItem_ForeignWorkspaceParentRefuses(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, _, row := liveItemAttachmentFixture(t, s)
 
@@ -198,6 +202,7 @@ func waitForLockWait(t *testing.T, s *Store, needle string, done <-chan error) {
 // while the first is live — the interleaving this test constructs is
 // unrepresentable there, which is why the locking clause is dialect-gated.
 func TestCreateAttachmentForLiveItem_BlocksOnArchivingWriter(t *testing.T) {
+	t.Parallel()
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if pgURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set — the lock only exists on Postgres")

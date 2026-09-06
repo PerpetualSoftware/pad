@@ -13,6 +13,7 @@ import (
 //   - With 2 workspaces (below cap): Allowed=true, Current=2
 //   - After inserting a 3rd workspace (at cap): Allowed=false, Current=3
 func TestCheckUserLimit_WorkspacesFreeTier(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "s3cret")
@@ -80,6 +81,7 @@ func TestCheckUserLimit_WorkspacesFreeTier(t *testing.T) {
 // TestCheckUserLimit_WorkspacesFreeWithOverride confirms that a per-user
 // plan_overrides JSON entry raises the cap above the default 3.
 func TestCheckUserLimit_WorkspacesFreeWithOverride(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "override@example.com", "Override", "s3cret")
@@ -115,6 +117,7 @@ func TestCheckUserLimit_WorkspacesFreeWithOverride(t *testing.T) {
 // TestCheckUserLimit_WorkspacesProUnlimited confirms that pro-plan users
 // are always allowed regardless of workspace count.
 func TestCheckUserLimit_WorkspacesProUnlimited(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	owner := createTestUser(t, s, "pro@example.com", "Pro", "s3cret")

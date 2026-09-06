@@ -26,6 +26,7 @@ import (
 // If this passes while Layer A's tests also pass, the invariant has moved from
 // being a property of our code to being a property of the data.
 func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("Layer B is SQLite-only; Postgres refuses natively")
@@ -146,6 +147,7 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 // TestGenerateNULTriggerMigration. If the FILE is right, the list is wrong and
 // regenerating would erase the evidence.
 func TestNULTriggersMatchTheList(t *testing.T) {
+	t.Parallel()
 	committed, err := os.ReadFile("migrations/" + nulTriggerMigration)
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
@@ -190,6 +192,7 @@ func TestNULTriggersMatchTheList(t *testing.T) {
 // exercise this is to classify the driver error directly and, separately, to
 // prove an unguarded write produces a message the classifier recognises.
 func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
+	t.Parallel()
 	// WHY THERE IS NO END-TO-END LEG HERE, stated rather than faked.
 	//
 	// Codex round 2 was right that testing classifyTriggerRefusal with a
@@ -317,6 +320,7 @@ func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
 // enforcers, which is what licenses two enforcement layers to coexist — the
 // property DOC-2823 named as the deliverable rather than the guard itself.
 func TestLayerBAgreesWithTheCorpus(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("Layer B is SQLite-only")
@@ -395,6 +399,7 @@ func execRaw(db *sql.DB, q string, args ...any) error {
 // This simulates the rebuild by dropping the triggers, then runs the same
 // re-assertion path startup uses.
 func TestNULTriggersSurviveATableRebuild(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("Layer B is SQLite-only")
@@ -590,6 +595,7 @@ func openFakeGuarded(t *testing.T) *sql.DB {
 // use, which is the closest reachable analogue of a corrupt or partially
 // restored database.
 func TestNULTriggerRestorationFailsLoudlyOnAQueryError(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("Layer B is SQLite-only")
@@ -621,6 +627,7 @@ func TestNULTriggerRestorationFailsLoudlyOnAQueryError(t *testing.T) {
 // edit can ABORT legitimate writes, and the check that is supposed to notice
 // would report the database fine forever.
 func TestNULTriggerRestorationRemovesStrays(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() != DriverSQLite {
 		t.Skip("Layer B is SQLite-only")

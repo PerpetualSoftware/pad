@@ -22,6 +22,7 @@ import (
 // It runs against the RAW driver deliberately — no guard in the path — so what
 // is measured is Postgres's own verdict, not ours reflected back.
 func TestNativePostgresAgreesWithTheCorpus(t *testing.T) {
+	t.Parallel()
 	dsn := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if dsn == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set; the native-Postgres leg needs a real server")

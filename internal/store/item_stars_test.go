@@ -8,6 +8,7 @@ import (
 )
 
 func TestStarItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -35,6 +36,7 @@ func TestStarItem(t *testing.T) {
 }
 
 func TestUnstarItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -64,6 +66,7 @@ func TestUnstarItem(t *testing.T) {
 }
 
 func TestIsItemStarred(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -92,6 +95,7 @@ func TestIsItemStarred(t *testing.T) {
 }
 
 func TestAreItemsStarred(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -130,6 +134,7 @@ func TestAreItemsStarred(t *testing.T) {
 }
 
 func TestListStarredItems(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -162,6 +167,7 @@ func TestListStarredItems(t *testing.T) {
 }
 
 func TestListStarredItemsExcludesTerminal(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -200,6 +206,7 @@ func TestListStarredItemsExcludesTerminal(t *testing.T) {
 }
 
 func TestStarsArePerUser(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -234,6 +241,7 @@ func TestStarsArePerUser(t *testing.T) {
 }
 
 func TestCountStarredItems(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -264,6 +272,7 @@ func TestCountStarredItems(t *testing.T) {
 }
 
 func TestDeleteStarsForItem(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

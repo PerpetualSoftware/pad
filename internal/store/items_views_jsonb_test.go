@@ -31,6 +31,7 @@ import (
 // The store-layer coercion normalizes "" → "{}" / "[]" before the
 // UPDATE reaches the database.
 func TestItemsViewsJSONB_UpdateItemCoercesEmptyStringFields(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "JSONBCoerce")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -56,6 +57,7 @@ func TestItemsViewsJSONB_UpdateItemCoercesEmptyStringFields(t *testing.T) {
 // TestItemsViewsJSONB_UpdateViewCoercesEmptyStringConfig exercises the
 // IDEA-1486 floor at views.go:152.
 func TestItemsViewsJSONB_UpdateViewCoercesEmptyStringConfig(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "ViewCoerce")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -88,6 +90,7 @@ func TestItemsViewsJSONB_UpdateViewCoercesEmptyStringConfig(t *testing.T) {
 // shape default. Mirrors the IDEA-1488 log-and-coerce policy: legacy
 // bundles don't fail-stop on one bad row.
 func TestItemsViewsJSONB_ImportWorkspaceCoercesEmptyAndMalformed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner, err := s.CreateUser(models.UserCreate{
 		Email:    "owner-import@example.com",
@@ -254,6 +257,7 @@ func jsonEqualString(a, b string) bool {
 // rebuild forgets to recreate an index or the FTS triggers don't
 // re-attach to the renamed items table.
 func TestItemsViewsJSONB_SQLiteRebuildPreservesIndexesAndTriggers(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific schema-introspection test")
 	}
@@ -352,6 +356,7 @@ func TestItemsViewsJSONB_SQLiteRebuildPreservesIndexesAndTriggers(t *testing.T) 
 // schema level on SQLite (driven by the table-rebuild from migration
 // 056). This is the load-bearing invariant the IDEA-1486 floor adds.
 func TestItemsViewsJSONB_SQLiteRebuildRejectsNullFieldsAfterMigration(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific test; Postgres counterpart uses ALTER COLUMN SET NOT NULL")
 	}
@@ -375,6 +380,7 @@ func TestItemsViewsJSONB_SQLiteRebuildRejectsNullFieldsAfterMigration(t *testing
 // TestItemsViewsJSONB_SQLiteRebuildRejectsNullConfigAfterMigration is
 // the views.config counterpart to the items NULL-reject test.
 func TestItemsViewsJSONB_SQLiteRebuildRejectsNullConfigAfterMigration(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific test")
 	}
@@ -397,6 +403,7 @@ func TestItemsViewsJSONB_SQLiteRebuildRejectsNullConfigAfterMigration(t *testing
 // Verifies the ALTER COLUMN ... SET NOT NULL from pgmigrations/035 + 036
 // actually rejects NULL writes.
 func TestItemsViewsJSONB_PostgresRejectsNullFieldsAfterMigration(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
 	}
@@ -442,6 +449,7 @@ func TestItemsViewsJSONB_PostgresRejectsNullFieldsAfterMigration(t *testing.T) {
 // repeated application (DROP TABLE IF EXISTS items_new; backfill UPDATEs
 // are WHERE x IS NULL; index/trigger DROPs use IF EXISTS).
 func TestItemsViewsJSONB_SQLiteRebuildIsIdempotent(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific idempotency test")
 	}
@@ -479,6 +487,7 @@ func TestItemsViewsJSONB_SQLiteRebuildIsIdempotent(t *testing.T) {
 // INSERT…SELECT, the FK metadata re-resolves to the renamed table by
 // name and existing links remain valid.
 func TestItemsViewsJSONB_ItemLinksRoundTripAfterRebuild(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "LinkRoundTrip")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -520,6 +529,7 @@ func TestItemsViewsJSONB_ItemLinksRoundTripAfterRebuild(t *testing.T) {
 // seeding below is the actual ship-breaker scenario; without the
 // widened WHERE clause, the migration aborts.
 func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific (json_valid / json_type)")
 	}
@@ -749,6 +759,7 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 // required, a primitive). Codex R2 P1: the original NULL-only WHERE
 // would have left wrong-shape rows in place.
 func TestItemsViewsJSONB_PostgresBackfillRepairsMalformedShapes(t *testing.T) {
+	t.Parallel()
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if pgURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
@@ -818,6 +829,7 @@ func TestItemsViewsJSONB_PostgresBackfillRepairsMalformedShapes(t *testing.T) {
 // design decision D2, the virtual table is NOT dropped — only the
 // three triggers are.)
 func TestItemsViewsJSONB_ItemsFTSVirtualTableExists(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific (items_fts is a SQLite FTS5 virtual table)")
 	}

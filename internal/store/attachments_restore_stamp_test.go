@@ -37,6 +37,7 @@ func stampAged(t *testing.T, f *gcClaimFixture, id string, when time.Time) {
 const restoreStaleWindow = 15 * time.Minute
 
 func TestRestoreDocument_ReStampsAttachmentRefs(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	att := f.seedNeverAttached(t)
 
@@ -78,6 +79,7 @@ func TestRestoreDocument_ReStampsAttachmentRefs(t *testing.T) {
 }
 
 func TestRestoreItem_ReStampsAttachmentRefs(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	// Unattached upload (item_id NULL) referenced only from an item's content
 	// — the reachable item-leg case (an item-attached row carries item_id and
@@ -122,6 +124,7 @@ func TestRestoreItem_ReStampsAttachmentRefs(t *testing.T) {
 // attachment referenced only from a field value (e.g. a cover image) must be
 // re-stamped on restore too, since RestoreItem stamps content AND fields.
 func TestRestoreItem_ReStampsFieldsRefs(t *testing.T) {
+	t.Parallel()
 	f := newGCClaimFixture(t)
 	att := f.seedNeverAttached(t)
 

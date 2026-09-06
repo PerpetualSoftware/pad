@@ -21,6 +21,7 @@ func createTestUser(t *testing.T, s *Store, email, name, password string) *model
 }
 
 func TestUserCRUD(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// Create
@@ -104,6 +105,7 @@ func TestUserCRUD(t *testing.T) {
 }
 
 func TestUserCreateAdmin(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	u, err := s.CreateUser(models.UserCreate{
@@ -121,6 +123,7 @@ func TestUserCreateAdmin(t *testing.T) {
 }
 
 func TestUserDuplicateEmail(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	_, err := s.CreateUser(models.UserCreate{
@@ -139,6 +142,7 @@ func TestUserDuplicateEmail(t *testing.T) {
 }
 
 func TestValidatePassword(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	createTestUser(t, s, "test@test.com", "Test", "correctpassword")
@@ -172,6 +176,7 @@ func TestValidatePassword(t *testing.T) {
 }
 
 func TestListUsers(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	createTestUser(t, s, "a@test.com", "Alice", "pass1")
@@ -187,6 +192,7 @@ func TestListUsers(t *testing.T) {
 }
 
 func TestUserCount(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	count, _ := s.UserCount()
@@ -204,6 +210,7 @@ func TestUserCount(t *testing.T) {
 }
 
 func TestCountBillingAggregates(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	now := time.Now().UTC()
 	cutoff := now.Add(-30 * 24 * time.Hour)
@@ -256,6 +263,7 @@ func TestCountBillingAggregates(t *testing.T) {
 // over no-workspace wins over inactive wins over active. Documented in the
 // admin user list contract (PLAN-1542 / TASK-1544).
 func TestComputeAdminUserStatus(t *testing.T) {
+	t.Parallel()
 	recent := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
 	old := time.Now().UTC().Add(-60 * 24 * time.Hour).Format(time.RFC3339)
 	cases := []struct {
@@ -288,6 +296,7 @@ func TestComputeAdminUserStatus(t *testing.T) {
 // sort/filter knobs route to the right rows. Single end-to-end test against
 // a multi-user fixture; finer-grained assertions are split into subtests.
 func TestSearchUsersAggregations(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	// Three users:

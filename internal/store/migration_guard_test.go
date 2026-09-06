@@ -1,5 +1,23 @@
 package store
 
+// TASK-2900: NO TEST IN THIS FILE MAY CALL t.Parallel().
+//
+// Every one of them touches a package-level EXPORTED global —
+// store.AllowSchemaAhead and store.BinaryVersion — and restores it in a
+// t.Cleanup. Under t.Parallel that mutation window is open across every
+// concurrently-running test, and the restore fires while they are still in
+// flight: AllowSchemaAhead=true would silently disarm the schema-ahead guard
+// for whoever else is running, which is the assertion two of these tests exist
+// to make.
+//
+// Found by codex, NOT by my own sweep, and the reason is worth recording: my
+// global-mutator grep was `^var [a-z]`, which finds unexported package vars and
+// silently skips exported ones. The instrument asked "which unexported globals
+// exist" while the claim it was carrying was "which globals exist". Third
+// instance today of a grep narrower than the claim resting on it.
+//
+// TestMigrationGuardTestsStaySerial enforces this file-wide.
+
 import (
 	"os"
 	"path/filepath"

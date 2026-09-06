@@ -12,6 +12,7 @@ import (
 // CUSTOM status vocabularies (todo / drafting / scheduled) show their open
 // items instead of being hidden behind a hardcoded global allowlist.
 func TestListItems_NonTerminalFilter(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "NonTerminalFilter")
 

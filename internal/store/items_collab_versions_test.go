@@ -202,6 +202,7 @@ func TestCollabSnapshotPreservesVersionDiff(t *testing.T) {
 // full op-log state (PruneAndApply) or replace it wholesale (CLI
 // write, version restore).
 func TestCollabSnapshotDoesNotAdvanceOpLogWatermark(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Watermark Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -260,6 +261,7 @@ func TestCollabSnapshotDoesNotAdvanceOpLogWatermark(t *testing.T) {
 // op, so the GC watermark advances. Closes the browser-only-edited-
 // items-never-GC'd hole left by TASK-1309.
 func TestCollabSnapshotCursorMatchesMaxAdvancesWatermark(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Cursor Watermark Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -302,6 +304,7 @@ func TestCollabSnapshotCursorMatchesMaxAdvancesWatermark(t *testing.T) {
 // advance the watermark — the SQL CASE clause's equality check fails
 // and the column keeps its prior value. Per TASK-1319.
 func TestCollabSnapshotCursorBelowMaxLeavesWatermark(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Cursor Below Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -340,6 +343,7 @@ func TestCollabSnapshotCursorBelowMaxLeavesWatermark(t *testing.T) {
 // a collab-snapshot PATCH without OpLogCursor (older client) preserves
 // the conservative TASK-1309 behaviour (watermark unchanged).
 func TestCollabSnapshotNoCursorLeavesWatermark(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "No Cursor Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -366,6 +370,7 @@ func TestCollabSnapshotNoCursorLeavesWatermark(t *testing.T) {
 }
 
 func TestMinAndMaxOpLogIDEmptyAndPopulated(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Min Max Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
