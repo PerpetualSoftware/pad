@@ -11,11 +11,15 @@ import (
 // and internal/server/main_test.go for context — the same reasoning
 // applies to internal/store tests that call CreateUser directly.
 //
-// It also tears down testStoreSQLite's process-wide template DB
-// (IDEA-1914, store_test.go) after the suite finishes.
+// It also tears down the process-wide template databases after the suite
+// finishes: testStoreSQLite's template FILE (IDEA-1914, store_test.go) and
+// testStorePostgres's template DATABASE (TASK-2900, same file). The Postgres
+// teardown is a no-op when the suite ran on SQLite, since no template was
+// built.
 func TestMain(m *testing.M) {
 	SetBcryptCostForTesting(bcrypt.MinCost)
 	code := m.Run()
 	removeSQLiteTemplate()
+	removePostgresTemplate()
 	os.Exit(code)
 }

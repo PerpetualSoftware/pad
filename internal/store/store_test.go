@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,38 +154,87 @@ func removeSQLiteTemplate() {
 	}
 }
 
-// testStorePostgres creates an isolated test database on the PostgreSQL server.
-// It connects to the base URL, creates a randomly-named database, runs
-// migrations, and drops the database when the test finishes.
+// pgTemplate* mirror storetest/postgres.go's template machinery, duplicated
+// here for the same import-cycle reason testStoreSQLite is. KEEP IN SYNC.
+var (
+	pgTemplateMu   sync.RWMutex
+	pgTemplateOnce sync.Once
+	pgTemplateName string
+	pgTemplateErr  error
+
+	// pgCloneMu serialises CREATE DATABASE ... TEMPLATE within this binary:
+	// Postgres refuses to clone a database another session is connected to,
+	// and a clone briefly connects to the source. Uncontended while tests are
+	// serial; here because TASK-2900 may make some of them parallel, and a
+	// free lock costs less than a flake that only appears under concurrency.
+	pgCloneMu sync.Mutex
+
+	// pgTemplateBuilds is test-only instrumentation mirroring
+	// storetest's pgBuildCount. Note what it does NOT prove: it reads 1
+	// whether or not anything was cloned from the template. The clone itself
+	// is pinned by the marker, not by this counter.
+	pgTemplateBuilds int32
+)
+
+// testStorePostgres creates an isolated test database on the PostgreSQL server
+// by CLONING a per-binary template that has already been migrated.
+//
+// TASK-2900: this used to run the full migration chain per TEST — 385ms of a
+// 420ms per-construction toll, 386ms of it in the container's own CPU
+// accounting, against ~700 constructions in this package and 407s of container
+// CPU for the whole Postgres leg. The schema is identical for every test, so
+// building it per test bought nothing. This is the Postgres analogue of the
+// SQLite template-and-copy above (IDEA-1914).
+//
+// KEEP IN SYNC with internal/store/storetest/postgres.go, which carries the
+// same machinery for tests outside this package.
 func testStorePostgres(t *testing.T, baseURL string) *Store {
 	t.Helper()
 
 	// Generate a unique database name for this test.
 	dbName := "pad_test_" + uuid.New().String()[:8]
 
+	pgTemplateMu.RLock()
+	defer pgTemplateMu.RUnlock()
+
+	pgTemplateOnce.Do(func() {
+		pgTemplateName, pgTemplateErr = buildPostgresTemplate(baseURL)
+	})
+	if pgTemplateErr != nil {
+		t.Fatalf("build postgres template: %v", pgTemplateErr)
+	}
+
 	// Connect to the default "pad" database to issue CREATE/DROP DATABASE.
 	adminStore, err := newPostgresConn(baseURL)
 	if err != nil {
 		t.Fatalf("connect to postgres for admin: %v", err)
 	}
-
 	// CREATE DATABASE cannot run inside a transaction.
-	if _, err := adminStore.db.Exec(fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
-		adminStore.Close()
-		t.Fatalf("create test database %s: %v", dbName, err)
-	}
+	pgCloneMu.Lock()
+	_, err = adminStore.db.Exec(fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s", dbName, pgTemplateName))
+	pgCloneMu.Unlock()
 	adminStore.Close()
+	if err != nil {
+		t.Fatalf("clone test database %s from template %s: %v", dbName, pgTemplateName, err)
+	}
 
 	// Build the connection string for the new database.
 	testURL := replaceDBName(baseURL, dbName)
 
+	// The clone is already migrated, so this constructor's own migrate() is a
+	// fast no-op — schema_migrations arrived with the copy. Deliberately not
+	// skipped: the fixture goes through the same constructor as production.
 	s, err := NewPostgres(testURL)
 	if err != nil {
-		// Clean up the database we just created.
-		if admin2, err2 := newPostgresConn(baseURL); err2 == nil {
-			admin2.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
-			admin2.Close()
-		}
+		// Clean up the database we just created. WITH (FORCE), matching the
+		// success path below and storetest's twin: NewPostgres can fail with
+		// its pool already open — a migration error arrives after the
+		// connection does — and a plain DROP is refused while any session is
+		// attached, so the un-forced form left an orphaned pad_test_* database
+		// behind on exactly the path that most needs cleaning up. Pre-existing
+		// and asymmetric with the twin; corrected here because this change
+		// makes the two helpers a matched pair (codex round 2, P2).
+		dropPostgresTemplateDB(baseURL, dbName)
 		t.Fatalf("open test postgres store: %v", err)
 	}
 
@@ -198,6 +248,85 @@ func testStorePostgres(t *testing.T, baseURL string) *Store {
 	})
 
 	return s
+}
+
+// buildPostgresTemplate creates ONE fully-migrated database per test binary.
+// Callers hold pgTemplateMu for read.
+//
+// Closing the migrating connection is load-bearing, not hygiene: CREATE
+// DATABASE ... TEMPLATE fails while any session is connected to the source.
+//
+// LEAK POSTURE: a binary killed mid-run leaves its pad_tmpl_* database behind,
+// bounded by the container's lifetime — the test stack is per-worktree
+// (TASK-2708) and `make test-pg` tears it down with -v.
+func buildPostgresTemplate(baseURL string) (string, error) {
+	atomic.AddInt32(&pgTemplateBuilds, 1)
+	name := "pad_tmpl_" + uuid.New().String()[:8]
+
+	admin, err := newPostgresConn(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("connect to postgres for admin: %w", err)
+	}
+	if _, err := admin.db.Exec(fmt.Sprintf("CREATE DATABASE %s", name)); err != nil {
+		admin.Close()
+		return "", fmt.Errorf("create template database %s: %w", name, err)
+	}
+	admin.Close()
+
+	// The one time this binary pays for the migration chain.
+	s, err := NewPostgres(replaceDBName(baseURL, name))
+	if err != nil {
+		dropPostgresTemplateDB(baseURL, name)
+		return "", fmt.Errorf("migrate template database %s: %w", name, err)
+	}
+	// Stamp the template with a marker a freshly-migrated database cannot have.
+	// Without it this mechanism is untestable: a clone and a per-test migration
+	// produce otherwise identical databases, so reverting the TEMPLATE clause
+	// would restore the entire cost while leaving every test in the repository
+	// green. A table comment carries it because it lives in this database's own
+	// pg_description and travels with a file-level clone, while being invisible
+	// to product queries and to the NUL-scan table walkers, which read DATA.
+	// schema_migrations.applied_at is NOT sufficient: RFC3339 is
+	// second-resolution and a fresh 385ms migration can land in the same second.
+	// See storetest/postgres.go, which carries the same marker for the same
+	// reason. KEEP IN SYNC.
+	if _, err := s.db.Exec(fmt.Sprintf("COMMENT ON TABLE schema_migrations IS '%s'", pgTemplateMarker(name))); err != nil {
+		s.Close()
+		dropPostgresTemplateDB(baseURL, name)
+		return "", fmt.Errorf("stamp template %s: %w", name, err)
+	}
+	if err := s.Close(); err != nil {
+		dropPostgresTemplateDB(baseURL, name)
+		return "", fmt.Errorf("close template connection %s: %w", name, err)
+	}
+	return name, nil
+}
+
+// pgTemplateMarker is the sentinel stamped on the template and expected on
+// every database handed out. See buildPostgresTemplate.
+func pgTemplateMarker(templateName string) string {
+	return "storetest-pg-template:" + templateName
+}
+
+// removePostgresTemplate drops the per-binary template. Called from TestMain
+// after m.Run(), alongside removeSQLiteTemplate.
+func removePostgresTemplate() {
+	pgTemplateMu.Lock()
+	defer pgTemplateMu.Unlock()
+	if pgTemplateName == "" {
+		return
+	}
+	if baseURL := os.Getenv("PAD_TEST_POSTGRES_URL"); baseURL != "" {
+		dropPostgresTemplateDB(baseURL, pgTemplateName)
+	}
+	pgTemplateName = ""
+}
+
+func dropPostgresTemplateDB(baseURL, name string) {
+	if admin, err := newPostgresConn(baseURL); err == nil {
+		admin.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", name))
+		admin.Close()
+	}
 }
 
 // newPostgresConn opens a raw postgres connection (no migrations).
