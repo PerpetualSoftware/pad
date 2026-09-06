@@ -660,6 +660,24 @@ user hunting for an item that provably does not exist.
 		return applied;
 	}
 
+	/**
+	 * The workspace slug the relation picker searches in.
+	 *
+	 * The PREFLIGHT'S OWN destination slug, not `destWs`, and the difference
+	 * is not cosmetic: an item can be opened through a workspace-UUID URL, the
+	 * route parameter is passed through as `sourceWsSlug`, and a same-workspace
+	 * copy then puts that UUID in `destWs`. `/search` resolves a workspace by
+	 * SLUG only, so a picker handed a UUID searches nothing and silently
+	 * returns no results — a control that looks usable and cannot be used.
+	 *
+	 * The preflight response is the canonicalising round-trip: the server
+	 * resolved whatever it was given and answered with the real slug. Falls
+	 * back to `destWs` only before the first preflight has returned, at which
+	 * point no needs-value row is being rendered anyway (codex review,
+	 * TASK-2869).
+	 */
+	let pickerWsSlug = $derived(preflight?.destination.workspace_slug || destWs);
+
 	function toFieldDef(row: ItemCopyPreflightNeedsValue): FieldDef {
 		return {
 			key: row.key,
@@ -1154,7 +1172,7 @@ user hunting for an item that provably does not exist.
 												<div class="needs-control">
 													<FieldEditor
 														field={toFieldDef(row)}
-														wsSlug={destWs}
+														wsSlug={pickerWsSlug}
 														ariaLabel={row.label || row.key}
 														value={overrides[row.key]}
 														readonly={submitting || preparing}

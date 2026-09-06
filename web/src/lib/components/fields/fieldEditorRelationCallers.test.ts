@@ -55,8 +55,13 @@ describe('CopyItemDialog is now on the EDITABLE side of the gate (TASK-2869 / U2
 	it('passes the DESTINATION workspace slug, not the source', () => {
 		// destWs, never sourceWsSlug: a relation resolves at the destination,
 		// so the picker must list items the copy can actually point at.
-		expect(tag).toMatch(/wsSlug=\{destWs\}/);
+		// The PREFLIGHT'S canonical destination slug, not the raw `destWs`
+		// route value: an item opened through a workspace-UUID URL puts that
+		// UUID in destWs, and /search resolves by slug only, so the picker
+		// would silently search nothing (codex review, TASK-2869).
+		expect(tag).toMatch(/wsSlug=\{pickerWsSlug\}/);
 		expect(tag).not.toMatch(/wsSlug=\{sourceWsSlug\}/);
+		expect(copyDialog).toMatch(/preflight\?\.destination\.workspace_slug \|\| destWs/);
 	});
 
 	it('carries the row\'s target collection into the FieldDef', () => {
