@@ -1840,10 +1840,10 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 		// telling someone to use `--field` is advice that cannot be followed,
 		// and the error is the one line a script or a hurried reader sees.
 		hint := " (use --field key=value)"
-		if itemCopyUnfillable(pre.Fields.NeedsValue) == len(pre.Fields.NeedsValue) {
+		if tally := itemCopyTally(pre.Fields.NeedsValue); tally.AllUnfillable() {
 			hint = fmt.Sprintf(" (no --field can supply %s: %s)",
-				map[bool]string{true: "it", false: "them"}[len(pre.Fields.NeedsValue) == 1],
-				itemCopyUnfillableWhy(pre.Fields.NeedsValue))
+				map[bool]string{true: "it", false: "them"}[tally.Total == 1],
+				tally.Why())
 		}
 		return fmt.Errorf("copy refused: %s in %s/%s %s a value%s",
 			pluralize(len(pre.Fields.NeedsValue), "field", "fields"),
@@ -2128,24 +2128,21 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 		// a relation whose target collection is unavailable, and one whose key
 		// is empty. Both send someone to run a command that is refused for
 		// exactly the reason they are already stuck.
-		unfillable := itemCopyUnfillable(p.Fields.NeedsValue)
+		tally := itemCopyTally(p.Fields.NeedsValue)
+		fields := pluralize(tally.Total, "field", "fields")
+		needs := map[bool]string{true: "needs", false: "need"}[tally.Total == 1]
 		switch {
-		case unfillable == len(p.Fields.NeedsValue):
+		case tally.AllUnfillable():
 			fmt.Fprintf(w, "%s still %s a value, and no --field can supply %s: %s.\n",
-				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
-				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1],
-				map[bool]string{true: "it", false: "them"}[len(p.Fields.NeedsValue) == 1],
-				itemCopyUnfillableWhy(p.Fields.NeedsValue))
-		case unfillable > 0:
+				fields, needs,
+				map[bool]string{true: "it", false: "them"}[tally.Total == 1],
+				tally.Why())
+		case tally.Unfillable > 0:
 			fmt.Fprintf(w, "%s still %s a value. Supply the rest with --field key=value, then re-run without --dry-run — but %d of them cannot be supplied at all (%s).\n",
-				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
-				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1],
-				unfillable,
-				itemCopyUnfillableWhy(p.Fields.NeedsValue))
+				fields, needs, tally.Unfillable, tally.Why())
 		default:
 			fmt.Fprintf(w, "%s still %s a value. Supply with --field key=value, then re-run without --dry-run.\n",
-				pluralize(len(p.Fields.NeedsValue), "field", "fields"),
-				map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1])
+				fields, needs)
 		}
 		return w.err
 	}
@@ -2261,7 +2258,7 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	// instead (Codex round 6). Empty keys are not currently rejected by
 	// collection-schema validation, so this is reachable.
 	unnamed := 0
-	unfillable := itemCopyUnavailableTarget(p.Fields.NeedsValue)
+	unfillable := itemCopyTally(p.Fields.NeedsValue).UnavailableTarget
 	var toAdd, toFix []string
 	for _, f := range p.Fields.NeedsValue {
 		if strings.TrimSpace(f.Key) == "" {
@@ -2317,94 +2314,77 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	return w.err
 }
 
-// itemCopyUnfillable counts needs_value rows NO `--field` can satisfy, for
-// EITHER reason (IDEA-2899).
+// itemCopyFieldTally is what every "how do I supply this" sentence in the copy
+// path is computed from (IDEA-2899).
 //
-// Consulted by the two sites that state the advice in ONE sentence — the
-// --dry-run summary and the returned error. (The detailed render has its own
-// per-row handling and uses `itemCopyUnavailableTarget` plus its separate
-// empty-key branch, because it explains each reason where the row is printed.)
-// The first version of this fix touched only that render, and a review found
-// the other two still printing `--field key=value` at someone for whom no value
-// exists. Sites independently answering "how do I supply this" is exactly how
-// they diverge, so they ask one function instead.
+// ONE pass, ONE shape, because the alternative was measured. This started as a
+// single count, grew a second for the other reason a row cannot be supplied,
+// then a phrase function, and each addition falsified the previous round's
+// wording somewhere else: four review rounds, and every finding but the first
+// lived in this layer while the server half stayed clean. That distribution is
+// the finding — not the individual bugs, which were each small and each real.
 //
-// TWO reasons, not one, and the second was already here: an EMPTY KEY cannot be
-// supplied because `--field =value` is rejected by this command's own parser,
-// which the detailed render has explained since Codex round 6. That render is
-// the only site that knew; the summary and the error went on advising `--field`
-// for those rows too. A predicate named "unfillable" that answered for one of
-// the two reasons would have been a worse trap than no predicate — right at the
-// site that defined it, wrong everywhere it was reused.
-func itemCopyUnfillable(rows []cli.ItemCopyPreflightNeedsValue) int {
-	n := 0
-	for _, f := range rows {
-		if f.CollectionUnavailable || strings.TrimSpace(f.Key) == "" {
-			n++
-		}
-	}
-	return n
+// So the branching is gone. Callers ask for the tally and read the fields they
+// need; there is no second definition of "unfillable" to drift from the first,
+// and no sentence describing a subset of what a predicate counts.
+type itemCopyFieldTally struct {
+	// Total is every needs_value row.
+	Total int
+	// UnavailableTarget is rows naming a relation target this caller cannot
+	// use — deleted, or unreadable (IDEA-2899).
+	UnavailableTarget int
+	// EmptyKey is rows the destination reported with no key. `--field =value`
+	// is rejected by this command's own parser, so these have been unfillable
+	// since Codex round 6; only the detailed render knew it.
+	EmptyKey int
+	// Unfillable is rows carrying EITHER fault. NOT the sum: one row can carry
+	// BOTH — a relation with an empty key whose target is also unavailable —
+	// and counting it twice would make `Unfillable == Total` false for a set
+	// that is entirely unfillable, which is the comparison every caller makes.
+	Unfillable int
 }
 
-// itemCopyUnfillableWhy names WHY no `--field` can supply the given rows, for
-// the two sites that state it in one sentence (IDEA-2899, review round 3).
-//
-// Broadening `itemCopyUnfillable` to cover empty keys without broadening the
-// SENTENCE was the defect: a set of empty-key rows selected the all-unfillable
-// branch and was then explained as "the relation target is not available to
-// you", which is a false statement about rows that have no relation in them.
-// Widening what a rule ACTS on silently widens what it SAYS, and the tell is a
-// sentence that was true while the predicate was narrower.
-//
-// Counts the two faults INDEPENDENTLY — no `continue` between them — because
-// ONE row can carry both: a relation with an empty key whose target is also
-// unavailable. Skipping the second count made such a row report only the
-// relation reason, and a mixed-case test built from TWO rows could not see it
-// (review round 4). One row with both faults and two rows with one each are
-// different fixtures, and only the first exercises this.
-//
-// Returns "" when nothing is unfillable.
-func itemCopyUnfillableWhy(rows []cli.ItemCopyPreflightNeedsValue) string {
-	targets, keys := 0, 0
+func itemCopyTally(rows []cli.ItemCopyPreflightNeedsValue) itemCopyFieldTally {
+	t := itemCopyFieldTally{Total: len(rows)}
 	for _, f := range rows {
+		bad := false
 		if f.CollectionUnavailable {
-			targets++
+			t.UnavailableTarget++
+			bad = true
 		}
 		if strings.TrimSpace(f.Key) == "" {
-			keys++
+			t.EmptyKey++
+			bad = true
+		}
+		if bad {
+			t.Unfillable++
 		}
 	}
+	return t
+}
+
+// AllUnfillable is the condition the error and the summary both test: no
+// `--field` resolves ANY of them, so advising one is advice that cannot be
+// followed. False for an empty set, which has nothing to advise about.
+func (t itemCopyFieldTally) AllUnfillable() bool {
+	return t.Total > 0 && t.Unfillable == t.Total
+}
+
+// Why names the reasons actually present, for the two sites that state it in
+// one sentence. Neutral on number: one caller says "it" and the other may be
+// plural, so the phrase has to read correctly after either.
+//
+// Empty when nothing is unfillable.
+func (t itemCopyFieldTally) Why() string {
 	switch {
-	case targets > 0 && keys > 0:
+	case t.UnavailableTarget > 0 && t.EmptyKey > 0:
 		return "some name a relation target that is not available to you, and some came back with an empty key"
-	case targets > 0:
+	case t.UnavailableTarget > 0:
 		return "the relation target is not available to you"
-	case keys > 0:
-		// Neutral on number, since one call site says "it" and the other can be
-		// plural (review round 4): "an empty key" reads correctly after either.
+	case t.EmptyKey > 0:
 		return "an empty key came back from the destination, which --field cannot address"
 	}
 	return ""
-}
-
-// itemCopyUnavailableTarget counts only the relation half, for the detailed
-// render's own sentence about it — that render explains the empty-key case
-// separately, and the two sentences say different things.
-//
-// DELIBERATELY NOT also excluding empty keys, though the first version did. A
-// row can carry BOTH faults, and a mutant removing that exclusion survived
-// every test — correctly, because the behaviour it changes is printing two
-// sentences that are both TRUE about such a row instead of one. The guard was
-// tidiness dressed as a rule, and a condition nothing can distinguish is a
-// condition the next reader has to re-derive.
-func itemCopyUnavailableTarget(rows []cli.ItemCopyPreflightNeedsValue) int {
-	n := 0
-	for _, f := range rows {
-		if f.CollectionUnavailable {
-			n++
-		}
-	}
-	return n
 }
 
 // renderItemCopyResult writes the outcome of a completed copy.

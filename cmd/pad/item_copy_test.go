@@ -2037,3 +2037,41 @@ func TestRunItemCopy_ARowWithBothFaultsReportsBoth(t *testing.T) {
 		}
 	}
 }
+
+// The tally as a unit, including the case its callers cannot currently reach.
+//
+// Both call sites sit inside `if len(NeedsValue) > 0`, so `Total == 0` never
+// arrives today and a mutant removing the guard SURVIVES every command-level
+// test. Keeping an unreachable guard and calling it defence is how a promise
+// becomes a lie, so it is tested where it IS reachable: an empty set is not
+// "entirely unfillable", and a future caller outside that gate would otherwise
+// be told, silently, that nothing can be supplied.
+func TestItemCopyTally(t *testing.T) {
+	if got := itemCopyTally(nil); got.AllUnfillable() {
+		t.Fatalf("an empty set reports AllUnfillable: %+v", got)
+	}
+
+	// ONE row, BOTH faults. Unfillable must be 1, not 2 — otherwise
+	// `Unfillable == Total` is false for a set that is entirely unfillable,
+	// which is the comparison both callers make.
+	both := itemCopyTally([]cli.ItemCopyPreflightNeedsValue{{
+		Key: "", Type: "relation", CollectionUnavailable: true,
+	}})
+	if both.Unfillable != 1 || both.Total != 1 || !both.AllUnfillable() {
+		t.Fatalf("a single row with both faults tallied wrong: %+v", both)
+	}
+	if both.UnavailableTarget != 1 || both.EmptyKey != 1 {
+		t.Fatalf("both reasons should be counted for the same row: %+v", both)
+	}
+
+	// A whitespace-only key is an empty key: `--field " "=value` names nothing
+	// either, and the render has trimmed since Codex round 6.
+	if got := itemCopyTally([]cli.ItemCopyPreflightNeedsValue{{Key: "   "}}); got.EmptyKey != 1 {
+		t.Fatalf("a whitespace-only key is not counted as empty: %+v", got)
+	}
+
+	// A perfectly ordinary row is unfillable in neither sense.
+	if got := itemCopyTally([]cli.ItemCopyPreflightNeedsValue{{Key: "size", Type: "select"}}); got.Unfillable != 0 || got.Why() != "" {
+		t.Fatalf("an ordinary row was tallied as unfillable: %+v (why=%q)", got, got.Why())
+	}
+}
