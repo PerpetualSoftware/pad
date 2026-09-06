@@ -2197,7 +2197,18 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 		// makes `--field owner_ref=<ref>` answerable. Same reason the dialog
 		// needs it, on the surface that has no picker at all.
 		if f.Collection != "" {
-			fmt.Fprintf(w, "  %-20s   target collection: %s\n", "", itemCopyLine(f.Collection))
+			// IDEA-2899. Naming the target is only useful if the target is
+			// there: it can have been deleted, or be one this caller cannot
+			// read. Saying "target collection: people" and then refusing every
+			// ref the user finds is the CLI version of the dialog's empty
+			// picker — it sends someone looking for a value that does not
+			// exist for them.
+			if f.CollectionUnavailable {
+				fmt.Fprintf(w, "  %-20s   target collection: %s — NOT AVAILABLE to you (deleted, or you cannot access it)\n",
+					"", itemCopyLine(f.Collection))
+			} else {
+				fmt.Fprintf(w, "  %-20s   target collection: %s\n", "", itemCopyLine(f.Collection))
+			}
 		}
 		if f.Message != "" {
 			fmt.Fprintf(w, "  %-20s   %s\n", "", itemCopyLine(f.Message))
@@ -2210,10 +2221,22 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	// instead (Codex round 6). Empty keys are not currently rejected by
 	// collection-schema validation, so this is reachable.
 	unnamed := 0
+	unfillable := 0
 	var toAdd, toFix []string
 	for _, f := range p.Fields.NeedsValue {
 		if strings.TrimSpace(f.Key) == "" {
 			unnamed++
+			continue
+		}
+		// A relation whose TARGET is unavailable cannot be supplied either
+		// (IDEA-2899), and for the same reason the empty-key case above is
+		// excluded: `--field owner_ref=<value>` is a command with no value that
+		// can satisfy it, since the referent validation this command runs
+		// against would refuse anything the user could name. Printing it is
+		// handing someone a command that cannot work — the exact failure the
+		// empty-key branch was written to avoid.
+		if f.CollectionUnavailable {
+			unfillable++
 			continue
 		}
 		if _, ok := supplied(f.Key); ok {
@@ -2238,6 +2261,13 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 			fmt.Fprintf(w, " --field %s=<a valid value>", k)
 		}
 		fmt.Fprintln(w)
+	}
+	if unfillable > 0 {
+		fmt.Fprintf(w, "\n%s a relation whose target collection is not available to you, so no --field value can satisfy %s.\n",
+			map[bool]string{true: "One field is", false: pluralize(unfillable, "field is", "fields are")}[unfillable == 1],
+			map[bool]string{true: "it", false: "them"}[unfillable == 1])
+		fmt.Fprintf(w, "That is a permissions or schema problem in %s/%s, not something\nthis command can resolve.\n",
+			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug)
 	}
 	if unnamed > 0 {
 		fmt.Fprintf(w, "\n%s came back with an empty key and cannot be supplied with --field.\n",

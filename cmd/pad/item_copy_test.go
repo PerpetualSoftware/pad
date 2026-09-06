@@ -1709,3 +1709,89 @@ func TestRenderItemCopyNeedsValue_RelationNamesItsTargetCollection(t *testing.T)
 		t.Fatalf("the select row lost its options line:\n%s", got)
 	}
 }
+
+// IDEA-2899. Naming the target is only useful if the target is THERE. When it
+// is not — deleted, or unreadable by this caller — the CLI must say so and must
+// NOT print `--field owner_ref=<value>`: the referent validation this command
+// runs against would refuse anything the user could name, so the suggestion is
+// a command that cannot work. Same disposition as the empty-key branch, which
+// exists for exactly that reason.
+func TestRenderItemCopyNeedsValue_UnavailableRelationTargetIsNotSuggested(t *testing.T) {
+	pre := &cli.ItemCopyPreflight{
+		Destination: cli.ItemCopyPreflightDestination{
+			WorkspaceSlug: "dest-ws", CollectionSlug: "tasks",
+		},
+		Fields: cli.ItemCopyPreflightFields{
+			NeedsValue: []cli.ItemCopyPreflightNeedsValue{
+				{
+					Key: "owner_ref", Label: "Owner", Type: "relation",
+					Collection: "people", CollectionUnavailable: true,
+					Required: true, Reason: "missing_required",
+				},
+				// A row the CLI CAN fill, in the same render. Without it the
+				// test could pass by suppressing the Add: line entirely, which
+				// would be a different and worse bug.
+				{
+					Key: "priority", Label: "Priority", Type: "select",
+					Options: []string{"low", "high"}, Required: true,
+					Reason: "missing_required",
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderItemCopyNeedsValue(&buf, pre, nil); err != nil {
+		t.Fatalf("renderItemCopyNeedsValue: %v", err)
+	}
+	got := buf.String()
+
+	if !strings.Contains(got, "NOT AVAILABLE to you") {
+		t.Fatalf("the unavailable target is rendered as though it were usable:\n%s", got)
+	}
+	if strings.Contains(got, "--field owner_ref=") {
+		t.Fatalf("the CLI suggests supplying a relation whose target is unavailable; no value "+
+			"can satisfy it and the command would be refused:\n%s", got)
+	}
+	// THE OTHER DIRECTION, which is what makes the assertion above mean
+	// something: the fillable row is still suggested.
+	if !strings.Contains(got, "--field priority=<value>") {
+		t.Fatalf("the fillable row lost its suggestion, so the fix suppressed more than the one "+
+			"row it should have:\n%s", got)
+	}
+	if !strings.Contains(got, "no --field value can satisfy") {
+		t.Fatalf("nothing explains WHY the relation is missing from the Add: line; a suggestion "+
+			"that silently omits a required field reads as a bug in the CLI:\n%s", got)
+	}
+}
+
+// The control for the line above: an AVAILABLE target renders exactly as it did
+// before this change, so `omitempty`'s absent-means-available contract is
+// exercised on the CLI surface and not only on the web one.
+func TestRenderItemCopyNeedsValue_AvailableRelationTargetIsUnchanged(t *testing.T) {
+	pre := &cli.ItemCopyPreflight{
+		Destination: cli.ItemCopyPreflightDestination{
+			WorkspaceSlug: "dest-ws", CollectionSlug: "tasks",
+		},
+		Fields: cli.ItemCopyPreflightFields{
+			NeedsValue: []cli.ItemCopyPreflightNeedsValue{{
+				Key: "owner_ref", Label: "Owner", Type: "relation",
+				Collection: "people", Required: true, Reason: "missing_required",
+			}},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderItemCopyNeedsValue(&buf, pre, nil); err != nil {
+		t.Fatalf("renderItemCopyNeedsValue: %v", err)
+	}
+	got := buf.String()
+
+	if strings.Contains(got, "NOT AVAILABLE") {
+		t.Fatalf("a row with no flag was rendered as unavailable; absence must mean available, "+
+			"or a server that does not report:\n%s", got)
+	}
+	if !strings.Contains(got, "--field owner_ref=<value>") {
+		t.Fatalf("a fillable relation lost its suggestion:\n%s", got)
+	}
+}
