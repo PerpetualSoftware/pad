@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api } from '$lib/api/client';
+import { api, PadApiError } from '$lib/api/client';
 import type { ItemIndexRow } from '$lib/types';
 import { localIndex } from './localIndex.svelte';
 import { localSearch } from './localSearch.svelte';
@@ -66,6 +66,16 @@ describe('cold bootstrap vs. an eviction that raced the snapshot', () => {
 	it('does not reinstate a row whose moved_out was applied while /items-index was in flight', async () => {
 		const gate = deferred<Awaited<ReturnType<typeof api.items.listIndex>>>();
 		vi.spyOn(api.items, 'listIndex').mockReturnValueOnce(gate.promise);
+		// The pin (IDEA-2924) makes an overtaken cold boot REPLAY from the
+		// snapshot's cursor, so this door is now reached where it never used to
+		// be. The server re-delivers the eviction, because `ListMovedOutSince` is
+		// a `seq > since` query and the pinned cursor is below it.
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [{ id: 'secret', seq: 100, moved_out: true }],
+			cursor: '100',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-1',
+		});
 
 		// Cold boot begins: empty IDB, so this takes the /items-index branch.
 		const boot = localIndex.bootstrap(ws, { userId: null });
@@ -95,9 +105,22 @@ describe('cold bootstrap vs. an eviction that raced the snapshot', () => {
 		expect(canSee('secret', 'revoked')).toBe(false);
 	});
 
-	it('leaves no replay that could heal it: the cursor stays past the eviction and nothing is pending', async () => {
+	it('pins the cursor to the snapshot and replays from it, rather than skipping the gap', async () => {
+		// THIS TEST REPLACES ONE THAT ASSERTED THE OPPOSITE. Under TASK-2920 the
+		// cold branch kept the HIGHER cursor and set `pendingResync = false`, and
+		// a test here pinned that — deliberately, because it was what made the
+		// reinstatement permanent rather than cosmetic. IDEA-2924 removes the
+		// permanence, so the old assertions are now assertions about a defect
+		// that is gone; they are replaced rather than deleted, and this comment
+		// is the record of why a green test was changed.
 		const gate = deferred<Awaited<ReturnType<typeof api.items.listIndex>>>();
 		vi.spyOn(api.items, 'listIndex').mockReturnValueOnce(gate.promise);
+		const changes = vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '95',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-1',
+		});
 
 		const boot = localIndex.bootstrap(ws, { userId: null });
 		await settle();
@@ -111,12 +134,91 @@ describe('cold bootstrap vs. an eviction that raced the snapshot', () => {
 		});
 		await boot;
 
-		// This is the half that makes the first assertion's failure PERMANENT
-		// rather than transient, and it is asserted separately so a fix that
-		// merely re-fires a sync is not mistaken for a fix that holds the
-		// property. A later `/items-changes?since=100` cannot re-deliver a
-		// change at seq 100.
-		expect(localIndex.cursorFor(ws)).toBe('100');
+		// THE PIN, observable: the replay was issued FROM the snapshot's cursor,
+		// not from the higher one the delta had left behind. Asserting the
+		// request's `since` rather than the final cursor, because the loop
+		// advances the cursor again immediately and the end state cannot tell
+		// the two builds apart.
+		expect(changes).toHaveBeenCalled();
+		expect(changes.mock.calls[0][1]).toBe('95');
+	});
+
+	it('keeps the ask set when the replay fails, and does NOT fail the boot over it', async () => {
+		// Two properties in one leg because they are one decision. A mutation run
+		// found `pendingResync = behind` undetectable — the replay clears the ask
+		// on success, so the only moment it is observable is when the replay does
+		// NOT succeed. Writing that test then showed the replay's failure was
+		// taking the whole bootstrap down with it, discarding a snapshot that was
+		// already installed and usable.
+		const gate = deferred<Awaited<ReturnType<typeof api.items.listIndex>>>();
+		vi.spyOn(api.items, 'listIndex').mockReturnValueOnce(gate.promise);
+		vi.spyOn(api.items, 'changes').mockRejectedValue(new Error('network'));
+
+		const boot = localIndex.bootstrap(ws, { userId: null });
+		await settle();
+		localIndex.applyDelta(ws, [{ id: 'secret', seq: 100, moved_out: true }], '100', false);
+		gate.resolve({
+			items: [row('keeper', 1, 'kept'), row('secret', 40, 'revoked')],
+			total: 2,
+			cursor: '95',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-1',
+		});
+
+		// The boot RESOLVES — the snapshot is good.
+		await expect(boot).resolves.toBeUndefined();
+		expect(localIndex.bootstrapStateFor(ws)).toBe('ready');
+		expect(canSee('keeper', 'kept')).toBe(true);
+		// ...and the ask is still outstanding, so a later bootstrap resumes.
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
+	it('does NOT swallow a 403 from the replay — the purge still happens', async () => {
+		// The auth carve-out in the replay's catch. A mutant that swallowed
+		// everything survived the suite: a revocation surfacing on the REPLAY
+		// rather than on the snapshot would have left the cache serving rows the
+		// caller can no longer see, which is the whole thing TASK-1360 exists to
+		// stop. Non-fatal for a network blip is right; non-fatal for a 403 is the
+		// bug wearing the same clothes.
+		const gate = deferred<Awaited<ReturnType<typeof api.items.listIndex>>>();
+		vi.spyOn(api.items, 'listIndex').mockReturnValueOnce(gate.promise);
+		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
+			// What api.request() does, in order: the global handler resets first.
+			localIndex.reset(ws);
+			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });
+		});
+
+		const boot = localIndex.bootstrap(ws, { userId: null });
+		await settle();
+		localIndex.applyDelta(ws, [{ id: 'secret', seq: 100, moved_out: true }], '100', false);
+		gate.resolve({
+			items: [row('keeper', 1, 'kept'), row('secret', 40, 'revoked')],
+			total: 2,
+			cursor: '95',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-1',
+		});
+
+		await expect(boot).rejects.toThrow();
+		expect(localIndex.accessRevokedFor(ws)).toBe(true);
+	});
+
+	it('makes NO replay when the cold boot was not overtaken', async () => {
+		// The control leg. Without it the assertions above would also pass on a
+		// build that replayed unconditionally, which would be a different and
+		// worse change — an extra round-trip on every cold boot.
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '95',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-1',
+		});
+		const changes = vi.spyOn(api.items, 'changes');
+
+		await localIndex.bootstrap(ws, { userId: null });
+
+		expect(changes).not.toHaveBeenCalled();
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 });
