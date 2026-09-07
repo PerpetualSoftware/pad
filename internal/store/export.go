@@ -597,11 +597,25 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 	}
 
-	// Import items (first pass: create items, remap collection_id)
-	// Item numbers are assigned sequentially in created_at order to produce
-	// workspace-global numbering. Exported item_number values are ignored
-	// because old exports used per-collection numbering which can have
-	// duplicates within a workspace.
+	// Preserve modern archives' reference numbers, including deletion gaps and
+	// out-of-order items: content and comments still refer to those numbers.
+	// Legacy archives used per-collection numbering (or had no numbers), so
+	// retain sequential allocation when the imported set is not workspace-unique.
+	// Orphans are skipped below and must not force valid items to be renumbered.
+	preserveItemNumbers := true
+	seenItemNumbers := make(map[int]bool, len(data.Items))
+	for _, it := range data.Items {
+		if collMap[it.CollectionID] == "" {
+			continue
+		}
+		if it.ItemNumber <= 0 || seenItemNumbers[it.ItemNumber] {
+			preserveItemNumbers = false
+			break
+		}
+		seenItemNumbers[it.ItemNumber] = true
+	}
+
+	// Import items (first pass: create items, remap collection_id).
 	//
 	// IDEA-1486 + IDEA-1488: precompute each item's coerced fields/tags so
 	// the second-pass UPDATE (which re-applies fields after the ID remap)
@@ -649,6 +663,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		parentID := resolveImportParent(it.ParentID, itemMap, insertedItems)
 
 		nextItemNumber++
+		itemNumber := nextItemNumber
+		if preserveItemNumbers {
+			itemNumber = it.ItemNumber
+		}
 		// IDEA-1486 + IDEA-1488: coerce empty-string / malformed
 		// fields/tags at the import boundary. After migration 056 /
 		// pgmigrations 035 hardened items.fields and items.tags to
@@ -736,7 +754,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
 			newItemID, ws.ID, newCollID, itemTitle, itemSlug, it.Content, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
-			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, nextItemNumber,
+			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, itemNumber,
 			it.CreatedAt, it.UpdatedAt, ws.ID)
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
