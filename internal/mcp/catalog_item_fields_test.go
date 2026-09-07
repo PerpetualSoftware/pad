@@ -671,7 +671,7 @@ func TestPadItemUpdate_LoneHierarchyKeyStillAccepted(t *testing.T) {
 // TestPadItemUpdate_FieldArrayKeysNormalizedForConflicts: the conflict index
 // must be normalized the way the DOOR normalizes (BUG-2850, codex round 6).
 //
-// ingestFieldKVP (dispatch_http.go) TrimSpaces both halves of a `key=value`
+// ingestFieldKVP (dispatch_http.go) USED TO TrimSpace both halves of a `key=value`
 // entry before writing it. parseFieldArray indexed the raw halves, so the
 // index described something the remote door was never going to write:
 // `field:[" status=cancelled"]` sat under " status", missed the guard against
@@ -981,7 +981,7 @@ func TestPadItemUpdate_CanonicalEqualDuplicateIsUntouched(t *testing.T) {
 //
 // Round 7's canonicalization asked whether a canonical entry was PRESENT and
 // left the array alone if one was — so `field:["effort=l", " effort=l"]` kept
-// the padded sibling, and the doors then disagreed: HTTP trims and writes
+// the padded sibling, and the doors then disagreed: HTTP trimmed and wrote
 // `effort`, the CLI does not and writes an undeclared `" effort"`. Transport
 // divergence from a call both doors accept, which is the shape this whole
 // unit is about.
@@ -1827,7 +1827,7 @@ func TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields(t *testing.
 // The conflict index is normalized — that is what lets a padded entry be
 // recognized as a collision at all — so `field:["k = A"]` compared EQUAL to a
 // top-level `k:"A"` and the pair was accepted while the entry stayed padded
-// on the wire. HTTP trims it and writes `k`; the CLI does not, and writes a
+// on the wire. HTTP trimmed it and wrote `k`; the CLI did not, and wrote a
 // junk `"k "` key instead. The normalization that made the collision VISIBLE
 // is exactly what made accepting it wrong.
 //
@@ -1991,7 +1991,7 @@ func TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey(t *testing
 // parseFieldArray indexes by NORMALIZED key, so `["effort=l", " effort=l"]`
 // collapsed into a single index slot. Iterating that index made the pass's own
 // input lossy: the pair arrived as ONE contribution, fell under the len < 2
-// early exit, and passed unchecked — HTTP trims both to `effort` while stdio
+// early exit, and passed unchecked — HTTP trimmed both to `effort` while stdio
 // writes `effort` AND a junk `" effort"`. The pass claims to adjudicate one
 // canonical key offered by multiple sources; two array entries ARE multiple
 // sources, and it could not see them.
@@ -2098,7 +2098,7 @@ func TestPadItemUpdate_UnrelatedFieldsObjectDoesNotForceRefusal(t *testing.T) {
 }
 
 // TestPadItemUpdate_WhitespacePreservingValuesCompareLikeWithLike: entry
-// values are trimmed for COMPARISON because ingestFieldKVP trims them, so
+// values were trimmed for COMPARISON because ingestFieldKVP trimmed them, so
 // comparing them against an untrimmed `fields` value was apples to oranges
 // (BUG-2850, codex round 19).
 //

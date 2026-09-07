@@ -274,7 +274,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// key collapse to a single index slot — and iterating that index made
 	// this pass's own input lossy. `field:["effort=l", " effort=l"]` arrived
 	// as ONE contribution, fell under the len < 2 early exit, and passed
-	// unchecked: HTTP trims both to `effort` while stdio writes `effort` AND
+	// unchecked: HTTP trimmed both to `effort` while stdio wrote `effort` AND
 	// a junk `" effort"`. The pass claims to adjudicate one canonical key
 	// offered by multiple sources; two array entries ARE multiple sources,
 	// and it could not see them.
