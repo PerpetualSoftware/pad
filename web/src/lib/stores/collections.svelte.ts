@@ -34,6 +34,32 @@ let loading = $state(false);
 // (Codex review). Plain counter — not reactive; it only fences async writes.
 let collectionsLoadSeq = 0;
 
+// The workspace and promise of the load that will actually COMMIT — a single
+// slot TAGGED with its workspace, not a per-workspace map (TASK-2200, codex
+// round 3, which read the first draft of this comment as claiming the latter;
+// the comment was wrong, the slot was not).
+//
+// A map would be the worse structure here, and the reason is the generation
+// guard directly below: `loadCollections` commits only the LATEST call, so once
+// a load for B starts, A's in-flight request is already dead — its response
+// will be dropped by `seq !== collectionsLoadSeq`. Handing an
+// `ensureCollections('A')` caller that request's promise would resolve them
+// against a result that never lands, which is a quieter version of the bug this
+// unit exists to fix. Issuing a fresh A request is the correct answer, and it
+// is what the single slot produces.
+//
+// What the workspace TAG is for is the opposite mistake: without it, a joiner
+// asking about A would be handed B's promise and resolve against B's list.
+//
+// `loading` cannot serve either purpose — it is a single global flag with no
+// workspace on it and no promise behind it.
+//
+// Consumed only by `ensureCollections`, and deliberately not by
+// `loadCollections` itself — see that method's note on why coalescing every
+// caller would be wrong.
+let inFlightWs: string | null = null;
+let inFlightLoad: Promise<void> | null = null;
+
 export const collectionStore = {
 	get collections() { return collections; },
 	get items() { return items; },
@@ -72,9 +98,47 @@ export const collectionStore = {
 		return collections.filter(c => !c.is_default).sort((a, b) => a.sort_order - b.sort_order);
 	},
 
+	/**
+	 * ENSURE this workspace's collection list exists — as distinct from
+	 * `loadCollections`, which fetches a fresh one (TASK-2200).
+	 *
+	 * Two intents, and only one of them can be satisfied by a request that is
+	 * already in flight:
+	 *
+	 *   - "I need A list" (this method). A request issued a moment ago answers
+	 *     it perfectly, so joining it is right and a second fetch is waste.
+	 *   - "I need a FRESH list" (`loadCollections`). The caller knows the list
+	 *     MOVED — an SSE rename, a settings save, a server `collections_changed`
+	 *     — and a request issued BEFORE that move cannot answer it. Coalescing
+	 *     there would quietly serve pre-change data.
+	 *
+	 * That is why the coalescing lives here rather than inside `loadCollections`
+	 * where it would cover every caller. Every other call site in the app is the
+	 * second intent and is correctly left alone; this is the only one that is
+	 * the first (codex round 2 asked for the population, and that is it).
+	 *
+	 * No-ops when the list is already this workspace's. Never rejects for the
+	 * fresh-already case; a genuine fetch failure rejects like `loadCollections`.
+	 */
+	async ensureCollections(ws: string): Promise<void> {
+		if (collectionsWorkspace === ws) return;
+		// Join, rather than issue a second request for the same answer. The
+		// joined promise settles when THAT request does, which is the semantics
+		// the caller wants: "tell me when a list exists".
+		if (inFlightWs === ws && inFlightLoad) return inFlightLoad;
+		return collectionStore.loadCollections(ws);
+	},
+
 	async loadCollections(ws: string) {
 		const seq = ++collectionsLoadSeq;
 		loading = true;
+		// Published for `ensureCollections` to join, tagged with the workspace
+		// so a joiner asking about A is never handed B's promise. Overwriting a
+		// previous tenant is correct rather than lossy: this assignment happens
+		// after `++collectionsLoadSeq`, so the load being displaced has already
+		// lost the right to commit.
+		inFlightWs = ws;
+		const load = (async () => {
 		try {
 			const result = await api.collections.list(ws);
 			// Drop a stale response: a newer loadCollections (e.g. a workspace
@@ -93,7 +157,16 @@ export const collectionStore = {
 			// Only the latest in-flight load owns the `loading` flag — an older
 			// load resolving late must not flip it off while the newer one runs.
 			if (seq === collectionsLoadSeq) loading = false;
+			// Same ownership rule for the join slot: an older load settling late
+			// must not clear a newer one's promise out from under a joiner.
+			if (seq === collectionsLoadSeq) {
+				inFlightWs = null;
+				inFlightLoad = null;
+			}
 		}
+		})();
+		inFlightLoad = load;
+		return load;
 	},
 
 	async loadItems(ws: string, collectionSlug?: string, params?: Record<string, string | number | boolean | undefined>) {

@@ -58,9 +58,54 @@
 			// reconcile is still safe to skip: whichever layout instance IS
 			// showing that workspace has its own subscription.
 			if (ws !== wsSlug) return;
-			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
-				collectionStore.loadCollections(ws);
+			// RECOVERY, on EVERY result type and gated on the CONDITION rather
+			// than on the signal (TASK-2200). A cold load during a server
+			// outage leaves workspace identity and the collection list missing
+			// with nothing to retry either: the root layout attempts `loadAll`
+			// once per auth resolution, and `setCurrent` / `loadCollections`
+			// run once from an effect keyed on a slug that does not change. The
+			// board could then recover — its own Retry, and the items cache —
+			// inside a shell with no navigation, because the sidebar builds its
+			// links from `workspaceStore.current` and the collection list.
+			//
+			// Not gated on `full_refresh`, and that is the measured part: when
+			// the server comes back, `/changes` usually SUCCEEDS with nothing to
+			// report, so the result is `caught_up`. The type meaning "nothing
+			// was missed" is exactly the one that arrives when everything was,
+			// because the cursor was seeded during the outage. Both calls below
+			// are no-ops when nothing is missing.
+			try {
+				await workspaceStore.recoverIfMissing(ws);
+			} catch {
+				// Still unreachable. The next sync result asks again; throwing
+				// out of a subscriber would take the other subscribers with it.
 			}
+			// ONE collection call, and WHICH one is the caller's intent (codex
+			// rounds 1 and 2). Two reasons to want the list, and they are not
+			// the same request:
+			//
+			//   - the server says the list CHANGED, so a fetch issued before
+			//     that change cannot answer it — `loadCollections`, always a
+			//     real request;
+			//   - we simply do not HAVE this workspace's list, which a request
+			//     already in flight answers perfectly — `ensureCollections`,
+			//     which joins it instead of issuing a second one.
+			//
+			// Asking them as two separate `if`s fired two requests whenever both
+			// were true (round 1), and the recovery arm alone still raced the
+			// workspace effect's own in-flight load (round 2). The store owns
+			// the join because only the store can see what is in flight.
+			const collectionsChanged =
+				result.type === 'full_refresh' ||
+				(result.type === 'incremental' && result.changes.collections_changed);
+			const collectionWork = collectionsChanged
+				? collectionStore.loadCollections(ws)
+				: collectionStore.ensureCollections(ws);
+			collectionWork.catch(() => {
+				// Same posture as the identity recovery above: the next sync
+				// result asks again, and throwing out of a subscriber would take
+				// the other subscribers with it.
+			});
 			// Always reconcile, even for `caught_up` — SSE delivers events, not
 			// delta data, and a previous failure won't recover without a fresh
 			// attempt. The localIndex cursor is independent of

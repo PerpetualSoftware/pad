@@ -24,7 +24,20 @@
 
 	let showShortcuts = $state(false);
 	let authReady = $state(false);
-	let workspacesLoaded = $state(false);
+	// An ATTEMPT has been made, not a load has SUCCEEDED (TASK-2200). The old
+	// name said the latter and the code did the former — it is set before the
+	// call and never reset, so a `loadAll` that REJECTED read afterwards as a
+	// completed load. That was half of the cold-load-during-outage shell brick:
+	// the flag it left behind disabled the only automatic retry this effect has.
+	//
+	// Deliberately still set BEFORE the call, and deliberately not reset on
+	// failure. Setting it only on success would re-arm an effect whose guard
+	// READS `workspaceStore.loading`, so every failed attempt would flip that
+	// dependency and re-run the effect — a hot retry loop against a server that
+	// is down. Recovery belongs where it can be gated on a CONDITION rather than
+	// on a flag: `workspaceStore.recoverIfMissing`, driven by the workspace
+	// layout's sync subscriber.
+	let workspacesRequested = $state(false);
 	let authLoadFailed = $state(false);
 	let isAuthPage = $derived(
 		page.url.pathname === '/login'
@@ -134,7 +147,7 @@
 		// alone: authReady flips true inside the unauthenticated branches of
 		// onMount BEFORE the /login redirect completes, so during that window a
 		// logged-out user on a protected route would otherwise fire loadAll()
-		// and latch workspacesLoaded=true, blocking the retry after login.
+		// and latch workspacesRequested=true, blocking the retry after login.
 		// authLoadFailed covers the deployment case where the auth endpoint is
 		// unavailable and authStore.authenticated stays false by design.
 		if (
@@ -142,10 +155,10 @@
 			(authStore.authenticated || authLoadFailed) &&
 			!isAuthPage &&
 			!isSharePage &&
-			!workspacesLoaded &&
+			!workspacesRequested &&
 			!workspaceStore.loading
 		) {
-			workspacesLoaded = true;
+			workspacesRequested = true;
 			workspaceStore.loadAll();
 		}
 	});

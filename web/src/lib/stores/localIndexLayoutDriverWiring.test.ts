@@ -60,3 +60,40 @@ describe('TASK-2921 — the workspace layout drives the reconcile for every rout
 		expect(layoutSource).toContain('syncService.markSynced()');
 	});
 });
+
+describe('TASK-2200 — the same layout drives shell recovery', () => {
+	/**
+	 * Same instrument, same limits, same delete-condition as the block above —
+	 * this is a SOURCE PIN and it cannot see reachability. What it is worth: the
+	 * two recovery calls cannot be silently deleted, which would restore a shell
+	 * that stays navigation-less after the server returns while every
+	 * behavioural test stays green, because they call `recoverIfMissing` and
+	 * `loadCollections` directly.
+	 */
+	it('re-acquires workspace identity from the sync subscriber', () => {
+		expect(layoutSource).toContain('await workspaceStore.recoverIfMissing(ws)');
+	});
+
+	it('re-acquires the collection list on the freshness CONDITION, not on a signal type alone', () => {
+		// The MISSING term is the anchor, not the call. `loadCollections(ws)`
+		// would still appear with the recovery term deleted and the
+		// changed-signal term left standing — which is precisely the state this
+		// unit found the file in, and the state a returning server does not
+		// reach (see below).
+		expect(layoutSource).toContain('collectionStore.ensureCollections(ws)');
+		expect(layoutSource).toContain('collectionsChanged\n\t\t\t\t? collectionStore.loadCollections(ws)');
+	});
+
+	it('does not gate recovery on the full_refresh signal', () => {
+		// Measured, not assumed (syncPostOutageResultType.svelte.test.ts): a
+		// returning server reports `caught_up`, so recovery reachable only via
+		// `full_refresh` would not run in the case this unit exists for. The
+		// pin: identity recovery is not inside a result-type test, and the
+		// collection load is reachable on the missing term alone.
+		const recovery = layoutSource.indexOf('await workspaceStore.recoverIfMissing(ws)');
+		const branch = layoutSource.indexOf("result.type === 'full_refresh'");
+		expect(recovery).toBeGreaterThan(-1);
+		expect(branch).toBeGreaterThan(-1);
+		expect(recovery).toBeLessThan(branch);
+	});
+});
