@@ -1220,12 +1220,31 @@ export const localIndex = {
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
-					if (cursorAsNum(resp.cursor) > cursorAsNum(state.cursor)) {
-						state.cursor = resp.cursor;
-					}
+					// THE PIN (IDEA-2924). A snapshot whose cursor is BEHIND the
+					// cache's is a stale response that landed late — a delta was
+					// consumed while this request was in flight. Keeping the
+					// higher cursor is what made that reinstatement PERMANENT:
+					// nothing would ever replay the range the snapshot did not
+					// see, so a row the delta evicted stayed evicted only as long
+					// as a per-id record remembered it (TASK-2920's
+					// `movedOutFloor`).
+					//
+					// Pinning to the snapshot's cursor is the discipline
+					// `resyncProjectionScope` has always had, and TASK-2906
+					// measured its safety: a RAM regression is safe because the
+					// merge keeps the newer row per id and a replayed range is
+					// idempotent. Only the DURABLE cursor may not regress, and
+					// nothing here writes one — see the persist below.
+					// Unconditional, which is "pin or advance" written once: below
+					// is the pin, above is the advance, equal is a no-op. The
+					// previous `only if higher` was the advance alone.
+					const behind = cursorAsNum(resp.cursor) < cursorAsNum(state.cursor);
+					state.cursor = resp.cursor;
 					state.bootstrapState = 'ready';
-					// Cold path is a full snapshot — nothing pending.
-					state.pendingResync = false;
+					// A cold snapshot that was NOT overtaken is complete, so
+					// nothing is pending. One that was overtaken owes a replay of
+					// the range it did not see, and says so.
+					state.pendingResync = behind;
 					// Server rows carry the live collection slug — drop any
 					// rename recorded pre-snapshot rather than re-applying
 					// it over fresher server truth (BUG-2601).
@@ -1262,6 +1281,44 @@ export const localIndex = {
 					).catch(
 						() => undefined,
 					);
+					// THE REPLAY OWNER (IDEA-2924), and it has to be here because
+					// MEASUREMENT SAYS NOBODY ELSE IS: the collection route calls
+					// `deltaSync` right after `bootstrap` in its own effect, but
+					// `ItemDetail` — the other `bootstrap` caller — calls it with
+					// NOTHING following, so on the item route a pinned cursor
+					// would sit un-replayed until an unrelated `sync_required` or
+					// item event happened along, which in a quiet workspace is
+					// never.
+					//
+					// Through the SAME loop both other doors use, not a second
+					// one: `reconcileWorkspace` is the function TASK-2921 made
+					// singular, called here with this bootstrap's own generation
+					// check. It drains from the cursor just pinned, so the range
+					// the snapshot did not see is re-delivered and every eviction
+					// in it is re-applied.
+					//
+					// Only when the snapshot was overtaken. A cold boot that won
+					// its race is complete and has nothing to drain.
+					if (behind) {
+						// NON-FATAL, and the mutation run is how I noticed it
+						// mattered. The snapshot is good and already installed;
+						// failing the whole bootstrap because a FOLLOW-UP drain
+						// blipped would throw away usable data and flip the UI to
+						// 'error' over a network hiccup — which the warm branch
+						// has always refused to do for the same reason. The ask
+						// stays set, so the next `bootstrap()` resumes.
+						//
+						// An auth error is the exception and is rethrown: a 401 /
+						// 403 means the rows are not ours to display, and
+						// `reconcileWorkspace`'s caller must still purge. Swallow
+						// that and the cache would go on serving revoked rows.
+						try {
+							await reconcileWorkspace(ws, state, isStale);
+						} catch (err) {
+							if (isAuthError(err)) throw err;
+						}
+						if (isStale()) return;
+					}
 				}
 			} catch (err) {
 				// Same order, same reason as the reconcile catch above (codex
