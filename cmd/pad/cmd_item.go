@@ -1083,6 +1083,31 @@ Examples:
 			// no longer clobber each other — the old read-modify-write here
 			// (fetch item, merge locally, send the whole blob) lost the later
 			// writer's change on the last write.
+			// AN EMPTY --parent IS REFUSED HERE, not ignored (BUG-2941).
+			//
+			// `--parent ""` reads as "detach this item", and for a long time
+			// it exited 0 and printed the updated item while doing nothing:
+			// `hasFieldChanges` tests `parentRef != ""`, so an empty value
+			// contributes no patch and the key the server's clear-path needs
+			// (`parent` present, empty) never goes on the wire. BUG-2078
+			// shipped `--clear-parent` as the working route but left this one
+			// looking like it worked, and the public CLI docs still taught it
+			// — which is where the expectation came from.
+			//
+			// Refusing rather than quietly aliasing it to --clear-parent: two
+			// spellings for one operation is what produced the confusion, and
+			// a caller who typed the empty form wanted a detach that this
+			// command did not perform. Naming the flag that does it is the
+			// actionable answer.
+			//
+			// UPDATE only, deliberately. On `item create` an empty --parent
+			// expresses nothing to ignore — there is no parent to detach —
+			// and `--parent "$MAYBE_EMPTY"` is a normal shell idiom there.
+			// Same asymmetry as v0.18/v0.19's update-only clear flags.
+			if cmd.Flags().Changed("parent") && parentFlag == "" {
+				return fmt.Errorf(`--parent "" does not detach an item and never did — it is silently ignored; use --clear-parent to remove the parent link`)
+			}
+
 			parentRef := parentFlag
 
 			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0 || clearParent
@@ -1323,7 +1348,7 @@ Examples:
 	cmd.Flags().StringVar(&priority, "priority", "", "update priority field")
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
-	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is silently ignored, it does NOT clear — use --clear-parent")
+	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is REFUSED, it does not clear — use --clear-parent")
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set a field (repeatable): --field key=value; refused for implementation_notes (use `pad item note`), decision_log (`pad item decide`) and convention (`pad library activate`)")
