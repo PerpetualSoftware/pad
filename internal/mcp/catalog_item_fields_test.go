@@ -2283,14 +2283,23 @@ func TestPadItemUpdate_EmptyCompatIDIsStillAClearAfterTheNilFix(t *testing.T) {
 // kept ignoring it. A transport divergence introduced by a fix, which is the
 // class BUG-2870 exists to close.
 func TestPadItemUpdate_EmptyParentIsDroppedNotDispatched(t *testing.T) {
+	// `comment` is carried empty ALONGSIDE the empty parent, deliberately
+	// (codex round 2 [P2]): without it this test passes an implementation
+	// that drops EVERY empty-valued key, which would be a much larger and
+	// undiscussed change to the tool's input handling. The assertion below
+	// is that `parent` is the only key this touches.
 	disp, msg, isErr := dispatchPadItem(t, map[string]any{
-		"action": "update",
-		"ref":    "TASK-5",
-		"parent": "",
-		"status": "done",
+		"action":  "update",
+		"ref":     "TASK-5",
+		"parent":  "",
+		"comment": "",
+		"status":  "done",
 	})
 	if isErr {
 		t.Fatalf("an empty parent is inert on this tool, not an error: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--comment", "") {
+		t.Errorf("only `parent` is dropped — an empty `comment` must reach the CLI exactly as before: %v", disp.gotArgs)
 	}
 	if argsContainPair(disp.gotArgs, "--parent", "") {
 		t.Errorf("--parent \"\" must not reach the CLI — it is refused there now: %v", disp.gotArgs)
