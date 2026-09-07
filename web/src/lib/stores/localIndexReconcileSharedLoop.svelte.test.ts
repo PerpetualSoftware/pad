@@ -185,6 +185,50 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 		expect(changes).toHaveBeenCalledTimes(2);
 	});
 
+	it('abandons a response whose workspace was reset mid-flight', async () => {
+		// A sign-out, user switch or 403 purge while `/items-changes` is in
+		// flight. Without a generation fence the loop keeps using the DETACHED
+		// state's cursor and `applyDelta` — which calls `ensureState(ws)` —
+		// writes the old response into the REPLACEMENT state: one user's rows in
+		// another's cache. The reconcile token does not cover this; it makes the
+		// loop re-poll rather than abort (codex round 4 P1).
+		await boot([row('keeper', 1, 'kept')]);
+
+		let started!: () => void;
+		const inFlight = new Promise<void>((r) => {
+			started = r;
+		});
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
+			started();
+			await gate;
+			return {
+				changes: [row('from-the-old-session', 11, 'kept')],
+				cursor: '11',
+				includes_unparented_metadata: false,
+				access_epoch: 'epoch-1',
+			};
+		});
+
+		const running = localIndex.reconcile(ws);
+		await inFlight;
+
+		// The workspace is dropped and a fresh one takes its place.
+		localIndex.reset(ws);
+		localIndex.upsert(ws, row('new-session-row', 1, 'kept'));
+
+		release();
+		expect(await running).toBe(false);
+
+		// The stale response must not have landed in the replacement state.
+		const kept = localIndex.getByCollection(ws, 'kept');
+		expect(kept.some((r) => r.id === 'from-the-old-session')).toBe(false);
+		expect(kept.some((r) => r.id === 'new-session-row')).toBe(true);
+	});
+
 	it('is a no-op reporting catch-up for a workspace that was never hydrated', async () => {
 		const changes = vi.spyOn(api.items, 'changes');
 		expect(await localIndex.reconcile('never-hydrated')).toBe(true);

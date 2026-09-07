@@ -1680,8 +1680,36 @@ export const localIndex = {
 	async reconcile(ws: string): Promise<boolean> {
 		const state = workspaces.get(ws);
 		if (!state) return true;
+		// GENERATION FENCE, the same one `bootstrap` has carried since Codex P1
+		// round 3 of TASK-1357 (codex round 4 P1 of this unit).
+		//
+		// Without it, a `reset()` landing while `/items-changes` is in flight —
+		// a sign-out, a user switch, a 403 purge — leaves this loop reading the
+		// DETACHED state's cursor and handing the response to `applyDelta`,
+		// which calls `ensureState(ws)` and writes it into the REPLACEMENT
+		// state. Old-user rows in the new user's cache, and persisted.
+		//
+		// The reconcile token does not cover this. It answers "did a resync
+		// overtake my request", and its answer sends the loop round AGAIN rather
+		// than aborting — so a token bump on the drop makes the loop re-poll
+		// against a state that is no longer the workspace's.
+		//
+		// This gap is older than this unit — the collection route's `deltaSync`
+		// never had a generation check either — but it stops being an obscure
+		// one now that the layout drives this for every route.
+		//
+		// GENERATION ALONE, not generation-plus-identity. `reset()` bumps
+		// `prior.generation` BEFORE deleting the entry, precisely so an in-flight
+		// holder of the old object can tell — so a `workspaces.get(ws) !== state`
+		// check is implied by the generation check rather than independent of it.
+		// A mutation run confirmed it: each half survived removal alone and only
+		// the pair died, which is the signature of a redundant guard rather than
+		// defence in depth. If `reset` ever stops bumping first, this is the line
+		// that breaks.
+		const generation = state.generation;
+		const isStale = () => state.generation !== generation;
 		try {
-			return await reconcileWorkspace(ws, state);
+			return await reconcileWorkspace(ws, state, isStale);
 		} catch (err) {
 			// 401 / 403 means the cached rows are no longer this caller's to
 			// display, and the reaction is the STORE's (TASK-2921) — the same
