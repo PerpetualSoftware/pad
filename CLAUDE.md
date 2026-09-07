@@ -107,7 +107,7 @@ Both SSE endpoints share one admission budget, enforced **per instance**: `PAD_S
 - `POST /api/v1/auth/forgot-password` — request password reset email
 - `POST /api/v1/auth/reset-password` — reset password with token
 - `POST /api/v1/auth/local-reset` — localhost-only account recovery (self-host, non-cloud). Loopback-gated, no auth — the bootstrap trust model. Returns a single-use reset link, or a temp password with `{"temp_password": true}`. Backs `pad auth reset-password`.
-- `GET/POST/DELETE /api/v1/auth/tokens` — user-scoped API tokens
+- `GET/POST/DELETE /api/v1/auth/tokens` — user-scoped API tokens. **Minting and rotating require an INTERACTIVE SESSION** (BUG-2890): a call authenticated by a PAT is refused `403 session_required` on `POST /auth/tokens`, `POST /auth/tokens/{id}/rotate` and `POST /workspaces/{ws}/tokens`, because a token that can mint tokens outlives its own revocation. A session cookie and a `padsess_` CLI bearer both count as interactive; LIST and REVOKE stay PAT-reachable, deliberately — revocation is the compromised-credential response
 - `GET/PATCH /api/v1/admin/settings` — platform settings (admin-only)
 - `POST /api/v1/admin/test-email` — send test email (admin-only)
 - `POST /api/v1/invitations/{code}/accept` — accept workspace invitation

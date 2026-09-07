@@ -32,9 +32,51 @@ func (s *Server) getTokenExpirySettings() (defaultDays, maxDays int) {
 	return
 }
 
+// requireInteractiveSession refuses a request authenticated by a long-lived
+// API token, and is the gate on every door that MINTS or ROTATES one
+// (BUG-2890, ruled on that item's trail day 57).
+//
+// The escalation it closes: a PAT that can reach a mint door issues further
+// tokens with independent names and expiries, which outlive the revocation
+// of the token that created them. Revoking a leaked credential then does
+// not end the access it was used to establish, and nothing in the token
+// list says which token minted which.
+//
+// It gates the CREDENTIAL, not the door. `isAPITokenAuth` is false for a
+// session cookie AND for a `padsess_` CLI bearer — that distinction is
+// deliberate and predates this fix (see ctxValidatedSessionBearer's note in
+// middleware_auth.go): a CLI session IS an interactive session. A gate
+// written against "carries an Authorization: Bearer header" would look
+// identical on every PAT test and break every logged-in CLI.
+//
+// LIST and REVOKE deliberately stay reachable by a PAT. Neither extends
+// access, and revocation is the compromised-credential response — gating it
+// behind a browser would put a session in the way of the incident path.
+//
+// Same shape as the 2FA handlers' gate; the code differs because this one
+// is `session_required` rather than the generic `forbidden`, so a client
+// can tell "wrong credential kind" from "insufficient permissions".
+func requireInteractiveSession(w http.ResponseWriter, r *http.Request) bool {
+	if isAPITokenAuth(r) {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Creating or rotating API tokens requires an interactive session, not an API token")
+		return false
+	}
+	return true
+}
+
 // handleCreateToken creates a new API token scoped to a workspace.
 // The token is owned by the authenticated user (if any).
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+	// Before requireMinRole, not after: this door mints through the same
+	// store call as /auth/tokens and is reachable by an OWNER's PAT
+	// (measured on BUG-2890's trail — the filing named only the two
+	// /auth/tokens doors). Checking the credential kind first also stops
+	// a PAT-borne caller learning its own membership status from the
+	// difference between the two 403s.
+	if !requireInteractiveSession(w, r) {
+		return
+	}
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
@@ -144,6 +186,10 @@ func (s *Server) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateUserToken creates a new API token owned by the authenticated user.
 func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
+	if !requireInteractiveSession(w, r) {
+		return
+	}
+
 	userID := currentUserID(r)
 	if userID == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
@@ -205,6 +251,10 @@ func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 // handleRotateUserToken generates a new secret for an existing token,
 // invalidating the old one. The token metadata is preserved.
 func (s *Server) handleRotateUserToken(w http.ResponseWriter, r *http.Request) {
+	if !requireInteractiveSession(w, r) {
+		return
+	}
+
 	userID := currentUserID(r)
 	if userID == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
