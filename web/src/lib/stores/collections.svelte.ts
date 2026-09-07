@@ -1,5 +1,7 @@
 import { api } from '$lib/api/client';
 import type { Collection, Item } from '$lib/types';
+import { authStore } from './auth.svelte';
+import { hydrateCollections, persistCollections, readDurableEpoch } from './localIndexPersistence';
 
 let collections = $state<Collection[]>([]);
 let items = $state<Item[]>([]);
@@ -129,9 +131,51 @@ export const collectionStore = {
 		return collectionStore.loadCollections(ws);
 	},
 
+	/**
+	 * The cached collection list for this workspace, or null (TASK-2946).
+	 *
+	 * For the caller that has just FAILED to reach the server and needs to
+	 * render something honest. The scope fence lives in `hydrateCollections`,
+	 * so this cannot hand back a list whose scope the durable cache disagrees
+	 * with.
+	 *
+	 * DELIBERATELY NOT ADOPTED INTO `collections`. Seeding the reactive array
+	 * from cache would also have to stamp `collectionsWorkspace`, and that
+	 * stamp is what `collectionsAreFreshFor` answers — which TASK-2200's
+	 * recovery reads to decide whether to keep re-fetching. A cached list
+	 * marked fresh would stop the retry that is the only route back to a real
+	 * one. So the cache is a read for a caller that wants it, not a substitute
+	 * for the array; the sidebar stays empty until a fetch succeeds, and that
+	 * is the correct trade rather than an oversight.
+	 */
+	async cachedCollection(ws: string, slug: string): Promise<Collection | null> {
+		const list = await hydrateCollections(authStore.userId || null, ws);
+		return list?.find((c) => c.slug === slug) ?? null;
+	},
+
 	async loadCollections(ws: string) {
 		const seq = ++collectionsLoadSeq;
 		loading = true;
+		// The DURABLE scope claim before the request, so `persistCollections` can
+		// tell whether a resync landed underneath it — the list carries no scope
+		// of its own and the stamp is borrowed from the row cache, so it is only
+		// honest if that cache held still (TASK-2946).
+		//
+		// Durable rather than `localIndex.accessEpochFor(ws)`, for two reasons
+		// that both cost the feature its common path while it was RAM-based
+		// (codex round 2): a cold tab has no RAM epoch yet, because this fetch
+		// starts before `bootstrap` runs, so every fresh visit refused to cache;
+		// and RAM is not the value `hydrateCollections` compares against, so a
+		// RAM-based bracket could agree while the fence's own value moved.
+		// THE NAMESPACE COMES FROM `authStore`, not from localIndex (codex round
+		// 3). The cache is one IDB database per (user, workspace), and
+		// localIndex's own `userId` is a copy captured when `bootstrap` ran —
+		// which is AFTER the layout starts this fetch. Reading it here returned
+		// null on exactly the first visit this feature exists for, writing the
+		// list into the `anon` database while every later read used the
+		// authenticated one. Same source as every `bootstrap` caller passes, so
+		// the two cannot disagree.
+		const userId = authStore.userId || null;
 		// Published for `ensureCollections` to join, tagged with the workspace
 		// so a joiner asking about A is never handed B's promise. Overwriting a
 		// previous tenant is correct rather than lossy: this assignment happens
@@ -140,6 +184,18 @@ export const collectionStore = {
 		inFlightWs = ws;
 		const load = (async () => {
 		try {
+			// STRICTLY BEFORE the request, not concurrently with it (codex round
+			// 3). Running them together looked free and was not: `Promise.all`
+			// starts both, but the durable read RESOLVES later and can observe a
+			// resync that landed AFTER the request was issued. The write would
+			// then compare that later epoch against itself, agree, and stamp an
+			// old-scope list with the new scope — the same defeat-by-construction
+			// round 1 found, reintroduced by the fix for round 2.
+			//
+			// The join `ensureCollections` performs does not depend on the fetch
+			// being issued synchronously; it depends on the in-flight slot, which
+			// is published synchronously above.
+			const epochBefore = await readDurableEpoch(userId, ws);
 			const result = await api.collections.list(ws);
 			// Drop a stale response: a newer loadCollections (e.g. a workspace
 			// switch that resolved first) has superseded this one, so writing
@@ -153,6 +209,11 @@ export const collectionStore = {
 			// leaves the prior (possibly stale) array in place, and its stamp
 			// with it, which is the correct conservative signal.
 			collectionsWorkspace = ws;
+			// Cache the list for a future cold load that cannot reach the server
+			// (TASK-2946). Fire-and-forget and best-effort, like every other
+			// durable write here; `persistCollections` itself decides whether the
+			// stamp it would write is honest.
+			void persistCollections(userId, ws, result, epochBefore);
 		} finally {
 			// Only the latest in-flight load owns the `loading` flag — an older
 			// load resolving late must not flip it off while the newer one runs.

@@ -76,6 +76,10 @@
 	// `indexError` retry box — instead of masking a
 	// live collection as deleted. Cleared at the top of every load.
 	let metaError = $state<Error | null>(null);
+	// TASK-2946 — this render came off the durable cache because the server was
+	// unreachable. Drives the degraded banner; cleared at the start of every
+	// load so a later success cannot leave it standing.
+	let metaFromCache = $state(false);
 	let viewMode = $state<ViewMode>('board');
 	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
 	// stored sort_order (drag order). Persisted per collection.
@@ -1164,6 +1168,9 @@
 		// URL-sync effect from firing with stale filter state while this
 		// route is erroring.
 		urlFiltersLoaded = false;
+		// Cleared per load: a successful fetch must not leave the previous
+		// load's degraded banner up (TASK-2946).
+		metaFromCache = false;
 		try {
 			// Items now flow through localIndex (the `items` $derived
 			// above reads `getByCollection`). We still fetch the
@@ -1260,7 +1267,35 @@
 				// A missing collection shows the empty / not-found state via
 				// the `collection` null branch in the template.
 			} else {
-				metaError = err instanceof Error ? err : new Error('Failed to load collection');
+				// TRANSIENT failure — and the one case where the durable cache
+				// can answer instead of an error card (TASK-2946). The rows are
+				// already here: `items` is derived from localIndex, which
+				// hydrates from IDB before it fetches, so a cold offline load
+				// had the user's rows in hand while this page said it could not
+				// load the collection.
+				//
+				// Only reached on a NON-404. A genuine `not_found` above must
+				// never render from cache: "deleted" and "unreachable" are
+				// different answers and the cache can only speak to the second
+				// (BUG-2025 drew that line; this keeps it).
+				//
+				// The scope fence is inside `cachedCollection` — a cached list
+				// whose stamp disagrees with the durable rows' epoch is refused
+				// there, so this cannot render a collection the caller may no
+				// longer be able to see. That is the disclosure TASK-2922 closed
+				// for rows, and it would arrive here through a second door.
+				const cached = await collectionStore.cachedCollection(ws, coll);
+				if (seq !== loadSeq) return;
+				if (cached && collGen === collectionGen) {
+					collection = cached;
+					metaError = null;
+					// The page is honest about what it is showing: the rows and
+					// the collection are both from disk and neither has been
+					// confirmed against the server this load.
+					metaFromCache = true;
+				} else {
+					metaError = err instanceof Error ? err : new Error('Failed to load collection');
+				}
 			}
 		} finally {
 			// Only the latest load owns the loading flag — a superseded
@@ -3036,6 +3071,27 @@
 	{:else if !collection}
 		<div class="empty-state">Collection not found</div>
 	{:else}
+		{#if metaFromCache}
+			<!-- TASK-2946. The collection metadata and the rows below both came
+			     off the durable cache because the server was unreachable, and
+			     neither has been confirmed this load. Saying so is the point:
+			     rendering stale data silently would be worse than the error card
+			     this replaces, which at least told the truth. -->
+			<div class="offline-banner" role="status">
+				<span aria-hidden="true">⚠️</span>
+				<span>
+					Showing a saved copy — couldn't reach the server, so this may be out of date.
+				</span>
+				<button
+					class="offline-banner-retry"
+					onclick={() => {
+						if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
+					}}
+				>
+					Retry
+				</button>
+			</div>
+		{/if}
 		<!-- Header -->
 		<div class="page-header">
 			<div class="title-row">
@@ -3697,6 +3753,36 @@
 		text-align: center;
 		padding-top: 20vh;
 		color: var(--text-muted);
+	}
+
+	/* TASK-2946 — the degraded-render banner. Deliberately quiet rather than
+	   alarming: nothing is broken, the page is simply showing what it has. */
+	.offline-banner {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		margin-bottom: 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+		font-size: 0.85rem;
+	}
+
+	.offline-banner-retry {
+		margin-left: auto;
+		padding: 0.2rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--bg);
+		color: var(--text);
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+
+	.offline-banner-retry:hover {
+		background: var(--bg-hover);
 	}
 
 	.empty-state-box {

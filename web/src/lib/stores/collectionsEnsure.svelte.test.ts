@@ -10,12 +10,26 @@ import type { Collection } from '$lib/types';
  * the first perfectly and cannot answer the second, since it was issued before
  * the change the caller is reacting to.
  *
+ * WHAT THESE LEGS PIN, stated because an earlier version of them accidentally
+ * pinned something else: the number of REQUESTS, not the tick they are issued
+ * in. They originally counted calls synchronously, which passed only because
+ * `loadCollections` happened to reach `api.collections.list` with no await in
+ * front of it — so TASK-2946 adding a durable read before the fetch failed all
+ * four for a reason that had nothing to do with coalescing. The join depends on
+ * the in-flight slot, which is published synchronously; when the request is
+ * issued is not part of the contract. They now flush before counting.
+ *
  * So the coalescing lives in `ensureCollections` and NOT in `loadCollections`.
  * The control leg below is the one that keeps that true — without it, moving
  * the join into `loadCollections` (which would look like a tidy simplification)
  * would pass every other assertion here while quietly serving pre-change data
  * to an SSE rename.
  */
+
+/** Let any awaits inside `loadCollections` settle before counting requests. */
+async function flush(): Promise<void> {
+	await new Promise((r) => setTimeout(r, 0));
+}
 
 function coll(slug: string): Collection {
 	return { id: `id-${slug}`, slug, name: slug, is_default: true, sort_order: 0 } as Collection;
@@ -43,6 +57,7 @@ describe('TASK-2200 — ensureCollections', () => {
 
 		const first = collectionStore.loadCollections('alpha');
 		const joined = collectionStore.ensureCollections('alpha');
+		await flush();
 
 		expect(list).toHaveBeenCalledTimes(1);
 
@@ -83,6 +98,7 @@ describe('TASK-2200 — ensureCollections', () => {
 
 		const first = collectionStore.loadCollections('alpha');
 		const second = collectionStore.loadCollections('alpha');
+		await flush();
 
 		// Two requests, deliberately. This is the leg that fails if someone
 		// moves the join into `loadCollections`; every other assertion in this
@@ -103,6 +119,7 @@ describe('TASK-2200 — ensureCollections', () => {
 
 		const other = collectionStore.loadCollections('beta');
 		const mine = collectionStore.ensureCollections('alpha');
+		await flush();
 
 		// Handing back beta's promise would resolve alpha's caller against
 		// beta's list — the exact confusion `collectionsAreFreshFor` exists for.
@@ -125,6 +142,7 @@ describe('TASK-2200 — ensureCollections', () => {
 		const alpha = collectionStore.loadCollections('alpha');
 		const beta = collectionStore.loadCollections('beta');
 		const ensured = collectionStore.ensureCollections('alpha');
+		await flush();
 
 		// THREE requests, and the third is the point. Round 3 read this as a
 		// missing join and proposed a per-workspace map; the map would be the
