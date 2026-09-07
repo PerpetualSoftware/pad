@@ -34,7 +34,7 @@ describe('BUG-2609 end-to-end: stale snapshot does not clobber a newer persisted
 		await persistDelta(U, WS, [row('x', 7)], 'cursor-7', false, null);
 		// 2) The stale RAM snapshot (older seq) lands LAST — the fire-and-forget
 		//    upsert that BUG-2609's evidence run captured mid-flight.
-		await persistUpserts(U, WS, [row('x', 5)]);
+		await persistUpserts(U, WS, [row('x', 5)], null);
 
 		// The seq guard refused the stale write: IDB still holds seq 7...
 		expect((await rawItem(U, WS, 'x'))?.seq).toBe(7);
@@ -53,7 +53,7 @@ describe('BUG-2609 end-to-end: stale snapshot does not clobber a newer persisted
 		const WS = 'ws-2609-asym';
 
 		await persistDelta(U, WS, [row('x', 7)], 'cursor-7', false, null);
-		await persistUpserts(U, WS, [row('x', undefined)]); // seq-less snapshot lands last
+		await persistUpserts(U, WS, [row('x', undefined)], null); // seq-less snapshot lands last
 
 		expect((await rawItem(U, WS, 'x'))?.seq).toBe(7);
 		expect((await hydrate(U, WS)).items.find((i) => i.id === 'x')?.seq).toBe(7);
@@ -64,8 +64,8 @@ describe('BUG-2609 end-to-end: stale snapshot does not clobber a newer persisted
 		const U = null;
 		const WS = 'ws-2609-fwd';
 
-		await persistUpserts(U, WS, [row('x', 5)]);
-		await persistUpserts(U, WS, [row('x', 8)]); // newer — must land
+		await persistUpserts(U, WS, [row('x', 5)], null);
+		await persistUpserts(U, WS, [row('x', 8)], null); // newer — must land
 
 		expect((await rawItem(U, WS, 'x'))?.seq).toBe(8);
 		expect((await hydrate(U, WS)).items.find((i) => i.id === 'x')?.seq).toBe(8);
@@ -132,7 +132,7 @@ describe('database naming', () => {
 		// assertion above would pass for the wrong reason. Persist through the
 		// module, then read the raw store under the harness name directly.
 		const { persistUpserts } = await loadPersistence();
-		await persistUpserts('user-42', 'My WS', [row('y', 1)]);
+		await persistUpserts('user-42', 'My WS', [row('y', 1)], null);
 
 		const dbNameShouldBe = harnessDbName('user-42', 'My WS');
 		expect(dbNameShouldBe).toBe(

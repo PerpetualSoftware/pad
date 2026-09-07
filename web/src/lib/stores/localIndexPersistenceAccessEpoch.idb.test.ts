@@ -19,7 +19,9 @@ import { loadPersistence, openSecondConnection, harnessDbName } from '../../test
  * SCOPE. This file covers only what the minimal shape ships. The cross-tab
  * hazard — a write from a tab that has not yet learned the new scope
  * reinserting a row while the cache still advertises the current epoch — is
- * NOT closed here and is not meant to be; it is F2, and PLAN-2903 owns it.
+ * NOT closed here and is not meant to be; it is F2, and PLAN-2903 owned it.
+ * It is closed now, by the epoch check `persistUpserts` applies to its own
+ * batch, and pinned in localIndexScopeWriteFence.idb.test.ts (TASK-2922).
  */
 
 function row(id: string, seq: number): ItemIndexRow {
