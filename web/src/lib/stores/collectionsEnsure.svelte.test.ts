@@ -112,6 +112,37 @@ describe('TASK-2200 — ensureCollections', () => {
 		await Promise.all([other, mine]);
 	});
 
+	it('issues a FRESH request rather than joining a load a later workspace superseded', async () => {
+		const { api, collectionStore } = await load();
+
+		const releases: ((v: Collection[]) => void)[] = [];
+		const list = vi
+			.spyOn(api.collections, 'list')
+			.mockImplementation(() => new Promise<Collection[]>((r) => releases.push(r)));
+
+		// alpha, then beta, then someone needs alpha again — all three in
+		// flight at once (codex round 3 asked for this ordering).
+		const alpha = collectionStore.loadCollections('alpha');
+		const beta = collectionStore.loadCollections('beta');
+		const ensured = collectionStore.ensureCollections('alpha');
+
+		// THREE requests, and the third is the point. Round 3 read this as a
+		// missing join and proposed a per-workspace map; the map would be the
+		// defect. `loadCollections` commits only the LATEST call, so beta's
+		// start already killed alpha's first request — its response is dropped
+		// by the generation guard. Joining it would resolve this caller against
+		// a result that never lands, which is a quieter version of the bug this
+		// unit exists to fix.
+		expect(list).toHaveBeenCalledTimes(3);
+
+		releases.forEach((r) => r([coll('tasks')]));
+		await Promise.all([alpha, beta, ensured]);
+
+		// And the fresh alpha request is the one that commits, because it is
+		// the latest.
+		expect(collectionStore.collectionsAreFreshFor('alpha')).toBe(true);
+	});
+
 	it('releases the join slot once the load settles, so a later ensure issues a real request', async () => {
 		const { api, collectionStore } = await load();
 

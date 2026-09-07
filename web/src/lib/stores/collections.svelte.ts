@@ -34,10 +34,25 @@ let loading = $state(false);
 // (Codex review). Plain counter — not reactive; it only fences async writes.
 let collectionsLoadSeq = 0;
 
-// The workspace and promise of the `loadCollections` request currently in
-// flight, or nulls when none is (TASK-2200). `loading` cannot answer this: it
-// is a single global flag with no workspace on it, so it cannot tell a caller
-// asking about workspace A that the in-flight request is for B.
+// The workspace and promise of the load that will actually COMMIT — a single
+// slot TAGGED with its workspace, not a per-workspace map (TASK-2200, codex
+// round 3, which read the first draft of this comment as claiming the latter;
+// the comment was wrong, the slot was not).
+//
+// A map would be the worse structure here, and the reason is the generation
+// guard directly below: `loadCollections` commits only the LATEST call, so once
+// a load for B starts, A's in-flight request is already dead — its response
+// will be dropped by `seq !== collectionsLoadSeq`. Handing an
+// `ensureCollections('A')` caller that request's promise would resolve them
+// against a result that never lands, which is a quieter version of the bug this
+// unit exists to fix. Issuing a fresh A request is the correct answer, and it
+// is what the single slot produces.
+//
+// What the workspace TAG is for is the opposite mistake: without it, a joiner
+// asking about A would be handed B's promise and resolve against B's list.
+//
+// `loading` cannot serve either purpose — it is a single global flag with no
+// workspace on it and no promise behind it.
 //
 // Consumed only by `ensureCollections`, and deliberately not by
 // `loadCollections` itself — see that method's note on why coalescing every
@@ -117,9 +132,11 @@ export const collectionStore = {
 	async loadCollections(ws: string) {
 		const seq = ++collectionsLoadSeq;
 		loading = true;
-		// Published for `ensureCollections` to join. Recorded per WORKSPACE: a
-		// switch can leave A's request in flight while B's starts, and a joiner
-		// asking about A must not be handed B's promise.
+		// Published for `ensureCollections` to join, tagged with the workspace
+		// so a joiner asking about A is never handed B's promise. Overwriting a
+		// previous tenant is correct rather than lossy: this assignment happens
+		// after `++collectionsLoadSeq`, so the load being displaced has already
+		// lost the right to commit.
 		inFlightWs = ws;
 		const load = (async () => {
 		try {
