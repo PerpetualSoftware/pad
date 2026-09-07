@@ -24,32 +24,30 @@ build-go:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
 
 install: build
-	@# Stop running server, install binary, clear stale pid.
-	@# CAUTION: `pkill -x pad` is SYSTEM-WIDE (matches the binary name on the
-	@# whole host). If another user or project on the same machine is running
-	@# a `pad` process, it will get signaled too. Designed for single-developer
-	@# local setups; don't run `make install` on a shared host.
+	@# Delegated to scripts/install-refresh.sh (BUG-2897, TASK-2787). The
+	@# logic lives in a script rather than in this recipe for one reason
+	@# above readability: a script can be TESTED. install_refresh_test.go
+	@# drives it against a stub `pad` on PATH, including the branch where
+	@# the probe fails. Recipe-inline logic can only be exercised by running
+	@# `make install`, which stops the developer's real server — a test
+	@# nobody runs twice, which is how this target accumulated three
+	@# unverified claims.
 	@#
-	@# SIGTERM (not SIGKILL) so the server's graceful-shutdown path runs:
-	@# it closes the event bus, which terminates SSE handler goroutines so
-	@# the http.Server can write the final 0-chunk before closing each
-	@# stream. SIGKILL drops every open SSE connection mid-write, leaving
-	@# every browser tab with `ERR_INCOMPLETE_CHUNKED_ENCODING` and a noisy
-	@# reconnect storm. Falls back to SIGKILL after 5s for stuck processes.
-	@# BUG-1531 / SSE follow-up.
-	-pkill -TERM -x $(BINARY) 2>/dev/null; \
-		for i in 1 2 3 4 5; do \
-			pgrep -x $(BINARY) >/dev/null 2>&1 || break; \
-			sleep 1; \
-		done; \
-		pkill -KILL -x $(BINARY) 2>/dev/null || true
-	@mkdir -p $(INSTALL_DIR)
-	cp -f $(BINARY) $(INSTALL_DIR)/$(BINARY)
-	rm -f ~/.pad/pad.pid
-	@echo "Installed $(BINARY) to $(INSTALL_DIR)/$(BINARY)"
-	@# Trigger server auto-start by running a command
-	@$(INSTALL_DIR)/$(BINARY) auth whoami 2>/dev/null || true
-	@echo "Server restarted."
+	@# What the script guarantees, and what this target could not:
+	@#   - the binary it installs carries THIS invocation's commit, so a
+	@#     sibling's build sitting at ./pad cannot be installed silently
+	@#     (TASK-2787);
+	@#   - the server comes back with the argv of the process it killed,
+	@#     rather than whatever an auto-start defaults to (BUG-2897);
+	@#   - nothing is printed about a restart until the server answers on
+	@#     BOTH 127.0.0.1 and the configured host.
+	@#
+	@# CAUTION, unchanged: the stop is `pkill -x $(BINARY)`, which is
+	@# SYSTEM-WIDE (matches the binary name on the whole host). Designed for
+	@# single-developer local setups. When another session's worktree is
+	@# live, use CONVE-2687's manual sibling-safe recipe instead — this
+	@# target is the plain path, now honest, not a replacement for it.
+	@bash scripts/install-refresh.sh $(BINARY) $(INSTALL_DIR)/$(BINARY) $(COMMIT)
 
 # -timeout matches CI (see .github/workflows/ci.yml). Without it `go test`
 # uses a 10m per-test-binary default nobody chose — the shape that killed
