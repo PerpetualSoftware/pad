@@ -509,15 +509,29 @@ export async function hydrate(
  * equality costume, which is what defeated the fences on IDEA-2898's abandoned
  * branch. Both sides are epochs; the only operator is `!==`.
  *
- * DEFERRED, NEVER LOST. A behind tab's optimistic upsert is dropped from the
- * DURABLE cache until that tab resyncs — `localIndex.upsert` has already
- * written RAM and the search index before it calls this, so the writing session
- * sees its own row throughout, and its next `/items-changes` response carries
- * the epoch it does not hold, which routes through `ensureAccessScope` into a
- * resync whose snapshot re-includes the row. The write is delayed by one poll,
- * not discarded. That is the trade this takes deliberately: a tab that cannot
- * say what scope it holds has no business writing into a cache another tab
- * reads.
+ * DEFERRED, NEVER LOST — and the reason is PROVENANCE, not scheduling. A
+ * behind tab's optimistic upsert is dropped from the DURABLE cache until that
+ * tab resyncs, and `localIndex.upsert` has already written RAM and the search
+ * index before it calls this, so the writing session keeps serving its own row
+ * throughout. What makes the drop safe is that every row reaching this door is
+ * SERVER TRUTH — a mutation response, an SSE-derived row, or on the
+ * drag-reorder path a seq-less optimistic guess the authoritative response
+ * supersedes moments later — so the durable copy is a CACHE of something the
+ * server still holds. Any later snapshot, any later delta from this tab's
+ * cursor (which this door never advances, so a refused mutation stays inside
+ * the next window), and every cold boot re-supply it.
+ *
+ * The first draft of this paragraph gave the repair as "the tab's next
+ * `/items-changes`". That is true whenever one happens and it is NOT
+ * guaranteed: reconciles are SSE-driven rather than timed, so a quiet
+ * workspace whose SSE connection has dropped may not poll again in that
+ * session (codex round 2 P1). The correction matters because the two
+ * statements bound different things — the poll bounds how long the durable
+ * cache LAGS, and provenance is what says no row is ever at RISK. Only the
+ * second is load-bearing, and it was the one I had not written down.
+ *
+ * That is the trade this takes deliberately: a tab that cannot say what scope
+ * it holds has no business writing into a cache another tab reads.
  *
  * A cache with NO meta row is written normally. There is no scope claim on disk
  * for the batch to contradict, and minting one here would invent a cursor — the

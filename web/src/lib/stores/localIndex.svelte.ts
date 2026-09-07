@@ -1889,8 +1889,11 @@ export const localIndex = {
 		// the argument closes, and it closes it at the shared resource rather
 		// than by trying to teach this tab something it has not been told.
 		//
-		// RAM is already written above, deliberately: a refusal defers the
-		// durable copy by one poll, it does not discard the row.
+		// RAM is already written above, deliberately. A refusal defers the
+		// durable copy and never discards the row: everything reaching this
+		// call is server truth, so any later snapshot, delta or cold boot
+		// re-supplies it. See persistUpserts' own note for why provenance
+		// rather than the next poll is what makes that safe.
 		persistUpserts(state.userId, ws, [next], state.accessEpoch).catch(() => undefined);
 	},
 
