@@ -162,6 +162,13 @@ pad workspace import my-workspace.json
 pad workspace import --name "imported-workspace" my-workspace.json
 ```
 
+Item reference numbers are preserved when the imported items have positive,
+workspace-unique numbers, including gaps left by deleted items. This keeps
+references such as `[[TASK-2]]` pointing to the same task after restoration or
+SQLite→PostgreSQL migration. Legacy archives with duplicate, missing, or invalid
+numbers retain the sequential-renumbering fallback; references in those archives
+may need manual repair.
+
 ### One case where an export is not importable
 
 A workspace whose stored data contains a **NUL character** exports fine and is
