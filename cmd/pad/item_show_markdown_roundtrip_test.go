@@ -143,5 +143,10 @@ func feedStdin(t *testing.T, s string) func() {
 		_ = w.Close()
 	}()
 
-	return func() { os.Stdin = orig }
+	return func() {
+		os.Stdin = orig
+		// Close the read end too, not just restore the swap: without this
+		// each subtest leaks a file descriptor (codex round 1).
+		_ = r.Close()
+	}
 }

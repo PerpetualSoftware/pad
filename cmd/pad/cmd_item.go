@@ -732,11 +732,12 @@ func showCmd() *cobra.Command {
 				// same bytes back with `item update --stdin`, and the write
 				// path stores them exactly as sent. A `Println` here made
 				// that round trip append one newline per cycle, without
-				// bound, and made `$(...)` capture LOSE one instead, since
-				// command substitution strips every trailing newline. Both
-				// directions were this one line. The human-facing surface is
-				// the default table format below, which still ends the body
-				// with a newline.
+				// bound. (The `$(...)` capture that LOSES a byte is a
+				// different thing and is not fixed by this: command
+				// substitution strips every trailing newline from whatever
+				// it captures, `cat` included, before and after this change.)
+				// The human-facing surface is the default table format
+				// below, which still ends the body with a newline.
 				fmt.Print(item.Content)
 				return nil
 			}
