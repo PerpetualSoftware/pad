@@ -162,43 +162,13 @@ class WorkspaceState {
 	// request is issued, and a write authorised under a superseded scope is
 	// refused on return. Not persisted; a session-local ordering token.
 	//
-	// RECONCILE LOOPS DO NOT USE THIS — they use `resyncSeq` below (TASK-2909).
+	// RECONCILE LOOPS DO NOT USE THIS — they use the module-level
+	// `reconcileTokens` map (TASK-2909; moved out of the state by IDEA-2913).
 	// They did until then, which is what made a settle bump here look free: it
 	// would have answered their question and silently broken this one, refusing
 	// writes issued after the new snapshot was already installed.
 	scopeEpoch = 0;
 
-	// `resyncSeq` bumps when a resync SETTLES, and exists so a reconcile loop can
-	// ask "did a resync overlap my request", which `scopeEpoch` cannot answer
-	// (TASK-2909, review rounds 2 and 3).
-	//
-	// Settle only — an entry bump was written first and is redundant, which a
-	// mutation run showed by surviving its removal. A request that started
-	// before the resync mismatches after the settle bump; one that started
-	// during it is refused by the in-flight check while the resync runs and by
-	// the same settle bump afterwards. A second bump would be a second
-	// definition of "a resync happened" with nothing extra to say.
-	//
-	// KNOWN LIMIT, older than this counter: it is per-state and restarts at
-	// zero, so a `reset()` between a loop's capture and its response gives the
-	// REPLACEMENT state a matching token by coincidence. `resetGenerationFor`
-	// is the value that survives a reset and the loops do not yet capture it.
-	// Filed as IDEA-2913 rather than fixed here — the scope epoch this replaced
-	// had the same gap, so it is not this unit's to close.
-	//
-	// A separate counter rather than bumping `scopeEpoch` twice, which was the
-	// first shape and was wrong: `scopeEpoch` is ALSO the fence `upsert` uses to
-	// reject an optimistic write authorised under a superseded scope, and a
-	// settle bump made it reject writes issued AFTER the new snapshot was
-	// already installed — a user's create returning successfully and never
-	// reaching the store. One counter for two questions looked like thrift and
-	// was an overload; the questions differ, so the counters do.
-	//
-	// Reconcile loops capture this at the top of each iteration and hand it back
-	// when they report catch-up. Any capture taken during a resync mismatches
-	// afterwards, so a response computed against the pre-snapshot cursor cannot
-	// clear the ask however late it arrives.
-	resyncSeq = 0;
 
 	// `fencedIds` holds item ids the most recent resync DROPPED (absent from the
 	// authoritative snapshot — hidden by a downgrade or deleted). `upsert`
@@ -248,6 +218,40 @@ const workspaces = new SvelteMap<string, WorkspaceState>();
 const resetGenerations = new Map<string, number>();
 
 /**
+ * Per-workspace reconcile token — the value a reconcile loop captures when it
+ * ISSUES an `/items-changes` request and hands back when it reports catch-up
+ * (TASK-2909, moved out of `WorkspaceState` by IDEA-2913).
+ *
+ * It bumps on exactly two events, and they are the two ways a verdict computed
+ * against the cursor as the caller saw it can be overtaken:
+ *
+ *   - a projection resync SETTLES, having pinned the cursor;
+ *   - the workspace's rows are DROPPED (`markWorkspaceDropped`).
+ *
+ * OUTSIDE `workspaces`, for the same reason `resetGenerations` is (TASK-2877):
+ * `reset()` deletes that entry, so any counter living on the state object
+ * restarts at zero and a response issued against the OLD state finds a matching
+ * value on the replacement. That is an ABA — the counter returns to a value the
+ * caller had seen, by way of a different object — and no per-state value can
+ * close it, because "unchanged" and "reset back to zero" are the same number.
+ *
+ * ONE counter rather than making callers capture this AND `resetGenerationFor`:
+ * two values to compare is two values to keep in step, and the door that forgets
+ * the second one is the next lapse. The question both would answer is a single
+ * question — "is the state I measured still the state I am reporting to" — so it
+ * gets a single value. Its readers are the reconcile path and
+ * nothing else — `clearAskIfSettled`, the two loops, and the
+ * `reconcileTokenFor` accessor they capture through — verified by grep before
+ * the move, which is what makes moving it safe here and was not true of
+ * `scopeEpoch`.
+ */
+const reconcileTokens = new Map<string, number>();
+
+function bumpReconcileToken(ws: string): void {
+	reconcileTokens.set(ws, (reconcileTokens.get(ws) ?? 0) + 1);
+}
+
+/**
  * Record that a workspace's rows are gone. EVERY path that drops them calls
  * this — `reset()`, which deletes the whole state entry, and `bootstrap()`'s
  * 401/403 branch, which clears the rows in place. Two call sites rather than
@@ -257,6 +261,12 @@ const resetGenerations = new Map<string, number>();
  */
 function markWorkspaceDropped(ws: string): void {
 	resetGenerations.set(ws, (resetGenerations.get(ws) ?? 0) + 1);
+	// A drop invalidates any reconcile verdict in flight just as a settled
+	// resync does — the rows the response was computed against are gone
+	// (IDEA-2913). Bumping HERE rather than in `reset()` inherits this helper's
+	// guarantee of being the single funnel every drop path calls, which
+	// `localIndexResetGeneration.svelte.test.ts` already enforces.
+	bumpReconcileToken(ws);
 }
 
 const inflight = new Map<string, Promise<void>>();
@@ -421,7 +431,7 @@ function clearAskIfSettled(ws: string, state: WorkspaceState, token: number): vo
 	// started. A resync that overlapped it pinned the cursor since, so the
 	// verdict is stale — however late it arrives, and whether or not anything is
 	// still in flight now.
-	if (state.resyncSeq !== token) return;
+	if ((reconcileTokens.get(ws) ?? 0) !== token) return;
 	// ...and the still-running case, which the token alone cannot catch: the
 	// counter only moves when a resync SETTLES, so a response that arrives while
 	// one is mid-flight still carries a matching token.
@@ -649,7 +659,7 @@ async function resyncProjectionScope(
 		//
 		// Only the STARTER reaches this: joined callers return the pending
 		// promise above and never enter the try.
-		state.resyncSeq += 1;
+		bumpReconcileToken(ws);
 	}
 }
 
@@ -851,13 +861,13 @@ export const localIndex = {
 						// Captured per ITERATION but declared out here, because
 						// the clear below belongs to whichever iteration
 						// concluded catch-up (TASK-2909 review round 3).
-						let reconcileToken = state.resyncSeq;
+						let reconcileToken = reconcileTokens.get(ws) ?? 0;
 						for (let i = 0; i < 50; i++) {
-							reconcileToken = state.resyncSeq;
+							reconcileToken = reconcileTokens.get(ws) ?? 0;
 							const since = state.cursor;
 							const delta = await api.items.changes(ws, since);
 							if (isStale()) return;
-							if (state.resyncSeq !== reconcileToken) {
+							if ((reconcileTokens.get(ws) ?? 0) !== reconcileToken) {
 								// A concurrent resync (another caller) installed a
 								// new snapshot + pinned cursor while this request
 								// was in flight. This response predates it, so it
@@ -1713,8 +1723,9 @@ export const localIndex = {
 		// a value read at the moment of reporting, because the staleness this
 		// guards against is decided at request time, not at clear time.
 		//
-		// `clearAskIfSettled` compares it against `resyncSeq`, which bumps when
-		// a resync SETTLES, and additionally refuses while one is outstanding.
+		// `clearAskIfSettled` compares it against the module-level reconcile
+		// token, which bumps when a resync SETTLES and when the workspace's rows
+		// are DROPPED, and additionally refuses while a resync is outstanding.
 		// Between them they cover both ways a response can be overtaken: one
 		// that returns while the resync is still running (the counter has not
 		// moved yet — the in-flight check catches it) and one that returns after
@@ -1760,10 +1771,16 @@ export const localIndex = {
 	 * This one changes when a resync SETTLES, which is what makes a capture
 	 * taken before or during that resync detectably stale afterwards; the
 	 * mid-flight case is covered by the in-flight check in `clearAskIfSettled`
-	 * rather than by this counter. Returns 0 for an unhydrated workspace.
+	 * rather than by this counter.
+	 *
+	 * Returns 0 for a workspace nothing has happened to yet — but NOT as an
+	 * "unhydrated" sentinel, and no caller may read it as one: the counter
+	 * outlives the state, so a slug reset while unhydrated answers 1 with no
+	 * state in existence (IDEA-2913 review). The only meaningful use is
+	 * comparing a captured value against a later one.
 	 */
 	reconcileTokenFor(ws: string): number {
-		return workspaces.get(ws)?.resyncSeq ?? 0;
+		return reconcileTokens.get(ws) ?? 0;
 	},
 
 	scopeEpochFor(ws: string): number {
