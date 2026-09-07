@@ -59,6 +59,7 @@ func captureStdout(t *testing.T, fn func()) string {
 	fn()
 
 	_ = w.Close()
+	defer func() { _ = r.Close() }()
 	var buf bytes.Buffer
 	if _, err := buf.ReadFrom(r); err != nil {
 		t.Fatalf("read captured stdout: %v", err)
