@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/PerpetualSoftware/pad/internal/items"
 )
 
 // catalog_item_fields.go — the `fields` OBJECT alias on pad_item
@@ -137,11 +140,6 @@ type fieldContribution struct {
 	nested bool   // a structure, with no key=value encoding
 	raw    any    // the value as supplied, for comparing two structures
 
-	// nonCanonical marks a `field` array entry written in something other
-	// than its canonical `key=value` form (padding around either half). It
-	// matters because the two doors then receive DIFFERENT writes.
-	nonCanonical bool
-
 	// topLevel marks a contribution that arrived as a top-level param rather
 	// than through `field` or `fields`. It is what the compat-ID exception
 	// actually turns on — see the gate below.
@@ -233,7 +231,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// entries so two entries naming one key stay two contributions (round 18).
 	fieldEntries, _, errRes := parseFieldArray(prefix, input["field"])
 	if errRes != nil {
-		return nil // the caller parses for real and owns this error surface
+		// PROPAGATED, not swallowed (BUG-2870). This returned nil because the
+		// only errors parseFieldArray could raise were SHAPE errors, and
+		// reshapeItemFields — which parses for real — owns that surface. It
+		// can now also refuse a padded KEY, and that refusal has no second
+		// owner: reshapeItemFields returns early when there is no `fields`
+		// object, which is exactly the no-`fields` path this bug lives on. So
+		// swallowing it here turned `field:[" effort=l"]` back into a success.
+		// A shape error propagating from here instead of from the caller is
+		// harmless — same message, one layer earlier.
+		return errRes
 	}
 
 	groups := map[string][]fieldContribution{}
@@ -248,16 +255,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	sort.Strings(objKeys) // deterministic refusal text across runs
 	for _, k := range objKeys {
 		sv, err := stringifyFieldValue(obj[k])
-		// COMPARED TRIMMED, EMITTED RAW (codex round 19). Entry values are
-		// trimmed for comparison because ingestFieldKVP trims them, so
-		// comparing a trimmed entry against an untrimmed `fields` value was
-		// apples to oranges: `fields:{"note":" x "}` with `field:["note= x "]`
-		// read as " x " vs "x" and refused, though both doors write " x ".
-		// Only `value` (the comparison key) is trimmed; `raw` keeps the
-		// original, and the canonical re-emission still carries the untrimmed
-		// value to the wire.
+		// COMPARED RAW (BUG-2870, superseding codex round 19 on BUG-2850).
+		// This trimmed the comparison value because ingestFieldKVP trimmed
+		// what it stored, so a trimmed entry and an untrimmed `fields` value
+		// were apples to oranges. Neither door trims a value now, so raw IS
+		// what both will write, and trimming here would compare a form
+		// nothing stores — `fields:{"note":" x "}` with `field:["note= x "]`
+		// still agrees, and now it agrees about the bytes rather than about
+		// their trimmed shadows.
 		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "fields." + k, value: strings.TrimSpace(sv), nested: err != nil, raw: obj[k],
+			key: k, source: "fields." + k, value: sv, nested: err != nil, raw: obj[k],
 		})
 	}
 
@@ -267,7 +274,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// key collapse to a single index slot — and iterating that index made
 	// this pass's own input lossy. `field:["effort=l", " effort=l"]` arrived
 	// as ONE contribution, fell under the len < 2 early exit, and passed
-	// unchecked: HTTP trims both to `effort` while stdio writes `effort` AND
+	// unchecked: HTTP trimmed both to `effort` while stdio wrote `effort` AND
 	// a junk `" effort"`. The pass claims to adjudicate one canonical key
 	// offered by multiple sources; two array entries ARE multiple sources,
 	// and it could not see them.
@@ -276,18 +283,27 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// apply unchanged: equal canonical duplicates collapse, and a padded twin
 	// is refused by the non-canonical check like any other.
 	for _, entry := range fieldEntries {
-		k, v, ok := strings.Cut(entry, "=")
-		if !ok {
+		// Split the way the doors split (BUG-2870). This trimmed both halves
+		// to mirror ingestFieldKVP; no door trims now, so a trimmed value here
+		// would be compared against a `fields` value that is carried raw —
+		// which is exactly the apples-to-oranges the round-19 comment was
+		// written to prevent, in the opposite direction.
+		key, val, err := items.SplitFieldEntry(entry)
+		if errors.Is(err, items.ErrFieldEntryMalformed) {
 			continue // no '=' — the CLI owns that error surface, not this pass
 		}
-		key := strings.TrimSpace(k)
-		val := strings.TrimSpace(v)
+		if err != nil {
+			// REFUSED HERE, not skipped. This pass runs whether or not a
+			// `fields` object exists (round 14), and parseFieldArray does
+			// not: `field:[" effort=l"]` with no `fields` reaches the doors
+			// through this path alone. Skipping the entry would drop it from
+			// conflict detection entirely — which is how the first version of
+			// this change turned four refusals into successes, caught by the
+			// round-15/16/18 tests below.
+			return errStructured(prefix, err)
+		}
 		add(canonicalFieldKey(key), fieldContribution{
 			key: key, source: "the field array entry " + strconv.Quote(entry), value: val, raw: val,
-			// Whether the entry as WRITTEN matches its canonical form. The
-			// index is normalized so a padded entry can be recognized at all;
-			// this remembers that the doors will not receive it identically.
-			nonCanonical: entry != key+"="+val,
 		})
 	}
 
@@ -339,63 +355,65 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// WRITE — and this runs BEFORE the exemption below, deliberately
 		// (codex round 16).
 		//
-		// The conflict index is normalized, so `field:["k = A"]` compares
-		// EQUAL to a top-level `k:"A"` and the pair was accepted while the
-		// entry stayed padded on the wire. HTTP trims it and writes `k`; the
-		// CLI does not, and writes a junk `"k "` key instead. The
-		// normalization that lets the collision be SEEN is exactly what made
-		// accepting it wrong.
+		// THE PADDED-ENTRY CHECK THAT USED TO SIT HERE IS GONE (BUG-2870),
+		// and the decision is worth stating rather than leaving as an
+		// absence. Round 16 added it because `field:["k = A"]` compared EQUAL
+		// to a top-level `k:"A"` while the entry stayed padded on the wire —
+		// HTTP trimmed it and wrote `k`, the CLI did not and wrote a junk
+		// `"k "` key — so equality licensed a collapse the two doors would
+		// not honour identically.
 		//
-		// It sits above the exemption because padding breaks the exemption's
-		// own premise — that both doors resolve the duplicate identically —
-		// for EVERY key class, not just the compat IDs. Round 15 was this
-		// same mistake (a premise verified for declared params, generalized
-		// to keys it did not hold for); putting this check below the
+		// A padded key cannot reach this pass any more: items.SplitFieldEntry
+		// refuses it, so every contribution here is canonical BY
+		// CONSTRUCTION — `entry == key + "=" + value` holds for anything that
+		// parsed. The old flag was therefore provably always false, not
+		// merely untested; removing it changed no test, which is consistent
+		// with both "dead" and "untested", and the construction argument is
+		// what separates them.
+		//
+		// The premise it defended still holds and is still enforced, one
+		// layer earlier and for every key class: equality only licenses a
+		// collapse when both doors receive the same write. Round 15 was the
+		// same mistake in another form (a premise verified for declared
+		// params, generalized to keys it did not hold for); putting this check
+		// below the
 		// exemption would have repeated it one round later, and my first
 		// draft did exactly that.
 		//
-		// Only when nothing will canonicalize the entry, i.e. no `fields`
-		// object — with one present, reshapeItemFields re-emits it
-		// canonically and equality is safe again.
+		// The paragraphs that stood here described WHEN a padded entry would
+		// be canonicalized — per-key rather than per-request (round 17) — and
+		// not extended to a lone padded entry because that was "BUG-2870,
+		// ruled out of this PR's scope". Both are spent: this IS BUG-2870,
+		// nothing canonicalizes anything any more, and a padded entry is
+		// refused before it can reach a question about who covers its key.
 		//
-		// Deliberately NOT extended to a padded entry standing ALONE with no
-		// colliding param: that is BUG-2870, ruled out of this PR's scope,
-		// and it changes what every CLI caller receives. Here the caller has
-		// supplied one key twice and one of the forms is malformed, which is
-		// a narrower and locally-answerable question.
-		// WHETHER THIS KEY GETS CANONICALIZED IS A PER-KEY QUESTION, not a
-		// per-request one (codex round 17).
-		//
-		// Round 16 gated this on `!fieldsPresent`, reasoning that with a
-		// `fields` object present reshapeItemFields re-emits the entry
-		// canonically. True — for keys that are IN that object. With
-		// `fields:{}`, or a `fields` carrying some OTHER key, nothing
-		// canonicalizes `field:["status = done"]` and it reaches the doors
-		// padded exactly as it does with no `fields` at all.
+		// The predicate itself survives below, where it decides whether the
+		// round-15 exemption applies — a different question that has nothing
+		// to do with padding. It is named `coveredByFieldsObject` rather than
+		// `canonicalized` now (codex round 2): nothing canonicalizes anything
+		// any more, and the only thing it ever really asked was whether the
+		// `fields` object carries THIS key.
 		//
 		// Third round running that I generalized a property verified on one
 		// subset to the whole: round 15 (a premise true of declared params,
 		// applied to the compat IDs), round 16's first draft (a check placed
 		// below the exemption so it covered one key class), and now a
-		// per-key property read as per-request. The predicate is now the
-		// actual question — will anything canonicalize THIS key.
-		canonicalized := false
+		// per-key property read as per-request. The predicate is the actual
+		// question it needs — is THIS key carried by the `fields` object.
+		// (Round 17 phrased it as "will anything canonicalize THIS key",
+		// which was the same test under a name that no longer describes
+		// anything the code does.)
+		coveredByFieldsObject := false
 		for _, c := range contribs {
 			if _, inObj := obj[c.key]; inObj {
-				canonicalized = true
+				coveredByFieldsObject = true
 				break
 			}
 		}
-		if !canonicalized {
-			for i := 1; i < len(contribs); i++ {
-				a, b := contribs[0], contribs[i]
-				if a.nonCanonical || b.nonCanonical {
-					return errStructured(prefix, fmt.Errorf(
-						"%s conflicts with %s — the field entry is not in canonical key=value form, so the transports would write different keys; remove the padding or pass only one of them",
-						a.source, b.source))
-				}
-			}
-		}
+		// NOTE: this predicate no longer gates a padded-entry refusal — that
+		// guard is gone with BUG-2870, see above. It is still live below,
+		// where it decides whether the round-15 exemption applies, so the
+		// predicate stays and only the branch that used it went.
 
 		// ...and the exemption holds only where the doors PROVABLY agree,
 		// which is not everywhere (codex round 15).
@@ -424,8 +442,8 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// last entry — so refusing it was a false refusal on a call that
 		// resolves deterministically.
 		//
-		// `canonicalized` is exactly the right question and is already
-		// computed above: is THIS key carried by the `fields` object.
+		// `coveredByFieldsObject` is exactly the right question and is
+		// already computed above: is THIS key carried by the `fields` object.
 		// THE COMPAT EXCEPTION TURNS ON A TOP-LEVEL VALUE BEING PRESENT, not
 		// on the key being a compat one (codex round 20).
 		//
@@ -443,7 +461,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 				break
 			}
 		}
-		if !canonicalized && !compatTopLevel {
+		if !coveredByFieldsObject && !compatTopLevel {
 			continue
 		}
 		for i := 1; i < len(contribs); i++ {
@@ -672,11 +690,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 	// through its dedicated param (codex round 6).
 	dropFieldKeys := map[string]bool{}
 
-	// Generic keys whose array entry was a PADDED equal duplicate: the raw
-	// entry is dropped and re-emitted in canonical `key=value` form, so the
-	// doors that do not trim write the key the caller meant (codex round 7).
-	reEmitFields := map[string]string{}
-
 	// Deterministic processing (and error ordering) across runs.
 	keys := make([]string, 0, len(obj))
 	for k := range obj {
@@ -834,13 +847,20 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			continue
 		}
 		if _, has := fieldByKey[k]; has {
-			// Known equal (the pass above refused anything else). Re-emit
-			// canonically when the retained entry is padded, so every door
-			// writes the key the caller meant.
-			if hasNonCanonicalFieldEntry(fieldEntries, k, sv) {
-				dropFieldKeys[k] = true
-				reEmitFields[k] = sv
-			}
+			// Known equal (the pass above refused anything else), and there
+			// is nothing left to rewrite: BUG-2870 refuses a padded key at
+			// items.SplitFieldEntry, so an entry that parsed is canonical by
+			// construction and the retained one already carries the key the
+			// caller meant with the value they wrote.
+			//
+			// The RE-EMISSION this used to do — dropping the padded entry and
+			// re-emitting `k=sv` — existed because one door trimmed the key
+			// and the other did not, so a padded entry had to be rewritten to
+			// make the two doors write the same thing. Neither door trims now
+			// and neither accepts the padding, which removes the case rather
+			// than the need for it. Removing this changed no test, and the
+			// construction argument is what distinguishes "dead" from
+			// "untested" — a padded entry cannot reach here at all.
 			continue
 		}
 		fieldEntries = append(fieldEntries, k+"="+sv)
@@ -860,18 +880,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			kept = append(kept, e)
 		}
 		fieldEntries = kept
-	}
-	// Canonical re-emissions go on AFTER the filter, or the filter would
-	// remove them again — they carry the same key it just matched on.
-	if len(reEmitFields) > 0 {
-		reKeys := make([]string, 0, len(reEmitFields))
-		for k := range reEmitFields {
-			reKeys = append(reKeys, k)
-		}
-		sort.Strings(reKeys) // deterministic arg order across runs
-		for _, k := range reKeys {
-			fieldEntries = append(fieldEntries, k+"="+reEmitFields[k])
-		}
 	}
 	if len(fieldEntries) > 0 {
 		out["field"] = fieldEntries
@@ -897,34 +905,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 // it is produced by this merge, never accepted from the wire, and strict input
 // validation would reject it as an undeclared param if it were.
 const fieldsNativeKey = "__fields_native"
-
-// hasNonCanonicalFieldEntry reports whether ANY entry for this key is written
-// in something other than the canonical `key=value` form.
-//
-// "Any", not "no canonical entry exists" (codex round 8). The first version
-// asked whether a canonical entry was PRESENT and left the array alone if one
-// was — so `field:["effort=l", " effort=l"]` kept the padded twin, and the
-// doors then disagreed about it: HTTP trims and writes `effort`, the CLI does
-// not and writes an undeclared `" effort"`. One canonical entry does not make
-// its padded sibling harmless; every entry for the key has to be canonical,
-// or the key gets re-emitted once and cleanly.
-//
-// Collapsing duplicates in that re-emission is correct rather than lossy:
-// parseFieldArray already indexes them to a single value, so two entries for
-// one key were never two writes.
-func hasNonCanonicalFieldEntry(entries []string, key, value string) bool {
-	want := key + "=" + value
-	for _, e := range entries {
-		k, _, ok := strings.Cut(e, "=")
-		if !ok || strings.TrimSpace(k) != key {
-			continue
-		}
-		if e != want {
-			return true
-		}
-	}
-	return false
-}
 
 // parseFieldArray normalizes an existing `field` param into a []string
 // plus a key→value index. Entries the CLI would reject anyway (no '=')
@@ -954,25 +934,29 @@ func parseFieldArray(prefix string, raw any) ([]string, map[string]string, *mcp.
 		return nil, nil, errStructured(prefix, fmt.Errorf("field is %T, want array of \"key=value\" strings", raw))
 	}
 	for _, e := range entries {
-		if k, val, ok := strings.Cut(e, "="); ok {
-			// NORMALIZED THE WAY THE DOOR WILL NORMALIZE (codex round 6).
-			// ingestFieldKVP (dispatch_http.go) TrimSpaces both halves before
-			// storing them, so an un-trimmed index here does not describe what
-			// the remote door is about to write: `field:[" status=cancelled"]`
-			// indexed under " status" missed every conflict check against
-			// `fields:{"status":…}` and then silently overrode it. Trimming
-			// the value closes the mirror-image false refusal, where
-			// `field:["status= done"]` looked different from "done" and was
-			// refused as a conflict with a call that agrees.
-			//
-			// Only the INDEX is normalized. `entries` stays verbatim so every
-			// door still parses exactly what the caller sent — the CLI door
-			// does not trim (cmd/pad/cmd_item.go), and this must not quietly
-			// change what it receives. The effect is a conflict check that is
-			// conservative on both doors, which is the correct direction for
-			// a guard whose disposition is refuse-on-ambiguity.
-			byKey[strings.TrimSpace(k)] = strings.TrimSpace(val)
+		// INDEXED THE WAY THE DOORS PARSE (BUG-2870). This used to trim both
+		// halves here, mirroring ingestFieldKVP, which trimmed them at the
+		// remote door and nowhere else (codex round 6 on BUG-2850). That
+		// premise is gone: every door now runs items.SplitFieldEntry, which
+		// REFUSES a padded key rather than trimming it and carries the value
+		// through untouched. So the index is built by the same call the doors
+		// make, and a padded key is refused HERE — before dispatch, on both
+		// transports — instead of being silently re-pointed at the trimmed
+		// field by one door and stored as a ghost field by the other.
+		//
+		// Values are indexed RAW, which is what makes the comparison honest:
+		// both doors now write the raw value, so comparing a trimmed form
+		// would be comparing something neither door will store.
+		key, val, err := items.SplitFieldEntry(e)
+		if errors.Is(err, items.ErrFieldEntryMalformed) {
+			// Entries the CLI would reject anyway are passed through
+			// unindexed rather than pre-empting the CLI's own error surface.
+			continue
 		}
+		if err != nil {
+			return nil, nil, errStructured(prefix, err)
+		}
+		byKey[key] = val
 	}
 	return entries, byKey, nil
 }

@@ -16,8 +16,11 @@ import (
 // The doors did not agree. The CLI has coerced by schema type since BUG-1125
 // (cmd/pad/cmd_item.go::parseFieldFlag), and local stdio MCP inherits that by
 // shelling out to the binary — but the remote /mcp transport builds its field
-// map in ingestFieldKVP, which does `dst[key] = val` unconditionally, so every
-// value arrives as a string. validateFieldType then correctly refuses a string
+// map in ingestFieldKVP, which stores the value half as it received it — a
+// STRING — so every value arrives as a string. (Still true after BUG-2870:
+// that change routed ingestFieldKVP through items.SplitFieldEntry, which
+// stopped it TRIMMING the halves; it never stringified anything and does not
+// type anything now either. Typing is this file's job, which is the point.) validateFieldType then correctly refuses a string
 // for a declared number/json field, and the net effect was that an MCP agent on
 // that transport could not write those fields AT ALL: every attempt a 400.
 // Typing belongs to the server, keyed on the schema, so the doors cannot drift
