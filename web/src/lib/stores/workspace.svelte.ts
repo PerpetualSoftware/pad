@@ -14,6 +14,14 @@ let loading = $state(false);
 // membership for workspace B.
 let membershipSeq = 0;
 
+// The `loadAll` request currently in flight, or null. Consumed by
+// `recoverIfMissing`, which must JOIN it rather than skip past it: acting on a
+// still-empty `workspaces` sends `setCurrent` down its single-workspace
+// fallback for no reason (TASK-2200, codex round 4). Cleared in `loadAll`'s
+// own `finally`, so a failed request does not leave a dead promise behind for
+// the next caller to await.
+let inFlightLoadAll: Promise<void> | null = null;
+
 /**
  * Resource-scoped permission helpers (PLAN-1100 / TASK-1101).
  *
@@ -68,11 +76,18 @@ export const workspaceStore = {
 
 	async loadAll() {
 		loading = true;
-		try {
-			workspaces = await api.workspaces.list();
-		} finally {
-			loading = false;
-		}
+		// Published so `recoverIfMissing` can JOIN this request rather than
+		// skip past it — see the note there (codex round 4).
+		const load = (async () => {
+			try {
+				workspaces = await api.workspaces.list();
+			} finally {
+				loading = false;
+				inFlightLoadAll = null;
+			}
+		})();
+		inFlightLoadAll = load;
+		return load;
 	},
 
 	/**
@@ -105,9 +120,19 @@ export const workspaceStore = {
 	 * on an in-flight one.
 	 */
 	async recoverIfMissing(ws: string): Promise<void> {
-		if (workspaces.length === 0 && !loading) {
+		if (workspaces.length === 0) {
 			try {
-				await workspaceStore.loadAll();
+				// JOIN an in-flight list request rather than skipping past it
+				// (codex round 4). The first draft skipped on `!loading` and
+				// went straight to `setCurrent`, which — with `workspaces` still
+				// empty — falls back to a single-workspace fetch; if THAT failed
+				// while the in-flight list succeeded moments later, `current`
+				// stayed null and the shell stayed broken until the next sync
+				// result. Recoverable, but a wasted round, and the skip was the
+				// same "in flight" question `ensureCollections` answers by
+				// joining. Got it right in one place and wrong in the other, in
+				// one unit; they now answer it the same way.
+				await (inFlightLoadAll ?? workspaceStore.loadAll());
 			} catch {
 				// Still unreachable. Leave both pieces of state as they are —
 				// the next sync result asks again, and asking again is the whole

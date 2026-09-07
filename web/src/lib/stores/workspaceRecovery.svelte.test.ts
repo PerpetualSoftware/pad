@@ -115,20 +115,34 @@ describe('TASK-2200 — workspace identity recovers after a failed cold load', (
 		expect(workspaceStore.current?.slug).toBe('beta');
 	});
 
-	it('does not stack a second list request on one already in flight', async () => {
+	it('JOINS a list request already in flight, and still resolves `current` from it', async () => {
 		const { api, workspaceStore } = await load();
 
 		let release: (v: Workspace[]) => void = () => {};
 		const list = vi
 			.spyOn(api.workspaces, 'list')
 			.mockImplementation(() => new Promise<Workspace[]>((r) => (release = r)));
+		// The single-workspace fallback is DOWN. That is the discriminating
+		// part: the first draft of `recoverIfMissing` skipped an in-flight list
+		// and went straight to `setCurrent`, which — with `workspaces` still
+		// empty — takes this fallback, and when it failed `current` stayed null
+		// even though the list request succeeded moments later (codex round 4).
+		const get = vi.spyOn(api.workspaces, 'get').mockRejectedValue(new Error('down'));
 		vi.spyOn(api.workspaces, 'me').mockResolvedValue({} as never);
 
 		const inFlight = workspaceStore.loadAll();
-		await workspaceStore.recoverIfMissing('alpha');
+		const recovering = workspaceStore.recoverIfMissing('alpha');
+
+		// One request, not two.
 		expect(list).toHaveBeenCalledTimes(1);
 
 		release([ws('alpha')]);
-		await inFlight;
+		await Promise.all([inFlight, recovering]);
+
+		// And the outcome, which the call-count assertion alone cannot see:
+		// `current` is resolved OUT OF THE JOINED LIST, so the dead fallback is
+		// never needed.
+		expect(workspaceStore.current?.slug).toBe('alpha');
+		expect(get).not.toHaveBeenCalled();
 	});
 });
