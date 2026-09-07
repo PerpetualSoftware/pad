@@ -1688,21 +1688,6 @@ export const localIndex = {
 		return workspaces.get(ws)?.accessEpoch ?? null;
 	},
 
-	/**
-	 * The user namespace this workspace's durable cache lives under (TASK-2946).
-	 *
-	 * Exposed rather than letting a second store read `authStore` for itself.
-	 * The cache is one IDB database per (user, workspace) pair, and a caller
-	 * that resolved the user independently could write into a DIFFERENT database
-	 * than the rows — at which point a collection list stamped against "the row
-	 * cache's epoch" would be stamped against a row cache it does not share,
-	 * and the fence that checks it would be comparing two unrelated caches.
-	 * One owner for the namespace, and it is the store that captured it.
-	 */
-	userIdFor(ws: string): string | null {
-		return workspaces.get(ws)?.userId ?? null;
-	},
-
 	/** Force a full snapshot when the server's projection capability changes. */
 	async ensureProjectionScope(ws: string, includesUnparentedMetadata: boolean): Promise<boolean> {
 		const state = ensureState(ws);

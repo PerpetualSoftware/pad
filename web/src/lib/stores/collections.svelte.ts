@@ -1,6 +1,6 @@
 import { api } from '$lib/api/client';
 import type { Collection, Item } from '$lib/types';
-import { localIndex } from './localIndex.svelte';
+import { authStore } from './auth.svelte';
 import { hydrateCollections, persistCollections, readDurableEpoch } from './localIndexPersistence';
 
 let collections = $state<Collection[]>([]);
@@ -149,7 +149,7 @@ export const collectionStore = {
 	 * is the correct trade rather than an oversight.
 	 */
 	async cachedCollection(ws: string, slug: string): Promise<Collection | null> {
-		const list = await hydrateCollections(localIndex.userIdFor(ws), ws);
+		const list = await hydrateCollections(authStore.userId || null, ws);
 		return list?.find((c) => c.slug === slug) ?? null;
 	},
 
@@ -167,7 +167,15 @@ export const collectionStore = {
 		// starts before `bootstrap` runs, so every fresh visit refused to cache;
 		// and RAM is not the value `hydrateCollections` compares against, so a
 		// RAM-based bracket could agree while the fence's own value moved.
-		const userId = localIndex.userIdFor(ws);
+		// THE NAMESPACE COMES FROM `authStore`, not from localIndex (codex round
+		// 3). The cache is one IDB database per (user, workspace), and
+		// localIndex's own `userId` is a copy captured when `bootstrap` ran —
+		// which is AFTER the layout starts this fetch. Reading it here returned
+		// null on exactly the first visit this feature exists for, writing the
+		// list into the `anon` database while every later read used the
+		// authenticated one. Same source as every `bootstrap` caller passes, so
+		// the two cannot disagree.
+		const userId = authStore.userId || null;
 		// Published for `ensureCollections` to join, tagged with the workspace
 		// so a joiner asking about A is never handed B's promise. Overwriting a
 		// previous tenant is correct rather than lossy: this assignment happens
@@ -176,17 +184,19 @@ export const collectionStore = {
 		inFlightWs = ws;
 		const load = (async () => {
 		try {
-			// Issued TOGETHER, not sequentially. Awaiting the durable read first
-			// would delay the request by a round trip to IndexedDB and — worse —
-			// stop `loadCollections` issuing its fetch synchronously, which is
-			// what lets `ensureCollections` see an in-flight load and join it.
-			// Started in the same tick, the epoch read is "before the fetch" in
-			// the only sense that matters: a resync landing after this point is
-			// exactly what the comparison at write time is looking for.
-			const [result, epochBefore] = await Promise.all([
-				api.collections.list(ws),
-				readDurableEpoch(userId, ws),
-			]);
+			// STRICTLY BEFORE the request, not concurrently with it (codex round
+			// 3). Running them together looked free and was not: `Promise.all`
+			// starts both, but the durable read RESOLVES later and can observe a
+			// resync that landed AFTER the request was issued. The write would
+			// then compare that later epoch against itself, agree, and stamp an
+			// old-scope list with the new scope — the same defeat-by-construction
+			// round 1 found, reintroduced by the fix for round 2.
+			//
+			// The join `ensureCollections` performs does not depend on the fetch
+			// being issued synchronously; it depends on the in-flight slot, which
+			// is published synchronously above.
+			const epochBefore = await readDurableEpoch(userId, ws);
+			const result = await api.collections.list(ws);
 			// Drop a stale response: a newer loadCollections (e.g. a workspace
 			// switch that resolved first) has superseded this one, so writing
 			// `collections`/`collectionsWorkspace` here would clobber the newer

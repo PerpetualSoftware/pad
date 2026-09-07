@@ -44,6 +44,13 @@ function coll(slug: string): Collection {
 }
 
 afterEach(() => {
+	// BOTH, and the second was missing: `mockClear` on the hoisted persistence
+	// mocks does nothing for the `vi.spyOn(api.collections, 'list')` spies the
+	// legs install, so their CALLS leaked into the next test. That made an
+	// ordering leg read a previous test's request as this one's and fail
+	// identically against fixed and broken code — the fixture failing for a
+	// reason that has nothing to do with what it asserts.
+	vi.restoreAllMocks();
 	for (const fn of Object.values(persistence)) {
 		if (typeof fn === 'function' && 'mockClear' in fn) fn.mockClear();
 	}
@@ -63,6 +70,37 @@ describe('TASK-2946 — what loadCollections hands the cache', () => {
 		await collectionStore.loadCollections('alpha');
 
 		expect(persistence.persistCollections).toHaveBeenCalledTimes(1);
+		const args = persistence.persistCollections.mock.calls.at(-1) as unknown[];
+		expect(args[3]).toBe('e1');
+	});
+
+	it('completes the durable read BEFORE issuing the request, not alongside it', async () => {
+		// The property, and it is not cosmetic (codex round 3). Run concurrently,
+		// the durable read RESOLVES after the request was issued and can observe
+		// a resync that landed in between — the write then compares that later
+		// epoch against itself, agrees, and stamps an old-scope list with the new
+		// scope. Defeat by construction, which is what round 1 found and what the
+		// round 2 fix reintroduced.
+		//
+		// Asserted by holding the epoch read PENDING and checking the request has
+		// not been issued: an ordering assertion on invocation alone would also
+		// pass for an implementation that merely happened to evaluate the read
+		// first.
+		let releaseEpoch: (v: string) => void = () => {};
+		persistence.readDurableEpoch.mockImplementationOnce(
+			() => new Promise<string>((r) => (releaseEpoch = r)),
+		);
+		const list = vi.spyOn(api.collections, 'list').mockResolvedValueOnce([coll('tasks')]);
+
+		const loading = collectionStore.loadCollections('alpha');
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(list).not.toHaveBeenCalled();
+
+		releaseEpoch('e1');
+		await loading;
+
+		expect(list).toHaveBeenCalledTimes(1);
 		const args = persistence.persistCollections.mock.calls.at(-1) as unknown[];
 		expect(args[3]).toBe('e1');
 	});
