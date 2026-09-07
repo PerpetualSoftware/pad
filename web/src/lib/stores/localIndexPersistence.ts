@@ -34,7 +34,7 @@
 // so SvelteKit's prerender / SSR phase doesn't blow up.
 
 import { openDB, type IDBPDatabase } from 'idb';
-import type { ItemIndexRow } from '$lib/types';
+import type { Collection, ItemIndexRow } from '$lib/types';
 import { resolveRowWrite, type Tombstone } from './itemRowMerge';
 
 /**
@@ -132,6 +132,39 @@ interface MetaRow {
 interface RetagsRow {
 	key: 'retags';
 	map: Record<string, string>;
+}
+
+/**
+ * The cached collection list for this workspace, in the `meta` store under
+ * `key: 'collections'` (TASK-2946).
+ *
+ * ONE ROW, not an object store of collections, and the reason is the claim
+ * being stored. This is a SNAPSHOT of the visible set under a single scope —
+ * "these are the collections this caller could see, fetched while the durable
+ * cache described scope E" — and that claim is only true of the list as a
+ * whole. A store keyed by collection id would invite per-row writes, and a
+ * single collection written into a list stamped under a different scope makes
+ * the stamp a lie. One row can only be replaced.
+ *
+ * It also keeps the change off `IDB_FORMAT_VERSION`: the `meta` store already
+ * exists, so there is no upgrade branch and no migration to get wrong. (The
+ * item filing this predicted a new object store and a format bump; the snapshot
+ * argument is what changed it.)
+ *
+ * `accessEpoch` is BORROWED from the row cache, not reported by the server —
+ * `/workspaces/{ws}/collections` carries no `access_epoch`, unlike
+ * `/items-index` and `/items-changes`. `persistCollections` only writes when
+ * the row cache's epoch did not move across the fetch, which is what makes the
+ * borrowed stamp honest. A genuine server-side stamp would need that endpoint
+ * to return an ENVELOPE — it currently writes a naked array — and that is a
+ * wire-shape break for the web, CLI and MCP clients at once. Priced and
+ * declined (lead ruling, day 78); this note is here so the next person who
+ * wants it knows what it costs.
+ */
+interface CollectionsRow {
+	key: 'collections';
+	list: Collection[];
+	accessEpoch: string | null;
 }
 
 /**
@@ -871,6 +904,105 @@ export async function persistReplace(
 	} catch {
 		/* swallow — best-effort cache */
 		return false;
+	}
+}
+
+/**
+ * Persist this workspace's collection list, stamped with the scope the durable
+ * ROW cache described at the moment of the fetch (TASK-2946).
+ *
+ * WHY THE CALLER PASSES TWO EPOCHS. The list itself carries no scope
+ * information — the collections endpoint returns a naked array — so the stamp
+ * is borrowed from the row cache, and a borrowed stamp is only honest if the
+ * thing it was borrowed from did not move underneath the fetch. `before` is the
+ * epoch RAM held when the request was issued and `after` is the epoch it holds
+ * now; when they differ, a resync landed mid-fetch and this list may describe
+ * either scope. It is not written at all.
+ *
+ * That refusal is the whole design in one line, and it costs nothing worth
+ * having: a scope change in flight is the moment you would least want to
+ * commit a snapshot, and the next successful fetch caches it.
+ *
+ * NOT written when there is no `sync` meta row. A cache that has never synced
+ * has no scope claim for this list to agree with, so nothing later could check
+ * the stamp — and an unverifiable stamp is worse than an absent list, which at
+ * least renders the honest error card.
+ */
+export async function persistCollections(
+	userId: string | null,
+	ws: string,
+	list: Collection[],
+	before: string | null,
+	after: string | null,
+): Promise<void> {
+	if (!isSupported()) return;
+	// The scope moved under the fetch — see the note above.
+	if (before !== after) return;
+	const db = await open(userId, ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction('meta', 'readwrite');
+		const store = tx.objectStore('meta');
+		const sync = await readSyncRow(store);
+		if (!sync) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
+		// Stamped with the DURABLE epoch rather than the caller's `after`. They
+		// agree in the ordinary case, and where they do not it is because a
+		// write the caller could not see landed first — in which case the
+		// durable value is the one `hydrateCollections` will compare against,
+		// so it is the one worth recording.
+		store
+			.put({ key: 'collections', list, accessEpoch: sync.accessEpoch ?? null } satisfies CollectionsRow)
+			.catch(() => undefined);
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
+ * Read back the cached collection list, or null (TASK-2946).
+ *
+ * THE FENCE LIVES HERE, at the door, so no caller can render a list without it:
+ * the stored stamp must EQUAL the epoch the durable cache currently advertises
+ * (`meta.sync.accessEpoch`). Same equality test as `persistUpserts`, for the
+ * same reason — an `access_epoch` is a hash of the live grant set and can
+ * answer "same or different" and nothing else, so nothing here says "older".
+ *
+ * BOTH SIDES ARE DURABLE, which is what makes this work with no network. The
+ * caller reaching for this has just failed to reach the server, so a live epoch
+ * is exactly what it cannot obtain; the question being asked is whether the
+ * cached list and the cached ROWS describe the same scope, and both answers are
+ * on disk.
+ *
+ * Null on: no cached list, no `sync` row to check against, or a stamp that
+ * disagrees. The caller renders its error card, which is the honest outcome —
+ * a list whose scope cannot be confirmed is not better than no list.
+ *
+ * Two nulls MATCH, deliberately: a server predating `access_epoch` writes null
+ * on both sides, and that deployment keeps its cache. Same disposition as
+ * `persistUpserts`.
+ */
+export async function hydrateCollections(
+	userId: string | null,
+	ws: string,
+): Promise<Collection[] | null> {
+	if (!isSupported()) return null;
+	const db = await open(userId, ws);
+	if (!db) return null;
+	try {
+		const tx = db.transaction('meta', 'readonly');
+		const store = tx.objectStore('meta');
+		const cached = (await store.get('collections')) as CollectionsRow | undefined;
+		const sync = await readSyncRow(store);
+		await tx.done.catch(() => undefined);
+		if (!cached || !sync) return null;
+		if ((cached.accessEpoch ?? null) !== (sync.accessEpoch ?? null)) return null;
+		return cached.list;
+	} catch {
+		return null;
 	}
 }
 
