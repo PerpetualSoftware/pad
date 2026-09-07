@@ -46,14 +46,18 @@
 		// in onDestroy — so it is the owner whose lifetime actually matches the
 		// signal's. A store-owned subscription would have outlived its source.
 		unsubscribeSync = syncService.onSync(async (result) => {
-			// CAPTURE the workspace this result belongs to. `wsSlug` is derived
-			// from the route and changes under an async callback: switching from
-			// A to B while A's sync is in flight would otherwise reconcile B on
-			// A's result and mark A synced (codex round 5 P1). Everything below
-			// uses the captured value, and the re-read after the await is a
-			// guard, not a use.
-			const ws = wsSlug;
+			// The workspace this result was SYNCED FOR, off the result itself
+			// (codex round 8). Capturing `wsSlug` at callback entry — which is
+			// what round 5's fix did — is not enough: it names the workspace the
+			// user is on when the result is DELIVERED, and a sync issued for A
+			// and delivered after a switch to B reads as B's from both ends.
+			// Only the service knows, so the service now stamps it.
+			const ws = result.workspace;
 			if (!ws) return;
+			// Nothing to do for a workspace this layout is not showing. The
+			// reconcile is still safe to skip: whichever layout instance IS
+			// showing that workspace has its own subscription.
+			if (ws !== wsSlug) return;
 			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
 				collectionStore.loadCollections(ws);
 			}

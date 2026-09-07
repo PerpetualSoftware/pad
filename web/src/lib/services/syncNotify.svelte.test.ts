@@ -206,3 +206,40 @@ describe('BUG-2508 — a sync_required arriving mid-sync', () => {
 		expect(sinceCalls).toHaveLength(1);
 	});
 });
+
+describe('TASK-2921 — a result names the workspace it was SYNCED FOR', () => {
+	it('stamps the workspace the sync was issued for, not the one current at delivery', async () => {
+		await seedCursorAt(2_000_000);
+
+		// The sync is issued for 'ws'. While its `/changes` request is in flight,
+		// the user navigates and `setWorkspace` moves the service to 'other'.
+		// A result stamped at DELIVERY would say 'other', and the subscriber —
+		// whose own slug is derived from the route and has also moved — would
+		// have no way to tell it was A's result. That is codex round 8's finding.
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		changesImpl = async () => {
+			await gate;
+			return changesAt(2_060_000);
+		};
+
+		const seen: string[] = [];
+		const off = syncService.onSync((result) => {
+			seen.push(result.workspace);
+		});
+
+		const running = syncService.triggerSync();
+		// Move the service's current workspace while the request is outstanding.
+		changesImpl = async () => changesAt(2_060_000);
+		const switched = syncService.setWorkspace('other');
+		release();
+		await running;
+		await switched;
+		off();
+
+		expect(seen).toContain('ws');
+		expect(seen).not.toContain('other');
+	});
+});

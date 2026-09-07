@@ -19,7 +19,17 @@ import { api } from '$lib/api/client';
 import { sseService } from '$lib/services/sse.svelte';
 import type { Item, ChangesResponse } from '$lib/types';
 
-export type SyncResult = {
+/**
+ * `workspace` is the slug this result was SYNCED FOR, stamped when the sync was
+ * issued rather than when it is delivered (TASK-2921, codex round 8).
+ *
+ * Without it a subscriber has no way to tell which workspace a result describes:
+ * the service's own `wsSlug` moves on `setWorkspace`, and the subscriber's is
+ * derived from the route, so a sync issued for A and delivered after a switch to
+ * B reads as B's from both ends. Every subscriber that acts on a result must
+ * compare this against the workspace it is currently showing.
+ */
+type SyncOutcome = {
 	type: 'caught_up';        // SSE was healthy, nothing missed
 } | {
 	type: 'incremental';      // Delta sync via /changes
@@ -27,6 +37,8 @@ export type SyncResult = {
 } | {
 	type: 'full_refresh';     // Gap too large or error — caller should reload everything
 };
+
+export type SyncResult = SyncOutcome & { workspace: string };
 
 /**
  * A consumer of sync results. MAY be async: the service awaits what it returns,
@@ -112,6 +124,16 @@ function createSyncService() {
 		if (absence < MIN_ABSENCE_MS) return;
 
 		syncing = true;
+		// Same capture as `triggerSync`, same reason (codex round 8): stamped at
+		// issue time, not at delivery.
+		//
+		// NOT PINNED BY A TEST, and said out loud rather than left implied: the
+		// `triggerSync` twin is killed by a mutant, this one is not, because the
+		// visibilitychange path has no harness and building one for a three-line
+		// duplicate was not worth the fixture. The risk is a future edit changing
+		// one site and not the other — which is this unit's own theme, so: if you
+		// touch the stamp in `triggerSync`, touch it here.
+		const syncedWs = wsSlug;
 		try {
 			const result = await determineSync(absence);
 			// Only advance the cursor for incremental syncs (we know exactly
@@ -123,17 +145,17 @@ function createSyncService() {
 			}
 			// For 'caught_up': cursor stays as-is (nothing was missed).
 			// For 'full_refresh': cursor stays as-is until markSynced() is called.
-			notify(result);
+			notify({ ...result, workspace: syncedWs });
 		} catch {
 			// On error, tell pages to do a full refresh as a safe fallback.
 			// Don't advance cursor — retry on next tab resume.
-			notify({ type: 'full_refresh' });
+			notify({ type: 'full_refresh', workspace: syncedWs });
 		} finally {
 			syncing = false;
 		}
 	}
 
-	async function determineSync(absenceMs: number): Promise<SyncResult> {
+	async function determineSync(absenceMs: number): Promise<SyncOutcome> {
 		// If SSE says it needs a full sync (buffer overflow), respect that
 		if (sseService.needsSync) {
 			sseService.clearSyncFlag();
@@ -158,7 +180,7 @@ function createSyncService() {
 		return doIncrementalOrFull(absenceMs);
 	}
 
-	async function doIncrementalOrFull(absenceMs: number): Promise<SyncResult> {
+	async function doIncrementalOrFull(absenceMs: number): Promise<SyncOutcome> {
 		// Very long absence — skip incremental, do full refresh
 		if (absenceMs > MAX_INCREMENTAL_MS) {
 			return { type: 'full_refresh' };
@@ -246,6 +268,11 @@ function createSyncService() {
 			return;
 		}
 		syncing = true;
+		// The workspace this sync is FOR, captured at issue time. `setWorkspace`
+		// can move `wsSlug` while the request below is in flight, and a result
+		// stamped at delivery would name the workspace the user navigated TO
+		// rather than the one that was synced (codex round 8).
+		const syncedWs = wsSlug;
 		try {
 			do {
 				// Cleared BEFORE the request, so a signal arriving DURING it is
@@ -257,10 +284,10 @@ function createSyncService() {
 					lastSyncTime = result.changes.server_time;
 				}
 				// For full_refresh: don't advance cursor until pages confirm success.
-				notify(result);
+				notify({ ...result, workspace: syncedWs });
 			} while (pendingSync);
 		} catch {
-			notify({ type: 'full_refresh' });
+			notify({ type: 'full_refresh', workspace: syncedWs });
 		} finally {
 			syncing = false;
 			pendingSync = false;
