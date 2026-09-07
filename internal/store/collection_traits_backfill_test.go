@@ -265,7 +265,7 @@ func TestImportLegacyArchiveInfersTraits(t *testing.T) {
 		t.Fatal("control leg failed: export carried no conventions collection to strip")
 	}
 
-	imported, err := s.ImportWorkspace(exp, "legacy-archive-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "legacy-archive-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestImportDoesNotOverrideSurvivingTraits(t *testing.T) {
 		}
 	}
 
-	imported, err := s.ImportWorkspace(exp, "custom-traits-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "custom-traits-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}

@@ -130,7 +130,7 @@ func TestRoundTripPreservesItemsUnderSoftDeletedCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
-	imported, err := s.ImportWorkspace(exp, "round-trip-2884-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "round-trip-2884-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestRoundTripPreservesDependentsUnderSoftDeletedCollection(t *testing.T) {
 			len(exp.Comments), len(exp.ItemVersions), len(exp.Reminders))
 	}
 
-	imported, err := s.ImportWorkspace(exp, "dependents-2884-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "dependents-2884-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestImportRoutingIgnoresSoftDeletedCollections(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	slog.SetDefault(slog.New(&recordCapturingHandler{records: &captured}))
 
-	imported, err := s.ImportWorkspace(exp, "routing-2884-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "routing-2884-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestLegacyBundleWithoutDeletedAtImportsLive(t *testing.T) {
 		exp.Collections[i].DeletedAt = "" // as a pre-BUG-2884 archive decodes
 	}
 
-	imported, err := s.ImportWorkspace(exp, "legacy-2884-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "legacy-2884-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -580,7 +580,7 @@ func TestImportSurvivesOrphanedItemDependents(t *testing.T) {
 				}
 			}
 
-			imported, err := s.ImportWorkspace(exp, "orphan-"+tc.name+"-2884-target", owner.ID)
+			imported, err := s.ImportWorkspace(exp, "orphan-"+tc.name+"-2884-target", owner.ID, "")
 			if err != nil {
 				t.Fatalf("a bundle with one orphaned item carrying a %s aborted the whole import: %v", tc.name, err)
 			}
@@ -663,7 +663,7 @@ func TestImportDoesNotInferTraitsForArchivedCollections(t *testing.T) {
 		t.Fatal("control leg failed: the bundle carries no conventions collection")
 	}
 
-	imported, err := s.ImportWorkspace(exp, "inference-2884-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "inference-2884-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -794,7 +794,7 @@ func TestImportSurvivesOrphanedParent(t *testing.T) {
 		t.Fatalf("control leg failed: parent sorts after child (%d > %d), so the first pass never resolves it", parentIdx, childIdx)
 	}
 
-	imported, err := s.ImportWorkspace(exp, "orphan-parent-2884-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "orphan-parent-2884-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("a live item whose parent is orphaned aborted the whole import: %v", err)
 	}
@@ -856,7 +856,7 @@ func TestImportSurvivesDuplicateLinks(t *testing.T) {
 	dup.ID = dup.ID + "-dup"
 	exp.ItemLinks = append(exp.ItemLinks, dup)
 
-	imported, err := s.ImportWorkspace(exp, "duplicate-links-2884-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "duplicate-links-2884-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("a bundle carrying one duplicated link aborted the whole import: %v", err)
 	}

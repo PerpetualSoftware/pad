@@ -81,7 +81,7 @@ func TestImportWorkspaceFailureLeavesNoWorkspace(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 
-	ws, err := s.ImportWorkspace(failingImportBundle("Husk Probe", "husk-probe"), "", "")
+	ws, err := s.ImportWorkspace(failingImportBundle("Husk Probe", "husk-probe"), "", "", "")
 	if err == nil {
 		t.Fatalf("ImportWorkspace succeeded on a bundle with two collections sharing a slug; got workspace %+v", ws)
 	}
@@ -110,11 +110,11 @@ func TestImportWorkspaceRetryKeepsOriginalSlug(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 
-	if _, err := s.ImportWorkspace(failingImportBundle("Retry Probe", "retry-slug"), "", ""); err == nil {
+	if _, err := s.ImportWorkspace(failingImportBundle("Retry Probe", "retry-slug"), "", "", ""); err == nil {
 		t.Fatal("ImportWorkspace succeeded on the deliberately-broken bundle; the retry leg proves nothing")
 	}
 
-	ws, err := s.ImportWorkspace(validImportBundle("Retry Probe", "retry-slug"), "", "")
+	ws, err := s.ImportWorkspace(validImportBundle("Retry Probe", "retry-slug"), "", "", "")
 	if err != nil {
 		t.Fatalf("retry with the corrected bundle failed: %v", err)
 	}

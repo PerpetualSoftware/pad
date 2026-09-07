@@ -456,7 +456,10 @@ Steps:
 				stats := fmt.Sprintf("%d collections, %d items, %d comments",
 					len(data.Collections), len(data.Items), len(data.Comments))
 
-				if _, err := dstStore.ImportWorkspace(data, "", ""); err != nil {
+				// Empty source: this is an operator-run copy of an existing
+				// workspace, not a creation surface, and inventing "cli"
+				// here would relabel every migrated workspace's origin.
+				if _, err := dstStore.ImportWorkspace(data, "", "", ""); err != nil {
 					fmt.Fprintf(os.Stderr, "  ERROR importing %s: %v (skipping)\n", ws.Slug, err)
 					continue
 				}

@@ -100,7 +100,7 @@ func (s *Server) effectiveBlobMaxBytes() int64 {
 // for the operator to inspect. Orphan GC will eventually reclaim any
 // blob whose row insertion failed — the upload-handler's "blob may be
 // orphan on disk" comment applies here too.
-func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Request, mint workspaceMintAuth) {
 	if s.attachments == nil {
 		writeError(w, http.StatusServiceUnavailable, "attachments_disabled",
 			"Attachment storage is not configured on this server")
@@ -122,7 +122,6 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	defer gz.Close()
 
 	newName := r.URL.Query().Get("name")
-	userID := currentUserID(r)
 
 	// The bundle door gets the same --repair-nul treatment as the JSON one:
 	// a gzip import is the same import reached by a different Content-Type,
@@ -130,7 +129,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// different answers is how one of them keeps being forgotten.
 	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
 
-	ws, err := s.importBundle(r.Context(), gz, newName, userID, repair)
+	ws, err := s.importBundle(r.Context(), gz, newName, mint, repair)
 	if err != nil {
 		// Errors from importBundle are already shaped with status hints —
 		// surface as 400 unless the underlying error wraps an http hint.
@@ -184,10 +183,10 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// Mirror the JSON-import path's owner-attachment so the workspace
 	// shows up under the importer's account — including its error posture:
 	// not fatal (BUG-2715), but not discarded either.
-	if userID != "" {
-		if err := s.store.AddWorkspaceMember(ws.ID, userID, "owner"); err != nil {
+	if mint.OwnerID != "" {
+		if err := s.store.AddWorkspaceMember(ws.ID, mint.OwnerID, "owner"); err != nil {
 			slog.Error("bundle imported but importer was not added as owner",
-				"workspace_id", ws.ID, "user_id", userID, "error", err)
+				"workspace_id", ws.ID, "user_id", mint.OwnerID, "error", err)
 		}
 	}
 	repair.SetHeader(w)
@@ -213,7 +212,12 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
 // a live HTTP server.
-func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID string, repair *nulRepairTally) (*models.Workspace, error) {
+func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally) (*models.Workspace, error) {
+	// The bundle door is the SECOND body shape behind the import route, and
+	// it mints through the same store call, so it takes the same mint
+	// context the JSON path does rather than re-deriving owner and source
+	// from the request down here (BUG-2809).
+	ownerID := mint.OwnerID
 	tr := tar.NewReader(r)
 	blobCap := s.effectiveBlobMaxBytes()
 
@@ -302,7 +306,20 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName, ownerID
 					message: "Bundle pad-export.json could not be decoded: " + err.Error(),
 				}
 			}
-			ws, err = s.store.ImportWorkspace(&export, newName, ownerID)
+			// The payload-shaped preconditions, from the same place the
+			// JSON doors call — same rule, this door's own envelope
+			// (400 bad_bundle rather than 400 bad_request).
+			effectiveName := export.Workspace.Name
+			if newName != "" {
+				effectiveName = newName
+			}
+			if verr := validateWorkspaceMintPayload(effectiveName, &export.Workspace.Settings); verr != nil {
+				return nil, &importStatusError{
+					status: http.StatusBadRequest, code: "bad_bundle",
+					message: "Bundle pad-export.json is not importable: " + verr.Error(),
+				}
+			}
+			ws, err = s.store.ImportWorkspace(&export, newName, ownerID, mint.Source)
 			if err != nil {
 				return nil, fmt.Errorf("import workspace: %w", err)
 			}

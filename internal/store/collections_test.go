@@ -558,7 +558,7 @@ func TestExportImportRoundTripWithEmptyStringSettings(t *testing.T) {
 		exp.Collections[i].Settings = ""
 	}
 
-	imported, err := s.ImportWorkspace(exp, "round-trip-import-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "round-trip-import-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace error (IDEA-1484 import-side coercion regression): %v", err)
 	}

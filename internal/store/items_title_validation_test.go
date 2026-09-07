@@ -327,7 +327,7 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 		},
 	}
 
-	ws, err := s.ImportWorkspace(export, "Legacy Archive Target", owner.ID)
+	ws, err := s.ImportWorkspace(export, "Legacy Archive Target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace must SUCCEED on a legacy bundle, not refuse it: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 		},
 	}
 
-	ws, err := s.ImportWorkspace(export, "Collide Target", owner.ID)
+	ws, err := s.ImportWorkspace(export, "Collide Target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("a slug collision created by OUR truncation must be resolved, not abort the import: %v", err)
 	}

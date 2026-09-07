@@ -520,7 +520,7 @@ func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
 		},
 	}
 
-	ws, err := s.ImportWorkspace(export, "Relation Archive Target", owner.ID)
+	ws, err := s.ImportWorkspace(export, "Relation Archive Target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace must SUCCEED on a bundle carrying unresolvable relation values, not refuse it: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestImportWorkspace_UnresolvableRelationValueSurvivesAPrefixCollision(t *te
 		},
 	}
 
-	ws, err := s.ImportWorkspace(export, "Prefix Archive Target", owner.ID)
+	ws, err := s.ImportWorkspace(export, "Prefix Archive Target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -790,7 +790,7 @@ func TestImportWorkspace_DoesNotMintIDsForOrphanRelationReferents(t *testing.T) 
 		},
 	}
 
-	ws, err := s.ImportWorkspace(export, "Orphan Relation Target", owner.ID)
+	ws, err := s.ImportWorkspace(export, "Orphan Relation Target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}

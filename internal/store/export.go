@@ -353,7 +353,13 @@ func resolveImportParent(exportedParentID string, itemMap map[string]string, ins
 // ImportWorkspace imports a workspace from an exported data structure.
 // It creates a new workspace with regenerated IDs, remapping all references.
 // If newName is non-empty, it overrides the workspace name and slug.
-func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ownerID string) (*models.Workspace, error) {
+// source is the creation-surface attribution, derived by the CALLER from
+// the request's auth shape exactly as the create door derives it (BUG-1557,
+// BUG-2809). It is a parameter rather than a field on the export because an
+// export carries no source: a bundle says what the workspace WAS, and where
+// this copy is being minted from is a fact about this request. Operator
+// callers outside HTTP pass "".
+func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string) (*models.Workspace, error) {
 	if data.Version != 1 {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
 	}
@@ -398,6 +404,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		Description: data.Workspace.Description,
 		Settings:    data.Workspace.Settings,
 		OwnerID:     ownerID,
+		Source:      source,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
