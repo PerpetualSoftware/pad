@@ -693,15 +693,39 @@ func TestPadItemUpdate_FieldArrayKeysNormalizedForConflicts(t *testing.T) {
 			t.Errorf("conflicting call must not dispatch; dispatched %v", disp.gotPath)
 		}
 	})
-	t.Run("padded value is not a conflict", func(t *testing.T) {
+	// REPLACES the "padded value is not a conflict" leg of this test
+	// (BUG-2850, codex round 6). That leg asserted success for
+	// `field:["status= done"]` alongside `fields:{"status":"done"}`, and it
+	// was right while the remote door TRIMMED values — the two sources then
+	// stated the same thing, and refusing would have refused a call that
+	// agreed with itself. No door trims a value now (BUG-2870), so those two
+	// sources state " done" and "done": genuinely different values for one
+	// key, which is the ambiguity this pass exists to refuse.
+	t.Run("padded value IS a disagreement now that no door trims", func(t *testing.T) {
 		_, msg, isErr := dispatchPadItem(t, map[string]any{
 			"action": "update",
 			"ref":    "TASK-5",
 			"field":  []any{"status= done"},
 			"fields": map[string]any{"status": "done"},
 		})
+		if !isErr {
+			t.Fatalf("\" done\" and \"done\" are two values for one key; expected a refusal, got: %s", msg)
+		}
+		if !strings.Contains(msg, "conflicts with") {
+			t.Errorf("refusal should name the conflict; got: %s", msg)
+		}
+	})
+	// The control leg: identical values, stated twice, still succeed. Without
+	// this the test above would pass against a pass that refuses everything.
+	t.Run("the same value in both is still not a conflict", func(t *testing.T) {
+		_, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update",
+			"ref":    "TASK-5",
+			"field":  []any{"status=done"},
+			"fields": map[string]any{"status": "done"},
+		})
 		if isErr {
-			t.Fatalf("padding is not a disagreement; expected success, got: %s", msg)
+			t.Fatalf("one value stated twice is not a disagreement: %s", msg)
 		}
 	})
 }
@@ -785,9 +809,11 @@ func TestPadItemUpdate_HierarchyAliasAmbiguityRefusedWithoutFieldsObject(t *test
 			"parent": "PLAN-9",
 			"field":  []any{"plan=PLAN-12"},
 		},
-		"padded entries still caught": {
-			"field": []any{" parent=PLAN-9", "plan =PLAN-12"},
-		},
+		// The padded-entry case moved OUT of this table — see
+		// TestPadItemUpdate_PaddedHierarchyEntriesRefusedEarlier below. It is
+		// still refused and still does not dispatch; what changed is WHICH
+		// rule refuses it, and this table asserts the message names both
+		// hierarchy keys.
 	}
 	for name, extra := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -842,30 +868,82 @@ func TestPadItemUpdate_SingleHierarchyKeyInFieldArrayStillAccepted(t *testing.T)
 //
 // Asserted on the emitted args rather than on success, because the call
 // succeeded before the fix too — it just wrote the wrong key.
-func TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized(t *testing.T) {
+// REPLACES the "padded entries still caught" case of
+// TestPadItemUpdate_HierarchyAliasAmbiguityRefusedWithoutFieldsObject
+// (BUG-2850, codex round 7). The OUTCOME it asserted survives — the call is
+// refused and nothing dispatches — but the reason arrives earlier now: a
+// padded key is refused as a padded key (BUG-2870) before the hierarchy-alias
+// pass gets to observe that `parent` and `plan` were both set. So the
+// assertion about the message naming both keys is no longer true of this
+// input, and keeping it in that table would have pinned a message this input
+// can no longer produce.
+//
+// The alias guard itself is unaffected: the three unpadded cases in that table
+// still exercise it, which is what keeps this replacement from being a hole.
+func TestPadItemUpdate_PaddedHierarchyEntriesRefusedEarlier(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{" parent=PLAN-9", "plan =PLAN-12"},
+	})
+	if !isErr {
+		t.Fatalf("expected structured refusal, got success: %s", msg)
+	}
+	if !strings.Contains(msg, "whitespace around its key") {
+		t.Errorf("the padded key is what refuses this now; got: %s", msg)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Errorf("refused call must not dispatch; dispatched %v", disp.gotPath)
+	}
+}
+
+// REPLACES TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized (BUG-2850,
+// codex round 8). That test asserted a padded entry equal to its `fields`
+// twin was silently REWRITTEN to canonical form and emitted once, which was
+// the best available answer while one door trimmed and the other did not:
+// canonicalizing was how the two doors were made to write the same key.
+//
+// BUG-2870 removes the premise. No door trims a key now — both refuse it — so
+// there is nothing to reconcile and nothing to rewrite. Refusing is also the
+// better answer on its own terms: canonicalization silently changed the key
+// the caller wrote, which is the behaviour this bug is about, applied by us
+// rather than by a door.
+func TestPadItemUpdate_PaddedEqualDuplicateIsRefused(t *testing.T) {
 	disp, msg, isErr := dispatchPadItem(t, map[string]any{
 		"action": "update",
 		"ref":    "TASK-5",
 		"field":  []any{" effort=l"},
 		"fields": map[string]any{"effort": "l"},
 	})
-	if isErr {
-		t.Fatalf("padding is not a disagreement; expected success, got: %s", msg)
+	if !isErr {
+		t.Fatalf("a padded key is refused now, equal twin or not; got success: %s (args %v)", msg, disp.gotArgs)
 	}
-	if !argsContainPair(disp.gotArgs, "--field", "effort=l") {
-		t.Errorf("the entry must be re-emitted canonically: %v", disp.gotArgs)
+	if !strings.Contains(msg, "whitespace around its key") {
+		t.Errorf("refusal should name the padding; got: %s", msg)
 	}
-	if argsContainPair(disp.gotArgs, "--field", " effort=l") {
-		t.Errorf("the padded entry must not survive — the CLI door does not trim it: %v", disp.gotArgs)
+	if len(disp.gotPath) != 0 {
+		t.Errorf("refused call must not dispatch; dispatched %v", disp.gotPath)
+	}
+	// The control: the same call written canonically still succeeds and still
+	// emits --field exactly once. Without this leg the test above passes
+	// against a pass that refuses every duplicate.
+	disp2, msg2, isErr2 := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"field":  []any{"effort=l"},
+		"fields": map[string]any{"effort": "l"},
+	})
+	if isErr2 {
+		t.Fatalf("an equal, canonical duplicate is not a disagreement: %s", msg2)
 	}
 	count := 0
-	for i := 0; i+1 < len(disp.gotArgs); i++ {
-		if disp.gotArgs[i] == "--field" {
+	for i := 0; i+1 < len(disp2.gotArgs); i++ {
+		if disp2.gotArgs[i] == "--field" {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Errorf("--field emitted %d times, want exactly 1: %v", count, disp.gotArgs)
+		t.Errorf("--field emitted %d times, want exactly 1: %v", count, disp2.gotArgs)
 	}
 }
 
@@ -911,30 +989,34 @@ func TestPadItemUpdate_CanonicalEqualDuplicateIsUntouched(t *testing.T) {
 // The key is now re-emitted ONCE, canonically. Collapsing the pair is not
 // lossy: parseFieldArray already indexes them to a single value, so two
 // entries for one key were never two writes.
-func TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesCollapse(t *testing.T) {
+// REPLACES TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesCollapse
+// (BUG-2850, codex round 8). That test asserted `field:["effort=l",
+// " effort=l"]` COLLAPSED to one canonical entry, which was the right answer
+// while HTTP trimmed the padded twin to `effort` and the CLI stored it as an
+// undeclared `" effort"`: collapsing was how the two doors were forced to
+// write the same key set.
+//
+// Both doors refuse the padded twin now, so there is no divergence left to
+// collapse — and a caller who wrote the same key twice, once padded, is far
+// likelier to have made a mistake than to have meant a silent de-duplication.
+// The round-8 finding it came from is unaffected: one canonical entry still
+// does not make its padded sibling harmless. It is just refused rather than
+// swallowed.
+func TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesRefused(t *testing.T) {
 	disp, msg, isErr := dispatchPadItem(t, map[string]any{
 		"action": "update",
 		"ref":    "TASK-5",
 		"field":  []any{"effort=l", " effort=l"},
 		"fields": map[string]any{"effort": "l"},
 	})
-	if isErr {
-		t.Fatalf("expected success: %s", msg)
+	if !isErr {
+		t.Fatalf("the padded twin must be refused, not collapsed; got success: %s (args %v)", msg, disp.gotArgs)
 	}
-	if !argsContainPair(disp.gotArgs, "--field", "effort=l") {
-		t.Errorf("the canonical entry must survive: %v", disp.gotArgs)
+	if !strings.Contains(msg, "whitespace around its key") {
+		t.Errorf("refusal should name the padding; got: %s", msg)
 	}
-	if argsContainPair(disp.gotArgs, "--field", " effort=l") {
-		t.Errorf("the padded twin must not survive — stdio would store it as an undeclared %q key: %v", " effort", disp.gotArgs)
-	}
-	count := 0
-	for i := 0; i+1 < len(disp.gotArgs); i++ {
-		if disp.gotArgs[i] == "--field" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("--field emitted %d times, want exactly 1: %v", count, disp.gotArgs)
+	if len(disp.gotPath) != 0 {
+		t.Errorf("refused call must not dispatch; dispatched %v", disp.gotPath)
 	}
 }
 
@@ -1784,17 +1866,26 @@ func TestPadItemUpdate_PaddedEntryCollidingWithAParamRefused(t *testing.T) {
 //
 // This leg is the scope boundary made executable: if it ever goes red, the
 // round-16 refusal has grown into BUG-2870's territory without a ruling.
-func TestPadItemUpdate_PaddedEntryAloneIsUntouched(t *testing.T) {
+// REPLACES TestPadItemUpdate_PaddedEntryAloneIsUntouched (BUG-2850). That
+// test pinned a DEFERRAL rather than a desired behaviour — its own failure
+// message said "a lone padded entry is BUG-2870's business, not this PR's" —
+// so it asserted the lone padded entry still dispatched, precisely to keep
+// that scope boundary visible. This is BUG-2870, so the boundary is gone and
+// the assertion inverts.
+func TestPadItemUpdate_PaddedEntryAloneIsRefused(t *testing.T) {
 	disp, msg, isErr := dispatchPadItem(t, map[string]any{
 		"action": "update",
 		"ref":    "TASK-5",
 		"field":  []any{"assigned_user_id = user-A"},
 	})
-	if isErr {
-		t.Fatalf("a lone padded entry is BUG-2870's business, not this PR's: %s", msg)
+	if !isErr {
+		t.Fatalf("a lone padded entry is refused now; got success: %s (args %v)", msg, disp.gotArgs)
 	}
-	if len(disp.gotPath) == 0 {
-		t.Fatal("expected the update to dispatch")
+	if !strings.Contains(msg, "whitespace around its key") {
+		t.Errorf("refusal should name the padding; got: %s", msg)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Errorf("refused call must not dispatch; dispatched %v", disp.gotPath)
 	}
 }
 
@@ -1853,17 +1944,40 @@ func TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey(t *testing
 			t.Fatalf("a fields object covering a DIFFERENT key does not canonicalize this one; got: %s (args %v)", msg, disp.gotArgs)
 		}
 	})
-	t.Run("fields carries the key — canonicalized, so accepted", func(t *testing.T) {
+	// REPLACES the "fields carries the key — canonicalized, so accepted" leg
+	// (BUG-2850, codex round 17). Its point was that the guard's question is
+	// PER-KEY: a `fields` object covering THIS key canonicalized the padded
+	// entry, so the call was accepted, while the two legs above stayed
+	// refused. The per-key/per-request distinction it was defending is still
+	// live and still tested by those two legs; what is gone is
+	// canonicalization itself, so there is no longer a case where a padded
+	// key is accepted because something else covers it.
+	t.Run("fields carries the key — still refused, nothing canonicalizes now", func(t *testing.T) {
 		disp, msg, isErr := dispatchPadItem(t, map[string]any{
 			"action": "update", "ref": "TASK-5",
 			"status": "done", "field": []any{"status = done"},
 			"fields": map[string]any{"status": "done"},
 		})
-		if isErr {
-			t.Fatalf("this key IS canonicalized, so the call must succeed: %s", msg)
+		if !isErr {
+			t.Fatalf("a padded key is refused whatever else carries it; got success: %s (args %v)", msg, disp.gotArgs)
 		}
-		if argsContainPair(disp.gotArgs, "--field", "status = done") {
-			t.Errorf("the padded entry must not survive canonicalization: %v", disp.gotArgs)
+		if !strings.Contains(msg, "whitespace around its key") {
+			t.Errorf("refusal should name the padding; got: %s", msg)
+		}
+	})
+	// The control that keeps the three legs above from being one assertion:
+	// written canonically, the same shape is accepted and dispatches.
+	t.Run("the canonical form of the same call is accepted", func(t *testing.T) {
+		disp, msg, isErr := dispatchPadItem(t, map[string]any{
+			"action": "update", "ref": "TASK-5",
+			"status": "done", "field": []any{"status=done"},
+			"fields": map[string]any{"status": "done"},
+		})
+		if isErr {
+			t.Fatalf("one value stated canonically in three places is not ambiguous: %s", msg)
+		}
+		if len(disp.gotPath) == 0 {
+			t.Fatal("expected the update to dispatch")
 		}
 	})
 }
@@ -2006,25 +2120,44 @@ func TestPadItemUpdate_WhitespacePreservingValuesCompareLikeWithLike(t *testing.
 	}
 }
 
-// ...and the same value through a NON-canonical entry, which forces the
-// re-emission path to run. Without this leg the assertion above is
-// unreachable for that path: its entry is already canonical, so nothing is
-// re-emitted and a mutant that trimmed the EMITTED value survived untouched
-// (CONVE-28 — the mutant was faithful, the test could not see it).
+// REPLACES TestPadItemUpdate_ReEmittedValueKeepsItsWhitespace (BUG-2850,
+// CONVE-28). That test drove the RE-EMISSION path — a padded key was
+// canonicalized, and the point was that canonicalizing the key must not also
+// trim the caller's value. It existed because the sibling assertion above
+// could not reach that path, so a mutant trimming the emitted value survived.
 //
-// Here the KEY is padded, so the entry is re-emitted, and the value it
-// carries must still be the untrimmed one the caller sent.
-func TestPadItemUpdate_ReEmittedValueKeepsItsWhitespace(t *testing.T) {
+// There is no re-emission path any more: a padded key is refused rather than
+// rewritten (BUG-2870), so nothing rewrites an entry and the mutant that test
+// was built for cannot exist. The value-preservation property it defended is
+// still pinned, from both directions — TestParseFieldKVP_PaddedValueVerbatim
+// at the remote door and TestItemUpdateFieldEntry_PaddedValueIsSent at the CLI
+// door — which is why this becomes a refusal test rather than being deleted.
+func TestPadItemUpdate_PaddedKeyWithWhitespaceValueIsRefused(t *testing.T) {
 	disp, msg, isErr := dispatchPadItem(t, map[string]any{
 		"action": "update", "ref": "TASK-5",
 		"fields": map[string]any{"note": " x "},
 		"field":  []any{"note = x "},
 	})
-	if isErr {
-		t.Fatalf("padding around the KEY is canonicalized, not a conflict: %s", msg)
+	if !isErr {
+		t.Fatalf("the padded KEY is refused; got success: %s (args %v)", msg, disp.gotArgs)
 	}
-	if !argsContainPair(disp.gotArgs, "--field", "note= x ") {
-		t.Errorf("the re-emitted entry must carry the caller's untrimmed VALUE with the canonical key: %v", disp.gotArgs)
+	if !strings.Contains(msg, "whitespace around its key") {
+		t.Errorf("refusal should name the KEY as the problem, not the value: %s", msg)
+	}
+	// The corrected form the refusal advises must itself be accepted, and it
+	// must reach the wire with the value untouched. This is the half of the
+	// old test that still has to hold: refusing a padded key must not become
+	// an excuse to trim the value beside it.
+	disp2, msg2, isErr2 := dispatchPadItem(t, map[string]any{
+		"action": "update", "ref": "TASK-5",
+		"fields": map[string]any{"note": " x "},
+		"field":  []any{"note= x "},
+	})
+	if isErr2 {
+		t.Fatalf("the form the refusal advises must be accepted: %s", msg2)
+	}
+	if !argsContainPair(disp2.gotArgs, "--field", "note= x ") {
+		t.Errorf("the caller's untrimmed VALUE must reach the wire: %v", disp2.gotArgs)
 	}
 }
 
