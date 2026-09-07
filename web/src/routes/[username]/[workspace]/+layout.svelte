@@ -32,11 +32,59 @@
 		// Initialize the sync coordinator (sets up visibilitychange listener once)
 		syncService.init();
 
-		// Listen for sync results to refresh collection metadata
-		unsubscribeSync = syncService.onSync((result) => {
-			if (!wsSlug) return;
+		// Listen for sync results to refresh collection metadata, and to DRIVE
+		// THE WORKSPACE RECONCILE (TASK-2921 / IDEA-2901).
+		//
+		// The reconcile used to be driven from the collection route, so a
+		// `sync_required` arriving while the user sat on item detail, the graph,
+		// the copy dialog or any other workspace route reached nothing — the
+		// index was still live and still being READ (ItemPicker reads it from
+		// the copy dialog, which is not a collection route) with nothing
+		// reconciling it. This layout is mounted for every route under
+		// `[username]/[workspace]` and it is where the signal source itself
+		// lives — `syncService.init()` and `connectSSE()` below, `disconnect()`
+		// in onDestroy — so it is the owner whose lifetime actually matches the
+		// signal's. A store-owned subscription would have outlived its source.
+		unsubscribeSync = syncService.onSync(async (result) => {
+			// The workspace this result was SYNCED FOR, off the result itself
+			// (codex round 8). Capturing `wsSlug` at callback entry — which is
+			// what round 5's fix did — is not enough: it names the workspace the
+			// user is on when the result is DELIVERED, and a sync issued for A
+			// and delivered after a switch to B reads as B's from both ends.
+			// Only the service knows, so the service now stamps it.
+			const ws = result.workspace;
+			if (!ws) return;
+			// Nothing to do for a workspace this layout is not showing. The
+			// reconcile is still safe to skip: whichever layout instance IS
+			// showing that workspace has its own subscription.
+			if (ws !== wsSlug) return;
 			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
-				collectionStore.loadCollections(wsSlug);
+				collectionStore.loadCollections(ws);
+			}
+			// Always reconcile, even for `caught_up` — SSE delivers events, not
+			// delta data, and a previous failure won't recover without a fresh
+			// attempt. The localIndex cursor is independent of
+			// syncService.lastSyncTime and per-row seq guards make repeated
+			// calls idempotent.
+			let caughtUp = false;
+			try {
+				caughtUp = await localIndex.reconcile(ws);
+			} catch {
+				// 401/403 purge and the error banner are handled where the cache
+				// state is read — `bootstrapState` and `pendingResyncFor`. There
+				// is nothing route-specific to do here, and throwing out of a
+				// subscriber would take the other subscribers with it.
+			}
+			// `markSynced` advances syncService's OWN cursor and is workspace-
+			// level, so it moves here with the outcome it depends on. Only on a
+			// clean catch-up: a failed reconcile leaves the cursor where it is
+			// so the next tab-resume retries.
+			// `markSynced` advances a SHARED, workspace-agnostic cursor, so it
+			// must not be advanced on the strength of a result for a workspace
+			// the user has since left — the reconcile that vouched for it was
+			// about a different cache.
+			if (caughtUp && result.type === 'full_refresh' && wsSlug === ws) {
+				syncService.markSynced();
 			}
 		});
 
@@ -153,12 +201,54 @@
 			const activeItem = collectionStore.activeItem;
 			const isExternal = event.source !== 'web';
 
+			// Pull the row data for this event into the local index (TASK-2921).
+			// The SSE payload carries metadata only, so the reconcile is the only
+			// thing that fetches rows; `classifySSEEvent` short-circuits the
+			// duplicates the server's replay buffer re-delivers after a
+			// tab-resume. Deliberately NOT filtered by collection — an item moved
+			// into or out of any collection still needs its delta applied. This
+			// ran on the collection route until this unit, which is why an item
+			// created elsewhere never reached the index of a user sitting on a
+			// non-collection route.
+			// Captured for the same reason as the sync handler above: this
+			// callback awaits, and `wsSlug` is derived from the route.
+			//
+			// Used for the WHOLE callback, not just the reconcile (codex round 6
+			// P1). The later `loadCollections` / `api.items.get` / link-building
+			// calls read the reactive slug after their own awaits and predate
+			// this unit — but the reconcile added ANOTHER await in front of all
+			// of them, so an event for workspace A crossing a switch to B now has
+			// a wider window to load B's collections off A's event. Every use in
+			// here means "the workspace this event arrived for", which is what
+			// the subscription was opened on.
+			const eventWs = wsSlug;
+			if (eventWs && localIndex.classifySSEEvent(eventWs, event) !== 'stale') {
+				try {
+					await localIndex.reconcile(eventWs);
+				} catch {
+					// As above: the cache-state readers own the reaction.
+				}
+			}
+
+			// THE INDEX IS PER-WORKSPACE; THE UI BELOW IS NOT (codex round 7 P1).
+			// `localIndex` is keyed by workspace, so reconciling `eventWs` above
+			// is right whatever route the user is on now. `collectionStore` and
+			// the toasts are GLOBAL — they describe the ONE workspace being
+			// looked at — so applying A's event to them while B is on screen
+			// corrupts B's UI with A's data, and capturing the slug does not help
+			// because the slug was never the problem for these.
+			//
+			// So: reconcile first, unconditionally, then bail if the route moved.
+			// The two halves want opposite things and the await between them is
+			// what makes the distinction visible at all.
+			if (wsSlug !== eventWs) return;
+
 			switch (event.type) {
 				case 'item_created': {
 					// Reload collections to update counts
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					try {
-						const item = await api.items.get(wsSlug, event.item_id);
+						const item = await api.items.get(eventWs, event.item_id);
 						collectionStore.addItem(item);
 					} catch {
 						// Item might not be fetchable by event ID, refresh collection
@@ -168,7 +258,7 @@
 					// click-intercepting surface. See its doc in the toast store.
 					if (isExternal && !quietExternalToasts()) {
 						const who = event.actor === 'agent' ? 'Agent' : (event.actor_name || 'CLI');
-						const link = event.collection ? `/${username}/${wsSlug}/${event.collection}/${event.item_id}` : undefined;
+						const link = event.collection ? `/${username}/${eventWs}/${event.collection}/${event.item_id}` : undefined;
 						toastStore.show(`${who} created: ${event.title}`, 'info', 4000, link);
 					}
 					break;
@@ -184,14 +274,14 @@
 
 					// Only reload collections for external/non-editor updates
 					// (e.g. status changes, field edits from another tab)
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 
 					if (activeItem && activeItem.id === event.item_id) {
 						if (editorStore.dirty) {
 							editorStore.setExternalChange(true);
 						} else {
 							try {
-								const updated = await api.items.get(wsSlug, activeItem.slug);
+								const updated = await api.items.get(eventWs, activeItem.slug);
 								// Fence the late continuation (PLAN-2179 / TASK-2181): on the
 								// focus-follows-editing host `collectionStore.activeItem`
 								// ping-pongs master↔pane on each click, so the active item may
@@ -209,7 +299,7 @@
 						const existing = collectionStore.items.find(i => i.id === event.item_id);
 						if (existing) {
 							try {
-								const updated = await api.items.get(wsSlug, existing.slug);
+								const updated = await api.items.get(eventWs, existing.slug);
 								collectionStore.updateItemInList(updated);
 							} catch {}
 						}
@@ -218,13 +308,13 @@
 				}
 
 				case 'item_archived': {
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					collectionStore.removeItem(event.item_id);
 					break;
 				}
 
 				case 'item_restored': {
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					break;
 				}
 
@@ -242,7 +332,7 @@
 					// (collection page + ItemDetail); this case owns the DATA.
 					if (event.new_slug && event.collection_id) {
 						localIndex.retagCollection(
-							wsSlug,
+							eventWs,
 							event.collection_id,
 							event.new_slug,
 							authStore.user?.id ?? null,
@@ -251,7 +341,7 @@
 					// Refresh sidebar/pickers for EVERY collection_updated —
 					// icon / name / sort-order changes matter to the nav
 					// even without a rename (codex round 1 P2).
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					break;
 				}
 			}

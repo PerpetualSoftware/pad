@@ -1430,6 +1430,8 @@
 
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !itemSlug || !item) return;
+			// A result names the workspace it was SYNCED FOR (TASK-2921).
+			if (result.workspace !== wsSlug) return;
 			// Ignore sync results while mid-switch (loaded item still A, ref
 			// already B) so a stale delete/refresh can't close B's pane or
 			// clobber it — the new item's loadData refetches fresh state

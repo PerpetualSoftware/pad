@@ -206,3 +206,78 @@ describe('BUG-2508 — a sync_required arriving mid-sync', () => {
 		expect(sinceCalls).toHaveLength(1);
 	});
 });
+
+describe('TASK-2921 — a result names the workspace it was SYNCED FOR', () => {
+	it('stamps the workspace the sync was issued for, not the one current at delivery', async () => {
+		await seedCursorAt(2_000_000);
+
+		// The sync is issued for 'ws'. While its `/changes` request is in flight,
+		// the user navigates and `setWorkspace` moves the service to 'other'.
+		// A result stamped at DELIVERY would say 'other', and the subscriber —
+		// whose own slug is derived from the route and has also moved — would
+		// have no way to tell it was A's result. That is codex round 8's finding.
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		changesImpl = async () => {
+			await gate;
+			return changesAt(2_060_000);
+		};
+
+		const seen: string[] = [];
+		const off = syncService.onSync((result) => {
+			seen.push(result.workspace);
+		});
+
+		const running = syncService.triggerSync();
+		// Move the service's current workspace while the request is outstanding.
+		changesImpl = async () => changesAt(2_060_000);
+		const switched = syncService.setWorkspace('other');
+		release();
+		await running;
+		await switched;
+		off();
+
+		expect(seen).toContain('ws');
+		expect(seen).not.toContain('other');
+	});
+
+	it('stamps a DEFERRED pass with its own workspace, not the first pass’s', async () => {
+		await seedCursorAt(3_000_000);
+
+		// Pass one is in flight; a sync_required arrives (deferring a second
+		// pass) and the workspace moves. The second pass issues its own request
+		// against the NEW workspace, so labelling it with the first pass's
+		// capture would name a workspace it did not sync (codex round 10).
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		let first = true;
+		changesImpl = async () => {
+			if (first) {
+				first = false;
+				await gate;
+			}
+			return changesAt(3_060_000);
+		};
+
+		const seen: string[] = [];
+		const off = syncService.onSync((result) => {
+			seen.push(result.workspace);
+		});
+
+		const running = syncService.triggerSync();
+		// Defer a second pass, then move the workspace before it runs.
+		void syncService.triggerSync();
+		const switched = syncService.setWorkspace('second-ws');
+		release();
+		await running;
+		await switched;
+		off();
+
+		expect(seen[0]).toBe('ws');
+		expect(seen.at(-1)).toBe('second-ws');
+	});
+});

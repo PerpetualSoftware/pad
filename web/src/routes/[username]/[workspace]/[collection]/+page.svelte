@@ -73,7 +73,7 @@
 	// renders the terminal "Collection not found" empty state. Any
 	// other thrown error sets `metaError`, which the template renders
 	// as an error + Retry state — mirroring the items branch's
-	// `indexError`/`deltaSyncFailed` retry box — instead of masking a
+	// `indexError` retry box — instead of masking a
 	// live collection as deleted. Cleared at the top of every load.
 	let metaError = $state<Error | null>(null);
 	let viewMode = $state<ViewMode>('board');
@@ -246,13 +246,21 @@
 	// retry CTA instead of the misleading "No items yet" empty state
 	// or a stuck-forever "Loading…" spinner.
 	let indexError = $derived(indexState === 'error');
-	// `deltaSyncFailed` lets the auth-error reset on /items-changes
-	// surface as an error banner even when the local-index state
-	// has rolled back to 'cold'. Cleared on every successful
-	// deltaSync.
-	let deltaSyncFailed = $state(false);
+	// `deltaSyncFailed` was a PAGE-LOCAL memo of "the cache was dropped because
+	// access was revoked" (TASK-2921). It existed because a 403 ends in
+	// `localIndex.reset(ws)` — fired by the API client's GLOBAL access-revoked
+	// handler, before the error reaches any caller — and `reset` DELETES the
+	// workspace state, taking any `'error'` bootstrapState with it. The page
+	// remembered what the store had just forgotten, so the banner could tell
+	// "revoked" from "still loading".
+	//
+	// The memo is now the STORE's (`accessRevokedFor`), on a module-level set
+	// that outlives the reset, exactly as `reconcileTokens` does. Same signal,
+	// visible from every route rather than this one — which matters now that the
+	// layout drives the reconcile for all of them.
+	let accessRevoked = $derived(localIndex.accessRevokedFor(wsSlug));
 	let loading = $derived(
-		!metaError && (metaLoading || (!indexReady && !indexError && !deltaSyncFailed)),
+		!metaError && (metaLoading || (!indexReady && !indexError && !accessRevoked)),
 	);
 
 	// Unparented-filter projection scope (TASK-2099 / PLAN-2095 DR-2). `true`
@@ -909,19 +917,12 @@
 				}
 				return;
 			}
-			// React to item lifecycle events by pulling deltas through
-			// the local store. With seq-stamped events (TASK-1358) we
-			// can short-circuit duplicates the server's replay buffer
-			// re-delivers after a tab-resume, or events whose data is
-			// already in the local index from a prior delta. Anything
-			// not "stale" still needs row data, which only
-			// `deltaSync` can fetch — the SSE wire payload doesn't
-			// carry it. We don't filter by collection here: an item
-			// moved into or out of this collection still needs its
-			// delta applied so the derived view reflects it.
-			const status = localIndex.classifySSEEvent(ws, event);
-			if (status === 'stale') return;
-			await deltaSync(ws);
+			// Item lifecycle events no longer drive a reconcile from HERE
+			// (TASK-2921). The workspace layout does it, for every route rather
+			// than only this one — see its `onItemEvent` handler. Leaving a
+			// second driver on this page would mean two loops racing on the same
+			// workspace for no gain: they are safe together by way of the
+			// reconcile token, but the second one buys nothing this route needs.
 		});
 	});
 
@@ -961,21 +962,16 @@
 		installPaneTestHook();
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !collSlug) return;
+			// A result names the workspace it was SYNCED FOR (TASK-2921). Every
+			// subscriber compares — the field's own doc says so, and four of the
+			// five did not until codex round 9 named them.
+			if (result.workspace !== wsSlug) return;
 
-			// Always run deltaSync, even for `caught_up` — SSE
-			// delivers events, not delta data, and a previous
-			// deltaSync failure (Codex P2 round 2) won't recover
-			// without a fresh fetch attempt. The localIndex cursor is
-			// independent of syncService.lastSyncTime, and per-row
-			// seq guards make repeated calls idempotent.
-			const ok = await deltaSync(wsSlug);
+			// The reconcile and `markSynced` moved to the workspace layout
+			// (TASK-2921) — both are workspace-level, and `markSynced` needs the
+			// reconcile's outcome, so it went with it. What stays here is what is
+			// genuinely this route's.
 			await refreshProgress(wsSlug, collSlug, items);
-			if (ok && result.type === 'full_refresh') {
-				// Only advance the legacy syncService cursor on a
-				// clean catch-up. A failed reconcile leaves it where
-				// it is so the next tab-resume retries.
-				syncService.markSynced();
-			}
 			// BUG-2601: renames only travel over the collection_updated
 			// SSE; a missed event strands this route on the dead slug and
 			// NOTHING above notices — /changes says nothing about
@@ -1089,89 +1085,33 @@
 	 */
 	async function deltaSync(ws: string): Promise<boolean> {
 		try {
-			for (let i = 0; i < 50; i++) {
-				// The overlap token, not the scope epoch: this loop needs to know
-				// whether a resync overlapped its request, and `scopeEpochFor` is
-				// the fence for optimistic WRITES and must not carry that meaning
-				// (TASK-2909 review round 3). Captured HERE, when the request is
-				// issued — the staleness it guards against is decided then, not
-				// when the response is read.
-				const tokenBefore = localIndex.reconcileTokenFor(ws);
-				const since = localIndex.cursorFor(ws);
-				const delta = await api.items.changes(ws, since);
-				if (localIndex.reconcileTokenFor(ws) !== tokenBefore) {
-					// A concurrent resync installed a new snapshot + pinned
-					// cursor while this request was in flight; the response
-					// predates it. Re-poll from the new cursor rather than
-					// reporting catch-up on stale data (Codex P2 round 8).
-					continue;
-				}
-				if (await localIndex.ensureAccessScope(ws, delta.access_epoch)) {
-					// IDEA-2898: the caller's visible set changed with no row
-					// change to carry it. Same `continue` discipline as the
-					// projection branch below and for the same reason — the
-					// resync pinned the cursor, so post-snapshot mutations are
-					// only replayed if we keep looping.
-					continue;
-				}
-				if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
-					// A resync just pinned the cursor to the snapshot cursor to
-					// replay post-snapshot mutations under the new scope. Keep
-					// looping so the next `/items-changes` actually fetches them
-					// instead of reporting caught-up prematurely. The resync
-					// already aligned the scope, so ensureProjectionScope won't
-					// re-fire; the 50-iteration cap bounds the loop.
-					continue;
-				}
-				if (delta.changes.length === 0 || delta.cursor === since) {
-					deltaSyncFailed = false;
-					// This loop is an independent reconcile path from
-					// `bootstrap()`'s internal one (driven by SSE/periodic
-					// sync, not the initial cold/warm boot) — it's the only
-					// owner of `pendingResync` for a resync IT triggered.
-					// Mark caught up so a mid-session projection-scope
-					// change doesn't leave `pendingResyncFor` stuck `true`
-					// for the rest of the session (TASK-2099 / PLAN-2095
-					// DR-2, Codex review round 4). Pass `epochBefore` — this
-					// iteration already confirmed it still matches the live
-					// epoch above — so a differently-scoped resync that
-					// lands concurrently after this point isn't silently
-					// stomped (Codex review round 5).
-					localIndex.markCaughtUp(ws, tokenBefore);
-					return true;
-				}
-				localIndex.applyDelta(
-					ws,
-					delta.changes,
-					delta.cursor,
-					delta.includes_unparented_metadata,
-				);
-				if (delta.cursor === since) {
-					deltaSyncFailed = false;
-					localIndex.markCaughtUp(ws, tokenBefore);
-					return true;
-				}
-			}
-			// Cap hit — pretend success at the page level so we don't
-			// thrash, but tell the caller it wasn't a clean catch-up.
-			return false;
-		} catch (err) {
-			// 401 (session expired) / 403 (access revoked) mean the
-			// cache is no longer ours to display. Drop it through the
-			// same path bootstrap uses so the 403 handler (TASK-1360)
-			// + 401 /login redirect (already in api/client.ts) can
-			// react. Set `deltaSyncFailed` so the page surfaces an
-			// error banner — `localIndex.reset` rolls state back to
-			// 'cold' but the bootstrap effect can't re-trigger on the
-			// same wsSlug/userId, so without this flag the page
-			// pins at "Loading…" forever (Codex P2 round 5).
-			if (
-				err instanceof PadApiError &&
-				(err.code === 'forbidden' || err.code === 'unauthorized')
-			) {
-				localIndex.reset(ws);
-				deltaSyncFailed = true;
-			}
+			// The reconcile itself is the STORE's (TASK-2921). This page used
+			// to carry its own copy of the loop — token discipline, both scope
+			// checks, catch-up detection and the ask-clearing — and the copies
+			// had drifted: this one reimplemented nothing but also checked no
+			// generation, while bootstrap's reimplemented `ensureProjectionScope`
+			// inline. What stays here is what is genuinely the page's: the error
+			// banner and the reset on a 401/403.
+			//
+			// `false` means the loop hit its page cap without catching up —
+			// pretend success at the page level so we don't thrash, but tell the
+			// caller it wasn't a clean catch-up.
+			return await localIndex.reconcile(ws);
+		} catch {
+			// 401 (session expired) / 403 (access revoked) mean the cache is no
+			// longer ours to display, and BOTH the purge and the resulting
+			// 'error' state are the STORE's now (TASK-2921): `reconcile` runs
+			// `dropCacheForAuthError` before it rethrows, so `indexError` is
+			// already true by the time we land here and the banner needs nothing
+			// from this page. The 401 /login redirect still happens in
+			// api/client.ts as before.
+			//
+			// The page-local `deltaSyncFailed` flag this used to set existed for
+			// one reason: the old reaction was `localIndex.reset(ws)`, which
+			// DELETES the state entry and with it the 'error' the banner reads,
+			// so the page pinned at "Loading…" forever without a private memo.
+			// Clearing in place removes the need for the memo, and every other
+			// route gets the banner-worthy state for free.
 			return false;
 		}
 	}
@@ -3443,7 +3383,7 @@
 		</div>
 
 		<!-- Content -->
-		{#if (indexError || deltaSyncFailed) && items.length === 0}
+		{#if (indexError || accessRevoked) && items.length === 0}
 			<!-- localIndex bootstrap failed and the cache is empty
 			     (e.g. transient /items-index failure on cold load,
 			     or auth revoked on /items-changes). Show a retry
@@ -3456,7 +3396,6 @@
 				<button
 					class="empty-cta"
 					onclick={() => {
-						deltaSyncFailed = false;
 						localIndex.reset(wsSlug);
 						localIndex.bootstrap(wsSlug, { userId: authStore.userId || null });
 					}}
