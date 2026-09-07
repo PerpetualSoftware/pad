@@ -46,9 +46,16 @@
 		// in onDestroy — so it is the owner whose lifetime actually matches the
 		// signal's. A store-owned subscription would have outlived its source.
 		unsubscribeSync = syncService.onSync(async (result) => {
-			if (!wsSlug) return;
+			// CAPTURE the workspace this result belongs to. `wsSlug` is derived
+			// from the route and changes under an async callback: switching from
+			// A to B while A's sync is in flight would otherwise reconcile B on
+			// A's result and mark A synced (codex round 5 P1). Everything below
+			// uses the captured value, and the re-read after the await is a
+			// guard, not a use.
+			const ws = wsSlug;
+			if (!ws) return;
 			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
-				collectionStore.loadCollections(wsSlug);
+				collectionStore.loadCollections(ws);
 			}
 			// Always reconcile, even for `caught_up` — SSE delivers events, not
 			// delta data, and a previous failure won't recover without a fresh
@@ -57,7 +64,7 @@
 			// calls idempotent.
 			let caughtUp = false;
 			try {
-				caughtUp = await localIndex.reconcile(wsSlug);
+				caughtUp = await localIndex.reconcile(ws);
 			} catch {
 				// 401/403 purge and the error banner are handled where the cache
 				// state is read — `bootstrapState` and `pendingResyncFor`. There
@@ -68,7 +75,11 @@
 			// level, so it moves here with the outcome it depends on. Only on a
 			// clean catch-up: a failed reconcile leaves the cursor where it is
 			// so the next tab-resume retries.
-			if (caughtUp && result.type === 'full_refresh') {
+			// `markSynced` advances a SHARED, workspace-agnostic cursor, so it
+			// must not be advanced on the strength of a result for a workspace
+			// the user has since left — the reconcile that vouched for it was
+			// about a different cache.
+			if (caughtUp && result.type === 'full_refresh' && wsSlug === ws) {
 				syncService.markSynced();
 			}
 		});
@@ -195,9 +206,12 @@
 			// ran on the collection route until this unit, which is why an item
 			// created elsewhere never reached the index of a user sitting on a
 			// non-collection route.
-			if (wsSlug && localIndex.classifySSEEvent(wsSlug, event) !== 'stale') {
+			// Captured for the same reason as the sync handler above: this
+			// callback awaits, and `wsSlug` is derived from the route.
+			const eventWs = wsSlug;
+			if (eventWs && localIndex.classifySSEEvent(eventWs, event) !== 'stale') {
 				try {
-					await localIndex.reconcile(wsSlug);
+					await localIndex.reconcile(eventWs);
 				} catch {
 					// As above: the cache-state readers own the reaction.
 				}

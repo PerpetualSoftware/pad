@@ -31,6 +31,13 @@ import { fileURLToPath } from 'node:url';
  * DELETE IT the day `+layout.svelte` grows a component harness, or the drivers
  * move somewhere testable. Same condition, same reasoning, as the file it
  * replaces.
+ *
+ * IT WILL FAIL ON A RENAME, and that is correct rather than annoying — it did,
+ * once, within an hour of being written, when codex round 5 made both callbacks
+ * capture the workspace slug before awaiting. The failure is the prompt to go and
+ * look at what changed; the anchors are then updated deliberately. An anchor
+ * loose enough to survive a rename would also survive the call being deleted,
+ * which is the only thing this file exists to catch.
  */
 const layoutSource = readFileSync(
 	fileURLToPath(new URL('../../routes/[username]/[workspace]/+layout.svelte', import.meta.url)),
@@ -42,11 +49,11 @@ describe('TASK-2921 — the workspace layout drives the reconcile for every rout
 		// The anchor is the enclosing call rather than a bare identifier:
 		// `reconcile` appears in that file for unrelated reasons and a substring
 		// match would pass while the call was gone.
-		expect(layoutSource).toContain('await localIndex.reconcile(wsSlug)');
+		expect(layoutSource).toContain('await localIndex.reconcile(ws)');
 	});
 
 	it('reconciles on a non-stale item event', () => {
-		expect(layoutSource).toContain("localIndex.classifySSEEvent(wsSlug, event) !== 'stale'");
+		expect(layoutSource).toContain("localIndex.classifySSEEvent(eventWs, event) !== 'stale'");
 	});
 
 	it('still owns markSynced, which depends on the reconcile outcome', () => {
