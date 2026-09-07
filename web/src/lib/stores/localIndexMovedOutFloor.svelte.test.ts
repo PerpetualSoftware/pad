@@ -224,6 +224,98 @@ describe('upsert — the optimistic write path', () => {
 	});
 });
 
+describe('the floor map is bounded (codex round 1 P2)', () => {
+	/**
+	 * The lift on the authoritative re-add paths prunes only ids that came BACK,
+	 * which is never the case for an item moved out permanently — so the cap in
+	 * `noteMovedOut` is the only thing standing between a long-lived tab and one
+	 * entry per eviction forever. These two tests pin the cap and the direction
+	 * it evicts in; without them the constant is a comment.
+	 */
+	const CAP = 5000;
+
+	function evictions(from: number, count: number, idOf: (i: number) => string) {
+		return Array.from({ length: count }, (_, i) => ({
+			id: idOf(from + i),
+			seq: from + i,
+			moved_out: true as const,
+		}));
+	}
+
+	async function bootEmpty(): Promise<void> {
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [],
+			total: 0,
+			cursor: '0',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-1',
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+	}
+
+	it('evicts the OLDEST floor once the cap is exceeded, and keeps the rest', async () => {
+		await bootEmpty();
+		localIndex.applyDelta(ws, [{ id: 'oldest', seq: 1, moved_out: true }], '1', false);
+		localIndex.applyDelta(ws, [{ id: 'second', seq: 2, moved_out: true }], '2', false);
+		// Fill to exactly the cap, then push one past it.
+		localIndex.applyDelta(ws, evictions(3, CAP - 2, (i) => `bulk-${i}`), String(CAP), false);
+		localIndex.applyDelta(ws, [{ id: 'newest', seq: CAP + 1, moved_out: true }], String(CAP + 1), false);
+
+		// The oldest floor is gone, so its id is admitted again — this is the
+		// bound, observable from outside.
+		localIndex.upsert(ws, row('oldest', 1, 'revoked'));
+		expect(canSee('oldest', 'revoked')).toBe(true);
+		// ...and nothing else went with it. Without this leg the assertion above
+		// would also pass on a map that dropped everything.
+		localIndex.upsert(ws, row('second', 2, 'revoked'));
+		expect(canSee('second', 'revoked')).toBe(false);
+		localIndex.upsert(ws, row('newest', CAP + 1, 'revoked'));
+		expect(canSee('newest', 'revoked')).toBe(false);
+	});
+
+	it('an authoritative re-add frees its slot, so the cap evicts one fewer old floor', async () => {
+		await bootEmpty();
+		localIndex.applyDelta(ws, [{ id: 'oldest', seq: 1, moved_out: true }], '1', false);
+		// Fill to EXACTLY the cap.
+		localIndex.applyDelta(ws, evictions(2, CAP - 1, (i) => `bulk-${i}`), String(CAP), false);
+
+		// The server says one of them is visible again. That lift is what this
+		// test is about: it is otherwise unobservable — after a re-add the row's
+		// own `existing.seq` guard subsumes everything the floor could refuse —
+		// and it is precisely what makes room here.
+		localIndex.applyDelta(
+			ws,
+			[row('bulk-5', CAP + 1, 'kept')],
+			String(CAP + 1),
+			false,
+		);
+		// One more eviction. With the lift the map is back at the cap and nothing
+		// is dropped; without it the map would be one over and `oldest` would go.
+		localIndex.applyDelta(ws, [{ id: 'newest', seq: CAP + 2, moved_out: true }], String(CAP + 2), false);
+
+		localIndex.upsert(ws, row('oldest', 1, 'revoked'));
+		expect(canSee('oldest', 'revoked')).toBe(false);
+	});
+
+	it('a floor RAISED in place keeps its position — a re-raise is not a fresh lease', async () => {
+		await bootEmpty();
+		localIndex.applyDelta(ws, [{ id: 'oldest', seq: 1, moved_out: true }], '1', false);
+		localIndex.applyDelta(ws, [{ id: 'second', seq: 2, moved_out: true }], '2', false);
+		// The same id evicted again at a higher seq. If this moved it to the end
+		// of the map, `second` would become the oldest and be evicted below.
+		localIndex.applyDelta(ws, [{ id: 'oldest', seq: 3, moved_out: true }], '3', false);
+		localIndex.applyDelta(ws, evictions(4, CAP - 2, (i) => `bulk-${i}`), String(CAP + 1), false);
+		localIndex.applyDelta(ws, [{ id: 'newest', seq: CAP + 2, moved_out: true }], String(CAP + 2), false);
+
+		// `oldest` was still the oldest entry despite the re-raise, so it went.
+		localIndex.upsert(ws, row('oldest', 3, 'revoked'));
+		expect(canSee('oldest', 'revoked')).toBe(true);
+		// `second` did not.
+		localIndex.upsert(ws, row('second', 2, 'revoked'));
+		expect(canSee('second', 'revoked')).toBe(false);
+	});
+});
+
 describe('resyncProjectionScope — the same door under a different roof', () => {
 	it('does not reinstate a row whose moved_out was applied while its snapshot was in flight', async () => {
 		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({

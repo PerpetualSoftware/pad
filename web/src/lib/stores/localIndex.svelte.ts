@@ -186,8 +186,7 @@ class WorkspaceState {
 	// a row is refused only while the evidence offered for it is NOT NEWER than
 	// the eviction, so a genuine re-add — which the server stamps with a fresh,
 	// higher seq — is admitted without anything having to expire or be cleaned
-	// up. Correctness therefore does not depend on the pruning below; that is
-	// only about the map's size.
+	// up. Correctness therefore does not depend on any pruning.
 	//
 	// It exists because `applyDelta`'s `moved_out` branch is a HARD evict
 	// (`state.items.delete`), which leaves no row for the ordinary
@@ -208,6 +207,12 @@ class WorkspaceState {
 	// `persistDelta` call, so a reload finds the row already gone from disk and
 	// the cursor already past it — there is no window on the other side to
 	// guard. The map guards a within-session race only.
+	// BOUNDED, and NOT by the `delete` on the authoritative re-add paths: that
+	// lift fires only when an item comes BACK, which by definition never happens
+	// for one that moved out permanently — so it prunes exactly the entries that
+	// were already harmless and none of the ones that accumulate (codex round 1
+	// P2, against the first draft of the comment above, which implied otherwise).
+	// `noteMovedOut` caps the map; see `MOVED_OUT_FLOOR_CAP`.
 	movedOutFloor = new Map<string, number>();
 
 	// `pendingRetags` records collection renames (collection id → latest new
@@ -394,6 +399,48 @@ function cursorAsNum(c: string): number {
  * mixed-deployment server that stamps no seq; refusing instead would drop rows
  * permanently in that deployment, which is the worse of the two failures.
  */
+/**
+ * How many eviction floors one workspace keeps (TASK-2920, codex round 1 P2).
+ *
+ * 5000 is `DefaultItemChangesLimit` in `internal/store/items.go` — the server's
+ * per-page cap on `/items-changes`, and the one that applies here: the client
+ * method takes an optional `limit` and both live callers (`deltaSync` and
+ * `bootstrap`'s reconcile loop) pass none. Sizing the map to a full page means a
+ * bulk move — the only way to add entries quickly — can never evict the floors
+ * it is itself in the middle of recording. At a 36-byte uuid key plus a number
+ * that is well under 1 MB per workspace, and it is session-local.
+ *
+ * Oldest-first eviction, which is the direction that matters: an entry's whole
+ * job is to outlive row sets FETCHED BEFORE IT, so the oldest entry is the one
+ * whose racing fetches are likeliest to have long since landed. Evicting one
+ * re-opens the original window for that single id — strictly better than an
+ * unbounded map, and no worse than the behaviour before this fence existed.
+ */
+const MOVED_OUT_FLOOR_CAP = 5000;
+
+/**
+ * Record that an eviction for `id` was consumed at `seq`, keeping the map
+ * bounded (TASK-2920).
+ *
+ * Highest wins, because the floor must never regress. A floor RAISED in place
+ * deliberately keeps its original insertion position rather than moving to the
+ * end: `Map` iteration order is what the cap evicts by, and a re-raise is the
+ * same eviction learned about twice, not a newer one to give a fresh lease.
+ */
+function noteMovedOut(state: WorkspaceState, id: string, seq: number): void {
+	const floor = state.movedOutFloor.get(id);
+	if (floor !== undefined) {
+		if (seq > floor) state.movedOutFloor.set(id, seq);
+		return;
+	}
+	state.movedOutFloor.set(id, seq);
+	while (state.movedOutFloor.size > MOVED_OUT_FLOOR_CAP) {
+		const oldest = state.movedOutFloor.keys().next();
+		if (oldest.done) break;
+		state.movedOutFloor.delete(oldest.value);
+	}
+}
+
 function refusedByMovedOut(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
 	const floor = state.movedOutFloor.get(row.id);
 	if (floor === undefined) return false;
@@ -1337,10 +1384,7 @@ export const localIndex = {
 				// arrive out of order across concurrent reconcile loops, and the
 				// floor must not regress.
 				if (change.seq !== undefined) {
-					const floor = state.movedOutFloor.get(change.id);
-					if (floor === undefined || change.seq > floor) {
-						state.movedOutFloor.set(change.id, change.seq);
-					}
+					noteMovedOut(state, change.id, change.seq);
 				}
 				continue;
 			}
