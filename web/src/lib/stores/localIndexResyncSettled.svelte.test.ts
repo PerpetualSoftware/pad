@@ -453,3 +453,73 @@ describe('TASK-2909 — the ask outlives an unwritten resync', () => {
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 });
+
+describe('IDEA-2913 — a verdict cannot cross a reset', () => {
+	/** Run one projection resync to completion, bumping the token once. */
+	async function oneResync(unparented: boolean, epoch: string): Promise<void> {
+		vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [row('cached', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: unparented,
+			access_epoch: epoch,
+		} as unknown as Awaited<ReturnType<typeof api.items.listIndex>>);
+		await localIndex.ensureProjectionScope(ws, unparented);
+	}
+
+	it('a token captured against one state does not clear the ask of its replacement', async () => {
+		// Discriminates the MOVE (a per-state counter restarts at zero, so old
+		// and replacement both reach 1 after one resync each and the captured
+		// value matches). It does NOT discriminate the drop bump — with the
+		// counter outside the state the two resyncs alone already separate the
+		// numbers, so this passes with `markWorkspaceDropped`'s bump removed. A
+		// mutation run said so; the sibling test below is what covers that half,
+		// and this comment exists because the test's NAME would otherwise imply
+		// it covered both.
+		await boot();
+		await oneResync(true, 'e2');
+		const capturedInA = localIndex.reconcileTokenFor(ws);
+
+		// Sign-out / 403 purge / workspace deletion — the state object is gone.
+		localIndex.reset(ws);
+
+		await boot();
+		await oneResync(true, 'e2');
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+
+		// Per-state, both would read 1 and this would clear an ask belonging to a
+		// workspace identity the response never saw. The token now outlives the
+		// state, so the reset itself moved it.
+		localIndex.markCaughtUp(ws, capturedInA);
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+
+		// ...and the replacement's own loop is not wedged by that.
+		localIndex.markCaughtUp(ws, localIndex.reconcileTokenFor(ws));
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+	});
+
+	it('a drop alone moves the token, with no resync involved', async () => {
+		// THE DROP BUMP'S ONLY DISCRIMINATOR, and the case it exists for: a
+		// capture taken in one state, no resync anywhere, and a reset. The
+		// counter surviving the state closes the ABA whenever a resync happens
+		// to separate the numbers; this closes it when nothing does. The bump
+		// lives in `markWorkspaceDropped` — the single funnel every drop path
+		// calls, enforced by localIndexResetGeneration.svelte.test.ts — rather
+		// than in `reset()`, so a drop that clears rows in place moves it too.
+		await boot();
+		const before = localIndex.reconcileTokenFor(ws);
+		localIndex.reset(ws);
+		expect(localIndex.reconcileTokenFor(ws)).not.toBe(before);
+	});
+
+	it('survives the state it counts — a fresh workspace does not restart it', async () => {
+		await boot();
+		await oneResync(true, 'e2');
+		const afterResync = localIndex.reconcileTokenFor(ws);
+		localIndex.reset(ws);
+		await boot();
+
+		// The replacement state is brand new; the token is not.
+		expect(localIndex.reconcileTokenFor(ws)).toBeGreaterThan(afterResync);
+	});
+});
