@@ -86,6 +86,13 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 		// survived.
 		expect(listIndex).toHaveBeenCalled();
 		expect(localIndex.getByCollection(ws, 'revoked').some((r) => r.id === 'secret')).toBe(false);
+		// And the ask the resync RAISED is cleared by the same loop that drained
+		// it. This assertion lives here rather than in the catch-up test below
+		// because a resync is what actually SETS `pendingResync` — after a cold
+		// boot it is already false, so asserting the clear there would pass
+		// whether or not the clear happened. A mutation run caught exactly that:
+		// removing `clearAskIfSettled` left the suite green.
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 
 	it('reports catch-up and clears the outstanding ask', async () => {
@@ -98,7 +105,6 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 		});
 
 		expect(await localIndex.reconcile(ws)).toBe(true);
-		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 
 	it('reports NOT caught up when the page cap is hit, leaving the ask set', async () => {
@@ -119,6 +125,64 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 		expect(await localIndex.reconcile(ws)).toBe(false);
 		// The cap is what bounds it; without one this would not return.
 		expect(seq).toBe(60);
+	});
+
+	it('does not report catch-up on a response a resync overtook', async () => {
+		// TASK-2909's rule, now pinned at the ONE door instead of at neither: the
+		// reconcile token must be captured when the request is ISSUED, because
+		// the staleness it guards against is decided then. A mutation run found
+		// this unpinned — moving the capture to after the await left the suite
+		// green, since both orderings end in the same state once the loop's next
+		// iteration catches up honestly.
+		//
+		// The discriminator is therefore the REQUEST COUNT, not the end state: a
+		// response the resync overtook must send the loop round again, so the
+		// correct code issues two requests where the broken code issues one.
+		await boot([row('keeper', 1, 'kept')]);
+
+		let started!: () => void;
+		const firstCallStarted = new Promise<void>((r) => {
+			started = r;
+		});
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const caughtUpResponse = {
+			changes: [],
+			cursor: '10',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-1',
+		};
+		const changes = vi.spyOn(api.items, 'changes');
+		changes.mockImplementationOnce(async () => {
+			started();
+			await gate;
+			return caughtUpResponse;
+		});
+		// Subsequent responses carry the NEW epoch, as a real server would once
+		// the scope has changed — otherwise the loop keeps re-resyncing on a
+		// stale epoch and the request count stops measuring what this test is
+		// about.
+		changes.mockResolvedValue({ ...caughtUpResponse, access_epoch: 'epoch-2' });
+
+		const running = localIndex.reconcile(ws);
+		await firstCallStarted;
+
+		// A resync settles while that request is in flight, bumping the token.
+		vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '10',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-2',
+		});
+		await localIndex.ensureAccessScope(ws, 'epoch-2');
+
+		release();
+		await running;
+
+		expect(changes).toHaveBeenCalledTimes(2);
 	});
 
 	it('is a no-op reporting catch-up for a workspace that was never hydrated', async () => {
