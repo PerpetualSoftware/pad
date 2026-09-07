@@ -936,7 +936,7 @@ export async function persistCollections(
 	after: string | null,
 ): Promise<void> {
 	if (!isSupported()) return;
-	// The scope moved under the fetch — see the note above.
+	// The scope moved under the fetch, as this tab saw it — see the note above.
 	if (before !== after) return;
 	const db = await open(userId, ws);
 	if (!db) return;
@@ -948,13 +948,26 @@ export async function persistCollections(
 			await tx.done.catch(() => undefined);
 			return;
 		}
-		// Stamped with the DURABLE epoch rather than the caller's `after`. They
-		// agree in the ordinary case, and where they do not it is because a
-		// write the caller could not see landed first — in which case the
-		// durable value is the one `hydrateCollections` will compare against,
-		// so it is the one worth recording.
+		// THE THIRD VANTAGE POINT, and the fence is worthless without it (codex
+		// round 1). `before !== after` catches a resync THIS tab observed. It
+		// cannot see one that ANOTHER tab landed durably while the fetch was in
+		// flight — and the first draft of this function stamped the row with
+		// `sync.accessEpoch` in that case, which makes the stamp agree with the
+		// disk BY CONSTRUCTION and lets `hydrateCollections` accept a list
+		// fetched under a scope the cache has already left. That is the exact
+		// disclosure this unit exists to prevent, written into it by a comment
+		// arguing that recording the durable value was the careful choice.
+		//
+		// So the stamp is the epoch the fetch actually happened under, and it is
+		// written only when all three agree: RAM before, RAM after, and disk
+		// now. One property — nothing moved — asked at every vantage point that
+		// can see a move.
+		if ((sync.accessEpoch ?? null) !== after) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
 		store
-			.put({ key: 'collections', list, accessEpoch: sync.accessEpoch ?? null } satisfies CollectionsRow)
+			.put({ key: 'collections', list, accessEpoch: after } satisfies CollectionsRow)
 			.catch(() => undefined);
 		await tx.done;
 	} catch {

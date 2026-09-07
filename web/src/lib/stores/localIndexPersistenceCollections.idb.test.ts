@@ -75,6 +75,22 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		expect(await hydrateCollections(U, WS)).toBeNull();
 	});
 
+	it('does NOT persist when ANOTHER tab moved the durable scope under the fetch', async () => {
+		const U = null;
+		const WS = 'ws-2946-crosstab';
+		const { persistDelta, persistCollections, hydrateCollections } = await loadPersistence();
+
+		// This tab's RAM saw no change — `before` and `after` both e1 — but a
+		// sibling tab resynced to e2 and its write landed first. Stamping the
+		// list with the DURABLE epoch would make it agree with the disk by
+		// construction and hand the fence a list fetched under a scope the cache
+		// has already left (codex round 1).
+		await persistDelta(U, WS, [row('a', 1)], '1', false, 'e2');
+		await persistCollections(U, WS, [coll('secret')], 'e1', 'e1');
+
+		expect(await hydrateCollections(U, WS)).toBeNull();
+	});
+
 	it('does NOT persist into a cache that has never synced, and the row cannot appear later', async () => {
 		const U = null;
 		const WS = 'ws-2946-nosync';
