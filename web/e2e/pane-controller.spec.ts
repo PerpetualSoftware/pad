@@ -115,9 +115,10 @@ function authHeaders(fixture: SuiteFixture) {
 	return { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
 }
 
-/** Create a fresh, test-scoped renamable collection (letters-only prefix, name
+/** Create a fresh, test-scoped renamable collection (explicit prefix, name
  *  unique — see pane-collection-migration-race.spec.ts for the slug/prefix
- *  gotchas). */
+ *  gotchas, and for why the prefix is explicit for DETERMINISM rather than to
+ *  dodge the by-ref 404 that BUG-2943 fixed). */
 async function seedCollection(
 	fixture: SuiteFixture,
 	request: APIRequestContext,

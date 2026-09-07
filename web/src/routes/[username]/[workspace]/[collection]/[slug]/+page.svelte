@@ -194,8 +194,18 @@
 	// Parse a ref-shaped candidate's item NUMBER (mirrors paneTarget's private
 	// `parseRefNumber`) — used only to derive `masterItem.item_number` from the
 	// master's canonical ref below.
+	//
+	// The prefix half admits DIGITS after the first letter, matching the
+	// server's ref grammar since BUG-2943 (case-insensitively — the input is
+	// a canonical ref, but the server accepts either case). It was
+	// `[A-Za-z]+`, so a master whose ref is `R2-1` parsed as null, its
+	// `item_number` fell back to 0, and the self-pane guard below stopped
+	// recognising `?item=R2-1` as the master — mounting a second provider for
+	// the item already on screen. Caught by codex round 3; it is the fourth
+	// consumer found carrying its own copy of this grammar, which is the
+	// argument for the shared definition rather than for four careful edits.
 	function refNumber(candidate: string): number | null {
-		const m = /^([A-Za-z]+)-(\d+)$/.exec(candidate);
+		const m = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(candidate);
 		if (!m) return null;
 		const n = Number(m[2]);
 		return Number.isFinite(n) && n > 0 ? n : null;

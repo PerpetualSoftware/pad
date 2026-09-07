@@ -583,6 +583,47 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			return nil, fmt.Errorf("de-duplicate declarations for %s: %w", c.Slug, derr)
 		}
 
+		// A PREFIX MUST BE RESOLVABLE, even on a restore (BUG-2943). Import
+		// is the one door where refusing has a real cost — a workspace that
+		// already carries a bad prefix would fail to come back — so it is the
+		// most permissive door that can still be honest: anything the ref
+		// parser resolves is accepted, which now includes digits after the
+		// first letter, and only a prefix NO surface could resolve is
+		// refused. Carrying that one verbatim would restore a workspace whose
+		// items print issue IDs the CLI answers "not found" to, which is the
+		// defect this item exists for rather than a compatibility we owe.
+		//
+		// The message names the collection and says the export is editable,
+		// because the operator holds the file and a one-character edit is the
+		// whole remedy.
+		//
+		// AN ABSENT prefix is not an unresolvable one. Exports written before
+		// the field existed — and every fixture in the suite — carry "", and
+		// the first version of this check refused them, which would have
+		// turned a fix for unresolvable IDs into a fix that cannot restore an
+		// old bundle at all. An empty prefix takes the same fallback
+		// CreateCollection applies (derive from the name, else ITEM), which
+		// also upgrades it: an empty prefix is itself an id-space nothing can
+		// resolve, since a ref would begin with "-".
+		prefix := c.Prefix
+		if prefix == "" {
+			prefix = collections.DerivePrefix(c.Name)
+		}
+		if prefix == "" {
+			prefix = "ITEM"
+		}
+		if !collections.IsValidPrefix(prefix) {
+			return nil, fmt.Errorf("import collection %q: prefix %q cannot be resolved — a collection prefix must start with an uppercase letter and contain only uppercase letters or digits; edit the prefix for this collection in the export and import again", c.Name, c.Prefix)
+		}
+		if hasDigit(prefix) {
+			// Accepted only because the parser widened for this fix. Logged so
+			// an operator can see an id-space that would have been rejected
+			// before, rather than discovering it from a resolve failure that
+			// no longer happens.
+			slog.Warn("imported collection with a digit-bearing prefix",
+				"workspace", ws.Slug, "collection", c.Slug, "prefix", prefix)
+		}
+
 		// NULLIF so an ABSENT deleted_at — every archive written before
 		// BUG-2884, which decodes the missing key as "" — imports the
 		// collection LIVE. That direction is what keeps old bundles working;
@@ -590,7 +631,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		_, err := tx.Exec(s.q(`
 			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, deleted_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`),
-			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, traits, c.Prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
+			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, traits, prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
 			c.CreatedAt, c.UpdatedAt, c.DeletedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)
@@ -1175,4 +1216,15 @@ func dropDuplicateImportDeclarations(traits, slug, deletedAt, workspaceID string
 		return "", eerr
 	}
 	return encoded, nil
+}
+
+// hasDigit reports whether s contains an ASCII digit. Used at import to log a
+// prefix that only became resolvable when parseItemRef widened (BUG-2943).
+func hasDigit(s string) bool {
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
 }

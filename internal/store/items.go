@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/diff"
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -745,6 +746,17 @@ func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.It
 
 // ResolveItem looks up an item by UUID, PREFIX-NUMBER ref (e.g. "IDEA-15"),
 // or slug. UUID is tried first, then ref, then slug.
+// ResolveItem maps a caller-supplied identifier to an item, trying UUID, then
+// PREFIX-NUMBER ref, then slug.
+//
+// THAT ORDER IS THE DOCUMENTED PRECEDENCE, and BUG-2943 made it matter more:
+// parseItemRef now accepts a digit after the first prefix character, so more
+// strings are ref-SHAPED than before — "ab1-42" among them. The rule is
+// deterministic and stated here once so both server and client code can cite
+// it rather than each deciding: a ref-shaped identifier is looked up AS A REF
+// first, and falls through to the slug lookup when no such ref exists. An
+// identifier that is both a live ref and a live slug is a naming collision the
+// user created, and the precedence is how it is settled — the ref wins.
 func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error) {
 	// Try UUID lookup first (8-4-4-4-12 hex format)
 	if isUUID(identifier) {
@@ -854,11 +866,16 @@ func parseItemRef(s string) (string, int, bool) {
 		return "", 0, false
 	}
 	prefix := s[:idx]
-	// Prefix must be all uppercase letters
-	for _, c := range prefix {
-		if c < 'A' || c > 'Z' {
-			return "", 0, false
-		}
+	// ONE definition of a valid prefix, shared with every door that can put
+	// one on a collection (BUG-2943). This used to require A-Z and nothing
+	// else, while the generator admitted any first byte — so a collection
+	// named "TEMP Rook A 2870" got the prefix "TRA2" and every item in it
+	// printed an issue ID this parser then refused, falling through to a slug
+	// lookup that cannot match one. Widening here rather than rewriting those
+	// prefixes is what makes the fix migration-free: an existing "AB1"
+	// resolves the moment this ships, and nobody's stored identifier changes.
+	if !collections.IsValidPrefix(prefix) {
+		return "", 0, false
 	}
 	numStr := s[idx+1:]
 	num := 0

@@ -153,14 +153,33 @@ describe('isSamePaneTarget — same-item guard', () => {
 		expect(isSamePaneTarget({ ref: 'TASK-6' }, task5)).toBe(false);
 	});
 
-	it('does NOT treat a digit-bearing slug as a ref, even when its trailing number coincides', () => {
-		// The server's parseItemRef requires a LETTERS-ONLY prefix (no digits);
-		// a slug like "roadmap2-5" is not ref-shaped by that grammar and must
-		// stay a plain slug candidate — not misread as ref number 5, which
-		// would false-positive against an unrelated item TASK-5 (Codex review
-		// — PR diff pass).
+	it('a SLUG-channel candidate is never read as a ref, digit-bearing or not', () => {
+		// Channel provenance, not grammar, is what protects this leg: a target
+		// that names an item by `slug` is judged only as a slug, so
+		// "roadmap2-5" cannot be misread as ref number 5 whatever the ref
+		// grammar admits.
 		expect(isSamePaneTarget({ slug: 'roadmap2-5' }, task5)).toBe(false);
-		expect(isSamePaneTarget({ href: '/alice/myws/docs/roadmap2-5' }, task5)).toBe(false);
+	});
+
+	it('an HREF ending in a ref-shaped segment IS read as a ref, now that the grammar admits digits', () => {
+		// BEHAVIOUR CHANGE, BUG-2943. This asserted `false`, on the reasoning
+		// that the server's parseItemRef USED TO REQUIRE a letters-only prefix,
+		// so "roadmap2-5" was not ref-shaped. It no longer does — it
+		// parses "roadmap2-5" as ROADMAP2-5, tries the ref, and falls back to
+		// a slug lookup only if none exists — and a client guard holding a
+		// grammar the server abandoned produces a DIFFERENT wrong answer
+		// rather than a right one, which is the divergence BUG-2943 is about.
+		//
+		// The cost, stated rather than buried: an href-derived segment that is
+		// ref-shaped under the wider grammar is compared by NUMBER with the
+		// prefix discarded (see `matchesRefNumber`), so a genuine slug like
+		// "roadmap2-5" now counts as the same pane target as TASK-5. The
+		// prefix is dropped because a moved item keeps a stale prefix — the
+		// server's own number-only fallback in GetItemByRef — and
+		// `PaneGuardItem` carries no prefix to compare against anyway.
+		// Tightening that means widening the guard's item type, which is a
+		// separate change with its own callers; it is on BUG-2943's trail.
+		expect(isSamePaneTarget({ href: '/alice/myws/docs/roadmap2-5' }, task5)).toBe(true);
 	});
 
 	it('a cross-workspace resolver href never false-positives, even when the numbers coincide', () => {

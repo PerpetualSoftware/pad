@@ -73,17 +73,21 @@ async function seedMigratableCollection(
 	// real single collection does, so a same-collection resave is a no-op
 	// slug-wise.
 	//
-	// IMPORTANT #2: pass an explicit, LETTERS-ONLY `itemPrefix` rather than
-	// letting the server derive one from `name` (collections.DerivePrefix).
-	// The derived prefix can pick up a leading digit from a numeric "word"
-	// in the name (e.g. a trailing Date.now() uniqueness suffix) — item
-	// refs are `{PREFIX}-{N}`, and the server's ref parser expects the
-	// prefix to be pure letters, so a digit-containing prefix makes every
-	// by-ref lookup (GET /items/{ref}) 404 with "Item not found" even
-	// though the item exists (confirmed empirically: creating a collection
-	// named "bug2129-switch <timestamp>" derived prefix "BS1" — the
-	// leading digit of the timestamp "word" — and every subsequent
-	// GET /items/BS1-10 404'd while GET /items/{slug} succeeded).
+	// IMPORTANT #2: pass an explicit `itemPrefix` rather than letting the
+	// server derive one from `name` (collections.DerivePrefix). This used to
+	// be load-bearing for a reason that no longer holds, and the history is
+	// worth keeping because it is what BUG-2943 fixed: a derived prefix could
+	// pick up a digit from a numeric "word" in the name (a trailing
+	// Date.now() suffix), the ref parser accepted only A-Z, and every by-ref
+	// lookup 404'd while the slug worked — confirmed empirically here, with a
+	// collection named "bug2129-switch <timestamp>" deriving "BS1" and every
+	// GET /items/BS1-10 404'ing.
+	//
+	// Since BUG-2943 the parser accepts a digit after the first character AND
+	// DerivePrefix no longer mints one, so neither half can happen. The
+	// explicit prefix stays for determinism — a test that asserts on refs
+	// should not depend on what a timestamped name derives — not as a
+	// workaround.
 	const name = `${namePrefix} ${Date.now()}`;
 	const schema = JSON.stringify({
 		fields: [
