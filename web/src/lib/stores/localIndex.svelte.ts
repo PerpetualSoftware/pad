@@ -412,9 +412,23 @@ function cursorAsNum(c: string): number {
  *
  * Oldest-first eviction, which is the direction that matters: an entry's whole
  * job is to outlive row sets FETCHED BEFORE IT, so the oldest entry is the one
- * whose racing fetches are likeliest to have long since landed. Evicting one
- * re-opens the original window for that single id — strictly better than an
- * unbounded map, and no worse than the behaviour before this fence existed.
+ * whose racing fetches are likeliest to have long since landed.
+ *
+ * WHAT THE CAP DOES NOT CLOSE, stated plainly because a bound that reads as a
+ * guarantee is worse than one that reads as a bound (codex round 2 P2). The
+ * reconcile loop PAGES, so more than one page of evictions can be consumed
+ * inside a single in-flight snapshot; past 5000 of them the oldest floors are
+ * gone before that snapshot merges, and those ids can be reinstated exactly as
+ * they were before this fence existed. Every id under the cap is still
+ * protected, so the cap strictly reduces the exposure and never widens it — but
+ * it does not eliminate it.
+ *
+ * Closing it needs a different mechanism, not a bigger number: the cold path
+ * would have to PIN its cursor to the snapshot's the way `resyncProjectionScope`
+ * already does, so the replay re-delivers every eviction in the gap and no
+ * per-id record is load-bearing at all. That is a change to the cold path's
+ * cursor contract and it interacts with TASK-2906's durable monotonicity gate,
+ * so it is filed rather than smuggled in here — see TASK-2920's trail.
  */
 const MOVED_OUT_FLOOR_CAP = 5000;
 
