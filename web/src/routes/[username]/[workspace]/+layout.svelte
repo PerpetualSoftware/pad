@@ -208,6 +208,15 @@
 			// non-collection route.
 			// Captured for the same reason as the sync handler above: this
 			// callback awaits, and `wsSlug` is derived from the route.
+			//
+			// Used for the WHOLE callback, not just the reconcile (codex round 6
+			// P1). The later `loadCollections` / `api.items.get` / link-building
+			// calls read the reactive slug after their own awaits and predate
+			// this unit — but the reconcile added ANOTHER await in front of all
+			// of them, so an event for workspace A crossing a switch to B now has
+			// a wider window to load B's collections off A's event. Every use in
+			// here means "the workspace this event arrived for", which is what
+			// the subscription was opened on.
 			const eventWs = wsSlug;
 			if (eventWs && localIndex.classifySSEEvent(eventWs, event) !== 'stale') {
 				try {
@@ -220,9 +229,9 @@
 			switch (event.type) {
 				case 'item_created': {
 					// Reload collections to update counts
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					try {
-						const item = await api.items.get(wsSlug, event.item_id);
+						const item = await api.items.get(eventWs, event.item_id);
 						collectionStore.addItem(item);
 					} catch {
 						// Item might not be fetchable by event ID, refresh collection
@@ -232,7 +241,7 @@
 					// click-intercepting surface. See its doc in the toast store.
 					if (isExternal && !quietExternalToasts()) {
 						const who = event.actor === 'agent' ? 'Agent' : (event.actor_name || 'CLI');
-						const link = event.collection ? `/${username}/${wsSlug}/${event.collection}/${event.item_id}` : undefined;
+						const link = event.collection ? `/${username}/${eventWs}/${event.collection}/${event.item_id}` : undefined;
 						toastStore.show(`${who} created: ${event.title}`, 'info', 4000, link);
 					}
 					break;
@@ -248,14 +257,14 @@
 
 					// Only reload collections for external/non-editor updates
 					// (e.g. status changes, field edits from another tab)
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 
 					if (activeItem && activeItem.id === event.item_id) {
 						if (editorStore.dirty) {
 							editorStore.setExternalChange(true);
 						} else {
 							try {
-								const updated = await api.items.get(wsSlug, activeItem.slug);
+								const updated = await api.items.get(eventWs, activeItem.slug);
 								// Fence the late continuation (PLAN-2179 / TASK-2181): on the
 								// focus-follows-editing host `collectionStore.activeItem`
 								// ping-pongs master↔pane on each click, so the active item may
@@ -273,7 +282,7 @@
 						const existing = collectionStore.items.find(i => i.id === event.item_id);
 						if (existing) {
 							try {
-								const updated = await api.items.get(wsSlug, existing.slug);
+								const updated = await api.items.get(eventWs, existing.slug);
 								collectionStore.updateItemInList(updated);
 							} catch {}
 						}
@@ -282,13 +291,13 @@
 				}
 
 				case 'item_archived': {
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					collectionStore.removeItem(event.item_id);
 					break;
 				}
 
 				case 'item_restored': {
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					break;
 				}
 
@@ -306,7 +315,7 @@
 					// (collection page + ItemDetail); this case owns the DATA.
 					if (event.new_slug && event.collection_id) {
 						localIndex.retagCollection(
-							wsSlug,
+							eventWs,
 							event.collection_id,
 							event.new_slug,
 							authStore.user?.id ?? null,
@@ -315,7 +324,7 @@
 					// Refresh sidebar/pickers for EVERY collection_updated —
 					// icon / name / sort-order changes matter to the nav
 					// even without a rename (codex round 1 P2).
-					collectionStore.loadCollections(wsSlug);
+					collectionStore.loadCollections(eventWs);
 					break;
 				}
 			}
