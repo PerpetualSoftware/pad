@@ -826,7 +826,7 @@ const CmdhelpVersion = "0.1"
 //     they disagreed: the CLI sites used both halves verbatim, so
 //     `field:[" effort=l"]` stored an undeclared field literally named
 //     " effort" and left the declared `effort` untouched, while this
-//     door TrimSpaced both halves and wrote `effort`. Same call, two
+//     door used to TrimSpace both halves and write `effort`. Same call, two
 //     stored keys, decided by nothing but the transport. All six now
 //     call items.SplitFieldEntry.
 //

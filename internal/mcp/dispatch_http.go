@@ -954,9 +954,11 @@ func liftFieldsToColumns(fields, payload map[string]any) {
 }
 
 // parseFieldKVP normalizes the --field flag's various wire shapes
-// (single string, []string, []any) into a `key→value` map. Empty /
-// invalid entries are skipped silently to match the CLI's permissive
-// behaviour.
+// (single string, []string, []any) into a `key→value` map. A MALFORMED
+// entry — empty, or with no usable `key=value` split — is skipped
+// silently, matching the CLI's permissive behaviour on that one case. A
+// padded KEY is a different thing and is REFUSED, aborting the whole call
+// rather than dropping one entry (BUG-2870).
 // nativeFields returns the `fields` object the catalog merge preserved with
 // its JSON types intact, or nil. See fieldsNativeKey (BUG-2850).
 func nativeFields(input map[string]any) map[string]any {

@@ -381,15 +381,18 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// draft did exactly that.
 		//
 		// The paragraphs that stood here described WHEN a padded entry would
-		// be canonicalized — per-key rather than per-request (round 17), and
+		// be canonicalized — per-key rather than per-request (round 17) — and
 		// not extended to a lone padded entry because that was "BUG-2870,
 		// ruled out of this PR's scope". Both are spent: this IS BUG-2870,
 		// nothing canonicalizes anything any more, and a padded entry is
 		// refused before it can reach a question about who covers its key.
 		//
-		// `canonicalized` itself survives below, where it decides whether the
+		// The predicate itself survives below, where it decides whether the
 		// round-15 exemption applies — a different question that has nothing
-		// to do with padding.
+		// to do with padding. It is named `coveredByFieldsObject` rather than
+		// `canonicalized` now (codex round 2): nothing canonicalizes anything
+		// any more, and the only thing it ever really asked was whether the
+		// `fields` object carries THIS key.
 		//
 		// Third round running that I generalized a property verified on one
 		// subset to the whole: round 15 (a premise true of declared params,
@@ -397,14 +400,14 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// below the exemption so it covered one key class), and now a
 		// per-key property read as per-request. The predicate is now the
 		// actual question — will anything canonicalize THIS key.
-		canonicalized := false
+		coveredByFieldsObject := false
 		for _, c := range contribs {
 			if _, inObj := obj[c.key]; inObj {
-				canonicalized = true
+				coveredByFieldsObject = true
 				break
 			}
 		}
-		// NOTE: `canonicalized` no longer gates a padded-entry refusal — that
+		// NOTE: this predicate no longer gates a padded-entry refusal — that
 		// guard is gone with BUG-2870, see above. It is still live below,
 		// where it decides whether the round-15 exemption applies, so the
 		// predicate stays and only the branch that used it went.
@@ -436,8 +439,8 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// last entry — so refusing it was a false refusal on a call that
 		// resolves deterministically.
 		//
-		// `canonicalized` is exactly the right question and is already
-		// computed above: is THIS key carried by the `fields` object.
+		// `coveredByFieldsObject` is exactly the right question and is
+		// already computed above: is THIS key carried by the `fields` object.
 		// THE COMPAT EXCEPTION TURNS ON A TOP-LEVEL VALUE BEING PRESENT, not
 		// on the key being a compat one (codex round 20).
 		//
@@ -455,7 +458,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 				break
 			}
 		}
-		if !canonicalized && !compatTopLevel {
+		if !coveredByFieldsObject && !compatTopLevel {
 			continue
 		}
 		for i := 1; i < len(contribs); i++ {
