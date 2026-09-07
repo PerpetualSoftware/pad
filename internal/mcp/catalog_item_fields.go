@@ -412,8 +412,10 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 				break
 			}
 		}
-		if !canonicalized {
-		}
+		// NOTE: `canonicalized` no longer gates a padded-entry refusal — that
+		// guard is gone with BUG-2870, see above. It is still live below,
+		// where it decides whether the round-15 exemption applies, so the
+		// predicate stays and only the branch that used it went.
 
 		// ...and the exemption holds only where the doors PROVABLY agree,
 		// which is not everywhere (codex round 15).
