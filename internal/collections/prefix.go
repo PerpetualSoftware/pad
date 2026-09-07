@@ -36,15 +36,13 @@ func NormalizeSlug(input string) string {
 // Single word: first 3-5 letters, removing trailing "s" for plurals
 // Multi-word: first letter of each word, capped at 5 chars
 //
-// THE RESULT IS A-Z ONLY, and that is a hard constraint rather than a style
-// choice (BUG-2943). NOTE THE SCOPE: this function is one of four doors that
-// can put a prefix on a collection, and it is the only one that enforces the
-// constraint. An EXPLICIT prefix — `collection create --prefix`, `collection
-// update --prefix`, the HTTP/MCP `prefix` field, or a workspace import — is
-// still stored verbatim and unvalidated (codex round 1 [P2] on this unit,
-// with the call sites named on BUG-2943's trail). So this makes DERIVED
-// prefixes safe; it does not make the invariant hold. `parseItemRef` (internal/store/items.go) resolves a
-// PREFIX-NUMBER ref only when every prefix character is A-Z, and falls
+// THE RESULT IS A-Z ONLY (BUG-2943). That is stricter than IsValidPrefix,
+// which also permits digits after the first character — deliberately: the
+// grammar has to ACCEPT a digit so an existing prefix like "AB1" keeps
+// resolving without a migration, while there is no reason to MINT one, since
+// a digit in a derived prefix comes from a digit in a collection name and
+// carries no meaning a reader would recognise. `parseItemRef` (internal/store/items.go) resolves a
+// PREFIX-NUMBER ref only when the prefix satisfies IsValidPrefix, and falls
 // through to a slug lookup otherwise — so a prefix carrying anything else
 // makes every item in that collection unresolvable by the issue ID the
 // product itself prints. Measured: a collection named "TEMP Rook A 2870" got
@@ -148,8 +146,8 @@ func IsValidPrefix(s string) bool {
 }
 
 // keepASCIILetters uppercases s and drops every character that is not A-Z.
-// ASCII-only on purpose: the prefix has to satisfy parseItemRef's A-Z test,
-// and there is no faithful mapping from a non-Latin letter into that range.
+// ASCII-only on purpose: the prefix has to satisfy parseItemRef, and there is
+// no faithful mapping from a non-Latin letter into A-Z.
 func keepASCIILetters(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToUpper(s) {

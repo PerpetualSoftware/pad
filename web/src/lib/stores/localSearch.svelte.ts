@@ -92,7 +92,11 @@ export interface ParsedSearchQuery {
 const PREFIX_BODY_RE = /^(?:body|content):/i;
 const PREFIX_COLL_RE = /^coll:(.+)$/i;
 const PREFIX_ITEM_NUMBER_RE = /^(?:#|item:)(\d+)$/i;
-const REF_PATTERN_RE = /^([A-Za-z]+)-(\d+)$/;
+// Prefix grammar matches the server's collections.IsValidPrefix — a letter
+// followed by letters or digits (BUG-2943). `[A-Za-z]+` could not recognise a
+// ref on a collection whose prefix carries a digit, so the palette's Enter
+// fast-path silently failed to go anywhere for those items.
+const REF_PATTERN_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 
 /**
  * Parse a whole search query as a direct "go to item" target — the

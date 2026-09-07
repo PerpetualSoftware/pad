@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -215,11 +217,102 @@ func TestImportWorkspace_PrefixMustBeResolvable(t *testing.T) {
 		if err != nil || got == nil {
 			t.Fatalf("imported workspace has no tasks collection: %v", err)
 		}
-		if got.Prefix == "" {
-			t.Fatal("an empty prefix must be filled in, not carried — a ref would begin with a dash")
+		// PIN THE VALUE, not just resolvability (codex round 2 [P2]). Asserting
+		// only "non-empty and parseable" passes an implementation that stamps
+		// ITEM on every absent prefix, which is not the documented
+		// derive-then-ITEM fallback and would give every collection in a
+		// restored workspace the same id-space.
+		if got.Prefix != "TASK" {
+			t.Errorf("imported prefix = %q, want TASK — the fallback DERIVES from the name "+
+				"before reaching for ITEM", got.Prefix)
 		}
 		if _, _, ok := parseItemRef(got.Prefix + "-1"); !ok {
 			t.Errorf("the filled-in prefix %q does not resolve", got.Prefix)
 		}
 	})
+}
+
+// ...and the other half of the fallback: a collection whose NAME yields no
+// letters falls through DerivePrefix's empty return to ITEM. Without this leg
+// the assertion above is satisfied by an implementation that only derives and
+// never reaches the fallback, so the two legs are what make the rule
+// "derive, THEN ITEM" rather than either half alone.
+func TestImportWorkspace_LetterlessNameFallsBackToITEM(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	owner := createTestUser(t, s, "letterless-owner@test.com", "Letterless Owner", "password123")
+	src := createTestWorkspace(t, s, "Letterless Source")
+	if _, err := s.CreateCollection(src.ID, models.CollectionCreate{
+		Name: "2026", Slug: "twenty-twenty-six",
+	}); err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	for i := range exp.Collections {
+		exp.Collections[i].Prefix = ""
+	}
+
+	imported, err := s.ImportWorkspace(exp, "letterless-target", owner.ID, "")
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+	got, err := s.GetCollectionBySlug(imported.ID, "twenty-twenty-six")
+	if err != nil || got == nil {
+		t.Fatalf("imported workspace has no twenty-twenty-six collection: %v", err)
+	}
+	if got.Prefix != "ITEM" {
+		t.Errorf("prefix for a letterless name = %q, want ITEM", got.Prefix)
+	}
+}
+
+// The WARN the ruling asked for: a prefix accepted ONLY because the parser
+// widened is visible to an operator, rather than being inferred from a resolve
+// failure that no longer happens. Untested, this is a line of code nobody
+// would notice was gone.
+//
+// Not t.Parallel: it swaps the process-wide default slog handler, which is
+// exactly the shared global CONVE-2086 says disqualifies a test from running
+// beside others.
+func TestImportWorkspace_DigitBearingPrefixIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := testStore(t)
+	owner := createTestUser(t, s, "warn-owner@test.com", "Warn Owner", "password123")
+	src := createTestWorkspace(t, s, "Warn Source")
+	if err := s.SeedCollectionsFromTemplate(src.ID, "startup"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	exp, err := s.ExportWorkspace(src.Slug)
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	for i := range exp.Collections {
+		if exp.Collections[i].Slug == "tasks" {
+			exp.Collections[i].Prefix = "TSK1"
+		}
+	}
+	if _, err := s.ImportWorkspace(exp, "warn-target", owner.ID, ""); err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "digit-bearing prefix") {
+		t.Errorf("no warning logged for a digit-bearing prefix:\n%s", logged)
+	}
+	if !strings.Contains(logged, "TSK1") {
+		t.Errorf("the warning must name the prefix:\n%s", logged)
+	}
+	// The control: an ORDINARY prefix must NOT warn, or the log is noise and
+	// an operator learns to ignore it.
+	if strings.Count(logged, "digit-bearing prefix") != 1 {
+		t.Errorf("exactly one collection had a digit-bearing prefix; got %d warnings:\n%s",
+			strings.Count(logged, "digit-bearing prefix"), logged)
+	}
 }

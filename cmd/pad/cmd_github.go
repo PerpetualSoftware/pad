@@ -68,7 +68,15 @@ func getCurrentBranch() (string, error) {
 }
 
 // extractItemRefFromBranch attempts to find a Pad item reference (e.g. TASK-5, BUG-3) in a branch name.
-var itemRefPattern = regexp.MustCompile(`([A-Z]+-\d+)`)
+//
+// The prefix grammar matches collections.IsValidPrefix — a letter followed by
+// letters or digits (BUG-2943). It was `[A-Z]+` and therefore could not see a
+// ref on a collection whose prefix carries a digit, so `pad github link` on a
+// branch named `fix/ab1-42-something` silently found nothing. That was
+// invisible while the ref parser refused digits too; widening the parser
+// without widening this would have left the two disagreeing again, which is
+// the whole shape of this bug.
+var itemRefPattern = regexp.MustCompile(`([A-Z][A-Z0-9]*-\d+)`)
 
 func extractItemRefFromBranch(branch string) string {
 	// Convert to uppercase for matching since branch names are often lowercase
