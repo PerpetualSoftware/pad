@@ -60,3 +60,39 @@ describe('TASK-2921 — the workspace layout drives the reconcile for every rout
 		expect(layoutSource).toContain('syncService.markSynced()');
 	});
 });
+
+describe('TASK-2200 — the same layout drives shell recovery', () => {
+	/**
+	 * Same instrument, same limits, same delete-condition as the block above —
+	 * this is a SOURCE PIN and it cannot see reachability. What it is worth: the
+	 * two recovery calls cannot be silently deleted, which would restore a shell
+	 * that stays navigation-less after the server returns while every
+	 * behavioural test stays green, because they call `recoverIfMissing` and
+	 * `loadCollections` directly.
+	 */
+	it('re-acquires workspace identity from the sync subscriber', () => {
+		expect(layoutSource).toContain('await workspaceStore.recoverIfMissing(ws)');
+	});
+
+	it('re-acquires the collection list on the freshness CONDITION, not on a signal type', () => {
+		// The condition is the anchor, not the call: `loadCollections(ws)` also
+		// appears in the `full_refresh` / `collections_changed` branch, which
+		// serves a different purpose (refresh a list we HAVE because the server
+		// says it changed). Anchoring on the call alone would pass with the
+		// recovery gate deleted and that branch left standing — which is
+		// precisely the state this unit found the file in.
+		expect(layoutSource).toContain('if (!collectionStore.collectionsAreFreshFor(ws))');
+	});
+
+	it('runs the recovery OUTSIDE the full_refresh branch', () => {
+		// Measured, not assumed (syncPostOutageResultType.svelte.test.ts): a
+		// returning server reports `caught_up`, so recovery hung inside the
+		// full_refresh branch would not run in the case this unit exists for.
+		// The pin: the recovery calls appear BEFORE the branch opens.
+		const recovery = layoutSource.indexOf('await workspaceStore.recoverIfMissing(ws)');
+		const branch = layoutSource.indexOf("if (result.type === 'full_refresh'");
+		expect(recovery).toBeGreaterThan(-1);
+		expect(branch).toBeGreaterThan(-1);
+		expect(recovery).toBeLessThan(branch);
+	});
+});

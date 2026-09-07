@@ -75,6 +75,61 @@ export const workspaceStore = {
 		}
 	},
 
+	/**
+	 * Re-acquire workspace identity when a previous attempt left it missing
+	 * (TASK-2200).
+	 *
+	 * THE DEFECT THIS EXISTS FOR. A cold load while the server is unreachable
+	 * leaves `workspaces` empty and `current` null, and NOTHING retried either:
+	 * the root layout attempts `loadAll` once per auth resolution, and
+	 * `setCurrent` runs once from an effect keyed on a workspace slug that does
+	 * not change. Every other caller of both is a user action — a topbar
+	 * reorder, the workspace switcher, the create-workspace modal. So when the
+	 * server came back the board could recover (its own Retry, and the items
+	 * cache) inside a shell with no navigation at all: the sidebar builds its
+	 * links from `current`, so with `current` null there are no links to build,
+	 * and only F5 fixed it.
+	 *
+	 * GATED ON THE CONDITION, NOT ON A SIGNAL TYPE. The caller is the workspace
+	 * layout's sync subscriber, and it calls this on EVERY sync result rather
+	 * than on `full_refresh` alone. That is deliberate and measured: after a
+	 * server returns, `/changes` usually SUCCEEDS with nothing to report, so the
+	 * result is `caught_up` — the type that means "nothing was missed" is
+	 * exactly the one that arrives when everything was missed, because the
+	 * cursor was seeded during the outage. Gating recovery on `full_refresh`
+	 * would therefore miss the common case. The condition below is the real
+	 * gate, and it is cheap: two reads, both false on a healthy session.
+	 *
+	 * IDEMPOTENT AND SELF-LIMITING. When identity is intact this does nothing
+	 * and issues no request. `loading` keeps it from stacking a second list call
+	 * on an in-flight one.
+	 */
+	async recoverIfMissing(ws: string): Promise<void> {
+		if (workspaces.length === 0 && !loading) {
+			try {
+				await workspaceStore.loadAll();
+			} catch {
+				// Still unreachable. Leave both pieces of state as they are —
+				// the next sync result asks again, and asking again is the whole
+				// mechanism. Swallowing here rather than rethrowing keeps a
+				// failure from taking the caller's other subscribers down.
+				return;
+			}
+		}
+		// Checked AFTER the list attempt, and against the slug rather than for
+		// mere presence: `setCurrent` resolves out of `workspaces` when it can
+		// and falls back to a single-workspace fetch when it cannot, so running
+		// it second gives it the array to work with. A `current` pointing at a
+		// DIFFERENT workspace is also wrong here — this is the recovery path for
+		// the workspace the layout is showing.
+		if (!current || current.slug !== ws) {
+			// `setCurrent` catches its own failures into `current = null`, so
+			// there is nothing to catch here and nothing to report: a still-down
+			// server simply leaves the condition true for the next attempt.
+			await workspaceStore.setCurrent(ws);
+		}
+	},
+
 	async setCurrent(ws: Workspace | string) {
 		// Capture a sequence token for this call. Any /me response received
 		// after a later setCurrent / create has run will be discarded — see

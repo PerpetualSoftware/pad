@@ -58,7 +58,41 @@
 			// reconcile is still safe to skip: whichever layout instance IS
 			// showing that workspace has its own subscription.
 			if (ws !== wsSlug) return;
+			// RECOVERY, on EVERY result type and gated on the CONDITION rather
+			// than on the signal (TASK-2200). A cold load during a server
+			// outage leaves workspace identity and the collection list missing
+			// with nothing to retry either: the root layout attempts `loadAll`
+			// once per auth resolution, and `setCurrent` / `loadCollections`
+			// run once from an effect keyed on a slug that does not change. The
+			// board could then recover — its own Retry, and the items cache —
+			// inside a shell with no navigation, because the sidebar builds its
+			// links from `workspaceStore.current` and the collection list.
+			//
+			// Not gated on `full_refresh`, and that is the measured part: when
+			// the server comes back, `/changes` usually SUCCEEDS with nothing to
+			// report, so the result is `caught_up`. The type meaning "nothing
+			// was missed" is exactly the one that arrives when everything was,
+			// because the cursor was seeded during the outage. Both calls below
+			// are no-ops when nothing is missing.
+			try {
+				await workspaceStore.recoverIfMissing(ws);
+			} catch {
+				// Still unreachable. The next sync result asks again; throwing
+				// out of a subscriber would take the other subscribers with it.
+			}
+			if (!collectionStore.collectionsAreFreshFor(ws)) {
+				// The collections analogue, and `collectionsAreFreshFor` is the
+				// right predicate rather than `collections.length === 0`: it
+				// already distinguishes "this workspace's list" from a stale
+				// previous workspace's, and a genuinely empty workspace stamps
+				// its slug on success so this does not re-fire for it.
+				collectionStore.loadCollections(ws).catch(() => {
+					// Same posture as above — the next result retries.
+				});
+			}
 			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
+				// Distinct from the recovery above and still needed: this one
+				// refreshes a list we HAVE because the server says it CHANGED.
 				collectionStore.loadCollections(ws);
 			}
 			// Always reconcile, even for `caught_up` — SSE delivers events, not
