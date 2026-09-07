@@ -686,3 +686,164 @@ func TestImportWorkspace_UnresolvableRelationValueSurvivesAPrefixCollision(t *te
 			"the remap has stopped working", got, want)
 	}
 }
+
+// A relation value pointing at an ORPHANED item is carried verbatim, not
+// rewritten into an id that names no row (BUG-2895).
+//
+// itemMap holds an entry for every item in the bundle INCLUDING orphans —
+// items whose collection the bundle does not carry — because the entry is
+// written before the orphan skip and parent resolution inside the same loop
+// reads it for items the loop has not reached. Passing that map to
+// remapFieldIDs rewrote an orphan-pointing relation value into the id the
+// orphan WOULD have received: an id that names no row here and has never
+// identified anything in any workspace.
+//
+// That is strictly worse than dangling. TASK-2878's carry rule imports an
+// unresolvable value VERBATIM so the source id survives as evidence a human or
+// a repair tool can act on; a fabricated id destroys the information that the
+// value was ever resolvable, and ImportWorkspace runs no
+// MigrateRelationReferents pass afterwards to re-examine it.
+//
+// This is the JSON-blob twin of BUG-2884's parent_id fix. Every site that one
+// corrected writes a FOREIGN KEY, so the database objected and the sweep found
+// them; this one writes into a blob, so nothing objected and it shipped.
+//
+// The bundle is hand-built because ExportWorkspace cannot produce an orphan —
+// which is the population the carry rule exists for: hand-edited, foreign, and
+// pre-BUG-2884 archives.
+//
+// MUTANT: pass itemMap instead of insertedItemMap at the remapFieldIDs call and
+// the orphan leg fails with a fresh UUID. Delete the second-pass remap entirely
+// and the CONTROL leg fails — that leg is the reason "carried verbatim" here
+// cannot be satisfied by "never processed", which produces byte-identical
+// output for the orphan leg alone.
+func TestImportWorkspace_DoesNotMintIDsForOrphanRelationReferents(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	owner, err := s.CreateUser(models.UserCreate{
+		Name:     "Owner",
+		Email:    "relation-orphan-owner@example.com",
+		Password: "passw0rd!",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// No id here is a prefix of another: a partial rewrite (codex round 17's
+	// defect, fixed) would otherwise fail these assertions for the wrong reason.
+	const (
+		liveColorID   = "old-color-alpha"
+		orphanColorID = "old-color-omega" // an ITEM in the bundle, collection absent
+		relationField = "color"
+	)
+
+	export := &models.WorkspaceExport{
+		Version:    1,
+		ExportedAt: "2026-09-07T00:00:00Z",
+		Workspace: models.WorkspaceExportMeta{
+			Name: "Orphan Relation Archive",
+			Slug: "orphan-relation-archive",
+		},
+		Collections: []models.CollectionExport{
+			{
+				ID: "old-coll-colors", Name: "Colors", Slug: "colors", Prefix: "COLO",
+				Schema:    `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true}]}`,
+				CreatedAt: "2026-09-07T00:00:00Z", UpdatedAt: "2026-09-07T00:00:00Z",
+			},
+			{
+				ID: "old-coll-cars", Name: "Cars", Slug: "cars", Prefix: "CAR",
+				Schema:    `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"color","type":"relation","collection":"colors"}]}`,
+				CreatedAt: "2026-09-07T00:00:00Z", UpdatedAt: "2026-09-07T00:00:00Z",
+			},
+			// "old-coll-hues" is deliberately ABSENT — that is what orphans the
+			// item below.
+		},
+		Items: []models.ItemExport{
+			{
+				ID: liveColorID, CollectionID: "old-coll-colors",
+				Title: "Red", Slug: "red",
+				Fields: `{}`, Tags: `[]`,
+				CreatedAt: "2026-09-07T00:00:00Z", UpdatedAt: "2026-09-07T00:00:00Z",
+			},
+			{
+				// THE ORPHAN: its collection is not in the bundle, so the import
+				// skips it — while still writing its itemMap entry.
+				ID: orphanColorID, CollectionID: "old-coll-hues",
+				Title: "Orphaned Hue", Slug: "orphaned-hue",
+				Fields: `{}`, Tags: `[]`,
+				CreatedAt: "2026-09-07T00:00:00Z", UpdatedAt: "2026-09-07T00:00:00Z",
+			},
+			{
+				// CONTROL: resolves inside the bundle, MUST come out rewritten.
+				ID: "old-car-resolvable", CollectionID: "old-coll-cars",
+				Title: "Resolvable", Slug: "resolvable",
+				Fields: `{"color":"` + liveColorID + `"}`, Tags: `[]`,
+				CreatedAt: "2026-09-07T00:00:00Z", UpdatedAt: "2026-09-07T00:00:00Z",
+			},
+			{
+				// THE SUBJECT: points at the orphan.
+				ID: "old-car-orphan-ref", CollectionID: "old-coll-cars",
+				Title: "Orphan Referent", Slug: "orphan-referent",
+				Fields: `{"color":"` + orphanColorID + `"}`, Tags: `[]`,
+				CreatedAt: "2026-09-07T00:00:00Z", UpdatedAt: "2026-09-07T00:00:00Z",
+			},
+		},
+	}
+
+	ws, err := s.ImportWorkspace(export, "Orphan Relation Target", owner.ID)
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+
+	items, err := s.ListItems(ws.ID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	byTitle := map[string]models.Item{}
+	for _, it := range items {
+		byTitle[it.Title] = it
+	}
+
+	// FIXTURE CHECK: the orphan really was orphaned. Without this the test
+	// could pass on a build that imported it, where the value would be
+	// legitimately resolvable and nothing under test would be exercised.
+	if _, imported := byTitle["Orphaned Hue"]; imported {
+		t.Fatalf("the orphan IMPORTED, so this fixture no longer orphans anything; titles=%v", byTitle)
+	}
+	red, ok := byTitle["Red"]
+	if !ok {
+		t.Fatalf("the relation target did not import; the control below would be meaningless. titles=%v", byTitle)
+	}
+
+	relationValue := func(title string) (any, bool) {
+		t.Helper()
+		it, ok := byTitle[title]
+		if !ok {
+			t.Fatalf("item %q did not import", title)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(it.Fields), &fields); err != nil {
+			t.Fatalf("item %q has an unreadable fields blob %q: %v", title, it.Fields, err)
+		}
+		v, present := fields[relationField]
+		return v, present
+	}
+
+	// CONTROL: the remap ran at all.
+	got, present := relationValue("Resolvable")
+	if !present {
+		t.Fatalf("the resolvable relation value was DROPPED")
+	}
+	if got != red.ID {
+		t.Fatalf("resolvable relation is %v, want the imported target's id %q; the remap did not run, so the orphan assertion below proves nothing", got, red.ID)
+	}
+
+	// THE RULE: the orphan-pointing value is carried verbatim.
+	got, present = relationValue("Orphan Referent")
+	if !present {
+		t.Fatalf("import DROPPED a relation value pointing at an orphan; the ruling is that it carries")
+	}
+	if got != orphanColorID {
+		t.Fatalf("import rewrote an orphan-pointing relation value to %v — an id that names no row in any workspace — want it carried verbatim as %q", got, orphanColorID)
+	}
+}

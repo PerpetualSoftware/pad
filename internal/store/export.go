@@ -737,6 +737,33 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		insertedItems[newItemID] = true
 	}
 
+	// The remap map for relation FIELD VALUES, filtered to items that actually
+	// landed (BUG-2895). itemMap holds an entry for every item in the bundle
+	// INCLUDING orphans — see the note where it is built, which explains why it
+	// has to — so remapping a field value through it rewrites a reference to an
+	// orphan into the id that orphan WOULD have received: an id that names no
+	// row here and has never identified anything anywhere.
+	//
+	// That is worse than leaving it alone. TASK-2878's carry rule imports an
+	// unresolvable relation value VERBATIM precisely so nothing is invented:
+	// the source id is evidence a human or a repair tool can act on, and
+	// ImportWorkspace runs no MigrateRelationReferents pass afterwards to
+	// re-examine what this writes.
+	//
+	// This is the same correction BUG-2884 made for parent_id, arriving late
+	// because every site that one fixed writes a FOREIGN KEY and the database
+	// objected. This one writes into a JSON blob, so nothing objected.
+	//
+	// KEY SPACES DIFFER and getting it backwards is silent in both directions:
+	// itemMap is oldID -> newID, insertedItems is keyed by NEW id. The test is
+	// on the VALUE.
+	insertedItemMap := make(map[string]string, len(insertedItems))
+	for oldID, newItemID := range itemMap {
+		if insertedItems[newItemID] {
+			insertedItemMap[oldID] = newItemID
+		}
+	}
+
 	// Second pass: remap parent_id and relation fields (now all items exist).
 	// Use the coerced first-pass fields value as the remap input so a
 	// malformed-and-coerced row doesn't get its coercion clobbered by the
@@ -755,8 +782,9 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if !ok {
 			fieldsInput = it.Fields // defensive — should always be populated by first pass
 		}
-		// Remap relation fields now that ALL items are mapped
-		fields := remapFieldIDs(fieldsInput, itemMap, collMap)
+		// Remap relation fields now that all INSERTED items are mapped
+		// (BUG-2895 — see insertedItemMap above for why it is not itemMap).
+		fields := remapFieldIDs(fieldsInput, insertedItemMap)
 		parentID := resolveImportParent(it.ParentID, itemMap, insertedItems)
 		_, err := tx.Exec(s.q(`UPDATE items SET fields = ?, parent_id = NULLIF(?, '') WHERE id = ?`),
 			fields, parentID, newItemID)
@@ -1004,6 +1032,17 @@ func (s *Store) rebuildFTSForWorkspace(wsID string) {
 // remapFieldIDs replaces old UUIDs in a JSON fields string with their new IDs.
 // This handles relation fields (e.g. parent: "uuid") without needing to parse the schema.
 //
+// itemMap must contain ONLY items the import actually inserted (BUG-2895). An id
+// absent from it is left verbatim, which is the carry posture TASK-2878 defines
+// for an unresolvable relation value; an id this function invents is not
+// unresolvable, it is fabricated, and nothing downstream re-examines it.
+//
+// The collMap parameter this used to take was never read — a relation field's
+// VALUE names an item, and the collection a relation targets is carried in the
+// SCHEMA as a slug, not as an id in the blob (see retargetRelationFieldsTx).
+// Dropped rather than left, because an unread parameter reads as a claim that
+// collection ids are remapped here.
+//
 // IDEA-1486: empty-string input is normalized to "{}". Centralizing the
 // contract here keeps future callers safe by default — any UPDATE that
 // writes the result back into items.fields is guaranteed to satisfy the
@@ -1013,7 +1052,7 @@ func (s *Store) rebuildFTSForWorkspace(wsID string) {
 // invalid JSON on SQLite and (post-migration) would have already 500'd
 // on the first-pass INSERT on Postgres if not for the import-boundary
 // coercion above.
-func remapFieldIDs(fieldsJSON string, itemMap, collMap map[string]string) string {
+func remapFieldIDs(fieldsJSON string, itemMap map[string]string) string {
 	if fieldsJSON == "" {
 		return "{}"
 	}
