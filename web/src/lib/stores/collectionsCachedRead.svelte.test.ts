@@ -15,6 +15,7 @@ import type { Collection } from '$lib/types';
 const persistence = vi.hoisted(() => ({
 	hydrateCollections: vi.fn(async () => null as Collection[] | null),
 	persistCollections: vi.fn(async () => undefined),
+	readDurableEpoch: vi.fn(async () => undefined as string | null | undefined),
 	hydrate: vi.fn(async () => ({
 		items: [],
 		cursor: '0',
@@ -35,6 +36,7 @@ const persistence = vi.hoisted(() => ({
 }));
 vi.mock('./localIndexPersistence', () => persistence);
 
+const { api } = await import('$lib/api/client');
 const { collectionStore } = await import('./collections.svelte');
 
 function coll(slug: string): Collection {
@@ -45,6 +47,39 @@ afterEach(() => {
 	for (const fn of Object.values(persistence)) {
 		if (typeof fn === 'function' && 'mockClear' in fn) fn.mockClear();
 	}
+});
+
+describe('TASK-2946 — what loadCollections hands the cache', () => {
+	it('stamps with the DURABLE epoch, so a cold tab with no RAM epoch still caches', async () => {
+		// The path the feature actually runs on, and the one every IDB test
+		// missed by seeding epochs directly (codex round 2). The workspace
+		// layout starts this fetch BEFORE `localIndex.bootstrap`, so RAM's epoch
+		// is null here; an earlier draft bracketed the fetch with RAM and
+		// therefore refused to cache on every fresh online visit — inert in its
+		// most common path, with all nine IDB legs green.
+		persistence.readDurableEpoch.mockResolvedValueOnce('e1');
+		vi.spyOn(api.collections, 'list').mockResolvedValueOnce([coll('tasks')]);
+
+		await collectionStore.loadCollections('alpha');
+
+		expect(persistence.persistCollections).toHaveBeenCalledTimes(1);
+		const args = persistence.persistCollections.mock.calls.at(-1) as unknown[];
+		expect(args[3]).toBe('e1');
+	});
+
+	it('does not cache a list it could not read a durable scope for', async () => {
+		// `undefined` is "no sync row / unreadable cache", not "the scope is
+		// null" — nothing to vouch for the stamp, so the write is refused
+		// downstream. Pinned here so the caller keeps passing the value through
+		// rather than substituting a default.
+		persistence.readDurableEpoch.mockResolvedValueOnce(undefined);
+		vi.spyOn(api.collections, 'list').mockResolvedValueOnce([coll('tasks')]);
+
+		await collectionStore.loadCollections('beta');
+
+		const args = persistence.persistCollections.mock.calls.at(-1) as unknown[];
+		expect(args[3]).toBeUndefined();
+	});
 });
 
 describe('TASK-2946 — cachedCollection', () => {

@@ -10,6 +10,15 @@ import type { Collection } from '$lib/types';
  * the first perfectly and cannot answer the second, since it was issued before
  * the change the caller is reacting to.
  *
+ * These legs also pin an ordering property nobody wrote down until it broke:
+ * `loadCollections` must ISSUE its request synchronously. The assertions below
+ * count calls in the same tick, so any `await` added before the fetch fails
+ * them — which is how TASK-2946 caught itself adding a durable read in front of
+ * the request. That await would also have delayed the in-flight slot, so
+ * `ensureCollections` would have seen nothing to join and duplicated the
+ * request: the very thing this file exists to prevent, reintroduced from the
+ * other end.
+ *
  * So the coalescing lives in `ensureCollections` and NOT in `loadCollections`.
  * The control leg below is the one that keeps that true — without it, moving
  * the join into `loadCollections` (which would look like a tidy simplification)

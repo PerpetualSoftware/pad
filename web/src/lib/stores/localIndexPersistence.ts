@@ -908,15 +908,51 @@ export async function persistReplace(
 }
 
 /**
+ * The durable scope claim, as three distinguishable answers (TASK-2946):
+ * a string epoch, `null` for a cache written by a server that predates
+ * `access_epoch`, and `undefined` for NO SYNC ROW AT ALL.
+ *
+ * The third is why this is not just `string | null`. "The cache says its scope
+ * is null" and "the cache has never synced and says nothing" are different
+ * facts, and collapsing them would let a list fetched before the cache had any
+ * scope claim be stamped as though it matched one.
+ */
+export type DurableEpoch = string | null | undefined;
+
+/**
+ * Read the durable scope claim without opening a write transaction
+ * (TASK-2946). Called before a collection-list fetch so `persistCollections`
+ * has something to compare its commit-time read against.
+ *
+ * Returns `undefined` for an unreadable or absent cache as well as for a
+ * missing sync row — deliberately, since both mean "no claim I can vouch for",
+ * and `persistCollections` refuses on either.
+ */
+export async function readDurableEpoch(userId: string | null, ws: string): Promise<DurableEpoch> {
+	if (!isSupported()) return undefined;
+	const db = await open(userId, ws);
+	if (!db) return undefined;
+	try {
+		const tx = db.transaction('meta', 'readonly');
+		const sync = await readSyncRow(tx.objectStore('meta'));
+		await tx.done.catch(() => undefined);
+		return sync ? (sync.accessEpoch ?? null) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Persist this workspace's collection list, stamped with the scope the durable
  * ROW cache described at the moment of the fetch (TASK-2946).
  *
- * WHY THE CALLER PASSES TWO EPOCHS. The list itself carries no scope
- * information — the collections endpoint returns a naked array — so the stamp
- * is borrowed from the row cache, and a borrowed stamp is only honest if the
- * thing it was borrowed from did not move underneath the fetch. `before` is the
- * epoch RAM held when the request was issued and `after` is the epoch it holds
- * now; when they differ, a resync landed mid-fetch and this list may describe
+ * WHY THE CALLER PASSES AN EPOCH. The list itself carries no scope information
+ * — the collections endpoint returns a naked array — so the stamp is borrowed
+ * from the row cache, and a borrowed stamp is only honest if the thing it was
+ * borrowed from did not move underneath the fetch. `before` is
+ * `readDurableEpoch` taken before the request was issued; this function reads
+ * the same value again inside its write transaction. When they differ, a resync
+ * landed mid-fetch — from this tab or any other — and this list may describe
  * either scope. It is not written at all.
  *
  * That refusal is the whole design in one line, and it costs nothing worth
@@ -932,12 +968,9 @@ export async function persistCollections(
 	userId: string | null,
 	ws: string,
 	list: Collection[],
-	before: string | null,
-	after: string | null,
+	before: DurableEpoch,
 ): Promise<void> {
 	if (!isSupported()) return;
-	// The scope moved under the fetch, as this tab saw it — see the note above.
-	if (before !== after) return;
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
@@ -948,26 +981,37 @@ export async function persistCollections(
 			await tx.done.catch(() => undefined);
 			return;
 		}
-		// THE THIRD VANTAGE POINT, and the fence is worthless without it (codex
-		// round 1). `before !== after` catches a resync THIS tab observed. It
-		// cannot see one that ANOTHER tab landed durably while the fetch was in
-		// flight — and the first draft of this function stamped the row with
-		// `sync.accessEpoch` in that case, which makes the stamp agree with the
-		// disk BY CONSTRUCTION and lets `hydrateCollections` accept a list
-		// fetched under a scope the cache has already left. That is the exact
-		// disclosure this unit exists to prevent, written into it by a comment
-		// arguing that recording the durable value was the careful choice.
+		// ONE VANTAGE POINT, BRACKETING THE FETCH (codex round 2). Earlier drafts
+		// asked RAM: the epoch the store believed before the request against the
+		// one it believed after. Two things were wrong with that, and both were
+		// found by review rather than by these tests, because every test seeded
+		// the epochs by hand and so never stood where a real caller stands.
 		//
-		// So the stamp is the epoch the fetch actually happened under, and it is
-		// written only when all three agree: RAM before, RAM after, and disk
-		// now. One property — nothing moved — asked at every vantage point that
-		// can see a move.
-		if ((sync.accessEpoch ?? null) !== after) {
+		//   - A COLD TAB HAS NO RAM EPOCH YET. The layout starts this fetch
+		//     before `localIndex.bootstrap` has run, so `before` was null and
+		//     `after` was whatever bootstrap had since learned — different, and
+		//     refused. A fresh online visit therefore cached NOTHING, and the
+		//     feature was inert in its most common path while every test passed.
+		//     RAM going null → e1 is the tab LEARNING, not the scope MOVING, and
+		//     a check that cannot tell those apart answers the wrong question.
+		//   - RAM IS NOT WHAT THE FENCE READS. `hydrateCollections` compares
+		//     against the DURABLE epoch, so a RAM-based guard could pass while
+		//     the value the fence will actually use had moved underneath it.
+		//
+		// So both reads are durable and both are of the value the fence uses:
+		// `before` is `readDurableEpoch` from before the request, and this one is
+		// read INSIDE the write transaction, which is the commit-time value by
+		// construction. Equal means nothing moved across the fetch and the list
+		// describes this scope. A `before` of `undefined` — no sync row yet —
+		// can never equal a present row's epoch, so a list fetched before the
+		// cache had any scope claim is refused rather than stamped with one it
+		// did not have.
+		if ((sync.accessEpoch ?? null) !== before) {
 			await tx.done.catch(() => undefined);
 			return;
 		}
 		store
-			.put({ key: 'collections', list, accessEpoch: after } satisfies CollectionsRow)
+			.put({ key: 'collections', list, accessEpoch: before } satisfies CollectionsRow)
 			.catch(() => undefined);
 		await tx.done;
 	} catch {

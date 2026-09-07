@@ -37,7 +37,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		const { persistDelta, persistCollections, hydrateCollections } = await loadPersistence();
 
 		await persistDelta(U, WS, [row('a', 1)], '1', false, 'e1');
-		await persistCollections(U, WS, [coll('tasks'), coll('ideas')], 'e1', 'e1');
+		await persistCollections(U, WS, [coll('tasks'), coll('ideas')], 'e1');
 
 		const list = await hydrateCollections(U, WS);
 		expect(list?.map((c) => c.slug)).toEqual(['tasks', 'ideas']);
@@ -50,7 +50,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 			await loadPersistence();
 
 		await persistDelta(U, WS, [row('a', 1)], '1', false, 'e1');
-		await persistCollections(U, WS, [coll('secret')], 'e1', 'e1');
+		await persistCollections(U, WS, [coll('secret')], 'e1');
 		expect((await hydrateCollections(U, WS))?.length).toBe(1);
 
 		// A resync under a NARROWED scope. The rows are replaced and the durable
@@ -70,7 +70,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		// The list was requested while RAM said e1 and arrived after a resync had
 		// moved it to e2 — so it may describe either scope, and a stamp would be
 		// a guess. The whole point of taking two epochs.
-		await persistCollections(U, WS, [coll('tasks')], 'e1', 'e2');
+		await persistCollections(U, WS, [coll('tasks')], 'e1');
 
 		expect(await hydrateCollections(U, WS)).toBeNull();
 	});
@@ -86,7 +86,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		// construction and hand the fence a list fetched under a scope the cache
 		// has already left (codex round 1).
 		await persistDelta(U, WS, [row('a', 1)], '1', false, 'e2');
-		await persistCollections(U, WS, [coll('secret')], 'e1', 'e1');
+		await persistCollections(U, WS, [coll('secret')], 'e1');
 
 		expect(await hydrateCollections(U, WS)).toBeNull();
 	});
@@ -98,7 +98,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 
 		// No `sync` row: there is no epoch to BORROW, so any stamp would be
 		// invented rather than observed.
-		await persistCollections(U, WS, [coll('tasks')], 'e1', 'e1');
+		await persistCollections(U, WS, [coll('tasks')], 'e1');
 		expect(await hydrateCollections(U, WS)).toBeNull();
 
 		// The discriminating half, and the reason this leg is not just restating
@@ -122,7 +122,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		const { persistDelta, persistCollections, hydrateCollections } = await loadPersistence();
 
 		await persistDelta(U, WS, [row('a', 1)], '1', false, null);
-		await persistCollections(U, WS, [coll('tasks')], null, null);
+		await persistCollections(U, WS, [coll('tasks')], null);
 
 		expect((await hydrateCollections(U, WS))?.map((c) => c.slug)).toEqual(['tasks']);
 	});
@@ -133,7 +133,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		const { persistDelta, persistCollections, hydrateCollections } = await loadPersistence();
 
 		await persistDelta(U, WS, [row('a', 1)], '1', false, 'e1');
-		await persistCollections(U, WS, [coll('tasks')], 'e1', 'e1');
+		await persistCollections(U, WS, [coll('tasks')], 'e1');
 
 		// Without this leg the refusal above would also pass against a fence
 		// that refused everything — including every ordinary session, which
@@ -159,8 +159,8 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		const { persistDelta, persistCollections, hydrateCollections } = await loadPersistence();
 
 		await persistDelta(U, WS, [row('a', 1)], '1', false, 'e1');
-		await persistCollections(U, WS, [coll('tasks'), coll('gone')], 'e1', 'e1');
-		await persistCollections(U, WS, [coll('tasks')], 'e1', 'e1');
+		await persistCollections(U, WS, [coll('tasks'), coll('gone')], 'e1');
+		await persistCollections(U, WS, [coll('tasks')], 'e1');
 
 		// A list is a snapshot of the visible set under one scope, true only as
 		// a whole — a collection dropped by a narrowed scope must not survive as

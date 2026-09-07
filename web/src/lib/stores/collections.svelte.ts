@@ -1,7 +1,7 @@
 import { api } from '$lib/api/client';
 import type { Collection, Item } from '$lib/types';
 import { localIndex } from './localIndex.svelte';
-import { hydrateCollections, persistCollections } from './localIndexPersistence';
+import { hydrateCollections, persistCollections, readDurableEpoch } from './localIndexPersistence';
 
 let collections = $state<Collection[]>([]);
 let items = $state<Item[]>([]);
@@ -156,11 +156,18 @@ export const collectionStore = {
 	async loadCollections(ws: string) {
 		const seq = ++collectionsLoadSeq;
 		loading = true;
-		// Captured BEFORE the request so `persistCollections` can tell whether a
-		// resync landed underneath it — the list carries no scope of its own and
-		// the stamp is borrowed from the row cache, so it is only honest if that
-		// cache held still (TASK-2946).
-		const epochBefore = localIndex.accessEpochFor(ws);
+		// The DURABLE scope claim before the request, so `persistCollections` can
+		// tell whether a resync landed underneath it — the list carries no scope
+		// of its own and the stamp is borrowed from the row cache, so it is only
+		// honest if that cache held still (TASK-2946).
+		//
+		// Durable rather than `localIndex.accessEpochFor(ws)`, for two reasons
+		// that both cost the feature its common path while it was RAM-based
+		// (codex round 2): a cold tab has no RAM epoch yet, because this fetch
+		// starts before `bootstrap` runs, so every fresh visit refused to cache;
+		// and RAM is not the value `hydrateCollections` compares against, so a
+		// RAM-based bracket could agree while the fence's own value moved.
+		const userId = localIndex.userIdFor(ws);
 		// Published for `ensureCollections` to join, tagged with the workspace
 		// so a joiner asking about A is never handed B's promise. Overwriting a
 		// previous tenant is correct rather than lossy: this assignment happens
@@ -169,7 +176,17 @@ export const collectionStore = {
 		inFlightWs = ws;
 		const load = (async () => {
 		try {
-			const result = await api.collections.list(ws);
+			// Issued TOGETHER, not sequentially. Awaiting the durable read first
+			// would delay the request by a round trip to IndexedDB and — worse —
+			// stop `loadCollections` issuing its fetch synchronously, which is
+			// what lets `ensureCollections` see an in-flight load and join it.
+			// Started in the same tick, the epoch read is "before the fetch" in
+			// the only sense that matters: a resync landing after this point is
+			// exactly what the comparison at write time is looking for.
+			const [result, epochBefore] = await Promise.all([
+				api.collections.list(ws),
+				readDurableEpoch(userId, ws),
+			]);
 			// Drop a stale response: a newer loadCollections (e.g. a workspace
 			// switch that resolved first) has superseded this one, so writing
 			// `collections`/`collectionsWorkspace` here would clobber the newer
@@ -186,13 +203,7 @@ export const collectionStore = {
 			// (TASK-2946). Fire-and-forget and best-effort, like every other
 			// durable write here; `persistCollections` itself decides whether the
 			// stamp it would write is honest.
-			void persistCollections(
-				localIndex.userIdFor(ws),
-				ws,
-				result,
-				epochBefore,
-				localIndex.accessEpochFor(ws),
-			);
+			void persistCollections(userId, ws, result, epochBefore);
 		} finally {
 			// Only the latest in-flight load owns the `loading` flag — an older
 			// load resolving late must not flip it off while the newer one runs.
