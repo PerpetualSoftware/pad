@@ -380,24 +380,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// exemption would have repeated it one round later, and my first
 		// draft did exactly that.
 		//
-		// Only when nothing will canonicalize the entry, i.e. no `fields`
-		// object — with one present, reshapeItemFields re-emits it
-		// canonically and equality is safe again.
+		// The paragraphs that stood here described WHEN a padded entry would
+		// be canonicalized — per-key rather than per-request (round 17), and
+		// not extended to a lone padded entry because that was "BUG-2870,
+		// ruled out of this PR's scope". Both are spent: this IS BUG-2870,
+		// nothing canonicalizes anything any more, and a padded entry is
+		// refused before it can reach a question about who covers its key.
 		//
-		// Deliberately NOT extended to a padded entry standing ALONE with no
-		// colliding param: that is BUG-2870, ruled out of this PR's scope,
-		// and it changes what every CLI caller receives. Here the caller has
-		// supplied one key twice and one of the forms is malformed, which is
-		// a narrower and locally-answerable question.
-		// WHETHER THIS KEY GETS CANONICALIZED IS A PER-KEY QUESTION, not a
-		// per-request one (codex round 17).
-		//
-		// Round 16 gated this on `!fieldsPresent`, reasoning that with a
-		// `fields` object present reshapeItemFields re-emits the entry
-		// canonically. True — for keys that are IN that object. With
-		// `fields:{}`, or a `fields` carrying some OTHER key, nothing
-		// canonicalizes `field:["status = done"]` and it reaches the doors
-		// padded exactly as it does with no `fields` at all.
+		// `canonicalized` itself survives below, where it decides whether the
+		// round-15 exemption applies — a different question that has nothing
+		// to do with padding.
 		//
 		// Third round running that I generalized a property verified on one
 		// subset to the whole: round 15 (a premise true of declared params,
@@ -692,11 +684,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 	// through its dedicated param (codex round 6).
 	dropFieldKeys := map[string]bool{}
 
-	// Generic keys whose array entry was a PADDED equal duplicate: the raw
-	// entry is dropped and re-emitted in canonical `key=value` form, so the
-	// doors that do not trim write the key the caller meant (codex round 7).
-	reEmitFields := map[string]string{}
-
 	// Deterministic processing (and error ordering) across runs.
 	keys := make([]string, 0, len(obj))
 	for k := range obj {
@@ -887,18 +874,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			kept = append(kept, e)
 		}
 		fieldEntries = kept
-	}
-	// Canonical re-emissions go on AFTER the filter, or the filter would
-	// remove them again — they carry the same key it just matched on.
-	if len(reEmitFields) > 0 {
-		reKeys := make([]string, 0, len(reEmitFields))
-		for k := range reEmitFields {
-			reKeys = append(reKeys, k)
-		}
-		sort.Strings(reKeys) // deterministic arg order across runs
-		for _, k := range reKeys {
-			fieldEntries = append(fieldEntries, k+"="+reEmitFields[k])
-		}
 	}
 	if len(fieldEntries) > 0 {
 		out["field"] = fieldEntries

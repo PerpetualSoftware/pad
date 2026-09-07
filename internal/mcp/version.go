@@ -854,13 +854,26 @@ const CmdhelpVersion = "0.1"
 //
 //     Bump rationale: a BEHAVIOR bump on the 0.29 / 0.27 / 0.26 / 0.16
 //     / 0.10 / 0.9 grounds. No tool name, action enum or parameter
-//     shape changed. THE ONLY BEHAVIOUR CHANGE IS /MCP REFUSING WHAT
-//     IT SILENTLY ACCEPTED: a padded key, which it used to trim and
-//     write to a different field than the one written, and a padded
-//     value, which it used to trim and type. A caller writing
-//     canonical entries sees no difference. No escape hatch, for 0.29's
-//     reason — there is no legitimate call this refuses, only calls
-//     whose two readings this door used to choose between silently.
+//     shape changed. EVERY door refuses a padded key now, and each was
+//     accepting it differently: /mcp trimmed it and wrote the declared
+//     field, the CLI stored a ghost field beside it. So both refuse
+//     something they used to accept — the phrase "only /mcp changes"
+//     was in an earlier draft of this entry and is wrong (codex round
+//     1). What is /mcp-ONLY is the value half: it used to trim a
+//     padded VALUE and type the result, and now carries it through to
+//     the same validation the CLI has always applied.
+//
+//     A caller writing canonical entries sees no difference at either
+//     door. A second, separately noticeable fix rides along:
+//     detectFieldConflicts swallowed parseFieldArray's refusal as "the
+//     caller owns this error surface", which held only while the sole
+//     possible error was a shape error — reshapeItemFields returns
+//     early with no `fields` object, so on the no-`fields` path four
+//     existing refusals were landing as successes.
+//
+//     No escape hatch, for 0.29's reason — there is no legitimate call
+//     this refuses, only calls whose two readings a door used to
+//     choose between silently.
 //
 //     0.29 — PLAN-2857 U1 / TASK-2878. A `relation` field value must
 //     now NAME A LIVE ITEM in the collection that field declares.
