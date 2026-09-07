@@ -268,16 +268,24 @@ function createSyncService() {
 			return;
 		}
 		syncing = true;
-		// The workspace this sync is FOR, captured at issue time. `setWorkspace`
-		// can move `wsSlug` while the request below is in flight, and a result
-		// stamped at delivery would name the workspace the user navigated TO
-		// rather than the one that was synced (codex round 8).
-		const syncedWs = wsSlug;
+		// The workspace a sync is FOR, captured at issue time — see the stamp
+		// below. Declared out here only so the catch can name it.
+		let syncedWs = wsSlug;
 		try {
 			do {
 				// Cleared BEFORE the request, so a signal arriving DURING it is
 				// recorded rather than swallowed by the pass that predates it.
 				pendingSync = false;
+				// PER PASS, not once for the loop (codex round 10). A deferred
+				// pass issues its OWN request, and `setWorkspace` may have moved
+				// `wsSlug` since the first one — so a single capture would run
+				// pass two against workspace B and label its result A. Each pass
+				// is a separate sync and stamps the workspace it actually ran
+				// for. `setWorkspace` can move `wsSlug` while the request below
+				// is in flight; a result stamped at DELIVERY would name the
+				// workspace the user navigated TO rather than the one synced
+				// (codex round 8).
+				syncedWs = wsSlug;
 				// SSE told us there's a gap — try incremental, fall back to full
 				const result = await doIncrementalOrFull(MAX_INCREMENTAL_MS);
 				if (result.type === 'incremental') {
