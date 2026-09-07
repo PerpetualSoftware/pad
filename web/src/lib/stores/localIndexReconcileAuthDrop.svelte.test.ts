@@ -94,6 +94,59 @@ describe('the reconcile’s auth-error reaction', () => {
 		expect(localIndex.accessRevokedFor(ws)).toBe(true);
 	});
 
+	it('BOOTSTRAP’s cold path: a 403 on /items-index still records the revocation', async () => {
+		// The likeliest path of all — the first load after a revocation — and the
+		// one the round-1 fix did NOT cover. Both of bootstrap's catches checked
+		// `isStale()` BEFORE the auth branch, and the global handler's reset is
+		// exactly what makes `isStale()` true, so the revocation was swallowed
+		// into a cold state with no banner. Found by review round 2.
+		vi.spyOn(api.items, 'listIndex').mockImplementation(async () => {
+			localIndex.reset(ws);
+			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });
+		});
+
+		await expect(localIndex.bootstrap(ws, { userId: null })).rejects.toThrow();
+
+		expect(localIndex.accessRevokedFor(ws)).toBe(true);
+	});
+
+	it('BOOTSTRAP’s reconcile loop: a 403 mid-catch-up still records the revocation', async () => {
+		// This must drive BOOTSTRAP, not `reconcile` — they have separate
+		// catches, and an earlier draft of this test called `reconcile` while
+		// claiming to cover bootstrap's. A mutant restoring the old ordering in
+		// bootstrap's inner catch SURVIVED it, which is how the mislabelling
+		// surfaced.
+		await boot();
+
+		// Reach bootstrap's REENTRY path, the one that runs the reconcile loop:
+		// an outstanding ask makes `bootstrap` proceed instead of no-opping, and
+		// a reentry skips the hydrate and goes straight to the loop.
+		vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '10',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-2',
+		});
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '10',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-2',
+		});
+		await localIndex.ensureAccessScope(ws, 'epoch-2');
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+
+		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
+			localIndex.reset(ws);
+			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });
+		});
+
+		await expect(localIndex.bootstrap(ws, { userId: null })).rejects.toThrow();
+
+		expect(localIndex.accessRevokedFor(ws)).toBe(true);
+	});
+
 	it('a fresh bootstrap clears the revoked marker, so the Retry CTA works', async () => {
 		await boot();
 		vi.spyOn(api.items, 'changes').mockImplementation(async () => {

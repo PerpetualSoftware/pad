@@ -1168,22 +1168,22 @@ export const localIndex = {
 						await reconcileWorkspace(ws, state, isStale);
 						if (isStale()) return;
 					} catch (err) {
-						if (isStale()) return;
-						// 401 (unauthorized — session expired) and 403
-						// (forbidden — access revoked) both mean the
-						// cached rows are no longer ours to display.
-						// Drop the cache and re-throw so the caller's
-						// redirect / purge handler can react. Other
-						// errors stay transient — cache stands and the
-						// next bootstrap() call retries the reconcile
-						// because `pendingResync` is still true.
+						// THE AUTH BRANCH GOES BEFORE THE STALENESS BAIL, and the
+						// order is the whole fix (codex round 2 P1). On a 403 the
+						// API client's global handler has ALREADY called
+						// `reset(ws)`, which bumps this state's generation — so
+						// `isStale()` is true precisely in the case the branch
+						// below exists for, and checking it first returned before
+						// recording the revocation. The staleness guard stops
+						// stale WRITES; `dropCacheForAuthError`'s writes to a
+						// detached state are inert, and the part that matters is
+						// the module-level marker, which is not a write to this
+						// state at all.
 						if (isAuthError(err)) {
-							// The whole reaction lives in
-							// `dropCacheForAuthError` now, so the
-							// route door gets it too (TASK-2921).
 							dropCacheForAuthError(ws, state);
 							throw err;
 						}
+						if (isStale()) return;
 						// Transient network failure. Cache stands and
 						// state stays 'ready' so the UI keeps working.
 						// `pendingResync` remains true so the next
@@ -1265,6 +1265,16 @@ export const localIndex = {
 					);
 				}
 			} catch (err) {
+				// Same order, same reason as the reconcile catch above (codex
+				// round 2 P1): a 403 on the COLD `/items-index` — the first load
+				// after a revocation, and the likeliest path of all — is reset by
+				// the global handler before it reaches here, which makes
+				// `isStale()` true and used to swallow it into a cold state with
+				// no banner.
+				if (isAuthError(err)) {
+					dropCacheForAuthError(ws, state);
+					throw err;
+				}
 				if (isStale()) return;
 				state.bootstrapState = 'error';
 				throw err;
