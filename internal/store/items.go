@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/diff"
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -854,11 +855,16 @@ func parseItemRef(s string) (string, int, bool) {
 		return "", 0, false
 	}
 	prefix := s[:idx]
-	// Prefix must be all uppercase letters
-	for _, c := range prefix {
-		if c < 'A' || c > 'Z' {
-			return "", 0, false
-		}
+	// ONE definition of a valid prefix, shared with every door that can put
+	// one on a collection (BUG-2943). This used to require A-Z and nothing
+	// else, while the generator admitted any first byte — so a collection
+	// named "TEMP Rook A 2870" got the prefix "TRA2" and every item in it
+	// printed an issue ID this parser then refused, falling through to a slug
+	// lookup that cannot match one. Widening here rather than rewriting those
+	// prefixes is what makes the fix migration-free: an existing "AB1"
+	// resolves the moment this ships, and nobody's stored identifier changes.
+	if !collections.IsValidPrefix(prefix) {
+		return "", 0, false
 	}
 	numStr := s[idx+1:]
 	num := 0

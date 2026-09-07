@@ -111,6 +111,42 @@ func DerivePrefix(name string) string {
 	return prefix.String()
 }
 
+// IsValidPrefix reports whether s is a well-formed collection prefix: an
+// uppercase ASCII letter followed by uppercase letters or digits.
+//
+// ONE DEFINITION, used by every door that can put a prefix on a collection
+// (derive, explicit create, update, import) AND by the ref parser that has to
+// resolve IDs built from it (internal/store parseItemRef). BUG-2943 happened
+// because there were two implicit definitions — the generator admitted any
+// first byte, the parser accepted only A-Z — and the disagreement surfaced at
+// READ time, on an identifier the product itself had minted and printed.
+// Anything that decides what a prefix may contain calls this, or the two
+// definitions start drifting again.
+//
+// Digits are permitted after the first character, which is what lets an
+// existing collection carrying a prefix like "AB1" resolve its items the
+// moment this ships — no migration, no rewriting an identifier a user's other
+// records may reference. The first character must be a LETTER so a ref can
+// never begin with a digit, keeping `PREFIX-NUMBER` unambiguous to read.
+func IsValidPrefix(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			// always fine
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false // a prefix may not START with a digit
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // keepASCIILetters uppercases s and drops every character that is not A-Z.
 // ASCII-only on purpose: the prefix has to satisfy parseItemRef's A-Z test,
 // and there is no faithful mapping from a non-Latin letter into that range.

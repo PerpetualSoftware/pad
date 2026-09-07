@@ -59,7 +59,17 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	description := input.Description
 
 	prefix := input.Prefix
-	if prefix == "" {
+	if prefix != "" {
+		// AN EXPLICIT PREFIX IS VALIDATED (BUG-2943). The caller typed this
+		// one, so a refusal is actionable — unlike the derived path, where
+		// nobody chose the characters. Without this the door that mints most
+		// collections was the only one enforcing the grammar, and
+		// `--prefix "AB!"` still produced items whose printed issue ID no
+		// surface could resolve.
+		if !collections.IsValidPrefix(prefix) {
+			return nil, fmt.Errorf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", prefix)
+		}
+	} else {
 		prefix = collections.DerivePrefix(input.Name)
 	}
 	if prefix == "" {
@@ -472,6 +482,12 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 	}
 	if input.Prefix != nil {
+		// Same grammar as create (BUG-2943). An update is the door a user
+		// reaches for to FIX a bad prefix, so it has to reject a bad
+		// replacement rather than swap one unresolvable id-space for another.
+		if !collections.IsValidPrefix(*input.Prefix) {
+			return nil, fmt.Errorf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", *input.Prefix)
+		}
 		sets = append(sets, "prefix = ?")
 		args = append(args, *input.Prefix)
 	}
