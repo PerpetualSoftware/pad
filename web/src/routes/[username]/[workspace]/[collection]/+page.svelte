@@ -1090,10 +1090,16 @@
 	async function deltaSync(ws: string): Promise<boolean> {
 		try {
 			for (let i = 0; i < 50; i++) {
-				const epochBefore = localIndex.scopeEpochFor(ws);
+				// The overlap token, not the scope epoch: this loop needs to know
+				// whether a resync overlapped its request, and `scopeEpochFor` is
+				// the fence for optimistic WRITES and must not carry that meaning
+				// (TASK-2909 review round 3). Captured HERE, when the request is
+				// issued — the staleness it guards against is decided then, not
+				// when the response is read.
+				const tokenBefore = localIndex.reconcileTokenFor(ws);
 				const since = localIndex.cursorFor(ws);
 				const delta = await api.items.changes(ws, since);
-				if (localIndex.scopeEpochFor(ws) !== epochBefore) {
+				if (localIndex.reconcileTokenFor(ws) !== tokenBefore) {
 					// A concurrent resync installed a new snapshot + pinned
 					// cursor while this request was in flight; the response
 					// predates it. Re-poll from the new cursor rather than
@@ -1131,7 +1137,7 @@
 					// epoch above — so a differently-scoped resync that
 					// lands concurrently after this point isn't silently
 					// stomped (Codex review round 5).
-					localIndex.markCaughtUp(ws, epochBefore);
+					localIndex.markCaughtUp(ws, tokenBefore);
 					return true;
 				}
 				localIndex.applyDelta(
@@ -1142,7 +1148,7 @@
 				);
 				if (delta.cursor === since) {
 					deltaSyncFailed = false;
-					localIndex.markCaughtUp(ws, epochBefore);
+					localIndex.markCaughtUp(ws, tokenBefore);
 					return true;
 				}
 			}

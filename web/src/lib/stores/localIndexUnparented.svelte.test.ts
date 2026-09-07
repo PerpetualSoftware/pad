@@ -233,7 +233,7 @@ describe('localIndex.markCaughtUp', () => {
 		await localIndex.ensureProjectionScope(ws, false);
 		expect(localIndex.pendingResyncFor(ws)).toBe(true);
 
-		localIndex.markCaughtUp(ws, localIndex.scopeEpochFor(ws));
+		localIndex.markCaughtUp(ws, localIndex.reconcileTokenFor(ws));
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 
@@ -245,7 +245,10 @@ describe('localIndex.markCaughtUp', () => {
 	it('does NOT clear a pending resync when a newer resync has landed under a different epoch', async () => {
 		localIndex.upsert(ws, row('scoped', 1, true));
 		localIndex.applyDelta(ws, [], '1', true);
-		const staleEpoch = localIndex.scopeEpochFor(ws);
+		// The RECONCILE TOKEN, which is what `markCaughtUp` compares since
+		// TASK-2909 — `scopeEpochFor` kept its own meaning as the fence for
+		// optimistic writes.
+		const staleEpoch = localIndex.reconcileTokenFor(ws);
 
 		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
 			items: [row('scoped', 1)],
@@ -255,7 +258,7 @@ describe('localIndex.markCaughtUp', () => {
 		});
 		await localIndex.ensureProjectionScope(ws, false);
 		expect(localIndex.pendingResyncFor(ws)).toBe(true);
-		expect(localIndex.scopeEpochFor(ws)).toBeGreaterThan(staleEpoch);
+		expect(localIndex.reconcileTokenFor(ws)).toBeGreaterThan(staleEpoch);
 
 		// A caller that captured the epoch BEFORE this resync landed tries
 		// to confirm catch-up — its confirmation predates the newer resync

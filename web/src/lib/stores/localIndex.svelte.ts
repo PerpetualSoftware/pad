@@ -130,11 +130,25 @@ class WorkspaceState {
 	// on that evidence is the silent adopt this change exists to prevent — see
 	// `ensureAccessScope`.
 	cacheRead = $state(false);
-	// Did the last projection/access resync's authoritative snapshot actually
-	// REACH the durable cache? (TASK-2906, review round 2.) `persistReplace` can
-	// decline — its cursor lost a race to another tab, or storage failed — and
-	// when it does the durable rows still describe the OLD scope while RAM has
-	// moved on. `ensureAccessScope` must not then stamp the new epoch onto disk
+	// Does the durable cache reflect the MOST RECENT authoritative snapshot this
+	// session installed in RAM? (TASK-2906 round 2; widened by TASK-2909.)
+	//
+	// Read it as a statement about the two stores AGREEING, not as the return
+	// value of the last `persistReplace` call. `resyncProjectionScope` clears it
+	// the moment it installs a snapshot in RAM and sets it again from the
+	// persist result, so it is false for the whole window in between.
+	//
+	// TWO CONSUMERS, AND `markCaughtUp` IS NOT ONE OF THEM: `durableEpochFor`,
+	// which stops vouching for the epoch while this is false, and
+	// `ensureAccessScope`, which skips its durable stamp on the same evidence.
+	// The ASK is deliberately not conditioned on it — see `markCaughtUp` for why
+	// requiring disk there is a wedge rather than a guard. A resync that never
+	// installs anything (the fetch threw, or the generation changed before the
+	// snapshot was applied) leaves this alone, because RAM and IDB still agree.
+	//
+	// `persistReplace` can decline — its cursor lost a race to another tab, or
+	// storage failed — and when it does the durable rows still describe the OLD
+	// scope while RAM has moved on. `ensureAccessScope` must not then stamp the new epoch onto disk
 	// on that resync's behalf: an epoch is a claim about the rowset it was
 	// fetched with, and adopting one over a rowset that was never replaced makes
 	// the cache agree with the server about a scope it does not hold — the
@@ -142,13 +156,49 @@ class WorkspaceState {
 	// door. Starts true: with no resync yet there is no unconfirmed snapshot.
 	durableSnapshotCommitted = $state(true);
 
-	// `scopeEpoch` bumps every time a projection resync installs a new
-	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
-	// it before each `/items-changes` request and refuse to treat a response
-	// that raced a concurrent resync as caught-up — otherwise a stale in-flight
-	// delta could clear `pendingResync` without validating the pinned cursor
-	// (Codex P2 round 8). Not persisted; a session-local ordering token.
+	// `scopeEpoch` bumps every time a projection resync STARTS installing a new
+	// authoritative snapshot (i.e. the scope changed). Its consumer is the
+	// optimistic-write fence in `upsert`: a mutation captures it when the
+	// request is issued, and a write authorised under a superseded scope is
+	// refused on return. Not persisted; a session-local ordering token.
+	//
+	// RECONCILE LOOPS DO NOT USE THIS — they use `resyncSeq` below (TASK-2909).
+	// They did until then, which is what made a settle bump here look free: it
+	// would have answered their question and silently broken this one, refusing
+	// writes issued after the new snapshot was already installed.
 	scopeEpoch = 0;
+
+	// `resyncSeq` bumps when a resync SETTLES, and exists so a reconcile loop can
+	// ask "did a resync overlap my request", which `scopeEpoch` cannot answer
+	// (TASK-2909, review rounds 2 and 3).
+	//
+	// Settle only — an entry bump was written first and is redundant, which a
+	// mutation run showed by surviving its removal. A request that started
+	// before the resync mismatches after the settle bump; one that started
+	// during it is refused by the in-flight check while the resync runs and by
+	// the same settle bump afterwards. A second bump would be a second
+	// definition of "a resync happened" with nothing extra to say.
+	//
+	// KNOWN LIMIT, older than this counter: it is per-state and restarts at
+	// zero, so a `reset()` between a loop's capture and its response gives the
+	// REPLACEMENT state a matching token by coincidence. `resetGenerationFor`
+	// is the value that survives a reset and the loops do not yet capture it.
+	// Filed as IDEA-2913 rather than fixed here — the scope epoch this replaced
+	// had the same gap, so it is not this unit's to close.
+	//
+	// A separate counter rather than bumping `scopeEpoch` twice, which was the
+	// first shape and was wrong: `scopeEpoch` is ALSO the fence `upsert` uses to
+	// reject an optimistic write authorised under a superseded scope, and a
+	// settle bump made it reject writes issued AFTER the new snapshot was
+	// already installed — a user's create returning successfully and never
+	// reaching the store. One counter for two questions looked like thrift and
+	// was an overload; the questions differ, so the counters do.
+	//
+	// Reconcile loops capture this at the top of each iteration and hand it back
+	// when they report catch-up. Any capture taken during a resync mismatches
+	// afterwards, so a response computed against the pre-snapshot cursor cannot
+	// clear the ask however late it arrives.
+	resyncSeq = 0;
 
 	// `fencedIds` holds item ids the most recent resync DROPPED (absent from the
 	// authoritative snapshot — hidden by a downgrade or deleted). `upsert`
@@ -338,18 +388,55 @@ function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
  * the joined-resync stamp was taught to skip, one door along. Skipping is not
  * available here, because the delta's rows and cursor must still land.
  *
- * So the delta writes NULL instead, which is not a gap but the accurate
- * statement: a null baseline over a populated cache means "cannot know what this
- * was authorised for", and `ensureAccessScope` already reads it as a resync. It
- * clears itself — the next `persistReplace` that commits records the real epoch
- * and flips the flag back.
+ * So the delta DECLINES TO VOUCH: it passes `undefined`, which `persistDelta`
+ * reads as "carry the stored epoch" (TASK-2909 review round 1 P2 — an explicit
+ * null, which this shipped as, could commit after a replace and clobber the
+ * epoch that replace had just recorded). The carried value keeps the durable
+ * epoch agreeing with the durable ROWS, which is what makes the SERVER's next
+ * epoch disagree with it and trigger a resync. It clears itself — the next
+ * `persistReplace` that commits records the real epoch and flips the flag back.
+ *
+ * The repair is a LATER one, not an in-session one: it fires on the next
+ * hydrate, or on the next response whose epoch disagrees. Nothing here repairs
+ * the durable cache at the moment the replace is refused.
  *
  * One function rather than the expression written at each `persistDelta` call,
  * because a rule applied at one door and not its sibling is how this unit's
  * previous two rounds each went.
  */
-function durableEpochFor(state: WorkspaceState): string | null {
-	return state.durableSnapshotCommitted ? state.accessEpoch : null;
+/**
+ * Clear the "this workspace still owes a replay" ask, if it may be cleared
+ * (TASK-2909).
+ *
+ * ONE definition, two callers: the public `markCaughtUp` (used by reconcile
+ * loops that own their own catch-up) and `bootstrap`'s internal loop. They used
+ * to hold the decision separately, so a condition added to one did not reach
+ * the other.
+ *
+ * Both doors pass the token their own loop captured at request time; this helper
+ * owns the whole decision, so a condition added here reaches both.
+ */
+function clearAskIfSettled(ws: string, state: WorkspaceState, token: number): void {
+	// The response was computed against the cursor as it stood when the request
+	// started. A resync that overlapped it pinned the cursor since, so the
+	// verdict is stale — however late it arrives, and whether or not anything is
+	// still in flight now.
+	if (state.resyncSeq !== token) return;
+	// ...and the still-running case, which the token alone cannot catch: the
+	// counter only moves when a resync SETTLES, so a response that arrives while
+	// one is mid-flight still carries a matching token.
+	if (projectionResyncs.has(ws)) return;
+	state.pendingResync = false;
+}
+
+function durableEpochFor(state: WorkspaceState): string | null | undefined {
+	// `undefined` is CARRY THE STORED EPOCH, not "no epoch" — see persistDelta's
+	// param doc. Writing an explicit null here (TASK-2906's first shape) is
+	// unsafe during the window between a resync installing its snapshot in RAM
+	// and `persistReplace` resolving: a delta committing after that replace
+	// would clobber the epoch it had just correctly recorded, and the next boot
+	// would pay a full snapshot to rediscover it (review round 1 P2).
+	return state.durableSnapshotCommitted ? state.accessEpoch : undefined;
 }
 
 async function resyncProjectionScope(
@@ -485,6 +572,16 @@ async function resyncProjectionScope(
 			state.items.set(next.id, next);
 		}
 		state.cursor = resp.cursor;
+		// FROM HERE, RAM AND DISK DISAGREE UNTIL `persistReplace` SAYS OTHERWISE
+		// (TASK-2909). Every exit below this line — the generation guard, a
+		// refused replace, or simply the time the transaction takes — leaves the
+		// durable cache describing the PREVIOUS snapshot, and both readers of
+		// this flag need to know that: a delta must not stamp RAM's epoch onto
+		// rows nobody replaced (`durableEpochFor`), and a joined caller must not
+		// stamp it on the resync's behalf (`ensureAccessScope`). Setting it only
+		// from the persist RESULT left it carrying the previous resync's verdict
+		// across this whole window — which the persist-await test pins.
+		state.durableSnapshotCommitted = false;
 		state.bootstrapState = 'ready';
 		// Server rows carry the live collection slug — a rename recorded
 		// pre-snapshot is already reflected, and re-applying it later could
@@ -534,6 +631,25 @@ async function resyncProjectionScope(
 		await promise;
 	} finally {
 		if (projectionResyncs.get(ws) === promise) projectionResyncs.delete(ws);
+		// BUMP THE OVERLAP COUNTER ON SETTLE (TASK-2909, review rounds 2-3).
+		//
+		// This is the ONLY bump. A reconcile loop captures the counter when its
+		// `/items-changes` request starts, so bumping here makes every capture
+		// taken before or during this resync mismatch once it finishes — which
+		// is exactly the set of responses whose verdict the pinned cursor has
+		// overtaken. The remaining case, a response that returns while this
+		// resync is still running, has not reached this line yet and is refused
+		// by `clearAskIfSettled`'s in-flight check instead.
+		//
+		// An entry bump was written first and removed: a mutation run showed it
+		// survived removal, and reading it again there was nothing it could say
+		// that these two do not already say between them. A second bump would
+		// have been a second definition of "a resync happened" to keep in step
+		// with the first.
+		//
+		// Only the STARTER reaches this: joined callers return the pending
+		// promise above and never enter the try.
+		state.resyncSeq += 1;
 	}
 }
 
@@ -732,12 +848,16 @@ export const localIndex = {
 						// advance, give up after 50 and let the user's
 						// next visit retry.
 						let caughtUp = false;
+						// Captured per ITERATION but declared out here, because
+						// the clear below belongs to whichever iteration
+						// concluded catch-up (TASK-2909 review round 3).
+						let reconcileToken = state.resyncSeq;
 						for (let i = 0; i < 50; i++) {
-							const epochBefore = state.scopeEpoch;
+							reconcileToken = state.resyncSeq;
 							const since = state.cursor;
 							const delta = await api.items.changes(ws, since);
 							if (isStale()) return;
-							if (state.scopeEpoch !== epochBefore) {
+							if (state.resyncSeq !== reconcileToken) {
 								// A concurrent resync (another caller) installed a
 								// new snapshot + pinned cursor while this request
 								// was in flight. This response predates it, so it
@@ -808,7 +928,14 @@ export const localIndex = {
 						// rows; we don't expect to hit this in practice
 						// but it's the difference between "stale
 						// forever" and "next visit retries".
-						if (caughtUp) state.pendingResync = false;
+						// Through the same guard as `markCaughtUp`, not a
+						// second copy of the decision (TASK-2909 review round
+						// 1). This loop cleared the flag directly, which meant
+						// every condition added to the public entry point
+						// silently did not apply here — the fourth time in
+						// PLAN-2903 that a rule landed at one door and not its
+						// sibling.
+						if (caughtUp) clearAskIfSettled(ws, state, reconcileToken);
 					} catch (err) {
 						if (isStale()) return;
 						// 401 (unauthorized — session expired) and 403
@@ -1557,8 +1684,10 @@ export const localIndex = {
 	 * `since`) — mirroring exactly what `bootstrap()`'s loop already does
 	 * for the path it owns.
 	 *
-	 * `epoch` MUST be the `scopeEpochFor(ws)` the caller captured at (or
-	 * reconfirmed immediately before) the point it decided "caught up" —
+	 * The argument MUST be the `reconcileTokenFor(ws)` the caller captured when
+	 * it ISSUED the request it is reporting on — not one read at (or
+	 * reconfirmed immediately before) the point it decided "caught up", because
+	 * the staleness this guards against is decided at request time (TASK-2909) —
 	 * the same value already threaded through these reconcile loops as
 	 * `epochBefore`. SSE, periodic sync, and `bootstrap()` can all trigger
 	 * reconciliations concurrently; without this check, one caller's stale
@@ -1573,21 +1702,70 @@ export const localIndex = {
 	 *
 	 * No-op for an unhydrated workspace.
 	 */
-	markCaughtUp(ws: string, epoch: number): void {
+	markCaughtUp(ws: string, token: number): void {
 		const state = workspaces.get(ws);
 		if (!state) return;
-		if (state.scopeEpoch !== epoch) return;
-		state.pendingResync = false;
+		// WHAT THE TOKEN MUST BE, AND WHAT IT IS NOT (TASK-2909).
+		//
+		// `token` is the caller's `reconcileTokenFor(ws)` captured when it
+		// ISSUED the request it is now reporting on. Not a scope epoch — those
+		// fence optimistic WRITES and say nothing about resync overlap — and not
+		// a value read at the moment of reporting, because the staleness this
+		// guards against is decided at request time, not at clear time.
+		//
+		// `clearAskIfSettled` compares it against `resyncSeq`, which bumps when
+		// a resync SETTLES, and additionally refuses while one is outstanding.
+		// Between them they cover both ways a response can be overtaken: one
+		// that returns while the resync is still running (the counter has not
+		// moved yet — the in-flight check catches it) and one that returns after
+		// it settled (nothing is in flight — the bumped counter catches it).
+		// Both were computed against the PRE-snapshot cursor, so once the resync
+		// pins the cursor their verdict is not merely early, it is stale. That is
+		// also why the refusal is not deferred and re-applied: applying it later
+		// would apply a verdict the snapshot invalidated. The caller's next
+		// trigger re-polls from the pinned cursor and clears honestly.
+		//
+		// DISK IS NOT A CONDITION, deliberately (review round 1). An earlier
+		// version also refused while `durableSnapshotCommitted` was false. That
+		// buys no repair and costs a wedge: `pendingResyncFor` gates a
+		// destructive decision (TASK-2099 / PLAN-2095 DR-2), and a persistently
+		// refused replace or a failing IndexedDB `open()` would make the flag
+		// un-clearable for the session. The refused case is repaired through a
+		// channel that does not touch this flag — `durableEpochFor` stops
+		// vouching for the epoch, so the durable baseline stops agreeing with
+		// the server and the next hydrate resyncs. PLAN-2903 item 3's "nothing
+		// retries" was true when written and stopped being true at TASK-2906;
+		// the premise correction is on that plan's trail.
+		clearAskIfSettled(ws, state, token);
 	},
 
 	/**
-	 * Current projection-scope epoch — bumped each time a resync installs a
-	 * new authoritative snapshot. A reconcile loop captures it before an
-	 * `/items-changes` request and, if it differs when the request returns, a
-	 * concurrent resync landed: the response predates the new pinned cursor and
-	 * must not be treated as a clean catch-up (Codex P2 round 8). Returns 0 for
-	 * an unhydrated workspace.
+	 * Current projection-scope epoch — bumped when a resync STARTS installing a
+	 * new authoritative snapshot. Captured by a caller issuing an optimistic
+	 * MUTATION and handed back to `upsert`, which refuses a write authorised
+	 * under a superseded scope. Returns 0 for an unhydrated workspace.
+	 *
+	 * Reconcile loops want `reconcileTokenFor` instead (TASK-2909): this value
+	 * cannot say whether a resync overlapped a request, and giving it that
+	 * second meaning broke the write fence.
 	 */
+	/**
+	 * The token a reconcile loop captures when it starts an `/items-changes`
+	 * request and hands back to `markCaughtUp` (TASK-2909).
+	 *
+	 * Distinct from `scopeEpochFor`, which answers "was my optimistic write
+	 * authorised under the current scope" and must NOT change when a resync
+	 * merely finishes persisting — a settle bump there rejected user writes
+	 * issued after the new snapshot was already installed (review round 3).
+	 * This one changes when a resync SETTLES, which is what makes a capture
+	 * taken before or during that resync detectably stale afterwards; the
+	 * mid-flight case is covered by the in-flight check in `clearAskIfSettled`
+	 * rather than by this counter. Returns 0 for an unhydrated workspace.
+	 */
+	reconcileTokenFor(ws: string): number {
+		return workspaces.get(ws)?.resyncSeq ?? 0;
+	},
+
 	scopeEpochFor(ws: string): number {
 		return workspaces.get(ws)?.scopeEpoch ?? 0;
 	},
@@ -1607,8 +1785,13 @@ export const localIndex = {
 	 * workspace — capturing this before the request and requiring it unchanged
 	 * afterwards is what distinguishes "still the state I was authorized
 	 * against" from "a fresh state that has coincidentally reached the same
-	 * numbers". `scopeEpochFor` answers the resync question and this answers
-	 * the identity one; a write-back needs both (TASK-2877).
+	 * numbers". `reconcileTokenFor` answers the resync-overlap question and this
+	 * answers the identity one; a write-back needs both (TASK-2877). Still true
+	 * after TASK-2909, and sharper: a reset between a reconcile loop's capture
+	 * and its response gives the REPLACEMENT state a token starting from zero,
+	 * so the token alone cannot tell a stale response from a fresh one across a
+	 * reset. That gap is older than the token (the scope epoch it replaced had
+	 * it too) and is filed rather than fixed here.
 	 */
 	resetGenerationFor(ws: string): number {
 		return resetGenerations.get(ws) ?? 0;

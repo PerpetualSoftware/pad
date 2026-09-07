@@ -382,14 +382,21 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(args[5]).toBe('e1');
 	});
 
-	it('hands persistDelta a NULL baseline while a refused snapshot is unrepaired', async () => {
+	it('hands persistDelta the CARRY-OVER marker while a refused snapshot is unrepaired', async () => {
 		// TASK-2906 round 3. Skipping the joined stamp is not enough on its own:
 		// RAM has adopted the new epoch, and the very next delta advances the
-		// cursor and carries that epoch onto durable rows the refused snapshot
-		// never replaced. The delta cannot be skipped — its rows and cursor must
-		// land — so it writes NULL, which is the accurate claim ("cannot know
-		// what this was authorised for") and the one `ensureAccessScope`
-		// already resyncs on.
+		// cursor and would carry that epoch onto durable rows the refused
+		// snapshot never replaced. The delta cannot be skipped — its rows and
+		// cursor must land — so it declines to vouch for the epoch at all.
+		//
+		// It passes `undefined` (CARRY THE STORED EPOCH) rather than the
+		// explicit `null` this shipped as: the caller also cannot vouch during
+		// the window between a resync installing its snapshot and
+		// `persistReplace` resolving, and a null committing after that replace
+		// would clobber the epoch it had just recorded (TASK-2909 review round 1
+		// P2). Carrying the stored value keeps the epoch agreeing with the ROWS
+		// it describes, which is what makes the server's next epoch disagree and
+		// trigger the resync.
 		persistence.persistReplace.mockResolvedValueOnce(
 			false as unknown as Awaited<ReturnType<typeof persistence.persistReplace>>,
 		);
@@ -426,7 +433,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		// RAM keeps 'e2' — this session genuinely has the new scope. Only the
 		// DURABLE claim is withheld, and withholding it is what makes the next
 		// hydrate resync instead of adopting rows nobody replaced.
-		expect(args[5]).toBeNull();
+		expect(args[5]).toBeUndefined();
 		expect(localIndex.accessEpochFor(ws)).toBe('e2');
 	});
 

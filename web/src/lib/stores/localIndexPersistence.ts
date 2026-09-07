@@ -265,16 +265,19 @@ async function raiseTombstone(
  * is already covered by the claim the stored cursor makes. The batch is
  * superseded, not refused, so no caller is owed a signal or a resync.
  */
-async function cursorIsBehind(
-	metaStore: { get(key: string): Promise<unknown> },
-	cursor: string,
-): Promise<boolean> {
-	const stored = (await metaStore.get('sync')) as MetaRow | undefined;
+function cursorIsBehind(stored: MetaRow | undefined, cursor: string): boolean {
 	// No stored cursor: nothing to be behind. Equal is not behind — the rows are
 	// a restatement at the same position, and refusing one would drop rows a
 	// cold snapshot may hold that the other writer's cache does not.
 	if (!stored) return false;
 	return compareCursors(cursor, stored.cursor) < 0;
+}
+
+/** Read the `sync` meta row, or undefined when this cache has never synced. */
+async function readSyncRow(metaStore: {
+	get(key: string): Promise<unknown>;
+}): Promise<MetaRow | undefined> {
+	return (await metaStore.get('sync')) as MetaRow | undefined;
 }
 
 /**
@@ -617,7 +620,28 @@ export async function persistDelta(
 	rows: ItemIndexRow[],
 	cursor: string,
 	includesUnparentedMetadata: boolean,
-	accessEpoch: string | null,
+	/**
+	 * The scope this batch was fetched under, or `undefined` for CARRY THE
+	 * STORED EPOCH (TASK-2909, review round 1 P2).
+	 *
+	 * TASK-2906 had the caller write an explicit `null` — "cannot know what this
+	 * was authorised for" — whenever it could not vouch for the epoch, which is
+	 * true at the instant the delta is built but is not safe to WRITE: the
+	 * caller cannot vouch during the whole window between a resync installing
+	 * its snapshot in RAM and `persistReplace` resolving, and a delta whose
+	 * transaction commits after that replace would overwrite the epoch the
+	 * replace had just correctly recorded. The next boot then reads a null
+	 * baseline over a populated cache and pays a full snapshot to rediscover
+	 * what this session already knew.
+	 *
+	 * Carrying the stored value instead is both safer and more accurate. If the
+	 * replace committed, its epoch survives. If it was refused, the stored
+	 * epoch still describes the stored ROWS — the two agree, which is the one
+	 * property the cache needs — and it is the SERVER's next epoch that
+	 * disagrees with it and triggers the resync. Either way the repair happens;
+	 * this way it does not also fire when nothing changed.
+	 */
+	accessEpoch: string | null | undefined,
 	removeIds: string[] = [],
 ): Promise<void> {
 	if (!isSupported()) return;
@@ -628,11 +652,12 @@ export async function persistDelta(
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
 		const metaStore = tx.objectStore('meta');
-		// CURSOR ORDERING GATE (TASK-2906). Read the stored cursor BEFORE any
+		// CURSOR ORDERING GATE (TASK-2906). Read the stored row BEFORE any
 		// write is issued in this transaction, so a behind batch lands nothing
 		// at all — see cursorIsBehind for why the whole batch goes, not just
-		// the cursor.
-		if (await cursorIsBehind(metaStore, cursor)) {
+		// the cursor. The same read supplies the epoch carry-over below.
+		const storedMeta = await readSyncRow(metaStore);
+		if (cursorIsBehind(storedMeta, cursor)) {
 			await tx.done.catch(() => undefined);
 			return;
 		}
@@ -666,7 +691,8 @@ export async function persistDelta(
 				cursor,
 				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
 				includesUnparentedMetadata,
-				accessEpoch,
+				// `undefined` means CARRY THE STORED EPOCH — see the param doc.
+				accessEpoch: accessEpoch === undefined ? (storedMeta?.accessEpoch ?? null) : accessEpoch,
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;
@@ -732,7 +758,7 @@ export async function persistReplace(
 		// TASK-2906 trail: it adds no exposure the cache did not already carry
 		// one moment earlier, and refusing the epoch ALONG WITH the rows is what
 		// keeps the repair alive — see cursorIsBehind's scope paragraph.
-		if (await cursorIsBehind(metaStore, cursor)) {
+		if (cursorIsBehind(await readSyncRow(metaStore), cursor)) {
 			await tx.done.catch(() => undefined);
 			return false;
 		}
