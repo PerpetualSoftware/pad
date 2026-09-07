@@ -115,6 +115,43 @@ describe('TASK-2200 — workspace identity recovers after a failed cold load', (
 		expect(workspaceStore.current?.slug).toBe('beta');
 	});
 
+	it('an OLDER overlapping load settling first does not clear the newer one’s join slot', async () => {
+		const { api, workspaceStore } = await load();
+
+		const settle: { resolve: (v: Workspace[]) => void; reject: (e: Error) => void }[] = [];
+		const list = vi
+			.spyOn(api.workspaces, 'list')
+			.mockImplementation(
+				() => new Promise<Workspace[]>((resolve, reject) => settle.push({ resolve, reject })),
+			);
+		vi.spyOn(api.workspaces, 'me').mockResolvedValue({} as never);
+
+		const older = workspaceStore.loadAll();
+		const newer = workspaceStore.loadAll();
+		expect(list).toHaveBeenCalledTimes(2);
+
+		// The OLDER request settles first, and it FAILS — which is what keeps
+		// `workspaces` empty so the recovery below has something to recover.
+		// The first draft of this leg resolved it successfully, which populated
+		// the array, sent the recovery straight past its list branch, and made
+		// the assertion pass against unconditional cleanup too: a fixture that
+		// could not fail, caught by running it against the mutant.
+		settle[0].reject(new Error('older attempt failed'));
+		await older.catch(() => undefined);
+
+		const recovering = workspaceStore.recoverIfMissing('alpha');
+
+		// Still two. Unconditional cleanup would have let the older failure
+		// clear the slot the NEWER load still owns (codex round 5), and this
+		// would be a third request instead of a join — the race round 4 closed,
+		// reintroduced by its own cleanup.
+		expect(list).toHaveBeenCalledTimes(2);
+
+		settle[1].resolve([ws('alpha')]);
+		await Promise.all([newer, recovering]);
+		expect(workspaceStore.current?.slug).toBe('alpha');
+	});
+
 	it('JOINS a list request already in flight, and still resolves `current` from it', async () => {
 		const { api, workspaceStore } = await load();
 

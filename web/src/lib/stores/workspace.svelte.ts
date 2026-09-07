@@ -20,7 +20,20 @@ let membershipSeq = 0;
 // fallback for no reason (TASK-2200, codex round 4). Cleared in `loadAll`'s
 // own `finally`, so a failed request does not leave a dead promise behind for
 // the next caller to await.
+//
+// NOT ADDRESSED HERE, and named rather than left implicit: `loadAll` has no
+// guard on which RESPONSE commits, so two overlapping calls can leave the
+// OLDER list in `workspaces` if it resolves last. `collections.svelte.ts` has
+// exactly that guard (`seq !== collectionsLoadSeq`) and this store does not.
+// Pre-existing, unrelated to the recovery path — the recovery only ever joins,
+// never issues a competing call — and a separate fix with its own test.
 let inFlightLoadAll: Promise<void> | null = null;
+// Monotonic generation for `loadAll`, so its cleanup can tell "I still own the
+// slot" from "a newer call took it" — the same instrument, and the same name
+// shape, as `collectionsLoadSeq` next door. A promise-identity check would read
+// more directly but forces a self-reference the type checker cannot prove is
+// assigned before use.
+let loadAllSeq = 0;
 
 /**
  * Resource-scoped permission helpers (PLAN-1100 / TASK-1101).
@@ -75,6 +88,7 @@ export const workspaceStore = {
 	},
 
 	async loadAll() {
+		const seq = ++loadAllSeq;
 		loading = true;
 		// Published so `recoverIfMissing` can JOIN this request rather than
 		// skip past it — see the note there (codex round 4).
@@ -82,8 +96,25 @@ export const workspaceStore = {
 			try {
 				workspaces = await api.workspaces.list();
 			} finally {
-				loading = false;
-				inFlightLoadAll = null;
+				// OWNERSHIP, by promise identity (codex round 5). Clearing
+				// unconditionally lets an older overlapping request finish first
+				// and clear a NEWER one's slot, after which a concurrent
+				// `recoverIfMissing` starts a third request instead of joining
+				// the load still running — the race round 4 just closed,
+				// reintroduced by its own cleanup.
+				//
+				// This is the same rule `collections.svelte.ts` already applies
+				// to its `loading` flag and join slot, expressed there with a
+				// sequence counter. Third time in this unit that a rule was
+				// applied at one door and not its sibling.
+				//
+				// `loading` moves under the same guard for the same reason: an
+				// older load flipping it off while a newer one runs is the
+				// spinner half of the same mistake.
+				if (seq === loadAllSeq) {
+					loading = false;
+					inFlightLoadAll = null;
+				}
 			}
 		})();
 		inFlightLoadAll = load;
