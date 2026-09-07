@@ -113,3 +113,97 @@ func TestMoveItem_InvalidOverrideRejected(t *testing.T) {
 		t.Errorf("item moved despite the 400 — collection is now %q", fresh.CollectionID)
 	}
 }
+
+// TestMoveItem_OverrideValueIsTypedServerSide pins the fact BUG-2870 turned
+// on. `pad item move --field n=3` sends the value as a STRING — moveCmd is
+// the one CLI site that never calls parseFieldFlag — and the item ends up
+// with the NUMBER 3 anyway, because the merged map is validated (and its
+// values coerced) on this path like every other write door.
+//
+// That is why BUG-2870's fix routes move through the shared KEY parse only
+// and does NOT add client-side typing: for a declared field there is nothing
+// left to type, and for the undeclared key a padded entry used to create,
+// no client-side typing could have helped. The measurement is easy to lose
+// — it is invisible from cmd/pad, where the value is plainly a string — so
+// it is pinned here rather than left as a claim on the trail.
+func TestMoveItem_OverrideValueIsTypedServerSide(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSForTest(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug(%s): %v", slug, err)
+	}
+	src := mustSchemaCollection(t, srv, ws.ID, "Typed Src", `{"fields":[
+		{"key":"note","label":"Note","type":"text"}
+	]}`)
+	dst := mustSchemaCollection(t, srv, ws.ID, "Typed Dst", `{"fields":[
+		{"key":"note","label":"Note","type":"text"},
+		{"key":"n","label":"N","type":"number"}
+	]}`)
+
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
+		"title": "Movable", "fields": `{"note":"hi"}`,
+	})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{
+			"target_collection": dst.Slug,
+			// A STRING, exactly as the CLI sends it.
+			"field_overrides": map[string]interface{}{"n": "3"},
+		})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move with a numeric override: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var moved models.Item
+	parseJSON(t, rr, &moved)
+	if want := `"n":3`; !strings.Contains(moved.Fields, want) {
+		t.Errorf("moved item fields = %s, want it to contain %s — the server types a declared field, "+
+			"which is why the CLI does not need to", moved.Fields, want)
+	}
+	if bad := `"n":"3"`; strings.Contains(moved.Fields, bad) {
+		t.Errorf("the value stayed a string: %s", moved.Fields)
+	}
+}
+
+// ...and the padded companion: a value that cannot be typed is REFUSED here
+// rather than stored as a string. This is the half a caller notices, because
+// the remote /mcp door used to trim the padding and succeed.
+func TestMoveItem_PaddedOverrideValueRefused(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSForTest(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug(%s): %v", slug, err)
+	}
+	src := mustSchemaCollection(t, srv, ws.ID, "Padded Src", `{"fields":[
+		{"key":"note","label":"Note","type":"text"}
+	]}`)
+	dst := mustSchemaCollection(t, srv, ws.ID, "Padded Dst", `{"fields":[
+		{"key":"note","label":"Note","type":"text"},
+		{"key":"n","label":"N","type":"number"}
+	]}`)
+
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
+		"title": "Movable", "fields": `{"note":"hi"}`,
+	})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{
+			"target_collection": dst.Slug,
+			"field_overrides":   map[string]interface{}{"n": " 3"},
+		})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a padded numeric override, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	fresh, err := srv.store.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if fresh.CollectionID != src.ID {
+		t.Errorf("item moved despite the 400 — collection is now %q", fresh.CollectionID)
+	}
+}
