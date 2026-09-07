@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/PerpetualSoftware/pad/internal/items"
 )
 
 // catalog_item_fields.go — the `fields` OBJECT alias on pad_item
@@ -233,7 +236,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// entries so two entries naming one key stay two contributions (round 18).
 	fieldEntries, _, errRes := parseFieldArray(prefix, input["field"])
 	if errRes != nil {
-		return nil // the caller parses for real and owns this error surface
+		// PROPAGATED, not swallowed (BUG-2870). This returned nil because the
+		// only errors parseFieldArray could raise were SHAPE errors, and
+		// reshapeItemFields — which parses for real — owns that surface. It
+		// can now also refuse a padded KEY, and that refusal has no second
+		// owner: reshapeItemFields returns early when there is no `fields`
+		// object, which is exactly the no-`fields` path this bug lives on. So
+		// swallowing it here turned `field:[" effort=l"]` back into a success.
+		// A shape error propagating from here instead of from the caller is
+		// harmless — same message, one layer earlier.
+		return errRes
 	}
 
 	groups := map[string][]fieldContribution{}
@@ -248,16 +260,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	sort.Strings(objKeys) // deterministic refusal text across runs
 	for _, k := range objKeys {
 		sv, err := stringifyFieldValue(obj[k])
-		// COMPARED TRIMMED, EMITTED RAW (codex round 19). Entry values are
-		// trimmed for comparison because ingestFieldKVP trims them, so
-		// comparing a trimmed entry against an untrimmed `fields` value was
-		// apples to oranges: `fields:{"note":" x "}` with `field:["note= x "]`
-		// read as " x " vs "x" and refused, though both doors write " x ".
-		// Only `value` (the comparison key) is trimmed; `raw` keeps the
-		// original, and the canonical re-emission still carries the untrimmed
-		// value to the wire.
+		// COMPARED RAW (BUG-2870, superseding codex round 19 on BUG-2850).
+		// This trimmed the comparison value because ingestFieldKVP trimmed
+		// what it stored, so a trimmed entry and an untrimmed `fields` value
+		// were apples to oranges. Neither door trims a value now, so raw IS
+		// what both will write, and trimming here would compare a form
+		// nothing stores — `fields:{"note":" x "}` with `field:["note= x "]`
+		// still agrees, and now it agrees about the bytes rather than about
+		// their trimmed shadows.
 		add(canonicalFieldKey(k), fieldContribution{
-			key: k, source: "fields." + k, value: strings.TrimSpace(sv), nested: err != nil, raw: obj[k],
+			key: k, source: "fields." + k, value: sv, nested: err != nil, raw: obj[k],
 		})
 	}
 
@@ -276,12 +288,25 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 	// apply unchanged: equal canonical duplicates collapse, and a padded twin
 	// is refused by the non-canonical check like any other.
 	for _, entry := range fieldEntries {
-		k, v, ok := strings.Cut(entry, "=")
-		if !ok {
+		// Split the way the doors split (BUG-2870). This trimmed both halves
+		// to mirror ingestFieldKVP; no door trims now, so a trimmed value here
+		// would be compared against a `fields` value that is carried raw —
+		// which is exactly the apples-to-oranges the round-19 comment was
+		// written to prevent, in the opposite direction.
+		key, val, err := items.SplitFieldEntry(entry)
+		if errors.Is(err, items.ErrFieldEntryMalformed) {
 			continue // no '=' — the CLI owns that error surface, not this pass
 		}
-		key := strings.TrimSpace(k)
-		val := strings.TrimSpace(v)
+		if err != nil {
+			// REFUSED HERE, not skipped. This pass runs whether or not a
+			// `fields` object exists (round 14), and parseFieldArray does
+			// not: `field:[" effort=l"]` with no `fields` reaches the doors
+			// through this path alone. Skipping the entry would drop it from
+			// conflict detection entirely — which is how the first version of
+			// this change turned four refusals into successes, caught by the
+			// round-15/16/18 tests below.
+			return errStructured(prefix, err)
+		}
 		add(canonicalFieldKey(key), fieldContribution{
 			key: key, source: "the field array entry " + strconv.Quote(entry), value: val, raw: val,
 			// Whether the entry as WRITTEN matches its canonical form. The
@@ -954,25 +979,29 @@ func parseFieldArray(prefix string, raw any) ([]string, map[string]string, *mcp.
 		return nil, nil, errStructured(prefix, fmt.Errorf("field is %T, want array of \"key=value\" strings", raw))
 	}
 	for _, e := range entries {
-		if k, val, ok := strings.Cut(e, "="); ok {
-			// NORMALIZED THE WAY THE DOOR WILL NORMALIZE (codex round 6).
-			// ingestFieldKVP (dispatch_http.go) TrimSpaces both halves before
-			// storing them, so an un-trimmed index here does not describe what
-			// the remote door is about to write: `field:[" status=cancelled"]`
-			// indexed under " status" missed every conflict check against
-			// `fields:{"status":…}` and then silently overrode it. Trimming
-			// the value closes the mirror-image false refusal, where
-			// `field:["status= done"]` looked different from "done" and was
-			// refused as a conflict with a call that agrees.
-			//
-			// Only the INDEX is normalized. `entries` stays verbatim so every
-			// door still parses exactly what the caller sent — the CLI door
-			// does not trim (cmd/pad/cmd_item.go), and this must not quietly
-			// change what it receives. The effect is a conflict check that is
-			// conservative on both doors, which is the correct direction for
-			// a guard whose disposition is refuse-on-ambiguity.
-			byKey[strings.TrimSpace(k)] = strings.TrimSpace(val)
+		// INDEXED THE WAY THE DOORS PARSE (BUG-2870). This used to trim both
+		// halves here, mirroring ingestFieldKVP, which trimmed them at the
+		// remote door and nowhere else (codex round 6 on BUG-2850). That
+		// premise is gone: every door now runs items.SplitFieldEntry, which
+		// REFUSES a padded key rather than trimming it and carries the value
+		// through untouched. So the index is built by the same call the doors
+		// make, and a padded key is refused HERE — before dispatch, on both
+		// transports — instead of being silently re-pointed at the trimmed
+		// field by one door and stored as a ghost field by the other.
+		//
+		// Values are indexed RAW, which is what makes the comparison honest:
+		// both doors now write the raw value, so comparing a trimmed form
+		// would be comparing something neither door will store.
+		key, val, err := items.SplitFieldEntry(e)
+		if errors.Is(err, items.ErrFieldEntryMalformed) {
+			// Entries the CLI would reject anyway are passed through
+			// unindexed rather than pre-empting the CLI's own error surface.
+			continue
 		}
+		if err != nil {
+			return nil, nil, errStructured(prefix, err)
+		}
+		byKey[key] = val
 	}
 	return entries, byKey, nil
 }
