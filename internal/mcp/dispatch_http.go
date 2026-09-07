@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
@@ -971,34 +973,49 @@ func parseFieldKVP(raw any) (map[string]any, error) {
 			if !ok {
 				return nil, fmt.Errorf("expected string entries, got %T", e)
 			}
-			ingestFieldKVP(s, out)
+			if err := ingestFieldKVP(s, out); err != nil {
+				return nil, err
+			}
 		}
 	case []string:
 		for _, s := range v {
-			ingestFieldKVP(s, out)
+			if err := ingestFieldKVP(s, out); err != nil {
+				return nil, err
+			}
 		}
 	case string:
-		ingestFieldKVP(v, out)
+		if err := ingestFieldKVP(v, out); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("expected array or string, got %T", raw)
 	}
 	return out, nil
 }
 
-func ingestFieldKVP(s string, dst map[string]any) {
-	if s == "" {
-		return
+// ingestFieldKVP adds one `key=value` entry to dst, through the SAME parse the
+// CLI doors use (BUG-2870). It used to TrimSpace both halves here and nowhere
+// else, which is what made one call store two different keys depending on the
+// transport: `field:[" effort=l"]` wrote `effort` here and an undeclared
+// " effort" at the CLI.
+//
+// Both halves of that divergence close in the same direction, but not the same
+// way: a padded KEY is now REFUSED at both doors rather than trimmed at one,
+// and a VALUE is carried VERBATIM at both rather than trimmed at one. The
+// second is the behaviour change a caller can notice — a padded value that
+// this door silently accepted (and typed) is now passed through and refused
+// one layer down by field validation, with a message naming the field, which
+// is the same answer the CLI has always given.
+func ingestFieldKVP(s string, dst map[string]any) error {
+	key, val, err := items.SplitFieldEntry(s)
+	if errors.Is(err, items.ErrFieldEntryMalformed) {
+		return nil // skipped silently, matching the CLI doors
 	}
-	parts := strings.SplitN(s, "=", 2)
-	if len(parts) != 2 {
-		return
-	}
-	key := strings.TrimSpace(parts[0])
-	val := strings.TrimSpace(parts[1])
-	if key == "" {
-		return
+	if err != nil {
+		return err
 	}
 	dst[key] = val
+	return nil
 }
 
 // mapPlaybookRun handles `pad_playbook.action=run` for the HTTP MCP

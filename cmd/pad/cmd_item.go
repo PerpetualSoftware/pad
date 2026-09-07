@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/items"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -246,9 +248,14 @@ Run with --help-collections to see available collections and their status values
 				_ = json.Unmarshal([]byte(coll.Schema), &collSchema)
 			}
 			for _, kv := range fieldFlags {
-				if idx := strings.Index(kv, "="); idx > 0 {
-					fields[kv[:idx]] = parseFieldFlag(collSchema, kv[:idx], kv[idx+1:])
+				key, val, ferr := items.SplitFieldEntry(kv)
+				if errors.Is(ferr, items.ErrFieldEntryMalformed) {
+					continue // historical disposition here: skip silently
 				}
+				if ferr != nil {
+					return ferr
+				}
+				fields[key] = parseFieldFlag(collSchema, key, val)
 			}
 
 			// Pull column-named keys out of the blob before it's marshalled
@@ -497,11 +504,23 @@ Examples:
 			}
 			params.Set("limit", fmt.Sprintf("%d", effectiveLimit))
 
-			// Apply arbitrary --field key=value filters as query params
+			// Apply arbitrary --field key=value filters as query params.
+			//
+			// The key rule is the same one the WRITE doors use, deliberately
+			// (BUG-2870, day-60 ruling): one key string means one field at
+			// every door. A padded key here would filter on a field nobody
+			// declared and come back empty, which is indistinguishable from
+			// "no rows match" — so it is refused with the same message the
+			// write doors give instead of answering a question nobody asked.
 			for _, kv := range fieldFlags {
-				if idx := strings.Index(kv, "="); idx > 0 {
-					params.Set(kv[:idx], kv[idx+1:])
+				key, val, ferr := items.SplitFieldEntry(kv)
+				if errors.Is(ferr, items.ErrFieldEntryMalformed) {
+					continue // historical disposition here: skip silently
 				}
+				if ferr != nil {
+					return ferr
+				}
+				params.Set(key, val)
 			}
 
 			var items []models.Item
@@ -1099,9 +1118,14 @@ Examples:
 					}
 				}
 				for _, kv := range fieldFlags {
-					if idx := strings.Index(kv, "="); idx > 0 {
-						patch[kv[:idx]] = parseFieldFlag(collSchema, kv[:idx], kv[idx+1:])
+					key, val, ferr := items.SplitFieldEntry(kv)
+					if errors.Is(ferr, items.ErrFieldEntryMalformed) {
+						continue // historical disposition here: skip silently
 					}
+					if ferr != nil {
+						return ferr
+					}
+					patch[key] = parseFieldFlag(collSchema, key, val)
 				}
 
 				// Pull column-named keys out of the patch (BUG-2583) and apply
@@ -1608,11 +1632,23 @@ Examples:
 			fieldFlags, _ := cmd.Flags().GetStringArray("field")
 			if len(fieldFlags) > 0 {
 				overrides := map[string]any{}
+				// KEY normalisation only. Values stay strings here on
+				// purpose: the server types a declared field on this path
+				// too (ValidateFieldsDetailed over the merged map), so a
+				// clean `--field n=3` already stores the NUMBER 3 — measured
+				// on BUG-2870's trail before this change. Adding
+				// parseFieldFlag here would buy nothing for a declared key
+				// and could not help an undeclared one, which is what the
+				// padded key used to create.
 				for _, f := range fieldFlags {
-					parts := strings.SplitN(f, "=", 2)
-					if len(parts) == 2 {
-						overrides[parts[0]] = parts[1]
+					key, val, ferr := items.SplitFieldEntry(f)
+					if errors.Is(ferr, items.ErrFieldEntryMalformed) {
+						continue // historical disposition here: skip silently
 					}
+					if ferr != nil {
+						return ferr
+					}
+					overrides[key] = val
 				}
 				input["field_overrides"] = overrides
 			}
@@ -1802,16 +1838,20 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 		}
 		overrides := map[string]any{}
 		for _, kv := range opts.Fields {
-			idx := strings.Index(kv, "=")
-			if idx <= 0 {
+			key, val, ferr := items.SplitFieldEntry(kv)
+			if errors.Is(ferr, items.ErrFieldEntryMalformed) {
 				// Unlike `pad item create`, a malformed --field here is a
 				// hard error rather than a silent skip: this command's
 				// whole refusal contract is "you were told what to
 				// supply", and silently dropping the thing the user
-				// supplied would make the refusal a lie.
+				// supplied would make the refusal a lie. That disposition
+				// is why SplitFieldEntry classifies rather than decides.
 				return fmt.Errorf("invalid --field %q: expected key=value", kv)
 			}
-			overrides[kv[:idx]] = parseFieldFlag(schema, kv[:idx], kv[idx+1:])
+			if ferr != nil {
+				return ferr
+			}
+			overrides[key] = parseFieldFlag(schema, key, val)
 		}
 		req.FieldOverrides = overrides
 	}
