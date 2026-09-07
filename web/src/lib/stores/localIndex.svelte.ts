@@ -55,7 +55,7 @@
 // round-trip. Storage failures are silently swallowed — the store
 // keeps working in-memory.
 
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api/client';
 import { PadApiError } from '$lib/api/client';
 import {
@@ -252,6 +252,29 @@ const workspaces = new SvelteMap<string, WorkspaceState>();
  * `resetGenerationFor` for why this cannot live on the state object.
  */
 const resetGenerations = new Map<string, number>();
+
+/**
+ * Workspaces whose cache was dropped because ACCESS WAS REVOKED (TASK-2921,
+ * codex round 1 P1). A `$state` set so the reading component re-renders.
+ *
+ * Module-level, OUTLIVING THE STATE IT DESCRIBES, for the same reason
+ * `resetGenerations` and `reconcileTokens` are — and here the reason is not
+ * subtle: on a 403 the API client's global access-revoked handler runs
+ * `localIndex.reset(scope.workspace)` BEFORE the error reaches any caller, and
+ * `reset` DELETES the workspace's state entry. Anything recorded on that entry
+ * is gone before the UI can read it, so a per-workspace field cannot answer
+ * "was this a revocation or is it still loading".
+ *
+ * That is why the collection route carried a page-local `deltaSyncFailed` flag,
+ * and why deleting it in favour of `bootstrapState === 'error'` was WRONG — the
+ * first draft of this unit did exactly that and left the route on "Loading…"
+ * forever after a 403. The fix is not to put the flag back on the page: it is to
+ * put it where every route can see it, which is here.
+ *
+ * Cleared when a fresh (non-reentry) bootstrap starts, which is what the
+ * banner's Retry CTA triggers.
+ */
+const accessRevoked = new SvelteSet<string>();
 
 /**
  * Per-workspace reconcile token — the value a reconcile loop captures when it
@@ -627,6 +650,11 @@ function durableEpochFor(state: WorkspaceState): string | null | undefined {
  * distinction in the store, where every route can see it.
  */
 function dropCacheForAuthError(ws: string, state: WorkspaceState): void {
+	// FIRST, and outside the state object: `reset` may already have deleted the
+	// entry `state` points at (the API client's global 403 handler calls it
+	// before the error reaches us), in which case every assignment below lands
+	// on a detached object nobody will read. This one does not.
+	accessRevoked.add(ws);
 	state.bootstrapState = 'error';
 	state.pendingResync = false;
 	state.items.clear();
@@ -1009,6 +1037,10 @@ export const localIndex = {
 		// keeps state='ready' throughout so the UI never blanks while
 		// retrying the reconcile.
 		if (!reentry) state.bootstrapState = 'loading';
+		// A fresh boot is the answer to a revocation banner — the Retry CTA is
+		// `reset` + `bootstrap`. Cleared here rather than on success so the
+		// banner goes away while the retry runs, and returns if it 403s again.
+		if (!reentry) accessRevoked.delete(ws);
 		// Capture the generation at start. If `reset()` runs during
 		// any await below, generation bumps; we then bail out before
 		// re-applying rows or writing the snapshot back, otherwise
@@ -1623,6 +1655,19 @@ export const localIndex = {
 	 * No-op returning true for an unhydrated workspace — there is nothing to
 	 * reconcile and no ask outstanding, so reporting catch-up is honest.
 	 */
+	/**
+	 * Was this workspace's cache dropped because ACCESS WAS REVOKED, as opposed
+	 * to still loading or transiently failing? (TASK-2921.)
+	 *
+	 * Survives `reset()` deleting the workspace state, which is the whole point:
+	 * the API client's global 403 handler resets before the error reaches any
+	 * caller, so `bootstrapStateFor` reads `'cold'` at exactly the moment the UI
+	 * needs to distinguish revoked from loading.
+	 */
+	accessRevokedFor(ws: string): boolean {
+		return accessRevoked.has(ws);
+	},
+
 	async reconcile(ws: string): Promise<boolean> {
 		const state = workspaces.get(ws);
 		if (!state) return true;

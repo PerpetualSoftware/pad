@@ -246,15 +246,22 @@
 	// retry CTA instead of the misleading "No items yet" empty state
 	// or a stuck-forever "Loading…" spinner.
 	let indexError = $derived(indexState === 'error');
-	// `deltaSyncFailed` is GONE (TASK-2921). It existed because the page's own
-	// auth-error reaction was `localIndex.reset(ws)`, which DELETES the state
-	// entry and with it the `'error'` bootstrapState the banner reads — so the
-	// page kept a private flag to remember what the store had just forgotten.
-	// The reaction is now `dropCacheForAuthError`, shared by both doors, which
-	// clears the rows IN PLACE and leaves the state `'error'`. `indexError`
-	// therefore covers the case on its own, from any route, including the ones
-	// that never had this flag.
-	let loading = $derived(!metaError && (metaLoading || (!indexReady && !indexError)));
+	// `deltaSyncFailed` was a PAGE-LOCAL memo of "the cache was dropped because
+	// access was revoked" (TASK-2921). It existed because a 403 ends in
+	// `localIndex.reset(ws)` — fired by the API client's GLOBAL access-revoked
+	// handler, before the error reaches any caller — and `reset` DELETES the
+	// workspace state, taking any `'error'` bootstrapState with it. The page
+	// remembered what the store had just forgotten, so the banner could tell
+	// "revoked" from "still loading".
+	//
+	// The memo is now the STORE's (`accessRevokedFor`), on a module-level set
+	// that outlives the reset, exactly as `reconcileTokens` does. Same signal,
+	// visible from every route rather than this one — which matters now that the
+	// layout drives the reconcile for all of them.
+	let accessRevoked = $derived(localIndex.accessRevokedFor(wsSlug));
+	let loading = $derived(
+		!metaError && (metaLoading || (!indexReady && !indexError && !accessRevoked)),
+	);
 
 	// Unparented-filter projection scope (TASK-2099 / PLAN-2095 DR-2). `true`
 	// only once the local index has confirmed (via `includes_unparented_
@@ -3372,7 +3379,7 @@
 		</div>
 
 		<!-- Content -->
-		{#if indexError && items.length === 0}
+		{#if (indexError || accessRevoked) && items.length === 0}
 			<!-- localIndex bootstrap failed and the cache is empty
 			     (e.g. transient /items-index failure on cold load,
 			     or auth revoked on /items-changes). Show a retry

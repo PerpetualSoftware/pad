@@ -68,6 +68,48 @@ describe('the reconcile’s auth-error reaction', () => {
 		expect(localIndex.getByCollection(ws, 'kept')).toHaveLength(0);
 	});
 
+	it('survives the GLOBAL 403 handler having already reset the workspace', async () => {
+		// THE CASE THE OTHER TESTS IN THIS FILE CANNOT SEE, because they mock
+		// `api.items.changes` and so never go through `api.request()`.
+		//
+		// On a 403, `request()` fires the registered access-revoked handler
+		// BEFORE the error reaches any caller, and that handler (registered in
+		// the root layout) calls `localIndex.reset(scope.workspace)` — which
+		// DELETES the workspace state entry. So by the time the reconcile's catch
+		// runs, the `state` it holds is detached: every field it writes lands on
+		// an object nobody will ever read, and `bootstrapStateFor` answers
+		// 'cold'. A UI keying the banner off that state stays on "Loading…"
+		// forever. Found by review, not by this suite, and this is the test that
+		// closes that gap.
+		await boot();
+		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
+			// Exactly what request() does, in order.
+			localIndex.reset(ws);
+			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });
+		});
+
+		await expect(localIndex.reconcile(ws)).rejects.toThrow();
+
+		// The signal has to live somewhere the reset cannot take with it.
+		expect(localIndex.accessRevokedFor(ws)).toBe(true);
+	});
+
+	it('a fresh bootstrap clears the revoked marker, so the Retry CTA works', async () => {
+		await boot();
+		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
+			localIndex.reset(ws);
+			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });
+		});
+		await expect(localIndex.reconcile(ws)).rejects.toThrow();
+		expect(localIndex.accessRevokedFor(ws)).toBe(true);
+
+		vi.restoreAllMocks();
+		localIndex.reset(ws);
+		await boot();
+
+		expect(localIndex.accessRevokedFor(ws)).toBe(false);
+	});
+
 	it('rethrows, so the caller’s /login redirect still fires', async () => {
 		await boot();
 		vi.spyOn(api.items, 'changes').mockRejectedValue(
