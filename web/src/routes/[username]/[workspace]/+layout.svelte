@@ -226,6 +226,19 @@
 				}
 			}
 
+			// THE INDEX IS PER-WORKSPACE; THE UI BELOW IS NOT (codex round 7 P1).
+			// `localIndex` is keyed by workspace, so reconciling `eventWs` above
+			// is right whatever route the user is on now. `collectionStore` and
+			// the toasts are GLOBAL — they describe the ONE workspace being
+			// looked at — so applying A's event to them while B is on screen
+			// corrupts B's UI with A's data, and capturing the slug does not help
+			// because the slug was never the problem for these.
+			//
+			// So: reconcile first, unconditionally, then bail if the route moved.
+			// The two halves want opposite things and the await between them is
+			// what makes the distinction visible at all.
+			if (wsSlug !== eventWs) return;
+
 			switch (event.type) {
 				case 'item_created': {
 					// Reload collections to update counts
