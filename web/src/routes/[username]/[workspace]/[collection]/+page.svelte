@@ -1089,72 +1089,20 @@
 	 */
 	async function deltaSync(ws: string): Promise<boolean> {
 		try {
-			for (let i = 0; i < 50; i++) {
-				// The overlap token, not the scope epoch: this loop needs to know
-				// whether a resync overlapped its request, and `scopeEpochFor` is
-				// the fence for optimistic WRITES and must not carry that meaning
-				// (TASK-2909 review round 3). Captured HERE, when the request is
-				// issued — the staleness it guards against is decided then, not
-				// when the response is read.
-				const tokenBefore = localIndex.reconcileTokenFor(ws);
-				const since = localIndex.cursorFor(ws);
-				const delta = await api.items.changes(ws, since);
-				if (localIndex.reconcileTokenFor(ws) !== tokenBefore) {
-					// A concurrent resync installed a new snapshot + pinned
-					// cursor while this request was in flight; the response
-					// predates it. Re-poll from the new cursor rather than
-					// reporting catch-up on stale data (Codex P2 round 8).
-					continue;
-				}
-				if (await localIndex.ensureAccessScope(ws, delta.access_epoch)) {
-					// IDEA-2898: the caller's visible set changed with no row
-					// change to carry it. Same `continue` discipline as the
-					// projection branch below and for the same reason — the
-					// resync pinned the cursor, so post-snapshot mutations are
-					// only replayed if we keep looping.
-					continue;
-				}
-				if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
-					// A resync just pinned the cursor to the snapshot cursor to
-					// replay post-snapshot mutations under the new scope. Keep
-					// looping so the next `/items-changes` actually fetches them
-					// instead of reporting caught-up prematurely. The resync
-					// already aligned the scope, so ensureProjectionScope won't
-					// re-fire; the 50-iteration cap bounds the loop.
-					continue;
-				}
-				if (delta.changes.length === 0 || delta.cursor === since) {
-					deltaSyncFailed = false;
-					// This loop is an independent reconcile path from
-					// `bootstrap()`'s internal one (driven by SSE/periodic
-					// sync, not the initial cold/warm boot) — it's the only
-					// owner of `pendingResync` for a resync IT triggered.
-					// Mark caught up so a mid-session projection-scope
-					// change doesn't leave `pendingResyncFor` stuck `true`
-					// for the rest of the session (TASK-2099 / PLAN-2095
-					// DR-2, Codex review round 4). Pass `epochBefore` — this
-					// iteration already confirmed it still matches the live
-					// epoch above — so a differently-scoped resync that
-					// lands concurrently after this point isn't silently
-					// stomped (Codex review round 5).
-					localIndex.markCaughtUp(ws, tokenBefore);
-					return true;
-				}
-				localIndex.applyDelta(
-					ws,
-					delta.changes,
-					delta.cursor,
-					delta.includes_unparented_metadata,
-				);
-				if (delta.cursor === since) {
-					deltaSyncFailed = false;
-					localIndex.markCaughtUp(ws, tokenBefore);
-					return true;
-				}
-			}
-			// Cap hit — pretend success at the page level so we don't
-			// thrash, but tell the caller it wasn't a clean catch-up.
-			return false;
+			// The reconcile itself is the STORE's (TASK-2921). This page used
+			// to carry its own copy of the loop — token discipline, both scope
+			// checks, catch-up detection and the ask-clearing — and the copies
+			// had drifted: this one reimplemented nothing but also checked no
+			// generation, while bootstrap's reimplemented `ensureProjectionScope`
+			// inline. What stays here is what is genuinely the page's: the error
+			// banner and the reset on a 401/403.
+			//
+			// `false` means the loop hit its page cap without catching up —
+			// pretend success at the page level so we don't thrash, but tell the
+			// caller it wasn't a clean catch-up.
+			const caughtUp = await localIndex.reconcile(ws);
+			if (caughtUp) deltaSyncFailed = false;
+			return caughtUp;
 		} catch (err) {
 			// 401 (session expired) / 403 (access revoked) mean the
 			// cache is no longer ours to display. Drop it through the

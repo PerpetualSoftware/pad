@@ -569,6 +569,104 @@ function durableEpochFor(state: WorkspaceState): string | null | undefined {
 	return state.durableSnapshotCommitted ? state.accessEpoch : undefined;
 }
 
+/**
+ * The workspace reconcile loop — ONE definition, both doors (TASK-2921).
+ *
+ * Drains `/items-changes` from the workspace cursor until it stops advancing,
+ * routing a changed access epoch or projection scope through the PUBLIC
+ * `ensureAccessScope` / `ensureProjectionScope` entry points, and clears the
+ * outstanding ask through `clearAskIfSettled` when — and only when — an
+ * iteration concludes catch-up.
+ *
+ * Returns true if it caught up, false if it hit the page cap. A caller that
+ * needs to know is the collection route, whose banner distinguishes the two;
+ * `bootstrap` ignores it, because the ask is the state that matters and this
+ * function already owns it.
+ *
+ * WHY IT IS ONE FUNCTION. Until now `bootstrap` and the collection route's
+ * `deltaSync` each carried their own copy, and the copies had already drifted
+ * in four places: the route had no generation check, `bootstrap` reimplemented
+ * `ensureProjectionScope`'s predicate inline, the two cleared the ask through
+ * different doors, and only one assigned `includesUnparentedMetadata` per
+ * iteration. Every rule this plan has added arrived at one copy first — the
+ * comment this replaced said so about `clearAskIfSettled`, calling it the fourth
+ * time a rule landed at one door and not its sibling.
+ *
+ * `isStale` is the caller's own "the state I captured is gone" predicate.
+ * `bootstrap` passes its generation check; the route passes nothing, because a
+ * page has no generation to compare against and its `reset()` path tears the
+ * page down anyway. It is checked after EVERY await, which is stricter than
+ * what the route had (nothing) and identical to what `bootstrap` had.
+ *
+ * ONE DELIBERATE BEHAVIOUR CHANGE, not a refactor artifact. `bootstrap`'s inline
+ * projection test was `includesUnparentedMetadata !== null && !== incoming`, so
+ * a NULL scope over a populated cache silently ADOPTED the incoming value.
+ * `ensureProjectionScope` resyncs in that case instead, for the same reason the
+ * access epoch's null baseline does: a cache whose scope we cannot vouch for
+ * must not be told what it was authorised for by the response we are checking
+ * it against. Routing both doors through the public entry point is the point of
+ * the unit, and this is the one place where doing so changes an answer.
+ */
+async function reconcileWorkspace(
+	ws: string,
+	state: WorkspaceState,
+	isStale: () => boolean = () => false,
+): Promise<boolean> {
+	// Cap iterations defensively — a healthy server drains in < 10 pages even
+	// for huge gaps; if something pathological loops without cursor advance,
+	// give up after 50 and let the caller retry. 50 x 5000 = 250,000 rows. A cap
+	// hit leaves the ask SET, which is the difference between "stale forever"
+	// and "next visit resumes".
+	for (let i = 0; i < 50; i++) {
+		// Captured when the request is ISSUED — the staleness it guards against
+		// is decided then, not when the response is read (TASK-2909).
+		const reconcileToken = reconcileTokens.get(ws) ?? 0;
+		const since = state.cursor;
+		const delta = await api.items.changes(ws, since);
+		if (isStale()) return false;
+		if ((reconcileTokens.get(ws) ?? 0) !== reconcileToken) {
+			// A concurrent resync installed a new snapshot and pinned the cursor
+			// while this request was in flight, so this response predates it and
+			// cannot confirm catch-up. Re-poll from the new cursor.
+			continue;
+		}
+		// IDEA-2898. The caller's visible set changed with no row change to
+		// carry it — a revocation writes no item, so nothing else in this
+		// response could evict the rows it hid.
+		//
+		// `continue`, never `break`: the resync pins the cursor to the
+		// snapshot's, so post-snapshot mutations are replayed only if the loop
+		// polls again. Neither branch can re-fire, because each resync aligns
+		// the value its check compares.
+		if (await localIndex.ensureAccessScope(ws, delta.access_epoch)) {
+			if (isStale()) return false;
+			continue;
+		}
+		if (isStale()) return false;
+		if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
+			if (isStale()) return false;
+			continue;
+		}
+		if (isStale()) return false;
+		if (delta.changes.length === 0 || delta.cursor === since) {
+			// No new rows AND no cursor advance — caught up.
+			clearAskIfSettled(ws, state, reconcileToken);
+			return true;
+		}
+		localIndex.applyDelta(
+			ws,
+			delta.changes,
+			delta.cursor,
+			delta.includes_unparented_metadata,
+		);
+		if (delta.cursor === since) {
+			clearAskIfSettled(ws, state, reconcileToken);
+			return true;
+		}
+	}
+	return false;
+}
+
 async function resyncProjectionScope(
 	ws: string,
 	state: WorkspaceState,
@@ -980,100 +1078,16 @@ export const localIndex = {
 					// Other network blips are non-fatal — the cache
 					// stands and the next reconnect retries.
 					try {
-						// Cap iterations defensively — a healthy server
-						// drains in < 10 pages even for huge gaps; if
-						// something pathological loops without cursor
-						// advance, give up after 50 and let the user's
-						// next visit retry.
-						let caughtUp = false;
-						// Captured per ITERATION but declared out here, because
-						// the clear below belongs to whichever iteration
-						// concluded catch-up (TASK-2909 review round 3).
-						let reconcileToken = reconcileTokens.get(ws) ?? 0;
-						for (let i = 0; i < 50; i++) {
-							reconcileToken = reconcileTokens.get(ws) ?? 0;
-							const since = state.cursor;
-							const delta = await api.items.changes(ws, since);
-							if (isStale()) return;
-							if ((reconcileTokens.get(ws) ?? 0) !== reconcileToken) {
-								// A concurrent resync (another caller) installed a
-								// new snapshot + pinned cursor while this request
-								// was in flight. This response predates it, so it
-								// can't confirm catch-up — re-poll from the new
-								// cursor instead of clearing pendingResync on stale
-								// data (Codex P2 round 8).
-								continue;
-							}
-							// IDEA-2898. The caller's visible set changed with no row
-							// change to carry it — a revocation writes no item, so
-							// nothing else in this response could evict the rows it
-							// hid. Delegated to `ensureAccessScope` rather than
-							// re-implemented here: an inline copy is a second
-							// definition of the same rule, and the first draft of it
-							// already diverged (it skipped the null-baseline case,
-							// which is precisely the offline-revocation cache this
-							// exists for). One tested function, two call sites.
-							//
-							// `continue`, never `break`, for the same reason as the
-							// projection branch below: the resync pins the cursor to
-							// the snapshot's, so post-snapshot mutations are only
-							// replayed if the loop polls again. It cannot re-fire,
-							// because the resync set the epoch to the snapshot's.
-							if (await localIndex.ensureAccessScope(ws, delta.access_epoch)) {
-								if (isStale()) return;
-								continue;
-							}
-							if (isStale()) return;
-							if (
-								state.includesUnparentedMetadata !== null &&
-								state.includesUnparentedMetadata !== delta.includes_unparented_metadata
-							) {
-								// resyncProjectionScope pins the cursor to the
-								// snapshot cursor precisely so post-snapshot
-								// mutations replay under the new scope. DON'T break
-								// here — continue the loop so the next
-								// `/items-changes?since=<pinned cursor>` actually
-								// fetches them (visible rows return, hidden stay
-								// gone). resync set includesUnparentedMetadata to
-								// the new scope, so this branch can't re-fire and
-								// loop; the 50-page cap bounds it regardless.
-								await resyncProjectionScope(ws, state);
-								continue;
-							}
-							state.includesUnparentedMetadata = delta.includes_unparented_metadata;
-							if (delta.changes.length === 0 || delta.cursor === since) {
-								// Server returned no new rows AND no
-								// cursor advance — we're caught up.
-								caughtUp = true;
-								break;
-							}
-							localIndex.applyDelta(
-								ws,
-								delta.changes,
-								delta.cursor,
-								delta.includes_unparented_metadata,
-							);
-							if (delta.cursor === since) {
-								caughtUp = true;
-								break;
-							}
-						}
-						// Only mark fresh if the loop reached the
-						// server cursor. Hitting the 50-page cap
-						// without catching up leaves `pendingResync`
-						// true so a later bootstrap call resumes
-						// (Codex P2 round 6). 50 × 5000 = 250,000
-						// rows; we don't expect to hit this in practice
-						// but it's the difference between "stale
-						// forever" and "next visit retries".
-						// Through the same guard as `markCaughtUp`, not a
-						// second copy of the decision (TASK-2909 review round
-						// 1). This loop cleared the flag directly, which meant
-						// every condition added to the public entry point
-						// silently did not apply here — the fourth time in
-						// PLAN-2903 that a rule landed at one door and not its
-						// sibling.
-						if (caughtUp) clearAskIfSettled(ws, state, reconcileToken);
+						// ONE loop for both doors (TASK-2921). What used to live
+						// here inline is `reconcileWorkspace`, which the
+						// collection route's `deltaSync` now calls too. The
+						// duplication had already drifted in four places, and the
+						// comment that used to close this block named the cost:
+						// a rule added at the public entry point silently did not
+						// apply here. The ask is cleared inside, by whichever
+						// iteration concluded catch-up.
+						await reconcileWorkspace(ws, state, isStale);
+						if (isStale()) return;
 					} catch (err) {
 						if (isStale()) return;
 						// 401 (unauthorized — session expired) and 403
@@ -1564,6 +1578,25 @@ export const localIndex = {
 		if (state.includesUnparentedMetadata === includesUnparentedMetadata) return false;
 		await resyncProjectionScope(ws, state);
 		return true;
+	},
+
+	/**
+	 * Drive the workspace's reconcile loop (TASK-2921).
+	 *
+	 * The public door onto `reconcileWorkspace`, for callers that are not
+	 * `bootstrap` — today the collection route's `deltaSync`. Returns true if it
+	 * caught up, false if it hit the page cap, so the caller can distinguish
+	 * "current" from "gave up for now" in its own UI. Errors propagate: a 401 /
+	 * 403 means the cache is no longer the caller's to display and each door
+	 * still owns that reaction.
+	 *
+	 * No-op returning true for an unhydrated workspace — there is nothing to
+	 * reconcile and no ask outstanding, so reporting catch-up is honest.
+	 */
+	async reconcile(ws: string): Promise<boolean> {
+		const state = workspaces.get(ws);
+		if (!state) return true;
+		return reconcileWorkspace(ws, state);
 	},
 
 	/**
