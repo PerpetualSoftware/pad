@@ -69,8 +69,10 @@ func getCurrentBranch() (string, error) {
 
 // extractItemRefFromBranch attempts to find a Pad item reference (e.g. TASK-5, BUG-3) in a branch name.
 //
-// The prefix grammar matches collections.IsValidPrefix — a letter followed by
-// letters or digits (BUG-2943). It was `[A-Z]+` and therefore could not see a
+// The prefix grammar mirrors the ref grammar collections.IsValidPrefix
+// defines — a letter followed by letters or digits (BUG-2943). This pattern
+// runs against an upper-cased branch name, so it matches the validator
+// literally; the client-side ones are case-insensitive by design. It was `[A-Z]+` and therefore could not see a
 // ref on a collection whose prefix carries a digit, so `pad github link` on a
 // branch named `fix/ab1-42-something` silently found nothing. That was
 // invisible while the ref parser refused digits too; widening the parser
