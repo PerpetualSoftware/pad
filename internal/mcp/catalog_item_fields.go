@@ -140,11 +140,6 @@ type fieldContribution struct {
 	nested bool   // a structure, with no key=value encoding
 	raw    any    // the value as supplied, for comparing two structures
 
-	// nonCanonical marks a `field` array entry written in something other
-	// than its canonical `key=value` form (padding around either half). It
-	// matters because the two doors then receive DIFFERENT writes.
-	nonCanonical bool
-
 	// topLevel marks a contribution that arrived as a top-level param rather
 	// than through `field` or `fields`. It is what the compat-ID exception
 	// actually turns on — see the gate below.
@@ -309,10 +304,6 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		}
 		add(canonicalFieldKey(key), fieldContribution{
 			key: key, source: "the field array entry " + strconv.Quote(entry), value: val, raw: val,
-			// Whether the entry as WRITTEN matches its canonical form. The
-			// index is normalized so a padded entry can be recognized at all;
-			// this remembers that the doors will not receive it identically.
-			nonCanonical: entry != key+"="+val,
 		})
 	}
 
@@ -364,18 +355,28 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// WRITE — and this runs BEFORE the exemption below, deliberately
 		// (codex round 16).
 		//
-		// The conflict index is normalized, so `field:["k = A"]` compares
-		// EQUAL to a top-level `k:"A"` and the pair was accepted while the
-		// entry stayed padded on the wire. HTTP trims it and writes `k`; the
-		// CLI does not, and writes a junk `"k "` key instead. The
-		// normalization that lets the collision be SEEN is exactly what made
-		// accepting it wrong.
+		// THE PADDED-ENTRY CHECK THAT USED TO SIT HERE IS GONE (BUG-2870),
+		// and the decision is worth stating rather than leaving as an
+		// absence. Round 16 added it because `field:["k = A"]` compared EQUAL
+		// to a top-level `k:"A"` while the entry stayed padded on the wire —
+		// HTTP trimmed it and wrote `k`, the CLI did not and wrote a junk
+		// `"k "` key — so equality licensed a collapse the two doors would
+		// not honour identically.
 		//
-		// It sits above the exemption because padding breaks the exemption's
-		// own premise — that both doors resolve the duplicate identically —
-		// for EVERY key class, not just the compat IDs. Round 15 was this
-		// same mistake (a premise verified for declared params, generalized
-		// to keys it did not hold for); putting this check below the
+		// A padded key cannot reach this pass any more: items.SplitFieldEntry
+		// refuses it, so every contribution here is canonical BY
+		// CONSTRUCTION — `entry == key + "=" + value` holds for anything that
+		// parsed. The old flag was therefore provably always false, not
+		// merely untested; removing it changed no test, which is consistent
+		// with both "dead" and "untested", and the construction argument is
+		// what separates them.
+		//
+		// The premise it defended still holds and is still enforced, one
+		// layer earlier and for every key class: equality only licenses a
+		// collapse when both doors receive the same write. Round 15 was the
+		// same mistake in another form (a premise verified for declared
+		// params, generalized to keys it did not hold for); putting this check
+		// below the
 		// exemption would have repeated it one round later, and my first
 		// draft did exactly that.
 		//
@@ -412,14 +413,6 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 			}
 		}
 		if !canonicalized {
-			for i := 1; i < len(contribs); i++ {
-				a, b := contribs[0], contribs[i]
-				if a.nonCanonical || b.nonCanonical {
-					return errStructured(prefix, fmt.Errorf(
-						"%s conflicts with %s — the field entry is not in canonical key=value form, so the transports would write different keys; remove the padding or pass only one of them",
-						a.source, b.source))
-				}
-			}
 		}
 
 		// ...and the exemption holds only where the doors PROVABLY agree,
@@ -859,13 +852,20 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 			continue
 		}
 		if _, has := fieldByKey[k]; has {
-			// Known equal (the pass above refused anything else). Re-emit
-			// canonically when the retained entry is padded, so every door
-			// writes the key the caller meant.
-			if hasNonCanonicalFieldEntry(fieldEntries, k, sv) {
-				dropFieldKeys[k] = true
-				reEmitFields[k] = sv
-			}
+			// Known equal (the pass above refused anything else), and there
+			// is nothing left to rewrite: BUG-2870 refuses a padded key at
+			// items.SplitFieldEntry, so an entry that parsed is canonical by
+			// construction and the retained one already carries the key the
+			// caller meant with the value they wrote.
+			//
+			// The RE-EMISSION this used to do — dropping the padded entry and
+			// re-emitting `k=sv` — existed because one door trimmed the key
+			// and the other did not, so a padded entry had to be rewritten to
+			// make the two doors write the same thing. Neither door trims now
+			// and neither accepts the padding, which removes the case rather
+			// than the need for it. Removing this changed no test, and the
+			// construction argument is what distinguishes "dead" from
+			// "untested" — a padded entry cannot reach here at all.
 			continue
 		}
 		fieldEntries = append(fieldEntries, k+"="+sv)
@@ -922,34 +922,6 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *mc
 // it is produced by this merge, never accepted from the wire, and strict input
 // validation would reject it as an undeclared param if it were.
 const fieldsNativeKey = "__fields_native"
-
-// hasNonCanonicalFieldEntry reports whether ANY entry for this key is written
-// in something other than the canonical `key=value` form.
-//
-// "Any", not "no canonical entry exists" (codex round 8). The first version
-// asked whether a canonical entry was PRESENT and left the array alone if one
-// was — so `field:["effort=l", " effort=l"]` kept the padded twin, and the
-// doors then disagreed about it: HTTP trims and writes `effort`, the CLI does
-// not and writes an undeclared `" effort"`. One canonical entry does not make
-// its padded sibling harmless; every entry for the key has to be canonical,
-// or the key gets re-emitted once and cleanly.
-//
-// Collapsing duplicates in that re-emission is correct rather than lossy:
-// parseFieldArray already indexes them to a single value, so two entries for
-// one key were never two writes.
-func hasNonCanonicalFieldEntry(entries []string, key, value string) bool {
-	want := key + "=" + value
-	for _, e := range entries {
-		k, _, ok := strings.Cut(e, "=")
-		if !ok || strings.TrimSpace(k) != key {
-			continue
-		}
-		if e != want {
-			return true
-		}
-	}
-	return false
-}
 
 // parseFieldArray normalizes an existing `field` param into a []string
 // plus a key→value index. Entries the CLI would reject anyway (no '=')
