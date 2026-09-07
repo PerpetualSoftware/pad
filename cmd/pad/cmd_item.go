@@ -726,7 +726,18 @@ func showCmd() *cobra.Command {
 			}
 
 			if formatFlag == "markdown" {
-				fmt.Println(item.Content)
+				// The body is written VERBATIM — no trailing newline of our
+				// own (IDEA-2937). `--format markdown` is the machine-facing
+				// surface: agents and tools read a body here and write the
+				// same bytes back with `item update --stdin`, and the write
+				// path stores them exactly as sent. A `Println` here made
+				// that round trip append one newline per cycle, without
+				// bound, and made `$(...)` capture LOSE one instead, since
+				// command substitution strips every trailing newline. Both
+				// directions were this one line. The human-facing surface is
+				// the default table format below, which still ends the body
+				// with a newline.
+				fmt.Print(item.Content)
 				return nil
 			}
 
