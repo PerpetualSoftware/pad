@@ -80,31 +80,32 @@
 				// Still unreachable. The next sync result asks again; throwing
 				// out of a subscriber would take the other subscribers with it.
 			}
-			// ONE collection load, two reasons to want it (codex round 1). The
-			// recovery reason and the refresh reason are different — we are
-			// MISSING the list, versus the server says the list CHANGED — but
-			// they are not exclusive, and asking them as separate `if`s fired
-			// two requests whenever both were true. The store's load-generation
-			// guard drops the older response rather than corrupting anything,
-			// so this was waste and a superseded request rather than a wrong
-			// list; it is still a request nobody needed.
+			// ONE collection call, and WHICH one is the caller's intent (codex
+			// rounds 1 and 2). Two reasons to want the list, and they are not
+			// the same request:
 			//
-			// `collectionsAreFreshFor` is the right recovery predicate rather
-			// than `collections.length === 0`: it already distinguishes "this
-			// workspace's list" from a stale previous workspace's, and a
-			// genuinely empty workspace stamps its slug on success, so it does
-			// not re-fire for one.
-			const collectionsMissing = !collectionStore.collectionsAreFreshFor(ws);
+			//   - the server says the list CHANGED, so a fetch issued before
+			//     that change cannot answer it — `loadCollections`, always a
+			//     real request;
+			//   - we simply do not HAVE this workspace's list, which a request
+			//     already in flight answers perfectly — `ensureCollections`,
+			//     which joins it instead of issuing a second one.
+			//
+			// Asking them as two separate `if`s fired two requests whenever both
+			// were true (round 1), and the recovery arm alone still raced the
+			// workspace effect's own in-flight load (round 2). The store owns
+			// the join because only the store can see what is in flight.
 			const collectionsChanged =
 				result.type === 'full_refresh' ||
 				(result.type === 'incremental' && result.changes.collections_changed);
-			if (collectionsMissing || collectionsChanged) {
-				collectionStore.loadCollections(ws).catch(() => {
-					// Same posture as the identity recovery above: the next sync
-					// result asks again, and throwing out of a subscriber would
-					// take the other subscribers with it.
-				});
-			}
+			const collectionWork = collectionsChanged
+				? collectionStore.loadCollections(ws)
+				: collectionStore.ensureCollections(ws);
+			collectionWork.catch(() => {
+				// Same posture as the identity recovery above: the next sync
+				// result asks again, and throwing out of a subscriber would take
+				// the other subscribers with it.
+			});
 			// Always reconcile, even for `caught_up` — SSE delivers events, not
 			// delta data, and a previous failure won't recover without a fresh
 			// attempt. The localIndex cursor is independent of

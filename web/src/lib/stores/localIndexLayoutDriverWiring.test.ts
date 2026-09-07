@@ -80,10 +80,8 @@ describe('TASK-2200 — the same layout drives shell recovery', () => {
 		// changed-signal term left standing — which is precisely the state this
 		// unit found the file in, and the state a returning server does not
 		// reach (see below).
-		expect(layoutSource).toContain(
-			'const collectionsMissing = !collectionStore.collectionsAreFreshFor(ws)',
-		);
-		expect(layoutSource).toContain('if (collectionsMissing || collectionsChanged)');
+		expect(layoutSource).toContain('collectionStore.ensureCollections(ws)');
+		expect(layoutSource).toContain('collectionsChanged\n\t\t\t\t? collectionStore.loadCollections(ws)');
 	});
 
 	it('does not gate recovery on the full_refresh signal', () => {

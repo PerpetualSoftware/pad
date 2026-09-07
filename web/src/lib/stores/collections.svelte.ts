@@ -34,6 +34,17 @@ let loading = $state(false);
 // (Codex review). Plain counter — not reactive; it only fences async writes.
 let collectionsLoadSeq = 0;
 
+// The workspace and promise of the `loadCollections` request currently in
+// flight, or nulls when none is (TASK-2200). `loading` cannot answer this: it
+// is a single global flag with no workspace on it, so it cannot tell a caller
+// asking about workspace A that the in-flight request is for B.
+//
+// Consumed only by `ensureCollections`, and deliberately not by
+// `loadCollections` itself — see that method's note on why coalescing every
+// caller would be wrong.
+let inFlightWs: string | null = null;
+let inFlightLoad: Promise<void> | null = null;
+
 export const collectionStore = {
 	get collections() { return collections; },
 	get items() { return items; },
@@ -72,9 +83,45 @@ export const collectionStore = {
 		return collections.filter(c => !c.is_default).sort((a, b) => a.sort_order - b.sort_order);
 	},
 
+	/**
+	 * ENSURE this workspace's collection list exists — as distinct from
+	 * `loadCollections`, which fetches a fresh one (TASK-2200).
+	 *
+	 * Two intents, and only one of them can be satisfied by a request that is
+	 * already in flight:
+	 *
+	 *   - "I need A list" (this method). A request issued a moment ago answers
+	 *     it perfectly, so joining it is right and a second fetch is waste.
+	 *   - "I need a FRESH list" (`loadCollections`). The caller knows the list
+	 *     MOVED — an SSE rename, a settings save, a server `collections_changed`
+	 *     — and a request issued BEFORE that move cannot answer it. Coalescing
+	 *     there would quietly serve pre-change data.
+	 *
+	 * That is why the coalescing lives here rather than inside `loadCollections`
+	 * where it would cover every caller. Every other call site in the app is the
+	 * second intent and is correctly left alone; this is the only one that is
+	 * the first (codex round 2 asked for the population, and that is it).
+	 *
+	 * No-ops when the list is already this workspace's. Never rejects for the
+	 * fresh-already case; a genuine fetch failure rejects like `loadCollections`.
+	 */
+	async ensureCollections(ws: string): Promise<void> {
+		if (collectionsWorkspace === ws) return;
+		// Join, rather than issue a second request for the same answer. The
+		// joined promise settles when THAT request does, which is the semantics
+		// the caller wants: "tell me when a list exists".
+		if (inFlightWs === ws && inFlightLoad) return inFlightLoad;
+		return collectionStore.loadCollections(ws);
+	},
+
 	async loadCollections(ws: string) {
 		const seq = ++collectionsLoadSeq;
 		loading = true;
+		// Published for `ensureCollections` to join. Recorded per WORKSPACE: a
+		// switch can leave A's request in flight while B's starts, and a joiner
+		// asking about A must not be handed B's promise.
+		inFlightWs = ws;
+		const load = (async () => {
 		try {
 			const result = await api.collections.list(ws);
 			// Drop a stale response: a newer loadCollections (e.g. a workspace
@@ -93,7 +140,16 @@ export const collectionStore = {
 			// Only the latest in-flight load owns the `loading` flag — an older
 			// load resolving late must not flip it off while the newer one runs.
 			if (seq === collectionsLoadSeq) loading = false;
+			// Same ownership rule for the join slot: an older load settling late
+			// must not clear a newer one's promise out from under a joiner.
+			if (seq === collectionsLoadSeq) {
+				inFlightWs = null;
+				inFlightLoad = null;
+			}
 		}
+		})();
+		inFlightLoad = load;
+		return load;
 	},
 
 	async loadItems(ws: string, collectionSlug?: string, params?: Record<string, string | number | boolean | undefined>) {
