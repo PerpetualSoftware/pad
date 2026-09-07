@@ -162,8 +162,9 @@ class WorkspaceState {
 	// request is issued, and a write authorised under a superseded scope is
 	// refused on return. Not persisted; a session-local ordering token.
 	//
-	// RECONCILE LOOPS DO NOT USE THIS — they use the module-level
+	// THE RECONCILE LOOP DOES NOT USE THIS — it uses the module-level
 	// `reconcileTokens` map (TASK-2909; moved out of the state by IDEA-2913).
+	// Plural until TASK-2921, which made the two copies one `reconcileWorkspace`.
 	// They did until then, which is what made a settle bump here look free: it
 	// would have answered their question and silently broken this one, refusing
 	// writes issued after the new snapshot was already installed.
@@ -387,7 +388,8 @@ function cursorAsNum(c: string): number {
  * doors, because a rule landing at one door and not its sibling is the failure
  * PLAN-2903 has now hit five times — including once inside this very file, where
  * `bootstrap`'s reconcile loop cleared `pendingResync` directly instead of going
- * through `clearAskIfSettled`.
+ * through `clearAskIfSettled`. (That particular pair is gone: TASK-2921 made the
+ * two reconcile loops one function. The lesson stands; the instance is history.)
  *
  * `<=`, not `<`: the eviction IS the row's change at that seq, so a row offered
  * AT the floor is the same news, not newer news. Only a strictly higher seq is
@@ -404,8 +406,8 @@ function cursorAsNum(c: string): number {
  *
  * 5000 is `DefaultItemChangesLimit` in `internal/store/items.go` — the server's
  * per-page cap on `/items-changes`, and the one that applies here: the client
- * method takes an optional `limit` and both live callers (`deltaSync` and
- * `bootstrap`'s reconcile loop) pass none. Sizing the map to a full page means a
+ * method takes an optional `limit` and its one live caller — `reconcileWorkspace`,
+ * which both doors go through since TASK-2921 — passes none. Sizing the map to a full page means a
  * bulk move — the only way to add entries quickly — can never evict the floors
  * it is itself in the middle of recording. At a 36-byte uuid key plus a number
  * that is well under 1 MB per workspace, and it is session-local.
@@ -607,6 +609,48 @@ function durableEpochFor(state: WorkspaceState): string | null | undefined {
  * it against. Routing both doors through the public entry point is the point of
  * the unit, and this is the one place where doing so changes an answer.
  */
+/**
+ * The reaction to a 401 / 403 from a reconcile: the cached rows are no longer
+ * this caller's to display (TASK-1360). ONE definition, both doors (TASK-2921).
+ *
+ * `bootstrap` has done this since TASK-1360 and the collection route's
+ * `deltaSync` did a WEAKER version of it — `localIndex.reset(ws)`, which deletes
+ * the whole state entry. Now that the reconcile itself is shared, its failure
+ * reaction has to be too, or moving the driver to the layout would have silently
+ * dropped the purge on every route: the page was the only thing reacting, and
+ * the page is no longer the thing running the loop.
+ *
+ * Deliberately NOT `reset()`. `reset()` deletes the state entry, which loses the
+ * `'error'` bootstrapState the UI reads to tell "access revoked" from "still
+ * loading" — the collection route carried a page-local `deltaSyncFailed` flag
+ * purely to remember that across the deletion. Clearing in place keeps the
+ * distinction in the store, where every route can see it.
+ */
+function dropCacheForAuthError(ws: string, state: WorkspaceState): void {
+	state.bootstrapState = 'error';
+	state.pendingResync = false;
+	state.items.clear();
+	state.cursor = '0';
+	// This IS a drop, so it counts as one (TASK-2877): an in-flight write-back
+	// resolving after this would otherwise resurrect rows into a workspace whose
+	// access was just revoked. Bumped here rather than by funnelling through
+	// `reset()`, which also deletes the state entry.
+	markWorkspaceDropped(ws);
+	// Drop the MiniSearch index in lockstep with the cleared in-RAM rows so a
+	// stale search result can't navigate the user to a now-forbidden row
+	// (TASK-1363).
+	localSearch.reset(ws);
+	persistWipe(state.userId, ws).catch(() => undefined);
+}
+
+/** Is this the error that means the cache is no longer ours to show? */
+function isAuthError(err: unknown): boolean {
+	return (
+		err instanceof PadApiError &&
+		(err.code === 'forbidden' || err.code === 'unauthorized')
+	);
+}
+
 async function reconcileWorkspace(
 	ws: string,
 	state: WorkspaceState,
@@ -690,9 +734,9 @@ async function resyncProjectionScope(
 		// Mark the workspace as needing catch-up the instant a resync begins,
 		// regardless of caller. A resync installs the snapshot and pins the
 		// cursor, but the post-snapshot mutations aren't caught up until a
-		// reconcile loop drains from that cursor. The bootstrap reconcile loop
-		// clears this only on caughtUp; a page-driven resync (deltaSync) leaves
-		// it set, so a replay that fails or hits the 50-page cap keeps
+		// reconcile loop drains from that cursor. `reconcileWorkspace` — which
+		// both doors go through since TASK-2921 — clears this only on caughtUp,
+		// so a replay that fails or hits the 50-page cap keeps
 		// pendingResync=true and the next bootstrap() resumes instead of
 		// no-opping with racing mutations still missing. (A page resync that DOES
 		// catch up leaves it set too — the next bootstrap runs one harmless,
@@ -826,8 +870,11 @@ async function resyncProjectionScope(
 		// NOTE: deliberately do NOT clear pendingResync here. This resync only
 		// installs the authoritative snapshot and pins the cursor for replay;
 		// the post-snapshot mutations aren't caught up until the caller's delta
-		// loop drains from the pinned cursor. The bootstrap reconcile loop owns
-		// the flag — it clears pendingResync only once `caughtUp` is true, so a
+		// loop drains from the pinned cursor. `reconcileWorkspace` owns the flag
+		// — whichever door is running it, it clears pendingResync only once
+		// `caughtUp` is true (before TASK-2921 this said "the bootstrap reconcile
+		// loop", which had already stopped being the only clearer when TASK-2099
+		// gave the page `markCaughtUp`), so a
 		// replay that later fails transiently or hits the 50-page cap leaves
 		// pendingResync=true and the next bootstrap() resumes instead of
 		// no-opping with racing mutations still missing.
@@ -1098,33 +1145,11 @@ export const localIndex = {
 						// errors stay transient — cache stands and the
 						// next bootstrap() call retries the reconcile
 						// because `pendingResync` is still true.
-						if (
-							err instanceof PadApiError &&
-							(err.code === 'forbidden' || err.code === 'unauthorized')
-						) {
-							state.bootstrapState = 'error';
-							state.pendingResync = false;
-							state.items.clear();
-							state.cursor = '0';
-							// This IS a drop, so it counts as one
-							// (TASK-2877). `resetGenerationFor`'s
-							// contract is "the state you captured is
-							// gone", and an in-flight write-back that
-							// resolves after this would otherwise
-							// resurrect rows into a workspace whose
-							// access was just revoked — the case the
-							// accessor exists for. Bumped here rather
-							// than by funnelling through `reset()`,
-							// which also deletes the state entry and
-							// would change what the caller's redirect
-							// handler finds.
-							markWorkspaceDropped(ws);
-							// Drop the MiniSearch index in lockstep with
-							// the cleared in-RAM rows so a stale search
-							// result can't navigate the user to a
-							// now-forbidden row — TASK-1363.
-							localSearch.reset(ws);
-							persistWipe(userId, ws).catch(() => undefined);
+						if (isAuthError(err)) {
+							// The whole reaction lives in
+							// `dropCacheForAuthError` now, so the
+							// route door gets it too (TASK-2921).
+							dropCacheForAuthError(ws, state);
 							throw err;
 						}
 						// Transient network failure. Cache stands and
@@ -1466,9 +1491,9 @@ export const localIndex = {
 	 *
 	 * The sibling of `ensureProjectionScope`, and deliberately the same shape:
 	 * both answer "the server just told me my scope is not what this cache was
-	 * built under". This one exists for the page-driven `/items-changes` poll,
-	 * which is the path a long-lived session uses after bootstrap has settled
-	 * — bootstrap's own reconcile loop carries the same comparison inline.
+	 * built under". Since TASK-2921 there is ONE caller — `reconcileWorkspace`,
+	 * which `bootstrap` and the layout-driven `localIndex.reconcile` both go
+	 * through. Bootstrap used to carry the same comparison inline; it does not.
 	 *
 	 * Returns true when a resync ran, so the caller can skip applying a delta
 	 * that the snapshot has already superseded.
@@ -1500,8 +1525,9 @@ export const localIndex = {
 			// AN EMPTY RAM STATE IS NOT AN EMPTY CACHE. This is the silent
 			// adopt, and it is only safe once the durable cache has actually
 			// answered: `bootstrap` awaits `hydrate` before it merges anything,
-			// and an SSE-driven `deltaSync` runs on its own subscription rather
-			// than behind that await, so it can reach this line with RAM empty
+			// and an SSE-driven reconcile runs on its own subscription (the
+			// workspace layout's, since TASK-2921) rather than behind that
+			// await, so it can reach this line with RAM empty
 			// and IDB holding rows from a scope nobody has checked. Adopting
 			// there would stamp the new epoch onto the durable cache — via the
 			// delta this caller is about to apply — and the stale row would then
@@ -1584,11 +1610,15 @@ export const localIndex = {
 	 * Drive the workspace's reconcile loop (TASK-2921).
 	 *
 	 * The public door onto `reconcileWorkspace`, for callers that are not
-	 * `bootstrap` — today the collection route's `deltaSync`. Returns true if it
-	 * caught up, false if it hit the page cap, so the caller can distinguish
-	 * "current" from "gave up for now" in its own UI. Errors propagate: a 401 /
-	 * 403 means the cache is no longer the caller's to display and each door
-	 * still owns that reaction.
+	 * `bootstrap` — today the workspace layout, which drives it on every
+	 * `sync_required` and every non-stale item event. Returns true if it caught
+	 * up, false if it hit the page cap, so the caller can distinguish "current"
+	 * from "gave up for now".
+	 *
+	 * A 401 / 403 runs `dropCacheForAuthError` HERE and then rethrows. An earlier
+	 * draft of this comment said each door owned that reaction; that was true
+	 * when the collection route was the only caller and stopped being true in
+	 * the same unit, which is the whole hazard this sweep exists for.
 	 *
 	 * No-op returning true for an unhydrated workspace — there is nothing to
 	 * reconcile and no ask outstanding, so reporting catch-up is honest.
@@ -1596,7 +1626,19 @@ export const localIndex = {
 	async reconcile(ws: string): Promise<boolean> {
 		const state = workspaces.get(ws);
 		if (!state) return true;
-		return reconcileWorkspace(ws, state);
+		try {
+			return await reconcileWorkspace(ws, state);
+		} catch (err) {
+			// 401 / 403 means the cached rows are no longer this caller's to
+			// display, and the reaction is the STORE's (TASK-2921) — the same
+			// `dropCacheForAuthError` bootstrap uses. It has to be here rather
+			// than at the caller, because the caller is no longer the collection
+			// route: the layout drives this now, for every route, and a purge
+			// that only one page performed would have quietly stopped happening.
+			// Rethrown either way so the caller's redirect handler still sees it.
+			if (isAuthError(err)) dropCacheForAuthError(ws, state);
+			throw err;
+		}
 	},
 
 	/**

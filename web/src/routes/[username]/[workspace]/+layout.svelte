@@ -32,11 +32,44 @@
 		// Initialize the sync coordinator (sets up visibilitychange listener once)
 		syncService.init();
 
-		// Listen for sync results to refresh collection metadata
-		unsubscribeSync = syncService.onSync((result) => {
+		// Listen for sync results to refresh collection metadata, and to DRIVE
+		// THE WORKSPACE RECONCILE (TASK-2921 / IDEA-2901).
+		//
+		// The reconcile used to be driven from the collection route, so a
+		// `sync_required` arriving while the user sat on item detail, the graph,
+		// the copy dialog or any other workspace route reached nothing — the
+		// index was still live and still being READ (ItemPicker reads it from
+		// the copy dialog, which is not a collection route) with nothing
+		// reconciling it. This layout is mounted for every route under
+		// `[username]/[workspace]` and it is where the signal source itself
+		// lives — `syncService.init()` and `connectSSE()` below, `disconnect()`
+		// in onDestroy — so it is the owner whose lifetime actually matches the
+		// signal's. A store-owned subscription would have outlived its source.
+		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug) return;
 			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
 				collectionStore.loadCollections(wsSlug);
+			}
+			// Always reconcile, even for `caught_up` — SSE delivers events, not
+			// delta data, and a previous failure won't recover without a fresh
+			// attempt. The localIndex cursor is independent of
+			// syncService.lastSyncTime and per-row seq guards make repeated
+			// calls idempotent.
+			let caughtUp = false;
+			try {
+				caughtUp = await localIndex.reconcile(wsSlug);
+			} catch {
+				// 401/403 purge and the error banner are handled where the cache
+				// state is read — `bootstrapState` and `pendingResyncFor`. There
+				// is nothing route-specific to do here, and throwing out of a
+				// subscriber would take the other subscribers with it.
+			}
+			// `markSynced` advances syncService's OWN cursor and is workspace-
+			// level, so it moves here with the outcome it depends on. Only on a
+			// clean catch-up: a failed reconcile leaves the cursor where it is
+			// so the next tab-resume retries.
+			if (caughtUp && result.type === 'full_refresh') {
+				syncService.markSynced();
 			}
 		});
 
@@ -152,6 +185,23 @@
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
 			const activeItem = collectionStore.activeItem;
 			const isExternal = event.source !== 'web';
+
+			// Pull the row data for this event into the local index (TASK-2921).
+			// The SSE payload carries metadata only, so the reconcile is the only
+			// thing that fetches rows; `classifySSEEvent` short-circuits the
+			// duplicates the server's replay buffer re-delivers after a
+			// tab-resume. Deliberately NOT filtered by collection — an item moved
+			// into or out of any collection still needs its delta applied. This
+			// ran on the collection route until this unit, which is why an item
+			// created elsewhere never reached the index of a user sitting on a
+			// non-collection route.
+			if (wsSlug && localIndex.classifySSEEvent(wsSlug, event) !== 'stale') {
+				try {
+					await localIndex.reconcile(wsSlug);
+				} catch {
+					// As above: the cache-state readers own the reaction.
+				}
+			}
 
 			switch (event.type) {
 				case 'item_created': {
