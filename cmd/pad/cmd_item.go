@@ -1024,6 +1024,37 @@ Examples:
   pad item update DOC-3 --stdin < updated-doc.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// AN EMPTY --parent IS REFUSED, not ignored (BUG-2941) — and it is
+			// refused HERE, before the client is built or a single request is
+			// sent (codex round 1 [P1]). The first draft put this beside the
+			// parent handling further down, which is after the GetItem below,
+			// so a refused call still made a request; a test that only watched
+			// for WRITES would have passed a version that refuses after
+			// fetching, and did.
+			//
+			// `--parent ""` is naturally READ as "detach this item" — that is
+			// the caller's intent, never what the code did — and for a long
+			// time it exited 0 and printed the updated item while doing nothing:
+			// `hasFieldChanges` tests `parentRef != ""`, so an empty value
+			// contributed no patch and the key the server's clear-path needs
+			// (`parent` present, empty) never went on the wire. BUG-2078
+			// shipped `--clear-parent` as the working route and left this one
+			// looking like it worked; getpad.dev's CLI reference still taught
+			// the empty form as the way to detach, which is where the
+			// expectation came from.
+			//
+			// Refusing rather than quietly aliasing it to --clear-parent: two
+			// spellings for one operation is what produced the confusion, and
+			// naming the flag that does the job is the actionable answer.
+			//
+			// UPDATE only, deliberately. On `item create` an empty --parent
+			// expresses nothing to ignore — there is no parent to detach —
+			// and `--parent "$MAYBE_EMPTY"` is a normal shell idiom there.
+			// Same asymmetry as v0.18/v0.19's update-only clear flags.
+			if cmd.Flags().Changed("parent") && parentFlag == "" {
+				return fmt.Errorf(`--parent "" does not detach an item and never did — it is silently ignored; use --clear-parent to remove the parent link`)
+			}
+
 			client, _ := getClient()
 			ws := getWorkspace()
 			slug := args[0]
@@ -1323,7 +1354,7 @@ Examples:
 	cmd.Flags().StringVar(&priority, "priority", "", "update priority field")
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
-	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is silently ignored, it does NOT clear — use --clear-parent")
+	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is REFUSED, it does not clear — use --clear-parent")
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set a field (repeatable): --field key=value; refused for implementation_notes (use `pad item note`), decision_log (`pad item decide`) and convention (`pad library activate`)")

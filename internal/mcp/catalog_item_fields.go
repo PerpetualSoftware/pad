@@ -594,7 +594,34 @@ func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) 
 	if errRes != nil {
 		return errRes, nil
 	}
+	dropInertEmptyParent(out)
 	return env.Dispatch(ctx, []string{"item", "update"}, out)
+}
+
+// dropInertEmptyParent removes a present-but-empty `parent` before dispatch,
+// so the catalog keeps the meaning it has documented since v0.19 — an empty
+// DECLARED string means "not provided" on this tool, and `clear_parent` is
+// the way to detach.
+//
+// It exists because BUG-2941 made the CLI REFUSE `--parent ""`, and stdio MCP
+// shells out to the CLI: BuildCLIArgs emits this string flag whenever the key
+// is PRESENT, empty or not, so `parent: ""` became `--parent ""` and an agent
+// following the
+// documented convention would have been refused on stdio while the remote
+// door went on ignoring it (codex round 1 [P1]). That is a transport
+// divergence created by a fix for a transport-independent bug — the same
+// class BUG-2870 exists to close, so it is not acceptable as a side effect of
+// this one.
+//
+// Dropped rather than refused: the empty value is inert BY DOCUMENTED DESIGN
+// here, so nobody typed it meaning "detach" — unlike at the CLI, where a
+// human typing `--parent ""` is expressing exactly that. Same input, opposite
+// dispositions, because the two surfaces have opposite conventions about what
+// an empty declared string means.
+func dropInertEmptyParent(input map[string]any) {
+	if v, ok := input["parent"].(string); ok && v == "" {
+		delete(input, "parent")
+	}
 }
 
 // rejectFieldsParam wraps a non-writer pad_item action so a `fields`
