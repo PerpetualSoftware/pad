@@ -522,6 +522,64 @@ describe('TASK-2922 — what an optimistic upsert hands on', () => {
 		expect(second).toBe('e2');
 	});
 
+	/**
+	 * THE REPAIR PATHS, enumerated rather than sampled (CONVE-18).
+	 *
+	 * Rounds 2 and 3 both attacked the same claim — that a refused durable write
+	 * is always re-supplied — from different directions, which is a reviewer
+	 * sampling a population I had not written down. The population is small, so
+	 * here it is in full, with the leg that pins each:
+	 *
+	 *   1. A later delta CARRIES the row → pinned in
+	 *      localIndexScopeWriteFence.idb.test.ts.
+	 *   2. A later delta's change for that id is STALE or EQUAL, so RAM wins and
+	 *      the change itself is not written → `applyDelta` still pushes the
+	 *      EXISTING row into the persist set, precisely so the cursor it is
+	 *      about to advance cannot lap a row whose write may not have landed.
+	 *      Pinned below. (That guard predates this unit and was added for the
+	 *      same hazard in its fire-and-forget costume; the epoch refusal is a
+	 *      new way to reach it, not a new hole.)
+	 *   3. A later delta's change is at or below the cursor FLOOR, where
+	 *      `applyDelta` skips it entirely. Unreachable for the case at hand and
+	 *      no leg is owed: the row was refused because a MUTATION just produced
+	 *      it, so its seq is the newest in the workspace and is above this tab's
+	 *      cursor by construction, and deltas are contiguous in seq from that
+	 *      cursor, so no batch can advance past the row without containing it.
+	 *   4. A RESYNC → `persistReplace` writes the SERVER's snapshot, so the row
+	 *      returns if and only if it is still in scope, which is the correct
+	 *      answer either way. Deliberately NO leg: the RAM copy plays no part
+	 *      here, so any test I could write would assert that a snapshot I
+	 *      handed the mock came back out of it — true for every build, fixed or
+	 *      broken. The first draft of this file had exactly that leg. What the
+	 *      resync does with the snapshot is pinned by the `persistReplace`
+	 *      tests above.
+	 *   5. A cold boot → `/items-index` persists the post-merge snapshot. Covered
+	 *      by the bootstrap tests already in this file.
+	 */
+	it('a delta that does NOT carry the refused row still persists it, so the cursor cannot lap it', async () => {
+		await bootUnder('e1', [row('seed', 1, 'kept')]);
+		// The mutation response the durable cache refused. RAM holds it at seq 9.
+		localIndex.upsert(ws, row('mine', 9, 'kept'));
+		persistence.persistDelta.mockClear();
+
+		// A later delta whose change for that id is STALE — RAM wins, so nothing
+		// about the change is written — while the cursor advances well past it.
+		localIndex.applyDelta(
+			ws,
+			[
+				{ id: 'mine', seq: 8, collection_slug: 'kept' },
+				{ id: 'other', seq: 20, collection_slug: 'kept' },
+			] as never,
+			'20',
+			false,
+		);
+
+		const args = persistence.persistDelta.mock.calls.at(-1) as unknown[];
+		const persisted = (args[2] as ItemIndexRow[]).map((r) => r.id);
+		expect(persisted).toContain('mine');
+		expect(args[3]).toBe('20');
+	});
+
 	it('DEFERRED, NOT LOST — RAM keeps the row the durable cache refuses', async () => {
 		// The cost the fence takes deliberately. `upsert` writes RAM and the
 		// search index BEFORE it calls persistence, so a behind tab keeps
