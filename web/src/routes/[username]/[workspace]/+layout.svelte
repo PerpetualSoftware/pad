@@ -80,20 +80,30 @@
 				// Still unreachable. The next sync result asks again; throwing
 				// out of a subscriber would take the other subscribers with it.
 			}
-			if (!collectionStore.collectionsAreFreshFor(ws)) {
-				// The collections analogue, and `collectionsAreFreshFor` is the
-				// right predicate rather than `collections.length === 0`: it
-				// already distinguishes "this workspace's list" from a stale
-				// previous workspace's, and a genuinely empty workspace stamps
-				// its slug on success so this does not re-fire for it.
+			// ONE collection load, two reasons to want it (codex round 1). The
+			// recovery reason and the refresh reason are different — we are
+			// MISSING the list, versus the server says the list CHANGED — but
+			// they are not exclusive, and asking them as separate `if`s fired
+			// two requests whenever both were true. The store's load-generation
+			// guard drops the older response rather than corrupting anything,
+			// so this was waste and a superseded request rather than a wrong
+			// list; it is still a request nobody needed.
+			//
+			// `collectionsAreFreshFor` is the right recovery predicate rather
+			// than `collections.length === 0`: it already distinguishes "this
+			// workspace's list" from a stale previous workspace's, and a
+			// genuinely empty workspace stamps its slug on success, so it does
+			// not re-fire for one.
+			const collectionsMissing = !collectionStore.collectionsAreFreshFor(ws);
+			const collectionsChanged =
+				result.type === 'full_refresh' ||
+				(result.type === 'incremental' && result.changes.collections_changed);
+			if (collectionsMissing || collectionsChanged) {
 				collectionStore.loadCollections(ws).catch(() => {
-					// Same posture as above — the next result retries.
+					// Same posture as the identity recovery above: the next sync
+					// result asks again, and throwing out of a subscriber would
+					// take the other subscribers with it.
 				});
-			}
-			if (result.type === 'full_refresh' || (result.type === 'incremental' && result.changes.collections_changed)) {
-				// Distinct from the recovery above and still needed: this one
-				// refreshes a list we HAVE because the server says it CHANGED.
-				collectionStore.loadCollections(ws);
 			}
 			// Always reconcile, even for `caught_up` — SSE delivers events, not
 			// delta data, and a previous failure won't recover without a fresh

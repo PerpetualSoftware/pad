@@ -74,23 +74,26 @@ describe('TASK-2200 — the same layout drives shell recovery', () => {
 		expect(layoutSource).toContain('await workspaceStore.recoverIfMissing(ws)');
 	});
 
-	it('re-acquires the collection list on the freshness CONDITION, not on a signal type', () => {
-		// The condition is the anchor, not the call: `loadCollections(ws)` also
-		// appears in the `full_refresh` / `collections_changed` branch, which
-		// serves a different purpose (refresh a list we HAVE because the server
-		// says it changed). Anchoring on the call alone would pass with the
-		// recovery gate deleted and that branch left standing — which is
-		// precisely the state this unit found the file in.
-		expect(layoutSource).toContain('if (!collectionStore.collectionsAreFreshFor(ws))');
+	it('re-acquires the collection list on the freshness CONDITION, not on a signal type alone', () => {
+		// The MISSING term is the anchor, not the call. `loadCollections(ws)`
+		// would still appear with the recovery term deleted and the
+		// changed-signal term left standing — which is precisely the state this
+		// unit found the file in, and the state a returning server does not
+		// reach (see below).
+		expect(layoutSource).toContain(
+			'const collectionsMissing = !collectionStore.collectionsAreFreshFor(ws)',
+		);
+		expect(layoutSource).toContain('if (collectionsMissing || collectionsChanged)');
 	});
 
-	it('runs the recovery OUTSIDE the full_refresh branch', () => {
+	it('does not gate recovery on the full_refresh signal', () => {
 		// Measured, not assumed (syncPostOutageResultType.svelte.test.ts): a
-		// returning server reports `caught_up`, so recovery hung inside the
-		// full_refresh branch would not run in the case this unit exists for.
-		// The pin: the recovery calls appear BEFORE the branch opens.
+		// returning server reports `caught_up`, so recovery reachable only via
+		// `full_refresh` would not run in the case this unit exists for. The
+		// pin: identity recovery is not inside a result-type test, and the
+		// collection load is reachable on the missing term alone.
 		const recovery = layoutSource.indexOf('await workspaceStore.recoverIfMissing(ws)');
-		const branch = layoutSource.indexOf("if (result.type === 'full_refresh'");
+		const branch = layoutSource.indexOf("result.type === 'full_refresh'");
 		expect(recovery).toBeGreaterThan(-1);
 		expect(branch).toBeGreaterThan(-1);
 		expect(recovery).toBeLessThan(branch);
