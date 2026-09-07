@@ -819,6 +819,49 @@ const CmdhelpVersion = "0.1"
 //     listing action exists on this surface — a door with no handle.
 //     Adding them later is additive.
 //
+//     0.30 — BUG-2870. One `--field key=value` entry means ONE thing
+//     at every door. Six sites parsed that entry independently — `item
+//     create`, `item list`, `item update`, `item move` and `item copy`
+//     in cmd/pad, plus ingestFieldKVP here — in four spellings, and
+//     they disagreed: the CLI sites used both halves verbatim, so
+//     `field:[" effort=l"]` stored an undeclared field literally named
+//     " effort" and left the declared `effort` untouched, while this
+//     door TrimSpaced both halves and wrote `effort`. Same call, two
+//     stored keys, decided by nothing but the transport. All six now
+//     call items.SplitFieldEntry.
+//
+//     Two rules, deliberately asymmetric. A padded KEY is REFUSED at
+//     every door rather than trimmed at one: trimming silently
+//     retargets the write to a different field than the caller typed,
+//     and a workspace with a field key that genuinely contains a space
+//     would have its data quietly moved. A VALUE is carried VERBATIM
+//     at every door: trimming reinterprets a caller's bytes, and on a
+//     text field the padding is content. A padded value against a
+//     typed field is refused one layer down by validation, naming the
+//     field — the same answer at both doors, since 0.27 types declared
+//     fields server-side.
+//
+//     The catalog's conflict pass is re-grounded on the same change,
+//     because its rules were derived from this door's trimming: the
+//     0.27-era "COMPARED TRIMMED, EMITTED RAW" comparison now compares
+//     RAW (raw is what both doors write), a padded entry is refused in
+//     the pass rather than skipped, and parseFieldArray's refusal is
+//     propagated rather than swallowed — reshapeItemFields returns
+//     early with no `fields` object, so on the no-`fields` path that
+//     refusal had no second owner. Canonicalization and the
+//     re-emission path are gone with it: nothing rewrites a caller's
+//     key any more, it is refused.
+//
+//     Bump rationale: a BEHAVIOR bump on the 0.29 / 0.27 / 0.26 / 0.16
+//     / 0.10 / 0.9 grounds. No tool name, action enum or parameter
+//     shape changed. THE ONLY BEHAVIOUR CHANGE IS /MCP REFUSING WHAT
+//     IT SILENTLY ACCEPTED: a padded key, which it used to trim and
+//     write to a different field than the one written, and a padded
+//     value, which it used to trim and type. A caller writing
+//     canonical entries sees no difference. No escape hatch, for 0.29's
+//     reason — there is no legitimate call this refuses, only calls
+//     whose two readings this door used to choose between silently.
+//
 //     0.29 — PLAN-2857 U1 / TASK-2878. A `relation` field value must
 //     now NAME A LIVE ITEM in the collection that field declares.
 //     `internal/items` has only ever checked the SHAPE of a relation
@@ -880,7 +923,7 @@ const CmdhelpVersion = "0.1"
 //     there is no legitimate call this refuses — the carried-value
 //     case, which is the one with a real claim to leniency, is
 //     already exempt by provenance rather than by a flag.
-const ToolSurfaceVersion = "0.29"
+const ToolSurfaceVersion = "0.30"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
