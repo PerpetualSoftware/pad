@@ -2276,3 +2276,49 @@ func TestPadItemUpdate_EmptyCompatIDIsStillAClearAfterTheNilFix(t *testing.T) {
 		t.Fatalf("an empty compat ID is a CLEAR and still conflicts with a set: %s", msg)
 	}
 }
+
+// BUG-2941 made the CLI refuse `--parent ""`, and stdio MCP shells out to the
+// CLI — so without dropInertEmptyParent, BuildCLIArgs would turn the catalog's
+// documented-inert `parent: ""` into a refusal on stdio while the remote door
+// kept ignoring it. A transport divergence introduced by a fix, which is the
+// class BUG-2870 exists to close.
+func TestPadItemUpdate_EmptyParentIsDroppedNotDispatched(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"parent": "",
+		"status": "done",
+	})
+	if isErr {
+		t.Fatalf("an empty parent is inert on this tool, not an error: %s", msg)
+	}
+	if argsContainPair(disp.gotArgs, "--parent", "") {
+		t.Errorf("--parent \"\" must not reach the CLI — it is refused there now: %v", disp.gotArgs)
+	}
+	for _, a := range disp.gotArgs {
+		if a == "--parent" {
+			t.Errorf("no --parent flag should be emitted at all: %v", disp.gotArgs)
+		}
+	}
+	// The control: the rest of the call still dispatches, so dropping the key
+	// did not turn an ordinary update into a no-op.
+	if !argsContainPair(disp.gotArgs, "--status", "done") {
+		t.Errorf("the rest of the update must still be dispatched: %v", disp.gotArgs)
+	}
+}
+
+// ...and a REAL parent still reaches the CLI, so the drop is about emptiness
+// and not about the key.
+func TestPadItemUpdate_NonEmptyParentStillDispatched(t *testing.T) {
+	disp, msg, isErr := dispatchPadItem(t, map[string]any{
+		"action": "update",
+		"ref":    "TASK-5",
+		"parent": "PLAN-9",
+	})
+	if isErr {
+		t.Fatalf("a real parent must dispatch: %s", msg)
+	}
+	if !argsContainPair(disp.gotArgs, "--parent", "PLAN-9") {
+		t.Errorf("--parent PLAN-9 must reach the CLI: %v", disp.gotArgs)
+	}
+}

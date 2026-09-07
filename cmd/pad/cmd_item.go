@@ -1024,6 +1024,36 @@ Examples:
   pad item update DOC-3 --stdin < updated-doc.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// AN EMPTY --parent IS REFUSED, not ignored (BUG-2941) — and it is
+			// refused HERE, before the client is built or a single request is
+			// sent (codex round 1 [P1]). The first draft put this beside the
+			// parent handling further down, which is after the GetItem below,
+			// so a refused call still made a request; a test that only watched
+			// for WRITES would have passed a version that refuses after
+			// fetching, and did.
+			//
+			// `--parent ""` reads as "detach this item", and for a long time
+			// it exited 0 and printed the updated item while doing nothing:
+			// `hasFieldChanges` tests `parentRef != ""`, so an empty value
+			// contributed no patch and the key the server's clear-path needs
+			// (`parent` present, empty) never went on the wire. BUG-2078
+			// shipped `--clear-parent` as the working route and left this one
+			// looking like it worked; getpad.dev's CLI reference still taught
+			// the empty form as the way to detach, which is where the
+			// expectation came from.
+			//
+			// Refusing rather than quietly aliasing it to --clear-parent: two
+			// spellings for one operation is what produced the confusion, and
+			// naming the flag that does the job is the actionable answer.
+			//
+			// UPDATE only, deliberately. On `item create` an empty --parent
+			// expresses nothing to ignore — there is no parent to detach —
+			// and `--parent "$MAYBE_EMPTY"` is a normal shell idiom there.
+			// Same asymmetry as v0.18/v0.19's update-only clear flags.
+			if cmd.Flags().Changed("parent") && parentFlag == "" {
+				return fmt.Errorf(`--parent "" does not detach an item and never did — it is silently ignored; use --clear-parent to remove the parent link`)
+			}
+
 			client, _ := getClient()
 			ws := getWorkspace()
 			slug := args[0]
@@ -1083,31 +1113,6 @@ Examples:
 			// no longer clobber each other — the old read-modify-write here
 			// (fetch item, merge locally, send the whole blob) lost the later
 			// writer's change on the last write.
-			// AN EMPTY --parent IS REFUSED HERE, not ignored (BUG-2941).
-			//
-			// `--parent ""` reads as "detach this item", and for a long time
-			// it exited 0 and printed the updated item while doing nothing:
-			// `hasFieldChanges` tests `parentRef != ""`, so an empty value
-			// contributes no patch and the key the server's clear-path needs
-			// (`parent` present, empty) never goes on the wire. BUG-2078
-			// shipped `--clear-parent` as the working route but left this one
-			// looking like it worked, and the public CLI docs still taught it
-			// — which is where the expectation came from.
-			//
-			// Refusing rather than quietly aliasing it to --clear-parent: two
-			// spellings for one operation is what produced the confusion, and
-			// a caller who typed the empty form wanted a detach that this
-			// command did not perform. Naming the flag that does it is the
-			// actionable answer.
-			//
-			// UPDATE only, deliberately. On `item create` an empty --parent
-			// expresses nothing to ignore — there is no parent to detach —
-			// and `--parent "$MAYBE_EMPTY"` is a normal shell idiom there.
-			// Same asymmetry as v0.18/v0.19's update-only clear flags.
-			if cmd.Flags().Changed("parent") && parentFlag == "" {
-				return fmt.Errorf(`--parent "" does not detach an item and never did — it is silently ignored; use --clear-parent to remove the parent link`)
-			}
-
 			parentRef := parentFlag
 
 			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0 || clearParent

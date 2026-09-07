@@ -22,12 +22,15 @@ import (
 // the expectation came from.
 
 func TestItemUpdateParent_EmptyValueRefused(t *testing.T) {
-	var sawRequest bool
+	// ZERO requests, not "no writes" (codex round 1 [P1]). The first version
+	// of this test ignored GETs, and the first version of the fix refused
+	// AFTER the item fetch — so a refused call still hit the server and this
+	// test passed anyway. Counting every method is what makes it an
+	// instrument for "refused before anything happened".
+	var requests []string
 
 	setupFormatRoutingTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			sawRequest = true
-		}
+		requests = append(requests, r.Method+" "+r.URL.Path)
 		_ = json.NewEncoder(w).Encode(models.Item{Slug: "task-5", CollectionSlug: "tasks"})
 	}))
 	formatFlag = "table"
@@ -46,8 +49,9 @@ func TestItemUpdateParent_EmptyValueRefused(t *testing.T) {
 	if !strings.Contains(execErr.Error(), "--clear-parent") {
 		t.Errorf("refusal must point at --clear-parent; got %q", execErr)
 	}
-	if sawRequest {
-		t.Errorf("a refused --parent must not send a write")
+	if len(requests) != 0 {
+		t.Errorf("a refused --parent must not reach the server at all; it made %d request(s): %v",
+			len(requests), requests)
 	}
 }
 
