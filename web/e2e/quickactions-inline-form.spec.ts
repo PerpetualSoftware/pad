@@ -36,11 +36,11 @@ function authHeaders(fixture: SuiteFixture) {
 	return { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
 }
 
-// A plain collection with a minimal valid schema. Letters-only prefix and a
+// A plain collection with a minimal valid schema. Explicit prefix and a
 // timestamped name so the server-derived slug stays in sync with the name
-// (see pane-collection-migration-race.spec.ts::seedMigratableCollection for
-// why numeric-derived prefixes 404 by-ref lookups and out-of-sync name/slug
-// reassign the slug on the next save).
+// (see pane-collection-migration-race.spec.ts::seedMigratableCollection —
+// note the by-ref 404 described there was BUG-2943 and is fixed; the explicit
+// prefix now buys determinism, while the name/slug half still matters).
 async function seedCollection(
 	fixture: SuiteFixture,
 	request: APIRequestContext,

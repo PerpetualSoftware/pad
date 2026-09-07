@@ -33,7 +33,7 @@ nothing gets written until the user confirms.
 
 Detect which mode the user invoked by inspecting the first positional:
 
-- **Looks like a ref** (matches ` + "`^[A-Z]+-\\d+$`" + ` and resolves to a real item in the workspace) → **elaborate mode**. Load the item with ` + "`pad item show <ref> --format markdown`" + `, ask the user what they want to expand or clarify, and update the item via ` + "`pad item update <ref> --stdin`" + ` with the agreed-upon body.
+- **Looks like a ref** (matches ` + "`^[A-Z][A-Z0-9]*-\\d+$`" + ` and resolves to a real item in the workspace) → **elaborate mode**. Load the item with ` + "`pad item show <ref> --format markdown`" + `, ask the user what they want to expand or clarify, and update the item via ` + "`pad item update <ref> --stdin`" + ` with the agreed-upon body.
 - **Otherwise** → **create-new mode**. Run the full Conversation flow below to design and create a fresh plan.
 
 Quick-action prompts that invoke this playbook with a ref + title and trailing intent — e.g. ` + "`plan <REF> \"<title>\" — outline goals, deliverables, and timeline`" + ` (shortcut form ` + "`/pad plan …`" + ` in Claude Code) — are the elaborate-mode entry point; the freeform text after the title is conversational context, not extra positional args.

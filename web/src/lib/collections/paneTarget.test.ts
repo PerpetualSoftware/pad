@@ -163,8 +163,8 @@ describe('isSamePaneTarget — same-item guard', () => {
 
 	it('an HREF ending in a ref-shaped segment IS read as a ref, now that the grammar admits digits', () => {
 		// BEHAVIOUR CHANGE, BUG-2943. This asserted `false`, on the reasoning
-		// that the server's parseItemRef required a LETTERS-ONLY prefix so
-		// "roadmap2-5" was not ref-shaped. The server dropped that rule — it
+		// that the server's parseItemRef USED TO REQUIRE a letters-only prefix,
+		// so "roadmap2-5" was not ref-shaped. It no longer does — it
 		// parses "roadmap2-5" as ROADMAP2-5, tries the ref, and falls back to
 		// a slug lookup only if none exists — and a client guard holding a
 		// grammar the server abandoned produces a DIFFERENT wrong answer
