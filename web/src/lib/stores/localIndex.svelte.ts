@@ -1168,21 +1168,20 @@ export const localIndex = {
 						await reconcileWorkspace(ws, state, isStale);
 						if (isStale()) return;
 					} catch (err) {
-						// THE AUTH BRANCH GOES BEFORE THE STALENESS BAIL, and the
-						// order is the whole fix (codex round 2 P1). On a 403 the
-						// API client's global handler has ALREADY called
-						// `reset(ws)`, which bumps this state's generation — so
-						// `isStale()` is true precisely in the case the branch
-						// below exists for, and checking it first returned before
-						// recording the revocation. The staleness guard stops
-						// stale WRITES; `dropCacheForAuthError`'s writes to a
-						// detached state are inert, and the part that matters is
-						// the module-level marker, which is not a write to this
-						// state at all.
-						if (isAuthError(err)) {
-							dropCacheForAuthError(ws, state);
-							throw err;
-						}
+						// RETHROW an auth error WITHOUT reacting: the outer catch
+						// owns the reaction, and running it in both places ran it
+						// TWICE — two `markWorkspaceDropped` bumps, two search
+						// resets, and two async `persistWipe` calls that a retry
+						// could race (codex round 3 P2).
+						//
+						// It still has to come BEFORE the staleness bail, which is
+						// codex round 2's fix and independent of this one: the
+						// global 403 handler has already called `reset(ws)`,
+						// bumping this state's generation, so `isStale()` is true
+						// in exactly the case the auth path exists for. Bailing
+						// first would swallow the error here and the outer catch
+						// would never see it.
+						if (isAuthError(err)) throw err;
 						if (isStale()) return;
 						// Transient network failure. Cache stands and
 						// state stays 'ready' so the UI keeps working.

@@ -147,6 +147,44 @@ describe('the reconcile’s auth-error reaction', () => {
 		expect(localIndex.accessRevokedFor(ws)).toBe(true);
 	});
 
+	it('reacts exactly ONCE when the error crosses two catches', async () => {
+		// bootstrap's inner catch rethrows an auth error and its outer catch owns
+		// the reaction. An earlier draft reacted in both, so one 403 ran
+		// `markWorkspaceDropped`, `localSearch.reset` and an async `persistWipe`
+		// TWICE — and a retry could race the second wipe against freshly
+		// persisted rows (codex round 3 P2).
+		//
+		// `resetGenerationFor` counts drops, so it is the observable: one
+		// revocation, one drop of ours. The global handler's own `reset` is the
+		// other one, and it is fired by the test's mock exactly once, so the
+		// delta across the call is what discriminates.
+		await boot();
+		vi.spyOn(api.items, 'listIndex').mockResolvedValue({
+			items: [row('keeper', 1, 'kept')],
+			total: 1,
+			cursor: '10',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-2',
+		});
+		vi.spyOn(api.items, 'changes').mockResolvedValue({
+			changes: [],
+			cursor: '10',
+			includes_unparented_metadata: false,
+			access_epoch: 'epoch-2',
+		});
+		await localIndex.ensureAccessScope(ws, 'epoch-2');
+
+		const before = localIndex.resetGenerationFor(ws);
+		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
+			localIndex.reset(ws); // the global handler's half: one drop
+			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });
+		});
+		await expect(localIndex.bootstrap(ws, { userId: null })).rejects.toThrow();
+
+		// One drop from the global handler + one from our single reaction.
+		expect(localIndex.resetGenerationFor(ws) - before).toBe(2);
+	});
+
 	it('a fresh bootstrap clears the revoked marker, so the Retry CTA works', async () => {
 		await boot();
 		vi.spyOn(api.items, 'changes').mockImplementation(async () => {
