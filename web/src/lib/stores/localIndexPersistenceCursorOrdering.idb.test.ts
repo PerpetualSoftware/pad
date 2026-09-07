@@ -131,6 +131,39 @@ describe('TASK-2906 — the durable cursor never moves backward', () => {
 		expect(await rawItem(U, WS, 'revoked')).toBeDefined();
 	});
 
+	it('carries the stored epoch when the delta declines to vouch for one (TASK-2909)', async () => {
+		const U = null;
+		const WS = 'ws-2909-carry-epoch';
+		const mod = await loadPersistence();
+		const { persistReplace, persistDelta, hydrate } = mod;
+
+		await persistReplace(U, WS, [row('a', 1)], '10', false, 'e1');
+		// `undefined` is CARRY THE STORED EPOCH, and it is distinct from an
+		// explicit null: a delta that cannot vouch for the epoch must not
+		// clobber one a replace has just correctly recorded, which is reachable
+		// because the caller cannot vouch for the whole window between a resync
+		// installing its snapshot and the replace resolving.
+		await persistDelta(U, WS, [row('b', 20)], '20', false, undefined);
+
+		const after = await hydrate(U, WS);
+		expect(after.accessEpoch).toBe('e1');
+		expect(after.cursor).toBe('20');
+	});
+
+	it('still writes an explicit null when the caller passes one', async () => {
+		const U = null;
+		const WS = 'ws-2909-explicit-null';
+		const mod = await loadPersistence();
+		const { persistReplace, persistDelta, hydrate } = mod;
+
+		// The carry-over must not swallow a deliberate "no baseline" — an older
+		// server sends no epoch at all, and that absence has to reach disk.
+		await persistReplace(U, WS, [row('a', 1)], '10', false, 'e1');
+		await persistDelta(U, WS, [row('b', 20)], '20', false, null);
+
+		expect((await hydrate(U, WS)).accessEpoch).toBeNull();
+	});
+
 	it('accepts a batch at the SAME cursor — equal is not behind', async () => {
 		const U = null;
 		const WS = 'ws-2906-equal';
