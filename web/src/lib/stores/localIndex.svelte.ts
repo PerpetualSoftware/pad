@@ -180,6 +180,41 @@ class WorkspaceState {
 	// the race it guards is within a single session.
 	fencedIds = new Set<string>();
 
+	// `movedOutFloor` maps an item id to the `seq` at which THIS session consumed
+	// a `moved_out` eviction for it (TASK-2920 / PLAN-2903 item 6). It is a
+	// per-id SEQ FLOOR, not a blocklist, and the distinction is the whole design:
+	// a row is refused only while the evidence offered for it is NOT NEWER than
+	// the eviction, so a genuine re-add — which the server stamps with a fresh,
+	// higher seq — is admitted without anything having to expire or be cleaned
+	// up. Correctness therefore does not depend on any pruning.
+	//
+	// It exists because `applyDelta`'s `moved_out` branch is a HARD evict
+	// (`state.items.delete`), which leaves no row for the ordinary
+	// `existing.seq` guards to compare against. Every door that merges rows
+	// FETCHED OR READ BEFORE the eviction was consumed therefore saw an absent
+	// id and reinstated the row: the cold `/items-index` snapshot and the warm
+	// IDB hydrate (both via `mergeRow`), the resync snapshot, and a stale
+	// optimistic `upsert`.
+	//
+	// The values compared are `seq` against `seq`, which IS orderable —
+	// strictly monotonic per workspace — unlike `access_epoch`, whose
+	// unorderability is what defeated the fences on IDEA-2898's abandoned
+	// branch. PLAN-2903's working rule asks that this be stated rather than
+	// assumed, so: this fence is entitled to say "older".
+	//
+	// Not persisted, for the same reason `fencedIds` is not: the eviction it
+	// records reaches IDB atomically with the cursor advance in the same
+	// `persistDelta` call, so a reload finds the row already gone from disk and
+	// the cursor already past it — there is no window on the other side to
+	// guard. The map guards a within-session race only.
+	// BOUNDED, and NOT by the `delete` on the authoritative re-add paths: that
+	// lift fires only when an item comes BACK, which by definition never happens
+	// for one that moved out permanently — so it prunes exactly the entries that
+	// were already harmless and none of the ones that accumulate (codex round 1
+	// P2, against the first draft of the comment above, which implied otherwise).
+	// `noteMovedOut` caps the map; see `MOVED_OUT_FLOOR_CAP`.
+	movedOutFloor = new Map<string, number>();
+
 	// `pendingRetags` records collection renames (collection id → latest new
 	// slug) seen via `retagCollection` (BUG-2601). A rename event can land
 	// BEFORE this workspace's rows exist (SSE connects fast; bootstrap's warm
@@ -345,6 +380,90 @@ function cursorAsNum(c: string): number {
 }
 
 /**
+ * Is this row older evidence than an eviction this session already consumed?
+ * (TASK-2920.)
+ *
+ * ONE function rather than the comparison written at each of the four write
+ * doors, because a rule landing at one door and not its sibling is the failure
+ * PLAN-2903 has now hit five times — including once inside this very file, where
+ * `bootstrap`'s reconcile loop cleared `pendingResync` directly instead of going
+ * through `clearAskIfSettled`.
+ *
+ * `<=`, not `<`: the eviction IS the row's change at that seq, so a row offered
+ * AT the floor is the same news, not newer news. Only a strictly higher seq is
+ * evidence the row came back.
+ *
+ * A row with NO `seq` is admitted. There is genuinely no basis to order it, and
+ * this file already resolves that case the same way in `upsert` ("Rows or peers
+ * missing `seq` overwrite unconditionally"). The cost is bounded to a legacy /
+ * mixed-deployment server that stamps no seq; refusing instead would drop rows
+ * permanently in that deployment, which is the worse of the two failures.
+ */
+/**
+ * How many eviction floors one workspace keeps (TASK-2920, codex round 1 P2).
+ *
+ * 5000 is `DefaultItemChangesLimit` in `internal/store/items.go` — the server's
+ * per-page cap on `/items-changes`, and the one that applies here: the client
+ * method takes an optional `limit` and both live callers (`deltaSync` and
+ * `bootstrap`'s reconcile loop) pass none. Sizing the map to a full page means a
+ * bulk move — the only way to add entries quickly — can never evict the floors
+ * it is itself in the middle of recording. At a 36-byte uuid key plus a number
+ * that is well under 1 MB per workspace, and it is session-local.
+ *
+ * Oldest-first eviction, which is the direction that matters: an entry's whole
+ * job is to outlive row sets FETCHED BEFORE IT, so the oldest entry is the one
+ * whose racing fetches are likeliest to have long since landed.
+ *
+ * WHAT THE CAP DOES NOT CLOSE, stated plainly because a bound that reads as a
+ * guarantee is worse than one that reads as a bound (codex round 2 P2). The
+ * reconcile loop PAGES, so more than one page of evictions can be consumed
+ * inside a single in-flight snapshot; past 5000 of them the oldest floors are
+ * gone before that snapshot merges, and those ids can be reinstated exactly as
+ * they were before this fence existed. Every id under the cap is still
+ * protected, so the cap strictly reduces the exposure and never widens it — but
+ * it does not eliminate it.
+ *
+ * Closing it needs a different mechanism, not a bigger number: the cold path
+ * would have to PIN its cursor to the snapshot's the way `resyncProjectionScope`
+ * already does, so the replay re-delivers every eviction in the gap and no
+ * per-id record is load-bearing at all. That is a change to the cold path's
+ * cursor contract and it interacts with TASK-2906's durable monotonicity gate,
+ * so it is filed rather than smuggled in here — see TASK-2920's trail.
+ */
+const MOVED_OUT_FLOOR_CAP = 5000;
+
+/**
+ * Record that an eviction for `id` was consumed at `seq`, keeping the map
+ * bounded (TASK-2920).
+ *
+ * Highest wins, because the floor must never regress. A floor RAISED in place
+ * deliberately keeps its original insertion position rather than moving to the
+ * end: `Map` iteration order is what the cap evicts by, and a re-raise is the
+ * same eviction learned about twice, not a newer one to give a fresh lease.
+ */
+function noteMovedOut(state: WorkspaceState, id: string, seq: number): void {
+	const floor = state.movedOutFloor.get(id);
+	if (floor !== undefined) {
+		if (seq > floor) state.movedOutFloor.set(id, seq);
+		return;
+	}
+	state.movedOutFloor.set(id, seq);
+	while (state.movedOutFloor.size > MOVED_OUT_FLOOR_CAP) {
+		const oldest = state.movedOutFloor.keys().next();
+		if (oldest.done) break;
+		state.movedOutFloor.delete(oldest.value);
+	}
+}
+
+function refusedByMovedOut(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
+	const floor = state.movedOutFloor.get(row.id);
+	if (floor === undefined) return false;
+	const seq = (row as ItemIndexRow).seq;
+	if (seq === undefined) return false;
+	return seq <= floor;
+}
+
+/**
  * Apply a single row to a workspace's items map with the per-row
  * seq guard. Used by `bootstrap` (both warm and cold paths) and
  * `upsert`/`applyDelta` indirectly via the existing inline logic.
@@ -352,6 +471,7 @@ function cursorAsNum(c: string): number {
  * stale.
  */
 function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
+	if (refusedByMovedOut(state, row)) return false;
 	let next = toSkinny(row);
 	const existing = state.items.get(next.id);
 	next = preserveProjectionMetadata(existing, next);
@@ -563,6 +683,14 @@ async function resyncProjectionScope(
 			state.accessEpoch = fallbackEpoch;
 		}
 		for (const row of resp.items) {
+			// The snapshot can predate an eviction this session already consumed
+			// (TASK-2920). A resync SELF-HEALS that case — it pins the cursor to
+			// the snapshot's below, so the caller's next `/items-changes`
+			// re-delivers the eviction — so the guard here closes a visible
+			// flicker rather than a durable defect. It is applied anyway because
+			// this is the same door under a different roof, and the alternative
+			// is a rule that holds in `mergeRow` and not here.
+			if (refusedByMovedOut(state, row)) continue;
 			const next = toSkinny(row);
 			const existing = state.items.get(next.id);
 			if (
@@ -1244,6 +1372,11 @@ export const localIndex = {
 						// Authoritative re-add — the row is visible again, so
 						// lift any fence so its optimistic edits aren't dropped.
 						state.fencedIds.delete(change.id);
+						// Same for the eviction floor (TASK-2920). Dropping it is
+						// housekeeping, not correctness: this row's seq is now at
+						// or above the floor, so the floor could no longer refuse
+						// anything the ordinary `existing.seq` guards admit.
+						state.movedOutFloor.delete(change.id);
 					} else {
 						toPersist.push(existing);
 					}
@@ -1259,6 +1392,14 @@ export const localIndex = {
 				state.items.delete(change.id);
 				localSearch.remove(ws, change.id);
 				toRemove.push(change.id);
+				// Record the seq at which this eviction was consumed, so a row
+				// set fetched or read BEFORE it cannot reinstate the row after
+				// it (TASK-2920). Highest wins: two evictions for one id can
+				// arrive out of order across concurrent reconcile loops, and the
+				// floor must not regress.
+				if (change.seq !== undefined) {
+					noteMovedOut(state, change.id, change.seq);
+				}
 				continue;
 			}
 			// `deleted: true` is the server's derived view of
@@ -1275,6 +1416,10 @@ export const localIndex = {
 			toPersist.push(skinny);
 			// Authoritative re-add under the current scope — lift any fence.
 			state.fencedIds.delete(change.id);
+			// ...and the eviction floor (TASK-2920), for the same reason: the
+			// server has just said this row is visible again, at a seq at or
+			// above the floor.
+			state.movedOutFloor.delete(change.id);
 			// Keep the search index in lockstep with the canonical
 			// store — TASK-1363. Soft-deleted rows still index (the
 			// `_deleted` flag gates them out at search time) so a
@@ -1498,6 +1643,12 @@ export const localIndex = {
 		// fence lifts only via an authoritative applyDelta re-add or the next
 		// resync recomputing the set.
 		if (state.fencedIds.has(next.id)) return;
+		// Eviction floor (TASK-2920). `fencedIds` does not cover this: it holds
+		// ids a RESYNC dropped, and is REPLACED wholesale by the next resync,
+		// whereas a `moved_out` eviction is recorded by a delta and must outlive
+		// resyncs. The `sinceEpoch` guard above does not cover it either — that
+		// bumps on a resync, and an eviction is not one.
+		if (refusedByMovedOut(state, next)) return;
 		const existing = state.items.get(row.id);
 		next = preserveProjectionMetadata(existing, next);
 		if (
