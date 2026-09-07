@@ -398,8 +398,11 @@ func detectFieldConflicts(prefix string, input map[string]any) *mcp.CallToolResu
 		// subset to the whole: round 15 (a premise true of declared params,
 		// applied to the compat IDs), round 16's first draft (a check placed
 		// below the exemption so it covered one key class), and now a
-		// per-key property read as per-request. The predicate is now the
-		// actual question — will anything canonicalize THIS key.
+		// per-key property read as per-request. The predicate is the actual
+		// question it needs — is THIS key carried by the `fields` object.
+		// (Round 17 phrased it as "will anything canonicalize THIS key",
+		// which was the same test under a name that no longer describes
+		// anything the code does.)
 		coveredByFieldsObject := false
 		for _, c := range contribs {
 			if _, inObj := obj[c.key]; inObj {

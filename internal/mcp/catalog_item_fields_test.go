@@ -948,8 +948,11 @@ func TestPadItemUpdate_PaddedEqualDuplicateIsRefused(t *testing.T) {
 	}
 }
 
-// ...and an already-canonical equal duplicate is left exactly as it was, so
-// the re-emission does not churn a well-formed array.
+// ...and an equal duplicate written canonically is left exactly as it was —
+// the same assertion as before BUG-2870, when its point was that the
+// re-emission did not churn a well-formed array. There is no re-emission
+// now, so what it pins is narrower and still worth pinning: refusing the
+// padded form did not become refusing (or rewriting) the clean one.
 func TestPadItemUpdate_CanonicalEqualDuplicateIsUntouched(t *testing.T) {
 	disp, msg, isErr := dispatchPadItem(t, map[string]any{
 		"action": "update",
@@ -2165,8 +2168,12 @@ func TestPadItemUpdate_PaddedKeyWithWhitespaceValueIsRefused(t *testing.T) {
 	}
 }
 
-// ...and genuinely different values are still refused, so trimming for
-// comparison did not turn into "any two values agree".
+// ...and genuinely different values are still refused. Named for the trimmed
+// COMPARISON it was written against (BUG-2850, round 19); comparison is raw
+// now (BUG-2870), which makes this case strictly easier to catch — " x " and
+// " y " differ under either rule. Kept because the property is the same one:
+// a comparison rule loose enough to make two different values agree is the
+// failure it guards.
 func TestPadItemUpdate_TrimmedComparisonStillCatchesRealDifferences(t *testing.T) {
 	_, msg, isErr := dispatchPadItem(t, map[string]any{
 		"action": "update", "ref": "TASK-5",
