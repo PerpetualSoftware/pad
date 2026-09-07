@@ -186,7 +186,7 @@ func TestItemsViewsJSONB_ImportWorkspaceCoercesEmptyAndMalformed(t *testing.T) {
 		},
 	}
 
-	ws, err := s.ImportWorkspace(export, "Imported Coerce", owner.ID)
+	ws, err := s.ImportWorkspace(export, "Imported Coerce", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}

@@ -380,9 +380,11 @@ func (s *Server) requireWorkspaceCreationConsent(w http.ResponseWriter, r *http.
 }
 
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
-	// Consent gate first — before decoding the body, so a refusal never
+	// Every precondition that does not need the body, from the one place
+	// both mint doors call (BUG-2809). Before decoding, so a refusal never
 	// depends on body validity and cannot be probed by shape.
-	if !s.requireWorkspaceCreationConsent(w, r) {
+	mint, ok := s.beginWorkspaceMint(w, r)
+	if !ok {
 		return
 	}
 
@@ -392,35 +394,30 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Name == "" {
-		writeError(w, http.StatusBadRequest, "bad_request", "Name is required")
+	// The payload-shaped preconditions, from that same place.
+	if err := validateWorkspaceMintPayload(input.Name, &input.Settings); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	// Context is a create-only input concept (an export carries none), so it
+	// stays here rather than in the shared step. Settings are already
+	// normalized above, which is what this call would otherwise redo.
 	if err := normalizeWorkspaceInput(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 
-	// Attribute the creation surface AUTHORITATIVELY from the request's auth
-	// shape — never from the request body (WorkspaceCreate.Source is
-	// `json:"-"` for exactly this reason). CLI and Remote MCP callers
-	// present a bearer token / api-token context => "cli"; cookie-session
-	// web callers => "web". A cli/mcp origin is what tells the dashboard an
-	// agent is already connected right after `pad init`, so a web client
-	// must not be able to spoof it to suppress the connect-agent/onboarding
-	// prompts (BUG-1557).
-	_, input.Source = actorFromRequest(r)
-
-	// Set owner to the authenticated user
-	if userID := currentUserID(r); userID != "" {
-		input.OwnerID = userID
-	}
-
-	// Enforce workspace count limit (user-scoped)
-	if userID := currentUserID(r); userID != "" {
-		if !s.enforceUserPlanLimit(w, userID, "workspaces") {
-			return
-		}
+	// Attribution and ownership come from beginWorkspaceMint, which derived
+	// both AUTHORITATIVELY from the request's auth shape — never from the
+	// request body (WorkspaceCreate.Source is `json:"-"` for exactly this
+	// reason). A cli/mcp origin is what tells the dashboard an agent is
+	// already connected right after `pad init`, so a web client must not be
+	// able to spoof it to suppress the connect-agent/onboarding prompts
+	// (BUG-1557). The import door now gets the same value from the same
+	// place, which it previously got not at all.
+	input.Source = mint.Source
+	if mint.OwnerID != "" {
+		input.OwnerID = mint.OwnerID
 	}
 
 	ws, err := s.store.CreateWorkspace(input)
@@ -801,57 +798,31 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
-	// Consent gate — import is workspace creation through a second door
-	// (store.ImportWorkspace calls CreateWorkspace), so the same
-	// may_create_workspaces grant decides it. Ruled with the create-side
-	// gate on IDEA-2756. It sits ABOVE the Content-Type dispatch so it
-	// covers the tar.gz bundle path too — handleImportWorkspaceBundle is
-	// reachable only from here, so this is its only door — and above
-	// either body read, so a refused caller never uploads anything. The
-	// two reads have different bounds (the JSON path's 64 MiB
-	// decodeJSONWithLimit, the bundle path's own configurable and much
-	// larger limit); the gate precedes both, which is the property that
-	// matters here.
+	// Every pre-body precondition, from the one place both mint doors call
+	// (BUG-2809). This used to be two gates written out here, each added
+	// separately after a reviewer found the create door had it and this one
+	// did not: the OAuth consent grant (IDEA-2756) and the user-scoped plan
+	// limit (BUG-2793).
 	//
-	// Reachability, stated precisely because the create-side gate's is
-	// different: NO OAuth-bound caller can reach this handler today. The
-	// OAuth identity is stashed only by MCPBearerAuth, which is mounted
-	// on /mcp alone, so an OAuth connection reaches an /api/v1 handler
-	// only through the in-process MCP dispatcher — and its route table
-	// has no `workspace import` action. This gate is therefore correct
-	// but currently unexercised in production: it exists so that adding
-	// that action later cannot silently reopen the door, which is the
-	// failure mode a create-only fix would have left armed.
-	if !s.requireWorkspaceCreationConsent(w, r) {
+	// The PLACEMENT is the load-bearing part rather than the call. It sits
+	// ABOVE the Content-Type dispatch, so the tar.gz bundle path is covered
+	// by this same line rather than needing its own, and above either body
+	// read, so a refused caller never uploads anything. The two reads have
+	// different bounds (the JSON path's 64 MiB decodeJSONWithLimit, the
+	// bundle path's own configurable and much larger limit); the gate
+	// precedes both.
+	//
+	// Reachability of the consent half, stated precisely because the create
+	// door's is different: NO OAuth-bound caller can reach this handler
+	// today. The OAuth identity is stashed only by MCPBearerAuth, mounted on
+	// /mcp alone, so an OAuth connection reaches an /api/v1 handler only
+	// through the in-process MCP dispatcher — and its route table has no
+	// `workspace import` action. The gate is correct but currently
+	// unexercised in production: it exists so that adding that action later
+	// cannot silently reopen the door.
+	mint, ok := s.beginWorkspaceMint(w, r)
+	if !ok {
 		return
-	}
-
-	// Plan limit — the SECOND gate on workspace creation this door used to
-	// skip (BUG-2793). An import mints a workspace through the same
-	// store.CreateWorkspace, so a user at their plan's limit could exceed it
-	// by exporting any workspace and importing it back.
-	//
-	// Dave's day-63 ruling: an import IS a new workspace and counts, with no
-	// exemption for re-importing something you previously owned — export
-	// provenance is not trustworthy enough to gate billing on, and the
-	// at-limit case that deserves relief (undoing a delete) is served by the
-	// restore endpoint, which does not mint anything.
-	//
-	// Placed here for the same two reasons as the consent gate above it, and
-	// the placement is the load-bearing part rather than the call: ABOVE the
-	// Content-Type dispatch, so the tar.gz bundle path is covered by the same
-	// line rather than needing its own, and above either body read, so a
-	// refused caller never uploads. Self-hosted is unaffected —
-	// enforceUserPlanLimit returns true when cloudMode is off.
-	//
-	// The `userID != ""` guard mirrors the create side exactly. It is not
-	// defensive padding: a legacy workspace token resolves no user, and
-	// charging an unattributable import against nobody's plan is not a
-	// limit, it is a crash waiting for a nil.
-	if userID := currentUserID(r); userID != "" {
-		if !s.enforceUserPlanLimit(w, userID, "workspaces") {
-			return
-		}
 	}
 
 	// Content-Type dispatch:
@@ -870,7 +841,10 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	ct = strings.ToLower(strings.TrimSpace(ct))
 	if ct == "application/gzip" || ct == "application/x-gzip" || ct == "application/x-tar" {
-		s.handleImportWorkspaceBundle(w, r)
+		// mint travels as an ARGUMENT rather than on the Server: it is
+		// per-request state, and the two things it carries (owner, source)
+		// are exactly the two a concurrent request would differ on.
+		s.handleImportWorkspaceBundle(w, r, mint)
 		return
 	}
 
@@ -907,10 +881,26 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Optional: override workspace name via query param
 	newName := r.URL.Query().Get("name")
 
-	// Set the authenticated user as owner so the imported workspace is
-	// accessible and has correct owner_username for URL routing.
-	userID := currentUserID(r)
-	ws, err := s.store.ImportWorkspace(&data, newName, userID)
+	// The payload-shaped preconditions, from the same place the create door
+	// calls (BUG-2809). The EFFECTIVE name is checked — the override when
+	// one was given, the bundle's own otherwise — because that is what
+	// becomes the slug, and an empty name slugifies to an EMPTY SLUG, which
+	// is a routing key. Measured before the fix: the first such import took
+	// the empty slug and a second landed on "-2".
+	effectiveName := data.Workspace.Name
+	if newName != "" {
+		effectiveName = newName
+	}
+	if verr := validateWorkspaceMintPayload(effectiveName, &data.Workspace.Settings); verr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", verr.Error())
+		return
+	}
+
+	// Owner and source both come from the mint context resolved above, so
+	// an imported workspace is attributed the same way a created one is
+	// (BUG-1557 — import previously got no source at all).
+	userID := mint.OwnerID
+	ws, err := s.store.ImportWorkspace(&data, newName, userID, mint.Source)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "import_failed", err.Error())
 		return

@@ -408,7 +408,7 @@ func TestImportDeduplicatesAConflictingArchive(t *testing.T) {
 	dupe.Traits = convTraits
 	exp.Collections = append(exp.Collections, dupe)
 
-	imported, err := s.ImportWorkspace(exp, "import-dedupe-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "import-dedupe-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("an archive carrying a duplicate declaration failed to import: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestImportDeduplicatesAfterCanonicalInference(t *testing.T) {
 	rival.Traits = convTraits
 	exp.Collections = append(exp.Collections, rival)
 
-	imported, err := s.ImportWorkspace(exp, "infer-dedupe-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "infer-dedupe-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("import failed on an archive whose duplicate only appears after inference: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt(t *testin
 	archived.DeletedAt = "2026-01-02T03:04:05Z"
 	exp.Collections = append([]models.CollectionExport{archived}, exp.Collections...)
 
-	imported, err := s.ImportWorkspace(exp, "archived-trait-target", owner.ID)
+	imported, err := s.ImportWorkspace(exp, "archived-trait-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("import failed with an archived collection sharing a declaration: %v", err)
 	}

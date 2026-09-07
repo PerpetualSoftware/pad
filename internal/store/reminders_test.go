@@ -1065,7 +1065,7 @@ func TestRemindersRoundTripThroughExport(t *testing.T) {
 		t.Fatalf("export carried %d reminders, want 3", len(exp.Reminders))
 	}
 
-	dst, err := s.ImportWorkspace(exp, "reminder-export-target", owner.ID)
+	dst, err := s.ImportWorkspace(exp, "reminder-export-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -1357,7 +1357,7 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 		CreatedAt: exp.Reminders[0].CreatedAt, UpdatedAt: exp.Reminders[0].UpdatedAt,
 	})
 
-	dst, err := s.ImportWorkspace(exp, "import-norm-target", owner.ID)
+	dst, err := s.ImportWorkspace(exp, "import-norm-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
@@ -1420,7 +1420,7 @@ func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
 		CreatedAt: exp.Items[0].CreatedAt, UpdatedAt: exp.Items[0].UpdatedAt,
 	})
 
-	dst, err := s.ImportWorkspace(exp, "orphan-import-target", owner.ID)
+	dst, err := s.ImportWorkspace(exp, "orphan-import-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("one orphaned item aborted the whole import: %v", err)
 	}
@@ -1471,7 +1471,7 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 	exp.Reminders[0].AckedAt = "2026-01-01T00:00:00Z"
 	exp.Reminders[0].FiredAt = ""
 
-	dst, err := s.ImportWorkspace(exp, "ack-fire-target", owner.ID)
+	dst, err := s.ImportWorkspace(exp, "ack-fire-target", owner.ID, "")
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
