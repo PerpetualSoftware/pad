@@ -479,19 +479,81 @@ export async function hydrate(
  * `applyDelta`/`bootstrap` write-through. Batching matters when an
  * SSE flurry arrives — a single tx is much cheaper than N
  * one-shot puts.
+ *
+ * THE WRITER NAMES THE SCOPE IT BELIEVES IT HOLDS (TASK-2922, PLAN-2903 item
+ * 1), and a batch whose belief the cache contradicts writes NOTHING. This was
+ * the one durable door with no check of any kind, and it is the door a tab that
+ * has NOT learned about a scope change reaches the shared cache through — the
+ * other two writers already refuse or repair such a batch, in different ways
+ * and for different reasons:
+ *
+ *   - `persistReplace` is the resync itself, so it defines the scope rather
+ *     than claiming one.
+ *   - `persistDelta` carries or states an epoch alongside its rows, so a batch
+ *     from a behind tab drags the durable epoch BACK to that tab's older value.
+ *     The cache then DISAGREES with the server's next response, and that
+ *     disagreement is what triggers the repair. It self-heals.
+ *
+ * `persistUpserts` writes no meta row, and that is exactly why it needed this.
+ * Without the check, a stale row from a behind tab lands under the epoch the
+ * RESYNC stamped: the cache advertises the new scope over a row fetched under
+ * the old one, `ensureAccessScope` compares equal on every future poll AND
+ * every future cold boot, and nothing re-fires until the next access change. A
+ * permission-revoked row is then durable indefinitely.
+ *
+ * WHY THIS IS AN EQUALITY TEST AND NOT AN ORDERING ONE. An `access_epoch` is a
+ * hash of the live grant set; it can answer "same or different" and nothing
+ * else. PLAN-2903's working rule asks each unit to name whether the values its
+ * fence compares are orderable, and these are NOT — so this fence never says
+ * "older", "stale" or "behind", and cannot become an ordering claim wearing an
+ * equality costume, which is what defeated the fences on IDEA-2898's abandoned
+ * branch. Both sides are epochs; the only operator is `!==`.
+ *
+ * DEFERRED, NEVER LOST. A behind tab's optimistic upsert is dropped from the
+ * DURABLE cache until that tab resyncs — `localIndex.upsert` has already
+ * written RAM and the search index before it calls this, so the writing session
+ * sees its own row throughout, and its next `/items-changes` response carries
+ * the epoch it does not hold, which routes through `ensureAccessScope` into a
+ * resync whose snapshot re-includes the row. The write is delayed by one poll,
+ * not discarded. That is the trade this takes deliberately: a tab that cannot
+ * say what scope it holds has no business writing into a cache another tab
+ * reads.
+ *
+ * A cache with NO meta row is written normally. There is no scope claim on disk
+ * for the batch to contradict, and minting one here would invent a cursor — the
+ * same reason `persistAccessEpoch` declines to create the row.
  */
 export async function persistUpserts(
 	userId: string | null,
 	ws: string,
 	rows: ItemIndexRow[],
+	/**
+	 * The access epoch the WRITER believes describes the rows it is handing
+	 * over — `localIndex.upsert` passes `state.accessEpoch`. Required rather
+	 * than optional, so the type checker is what keeps a future call site from
+	 * skipping the guard by saying nothing; an optional parameter would make
+	 * the quiet call the unguarded one. `null` is a real value here, not an
+	 * absence: it is what a server that predates `access_epoch` produces, and
+	 * it matches the `null` such a server's deltas persist.
+	 */
+	expectedEpoch: string | null,
 ): Promise<void> {
 	if (!isSupported() || rows.length === 0) return;
 	const db = await open(userId, ws);
 	if (!db) return;
 	try {
-		const tx = db.transaction(['items', 'tombstones'], 'readwrite');
+		const tx = db.transaction(['items', 'meta', 'tombstones'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
 		const tombstones = tx.objectStore('tombstones');
+		// Read BEFORE any write is issued in this transaction, so a contradicted
+		// batch lands nothing at all — the same shape as the cursor gate in
+		// `persistDelta`, and for the same reason: a partial refusal would leave
+		// the cache in a state neither writer describes.
+		const storedMeta = await readSyncRow(tx.objectStore('meta'));
+		if (storedMeta && (storedMeta.accessEpoch ?? null) !== expectedEpoch) {
+			await tx.done.catch(() => undefined);
+			return;
+		}
 		for (const row of rows) {
 			const stored = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
 			const tombstone = (await tombstones.get(row.id)) as TombstoneRow | undefined;
@@ -713,17 +775,23 @@ export async function persistDelta(
  * connection sidesteps that — the clear and the puts commit together (or not
  * at all), and no connection is ever torn down.
  *
- * RESIDUAL (codex F2, lead-accepted). Clearing `tombstones` for ids the
- * snapshot omits reopens, for those ids, the cross-tab resurrection window a
- * tombstone otherwise closes: a stale `persistUpserts` from ANOTHER tab — one
- * that did not run this resync, so its RAM `fencedIds` does not cover the id —
- * can land after the clear and reinsert an omitted row behind the replacement
- * cursor. This is PRE-EXISTING to the item-clear below: before unit 2 the same
- * tab could resurrect the same row with no tombstone in the picture at all, so
- * tombstones only ever ADDED protection and this clear does not widen the
- * hazard. Within one tab the `fencedIds` guard refuses the stale upsert before
- * it reaches persistence. Self-healing: the next resync recomputes the fence
- * and re-drops the row. Not worth a key-diff in this tx to close.
+ * THE F2 RESIDUAL THIS NOTE USED TO RECORD IS CLOSED, and closed somewhere
+ * else (TASK-2922). Clearing `tombstones` for ids the snapshot omits does
+ * reopen, for those ids, the cross-tab resurrection window a tombstone
+ * otherwise closes: a stale `persistUpserts` from ANOTHER tab — one that did
+ * not run this resync, so its RAM `fencedIds` does not cover the id — could
+ * land after the clear and reinsert an omitted row behind the replacement
+ * cursor. The acceptance rested on that being self-healing, "the next resync
+ * recomputes the fence and re-drops the row", and the premise is false in the
+ * case that matters: the repair belongs to the tab that made the stale write,
+ * so a tab that goes away after its write commits — closed, frozen, discarded —
+ * takes the repair with it, and the row stays durable under an epoch the server
+ * agrees with. What closes it is the epoch check in `persistUpserts`, which
+ * refuses the write at its own door rather than teaching this transaction to
+ * diff keys. A tombstone is SEQ evidence and the thing being refused is a SCOPE
+ * fact; the key-diff fits the reachable case by coincidence of ordering, and
+ * cannot refuse a genuinely newer row the writing tab could still see under the
+ * old scope. So the clear below stays exactly as it was.
  */
 export async function persistReplace(
 	userId: string | null,

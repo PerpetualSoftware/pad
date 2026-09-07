@@ -1879,7 +1879,19 @@ export const localIndex = {
 		localSearch.upsert(ws, next);
 		// Write-through to IDB. Fire-and-forget; storage failures
 		// degrade silently.
-		persistUpserts(state.userId, ws, [next]).catch(() => undefined);
+		//
+		// The epoch names the scope THIS TAB believes it holds (TASK-2922), and
+		// the durable cache refuses the batch when it disagrees. The three
+		// guards above are all session-local — `scopeEpoch` bumps only when THIS
+		// tab resyncs, `fencedIds` is recomputed only by THIS tab's resync, and
+		// `movedOutFloor` records only evictions THIS tab consumed — so none of
+		// them can see a scope change another tab learned about. That is the gap
+		// the argument closes, and it closes it at the shared resource rather
+		// than by trying to teach this tab something it has not been told.
+		//
+		// RAM is already written above, deliberately: a refusal defers the
+		// durable copy by one poll, it does not discard the row.
+		persistUpserts(state.userId, ws, [next], state.accessEpoch).catch(() => undefined);
 	},
 
 	/**

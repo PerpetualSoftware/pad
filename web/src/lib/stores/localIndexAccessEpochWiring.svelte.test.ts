@@ -463,3 +463,85 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		expect(args[5]).toBe(localIndex.accessEpochFor(ws));
 	});
 });
+
+describe('TASK-2922 — what an optimistic upsert hands on', () => {
+	/**
+	 * Acquire a baseline the way a real session does — through a cold bootstrap
+	 * whose snapshot carries the epoch that describes it. Calling
+	 * `ensureAccessScope` on a never-bootstrapped workspace does NOT adopt: the
+	 * silent adopt is gated on the durable cache having answered (`cacheRead`),
+	 * so it returns with the baseline still null and every argument assertion
+	 * below would read `null` and pass for the wrong reason.
+	 */
+	async function bootUnder(epoch: string, rows: ItemIndexRow[]): Promise<void> {
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: rows,
+			total: rows.length,
+			cursor: String(rows.length),
+			includes_unparented_metadata: false,
+			access_epoch: epoch,
+		});
+		await localIndex.bootstrap(ws, { userId: null });
+	}
+
+	it('names the scope THIS TAB believes it holds, so the cache can contradict it', async () => {
+		// The fence itself is at the callee, pinned against a real database in
+		// localIndexScopeWriteFence.idb.test.ts. What cannot be seen there is
+		// whether the caller supplies the value — and a wrong or absent argument
+		// is silent in jsdom, where persistence is a no-op. So: assert the
+		// argument, per CONVE-19.
+		await bootUnder('e1', [row('seed', 1, 'kept')]);
+		persistence.persistUpserts.mockClear();
+
+		localIndex.upsert(ws, row('a', 2, 'kept'));
+
+		const args = persistence.persistUpserts.mock.calls.at(-1) as unknown[];
+		expect(args[3]).toBe('e1');
+		expect(args[3]).toBe(localIndex.accessEpochFor(ws));
+	});
+
+	it('CONTROL — the argument TRACKS the belief rather than being a fixed value', async () => {
+		// Without this leg the assertion above passes against a caller that
+		// hard-codes any single epoch, or that reads a copy captured once.
+		await bootUnder('e1', [row('seed', 1, 'kept')]);
+		localIndex.upsert(ws, row('a', 2, 'kept'));
+		const first = (persistence.persistUpserts.mock.calls.at(-1) as unknown[])[3];
+
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('seed', 1, 'kept')],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+			access_epoch: 'e2',
+		});
+		await localIndex.ensureAccessScope(ws, 'e2');
+		localIndex.upsert(ws, row('b', 3, 'kept'));
+		const second = (persistence.persistUpserts.mock.calls.at(-1) as unknown[])[3];
+
+		expect(first).toBe('e1');
+		expect(second).toBe('e2');
+	});
+
+	it('DEFERRED, NOT LOST — RAM keeps the row the durable cache refuses', async () => {
+		// The cost the fence takes deliberately. `upsert` writes RAM and the
+		// search index BEFORE it calls persistence, so a behind tab keeps
+		// serving its own row for the whole window; only the shared durable copy
+		// waits. Asserting the ORDER rather than just the end state, because a
+		// refactor that moved the persist ahead of the RAM write would turn a
+		// deferral into a loss and nothing else here would notice.
+		await bootUnder('e1', [row('seed', 1, 'kept')]);
+		persistence.persistUpserts.mockClear();
+
+		let ramHadRowAtPersistTime = false;
+		persistence.persistUpserts.mockImplementationOnce(async () => {
+			ramHadRowAtPersistTime = localIndex
+				.getByCollection(ws, 'kept')
+				.some((r) => r.id === 'local');
+			return undefined;
+		});
+		localIndex.upsert(ws, row('local', 5, 'kept'));
+
+		expect(ramHadRowAtPersistTime).toBe(true);
+		expect(localIndex.getByCollection(ws, 'kept').map((r) => r.id)).toContain('local');
+	});
+});

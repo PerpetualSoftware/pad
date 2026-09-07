@@ -43,11 +43,11 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const U = null;
 		const WS = 'ws-2633-evict';
 
-		await persistUpserts(U, WS, [row('x', 5)]);
+		await persistUpserts(U, WS, [row('x', 5)], null);
 		// A delta evicts x (moved-out) and advances the cursor to 10 — atomic.
 		await persistDelta(U, WS, [], '10', false, null, ['x']);
 		// The stale RAM snapshot for x (seq 5, behind the cursor) lands last.
-		await persistUpserts(U, WS, [row('x', 5)]);
+		await persistUpserts(U, WS, [row('x', 5)], null);
 
 		expect(await rawItem(U, WS, 'x')).toBeUndefined();
 		expect((await hydrate(U, WS)).items.find((i) => i.id === 'x')).toBeUndefined();
@@ -60,9 +60,9 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const U = null;
 		const WS = 'ws-2633-seqless';
 
-		await persistUpserts(U, WS, [row('x', 5)]);
+		await persistUpserts(U, WS, [row('x', 5)], null);
 		await persistDelta(U, WS, [], '10', false, null, ['x']);
-		await persistUpserts(U, WS, [row('x', undefined)]); // optimistic seq-less snapshot
+		await persistUpserts(U, WS, [row('x', undefined)], null); // optimistic seq-less snapshot
 
 		expect(await rawItem(U, WS, 'x')).toBeUndefined();
 	});
@@ -72,9 +72,9 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const U = null;
 		const WS = 'ws-2633-supersede';
 
-		await persistUpserts(U, WS, [row('x', 5)]);
+		await persistUpserts(U, WS, [row('x', 5)], null);
 		await persistDelta(U, WS, [], '10', false, null, ['x']); // tombstone x @ 10
-		await persistUpserts(U, WS, [row('x', 11)]); // newer than the tombstone
+		await persistUpserts(U, WS, [row('x', 11)], null); // newer than the tombstone
 
 		expect((await rawItem(U, WS, 'x'))?.seq).toBe(11);
 		expect(await rawTombstone(U, WS, 'x')).toBeUndefined(); // supersession cleared it
@@ -91,7 +91,7 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 
 		expect((await rawTombstone(U, WS, 'y'))?.deletedAtSeq).toBe(20);
 		// An in-flight stale upsert behind that cursor cannot bring y back.
-		await persistUpserts(U, WS, [row('y', 15)]);
+		await persistUpserts(U, WS, [row('y', 15)], null);
 		expect(await rawItem(U, WS, 'y')).toBeUndefined();
 	});
 
@@ -102,17 +102,17 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 
 		// A row is optimistically upserted before any sync writes meta.sync, then
 		// removed. With no persisted cursor the tombstone stamps the row's own seq.
-		await persistUpserts(U, WS, [row('z', 5)]);
+		await persistUpserts(U, WS, [row('z', 5)], null);
 		await persistRemovals(U, WS, ['z']);
 		expect((await rawTombstone(U, WS, 'z'))?.deletedAtSeq).toBe(5);
 
 		// A delayed stale snapshot of the same row cannot bring it back...
-		await persistUpserts(U, WS, [row('z', 5)]);
+		await persistUpserts(U, WS, [row('z', 5)], null);
 		expect(await rawItem(U, WS, 'z')).toBeUndefined();
 		expect((await hydrate(U, WS)).items.find((i) => i.id === 'z')).toBeUndefined();
 
 		// ...but a genuinely newer create still supersedes the tombstone.
-		await persistUpserts(U, WS, [row('z', 9)]);
+		await persistUpserts(U, WS, [row('z', 9)], null);
 		expect((await rawItem(U, WS, 'z'))?.seq).toBe(9);
 	});
 
@@ -121,14 +121,14 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		const U = null;
 		const WS = 'ws-2633-f4';
 
-		await persistUpserts(U, WS, [row('x', 5)]);
+		await persistUpserts(U, WS, [row('x', 5)], null);
 		await persistDelta(U, WS, [], '20', false, null, ['x']); // tombstone x @ 20
 		// An out-of-order lower-cursor eviction for the same id must not lower it.
 		await persistDelta(U, WS, [], '10', false, null, ['x']);
 		expect((await rawTombstone(U, WS, 'x'))?.deletedAtSeq).toBe(20);
 
 		// A snapshot at a seq between the two stamps is still refused.
-		await persistUpserts(U, WS, [row('x', 15)]);
+		await persistUpserts(U, WS, [row('x', 15)], null);
 		expect(await rawItem(U, WS, 'x')).toBeUndefined();
 	});
 });
@@ -143,7 +143,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 		const U = null;
 		const WS = 'ws-2634-race';
 
-		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'old-a')]);
+		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'old-a')], null);
 		// Collection renamed old-a → new-a: rows rewritten in place + overlay persisted.
 		await persistRetag(U, WS, 'coll-a', ['a1'], 'new-a');
 		expect((await rawItem(U, WS, 'a1'))?.collection_slug).toBe('new-a');
@@ -165,7 +165,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 		const U = null;
 		const WS = 'ws-2634-moved';
 
-		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'old-a')]);
+		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'old-a')], null);
 		// Rename coll-a → new-a: a1 rewritten in place + overlay persisted.
 		await persistRetag(U, WS, 'coll-a', ['a1'], 'new-a');
 		// a1 then genuinely MOVES to coll-b via an authoritative delta at a newer seq.
@@ -186,7 +186,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 		const U = null;
 		const WS = 'ws-2634-latest';
 
-		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'v0')]);
+		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'v0')], null);
 		await persistRetag(U, WS, 'coll-a', ['a1'], 'v1');
 		await persistRetag(U, WS, 'coll-a', ['a1'], 'v2');
 		expect(await rawRetags(U, WS)).toEqual({ 'coll-a': 'v2' });
@@ -197,7 +197,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 		const U = null;
 		const WS = 'ws-2634-replace';
 
-		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'old-a')]);
+		await persistUpserts(U, WS, [collRow('a1', 1, 'coll-a', 'old-a')], null);
 		await persistRetag(U, WS, 'coll-a', ['a1'], 'new-a');
 		expect(await rawRetags(U, WS)).toEqual({ 'coll-a': 'new-a' });
 
@@ -218,11 +218,11 @@ describe('BUG-2635 — equal-seq merge keeps a merged projection cross-tab', () 
 		const WS = 'ws-2635-merge';
 
 		// Tab B has the merged row: is_unparented projected in at seq 7.
-		await persistUpserts(U, WS, [row('x', 7, { is_unparented: true })]);
+		await persistUpserts(U, WS, [row('x', 7, { is_unparented: true })], null);
 		// Tab A holds a stale RAM snapshot at the SAME seq that never merged the
 		// projection, and persists it. Under the old blind-accept-at-equal-seq it
 		// would drop is_unparented; the merge refuses it.
-		await persistUpserts(U, WS, [row('x', 7)]);
+		await persistUpserts(U, WS, [row('x', 7)], null);
 
 		expect((await rawItem(U, WS, 'x'))?.is_unparented).toBe(true);
 	});
@@ -232,8 +232,8 @@ describe('BUG-2635 — equal-seq merge keeps a merged projection cross-tab', () 
 		const U = null;
 		const WS = 'ws-2635-preserve';
 
-		await persistUpserts(U, WS, [row('x', 5, { is_unparented: true })]);
-		await persistUpserts(U, WS, [row('x', 8)]); // mutation snapshot omits the projection
+		await persistUpserts(U, WS, [row('x', 5, { is_unparented: true })], null);
+		await persistUpserts(U, WS, [row('x', 8)], null); // mutation snapshot omits the projection
 
 		const stored = await rawItem(U, WS, 'x');
 		expect(stored?.seq).toBe(8);
@@ -247,7 +247,7 @@ describe('persistReplace clears the tombstone store too', () => {
 		const U = null;
 		const WS = 'ws-replace-tombstones';
 
-		await persistUpserts(U, WS, [row('x', 5)]);
+		await persistUpserts(U, WS, [row('x', 5)], null);
 		await persistDelta(U, WS, [], '10', false, null, ['x']); // tombstone x
 		expect(await rawTombstones(U, WS)).toHaveLength(1);
 
@@ -275,7 +275,7 @@ describe('v1 → v2 migration through the real module', () => {
 		// The module opens at IDB_FORMAT_VERSION (2) → upgrade runs, tombstones
 		// store is created, existing data retained.
 		const { persistUpserts, hydrate } = await loadPersistence();
-		await persistUpserts(U, WS, [row('fresh', 4)]);
+		await persistUpserts(U, WS, [row('fresh', 4)], null);
 
 		expect((await rawItem(U, WS, 'keep'))?.seq).toBe(3); // survived the format bump
 		expect(await rawTombstones(U, WS)).toHaveLength(0); // new store, empty
@@ -293,9 +293,12 @@ describe('raw readers address the module database', () => {
 		const U = 'user-9';
 		const WS = 'Name With Spaces';
 
-		await persistUpserts(U, WS, [
-			{ id: 'r', seq: 1, collection_id: 'c', collection_slug: 's' } as unknown as ItemIndexRow,
-		]);
+		await persistUpserts(
+			U,
+			WS,
+			[{ id: 'r', seq: 1, collection_id: 'c', collection_slug: 's' } as unknown as ItemIndexRow],
+			null,
+		);
 		await persistRetag(U, WS, 'c', ['r'], 's2');
 		await persistDelta(U, WS, [], '9', false, null, ['r']);
 
