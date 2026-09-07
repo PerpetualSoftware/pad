@@ -81,13 +81,26 @@ function lastHrefSegment(href: string): string | null {
 }
 
 // Ref-shaped candidate: PREFIX-NUMBER. Mirrors `internal/store/items.go`'s
-// `parseItemRef` — case-insensitive LETTERS-ONLY prefix (no digits; the
-// server's own loop rejects any non-A-Z byte in the prefix), a hyphen, then
-// a positive integer suffix. A looser digit-permitting prefix would
-// misclassify a digit-bearing slug like "roadmap2-5" as ref number 5 and
-// false-positive the same-item guard against an unrelated item TASK-5
-// (Codex review — PR diff pass).
-const REF_SHAPE = /^([A-Za-z]+)-(\d+)$/;
+// `parseItemRef`, which since BUG-2943 asks `collections.IsValidPrefix`: a
+// case-insensitive LETTER followed by letters or DIGITS, a hyphen, then a
+// positive integer suffix.
+//
+// This was LETTERS-ONLY, on the reasoning that a digit-permitting prefix
+// would misclassify a digit-bearing slug like "roadmap2-5" as ref number 5
+// and false-positive the same-item guard. That reasoning cited the server's
+// A-Z loop as its warrant, and the server no longer holds it: it will parse
+// "roadmap2-5" as ROADMAP2-5, try that ref, and fall back to a slug lookup
+// only if no such ref exists. A client guard holding a grammar the server
+// dropped does not avoid the wrong answer — it produces a DIFFERENT wrong
+// answer, silently, and that divergence is the bug BUG-2943 is about.
+//
+// The narrow shape is not what protected the strict gate anyway.
+// `isSameWorkspaceItemHref` requires the ref's prefix to EQUAL a real
+// collection's prefix from `collectionPrefixes`, so "roadmap2-5" passes there
+// only if a collection with prefix ROADMAP2 exists — in which case it IS that
+// collection's ref. Existence, not grammar, is doing the work, which is the
+// stronger check.
+const REF_SHAPE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 
 /** Parse a ref-shaped candidate's item NUMBER (case-insensitive; prefix is
  *  discarded — see `isSamePaneTarget`). Null for a non-ref-shaped string or

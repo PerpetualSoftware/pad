@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -315,4 +316,79 @@ func TestImportWorkspace_DigitBearingPrefixIsLogged(t *testing.T) {
 		t.Errorf("exactly one collection had a digit-bearing prefix; got %d warnings:\n%s",
 			strings.Count(logged, "digit-bearing prefix"), logged)
 	}
+}
+
+// The precedence BUG-2943's widening makes reachable for more strings, pinned
+// in both directions. "ab1-42" is ref-SHAPED under the wider grammar, so the
+// question "is a slug with that name still findable" has to have an answer
+// that does not depend on reading ResolveItem.
+func TestResolveItem_RefBeforeSlugPrecedence(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Ref Slug Precedence")
+
+	docs, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Docs", Slug: "docs-precedence", Prefix: "DOC",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	// A genuine SLUG that is ref-shaped under the widened grammar. The slug is
+	// derived from the title, so it is read back rather than asserted blind —
+	// a test that assumed "ab1-42" and silently got something else would be
+	// pinning nothing.
+	slugged, err := s.CreateItem(ws.ID, docs.ID, models.ItemCreate{Title: "Ab1 42"})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	if slugged.Slug != "ab1-42" {
+		t.Fatalf("control leg failed: the item's slug is %q, so this test is not exercising "+
+			"a ref-shaped slug at all", slugged.Slug)
+	}
+
+	t.Run("with no such ref, the slug resolves", func(t *testing.T) {
+		got, err := s.ResolveItem(ws.ID, "ab1-42")
+		if err != nil {
+			t.Fatalf("ResolveItem: %v", err)
+		}
+		if got == nil || got.ID != slugged.ID {
+			t.Fatalf("resolved %v, want the item slugged ab1-42 — a ref-shaped name that "+
+				"names no ref must still find the slug", got)
+		}
+	})
+
+	t.Run("when the ref exists, the ref wins", func(t *testing.T) {
+		refd, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+			Name: "Ab One", Slug: "ab-one-precedence", Prefix: "AB1",
+		})
+		if err != nil {
+			t.Fatalf("CreateCollection: %v", err)
+		}
+		// Item numbers are per-workspace, so create until one lands on 42 is
+		// not practical; assert the precedence on whatever number this item
+		// gets instead, which is the same claim.
+		item, err := s.CreateItem(ws.ID, refd.ID, models.ItemCreate{Title: "Real AB1 item"})
+		if err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		if item.ItemNumber == nil {
+			t.Fatal("created item has no number")
+		}
+		ref := fmt.Sprintf("AB1-%d", *item.ItemNumber)
+
+		got, err := s.ResolveItem(ws.ID, ref)
+		if err != nil {
+			t.Fatalf("ResolveItem: %v", err)
+		}
+		if got == nil || got.ID != item.ID {
+			t.Fatalf("resolved %v, want the AB1 item — a live ref must win", got)
+		}
+		// ...and the same string lowercased resolves identically, since refs
+		// are case-insensitive.
+		lower, err := s.ResolveItem(ws.ID, strings.ToLower(ref))
+		if err != nil || lower == nil || lower.ID != item.ID {
+			t.Errorf("lowercase %q did not resolve to the same item: %v (%v)", strings.ToLower(ref), lower, err)
+		}
+	})
 }

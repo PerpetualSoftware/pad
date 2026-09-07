@@ -746,6 +746,17 @@ func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.It
 
 // ResolveItem looks up an item by UUID, PREFIX-NUMBER ref (e.g. "IDEA-15"),
 // or slug. UUID is tried first, then ref, then slug.
+// ResolveItem maps a caller-supplied identifier to an item, trying UUID, then
+// PREFIX-NUMBER ref, then slug.
+//
+// THAT ORDER IS THE DOCUMENTED PRECEDENCE, and BUG-2943 made it matter more:
+// parseItemRef now accepts a digit after the first prefix character, so more
+// strings are ref-SHAPED than before — "ab1-42" among them. The rule is
+// deterministic and stated here once so both server and client code can cite
+// it rather than each deciding: a ref-shaped identifier is looked up AS A REF
+// first, and falls through to the slug lookup when no such ref exists. An
+// identifier that is both a live ref and a live slug is a naming collision the
+// user created, and the precedence is how it is settled — the ref wins.
 func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error) {
 	// Try UUID lookup first (8-4-4-4-12 hex format)
 	if isUUID(identifier) {
