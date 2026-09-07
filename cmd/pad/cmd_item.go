@@ -1032,8 +1032,9 @@ Examples:
 			// for WRITES would have passed a version that refuses after
 			// fetching, and did.
 			//
-			// `--parent ""` reads as "detach this item", and for a long time
-			// it exited 0 and printed the updated item while doing nothing:
+			// `--parent ""` is naturally READ as "detach this item" — that is
+			// the caller's intent, never what the code did — and for a long
+			// time it exited 0 and printed the updated item while doing nothing:
 			// `hasFieldChanges` tests `parentRef != ""`, so an empty value
 			// contributed no patch and the key the server's clear-path needs
 			// (`parent` present, empty) never went on the wire. BUG-2078

@@ -604,8 +604,9 @@ func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) 
 // the way to detach.
 //
 // It exists because BUG-2941 made the CLI REFUSE `--parent ""`, and stdio MCP
-// shells out to the CLI: BuildCLIArgs emits a flag for any key that is
-// PRESENT, so `parent: ""` became `--parent ""` and an agent following the
+// shells out to the CLI: BuildCLIArgs emits this string flag whenever the key
+// is PRESENT, empty or not, so `parent: ""` became `--parent ""` and an agent
+// following the
 // documented convention would have been refused on stdio while the remote
 // door went on ignoring it (codex round 1 [P1]). That is a transport
 // divergence created by a fix for a transport-independent bug — the same
