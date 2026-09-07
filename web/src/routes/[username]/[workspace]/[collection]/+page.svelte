@@ -962,6 +962,10 @@
 		installPaneTestHook();
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !collSlug) return;
+			// A result names the workspace it was SYNCED FOR (TASK-2921). Every
+			// subscriber compares — the field's own doc says so, and four of the
+			// five did not until codex round 9 named them.
+			if (result.workspace !== wsSlug) return;
 
 			// The reconcile and `markSynced` moved to the workspace layout
 			// (TASK-2921) — both are workspace-level, and `markSynced` needs the

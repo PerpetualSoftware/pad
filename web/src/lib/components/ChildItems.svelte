@@ -256,6 +256,8 @@
 	onMount(() => {
 		unsubscribeSync = syncService.onSync((result) => {
 			if (!wsSlug || !itemSlug) return;
+			// A result names the workspace it was SYNCED FOR (TASK-2921).
+			if (result.workspace !== wsSlug) return;
 			// Only reload children on actual changes, not when caught up
 			if (result.type !== 'caught_up') {
 				loadChildren();

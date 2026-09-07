@@ -187,6 +187,8 @@
 		// Dashboard always does a full reload on any sync signal since it's
 		// an aggregated view (counts, activity, suggestions change with any item update)
 		unsubscribeSync = syncService.onSync((result) => {
+			// A result names the workspace it was SYNCED FOR (TASK-2921).
+			if (result.workspace !== wsSlug) return;
 			if (result.type !== 'caught_up' && wsSlug) {
 				load(wsSlug, true);
 			}
