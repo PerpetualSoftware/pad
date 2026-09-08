@@ -13,13 +13,26 @@ import { localSearch } from './localSearch.svelte';
  * CONSUMED, because a `moved_out` delta was applied while `/items-index` was in
  * flight.
  *
- * Why the cold path and not the resync path: a resync PINS the cursor to the
- * snapshot's (`state.cursor = resp.cursor`), so the eviction it reinstates is
- * re-delivered by the caller's very next `/items-changes` and the row goes away
- * again. `bootstrap`'s cold branch keeps the HIGHER cursor and then sets
- * `pendingResync = false`, so the eviction is never replayed — the reinstated
- * row is durable, and the same branch persists it to IDB, so it survives a
- * reload.
+ * Why the cold path and not the resync path, AS THIS FILE WAS WRITTEN: a resync
+ * PINS the cursor to the snapshot's (`state.cursor = resp.cursor`), so the
+ * eviction it reinstates is re-delivered by the caller's very next
+ * `/items-changes` and the row goes away again, whereas `bootstrap`'s cold
+ * branch kept the HIGHER cursor and set `pendingResync = false` — the eviction
+ * was never replayed, the reinstated row was durable, and the same branch
+ * persisted it to IDB so it survived a reload.
+ *
+ * THAT ASYMMETRY IS GONE. IDEA-2924 gave the cold branch the same pin and made
+ * it own the replay, which is what the `pins the cursor to the snapshot and
+ * replays from it` case below now asserts. The paragraph above is kept as the
+ * reason this file exists, not as a description of the code.
+ *
+ * Which means THIS file no longer exercises the floor in any load-bearing way:
+ * its scenario now passes through the replay whether or not `refusedByMovedOut`
+ * refuses anything. The floor still stands, but the doors that depend on it are
+ * `upsert` and the warm hydrate — neither has a replay to be healed by — and
+ * they are covered by the sibling suite `localIndexMovedOutFloor.svelte.test.ts`
+ * (measured under TASK-2939; the population is written out at
+ * `MOVED_OUT_FLOOR_CAP`).
  */
 
 const ws = 'inverse-cold-test';
