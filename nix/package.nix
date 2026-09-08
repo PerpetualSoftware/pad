@@ -59,8 +59,22 @@ buildGoModule {
 
   go = go_1_26;
 
-  # Update alongside go.sum. Regenerate via:
-  #   nix build .#default 2>&1 | grep -A2 'got:'
+  # Update alongside go.sum — though CI no longer depends on you remembering
+  # (TASK-2954). Every Nix run IN CI recomputes this in its working tree before
+  # judging the build — a local `nix build` does not; it just fails the way it
+  # always did, and the line below tells you how to fix it — so a PR's check is
+  # green exactly when the build passes
+  # with that PR's module set; and the `push: main` run commits the corrected
+  # value back, so main heals one commit after a merge. It exists because a hash
+  # Dependabot could not update made every Go bump PR permanently red, and a
+  # check that is always red is not a check.
+  #
+  # Updating it by hand still works and is still the faster loop locally:
+  #   nix build .#default 2>&1 | tee /tmp/b.log; nix/bump-vendor-hash.sh /tmp/b.log
+  # Use that script rather than reading the hash out of the log by eye: this
+  # build has other fixed-output derivations (every npm tarball importNpmLock
+  # fetches is one), so `grep got:` can hand you a hash that belongs to
+  # something else entirely. The script anchors on the go-modules derivation.
   vendorHash = "sha256-8L7gH7Yy5+Fig3wK2SPLYSJjcY9nF/jumQ7PATJ3RIE=";
 
   subPackages = [ "cmd/pad" ];

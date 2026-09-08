@@ -7,8 +7,23 @@ on:
     branches: [main]
 
 concurrency:
-  group: nix-${{ github.ref }}
-  cancel-in-progress: true
+  # PR runs share a group per ref and supersede each other — a newer push to the
+  # same PR makes the older run's answer worthless.
+  #
+  # PUSH runs get a group of their OWN, one per commit, and this is deliberate
+  # (TASK-2954). A run on `main` may owe main a vendorHash heal, and losing it
+  # loses the fix SILENTLY: the next push's run recomputes correctly, but its
+  # go.mod/go.sum gate sees only its own commits, so nothing ever retries the
+  # skipped heal. `cancel-in-progress: false` is not enough to prevent that —
+  # GitHub holds only ONE pending run per group, so a third push evicts the
+  # queued second, and the eviction looks exactly like a run that decided there
+  # was nothing to do. A per-commit group cannot be evicted by anything.
+  #
+  # What that trades for: two main runs can reach the push step at once, and the
+  # loser gets a non-fast-forward rejection and goes red. That is the right
+  # direction — a red job is read, and the next merge's run heals anyway.
+  group: nix-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -21,10 +36,61 @@ jobs:
   nix:
     name: Nix build & check
     runs-on: ubuntu-latest
+    # NO write permission here, deliberately — see `push-vendor-hash` below.
+    # This job builds; it never pushes.
+    outputs:
+      vendor_hash_bumped: ${{ steps.vendorhash.outputs.bumped }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      # THE RED-BASELINE FIX (TASK-2954). `vendorHash` pins the Go module set by
+      # content hash; Dependabot updates go.mod/go.sum and has no idea this file
+      # exists, so EVERY Go bump PR failed the steps below on a hash mismatch,
+      # structurally and forever. A check that is always red is not a check —
+      # a bump that genuinely breaks the build looked identical, at a glance, to
+      # one that only moved the hash.
+      #
+      # This recomputes the hash in the WORKING TREE, so the steps below judge
+      # the build with this ref's actual module set. Nothing is pushed from here
+      # and no token is used: a Dependabot PR run gets a read-only GITHUB_TOKEN
+      # (it runs as if from a fork), and the `permissions` key does NOT lift that
+      # — only a repository-wide setting does, which would hand fork PRs write
+      # tokens too. The push therefore happens on `push: main` instead, in the
+      # job below, where the run is not Dependabot's.
+      #
+      # It runs on every run, not just Dependabot's: a human's own go.mod change
+      # moves the hash the same way, and a check that is honest only for one
+      # author is the shape this item exists to remove.
+      #
+      # It runs BEFORE `nix flake check`, which builds the package too and would
+      # hit the same mismatch first. It is deliberately not a gate: if the build
+      # fails for any reason other than a go-modules hash mismatch, the script
+      # exits non-zero, this step still succeeds, and the real steps below report
+      # the real failure. The gate stays exactly where it was.
+      - name: Recompute vendorHash before judging the build
+        id: vendorhash
+        run: |
+          set -o pipefail
+          if nix build .#default --print-build-logs 2>&1 | tee /tmp/nix-build.log; then
+            echo "Build is green; vendorHash is current."
+            exit 0
+          fi
+          if ! new_hash="$(nix/bump-vendor-hash.sh /tmp/nix-build.log)"; then
+            echo "Not a go-modules hash mismatch — leaving it to the build steps below."
+            exit 0
+          fi
+          echo "vendorHash -> $new_hash"
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+
+      - name: Carry the recomputed package.nix to the push job
+        if: steps.vendorhash.outputs.bumped == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: recomputed-package-nix
+          path: nix/package.nix
+          retention-days: 1
 
       - name: nix flake check
         run: nix flake check --print-build-logs
@@ -62,3 +128,106 @@ jobs:
         run: |
           GOTOOLCHAIN=auto go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
           GOVULNCHECK="$(go env GOPATH)/bin/govulncheck" nix/vulnscan.sh result/bin/pad
+
+  # THE ONLY JOB WITH A WRITE TOKEN, and it exists as a separate job precisely so
+  # that the token is never minted in a context an untrusted change could reach.
+  #
+  # An `if:` on a STEP is not a security boundary — the job would still hold a
+  # write-capable GITHUB_TOKEN, and `actions/checkout` persists it in the
+  # workspace for every later command, so any change to this file inside a PR
+  # could use it. An `if:` on a JOB is different in kind: the job does not start,
+  # and no write token is issued for that run at all.
+  #
+  # WHY ON `push: main` AND NOT ON THE PR (ruled on TASK-2954's trail). A
+  # Dependabot PR run gets a read-only token whatever `permissions` says. The
+  # merge, though, is authored by a human, so the `push` run that follows is an
+  # ordinary run with an ordinary token. `main` self-heals one commit after the
+  # merge — usually one commit after it; see the non-fast-forward note below for
+  # the case where it takes the next merge instead — and the PR's own check was
+  # already honest because the job above recomputes in the working tree. The two rejected alternatives were a PAT in
+  # the Dependabot secret store (a standing credential for a once-a-week fix) and
+  # enabling write tokens for pull-request workflows (which would give them to
+  # FORK PRs on a public repo — the surface CONVE-2438 exists to keep closed).
+  #
+  # THE LOOP GUARD IS THE COMMIT'S OWN CONTENTS. This job pushes a commit that
+  # touches `nix/package.nix` and nothing else. That push triggers this workflow
+  # again, the first gate below asks whether go.mod or go.sum moved across the
+  # push's range, and for the bot's own commit the answer is no — so the second
+  # run stops there. The gate is not a heuristic about who pushed; it is the fact
+  # that the fix cannot invalidate the hash it just wrote.
+  #
+  # If another merge lands while this job runs, the push is REJECTED as a
+  # non-fast-forward and this job goes red rather than overwriting anything. The
+  # heal is not lost: that merge's own run recomputes and heals. The window is
+  # the length of a nix build, and the failure mode is loud rather than silent —
+  # which is the same trade the per-commit concurrency group above makes.
+  #
+  # `needs: nix` without `if: always()` is the second half: this runs only when
+  # the build job SUCCEEDED, so a module set whose corrected tree still fails
+  # `nix flake check`, the smoke test or the vulnerability scan is never
+  # committed to main.
+  push-vendor-hash:
+    name: Heal main's vendorHash
+    needs: nix
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.nix.outputs.vendor_hash_bumped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the gate below asks what THIS PUSH changed, which is
+          # `before..after`, not `HEAD~1..HEAD`. A direct push of several commits
+          # can carry the go.sum change anywhere in the range, and a two-commit
+          # clone would see only the last one and skip a heal that was owed.
+          fetch-depth: 0
+
+      - name: Did this push touch the Go module set?
+        id: gate
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          # A branch created by this push, or a `before` the clone cannot resolve
+          # (a force push whose old tip is gone), leaves the range unanswerable.
+          # Fall through to the hash comparison rather than skipping: the second
+          # gate is the one that decides, and this one only avoids pointless work.
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git rev-parse --verify -q "$BEFORE^{commit}" >/dev/null; then
+            echo "Push range unresolvable; deferring to the hash comparison."
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BEFORE" "$AFTER" | command grep -qE '^go\.(mod|sum)$'; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go.mod/go.sum unchanged across $BEFORE..$AFTER — nothing here could have moved the hash."
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.gate.outputs.touched == 'true'
+        with:
+          name: recomputed-package-nix
+          path: nix/
+
+      - name: Commit and push
+        if: steps.gate.outputs.touched == 'true'
+        run: |
+          # The second gate. The artifact only exists because the build job found
+          # a mismatch, but comparing here keeps the job honest about the tree it
+          # is actually looking at rather than about what another job reported.
+          if git diff --quiet -- nix/package.nix; then
+            echo "package.nix already matches the recomputed hash; nothing to push."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add nix/package.nix
+          git commit -m "chore(nix): heal vendorHash for the module set in ${SHA} (TASK-2954)"
+          git push
+        env:
+          SHA: ${{ github.sha }}
