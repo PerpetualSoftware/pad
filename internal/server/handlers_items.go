@@ -1888,8 +1888,37 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// content-only split lost atomicity and broke
 		// Store.UpdateItem's content-versioning peek at Title.
 		// Per Codex review round 9.
-		err := s.applyContentViaCollab(r, item.ID, *input.Content, func() error {
-			updated, uerr := s.store.UpdateItemWithParentLink(item.ID, input, openChildrenPrecheck, parentLink)
+		err := s.applyContentViaCollab(r, item.ID, *input.Content, func(pruneOpLog func(*sql.Tx) error) error {
+			// The op-log prune rides INSIDE this write's transaction
+			// (BUG-2840 half B): composed onto the precheck hook, which
+			// UpdateItemWithParentLink runs inside the tx, so a refusal
+			// from the guard or from the update itself rolls the prune
+			// back. Before this the prune was a separate statement that
+			// ran FIRST, and a refused write left the op-log emptied with
+			// nothing written to supersede it.
+			precheck := openChildrenPrecheck
+			if pruneOpLog != nil {
+				inner := precheck
+				precheck = func(tx *sql.Tx, existing *models.Item) error {
+					// Guard first — a preference, not an enforced invariant,
+					// and mutation-checked as such: swapping these two
+					// survives the suite because both run in ONE transaction,
+					// so a refusal rolls the prune back either way. The order
+					// buys two smaller things: the DELETE is not done for a
+					// write that is about to refuse, and an error from the
+					// prune cannot mask the guard's refusal as the caller's
+					// answer. Neither is observable without a failing prune,
+					// so this comment claims a preference rather than a rule
+					// nothing enforces.
+					if inner != nil {
+						if err := inner(tx, existing); err != nil {
+							return err
+						}
+					}
+					return pruneOpLog(tx)
+				}
+			}
+			updated, uerr := s.store.UpdateItemWithParentLink(item.ID, input, precheck, parentLink)
 			if uerr != nil {
 				return uerr
 			}

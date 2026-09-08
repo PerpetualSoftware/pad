@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"errors"
 	"log/slog"
 	"math/rand"
@@ -14,11 +15,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 )
-
-// distantFuture is used as a "prune everything" cutoff for the
-// item_yjs_updates table. PruneYjsUpdatesBefore takes a strict-less-
-// than cutoff, so passing a far-future time sweeps the whole row set.
-var distantFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // collabMembershipRevalInterval is how often an active collab WS
 // re-runs authorizeCollabAccess to catch a mid-stream revocation
@@ -433,7 +429,14 @@ const applyContentMaxRetries = 3
 // on the no-room/no-applier paths, INSIDE the per-item setup lock
 // (so a fresh Join cannot replay stale op-log between prune and
 // content write).
-type directWriteFn func() error
+//
+// It receives the op-log prune as a hook to run INSIDE its own write
+// transaction rather than performing the prune itself, so the two
+// move together or not at all (BUG-2840 half B). The caller must run
+// the hook when it is non-nil; a write that commits without it leaves
+// a stale op-log that a later Join would replay over the content just
+// written, which is the hazard the prune exists to prevent.
+type directWriteFn func(pruneOpLog func(tx *sql.Tx) error) error
 
 func (s *Server) applyContentViaCollab(r *http.Request, itemID, markdown string, directWrite directWriteFn) error {
 	if s.collab == nil {
@@ -520,22 +523,33 @@ func (s *Server) applyContentViaCollabOnce(r *http.Request, itemID, markdown str
 		// ErrAllAppliersTimedOut is intentionally NOT pruned
 		// because peers may still be alive there.
 		paErr := s.collab.PruneAndApply(itemID, func() error {
-			// Prune the (now-stale) op-log. Failure here is logged
-			// but does NOT block the content write — the prune
-			// matters for FUTURE collab sessions, while the
-			// content write is the user's actual intent.
-			if _, perr := s.store.PruneYjsUpdatesBefore(itemID, distantFuture); perr != nil {
-				slog.Warn("collab: failed to prune op-log on direct-write fallback",
-					"item_id", itemID,
-					"error", perr,
-				)
-			}
-			// Write items.content under the same per-item lock so
-			// a concurrent Join can't slip in between prune and
-			// write, replay an empty op-log, then later overwrite
-			// our fresh write from its stale Y.Doc state. Per
-			// Codex review round 8.
-			return directWrite()
+			// The prune runs INSIDE the write's own transaction, via
+			// the hook, so a refused or failed write rolls it back
+			// (BUG-2840 half B). It used to run first, in its own
+			// statement: the justification for pruning is that "any
+			// prior collab state is strictly older than the
+			// items.content the caller is about to write", and that
+			// premise is FALSE on every path where the write then
+			// refuses — the ops were destroyed and nothing replaced
+			// them. That is not hypothetical on this branch: it fires
+			// on ErrNoApplierAvailable, i.e. a room inside its grace
+			// TTL with zero connections, which is exactly the state
+			// where the op-log holds a closed tab's edits that never
+			// reached items.content.
+			//
+			// Same shape, and the same reasoning, as PruneItemOpLogTx's
+			// use by version-restore, whose comment already says a
+			// split prune/commit "leaves a divergent state on any
+			// failure" in EITHER order. This path was the remaining
+			// split.
+			//
+			// Still under the per-item lock, so a concurrent Join
+			// cannot slip between prune and write, replay an empty
+			// op-log, then overwrite the fresh write from its stale
+			// Y.Doc state (Codex review round 8).
+			return directWrite(func(tx *sql.Tx) error {
+				return s.store.PruneItemOpLogTx(tx, itemID)
+			})
 		})
 		switch {
 		case paErr == nil:
