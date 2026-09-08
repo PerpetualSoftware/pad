@@ -213,10 +213,19 @@ var sniffAliases = map[string]string{
 // use). The result is normalized via NormalizeMIME and run through
 // sniffAliases so allowlist lookups always see the canonical name.
 //
+// One family is detected ahead of the stdlib: ISO-BMFF still images
+// (HEIC / HEIF / AVIF), which the mimesniff table has no signature for and
+// which therefore sniffed as application/octet-stream — unreachable behind an
+// allowlist that names all three (BUG-2961). sniffISOBMFFImage returns "" for
+// everything else, so it can only add detections; see mime_isobmff.go.
+//
 // Pass at most 512 bytes — additional bytes are ignored by the detector.
 func SniffMIME(head []byte) string {
 	if len(head) > 512 {
 		head = head[:512]
+	}
+	if mime := sniffISOBMFFImage(head); mime != "" {
+		return mime
 	}
 	got := NormalizeMIME(http.DetectContentType(head))
 	if alias, ok := sniffAliases[got]; ok {

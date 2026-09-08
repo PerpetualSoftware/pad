@@ -65,9 +65,18 @@ type Processor interface {
 	// these flags via GET /api/v1/server/capabilities and gates
 	// rotate/crop UI on per-format support, with an explanatory tooltip
 	// when disabled. Uploads always succeed (the MIME allowlist is the
-	// gate); display always works (browsers handle WebP / AVIF / HEIC
-	// natively). Self-hosters with the pure-Go build see their image
-	// formats list shrink, never an upload rejection.
+	// gate). Self-hosters with the pure-Go build see their image formats
+	// list shrink, never an upload rejection.
+	//
+	// This comment used to end "display always works (browsers handle
+	// WebP / AVIF / HEIC natively)". It doesn't: the client's own table
+	// (web/src/lib/attachments/display.ts) excludes image/heic from the
+	// viewer precisely because a browser may not decode it, and where no
+	// derived variant exists the read path serves the original. The
+	// sentence was harmless while http.DetectContentType made those three
+	// types unreachable at the door (BUG-2961); it stopped being harmless
+	// when the ISO-BMFF sniff made them uploadable, so it is corrected
+	// here rather than left as a claim the fix would have made load-bearing.
 	Capabilities() Capabilities
 }
 
