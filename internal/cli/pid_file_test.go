@@ -1,3 +1,5 @@
+//go:build unix
+
 package cli
 
 import (
@@ -5,126 +7,237 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
-// BUG-2965: `pad server stop` answered "server not running (no PID file)" about
-// a live server, because the file was written by exactly one path —
-// EnsureServer's auto-start branch — and never by `pad server start` itself.
-// EnsureServer spawns THIS command and records the child's pid, so writing our
-// own pid here produces the same value by a second route; what it adds is the
-// case where a human, a service unit, or a refresh recipe ran the command
-// directly.
-func TestWritePIDFile_WritesAndCleansUp(t *testing.T) {
+// BUG-2965 and BUG-2969 together: the PID file must let `pad server stop`
+// address the running server, and must not let it signal anything else.
+//
+// These are the Unix half — ownership here is an advisory lock, so the tests
+// exercise flock behaviour directly. The Windows half (creation-time
+// comparison) is covered by the CI smoke on windows-latest, which runs
+// `pad server stop` against a server it started.
+
+func TestClaimPIDFile_WritesARecordAndReleasesIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
 
-	cleanup := WritePIDFile(path, 4242)
+	release := ClaimPIDFile(path)
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("PID file not written: %v", err)
+	rec, ok := readPIDRecord(path)
+	if !ok {
+		t.Fatal("no PID record written")
 	}
-	if got := string(data); got != strconv.Itoa(4242) {
-		t.Errorf("PID file contains %q, want %q — StopServer parses this with strconv.Atoi", got, "4242")
+	if rec.PID != os.Getpid() {
+		t.Errorf("record names pid %d, want this process (%d)", rec.PID, os.Getpid())
+	}
+	if rec.StartedAt.IsZero() {
+		t.Error("record has no start time — the human-readable half is what a person reads to identify the process")
+	}
+	if rec.Exe == "" {
+		t.Error("record has no executable path")
 	}
 
-	cleanup()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("PID file survived cleanup (stat err = %v) — a stale file names a dead process to the next stop", err)
+	release()
+	if _, ok := readPIDRecord(path); ok {
+		t.Error("PID file survived release")
 	}
 }
 
-// TestWritePIDFile_UnwritablePathIsNotFatal pins the degradation. The server is
-// what the user asked for; a missing PID file costs them the addressable-stop
-// path and nothing else, so this must not panic and its cleanup must stay safe
-// to call.
-func TestWritePIDFile_UnwritablePathIsNotFatal(t *testing.T) {
-	// A path whose parent is a FILE, not a directory — unwritable without
-	// needing permissions games that behave differently under root.
-	parent := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(parent, []byte("x"), 0o644); err != nil {
+// TestClaimPIDFile_HoldsTheLockWhileRunning is the ownership claim itself: while
+// a server is up, the file reports as OURS, which is the only state in which
+// stop is allowed to signal.
+func TestClaimPIDFile_HoldsTheLockWhileRunning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	release := ClaimPIDFile(path)
+	defer release()
+
+	if _, ok := readPIDRecord(path); !ok {
+		t.Fatal("no PID record written")
+	}
+	if _, got := pidFileOwner(path); got != pidFileOurs {
+		t.Errorf("pidFileOwner = %v while the claim is held, want ours", got)
+	}
+}
+
+// TestPIDFileOwner_UnheldFileIsStale is the defect's core, expressed as a
+// property: a record nobody holds is stale NO MATTER WHAT PID IT NAMES. The pid
+// here is this live test process — the strongest form of the case, because a
+// liveness check would call it ours and signal it.
+func TestPIDFileOwner_UnheldFileIsStale(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	rec := pidRecord{PID: os.Getpid()}
+	if err := writePIDRecord(path, rec); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	path := filepath.Join(parent, "pad.pid")
 
-	cleanup := WritePIDFile(path, 4242)
-	if cleanup == nil {
-		t.Fatal("cleanup must never be nil — the caller defers it unconditionally")
-	}
-	cleanup() // must not panic, and must not care that there is nothing to remove
-
-	// Read rather than IsNotExist: a path UNDER a non-directory fails with
-	// ENOTDIR, not ENOENT, so os.IsNotExist is false even though nothing is
-	// there. The claim is "no PID file can be read here", so read.
-	if _, err := os.ReadFile(path); err == nil {
-		t.Errorf("a PID file is readable at %s after a failed write", path)
+	if _, got := pidFileOwner(path); got != pidFileStale {
+		t.Errorf("pidFileOwner = %v for an unheld file naming a LIVE pid, want stale — "+
+			"liveness is not ownership, and this is the pid a stranger would hold after reuse", got)
 	}
 }
 
-// TestWritePIDFile_CleanupToleratesAnAlreadyRemovedFile covers the ordinary
-// double-stop shape: something else (an operator, a stop that raced) removed
-// the file first. Cleanup must be quiet about that rather than logging a
-// failure on every clean shutdown.
-func TestWritePIDFile_CleanupToleratesAnAlreadyRemovedFile(t *testing.T) {
+func TestPIDFileOwner_MissingFileIsStale(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
-	cleanup := WritePIDFile(path, 99)
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("pre-remove: %v", err)
-	}
-	cleanup()
-}
-
-// TestWritePIDFile_CleanupDoesNotRemoveSomeoneElsesFile is the P1's second
-// half, and the sharper one. A duplicate start writes the file (the original's
-// pid was stale, or the write raced), fails to bind, and runs its cleanup — if
-// that cleanup is unconditional it deletes whatever is there, including a file
-// another instance has since written, leaving a HEALTHY server unaddressable.
-// That is this fix's own defect, reintroduced by its own cleanup.
-func TestWritePIDFile_CleanupDoesNotRemoveSomeoneElsesFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "pad.pid")
-
-	cleanup := WritePIDFile(path, 4242)
-
-	// Another instance takes ownership while we are still running.
-	if err := os.WriteFile(path, []byte("777"), 0o644); err != nil {
-		t.Fatalf("takeover: %v", err)
-	}
-
-	cleanup()
-
-	if got, ok := readPIDFile(path); !ok || got != 777 {
-		t.Errorf("PID file is %v (ok=%v) after our cleanup, want 777 — cleanup must only remove a file it still owns", got, ok)
+	if _, got := pidFileOwner(path); got != pidFileStale {
+		t.Errorf("pidFileOwner = %v for a missing file, want stale", got)
 	}
 }
 
-// Removed with codex round 3's P2: TestWritePIDFile_LeavesALivePeersFileAlone
-// and TestWritePIDFile_ReplacesAStaleFile pinned a live-pid refusal that is
-// wrong once the caller binds first — no live process can be serving an address
-// this process just bound, so deferring to one strands the real server. The
-// TestProcessIsAlive_* pair went with the predicate they covered, which had no
-// production caller left. Their replacement is the ordering itself, pinned in
-// internal/server (Listen refuses a held port) and exercised end to end against
-// the real binary on BUG-2965's trail.
-
-// TestWritePIDFile_CleanupIsIdempotent covers the shape the shutdown path now
-// relies on: the release runs explicitly before the listener closes AND stays
-// deferred as a backstop for the paths that never reach the shutdown sequence.
-// Calling it twice must be quiet and must not touch a successor's file.
-func TestWritePIDFile_CleanupIsIdempotent(t *testing.T) {
+func TestReadPIDRecord_AcceptsTheLegacyBarePID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
-	cleanup := WritePIDFile(path, 4242)
-
-	cleanup()
-	if _, ok := readPIDFile(path); ok {
-		t.Fatal("first cleanup left the file behind")
+	if err := os.WriteFile(path, []byte(strconv.Itoa(4242)+"\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
 
-	// A successor claims the path between the two calls — the ordinary fast
-	// restart. The second call must leave it alone.
-	if err := os.WriteFile(path, []byte("777"), 0o644); err != nil {
-		t.Fatalf("successor write: %v", err)
+	rec, ok := readPIDRecord(path)
+	if !ok {
+		t.Fatal("legacy bare-pid file did not parse — a file written by an older binary is exactly the case this family of bugs is about")
 	}
-	cleanup()
-	if got, ok := readPIDFile(path); !ok || got != 777 {
-		t.Errorf("second cleanup removed the successor's file (got %v, ok=%v)", got, ok)
+	if rec.PID != 4242 {
+		t.Errorf("pid = %d, want 4242", rec.PID)
+	}
+	if !rec.StartedAt.IsZero() {
+		t.Error("a legacy record must carry no fingerprint, so ownership reads as unprovable rather than proven")
+	}
+}
+
+func TestReadPIDRecord_RejectsGarbage(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":         "",
+		"whitespace":    "   \n",
+		"not a number":  "not-a-pid",
+		"zero":          "0",
+		"negative":      "-1",
+		"broken json":   `{"pid": `,
+		"json zero pid": `{"pid": 0}`,
+	} {
+		path := filepath.Join(t.TempDir(), "pad.pid")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("%s: seed: %v", name, err)
+		}
+		if _, ok := readPIDRecord(path); ok {
+			t.Errorf("%s: parsed as a valid record", name)
+		}
+	}
+}
+
+// TestClaimPIDFile_ReleaseIsIdempotent covers the shutdown path, which calls
+// release explicitly before the listener closes AND keeps it deferred as a
+// backstop.
+func TestClaimPIDFile_ReleaseIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	release := ClaimPIDFile(path)
+	release()
+	release()
+	if _, ok := readPIDRecord(path); ok {
+		t.Error("PID file present after two releases")
+	}
+}
+
+// TestProcessIsGone_LiveAndDead pins the confirmation predicate. The old wait
+// loop asked whether the PORT was quiet, which a port nothing ever served
+// answers instantly — that is how a kill that never touched a pad server
+// reported "Server stopped".
+func TestProcessIsGone_LiveAndDead(t *testing.T) {
+	if processIsGone(os.Getpid()) {
+		t.Error("processIsGone(self) = true")
+	}
+	if !processIsGone(-1) {
+		t.Error("processIsGone(-1) = false")
+	}
+}
+
+// TestPIDFileOwner_ReportsTheRecordItVerified is codex round 1's first race,
+// as a property rather than a timing test: the record the ownership check
+// hands back must be the one it read from the descriptor it probed, so a
+// caller cannot signal a pid whose ownership was never established.
+//
+// A successor claim rewrites the file; the check must then report the
+// SUCCESSOR's pid, never a pid a caller read earlier.
+func TestPIDFileOwner_ReportsTheRecordItVerified(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+
+	// Predecessor's record, unheld.
+	if err := writePIDRecord(path, pidRecord{PID: 111}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// The successor claims it — same path, its own pid, lock held.
+	release := ClaimPIDFile(path)
+	defer release()
+
+	rec, owner := pidFileOwner(path)
+	if owner != pidFileOurs {
+		t.Fatalf("owner = %v, want ours", owner)
+	}
+	if rec.PID != os.Getpid() {
+		t.Errorf("verified record names pid %d, want the successor (%d) — signalling the earlier pid would "+
+			"send SIGTERM to whatever now holds it", rec.PID, os.Getpid())
+	}
+}
+
+// TestPIDFileOwner_HeldButUnreadableIsUnprovable covers the claim caught
+// mid-write: the lock says held, the bytes do not parse, and there is no pid we
+// can justify signalling.
+func TestPIDFileOwner_HeldButUnreadableIsUnprovable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	release := ClaimPIDFile(path)
+	defer release()
+
+	// Truncate the contents while the lock is still held.
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	if _, owner := pidFileOwner(path); owner != pidFileUnprovable {
+		t.Errorf("owner = %v for a held but unparseable file, want unprovable", owner)
+	}
+}
+
+// TestPIDFileOwner_RemovesTheStaleFileItself pins where cleanup happens. It has
+// to be inside the ownership check, while the lock is held: a caller that
+// removed the file afterwards would race a replacement server's claim and
+// delete ITS record (codex round 2). Asserting the file is gone when the check
+// returns is how that placement stays put.
+func TestPIDFileOwner_RemovesTheStaleFileItself(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	if err := writePIDRecord(path, pidRecord{PID: os.Getpid()}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, owner := pidFileOwner(path); owner != pidFileStale {
+		t.Fatalf("owner = %v, want stale", owner)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("stale PID file survived the ownership check (stat err = %v) — cleanup must happen while the "+
+			"check holds the lock, not afterwards", err)
+	}
+}
+
+// TestClaimPIDFile_RetriesPastABriefProbe covers the interaction the round-2
+// fix created: `stop`'s ownership probe holds the lock for an instant, and a
+// server claiming in that instant must not lose its claim for the rest of its
+// life. The probe here is a real held lock released while the claim is trying.
+func TestClaimPIDFile_RetriesPastABriefProbe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+
+	probe, err := holdPIDFile(path)
+	if err != nil {
+		t.Fatalf("probe hold: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		probe()
+		close(done)
+	}()
+
+	release := ClaimPIDFile(path)
+	defer release()
+	<-done
+
+	rec, ok := readPIDRecord(path)
+	if !ok || rec.PID != os.Getpid() {
+		t.Errorf("claim did not survive a brief foreign hold (record %+v, ok=%v)", rec, ok)
 	}
 }

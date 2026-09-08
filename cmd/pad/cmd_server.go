@@ -1031,7 +1031,7 @@ func serveCmd() *cobra.Command {
 			}
 
 			// We hold the port; the file is ours to claim.
-			releasePIDFile := cli.WritePIDFile(cfg.PIDFile(), os.Getpid())
+			releasePIDFile := cli.ClaimPIDFile(cfg.PIDFile())
 			// Backstop for the paths that never reach the shutdown sequence
 			// (Serve returns an error). Safe to call twice: it only removes a
 			// file that still names us, and a second call finds nothing.
