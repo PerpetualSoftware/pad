@@ -152,3 +152,56 @@ describe('createKeyedSingleFlight', () => {
 		expect(seen).toEqual([true, true, false]);
 	});
 });
+
+/**
+ * TASK-2947, codex round 2 — the ONE way this extraction is not tick-identical
+ * to the hand-rolled code it replaced, pinned rather than hidden.
+ *
+ * The old versions ran their commit and their `finally` inside ONE async
+ * function, so cleanup followed the commit with no tick between them. Here the
+ * commit happens inside `work`, and `await work(...)` costs a microtask before
+ * the `finally` runs — crossing an async function boundary always does, so no
+ * callback-shaped extraction can avoid it. For one tick after a commit, the
+ * spinner is still true and the slot is still published.
+ *
+ * That window is UNOBSERVABLE AS WRONG, and this leg is why: every consumer
+ * checks its own committed state BEFORE it asks about the in-flight slot
+ * (`ensureCollections` returns early on `collectionsWorkspace === ws`,
+ * `recoverIfMissing` on a non-empty `workspaces`), and a caller that awaits the
+ * returned promise resumes AFTER the finally in both versions. A joiner that
+ * does land inside the window is handed a promise that resolves against the
+ * committed result — stale data is not reachable through it.
+ *
+ * Pinned as the PROPERTY (a joiner never resolves against a lie), not as the
+ * timing (which is an artifact, and which a future tick-identical rewrite
+ * should be free to remove without failing a test).
+ */
+describe('createKeyedSingleFlight — the commit-to-cleanup window', () => {
+	it('a joiner arriving between the commit and the cleanup resolves against the committed result', async () => {
+		const flight = createKeyedSingleFlight<string>();
+		const gate = deferred();
+		let committed: string | null = null;
+
+		const run = flight.run('alpha', async ({ isLatest }) => {
+			await gate.promise;
+			if (!isLatest()) return;
+			committed = 'alpha-result';
+		});
+
+		gate.resolve();
+		// One tick: `work` has finished and committed, but `run`'s finally has
+		// not gone yet — this is exactly the window round 2 named.
+		await Promise.resolve();
+		expect(committed).toBe('alpha-result');
+
+		// Deliberately tolerant of WHETHER the window is open: today it is, and a
+		// future tick-identical rewrite would close it. Either answer is correct;
+		// what must hold is that a joiner never resolves against a lie.
+		const joined = flight.inFlightFor('alpha');
+		if (joined) await joined;
+		expect(committed).toBe('alpha-result');
+
+		await run;
+		expect(flight.inFlightFor('alpha')).toBeNull();
+	});
+});

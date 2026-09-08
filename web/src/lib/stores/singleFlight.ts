@@ -126,6 +126,24 @@ export function createKeyedSingleFlight<K>(options: SingleFlightOptions = {}): K
 			// Assigned after the IIFE, which is safe rather than racy: the async
 			// body runs synchronously only as far as its first await, so the
 			// `finally` above cannot run before this line.
+			//
+			// ONE TICK OF NON-EQUIVALENCE with the hand-rolled code this replaced
+			// (codex round 2, TASK-2947), named because it is real. Both old
+			// versions ran commit and `finally` inside ONE async function, so
+			// cleanup followed the commit with no tick between. Here the commit is
+			// inside `work`, and `await work(...)` costs a microtask — crossing an
+			// async function boundary always does, so no callback-shaped extraction
+			// can avoid it. For that tick the spinner reads true and the slot stays
+			// published after the data has landed.
+			//
+			// Unobservable as WRONG, for a reason that is a property of the callers
+			// rather than luck: each checks its own committed state BEFORE asking
+			// about the slot (`ensureCollections` returns early on
+			// `collectionsWorkspace === ws`, `recoverIfMissing` on a non-empty
+			// `workspaces`), and anything awaiting the returned promise resumes
+			// after the `finally` in both versions. A joiner that does land in the
+			// window gets a promise resolving against the committed result. The leg
+			// in `singleFlight.test.ts` pins that property.
 			inFlightPromise = promise;
 			return promise;
 		},
