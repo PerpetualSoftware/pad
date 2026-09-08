@@ -781,6 +781,46 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// original. The editor uses thumbnails as an optimization, not a
 	// correctness requirement, so falling back keeps every render path
 	// working as soon as TASK-872 ships.
+	// WHICH variant the caller actually got. The fallback above is SILENT by
+	// design, and until BUG-2964 nothing on the wire distinguished "here is
+	// your thumbnail" from "here is the original, because this build could not
+	// derive one" — a pure-Go build derives no HEIC/AVIF thumbnail, so the
+	// editor was handing the browser HEIC bytes it cannot decode and rendering
+	// a broken image. The embed decision needs the answer per attachment, and
+	// the editor's metadata path is already a HEAD against this endpoint, so a
+	// response header reaches it with no extra request and no per-row lookup on
+	// the list endpoint.
+	servedVariant := models.AttachmentVariantOriginal
+	// Which derived variants EXIST, answered only on the no-variant path.
+	// That path is the editor's metadata HEAD (and plain downloads); the hot
+	// `?variant=thumb-md` image path is untouched and pays nothing. Two indexed
+	// point lookups on a cold path, rather than a new column or a per-row join
+	// on the list endpoint.
+	//
+	// A SENTINEL rather than an empty value for "none": an empty header value is
+	// the one thing a proxy may drop, and the client must be able to tell "this
+	// build says there are none" from "this build predates BUG-2964" — the
+	// second must keep the old MIME-prefix behaviour, or every embed flips to a
+	// chip when talking to an older server.
+	derived := ""
+	if r.URL.Query().Get("variant") == "" {
+		var present []string
+		for _, v := range []string{models.AttachmentVariantThumbSm, models.AttachmentVariantThumbMd} {
+			row, dErr := s.store.GetAttachmentVariant(workspaceID, att.ID, v)
+			if dErr != nil {
+				writeInternalError(w, dErr)
+				return
+			}
+			if row != nil {
+				present = append(present, v)
+			}
+		}
+		if len(present) == 0 {
+			derived = "none"
+		} else {
+			derived = strings.Join(present, ",")
+		}
+	}
 	if variant := r.URL.Query().Get("variant"); variant != "" {
 		if !isKnownVariant(variant) {
 			writeError(w, http.StatusBadRequest, "bad_variant",
@@ -797,6 +837,7 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 			return
 		} else if derived != nil {
 			att = derived
+			servedVariant = variant
 		}
 	}
 
@@ -854,6 +895,14 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// revocation (PLAN-2391 DR-10).
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Names the variant these BYTES are, not the one that was asked for
+	// (BUG-2964). Set on every response including the no-variant case, so its
+	// ABSENCE means an older build rather than "the original" — a client that
+	// cannot tell those apart would flip every embed on an old server.
+	w.Header().Set("X-Pad-Attachment-Variant", servedVariant)
+	if derived != "" {
+		w.Header().Set("X-Pad-Attachment-Derived", derived)
+	}
 	w.Header().Set("Content-Disposition",
 		fmt.Sprintf(`%s; filename=%q`, disposition, sanitizeHeaderFilename(att.Filename)))
 

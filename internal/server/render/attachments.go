@@ -28,6 +28,12 @@ type AttachmentMeta struct {
 	SizeBytes int64
 	Width     *int
 	Height    *int
+	// DerivedVariant reports whether the server holds a derived (thumbnail)
+	// variant for this attachment (BUG-2964). Three-valued via the pointer, and
+	// the third value carries meaning: nil means UNKNOWN — a caller that did not
+	// look — and falls back to the pre-BUG-2964 MIME-prefix behaviour. The TS
+	// mirror is `AttachmentMeta.derived_variant?: boolean | undefined`.
+	DerivedVariant *bool
 }
 
 // AttachmentResolver looks up an attachment by UUID. Returns nil for
@@ -68,11 +74,59 @@ func AttachmentDownloadURL(workspaceSlug, attachmentID, variant string) string {
 	return base + "?variant=" + url.QueryEscape(variant)
 }
 
-// IsImageMime reports whether the MIME type renders inline as an image.
+// IsImageMime reports whether the MIME type is LABELLED as an image.
 // Mirrors `image/*` from the server-side allowlist (image/png, image/jpeg,
 // image/gif, image/webp, image/avif, image/heic, image/heif).
+//
+// No longer the embed decision on its own — see ShouldEmbedAsImage.
 func IsImageMime(mime string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mime)), "image/")
+}
+
+// imgPaintableMimes are the types a BROWSER paints inside an <img> tag
+// (BUG-2964). Byte-for-byte mirror of IMG_PAINTABLE_MIMES in
+// web/src/lib/markdown/attachments.ts; a test asserts the two agree.
+//
+// HEIC/HEIF are absent deliberately: Chrome and Firefox decode neither, so an
+// <img> pointed at HEIC bytes shows the broken-image icon. AVIF IS present —
+// browsers decode it — which is why AVIF stays an image even on a build that
+// derives no thumbnail for it. image/svg+xml IS present: an SVG in an <img>
+// runs no script, and it has been embedded that way in existing documents
+// since attachments shipped.
+var imgPaintableMimes = map[string]bool{
+	"image/png":     true,
+	"image/jpeg":    true,
+	"image/gif":     true,
+	"image/webp":    true,
+	"image/avif":    true,
+	"image/svg+xml": true,
+}
+
+// ShouldEmbedAsImage decides <img> vs file chip (BUG-2964).
+//
+// THE RULE IS A DISJUNCTION: embed as <img> iff a derived variant exists (the
+// server can serve decodable bytes) OR the browser paints the original (no
+// derivative needed).
+//
+// Not a MIME prefix test, because a pure-Go build derives no HEIC thumbnail and
+// the byte endpoint falls back to the ORIGINAL when the variant row is missing —
+// so image/heic produced an <img> full of bytes the browser cannot decode. Not
+// variant availability alone either, because that same build derives no AVIF
+// thumbnail and every current browser decodes AVIF.
+//
+// A nil DerivedVariant means unknown and falls back to the prefix test.
+func ShouldEmbedAsImage(meta *AttachmentMeta) bool {
+	if meta == nil || !IsImageMime(meta.MimeType) {
+		return false
+	}
+	if meta.DerivedVariant == nil || *meta.DerivedVariant {
+		return true
+	}
+	mime := strings.ToLower(strings.TrimSpace(meta.MimeType))
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = strings.TrimSpace(mime[:i])
+	}
+	return imgPaintableMimes[mime]
 }
 
 // FormatAttachmentSize returns a human-readable byte count ("832 B",
@@ -191,7 +245,7 @@ func ResolveAttachmentImage(href, alt, workspaceSlug string, resolve AttachmentR
 	if meta == nil {
 		return RenderAttachmentMissing(uuid, alt)
 	}
-	if IsImageMime(meta.MimeType) {
+	if ShouldEmbedAsImage(meta) {
 		return RenderAttachmentImage(meta, alt, workspaceSlug)
 	}
 	chipText := alt

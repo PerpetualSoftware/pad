@@ -445,7 +445,9 @@ describe('parent-restore channel (BUG-2509)', () => {
 			off();
 		}
 
-		expect(observed).toEqual({ status: 'ok', mime: 'image/png', size: 3 });
+		// `derived: 'unknown'` — this fixture sets no `x-pad-attachment-derived`
+		// header, which is the older-server case (BUG-2964).
+		expect(observed).toEqual({ status: 'ok', mime: 'image/png', size: 3, derived: 'unknown' });
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 

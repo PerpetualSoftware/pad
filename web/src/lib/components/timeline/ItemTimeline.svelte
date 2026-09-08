@@ -272,7 +272,16 @@
 			// filename is left empty — the markdown alt text is the chip/img
 			// label, and renderAttachmentImage only falls back to filename
 			// when alt is blank.
-			next.set(uuid, { id: uuid, mime_type: m.mime, filename: '', size_bytes: m.size });
+			// `derived` carries the server's answer about thumbnail availability
+			// (BUG-2964); `'unknown'` becomes `undefined` so the renderer falls back
+			// to the old MIME-prefix behaviour against an older server.
+			next.set(uuid, {
+				id: uuid,
+				mime_type: m.mime,
+				filename: '',
+				size_bytes: m.size,
+				derived_variant: m.derived === 'unknown' ? undefined : m.derived
+			});
 			attMeta = next;
 		});
 	}

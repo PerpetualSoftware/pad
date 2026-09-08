@@ -29,6 +29,15 @@ export interface AttachmentMeta {
 	size_bytes: number;
 	width?: number | null;
 	height?: number | null;
+	/**
+	 * Whether the SERVER holds a derived (thumbnail) variant for this
+	 * attachment (BUG-2964). Sourced from the `X-Pad-Attachment-Derived`
+	 * response header via `fetchAttachmentMetadata`.
+	 *
+	 * `undefined` means UNKNOWN — an older server, or a caller that never
+	 * probed — and is not the same as `false`. See `shouldEmbedAsImage`.
+	 */
+	derived_variant?: boolean | undefined;
 }
 
 /**
@@ -106,9 +115,68 @@ export function formatAttachmentSize(bytes: number): string {
  * True if the MIME type renders inline as an image. Mirrors `image/*` from
  * the server-side allowlist (image/png, image/jpeg, image/gif, image/webp,
  * image/avif, image/heic, image/heif). Anything else falls back to a chip.
+ *
+ * NO LONGER THE EMBED DECISION on its own — see `shouldEmbedAsImage`. Kept
+ * because it is still the honest answer to "is this labelled as an image",
+ * which the unknown-server fallback needs.
  */
 export function isImageMime(mime: string | null | undefined): boolean {
 	return typeof mime === 'string' && mime.toLowerCase().trimStart().startsWith('image/');
+}
+
+/**
+ * The types a browser paints inside an `<img>` (BUG-2964).
+ *
+ * DUPLICATED from `$lib/attachments/display.ts::IMG_PAINTABLE_MIMES` rather
+ * than imported, and that is deliberate: this module's header requires it to
+ * stay byte-for-byte in lock-step with the Go renderer in
+ * `internal/server/render/attachments.go`, so its inputs have to be things the
+ * Go side can hold too. An import would tie the markdown renderer to the
+ * attachment-UI module and leave the Go copy with nothing to mirror. The two
+ * lists are asserted equal by a test rather than by a comment.
+ */
+const IMG_PAINTABLE_MIMES: ReadonlySet<string> = new Set([
+	'image/png',
+	'image/jpeg',
+	'image/gif',
+	'image/webp',
+	'image/avif',
+	'image/svg+xml'
+]);
+
+/**
+ * Should this attachment be embedded as an `<img>`, or as a downloadable file
+ * chip? (BUG-2964)
+ *
+ * THE RULE IS A DISJUNCTION, and each half is load-bearing:
+ *
+ *   embed as <img>  iff  a derived variant exists          (the server can
+ *                                                           serve decodable
+ *                                                           bytes)
+ *                   OR   the browser paints the original   (no derivative
+ *                                                           needed)
+ *
+ * Why not MIME prefix, which is what this used to be: a pure-Go build derives
+ * no thumbnail for HEIC, and the byte endpoint silently falls back to the
+ * ORIGINAL when the variant row is missing — so `image/heic` produced an
+ * `<img>` pointed at HEIC bytes, which Chrome and Firefox render as the
+ * broken-image icon.
+ *
+ * Why not variant availability alone: the same pure-Go build derives no AVIF
+ * thumbnail either, and AVIF is decoded by every current browser. Availability
+ * alone would turn a perfectly good AVIF embed into a chip. There is a CONTROL
+ * leg for exactly this.
+ *
+ * UNKNOWN (`derived_variant === undefined`) falls back to the old MIME-prefix
+ * behaviour. That is the compatibility hinge: an older server sends no header,
+ * and treating its silence as "no variants" would flip every embed in every
+ * document against it.
+ */
+export function shouldEmbedAsImage(meta: AttachmentMeta): boolean {
+	if (!isImageMime(meta.mime_type)) return false;
+	if (meta.derived_variant === undefined) return true;
+	if (meta.derived_variant) return true;
+	return IMG_PAINTABLE_MIMES.has((meta.mime_type ?? '').toLowerCase().split(';')[0].trim());
 }
 
 /**
@@ -218,7 +286,7 @@ export function resolveAttachmentImage(
 	if (uuid === null) return '';
 	const meta = resolver(uuid);
 	if (!meta) return missing(uuid, alt);
-	if (isImageMime(meta.mime_type))
+	if (shouldEmbedAsImage(meta))
 		return renderAttachmentImage(meta, alt, workspaceSlug, variant, urlBuilder);
 	return renderAttachmentChip(
 		meta,

@@ -34,6 +34,22 @@ export type AttachmentUrlBuilder = (uuid: string, variant?: AttachmentVariant) =
 export interface AttachmentMetadata {
 	mime: string;
 	size: number;
+	/**
+	 * Whether the SERVER holds a derived (thumbnail) variant for this
+	 * attachment — read from the `X-Pad-Attachment-Derived` response header
+	 * (BUG-2964).
+	 *
+	 * THREE-VALUED ON PURPOSE, and the third value is the whole point:
+	 *
+	 *  - `true`      — at least one derived variant exists.
+	 *  - `false`     — the header said `none`; this build derived nothing for
+	 *                  this file, so the only bytes on offer are the original.
+	 *  - `'unknown'` — no header at all, i.e. a server predating BUG-2964.
+	 *                  Callers must fall back to their previous behaviour here;
+	 *                  treating it as `false` would flip every embed on an older
+	 *                  server, which is a far bigger change than the bug.
+	 */
+	derived: boolean | 'unknown';
 }
 
 /**
@@ -115,10 +131,18 @@ export function fetchAttachmentMetadata(
 			const ctype = resp.headers.get('content-type') ?? '';
 			const mime = ctype.split(';')[0].trim();
 			const len = parseInt(resp.headers.get('content-length') ?? '0', 10);
+			// `none` is a SENTINEL, not an empty value: an empty header value is
+			// the one a proxy may drop, and absence has to keep meaning "old
+			// server" (see AttachmentMetadata.derived).
+			const derivedHeader = resp.headers.get('x-pad-attachment-derived');
 			return {
 				status: 'ok' as const,
 				mime,
-				size: Number.isFinite(len) && len >= 0 ? len : 0
+				size: Number.isFinite(len) && len >= 0 ? len : 0,
+				derived:
+					derivedHeader === null
+						? ('unknown' as const)
+						: derivedHeader.trim() !== '' && derivedHeader.trim() !== 'none'
 			};
 		} catch {
 			return { status: 'transient' as const };
