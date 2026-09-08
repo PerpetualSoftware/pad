@@ -262,6 +262,20 @@ jobs:
             if ($shown.title -ne 'Native smoke item') {
               throw "Unexpected item title: $($shown.title)"
             }
+            # Stop through the CLI, not Stop-Process: `pad server stop` is
+            # the only place the Windows PID-file ownership check runs
+            # (BUG-2969 — flock covers Linux and macOS, GetProcessTimes covers
+            # this platform), and a smoke that killed the process directly
+            # would leave that implementation unexercised anywhere. If it
+            # fails, the smoke fails; the finally below is the backstop that
+            # keeps a wedged server from holding the runner.
+            & $binary server stop
+            if (-not $server.HasExited) {
+              $server.WaitForExit(10000) | Out-Null
+            }
+            if (-not $server.HasExited) {
+              throw 'pad server stop did not stop the server'
+            }
           } finally {
             Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
           }
