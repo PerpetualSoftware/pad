@@ -1,6 +1,7 @@
 import { api } from '$lib/api/client';
 import type { Workspace, WorkspaceMembership } from '$lib/types';
 import * as perms from '$lib/utils/permissions';
+import { createKeyedSingleFlight } from './singleFlight';
 
 let workspaces = $state<Workspace[]>([]);
 let current = $state<Workspace | null>(null);
@@ -14,26 +15,22 @@ let loading = $state(false);
 // membership for workspace B.
 let membershipSeq = 0;
 
-// The `loadAll` request currently in flight, or null. Consumed by
-// `recoverIfMissing`, which must JOIN it rather than skip past it: acting on a
-// still-empty `workspaces` sends `setCurrent` down its single-workspace
-// fallback for no reason (TASK-2200, codex round 4). Cleared in `loadAll`'s
-// own `finally`, so a failed request does not leave a dead promise behind for
-// the next caller to await.
+// The keyed single-flight loader fencing `loadAll` (TASK-2947) — the same
+// primitive `collections.svelte.ts` uses, which is the point: generation,
+// join slot and ownership-guarded cleanup had been hand-rolled in both stores
+// and drifted three times in one afternoon (TASK-2200 rounds 3, 4 and 5).
 //
-// NOT ADDRESSED HERE, and named rather than left implicit: `loadAll` has no
-// guard on which RESPONSE commits, so two overlapping calls can leave the
-// OLDER list in `workspaces` if it resolves last. `collections.svelte.ts` has
-// exactly that guard (`seq !== collectionsLoadSeq`) and this store does not.
-// Pre-existing, unrelated to the recovery path — the recovery only ever joins,
-// never issues a competing call — and a separate fix with its own test.
-let inFlightLoadAll: Promise<void> | null = null;
-// Monotonic generation for `loadAll`, so its cleanup can tell "I still own the
-// slot" from "a newer call took it" — the same instrument, and the same name
-// shape, as `collectionsLoadSeq` next door. A promise-identity check would read
-// more directly but forces a self-reference the type checker cannot prove is
-// assigned before use.
-let loadAllSeq = 0;
+// `loadAll` takes no argument, so there is one key. It is still the KEYED
+// primitive rather than a bespoke unkeyed one, because a second shape would be
+// the sibling that drifts.
+//
+// `recoverIfMissing` JOINS an in-flight run via `inFlightFor` rather than
+// skipping past it: acting on a still-empty `workspaces` sends `setCurrent`
+// down its single-workspace fallback for no reason (codex round 4).
+const LOAD_ALL_KEY = 'all';
+const loadAllFlight = createKeyedSingleFlight<string>({
+	setLoading: (v) => { loading = v; },
+});
 
 /**
  * Resource-scoped permission helpers (PLAN-1100 / TASK-1101).
@@ -88,37 +85,19 @@ export const workspaceStore = {
 	},
 
 	async loadAll() {
-		const seq = ++loadAllSeq;
-		loading = true;
-		// Published so `recoverIfMissing` can JOIN this request rather than
-		// skip past it — see the note there (codex round 4).
-		const load = (async () => {
-			try {
-				workspaces = await api.workspaces.list();
-			} finally {
-				// OWNERSHIP, by promise identity (codex round 5). Clearing
-				// unconditionally lets an older overlapping request finish first
-				// and clear a NEWER one's slot, after which a concurrent
-				// `recoverIfMissing` starts a third request instead of joining
-				// the load still running — the race round 4 just closed,
-				// reintroduced by its own cleanup.
-				//
-				// This is the same rule `collections.svelte.ts` already applies
-				// to its `loading` flag and join slot, expressed there with a
-				// sequence counter. Third time in this unit that a rule was
-				// applied at one door and not its sibling.
-				//
-				// `loading` moves under the same guard for the same reason: an
-				// older load flipping it off while a newer one runs is the
-				// spinner half of the same mistake.
-				if (seq === loadAllSeq) {
-					loading = false;
-					inFlightLoadAll = null;
-				}
-			}
-		})();
-		inFlightLoadAll = load;
-		return load;
+		return loadAllFlight.run(LOAD_ALL_KEY, async ({ isLatest }) => {
+			const list = await api.workspaces.list();
+			// WHICH RESPONSE COMMITS (TASK-2947, and a behaviour change rather
+			// than a move). Two overlapping calls used to leave the OLDER list in
+			// `workspaces` if it resolved last — this store had the ownership
+			// guard on its CLEANUP and none on its COMMIT, where
+			// `collections.svelte.ts` had both. It was unreachable from the
+			// recovery path, which only ever joins, and it was named in this
+			// store's own comment as pre-existing; extracting the primitive is
+			// where it closes, because the primitive owns the rule.
+			if (!isLatest()) return;
+			workspaces = list;
+		});
 	},
 
 	/**
@@ -163,7 +142,7 @@ export const workspaceStore = {
 				// same "in flight" question `ensureCollections` answers by
 				// joining. Got it right in one place and wrong in the other, in
 				// one unit; they now answer it the same way.
-				await (inFlightLoadAll ?? workspaceStore.loadAll());
+				await (loadAllFlight.inFlightFor(LOAD_ALL_KEY) ?? workspaceStore.loadAll());
 			} catch {
 				// Still unreachable. Leave both pieces of state as they are —
 				// the next sync result asks again, and asking again is the whole
