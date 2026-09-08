@@ -324,8 +324,17 @@ func TestCollectionDeleteDefaultRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when deleting default collection")
 	}
-	if err.Error() != "cannot delete default collection" {
-		t.Errorf("unexpected error: %v", err)
+	// Was `err.Error() != "cannot delete default collection"`. The refusal is
+	// now a typed ValidationError so the HTTP layer can map it to a 400
+	// carrying this text instead of matching the prose (BUG-2951), which moves
+	// the sentinel prefix into Error(). Reason is the caller-facing contract,
+	// so that is what this asserts.
+	v, ok := AsValidationError(err)
+	if !ok {
+		t.Fatalf("DeleteCollection error is not a ValidationError: %v", err)
+	}
+	if v.Reason != "Cannot delete a default collection" {
+		t.Errorf("unexpected reason: %q", v.Reason)
 	}
 }
 

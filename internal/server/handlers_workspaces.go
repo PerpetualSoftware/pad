@@ -902,6 +902,17 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	userID := mint.OwnerID
 	ws, err := s.store.ImportWorkspace(&data, newName, userID, mint.Source)
 	if err != nil {
+		// A refusal about the EXPORT the caller supplied is a 400, not a 500
+		// (BUG-2951). This door answered 500 for every failure, including the
+		// prefix-grammar refusal whose message tells the caller which
+		// collection to edit and re-import — an actionable instruction
+		// delivered under a status that says "the server broke, try later".
+		// The sibling bundle-import door (handlers_import_bundle.go) already
+		// answers 400 for this class; this aligns the two.
+		if v, ok := store.AsValidationError(err); ok {
+			writeError(w, http.StatusBadRequest, "import_failed", v.Reason)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "import_failed", err.Error())
 		return
 	}

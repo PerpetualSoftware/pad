@@ -16,6 +16,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // defaultImportBundleMaxBytes caps an uploaded bundle. Mirrors the
@@ -321,6 +322,20 @@ func (s *Server) importBundle(ctx context.Context, r io.Reader, newName string, 
 			}
 			ws, err = s.store.ImportWorkspace(&export, newName, ownerID, mint.Source)
 			if err != nil {
+				// A refusal about the bundle the caller supplied gets this
+				// door's own envelope carrying the store's Reason, exactly as
+				// the mint-payload check above does. Falling through to the
+				// generic wrap would render err.Error() — which since BUG-2951
+				// carries the "store: validation" sentinel prefix, so the very
+				// change that made this refusal actionable on the JSON door
+				// would have made it uglier here. A producer change is only
+				// finished when its consumers have been read (codex round 1).
+				if v, ok := store.AsValidationError(err); ok {
+					return nil, &importStatusError{
+						status: http.StatusBadRequest, code: "bad_bundle",
+						message: "Bundle pad-export.json is not importable: " + v.Reason,
+					}
+				}
 				return nil, fmt.Errorf("import workspace: %w", err)
 			}
 			oldItemIDToSlug = make(map[string]string, len(export.Items))
