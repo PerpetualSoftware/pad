@@ -90,6 +90,14 @@ Requires:
 
 The `--cron` flag uses structured log output suitable for log aggregation systems.
 
+Both PostgreSQL commands accept `postgres://` / `postgresql://` URIs and
+libpq keyword/value connection strings in `PAD_DATABASE_URL`. Database passwords
+are passed to the native client through its environment, not its arguments.
+For a PostgreSQL service configuration, keep the password in that service
+rather than also supplying an inline password; service settings override
+environment defaults. Likewise, configure an SSL key passphrase (`sslpassword`)
+in a service file, since libpq has no corresponding environment variable.
+
 ### Restore
 
 ```bash
