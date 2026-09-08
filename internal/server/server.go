@@ -2125,7 +2125,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // (network blip, scheduler hiccup) before tripping the deadline.
 const httpIdleTimeout = 120 * time.Second
 
+// ListenAndServe binds addr and serves until the server is shut down.
+//
+// It is Listen followed by Serve; callers that need to act BETWEEN the bind and
+// the first request — recording a PID file, say, which must name the process
+// that actually owns the port (BUG-2965) — should call the two halves instead.
 func (s *Server) ListenAndServe(addr string) error {
+	ln, err := s.Listen(addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ln)
+}
+
+// Listen builds the HTTP server and binds addr, returning the listener without
+// accepting on it yet. A failure here is the "address already in use" case, and
+// separating it from Serve is what lets a caller distinguish "we own this port"
+// from "we are about to try".
+func (s *Server) Listen(addr string) (net.Listener, error) {
 	s.ensureRouter()
 
 	s.httpServer = &http.Server{
@@ -2142,8 +2159,18 @@ func (s *Server) ListenAndServe(addr string) error {
 		// Non-SSE handlers should use per-request context deadlines.
 	}
 
-	slog.Info("Pad server listening", "addr", addr)
-	return s.httpServer.ListenAndServe()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return ln, nil
+}
+
+// Serve accepts connections on ln until the server is shut down. Pair it with
+// Listen; ListenAndServe is the two together.
+func (s *Server) Serve(ln net.Listener) error {
+	slog.Info("Pad server listening", "addr", ln.Addr().String())
+	return s.httpServer.Serve(ln)
 }
 
 // Shutdown gracefully drains in-flight requests and stops the HTTP server.

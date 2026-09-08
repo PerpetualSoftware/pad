@@ -1004,6 +1004,39 @@ func serveCmd() *cobra.Command {
 					"hint", "cloud bootstrap stays loopback-only by design")
 			}
 
+			// Record this process in the PID file, so `pad server stop` can
+			// address a server started HERE and not only one auto-started by
+			// EnsureServer (BUG-2965). EnsureServer spawns this very command
+			// and writes the child's pid, so the two paths write the same
+			// value and cannot disagree; before this, the same command run by
+			// a human wrote nothing and `stop` answered "not running" about a
+			// live server.
+			//
+			// Written after the listener's prerequisites are up but before
+			// ListenAndServe, and removed on the way out. A SIGKILL leaves it
+			// behind, which is why StopServer treats the file as a handle
+			// rather than as evidence and asks the port when it is missing —
+			// and why a stale file that names a dead process is cleaned up
+			// there rather than trusted.
+			// Bind FIRST, then claim the PID file (BUG-2965, codex round 2).
+			// The file names the process `pad server stop` will signal, so it
+			// must name the one that actually owns the port. Writing before the
+			// bind lets a start that LOSES the race record itself and then, on
+			// its way out, remove the file the winner is relying on — leaving a
+			// healthy server unaddressable, which is this fix's own defect
+			// reintroduced by its own cleanup.
+			ln, lerr := srv.Listen(cfg.Addr())
+			if lerr != nil {
+				return lerr
+			}
+
+			// We hold the port; the file is ours to claim.
+			releasePIDFile := cli.WritePIDFile(cfg.PIDFile(), os.Getpid())
+			// Backstop for the paths that never reach the shutdown sequence
+			// (Serve returns an error). Safe to call twice: it only removes a
+			// file that still names us, and a second call finds nothing.
+			defer releasePIDFile()
+
 			// Graceful shutdown: listen for SIGINT/SIGTERM
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -1011,7 +1044,7 @@ func serveCmd() *cobra.Command {
 			// Start server in a goroutine
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- srv.ListenAndServe(cfg.Addr())
+				errCh <- srv.Serve(ln)
 			}()
 
 			// Wait for signal or server error
@@ -1023,6 +1056,22 @@ func serveCmd() *cobra.Command {
 				// Received shutdown signal
 				slog.Info("Shutting down server (30s grace period)...")
 				stop() // Reset signal handling so a second signal force-kills
+
+				// Release the PID file BEFORE the listener closes, not after
+				// (codex round 4, P1). Cleanup is a read-then-remove: it checks
+				// the file still names us, then unlinks. Run after the port is
+				// released, a successor can bind and claim between those two
+				// steps, and we then delete ITS entry — the live server ends up
+				// unaddressable, silently. While we still hold the port no
+				// other server can legitimately own this file, so there is
+				// nothing to race with.
+				//
+				// The cost is a window during the drain where a healthy server
+				// has no PID file, so a concurrent `pad server stop` answers
+				// "a server is answering on <addr> but this CLI did not start
+				// it". That is honest and actionable, and it is the trade this
+				// unit is about: a wrong silence for a true message.
+				releasePIDFile()
 
 				// Close event bus first — this terminates SSE handler
 				// goroutines so http.Server.Shutdown won't block on them.
