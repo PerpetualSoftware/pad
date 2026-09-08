@@ -2,6 +2,7 @@ import { api } from '$lib/api/client';
 import type { Collection, Item } from '$lib/types';
 import { authStore } from './auth.svelte';
 import { hydrateCollections, persistCollections, readDurableEpoch } from './localIndexPersistence';
+import { createKeyedSingleFlight } from './singleFlight';
 
 let collections = $state<Collection[]>([]);
 let items = $state<Item[]>([]);
@@ -28,39 +29,21 @@ let collectionsWorkspace = $state<string | null>(null);
 let activeItem = $state<Item | null>(null);
 let loading = $state(false);
 
-// Monotonic load generation for `loadCollections`. A workspace switch can
-// leave two list requests in flight (A pending, then B); without a guard a
-// late-resolving A response would overwrite B's `collections` +
-// `collectionsWorkspace` and strand `collectionsAreFreshFor(B)` at false. Each
-// call captures its generation and only commits if it's still the latest
-// (Codex review). Plain counter — not reactive; it only fences async writes.
-let collectionsLoadSeq = 0;
-
-// The workspace and promise of the load that will actually COMMIT — a single
-// slot TAGGED with its workspace, not a per-workspace map (TASK-2200, codex
-// round 3, which read the first draft of this comment as claiming the latter;
-// the comment was wrong, the slot was not).
+// The keyed single-flight loader that fences `loadCollections` (TASK-2947).
+// Generation, join slot and ownership-guarded cleanup all live in
+// `singleFlight.ts` now, shared with `workspace.svelte.ts` — the two stores
+// hand-rolled the same three parts and drifted three times in one afternoon.
 //
-// A map would be the worse structure here, and the reason is the generation
-// guard directly below: `loadCollections` commits only the LATEST call, so once
-// a load for B starts, A's in-flight request is already dead — its response
-// will be dropped by `seq !== collectionsLoadSeq`. Handing an
-// `ensureCollections('A')` caller that request's promise would resolve them
-// against a result that never lands, which is a quieter version of the bug this
-// unit exists to fix. Issuing a fresh A request is the correct answer, and it
-// is what the single slot produces.
+// Keyed by WORKSPACE SLUG, so a joiner asking about A is never handed B's
+// promise. It never coalesces: `run` always issues, and only
+// `ensureCollections` opts into joining via `inFlightFor`. See that method, and
+// `singleFlight.ts`'s own note, for why every other call site must NOT join.
 //
-// What the workspace TAG is for is the opposite mistake: without it, a joiner
-// asking about A would be handed B's promise and resolve against B's list.
-//
-// `loading` cannot serve either purpose — it is a single global flag with no
-// workspace on it and no promise behind it.
-//
-// Consumed only by `ensureCollections`, and deliberately not by
-// `loadCollections` itself — see that method's note on why coalescing every
-// caller would be wrong.
-let inFlightWs: string | null = null;
-let inFlightLoad: Promise<void> | null = null;
+// `loading` stays a `$state` in this file rather than moving into the loader,
+// because `loadItems` writes the same flag.
+const collectionsFlight = createKeyedSingleFlight<string>({
+	setLoading: (v) => { loading = v; },
+});
 
 export const collectionStore = {
 	get collections() { return collections; },
@@ -127,7 +110,8 @@ export const collectionStore = {
 		// Join, rather than issue a second request for the same answer. The
 		// joined promise settles when THAT request does, which is the semantics
 		// the caller wants: "tell me when a list exists".
-		if (inFlightWs === ws && inFlightLoad) return inFlightLoad;
+		const joined = collectionsFlight.inFlightFor(ws);
+		if (joined) return joined;
 		return collectionStore.loadCollections(ws);
 	},
 
@@ -154,8 +138,6 @@ export const collectionStore = {
 	},
 
 	async loadCollections(ws: string) {
-		const seq = ++collectionsLoadSeq;
-		loading = true;
 		// The DURABLE scope claim before the request, so `persistCollections` can
 		// tell whether a resync landed underneath it — the list carries no scope
 		// of its own and the stamp is borrowed from the row cache, so it is only
@@ -176,14 +158,10 @@ export const collectionStore = {
 		// authenticated one. Same source as every `bootstrap` caller passes, so
 		// the two cannot disagree.
 		const userId = authStore.userId || null;
-		// Published for `ensureCollections` to join, tagged with the workspace
-		// so a joiner asking about A is never handed B's promise. Overwriting a
-		// previous tenant is correct rather than lossy: this assignment happens
-		// after `++collectionsLoadSeq`, so the load being displaced has already
-		// lost the right to commit.
-		inFlightWs = ws;
-		const load = (async () => {
-		try {
+		// ALWAYS ISSUES — `run` never coalesces. The join is `ensureCollections`'s
+		// alone, via `inFlightFor`, because every other caller here knows the list
+		// MOVED and a request issued before that move cannot answer it.
+		return collectionsFlight.run(ws, async ({ isLatest }) => {
 			// STRICTLY BEFORE the request, not concurrently with it (codex round
 			// 3). Running them together looked free and was not: `Promise.all`
 			// starts both, but the durable read RESOLVES later and can observe a
@@ -194,14 +172,14 @@ export const collectionStore = {
 			//
 			// The join `ensureCollections` performs does not depend on the fetch
 			// being issued synchronously; it depends on the in-flight slot, which
-			// is published synchronously above.
+			// `run` publishes synchronously before calling this.
 			const epochBefore = await readDurableEpoch(userId, ws);
 			const result = await api.collections.list(ws);
 			// Drop a stale response: a newer loadCollections (e.g. a workspace
 			// switch that resolved first) has superseded this one, so writing
 			// `collections`/`collectionsWorkspace` here would clobber the newer
 			// workspace's data with this older load (Codex review).
-			if (seq !== collectionsLoadSeq) return;
+			if (!isLatest()) return;
 			collections = result;
 			// Stamp the array with its source workspace so consumers can tell
 			// it apart from a stale previous-workspace load (see
@@ -214,20 +192,7 @@ export const collectionStore = {
 			// durable write here; `persistCollections` itself decides whether the
 			// stamp it would write is honest.
 			void persistCollections(userId, ws, result, epochBefore);
-		} finally {
-			// Only the latest in-flight load owns the `loading` flag — an older
-			// load resolving late must not flip it off while the newer one runs.
-			if (seq === collectionsLoadSeq) loading = false;
-			// Same ownership rule for the join slot: an older load settling late
-			// must not clear a newer one's promise out from under a joiner.
-			if (seq === collectionsLoadSeq) {
-				inFlightWs = null;
-				inFlightLoad = null;
-			}
-		}
-		})();
-		inFlightLoad = load;
-		return load;
+		});
 	},
 
 	async loadItems(ws: string, collectionSlug?: string, params?: Record<string, string | number | boolean | undefined>) {
