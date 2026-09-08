@@ -67,7 +67,7 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 		// `--prefix "AB!"` still produced items whose printed issue ID no
 		// surface could resolve.
 		if !collections.IsValidPrefix(prefix) {
-			return nil, fmt.Errorf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", prefix)
+			return nil, invalidf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", prefix)
 		}
 	} else {
 		prefix = collections.DerivePrefix(input.Name)
@@ -486,7 +486,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		// reaches for to FIX a bad prefix, so it has to reject a bad
 		// replacement rather than swap one unresolvable id-space for another.
 		if !collections.IsValidPrefix(*input.Prefix) {
-			return nil, fmt.Errorf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", *input.Prefix)
+			return nil, invalidf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", *input.Prefix)
 		}
 		sets = append(sets, "prefix = ?")
 		args = append(args, *input.Prefix)
@@ -650,7 +650,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	if input.ExpectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
 		if perr != nil {
-			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
+			return nil, invalidf("expected_updated_at must be an RFC3339 timestamp, got %q", input.ExpectedUpdatedAt)
 		}
 		if !current.Equal(expected) {
 			return nil, &CollectionUpdateConflictError{
@@ -722,7 +722,7 @@ func (s *Store) DeleteCollection(id string, expectedUpdatedAt string) error {
 		return fmt.Errorf("check collection: %w", err)
 	}
 	if isDefault {
-		return fmt.Errorf("cannot delete default collection")
+		return invalidf("Cannot delete a default collection")
 	}
 
 	ts := now()
@@ -730,7 +730,7 @@ func (s *Store) DeleteCollection(id string, expectedUpdatedAt string) error {
 	if expectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, expectedUpdatedAt)
 		if perr != nil {
-			return fmt.Errorf("invalid expected_updated_at %q: %w", expectedUpdatedAt, perr)
+			return invalidf("expected_updated_at must be an RFC3339 timestamp, got %q", expectedUpdatedAt)
 		}
 		tx, terr := s.db.Begin()
 		if terr != nil {

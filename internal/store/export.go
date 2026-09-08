@@ -613,7 +613,7 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			prefix = "ITEM"
 		}
 		if !collections.IsValidPrefix(prefix) {
-			return nil, fmt.Errorf("import collection %q: prefix %q cannot be resolved — a collection prefix must start with an uppercase letter and contain only uppercase letters or digits; edit the prefix for this collection in the export and import again", c.Name, c.Prefix)
+			return nil, invalidf("import collection %q: prefix %q cannot be resolved — a collection prefix must start with an uppercase letter and contain only uppercase letters or digits; edit the prefix for this collection in the export and import again", c.Name, c.Prefix)
 		}
 		if hasDigit(prefix) {
 			// Accepted only because the parser widened for this fix. Logged so

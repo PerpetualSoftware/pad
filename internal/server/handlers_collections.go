@@ -239,6 +239,17 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusConflict, "conflict", uniqueCollectionConflictMessage(err))
 			return
 		}
+		// A refusal about what the CALLER asked for is a 400 carrying the
+		// store's own text (BUG-2951). Without this arm the prefix-grammar
+		// refusal — the one message that names the rule and an example — fell
+		// into writeInternalError and reached the caller as "An internal
+		// error occurred", which reads as an outage rather than as "fix your
+		// input". Reason, never err.Error(): the latter carries the sentinel
+		// prefix and any wrapping the call path added.
+		if v, ok := store.AsValidationError(err); ok {
+			writeError(w, http.StatusBadRequest, "bad_request", v.Reason)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -397,6 +408,13 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusConflict, "conflict", uniqueCollectionConflictMessage(err))
 			return
 		}
+		// Same arm as create, and this is the door BUG-2951 was measured on:
+		// `pad collection update docs --prefix "ab1"` answered "An internal
+		// error occurred" while the store had composed the rule and an example.
+		if v, ok := store.AsValidationError(err); ok {
+			writeError(w, http.StatusBadRequest, "bad_request", v.Reason)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -531,8 +549,19 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 			return
 		}
-		if strings.Contains(err.Error(), "cannot delete default collection") {
-			writeError(w, http.StatusBadRequest, "bad_request", "Cannot delete a default collection")
+		// Was a strings.Contains match on the store's error text (BUG-2951):
+		// a reworded refusal silently became a 500, and prose matching is the
+		// stopgap this unit exists to stop building on.
+		//
+		// It renders v.Reason rather than a wording of its own, so ONE rule
+		// holds at every door: the caller sees the store's message. Keeping a
+		// handler-side sentence here would have been wrong for a second
+		// reason — DeleteCollection can also refuse a malformed
+		// expected_updated_at, and a fixed string would have answered that
+		// refusal with the default-collection message. The store's Reason
+		// carries the caller-facing wording, so the text is unchanged.
+		if v, ok := store.AsValidationError(err); ok {
+			writeError(w, http.StatusBadRequest, "bad_request", v.Reason)
 			return
 		}
 		writeInternalError(w, err)
