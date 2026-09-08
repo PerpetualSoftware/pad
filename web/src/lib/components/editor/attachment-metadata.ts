@@ -35,21 +35,24 @@ export interface AttachmentMetadata {
 	mime: string;
 	size: number;
 	/**
-	 * Whether the SERVER holds a derived (thumbnail) variant for this
-	 * attachment — read from the `X-Pad-Attachment-Derived` response header
-	 * (BUG-2964).
+	 * The derived (thumbnail) variants the SERVER holds for this attachment —
+	 * parsed from the `X-Pad-Attachment-Derived` response header (BUG-2964).
 	 *
-	 * THREE-VALUED ON PURPOSE, and the third value is the whole point:
+	 * A LIST, not a boolean (codex round 1): derivation writes each variant
+	 * independently, so a consumer has to ask about the variant IT will request,
+	 * not about whether any thumbnail at all exists.
 	 *
-	 *  - `true`      — at least one derived variant exists.
-	 *  - `false`     — the header said `none`; this build derived nothing for
+	 * THREE-VALUED, and the third value is the whole point:
+	 *
+	 *  - `['thumb-sm','thumb-md']` — these exist.
+	 *  - `[]`        — the header said `none`; this build derived nothing for
 	 *                  this file, so the only bytes on offer are the original.
 	 *  - `'unknown'` — no header at all, i.e. a server predating BUG-2964.
 	 *                  Callers must fall back to their previous behaviour here;
-	 *                  treating it as `false` would flip every embed on an older
+	 *                  treating it as `[]` would flip every embed on an older
 	 *                  server, which is a far bigger change than the bug.
 	 */
-	derived: boolean | 'unknown';
+	derived: string[] | 'unknown';
 }
 
 /**
@@ -142,7 +145,10 @@ export function fetchAttachmentMetadata(
 				derived:
 					derivedHeader === null
 						? ('unknown' as const)
-						: derivedHeader.trim() !== '' && derivedHeader.trim() !== 'none'
+						: derivedHeader
+								.split(',')
+								.map((v) => v.trim())
+								.filter((v) => v !== '' && v !== 'none')
 			};
 		} catch {
 			return { status: 'transient' as const };

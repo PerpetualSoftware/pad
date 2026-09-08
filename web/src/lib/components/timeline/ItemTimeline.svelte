@@ -280,7 +280,7 @@
 				mime_type: m.mime,
 				filename: '',
 				size_bytes: m.size,
-				derived_variant: m.derived === 'unknown' ? undefined : m.derived
+				derived_variants: m.derived === 'unknown' ? undefined : m.derived
 			});
 			attMeta = next;
 		});

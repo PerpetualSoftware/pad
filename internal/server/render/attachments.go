@@ -28,12 +28,23 @@ type AttachmentMeta struct {
 	SizeBytes int64
 	Width     *int
 	Height    *int
-	// DerivedVariant reports whether the server holds a derived (thumbnail)
-	// variant for this attachment (BUG-2964). Three-valued via the pointer, and
-	// the third value carries meaning: nil means UNKNOWN — a caller that did not
-	// look — and falls back to the pre-BUG-2964 MIME-prefix behaviour. The TS
-	// mirror is `AttachmentMeta.derived_variant?: boolean | undefined`.
-	DerivedVariant *bool
+	// DerivedVariants names the derived (thumbnail) variants the server holds
+	// for this attachment (BUG-2964), e.g. ["thumb-sm","thumb-md"].
+	//
+	// PER-VARIANT, NOT A BOOLEAN, and codex round 1 is why: derivation writes
+	// each variant independently, so "some thumbnail exists" does not mean the
+	// one this render will REQUEST exists. If only thumb-sm were present and the
+	// render asked for thumb-md, a boolean would say "image", the endpoint would
+	// fall back to the undecodable original, and the broken image would be back
+	// with an extra layer of machinery in front of it.
+	//
+	// DerivedKnown separates "the server said none" from "nobody looked" without
+	// a nil-versus-empty-slice subtlety: false means UNKNOWN and falls back to
+	// the pre-BUG-2964 MIME-prefix behaviour. The TS mirror is
+	// `AttachmentMeta.derived_variants?: string[] | undefined`, where undefined
+	// is the same third state.
+	DerivedVariants []string
+	DerivedKnown    bool
 }
 
 // AttachmentResolver looks up an attachment by UUID. Returns nil for
@@ -93,6 +104,12 @@ func IsImageMime(mime string) bool {
 // derives no thumbnail for it. image/svg+xml IS present: an SVG in an <img>
 // runs no script, and it has been embedded that way in existing documents
 // since attachments shipped.
+// imageRenderVariant is the variant this renderer puts in an <img> src. Named
+// once so the embed DECISION and the URL it produces cannot disagree about
+// which variant is being asked for — the exact disagreement codex round 1 found
+// between a boolean availability flag and a specific request.
+const imageRenderVariant = "thumb-md"
+
 var imgPaintableMimes = map[string]bool{
 	"image/png":     true,
 	"image/jpeg":    true,
@@ -104,9 +121,14 @@ var imgPaintableMimes = map[string]bool{
 
 // ShouldEmbedAsImage decides <img> vs file chip (BUG-2964).
 //
-// THE RULE IS A DISJUNCTION: embed as <img> iff a derived variant exists (the
-// server can serve decodable bytes) OR the browser paints the original (no
-// derivative needed).
+// THE RULE IS A DISJUNCTION: embed as <img> iff THE VARIANT THIS RENDER WILL
+// REQUEST exists (the server can serve decodable bytes) OR the browser paints
+// the original (no derivative needed).
+//
+// `wantVariant` is the variant the caller is about to put in the URL, and it
+// must be the same one — asking about a variant you will not request answers a
+// question nobody has (codex round 1). An empty wantVariant means the render
+// points at the original, so only the paintable half can carry it.
 //
 // Not a MIME prefix test, because a pure-Go build derives no HEIC thumbnail and
 // the byte endpoint falls back to the ORIGINAL when the variant row is missing —
@@ -114,13 +136,20 @@ var imgPaintableMimes = map[string]bool{
 // variant availability alone either, because that same build derives no AVIF
 // thumbnail and every current browser decodes AVIF.
 //
-// A nil DerivedVariant means unknown and falls back to the prefix test.
-func ShouldEmbedAsImage(meta *AttachmentMeta) bool {
+// DerivedKnown false means unknown and falls back to the prefix test.
+func ShouldEmbedAsImage(meta *AttachmentMeta, wantVariant string) bool {
 	if meta == nil || !IsImageMime(meta.MimeType) {
 		return false
 	}
-	if meta.DerivedVariant == nil || *meta.DerivedVariant {
+	if !meta.DerivedKnown {
 		return true
+	}
+	if wantVariant != "" {
+		for _, v := range meta.DerivedVariants {
+			if v == wantVariant {
+				return true
+			}
+		}
 	}
 	mime := strings.ToLower(strings.TrimSpace(meta.MimeType))
 	if i := strings.IndexByte(mime, ';'); i >= 0 {
@@ -167,7 +196,7 @@ func RenderAttachmentImage(meta *AttachmentMeta, alt, workspaceSlug string) stri
 	if meta == nil {
 		return ""
 	}
-	src := AttachmentDownloadURL(workspaceSlug, meta.ID, "thumb-md")
+	src := AttachmentDownloadURL(workspaceSlug, meta.ID, imageRenderVariant)
 	altText := alt
 	if strings.TrimSpace(altText) == "" {
 		altText = meta.Filename
@@ -245,7 +274,7 @@ func ResolveAttachmentImage(href, alt, workspaceSlug string, resolve AttachmentR
 	if meta == nil {
 		return RenderAttachmentMissing(uuid, alt)
 	}
-	if ShouldEmbedAsImage(meta) {
+	if ShouldEmbedAsImage(meta, imageRenderVariant) {
 		return RenderAttachmentImage(meta, alt, workspaceSlug)
 	}
 	chipText := alt

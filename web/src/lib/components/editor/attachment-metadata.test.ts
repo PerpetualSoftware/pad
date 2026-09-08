@@ -411,23 +411,23 @@ describe('mimeToFormat', () => {
  * against an older build — a far bigger change than the bug being fixed.
  */
 describe('fetchAttachmentMetadata — derived-variant header (BUG-2964)', () => {
-	it('true when the server lists derived variants', async () => {
+	it('the parsed list when the server names derived variants', async () => {
 		const uuid = freshUuid();
 		fetchMock.mockResolvedValue(
 			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'thumb-sm,thumb-md' })
 		);
 		const r = await fetchAttachmentMetadata('ws', uuid, url);
-		expect(r).toMatchObject({ status: 'ok', derived: true });
+		expect(r).toMatchObject({ status: 'ok', derived: ['thumb-sm', 'thumb-md'] });
 		invalidateAttachmentMetadata('ws', uuid);
 	});
 
-	it('false on the `none` SENTINEL', async () => {
+	it('an empty list on the `none` SENTINEL', async () => {
 		const uuid = freshUuid();
 		fetchMock.mockResolvedValue(
 			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'none' })
 		);
 		const r = await fetchAttachmentMetadata('ws', uuid, url);
-		expect(r).toMatchObject({ status: 'ok', derived: false });
+		expect(r).toMatchObject({ status: 'ok', derived: [] });
 		invalidateAttachmentMetadata('ws', uuid);
 	});
 
@@ -448,8 +448,8 @@ describe('fetchAttachmentMetadata — derived-variant header (BUG-2964)', () => 
 		const r = await fetchAttachmentMetadata('ws', uuid, url);
 		expect(r.status).toBe('ok');
 		if (r.status === 'ok') {
-			expect(r.derived).not.toBe(false);
-			expect(r.derived).not.toBe(true);
+			expect(r.derived).not.toEqual([]);
+			expect(Array.isArray(r.derived)).toBe(false);
 		}
 		invalidateAttachmentMetadata('ws', uuid);
 	});
@@ -461,7 +461,7 @@ describe('fetchAttachmentMetadata — derived-variant header (BUG-2964)', () => 
 			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': '' })
 		);
 		const r = await fetchAttachmentMetadata('ws', uuid, url);
-		expect(r).toMatchObject({ status: 'ok', derived: false });
+		expect(r).toMatchObject({ status: 'ok', derived: [] });
 		invalidateAttachmentMetadata('ws', uuid);
 	});
 });
