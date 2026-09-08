@@ -208,6 +208,12 @@ class WorkspaceState {
 	// `persistDelta` call, so a reload finds the row already gone from disk and
 	// the cursor already past it — there is no window on the other side to
 	// guard. The map guards a within-session race only.
+	//
+	// The four doors listed above are no longer equal: the cold snapshot pins
+	// its cursor and replays the gap (IDEA-2924), so it is healed with or
+	// without this map, while `upsert` and the warm hydrate are not — their
+	// other guards are resync-scoped, and an eviction is not a resync. Measured under
+	// TASK-2939 — the population is written out at `MOVED_OUT_FLOOR_CAP`.
 	// BOUNDED, and NOT by the `delete` on the authoritative re-add paths: that
 	// lift fires only when an item comes BACK, which by definition never happens
 	// for one that moved out permanently — so it prunes exactly the entries that
@@ -448,12 +454,45 @@ function cursorAsNum(c: string): number {
  * protected, so the cap strictly reduces the exposure and never widens it — but
  * it does not eliminate it.
  *
- * Closing it needs a different mechanism, not a bigger number: the cold path
- * would have to PIN its cursor to the snapshot's the way `resyncProjectionScope`
- * already does, so the replay re-delivers every eviction in the gap and no
- * per-id record is load-bearing at all. That is a change to the cold path's
- * cursor contract and it interacts with TASK-2906's durable monotonicity gate,
- * so it is filed rather than smuggled in here — see TASK-2920's trail.
+ * WHAT CLOSED PART OF IT, AND WHAT DID NOT (TASK-2939, measured). The cold path
+ * now PINS its cursor to the snapshot's and owns the replay from it (IDEA-2924
+ * — see THE PIN in `bootstrap`'s stage 2), which is the mechanism this paragraph
+ * used to describe as unbuilt. On THAT door the exposure above is gone: the
+ * replay re-delivers every eviction in the gap, including ids whose floor this
+ * cap had already evicted, so no per-id record is load-bearing there.
+ *
+ * At two of the other three it still is, and the measurement is the reason this
+ * fence was kept rather than removed with the pin: disabling `refusedByMovedOut`
+ * against the pin as shipped fails seven of the ten legs in
+ * `localIndexMovedOutFloor.svelte.test.ts`. (`resyncProjectionScope` is the
+ * third door and is healed for the cold door's reason — it pins too. Not by
+ * itself, though: it leaves `pendingResync` set and its CALLER's
+ * `reconcileWorkspace` drains from the pinned cursor, where the cold path calls
+ * that loop inline.) The
+ * two that remain have no mechanism that could heal them, because the eviction
+ * advanced the cursor past ITSELF in the same atomic write and
+ * `ListMovedOutSince` is a `seq > since` query — so nothing re-delivers it to
+ * anyone:
+ *
+ *   - `upsert` — an optimistic response carries no cursor and triggers no
+ *     replay at all. That door has three other guards (`sinceEpoch`,
+ *     `fencedIds`, `existing.seq`) and NONE of them reaches this case: the
+ *     first two are RESYNC-SCOPED — `sinceEpoch` compares against a
+ *     `scopeEpoch` only a resync bumps, `fencedIds` holds only what a resync
+ *     dropped — and an eviction is not a resync, while the third cannot fire
+ *     because the hard evict left no `existing` to compare.
+ *   - the warm IDB hydrate — the hydrate reads the CACHED cursor, but the
+ *     eviction has already advanced `state.cursor` past itself, and the
+ *     reconcile drains from `state.cursor`. So the row is reinstated from the
+ *     cache and the drain starts beyond the news that would remove it again.
+ *     Different door, same permanence.
+ *
+ * The `resyncProjectionScope` leg fails too and is NOT evidence: that door pins
+ * its cursor like the cold one, and the leg asserts the end state at the moment
+ * the snapshot merges — before the replay that door owns has run (CONVE-12).
+ *
+ * So the residual exposure above now stands exactly where the floor does, and
+ * raising the number is still not the fix.
  */
 const MOVED_OUT_FLOOR_CAP = 5000;
 
@@ -990,10 +1029,17 @@ export const localIndex = {
 	 *      IDB so the next visit is warm.
 	 *
 	 * Merge-not-clear semantics are preserved: in either path, rows
-	 * are MERGED through the same per-row seq guard `upsert` uses,
-	 * and the cursor only advances forward. An optimistic `upsert()`
-	 * or SSE write that landed while bootstrap was in flight is
-	 * never regressed.
+	 * are MERGED through the same per-row seq guard `upsert` uses. An
+	 * optimistic `upsert()` or SSE write that landed while bootstrap
+	 * was in flight is never regressed.
+	 *
+	 * The CURSOR is a different matter and this used to say it only
+	 * advances. Since IDEA-2924 the cold path PINS it to an overtaken
+	 * snapshot's — a deliberate RAM regression, paid for by the replay
+	 * it starts from that cursor. Rows are still never regressed; only
+	 * the position from which the next delta is asked for is. The
+	 * DURABLE cursor is the one that still may not go backwards
+	 * (TASK-2906) — see `persistDelta`'s monotonicity gate.
 	 */
 	async bootstrap(
 		ws: string,
@@ -1456,9 +1502,12 @@ export const localIndex = {
 	 *      for that id (e.g. SSE arrived first via a different path).
 	 *
 	 * Rows missing `seq` (legacy snapshots before TASK-1352) pass
-	 * through unconditionally — there's no basis to compare. The
-	 * cursor only advances forward, so a backslide can never lose
-	 * progress.
+	 * through unconditionally — there's no basis to compare. This
+	 * function's own cursor writes only advance (guard 1 drops a
+	 * whole non-advancing batch), so a backslide can never lose
+	 * progress HERE. That is a property of this door, not of the
+	 * cursor: the cold path pins it backwards on an overtaken
+	 * snapshot and replays from there (IDEA-2924).
 	 */
 	applyDelta(
 		ws: string,
