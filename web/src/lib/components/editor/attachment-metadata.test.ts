@@ -465,3 +465,64 @@ describe('fetchAttachmentMetadata — derived-variant header (BUG-2964)', () => 
 		invalidateAttachmentMetadata('ws', uuid);
 	});
 });
+
+/**
+ * BUG-2964, codex round 2 — `derived` is NOT a durable fact, and caching it as
+ * one latches a wrong answer.
+ *
+ * Thumbnail derivation runs asynchronously after upload. A probe issued in that
+ * window truthfully sees no variants; the old per-arm rule cached every `ok`
+ * for the page's lifetime, so on a build that CAN derive HEIC a freshly
+ * uploaded HEIC would render as a file chip until reload, with the thumbnail
+ * sitting on the server the whole time.
+ */
+describe('fetchAttachmentMetadata — an empty derived list is PROVISIONAL', () => {
+	it('re-probes after an empty list, and picks up variants that landed since', async () => {
+		const uuid = freshUuid();
+		fetchMock
+			.mockResolvedValueOnce(
+				head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'none' })
+			)
+			.mockResolvedValueOnce(
+				head(200, {
+					'content-type': 'image/heic',
+					'x-pad-attachment-derived': 'thumb-sm,thumb-md'
+				})
+			);
+
+		const first = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(first).toMatchObject({ status: 'ok', derived: [] });
+
+		// No invalidate call in between: the empty answer must not have been
+		// cached, so this reaches the server and sees the settled state.
+		const second = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(second).toMatchObject({ status: 'ok', derived: ['thumb-sm', 'thumb-md'] });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it('CONTROL — a NON-EMPTY list IS cached; variants are never un-derived', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(
+			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'thumb-md' })
+		);
+
+		await fetchAttachmentMetadata('ws', uuid, url);
+		await fetchAttachmentMetadata('ws', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it("CONTROL — 'unknown' IS cached; it is a fact about the SERVER, not the attachment", async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png' }));
+
+		await fetchAttachmentMetadata('ws', uuid, url);
+		await fetchAttachmentMetadata('ws', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+});

@@ -93,6 +93,40 @@ export type AttachmentMetadataResult =
 const cache = new Map<string, Promise<AttachmentMetadataResult>>();
 
 /**
+ * Is this result a DURABLE fact worth keeping for the page's lifetime?
+ *
+ * `mime` and `size` are durable — the row is content-addressed. `derived` is
+ * NOT, and conflating the two is a real defect (BUG-2964, codex round 2):
+ * thumbnail derivation runs ASYNCHRONOUSLY after upload, so a probe issued in
+ * that window sees no variants yet. Caching that answer as immutable latches it
+ * for the rest of the page — and on a build that CAN derive HEIC, a freshly
+ * uploaded HEIC would then render as a file chip until a reload, even though
+ * the thumbnail landed a second later.
+ *
+ * So an EMPTY derived list is provisional and is not cached; the next probe
+ * asks again. A NON-EMPTY list is durable (variants are never un-derived), and
+ * `'unknown'` is durable too — it is a fact about the SERVER's build, not about
+ * this attachment, and it will not change under a running page.
+ *
+ * The cost is one repeat HEAD per probe for a file this build will never derive
+ * — a HEIC on a pure-Go instance. That is bounded, cheap (HEAD, and the
+ * endpoint is conditional-request friendly), and strictly better than latching
+ * a wrong answer: the alternative trades a permanent visible error for a
+ * request nobody notices.
+ */
+function isDurable(result: AttachmentMetadataResult): boolean {
+	// `missing` stays DURABLE — it is authoritative by design (DR-17), and it is
+	// what keeps editor undo from resurrecting a deleted attachment. Only
+	// `transient` and a provisional empty `derived` are evicted; the first draft
+	// of this helper demoted `missing` along with them, and three existing legs
+	// caught it.
+	if (result.status === 'transient') return false;
+	if (result.status !== 'ok') return true;
+	return result.derived === 'unknown' || result.derived.length > 0;
+}
+
+
+/**
  * Fetch (or read from cache) the MIME + size for an attachment. The
  * server registers HEAD alongside GET (TASK-877); chi doesn't auto-
  * route HEAD on GET handlers, so this must use HEAD — a GET would
@@ -159,7 +193,7 @@ export function fetchAttachmentMetadata(
 	// this from deleting a NEWER entry installed by an invalidate-then-
 	// refetch that raced this promise's resolution.
 	void promise.then((result) => {
-		if (result.status === 'transient' && cache.get(key) === promise) {
+		if (cache.get(key) === promise && !isDurable(result)) {
 			cache.delete(key);
 		}
 	});
