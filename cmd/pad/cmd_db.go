@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -128,8 +127,10 @@ the server resolves it (PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db).`,
 					"--file", output,
 				}
 
-				pgCmd := exec.Command("pg_dump", pgArgs...)
-				pgCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
+				pgCmd, err := postgresClient("pg_dump", dbURL, pgArgs...)
+				if err != nil {
+					return err
+				}
 				pgCmd.Stdout = os.Stdout
 				pgCmd.Stderr = os.Stderr
 
@@ -250,8 +251,10 @@ WARNING: This will overwrite the current database contents.`,
 					"--single-transaction",
 				}
 
-				psqlCmd := exec.Command("psql", psqlArgs...)
-				psqlCmd.Env = append(os.Environ(), "PGDATABASE="+dbURL)
+				psqlCmd, err := postgresClient("psql", dbURL, psqlArgs...)
+				if err != nil {
+					return err
+				}
 				psqlCmd.Stdout = os.Stdout
 				psqlCmd.Stderr = os.Stderr
 
