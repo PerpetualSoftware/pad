@@ -48,7 +48,9 @@ describe('fetchAttachmentMetadata — result arms', () => {
 
 		const result = await fetchAttachmentMetadata('ws', uuid, url);
 
-		expect(result).toEqual({ status: 'ok', mime: 'image/png', size: 4096 });
+		// `derived: 'unknown'` because these fixtures set no
+		// `x-pad-attachment-derived` header — the older-server case (BUG-2964).
+		expect(result).toEqual({ status: 'ok', mime: 'image/png', size: 4096, derived: 'unknown' });
 		// HEAD, not GET — a GET would pull the whole blob across the wire.
 		expect(fetchMock).toHaveBeenCalledWith(url(uuid), {
 			method: 'HEAD',
@@ -63,7 +65,8 @@ describe('fetchAttachmentMetadata — result arms', () => {
 		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({
 			status: 'ok',
 			mime: 'application/pdf',
-			size: 0
+			size: 0,
+			derived: 'unknown'
 		});
 	});
 
@@ -131,7 +134,8 @@ describe('fetchAttachmentMetadata — caching is per-arm', () => {
 		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({
 			status: 'ok',
 			mime: 'image/jpeg',
-			size: 7
+			size: 7,
+			derived: 'unknown'
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
@@ -207,7 +211,8 @@ describe('fetchAttachmentMetadata — caching is per-arm', () => {
 		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({
 			status: 'ok',
 			mime: 'image/avif',
-			size: 3
+			size: 3,
+			derived: 'unknown'
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
@@ -227,7 +232,8 @@ describe('revalidateAttachmentMetadata — existence probes ignore the cache', (
 		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({
 			status: 'ok',
 			mime: 'image/png',
-			size: 10
+			size: 10,
+			derived: 'unknown'
 		});
 
 		// The row is deleted by someone else; the cached `ok` still says live.
@@ -347,6 +353,7 @@ describe('invalidateAttachmentMetadataForWorkspace (BUG-2509)', () => {
 			status: 'ok',
 			mime: 'image/png',
 			size: 7,
+			derived: 'unknown',
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
@@ -391,5 +398,131 @@ describe('mimeToFormat', () => {
 	it('returns null for non-images and unknown image subtypes', () => {
 		expect(mimeToFormat('application/pdf')).toBeNull();
 		expect(mimeToFormat('image/jxl')).toBeNull();
+	});
+});
+
+/**
+ * BUG-2964 — `derived` is THREE-VALUED, and the third value is the point.
+ *
+ * The embed decision reads this to tell "the server holds a decodable
+ * derivative" from "the only bytes on offer are the original". A server
+ * predating BUG-2964 sends no header at all, and reading that silence as
+ * `false` would flip every image embed in every document to a file chip
+ * against an older build — a far bigger change than the bug being fixed.
+ */
+describe('fetchAttachmentMetadata — derived-variant header (BUG-2964)', () => {
+	it('the parsed list when the server names derived variants', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(
+			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'thumb-sm,thumb-md' })
+		);
+		const r = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(r).toMatchObject({ status: 'ok', derived: ['thumb-sm', 'thumb-md'] });
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it('an empty list on the `none` SENTINEL', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(
+			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'none' })
+		);
+		const r = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(r).toMatchObject({ status: 'ok', derived: [] });
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it("'unknown' when the header is ABSENT — an older server, not an answer", async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/heic' }));
+		const r = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(r).toMatchObject({ status: 'ok', derived: 'unknown' });
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it("'unknown' is NOT false — the two must never collapse", async () => {
+		// A guard against the tempting `derived: derivedHeader !== 'none'`,
+		// which reads absence as true, and against `=== 'none' ? false : true`,
+		// which reads absence as true as well. Both lose the third state.
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png' }));
+		const r = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(r.status).toBe('ok');
+		if (r.status === 'ok') {
+			expect(r.derived).not.toEqual([]);
+			expect(Array.isArray(r.derived)).toBe(false);
+		}
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it('an empty header value is treated as none, not as a list', async () => {
+		// Belt-and-braces for a proxy that strips the value but keeps the name.
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(
+			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': '' })
+		);
+		const r = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(r).toMatchObject({ status: 'ok', derived: [] });
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+});
+
+/**
+ * BUG-2964, codex round 2 — `derived` is NOT a durable fact, and caching it as
+ * one latches a wrong answer.
+ *
+ * Thumbnail derivation runs asynchronously after upload. A probe issued in that
+ * window truthfully sees no variants; the old per-arm rule cached every `ok`
+ * for the page's lifetime, so on a build that CAN derive HEIC a freshly
+ * uploaded HEIC would render as a file chip until reload, with the thumbnail
+ * sitting on the server the whole time.
+ */
+describe('fetchAttachmentMetadata — an empty derived list is PROVISIONAL', () => {
+	it('re-probes after an empty list, and picks up variants that landed since', async () => {
+		const uuid = freshUuid();
+		fetchMock
+			.mockResolvedValueOnce(
+				head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'none' })
+			)
+			.mockResolvedValueOnce(
+				head(200, {
+					'content-type': 'image/heic',
+					'x-pad-attachment-derived': 'thumb-sm,thumb-md'
+				})
+			);
+
+		const first = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(first).toMatchObject({ status: 'ok', derived: [] });
+
+		// No invalidate call in between: the empty answer must not have been
+		// cached, so this reaches the server and sees the settled state.
+		const second = await fetchAttachmentMetadata('ws', uuid, url);
+		expect(second).toMatchObject({ status: 'ok', derived: ['thumb-sm', 'thumb-md'] });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it('CONTROL — a NON-EMPTY list IS cached; variants are never un-derived', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(
+			head(200, { 'content-type': 'image/heic', 'x-pad-attachment-derived': 'thumb-md' })
+		);
+
+		await fetchAttachmentMetadata('ws', uuid, url);
+		await fetchAttachmentMetadata('ws', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		invalidateAttachmentMetadata('ws', uuid);
+	});
+
+	it("CONTROL — 'unknown' IS cached; it is a fact about the SERVER, not the attachment", async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png' }));
+
+		await fetchAttachmentMetadata('ws', uuid, url);
+		await fetchAttachmentMetadata('ws', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		invalidateAttachmentMetadata('ws', uuid);
 	});
 });

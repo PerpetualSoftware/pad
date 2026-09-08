@@ -315,6 +315,48 @@ const BROWSER_PREVIEW_MIMES: ReadonlySet<string> = new Set([
 	'text/plain'
 ]);
 
+/**
+ * The types a BROWSER paints inside an `<img>` tag (BUG-2964).
+ *
+ * A FOURTH predicate, and it must not be collapsed into `canOpenInViewer`
+ * even though the two sets nearly coincide. They answer different questions
+ * and differ on exactly one entry:
+ *
+ *  - `canOpenInViewer` (DR-16) — may the IN-APP viewer open this? It excludes
+ *    `image/svg+xml` because SVG carries ACTIVE CONTENT and the viewer opens
+ *    it in a context where that matters.
+ *  - this one — will the browser PAINT this in an `<img>`? SVG in an `<img>`
+ *    runs no script, so the active-content reason does not apply, and SVG has
+ *    been embedded this way in existing documents since attachments shipped.
+ *    Collapsing the two would silently turn every existing SVG embed into a
+ *    file chip — a document-visible regression nothing asked for.
+ *
+ * HEIC/HEIF are absent for the reason that motivated BUG-2964: Chrome and
+ * Firefox decode neither (Safari decodes HEIC), so an `<img>` pointed at HEIC
+ * bytes renders the broken-image icon. AVIF IS here — browsers decode it —
+ * which is why AVIF stays an image even on a build that derives no thumbnail
+ * for it. `image/tiff` is likewise absent, and would be a chip if it were ever
+ * added to the upload allowlist.
+ */
+const IMG_PAINTABLE_MIMES: ReadonlySet<string> = new Set([
+	'image/png',
+	'image/jpeg',
+	'image/gif',
+	'image/webp',
+	'image/avif',
+	'image/svg+xml'
+]);
+
+/**
+ * Will a browser paint this MIME inside an `<img>`? (BUG-2964)
+ *
+ * NOT a synonym for `canOpenInViewer` — see IMG_PAINTABLE_MIMES above before
+ * "simplifying" one into the other.
+ */
+export function browserPaintsInImgTag(mime: string | null | undefined): boolean {
+	return IMG_PAINTABLE_MIMES.has(normalizeMime(mime));
+}
+
 /** May this MIME be opened in the in-app image viewer? (DR-16) */
 export function canOpenInViewer(mime: string | null | undefined): boolean {
 	return VIEWER_MIMES.has(normalizeMime(mime));

@@ -34,6 +34,25 @@ export type AttachmentUrlBuilder = (uuid: string, variant?: AttachmentVariant) =
 export interface AttachmentMetadata {
 	mime: string;
 	size: number;
+	/**
+	 * The derived (thumbnail) variants the SERVER holds for this attachment —
+	 * parsed from the `X-Pad-Attachment-Derived` response header (BUG-2964).
+	 *
+	 * A LIST, not a boolean (codex round 1): derivation writes each variant
+	 * independently, so a consumer has to ask about the variant IT will request,
+	 * not about whether any thumbnail at all exists.
+	 *
+	 * THREE-VALUED, and the third value is the whole point:
+	 *
+	 *  - `['thumb-sm','thumb-md']` — these exist.
+	 *  - `[]`        — the header said `none`; this build derived nothing for
+	 *                  this file, so the only bytes on offer are the original.
+	 *  - `'unknown'` — no header at all, i.e. a server predating BUG-2964.
+	 *                  Callers must fall back to their previous behaviour here;
+	 *                  treating it as `[]` would flip every embed on an older
+	 *                  server, which is a far bigger change than the bug.
+	 */
+	derived: string[] | 'unknown';
 }
 
 /**
@@ -72,6 +91,40 @@ export type AttachmentMetadataResult =
 	| { status: 'transient' };
 
 const cache = new Map<string, Promise<AttachmentMetadataResult>>();
+
+/**
+ * Is this result a DURABLE fact worth keeping for the page's lifetime?
+ *
+ * `mime` and `size` are durable — the row is content-addressed. `derived` is
+ * NOT, and conflating the two is a real defect (BUG-2964, codex round 2):
+ * thumbnail derivation runs ASYNCHRONOUSLY after upload, so a probe issued in
+ * that window sees no variants yet. Caching that answer as immutable latches it
+ * for the rest of the page — and on a build that CAN derive HEIC, a freshly
+ * uploaded HEIC would then render as a file chip until a reload, even though
+ * the thumbnail landed a second later.
+ *
+ * So an EMPTY derived list is provisional and is not cached; the next probe
+ * asks again. A NON-EMPTY list is durable (variants are never un-derived), and
+ * `'unknown'` is durable too — it is a fact about the SERVER's build, not about
+ * this attachment, and it will not change under a running page.
+ *
+ * The cost is one repeat HEAD per probe for a file this build will never derive
+ * — a HEIC on a pure-Go instance. That is bounded, cheap (HEAD, and the
+ * endpoint is conditional-request friendly), and strictly better than latching
+ * a wrong answer: the alternative trades a permanent visible error for a
+ * request nobody notices.
+ */
+function isDurable(result: AttachmentMetadataResult): boolean {
+	// `missing` stays DURABLE — it is authoritative by design (DR-17), and it is
+	// what keeps editor undo from resurrecting a deleted attachment. Only
+	// `transient` and a provisional empty `derived` are evicted; the first draft
+	// of this helper demoted `missing` along with them, and three existing legs
+	// caught it.
+	if (result.status === 'transient') return false;
+	if (result.status !== 'ok') return true;
+	return result.derived === 'unknown' || result.derived.length > 0;
+}
+
 
 /**
  * Fetch (or read from cache) the MIME + size for an attachment. The
@@ -115,10 +168,21 @@ export function fetchAttachmentMetadata(
 			const ctype = resp.headers.get('content-type') ?? '';
 			const mime = ctype.split(';')[0].trim();
 			const len = parseInt(resp.headers.get('content-length') ?? '0', 10);
+			// `none` is a SENTINEL, not an empty value: an empty header value is
+			// the one a proxy may drop, and absence has to keep meaning "old
+			// server" (see AttachmentMetadata.derived).
+			const derivedHeader = resp.headers.get('x-pad-attachment-derived');
 			return {
 				status: 'ok' as const,
 				mime,
-				size: Number.isFinite(len) && len >= 0 ? len : 0
+				size: Number.isFinite(len) && len >= 0 ? len : 0,
+				derived:
+					derivedHeader === null
+						? ('unknown' as const)
+						: derivedHeader
+								.split(',')
+								.map((v) => v.trim())
+								.filter((v) => v !== '' && v !== 'none')
 			};
 		} catch {
 			return { status: 'transient' as const };
@@ -129,7 +193,7 @@ export function fetchAttachmentMetadata(
 	// this from deleting a NEWER entry installed by an invalidate-then-
 	// refetch that raced this promise's resolution.
 	void promise.then((result) => {
-		if (result.status === 'transient' && cache.get(key) === promise) {
+		if (cache.get(key) === promise && !isDurable(result)) {
 			cache.delete(key);
 		}
 	});
