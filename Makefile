@@ -1,4 +1,4 @@
-.PHONY: build test test-pg test-pg-down test-pg-project dev clean web dev-web serve restart lint install check vuln web-check web-test web-audit
+.PHONY: build test test-nix-hash test-pg test-pg-down test-pg-project dev clean web dev-web serve restart lint install check vuln web-check web-test web-audit
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
@@ -54,6 +54,12 @@ install: build
 # the v0.13.0 release pre-flight (TASK-2545).
 test:
 	go test -timeout=45m ./... -v
+
+# The vendorHash bump parser (TASK-2954). Pure bash, no toolchain, ~1s — its own
+# target rather than part of `test`, which means `go test`. CI runs this same
+# script in the Go job so a change to the parser is gated rather than trusted.
+test-nix-hash:
+	@nix/bump-vendor-hash_test.sh
 
 # Run tests against PostgreSQL (starts a container automatically).
 #

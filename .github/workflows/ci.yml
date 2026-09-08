@@ -62,6 +62,16 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      # The Nix vendorHash bump parser (TASK-2954). Its own gate lives HERE, in
+      # the Go job, and not in nix.yml: over there the script only does anything
+      # when a build has ALREADY failed on a hash mismatch, so an ordinary PR
+      # would exercise none of its logic and a change that broke it would land
+      # green and surface on the next dependency bump. The load-bearing case in
+      # the suite is negative — an npm fetchurl FOD mismatch must NOT be written
+      # into vendorHash.
+      - name: Test the Nix vendorHash bump parser
+        run: nix/bump-vendor-hash_test.sh
+
       - name: Run golangci-lint
         # only-new-issues: false means CI fails on ANY linter finding,
         # not just findings on PR-changed lines. The IDEA-732 cleanup
