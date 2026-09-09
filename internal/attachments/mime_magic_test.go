@@ -35,9 +35,9 @@ func TestBUG2963FormatsReachTheAllowlist(t *testing.T) {
 		cat       Category
 		why       string
 	}{
-		{"tar.head512", "archive.tar", "application/x-tar", "", CategoryArchive, "ustar at 257 plus a verified header checksum"},
-		{"bzip2.head512", "notes.txt.bz2", "application/x-bzip2", "", CategoryArchive, "BZh, block-size digit, block magic"},
-		{"sevenzip.head512", "archive.7z", "application/x-7z-compressed", "", CategoryArchive, "signature plus start-header CRC"},
+		{"tar.head512", "archive.tar", "application/x-tar", "", CategoryArchive, "ustar at offset 257"},
+		{"bzip2.head512", "notes.txt.bz2", "application/x-bzip2", "", CategoryArchive, "BZh plus the block-size digit"},
+		{"sevenzip.head512", "archive.7z", "application/x-7z-compressed", "", CategoryArchive, "the six-byte signature"},
 		{"flac.head512", "track.flac", "audio/flac", "", CategoryAudio, "fLaC plus a 34-byte STREAMINFO block"},
 		{"aac-adts.head512", "track.aac", "audio/aac", "application/octet-stream", CategoryAudio, "valid ADTS header, gated on the extension"},
 		{"avi.head512", "clip.avi", "video/x-msvideo", "", CategoryVideo, "video/avi alias"},
@@ -199,16 +199,19 @@ func TestADTSGate(t *testing.T) {
 		t.Errorf("PNG bytes named .aac gave code %q, want mime_extension_mismatch", code)
 	}
 
-	// THE control. This buffer opens with a valid ADTS header AND carries
-	// "ustar" at offset 257, so recognition identifies it as a tar. Named
-	// .aac it must be refused for the category mismatch it is — archive
-	// against audio. Remove the gate on the stdlib's verdict and the AAC
-	// branch overwrites that identification and accepts it as audio.
+	// An AAC whose payload contains "ustar" at offset 257. THIS PACKAGE
+	// refines such bytes to application/x-tar, and gating the AAC branch on
+	// that refined value refused the file under its own .aac name — a review
+	// round built a complete, ffmpeg-decodable AAC of exactly this shape. The
+	// gate reads the STANDARD LIBRARY's verdict instead, which for these bytes
+	// is "nothing identifies this", so the branch runs and the file is
+	// accepted.
 	//
-	// This is the only shape that separates the verdict gate from the
-	// structural check: the input has to PASS validADTSHeader and ALSO be
-	// identified as something else. A mutation run is what showed the PNG leg
-	// above could not do it.
+	// The buffer here is synthetic: it reproduces the CONDITION (a valid ADTS
+	// header, plus our own recogniser answering something else) without
+	// claiming to be decodable audio, since overwriting a real frame's bytes
+	// produces a file ffmpeg rejects. The real-file half of this class is
+	// carried by flac-ustar-in-comment.head512, which does decode.
 	collide := make([]byte, 512)
 	copy(collide, adts[:8])
 	copy(collide[257:], []byte("ustar"))
@@ -216,14 +219,13 @@ func TestADTSGate(t *testing.T) {
 		t.Fatal("premise failed: the collision buffer must be a valid ADTS header")
 	}
 	if got := SniffMIME(collide); got != "application/x-tar" {
-		t.Fatalf("premise failed: the collision buffer sniffed %q, want application/x-tar — "+
-			"it must be identified as something else for this to control anything", got)
+		t.Fatalf("premise failed: SniffMIME said %q, want application/x-tar — this case "+
+			"exists because our own refinement disagrees with the stdlib here", got)
 	}
-	if entry, code, err := ValidateUpload(collide, "track.aac"); err == nil {
-		t.Errorf("accepted as %q; a file identified as a tar must not be re-read as AAC "+
-			"because of its name", entry.MIME)
-	} else if code != "mime_extension_mismatch" {
-		t.Errorf("code = %q, want mime_extension_mismatch", code)
+	if entry, _, err := ValidateUpload(collide, "track.aac"); err != nil {
+		t.Errorf("refused (%v); the gate must read the stdlib's verdict, not ours", err)
+	} else if entry.MIME != "audio/aac" {
+		t.Errorf("stored as %q, want audio/aac", entry.MIME)
 	}
 
 	// The signature, byte by byte. Each leg below fails for exactly one
@@ -449,7 +451,9 @@ func TestMagicOnlyRecognisesWhatValidationUsedToRefuse(t *testing.T) {
 	// The premise the whole ruling rests on, asserted so it cannot rot: the
 	// stdlib really does recognise audio/mpeg from three bytes, and this door
 	// really does serve it inline.
-	entry, _, err := ValidateUpload([]byte("ID3\x03\x00\x00\x00"), "p.mp3")
+	// Exactly three bytes, because three is the claim. A longer input would
+	// pass even if the stdlib needed seven.
+	entry, _, err := ValidateUpload([]byte("ID3"), "p.mp3")
 	if err != nil {
 		t.Fatalf("premise failed: an ID3 header was refused: %v", err)
 	}
@@ -506,7 +510,9 @@ func TestMagicStillHasToBeThere(t *testing.T) {
 		{"BZh without the block-size digit", pad([]byte("BZhX")), "the digit is part of the signature"},
 		{"BZh0, below the range", pad([]byte("BZh0")), "bzip2 block sizes are 1..9"},
 		{"BZh:, just above the range", pad([]byte("BZh:")), "':' is '9'+1; the upper bound is a range, not a value"},
-		{"BZ without the h", pad([]byte("BZ9")), "all three letters are the signature"},
+		{"BZ without the h, digit otherwise valid", pad(append([]byte("BZ9"), '1')),
+			"all three letters are the signature — a case that fails the DIGIT check too " +
+				"would leave the prefix check untested"},
 		{"ustar at 256 rather than 257", func() []byte {
 			b := make([]byte, 512)
 			copy(b[256:], []byte("ustar"))
@@ -589,4 +595,65 @@ func TestEBMLParseDetails(t *testing.T) {
 			t.Errorf("premise failed: control sniffed %q, want video/x-matroska", got)
 		}
 	})
+}
+
+// TestCollidingMagicIsArbitratedByExtension covers the collision both ways.
+// More than one magic can match the same bytes, and review produced ordinary
+// files on each side, so any fixed winner refuses somebody:
+//
+//   - a tar whose first member is named "fLaC.txt" carries the FLAC marker at
+//     offset zero, because a tar header opens with a filename;
+//   - a FLAC whose Vorbis COMMENT tag contains "ustar" carries the tar magic
+//     at offset 257, because those tags are arbitrary UTF-8 (RFC 9639 §8.6).
+//
+// The extension arbitrates. It cannot introduce a type — both candidates are
+// ones the bytes matched — it only says which reading the uploader meant.
+func TestCollidingMagicIsArbitratedByExtension(t *testing.T) {
+	tarFile := readFixture(t, "tar-flac-named-member.head512")
+	flacFile := readFixture(t, "flac-ustar-in-comment.head512")
+
+	// Premise: both files really are ambiguous, or this arbitrates nothing.
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{{"tar with a fLaC-named member", tarFile}, {"flac with ustar in a comment", flacFile}} {
+		got := sniffOpaqueCandidates(tc.body)
+		if len(got) < 2 {
+			t.Fatalf("premise failed: %s matched %v, want at least two candidates", tc.name, got)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+		as   string
+		want string
+	}{
+		{"tar named .tar", tarFile, "archive.tar", "application/x-tar"},
+		{"flac named .flac", flacFile, "track.flac", "audio/flac"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, code, err := ValidateUpload(tc.body, tc.as)
+			if err != nil {
+				t.Fatalf("refused (code=%s); the extension names a candidate the bytes matched", code)
+			}
+			if entry.MIME != tc.want {
+				t.Errorf("stored as %q, want %q", entry.MIME, tc.want)
+			}
+		})
+	}
+
+	// An extension naming NEITHER candidate must not invent a third reading.
+	// The property is about the TYPE, not about acceptance: .zip names a type
+	// whose magic is absent here, so the default candidate stands. That the
+	// upload then succeeds is the ordinary category rule — tar and zip are
+	// both archives — and is not something arbitration decided.
+	entry, _, err := ValidateUpload(flacFile, "mystery.zip")
+	if err == nil && entry.MIME == "application/zip" {
+		t.Error("a .zip name made colliding bytes into a zip; the extension may choose " +
+			"among candidates the bytes matched, never add one")
+	}
+	if err == nil && entry.MIME != "application/x-tar" {
+		t.Errorf("stored as %q, want the default candidate application/x-tar", entry.MIME)
+	}
 }

@@ -1,6 +1,9 @@
 package attachments
 
-import "bytes"
+import (
+	"bytes"
+	"strings"
+)
 
 // This file closes the second half of the gap BUG-2961 opened: the upload
 // allowlist names types that SniffMIME cannot produce, so the door refuses —
@@ -50,37 +53,82 @@ import "bytes"
 
 // sniffOpaqueMagic recognises formats the WHATWG mimesniff table has no
 // signature for, so http.DetectContentType answers application/octet-stream
-// for a real file of them.
+// for a real file of them. It returns the DEFAULT candidate; see
+// sniffOpaqueCandidates for why there can be more than one.
 //
-// Called ONLY when the stdlib returned application/octet-stream. That ordering
-// is about not overriding a detection the stdlib made; it is NOT what keeps
-// these checks honest; nothing does, in the sense of proving a format. What it
-// prevents is the narrower thing it says: a recogniser here cannot overrule a
-// type the standard library actually identified.
+// Called ONLY when the stdlib returned application/octet-stream, so it cannot
+// override a type the standard library identified.
 func sniffOpaqueMagic(head []byte) string {
-	// TAR IS TESTED FIRST, and the order is load-bearing rather than
-	// arbitrary. Every other signature here is a PREFIX, and a tar header's
-	// first 100 bytes are its member's FILENAME — arbitrary text a user
-	// chooses. So a perfectly ordinary archive whose first member is called
-	// "fLaC.txt" or "BZh9.log" carries another format's magic at offset zero,
-	// and with the prefixes tested first it was recognised as that format and
-	// then REFUSED for a category mismatch against its own .tar extension.
-	//
-	// The collision is asymmetric, which is what makes an order the right
-	// answer rather than a coin toss: a real tar carrying a foreign prefix
-	// needs only a filename, while a real FLAC or 7z carrying "ustar" needs
-	// those exact five bytes at exactly offset 257 in compressed data. Losing
-	// the first case costs ordinary uploads; losing the second costs almost
-	// nothing.
-	switch {
-	case validTarHeader(head):
-		return "application/x-tar"
-	case validSevenZipHeader(head):
-		return "application/x-7z-compressed"
-	case validFLACStream(head):
-		return "audio/flac"
-	case validBzip2Stream(head):
-		return "application/x-bzip2"
+	if c := sniffOpaqueCandidates(head); len(c) > 0 {
+		return c[0]
+	}
+	return ""
+}
+
+// sniffOpaqueCandidates returns EVERY type whose magic matches, because more
+// than one can, and which is right is not always decidable from the bytes.
+//
+// The collision is real in both directions and neither side is exotic:
+//
+//   - A tar header's first 100 bytes are its member's FILENAME, so an ordinary
+//     archive whose first member is called "fLaC.txt" carries the FLAC marker
+//     at offset zero.
+//   - A FLAC file's Vorbis COMMENT tags are arbitrary UTF-8 (RFC 9639 §8.6),
+//     and an AAC frame's ancillary payload is arbitrary bytes, so either can
+//     contain "ustar" at offset 257.
+//
+// An earlier version picked a winner by ordering and argued the collision was
+// asymmetric — that real audio could not plausibly carry "ustar" at a fixed
+// offset. Review refuted that with complete, decodable FLAC and AAC files
+// carrying it in ordinary metadata. Any total order refuses somebody: tar
+// first refuses those, prefixes first refuse the archive.
+//
+// So the order here is only a DEFAULT. ValidateUpload, which knows the
+// filename, may pick a different candidate from this list — see
+// preferCandidateForExt, and note what that is and is not: the extension
+// cannot introduce a type, only choose among readings the bytes themselves
+// support.
+func sniffOpaqueCandidates(head []byte) []string {
+	var out []string
+	// tar leads the default order because its magic sits at a fixed offset
+	// rather than at a prefix, so it is the one least likely to be an
+	// accident of some other format's leading bytes.
+	if validTarHeader(head) {
+		out = append(out, "application/x-tar")
+	}
+	if validSevenZipHeader(head) {
+		out = append(out, "application/x-7z-compressed")
+	}
+	if validFLACStream(head) {
+		out = append(out, "audio/flac")
+	}
+	if validBzip2Stream(head) {
+		out = append(out, "application/x-bzip2")
+	}
+	return out
+}
+
+// preferCandidateForExt returns the candidate that the filename's extension
+// names, or "" when the extension names none of them.
+//
+// This is the ONLY place a filename influences which type is chosen, and the
+// influence is deliberately weak: every candidate is a type the BYTES already
+// matched, so the extension breaks a tie rather than casting a vote. A name
+// that matches nothing in the list changes nothing, and a name for a type
+// whose magic is absent can never appear in the list at all.
+func preferCandidateForExt(candidates []string, ext string) string {
+	if len(candidates) < 2 || ext == "" {
+		return ""
+	}
+	want, ok := extMIMEMap[strings.ToLower(ext)]
+	if !ok {
+		return ""
+	}
+	want = NormalizeMIME(want)
+	for _, c := range candidates {
+		if c == want {
+			return c
+		}
 	}
 	return ""
 }
@@ -124,10 +172,10 @@ func validBzip2Stream(head []byte) bool {
 //   - V7 tar, which predates the magic and has no signature anywhere. There is
 //     nothing at a fixed offset to key on, so it cannot be recognised by this
 //     kind of check at all; it stays refused, as it was before BUG-2963.
-//   - PAX and long-name GNU archives, whose first 512-byte block is a metadata
-//     header rather than a file header. The magic is still there and they ARE
-//     recognised; it is only a full parse that would need more blocks than
-//     this door ever reads, which is one of the reasons the parse is gone.
+//   - Nothing else. PAX and long-name GNU archives lead with a metadata block
+//     rather than a file header, and they ARE recognised, because the magic is
+//     in that block too. A full PARSE would need more blocks than this door
+//     ever reads, which is one of the reasons the parse is gone.
 //
 // The checksum that used to be verified here is gone. It never distinguished a
 // crafted header from a real one — archive/tar accepts an ELF carrying a

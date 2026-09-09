@@ -248,11 +248,10 @@ func SniffMIME(head []byte) string {
 	}
 	// Two BUG-2963 refinements. (Ogg was a third and was removed; see
 	// mime_magic.go for why a container name cannot be aliased to an audio
-	// type.) Each is keyed on what the stdlib already
-	// said, so none can retype a file the stdlib recognised as something else
-	// — and each then VALIDATES STRUCTURE before naming a type, which is the
-	// half that keeps them honest (see mime_magic.go's header for what
-	// happened when they did not):
+	// type.) Each is keyed on what the stdlib already said, so none can retype
+	// a file the standard library identified. Neither VALIDATES the format —
+	// see mime_magic.go's header for the three review rounds that settled why
+	// recognition here is by magic:
 	//
 	//   - video/webm is refined, because the mimesniff table answers it from
 	//     the bare EBML magic and cannot tell Matroska from WebM;
@@ -289,7 +288,23 @@ func SniffMIME(head []byte) string {
 // extOverride lets callers (the multipart handler) pass the original
 // filename so we can compare extensions; pass empty string to skip.
 func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string, err error) {
+	stdlib := NormalizeMIME(http.DetectContentType(head))
+	if alias, ok := sniffAliases[stdlib]; ok {
+		stdlib = alias
+	}
 	sniffed := SniffMIME(head)
+	ext := strings.ToLower(filepath.Ext(filename))
+
+	// More than one magic can match the same bytes — a tar whose first member
+	// is named "fLaC.txt", a FLAC whose COMMENT tag contains "ustar". When the
+	// extension names one of the matching candidates, it breaks the tie. It
+	// cannot introduce a type: every candidate is one the bytes matched, and a
+	// name for a type whose magic is absent never appears in the list.
+	if stdlib == "application/octet-stream" {
+		if alt := preferCandidateForExt(sniffOpaqueCandidates(head), ext); alt != "" {
+			sniffed = alt
+		}
+	}
 
 	// Raw AAC is the one BUG-2963 format whose structure is too small to act
 	// on from the bytes alone, so it is resolved here — where the filename is
@@ -303,19 +318,25 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 	// whose bytes are some other allowlisted audio type is still stored as
 	// that type by the ordinary rules — the categories agree, so nothing here
 	// refuses it. This branch adds one reading; it removes none.
-	// The gate is on the stdlib having NO SPECIFIC FORMAT OPINION, which is
-	// two verdicts and not one. application/octet-stream is the obvious half;
-	// text/plain is the other, and leaving it out refused real files. A raw
-	// AAC frame whose ancillary payload happens to be printable makes the
-	// leading 512 bytes look textual, so the stdlib answers text/plain — and a
-	// genuine, decodable .aac was rejected for a category mismatch. Neither
-	// verdict is a format detection; both mean "nothing here identifies this",
-	// which is the condition under which a weak signature may speak.
+	// The gate is on THE STANDARD LIBRARY'S verdict, not on the refined one,
+	// and the difference is not academic: a real AAC frame whose ancillary
+	// payload contains "ustar" at offset 257 is refined to application/x-tar
+	// by this package, and gating on the refined value refused it under its
+	// own .aac name. The stdlib said octet-stream about that file — nothing
+	// identified it — which is the condition under which a weak signature may
+	// speak.
 	//
-	// A file the stdlib DOES recognise — a PNG, a zip, a tar — is untouched.
-	if (sniffed == "application/octet-stream" || sniffed == "text/plain") &&
-		validADTSHeader(head) &&
-		strings.EqualFold(filepath.Ext(filename), ".aac") {
+	// Both no-opinion verdicts count. text/plain is the second: an AAC frame
+	// whose ancillary payload is printable makes the leading bytes look
+	// textual, and leaving that verdict out refused real files too.
+	//
+	// A file the stdlib DOES identify is untouched. That the gate can fire at
+	// all is a property worth keeping rather than a formality: no signature in
+	// the mimesniff table begins with 0xFF today, so nothing the stdlib names
+	// can pass validADTSHeader — but if one ever does, this gate is what stops
+	// a fourteen-bit match from overriding it.
+	if (stdlib == "application/octet-stream" || stdlib == "text/plain") &&
+		validADTSHeader(head) && ext == ".aac" {
 		sniffed = "audio/aac"
 	}
 

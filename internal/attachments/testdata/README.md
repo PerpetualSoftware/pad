@@ -66,7 +66,8 @@ the first version of these signatures.
 | `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match | a substring search calls this Matroska; its DocType is `webm` |
 | `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping this change fixes, still live under a search |
 | `elf-with-valid-tar-checksum.head512` | hand-built | an ELF header carrying a well-formed tar header in its padding, checksum included. ACCEPTED, deliberately — and when this package still verified checksums, `archive/tar`'s own reader accepted it too. It records a limitation rather than a defect |
-| `tar-flac-named-member.head512` | GNU `tar -cf` on a file named `fLaC.txt` | an ordinary archive carrying another format's prefix magic in its member NAME — the collision that decides recogniser order |
+| `tar-flac-named-member.head512` | GNU `tar -cf` on a file named `fLaC.txt` | an ordinary archive carrying another format's prefix magic in its member NAME |
+| `flac-ustar-in-comment.head512` | a real FLAC with a Vorbis COMMENT block whose vendor string places `ustar` at offset 257; decodes under libsndfile | the same collision from the other side — Vorbis tags are arbitrary UTF-8, so audio can carry the tar magic as easily as a tar can carry an audio marker |
 | `matroska-nul-terminated-doctype.head512` | `sample.mkv` with its DocType payload rewritten to `matroska\0junk`, declared length 13 | a DocType value ends at its first NUL; trimming instead stored a real Matroska as WebM |
 
 Void elements are legal anywhere in an EBML header and their contents are
@@ -96,7 +97,8 @@ The FFmpeg used is the one bundled with Remotion
 (`@remotion/compositor-linux-x64-gnu`), transcoded from real project assets;
 there is no system FFmpeg on the machine these were made on.
 
-**Gap, recorded rather than papered over:** every media fixture here comes from
-one FFmpeg build. A second encoder would be worth having for the EBML pair in
+**Gap, recorded rather than papered over:** the media fixtures come from one
+FFmpeg build, apart from `flac-ustar-in-comment.head512`, which is a FLAC
+assembled by hand from a real one and verified decodable by libsndfile. A second encoder would be worth having for the EBML pair in
 particular, since the DocType read is the only check here that depends on where
 a muxer places a string rather than on a fixed prefix.
