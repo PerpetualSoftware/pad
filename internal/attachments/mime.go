@@ -395,7 +395,17 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 				// answers audio/mp4 from the bytes. This is the isom-branded
 				// case, which is what FFmpeg writes and what arrives from
 				// phones.
-				if sniffed == "video/mp4" && ext == ".m4a" && extEntry.Category == CategoryAudio {
+				// The zip branch above guards on extEntry.Category because it
+				// answers for many extensions at once. This one answers for
+				// exactly .m4a, so the same guard could never differ from the
+				// extension test beside it — dead by construction rather than
+				// defence in depth, and a mutation run says so: removing it
+				// survives. What the branch actually depends on is that .m4a
+				// maps to an allowlisted AUDIO entry, which is a property of
+				// extMIMEMap and is asserted as one by
+				// TestBUG2963F4M4AExtensionTrust. A remap fails that test
+				// rather than silently retyping MP4 bytes here.
+				if sniffed == "video/mp4" && ext == ".m4a" {
 					return extEntry, "", nil
 				}
 				return MIMEEntry{}, "mime_extension_mismatch",

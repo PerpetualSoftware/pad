@@ -539,6 +539,18 @@ func TestEveryAllowedMIMEHasAnExtension(t *testing.T) {
 func TestBUG2963F4M4AExtensionTrust(t *testing.T) {
 	isom := readFixture(t, "m4a-isom.head512")
 
+	// The branch returns whatever .m4a maps to, so what it depends on is that
+	// the mapping is an allowlisted AUDIO entry. Asserted directly because the
+	// alternative — a category guard in the branch itself — is dead code when
+	// the branch answers for one extension, and a mutation run confirmed it
+	// survives removal. This assertion is what a remap of .m4a trips.
+	m4aEntry, ok := LookupMIME(extMIMEMap[".m4a"])
+	if !ok || m4aEntry.Category != CategoryAudio {
+		t.Fatalf("premise failed: .m4a maps to %q, which is allowed=%v category=%v; the "+
+			"branch under test returns that entry, so it must be an allowlisted audio type",
+			extMIMEMap[".m4a"], ok, m4aEntry.Category)
+	}
+
 	if got := SniffMIME(isom); got != "video/mp4" {
 		t.Fatalf("premise failed: these bytes sniff %q, not video/mp4 — with the sniff "+
 			"already audio there is no mismatch for the extension to resolve", got)
