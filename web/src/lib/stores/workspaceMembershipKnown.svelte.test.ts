@@ -99,5 +99,31 @@ describe('workspaceStore.membershipKnown', () => {
 		expect(workspaceStore.membershipKnown).toBe(true);
 		expect(workspaceStore.currentMembership).not.toBeNull();
 		expect(workspaceStore.isOwner).toBe(true);
+		// "Untouched" means the workspace identity too, not just the permission
+		// (codex round 4 — the title claimed more than the assertions did).
+		expect(workspaceStore.current?.slug).toBe('ws');
+	});
+
+	it('does not let a create override a navigation the user started after it', async () => {
+		// Ordering, not just settling (codex round 4). The create's API call is
+		// slow; a `setCurrent` begins while it is pending and resolves first.
+		// The navigation is the newer intent and must win — an earlier draft
+		// claimed the sequence token only after the create returned, which let
+		// the create switch the store out from under it.
+		const { workspaceStore } = await import('./workspace.svelte');
+		let releaseCreate: (v: unknown) => void = () => {};
+		api.workspaces.create.mockReturnValue(new Promise((r) => { releaseCreate = r; }));
+		api.workspaces.get.mockResolvedValue({ id: 'w2', slug: 'later', name: 'Later' });
+		api.workspaces.me.mockResolvedValue(OWNER);
+
+		const creating = workspaceStore.create({ name: 'New' });
+		await workspaceStore.setCurrent('later');
+		expect(workspaceStore.current?.slug).toBe('later');
+
+		releaseCreate({ id: 'w3', slug: 'created', name: 'Created' });
+		await creating;
+
+		expect(workspaceStore.current?.slug).toBe('later');
+		expect(workspaceStore.membershipKnown).toBe(true);
 	});
 });

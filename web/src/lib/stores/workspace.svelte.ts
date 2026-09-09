@@ -11,9 +11,13 @@ let currentMembership = $state<WorkspaceMembership | null>(null);
 // and they are opposites: one is "wait", the other is "no access".
 //
 // False from the moment a call that will replace membership begins — which
-// includes resolving the workspace itself, and creating one — until that call
-// settles. True once it has, on every exit: a fetched membership, a 403, a
-// workspace that did not resolve, or a create that threw.
+// includes resolving the workspace itself, and the part of a create that
+// follows a successful API call — until that call settles: a fetched
+// membership, a 403, or a workspace that did not resolve.
+//
+// A create that THROWS is outside all of that. It changes no state at all,
+// because a failed create says nothing about the workspace you are still
+// looking at; whatever this flag was before such a create, it still is.
 let membershipKnown = $state(false);
 let loading = $state(false);
 
@@ -260,15 +264,28 @@ export const workspaceStore = {
 		// page's owner controls until the next `setCurrent`. A failed create
 		// says nothing about the current membership, so it now changes nothing.
 		//
-		// Claiming the sequence token after the call, rather than before, keeps
-		// the guard it was written for: this create still supersedes anything
-		// started before this point, and a `setCurrent` started after it still
-		// supersedes this.
+		// OBSERVE the sequence token at entry, CLAIM it only on success (codex
+		// round 4). Three orderings have to come out right and the obvious two
+		// spellings each get one wrong:
+		//
+		//  - claiming at entry (the original) makes a FAILED create invalidate a
+		//    `setCurrent` that is still in flight — its writes are discarded on
+		//    the seq check and membership is left unresolved with nothing coming
+		//    to fix it;
+		//  - claiming only after the call lets a create that STARTED EARLIER but
+		//    resolved later override a navigation the user began in between.
+		//
+		// Reading the token at entry and comparing before claiming gives all
+		// three: a navigation started after this create wins (it bumped the
+		// token), a navigation still in flight from before loses (this create is
+		// the newer intent), and a failed create claims nothing and therefore
+		// invalidates nothing.
+		const entrySeq = membershipSeq;
 		const ws = await api.workspaces.create(data);
+		if (membershipSeq !== entrySeq) return ws;
 		const seq = ++membershipSeq;
 		currentMembership = null;
 		membershipKnown = false;
-		if (seq !== membershipSeq) return ws;
 		workspaces = [...workspaces, ws];
 		current = ws;
 		// New workspace — refresh membership for the just-created context.
