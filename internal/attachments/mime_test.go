@@ -525,3 +525,84 @@ func TestEveryAllowedMIMEHasAnExtension(t *testing.T) {
 		}
 	}
 }
+
+// TestBUG2963F4M4AExtensionTrust covers the third F4 leg: an isom-branded MP4
+// named .m4a is stored as audio/mp4. Audio-only and video MP4 are one
+// container, so the bytes cannot say which this is and the stdlib answers
+// video/mp4 for both — which refused a real .m4a as a mismatch against its own
+// type.
+//
+// The trust is the zip+document branch's, one family over: the BYTES establish
+// the container and the FILENAME chooses only the spelling within it. So the
+// controls below are the test. The accept leg alone is satisfied by a rule
+// that trusts .m4a outright, which is a different and much larger claim.
+func TestBUG2963F4M4AExtensionTrust(t *testing.T) {
+	isom := readFixture(t, "m4a-isom.head512")
+
+	if got := SniffMIME(isom); got != "video/mp4" {
+		t.Fatalf("premise failed: these bytes sniff %q, not video/mp4 — with the sniff "+
+			"already audio there is no mismatch for the extension to resolve", got)
+	}
+
+	entry, code, err := ValidateUpload(isom, "song.m4a")
+	if err != nil {
+		t.Fatalf("a real isom-branded .m4a was refused (code=%s): %v", code, err)
+	}
+	if entry.MIME != "audio/mp4" || entry.Category != CategoryAudio {
+		t.Errorf("stored %q/%v, want audio/mp4/%v", entry.MIME, entry.Category, CategoryAudio)
+	}
+	if !entry.ServeInline() {
+		t.Error("ServeInline() = false; audio/mp4 renders inline, as video/mp4 did")
+	}
+
+	// The NAME is what moved it. Same bytes under a video name stay video, so
+	// nothing here retyped the file on its own.
+	if e, _, err := ValidateUpload(isom, "clip.mp4"); err != nil {
+		t.Errorf("the same bytes named .mp4 were refused: %v", err)
+	} else if e.MIME != "video/mp4" {
+		t.Errorf("named .mp4 stored as %q, want video/mp4", e.MIME)
+	}
+
+	// And with no extension at all there is nothing to trust: the extension
+	// gate is skipped entirely, so this leg fails if the branch ever moves
+	// somewhere that does not require a filename.
+	if e, _, err := ValidateUpload(isom, "song"); err != nil {
+		t.Errorf("the same bytes with no extension were refused: %v", err)
+	} else if e.MIME != "video/mp4" {
+		t.Errorf("with no extension stored as %q, want video/mp4", e.MIME)
+	}
+
+	// The trust is bounded to the MP4 family. A WebM is video, and .m4a is
+	// audio, and this must still be a mismatch — a rule reading "a video named
+	// .m4a is audio" would accept it, and that rule is not what was granted.
+	// This is the leg that discriminates the two.
+	if _, code, err := ValidateUpload(readFixture(t, "webm.head512"), "song.m4a"); err == nil {
+		t.Error("a WebM named .m4a was accepted; the trust must not reach outside the MP4 container family")
+	} else if code != "mime_extension_mismatch" {
+		t.Errorf("WebM named .m4a gave code %q, want mime_extension_mismatch", code)
+	}
+
+	// The branch is keyed on .m4a and on the audio category, not on "the
+	// extension disagrees". These two legs are what say so: an MP4 named .mp3
+	// is an audio extension the branch must NOT answer for, and an MP4 named
+	// .pdf must not be stored as a document because a document extension was
+	// supplied.
+	if _, code, err := ValidateUpload(isom, "song.mp3"); err == nil {
+		t.Error("MP4 bytes named .mp3 were accepted; the branch is keyed on .m4a specifically")
+	} else if code != "mime_extension_mismatch" {
+		t.Errorf("MP4 named .mp3 gave code %q, want mime_extension_mismatch", code)
+	}
+	if _, code, err := ValidateUpload(isom, "song.pdf"); err == nil {
+		t.Error("MP4 bytes named .pdf were accepted; the category guard is not holding")
+	} else if code != "mime_extension_mismatch" {
+		t.Errorf("MP4 named .pdf gave code %q, want mime_extension_mismatch", code)
+	}
+
+	// And the extension introduces no type on its own: bytes nothing in the
+	// MP4 family could produce are still refused under the .m4a name.
+	if _, code, err := ValidateUpload([]byte("\x89PNG\r\n\x1a\n"), "song.m4a"); err == nil {
+		t.Error("PNG bytes named .m4a were accepted; the extension is being trusted alone")
+	} else if code != "mime_extension_mismatch" {
+		t.Errorf("PNG bytes named .m4a gave code %q, want mime_extension_mismatch", code)
+	}
+}

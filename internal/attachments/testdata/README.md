@@ -41,6 +41,18 @@ than 512 because the whole file is.
 | `webm.head512` | FFmpeg 7.1 `-f webm` | EBML magic with DocType `webm` at offset 24 — the control that stops the DocType read from answering Matroska for everything |
 | `avi.head512` | FFmpeg 7.1 `-f avi` | RIFF/AVI, which the stdlib names `video/avi` against the allowlist's `video/x-msvideo` |
 
+### PR B fixtures — the audio/video split (F4)
+
+| file | produced by | what it proves |
+|---|---|---|
+| `quicktime.head512` | FFmpeg n7.1 `-f mov` | major brand `qt  `. The stdlib's mp4 matcher wants a brand beginning `mp4` and this carries none, so it sniffs `application/octet-stream` — recognising it ADDS a detection rather than overriding one |
+| `m4a-brand.head512` | FFmpeg n7.1 `-f mp4 -brand "M4A "` | major brand `M4A `, compatible `M4A iso2 mp41`. The stdlib answers `video/mp4` off that `mp41`, so this is the one fixture whose recognition OVERRIDES the standard library, on the major brand |
+| `m4a-isom.head512` | FFmpeg n7.1 `-f mp4` | major brand `isom`, compatible `isom iso2 mp41` — an audio-only MP4 whose brands name no category at all. It is the input for the extension-trust leg: the bytes reach `video/mp4` and only the `.m4a` filename can choose the audio spelling |
+
+All three are one second of `sine=frequency=440` encoded to AAC, truncated to
+the 512 bytes `SniffMIME` reads.
+
+
 ### Fixtures for files the recogniser must ACCEPT
 
 Real files that three rounds of structural validation refused. Each is a file a

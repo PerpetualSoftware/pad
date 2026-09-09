@@ -228,18 +228,22 @@ var sniffAliases = map[string]string{
 // use). The result is normalized via NormalizeMIME and run through
 // sniffAliases so allowlist lookups always see the canonical name.
 //
-// One family is detected ahead of the stdlib: ISO-BMFF still images
-// (HEIC / HEIF / AVIF), which the mimesniff table has no signature for and
-// which therefore sniffed as application/octet-stream — unreachable behind an
-// allowlist that names all three (BUG-2961). sniffISOBMFFImage returns "" for
-// everything else, so it can only add detections; see mime_isobmff.go.
+// One family is detected ahead of the stdlib: ISO-BMFF. Still images
+// (HEIC / HEIF / AVIF) are the original case — the mimesniff table has no
+// signature for them, so they sniffed as application/octet-stream and were
+// unreachable behind an allowlist that names all three (BUG-2961). BUG-2963 F4
+// added two audio/video MAJOR brands: "qt  " (QuickTime), which the stdlib
+// also has no signature for, and "M4A ", which it names video/mp4 from a
+// compatible mp41 brand — the one place this package overrides the stdlib,
+// argued at isoBMFFAVBrands. sniffISOBMFF returns "" for everything else, so
+// apart from that one brand it can only add detections; see mime_isobmff.go.
 //
 // Pass at most 512 bytes — additional bytes are ignored by the detector.
 func SniffMIME(head []byte) string {
 	if len(head) > 512 {
 		head = head[:512]
 	}
-	if mime := sniffISOBMFFImage(head); mime != "" {
+	if mime := sniffISOBMFF(head); mime != "" {
 		return mime
 	}
 	got := NormalizeMIME(http.DetectContentType(head))
@@ -372,6 +376,26 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 				// trust the extension. Same logic for OpenDocument
 				// formats (.odt/.ods/.odp) which are also zip-based.
 				if sniffed == "application/zip" && extEntry.Category == CategoryDocument {
+					return extEntry, "", nil
+				}
+				// The audio/video split inside the MP4 family (BUG-2963 F4).
+				// Audio-only and video MP4 files are the same container, so
+				// the stdlib answers video/mp4 for both and an .m4a is
+				// refused as a mismatch against its own type. This is the
+				// zip+document trust one family over: the BYTES establish the
+				// container (ISO-BMFF, mp4-branded — nothing else reaches
+				// video/mp4 here), and the filename chooses only which
+				// spelling WITHIN that family is stored. It is not a track
+				// read and does not pretend to be. A video file renamed .m4a
+				// is stored audio/mp4, which costs an audio player where a
+				// video player belonged and nothing else: both are on the
+				// allowlist, both render inline, nothing is executed.
+				//
+				// The "M4A " major brand needs none of this — sniffISOBMFF
+				// answers audio/mp4 from the bytes. This is the isom-branded
+				// case, which is what FFmpeg writes and what arrives from
+				// phones.
+				if sniffed == "video/mp4" && ext == ".m4a" && extEntry.Category == CategoryAudio {
 					return extEntry, "", nil
 				}
 				return MIMEEntry{}, "mime_extension_mismatch",

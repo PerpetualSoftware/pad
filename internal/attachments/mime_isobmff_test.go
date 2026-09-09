@@ -2,6 +2,7 @@ package attachments
 
 import (
 	"encoding/binary"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -110,8 +111,8 @@ func TestValidateUpload_ISOBMFFDoesNotBecomeExtensionTrust(t *testing.T) {
 func TestSniffISOBMFFImage_SequenceBrandsAreNotStillImages(t *testing.T) {
 	for _, brand := range []string{"hevc", "hevx", "hevm", "hevs", "avis", "msf1"} {
 		body := ftypBox(brand, brand, "miaf")
-		if got := sniffISOBMFFImage(body); got != "" {
-			t.Errorf("sniffISOBMFFImage(major=%s) = %q, want \"\" (sequence brands are not on the allowlist)", brand, got)
+		if got := sniffISOBMFF(body); got != "" {
+			t.Errorf("sniffISOBMFF(major=%s) = %q, want \"\" (sequence brands are not on the allowlist)", brand, got)
 		}
 		if _, _, err := ValidateUpload(body, "clip."+brand); err == nil {
 			t.Errorf("ValidateUpload(major=%s) accepted; want refusal", brand)
@@ -138,8 +139,8 @@ func TestSniffISOBMFFImage_BrandsAnywhereInTheBox(t *testing.T) {
 		{"no image brand at all", []string{"isom", "iso2", "avc1"}, ""},
 	}
 	for _, tc := range cases {
-		if got := sniffISOBMFFImage(ftypBox(tc.brands[0], tc.brands[1:]...)); got != tc.want {
-			t.Errorf("%s: sniffISOBMFFImage(%v) = %q, want %q", tc.name, tc.brands, got, tc.want)
+		if got := sniffISOBMFF(ftypBox(tc.brands[0], tc.brands[1:]...)); got != tc.want {
+			t.Errorf("%s: sniffISOBMFF(%v) = %q, want %q", tc.name, tc.brands, got, tc.want)
 		}
 	}
 }
@@ -153,8 +154,8 @@ func TestSniffISOBMFFImage_YieldsToVideo(t *testing.T) {
 		t.Errorf("SniffMIME(mp4) = %q, want video/mp4", got)
 	}
 	mixed := ftypBox("isom", "mp42", "heic")
-	if got := sniffISOBMFFImage(mixed); got != "" {
-		t.Errorf("sniffISOBMFFImage(mp4 brands + heic) = %q, want \"\" (a video container stays a video)", got)
+	if got := sniffISOBMFF(mixed); got != "" {
+		t.Errorf("sniffISOBMFF(mp4 brands + heic) = %q, want \"\" (a video container stays a video)", got)
 	}
 }
 
@@ -177,18 +178,18 @@ func TestSniffISOBMFFImage_MalformedInput(t *testing.T) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					t.Errorf("%s: sniffISOBMFFImage panicked: %v", name, r)
+					t.Errorf("%s: sniffISOBMFF panicked: %v", name, r)
 				}
 			}()
-			sniffISOBMFFImage(body)
+			sniffISOBMFF(body)
 		}()
 	}
 
 	// Size 1 is a 64-bit largesize box: the brands sit eight bytes further
 	// along, so reading them at the 32-bit offsets would report a type derived
 	// from the size field. It must decline rather than guess.
-	if got := sniffISOBMFFImage(withBoxSize(full, 1)); got != "" {
-		t.Errorf("sniffISOBMFFImage(largesize box) = %q, want \"\" (brands are shifted; offsets do not apply)", got)
+	if got := sniffISOBMFF(withBoxSize(full, 1)); got != "" {
+		t.Errorf("sniffISOBMFF(largesize box) = %q, want \"\" (brands are shifted; offsets do not apply)", got)
 	}
 
 	// A buffer that stops inside the 16-byte ftyp header is a truncated file,
@@ -199,8 +200,8 @@ func TestSniffISOBMFFImage_MalformedInput(t *testing.T) {
 		body = append(body, "ftyp"...)
 		body = append(body, "heic"...)
 		body = append(body, "\x00\x00\x00\x00"...)
-		if got := sniffISOBMFFImage(body[:n]); got != "" {
-			t.Errorf("sniffISOBMFFImage(%d bytes) = %q, want \"\" (the ftyp header is 16 bytes)", n, got)
+		if got := sniffISOBMFF(body[:n]); got != "" {
+			t.Errorf("sniffISOBMFF(%d bytes) = %q, want \"\" (the ftyp header is 16 bytes)", n, got)
 		}
 	}
 
@@ -214,25 +215,25 @@ func TestSniffISOBMFFImage_MalformedInput(t *testing.T) {
 		body = append(body, "ftyp"...)
 		body = append(body, "heic"...)
 		body = append(body, "mif1"...)
-		if got := sniffISOBMFFImage(body); got != "" {
-			t.Errorf("sniffISOBMFFImage(box size %d) = %q, want \"\" (a size below 16 is not an ftyp box)", size, got)
+		if got := sniffISOBMFF(body); got != "" {
+			t.Errorf("sniffISOBMFF(box size %d) = %q, want \"\" (a size below 16 is not an ftyp box)", size, got)
 		}
 	}
 
 	// Size 0 is legal and means "to the end of the file": it shifts nothing, so
 	// a real file carrying it still resolves.
-	if got := sniffISOBMFFImage(withBoxSize(full, 0)); got != "image/avif" {
-		t.Errorf("sniffISOBMFFImage(box size 0) = %q, want image/avif (0 means to end of file)", got)
+	if got := sniffISOBMFF(withBoxSize(full, 0)); got != "image/avif" {
+		t.Errorf("sniffISOBMFF(box size 0) = %q, want image/avif (0 means to end of file)", got)
 	}
 
 	// A truncated head is the ordinary case for a large ftyp box and must
 	// still resolve: the major brand sits at bytes 8..12, well inside it.
-	if got := sniffISOBMFFImage(full[:16]); got != "image/avif" {
-		t.Errorf("sniffISOBMFFImage(first 16 bytes) = %q, want image/avif", got)
+	if got := sniffISOBMFF(full[:16]); got != "image/avif" {
+		t.Errorf("sniffISOBMFF(first 16 bytes) = %q, want image/avif", got)
 	}
 	// A box size larger than the buffer must not read past it.
-	if got := sniffISOBMFFImage(withBoxSize(full[:32], 1<<20)); got != "image/avif" {
-		t.Errorf("sniffISOBMFFImage(oversized box size, truncated buffer) = %q, want image/avif", got)
+	if got := sniffISOBMFF(withBoxSize(full[:32], 1<<20)); got != "image/avif" {
+		t.Errorf("sniffISOBMFF(oversized box size, truncated buffer) = %q, want image/avif", got)
 	}
 }
 
@@ -266,8 +267,8 @@ func TestSniffISOBMFFImage_ScanStopsAtTheBox(t *testing.T) {
 	body = append(body, 0, 0, 0, 12)
 	body = append(body, "free"...)
 	body = append(body, "heic"...) // payload bytes, four-aligned, NOT a brand
-	if got := sniffISOBMFFImage(body); got != "" {
-		t.Errorf("sniffISOBMFFImage(non-image ftyp + \"heic\" in a later box) = %q, want \"\"", got)
+	if got := sniffISOBMFF(body); got != "" {
+		t.Errorf("sniffISOBMFF(non-image ftyp + \"heic\" in a later box) = %q, want \"\"", got)
 	}
 }
 
@@ -279,8 +280,8 @@ func TestSniffISOBMFFImage_MinorVersionIsNotABrand(t *testing.T) {
 	body = append(body, "ftyp"...)
 	body = append(body, "isom"...) // major brand
 	body = append(body, "avif"...) // minor VERSION, coincidentally brand-shaped
-	if got := sniffISOBMFFImage(body); got != "" {
-		t.Errorf("sniffISOBMFFImage(minor version = \"avif\") = %q, want \"\"", got)
+	if got := sniffISOBMFF(body); got != "" {
+		t.Errorf("sniffISOBMFF(minor version = \"avif\") = %q, want \"\"", got)
 	}
 }
 
@@ -310,4 +311,104 @@ func withBoxSize(body []byte, size uint32) []byte {
 	copy(out, body)
 	binary.BigEndian.PutUint32(out[:4], size)
 	return out
+}
+
+// TestBUG2963F4Brands covers the audio/video half of the ISO-BMFF pre-check:
+// "qt  " -> video/quicktime, "M4A " -> audio/mp4, both from the MAJOR brand.
+//
+// Each leg asserts what the STANDARD LIBRARY says about the same bytes, and
+// that assertion is the point rather than decoration. It is what separates the
+// two brands: for "qt  " the stdlib has no opinion, so this ADDS a detection;
+// for "M4A " the stdlib names video/mp4 from a compatible "mp41" brand, so
+// this OVERRIDES it. A test that checked only the final answer would call
+// those the same thing, and the second is the one carrying a trust decision.
+func TestBUG2963F4Brands(t *testing.T) {
+	t.Run("quicktime", func(t *testing.T) {
+		head := readFixture(t, "quicktime.head512")
+
+		if got := http.DetectContentType(head); NormalizeMIME(got) != "application/octet-stream" {
+			t.Fatalf("premise failed: the stdlib called this %q, not application/octet-stream — "+
+				"this leg exists to cover the case where nothing identified the file", got)
+		}
+		if got := sniffISOBMFF(head); got != "video/quicktime" {
+			t.Errorf("sniffISOBMFF = %q, want video/quicktime", got)
+		}
+		if got := SniffMIME(head); got != "video/quicktime" {
+			t.Errorf("SniffMIME = %q, want video/quicktime", got)
+		}
+
+		entry, code, err := ValidateUpload(head, "clip.mov")
+		if err != nil {
+			t.Fatalf("a real QuickTime file was refused (code=%s): %v — video/quicktime "+
+				"has been on the allowlist the whole time", code, err)
+		}
+		if entry.MIME != "video/quicktime" || entry.Category != CategoryVideo {
+			t.Errorf("stored %q/%v, want video/quicktime/%v", entry.MIME, entry.Category, CategoryVideo)
+		}
+		if !entry.ServeInline() {
+			t.Error("ServeInline() = false; video/quicktime is a RenderInline entry")
+		}
+	})
+
+	t.Run("m4a major brand", func(t *testing.T) {
+		head := readFixture(t, "m4a-brand.head512")
+
+		if got := NormalizeMIME(http.DetectContentType(head)); got != "video/mp4" {
+			t.Fatalf("premise failed: the stdlib called this %q, not video/mp4 — this leg "+
+				"exists to cover the one brand that overrides the stdlib, and without "+
+				"the stdlib naming a video type there is nothing being overridden", got)
+		}
+		if got := sniffISOBMFF(head); got != "audio/mp4" {
+			t.Errorf("sniffISOBMFF = %q, want audio/mp4 — the major brand is \"M4A \" and "+
+				"says audio; the stdlib's video/mp4 comes from a COMPATIBLE mp41 brand", got)
+		}
+		if got := SniffMIME(head); got != "audio/mp4" {
+			t.Errorf("SniffMIME = %q, want audio/mp4", got)
+		}
+
+		entry, code, err := ValidateUpload(head, "clip.m4a")
+		if err != nil {
+			t.Fatalf("a real M4A-branded file was refused (code=%s): %v", code, err)
+		}
+		if entry.MIME != "audio/mp4" || entry.Category != CategoryAudio {
+			t.Errorf("stored %q/%v, want audio/mp4/%v — the CATEGORY is what this fixes; "+
+				"it decides whether the UI offers an audio player or a video one",
+				entry.MIME, entry.Category, CategoryAudio)
+		}
+		if !entry.ServeInline() {
+			t.Error("ServeInline() = false; audio/mp4 is a RenderInline entry, as video/mp4 was")
+		}
+	})
+
+	// The AV brands are read from the MAJOR brand and nowhere else. A file
+	// whose major brand is isom and whose COMPATIBLE list carries "M4A " is
+	// not answered for here — reading a category out of the compatible list
+	// is a wider rule than the one that was granted, and this is the leg that
+	// tells the two apart. Built rather than encoded, like the other
+	// brand-ordering cases in this file.
+	t.Run("compatible brands do not speak", func(t *testing.T) {
+		body := ftypBox("isom", "iso2", "M4A ")
+		if got := sniffISOBMFF(body); got != "" {
+			t.Errorf("sniffISOBMFF(major=isom, compatible=[iso2 \"M4A \"]) = %q, want \"\" — "+
+				"only the major brand may name a category", got)
+		}
+	})
+
+	// The isom-branded audio file, which the brands CANNOT decide: its major
+	// brand names no category and its compatible brands include mp41, so the
+	// pre-check yields and the stdlib's video/mp4 stands. This is the premise
+	// of the extension-trust leg in mime_test.go, asserted here so that leg's
+	// starting point is a measured fact rather than a claim in a comment.
+	t.Run("isom brand yields", func(t *testing.T) {
+		head := readFixture(t, "m4a-isom.head512")
+
+		if got := sniffISOBMFF(head); got != "" {
+			t.Errorf("sniffISOBMFF = %q, want \"\" — an isom major brand names no category, "+
+				"and reading one out of the compatible list is the track read F4 does not do", got)
+		}
+		if got := SniffMIME(head); got != "video/mp4" {
+			t.Errorf("SniffMIME = %q, want video/mp4 (the stdlib's answer, from the mp41 "+
+				"compatible brand)", got)
+		}
+	})
 }
