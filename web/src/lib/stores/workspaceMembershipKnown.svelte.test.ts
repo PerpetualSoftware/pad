@@ -1,0 +1,156 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+/**
+ * BUG-2978 — `membershipKnown` says whether a null `currentMembership` is an
+ * ANSWER ("no access") or merely NOT YET FETCHED. Consumers cache permissions
+ * through the false window, so a path that leaves it false forever is a cache
+ * that never updates again.
+ *
+ * The create-failure leg is the one codex round 2 found: `create()` clears
+ * membership at entry, and a rejected create returned before anything settled
+ * the flag.
+ */
+
+const api = vi.hoisted(() => ({
+	workspaces: {
+		get: vi.fn(),
+		me: vi.fn(),
+		list: vi.fn(),
+		create: vi.fn(),
+	},
+}));
+
+vi.mock('$lib/api/client', () => ({ api }));
+
+const OWNER = { role: 'owner', collection_grants: [], item_grants: [] };
+const WS = { id: 'w1', slug: 'ws', name: 'WS' };
+
+describe('workspaceStore.membershipKnown', () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+	});
+
+	it('is false while a membership fetch is in flight and true once it settles', async () => {
+		const { workspaceStore } = await import('./workspace.svelte');
+		let release: (v: unknown) => void = () => {};
+		api.workspaces.get.mockResolvedValue(WS);
+		api.workspaces.me.mockReturnValue(new Promise((r) => { release = r; }));
+
+		const pending = workspaceStore.setCurrent('ws');
+		expect(workspaceStore.membershipKnown).toBe(false);
+
+		release(OWNER);
+		await pending;
+		expect(workspaceStore.membershipKnown).toBe(true);
+		expect(workspaceStore.isOwner).toBe(true);
+	});
+
+	it('is true after a 403 — a denial is an answer, not a pending state', async () => {
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.get.mockResolvedValue(WS);
+		api.workspaces.me.mockRejectedValue(new Error('403'));
+
+		await workspaceStore.setCurrent('ws');
+		expect(workspaceStore.membershipKnown).toBe(true);
+		expect(workspaceStore.currentMembership).toBeNull();
+		expect(workspaceStore.isOwner).toBe(false);
+	});
+
+	it('is true when the workspace itself does not resolve', async () => {
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.get.mockRejectedValue(new Error('404'));
+
+		await workspaceStore.setCurrent('missing');
+		expect(workspaceStore.membershipKnown).toBe(true);
+	});
+
+	it('is false while the WORKSPACE is still resolving, not just the /me', async () => {
+		// The contract is the whole replacing call, so the window has to open
+		// before `/me` is even reached (codex round 3).
+		const { workspaceStore } = await import('./workspace.svelte');
+		let releaseGet: (v: unknown) => void = () => {};
+		api.workspaces.get.mockReturnValue(new Promise((r) => { releaseGet = r; }));
+		api.workspaces.me.mockResolvedValue(OWNER);
+
+		const pending = workspaceStore.setCurrent('ws');
+		expect(workspaceStore.membershipKnown).toBe(false);
+
+		releaseGet(WS);
+		await pending;
+		expect(workspaceStore.membershipKnown).toBe(true);
+	});
+
+	it('leaves the CURRENT workspace untouched when a create fails', async () => {
+		// A failed create says nothing about the workspace you are still looking
+		// at. The first version of this fix cleared membership at entry and then
+		// settled the flag on the failure path, which told every consumer the
+		// current workspace was now a definitive "no access" — hiding a mounted
+		// settings page's owner controls until the next setCurrent (codex round
+		// 3). The flag alone cannot catch that, so this asserts the membership.
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.get.mockResolvedValue(WS);
+		api.workspaces.me.mockResolvedValue(OWNER);
+		await workspaceStore.setCurrent('ws');
+		expect(workspaceStore.isOwner).toBe(true);
+
+		api.workspaces.create.mockRejectedValue(new Error('plan limit'));
+		await expect(workspaceStore.create({ name: 'nope' })).rejects.toThrow('plan limit');
+
+		expect(workspaceStore.membershipKnown).toBe(true);
+		expect(workspaceStore.currentMembership).not.toBeNull();
+		expect(workspaceStore.isOwner).toBe(true);
+		// "Untouched" means the workspace identity too, not just the permission
+		// (codex round 4 — the title claimed more than the assertions did).
+		expect(workspaceStore.current?.slug).toBe('ws');
+	});
+
+	it('does not let a create override a navigation the user started after it', async () => {
+		// Ordering, not just settling (codex round 4). The create's API call is
+		// slow; a `setCurrent` begins while it is pending and resolves first.
+		// The navigation is the newer intent and must win — an earlier draft
+		// claimed the sequence token only after the create returned, which let
+		// the create switch the store out from under it.
+		const { workspaceStore } = await import('./workspace.svelte');
+		let releaseCreate: (v: unknown) => void = () => {};
+		api.workspaces.create.mockReturnValue(new Promise((r) => { releaseCreate = r; }));
+		api.workspaces.get.mockResolvedValue({ id: 'w2', slug: 'later', name: 'Later' });
+		api.workspaces.me.mockResolvedValue(OWNER);
+
+		const creating = workspaceStore.create({ name: 'New' });
+		await workspaceStore.setCurrent('later');
+		expect(workspaceStore.current?.slug).toBe('later');
+
+		releaseCreate({ id: 'w3', slug: 'created', name: 'Created' });
+		await creating;
+
+		expect(workspaceStore.current?.slug).toBe('later');
+		expect(workspaceStore.membershipKnown).toBe(true);
+	});
+
+	it('keeps BOTH workspaces when two creates race', async () => {
+		// Codex round 5. Both creates succeed on the server, so both workspaces
+		// exist; only one can be selected. The loser of the selection race must
+		// still be in the list — otherwise a workspace the user just created is
+		// invisible until the next loadAll. Every earlier spelling of this
+		// protocol dropped one of them, differing only in which.
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.me.mockResolvedValue(OWNER);
+		let releaseA: (v: unknown) => void = () => {};
+		let releaseB: (v: unknown) => void = () => {};
+		api.workspaces.create
+			.mockReturnValueOnce(new Promise((r) => { releaseA = r; }))
+			.mockReturnValueOnce(new Promise((r) => { releaseB = r; }));
+
+		const a = workspaceStore.create({ name: 'A' });
+		const b = workspaceStore.create({ name: 'B' });
+
+		releaseA({ id: 'wa', slug: 'a', name: 'A' });
+		await a;
+		releaseB({ id: 'wb', slug: 'b', name: 'B' });
+		await b;
+
+		const slugs = workspaceStore.workspaces.map((w) => w.slug);
+		expect(slugs).toContain('a');
+		expect(slugs).toContain('b');
+	});
+});

@@ -6,13 +6,30 @@ import { createKeyedSingleFlight } from './singleFlight';
 let workspaces = $state<Workspace[]>([]);
 let current = $state<Workspace | null>(null);
 let currentMembership = $state<WorkspaceMembership | null>(null);
+// Whether `currentMembership` is an ANSWER or merely NOT YET FETCHED (BUG-2978).
+// It is null in both cases, which makes the two indistinguishable to consumers —
+// and they are opposites: one is "wait", the other is "no access".
+//
+// False from the moment a call that will replace membership begins — which
+// includes resolving the workspace itself, and the part of a create that
+// follows a successful API call — until that call settles: a fetched
+// membership, a 403, or a workspace that did not resolve.
+//
+// A create that THROWS is outside all of that. It changes no state at all,
+// because a failed create says nothing about the workspace you are still
+// looking at; whatever this flag was before such a create, it still is.
+let membershipKnown = $state(false);
 let loading = $state(false);
 
 // Monotonic sequence guarding async /me responses against navigation races.
-// Each setCurrent / create call increments the counter; a /me response is
-// only applied if its captured token still matches at resolution time. This
-// prevents a slow /me for workspace A from clobbering a freshly-set
-// membership for workspace B.
+// A /me response is only applied if its captured token still matches at
+// resolution time, which prevents a slow /me for workspace A from clobbering a
+// freshly-set membership for workspace B.
+//
+// Every `setCurrent` claims the token on entry. `create` OBSERVES it on entry
+// and claims only once the workspace exists, so a create that fails or loses a
+// selection race increments nothing — see the comment in `create` for the three
+// orderings that shapes.
 let membershipSeq = 0;
 
 // The keyed single-flight loader fencing `loadAll` (TASK-2947) — the same
@@ -46,6 +63,9 @@ const loadAllFlight = createKeyedSingleFlight<string>({
  * item grant is less permissive. `currentMembership` is null when not loaded
  * yet or the fetch failed; in that case all helpers return false (treat
  * unknown as no access).
+ *
+ * That conflation is safe for gating an affordance and NOT safe for caching one:
+ * see `membershipKnown` below, which is what tells the two apart.
  */
 
 export const workspaceStore = {
@@ -54,6 +74,24 @@ export const workspaceStore = {
 	get loading() { return loading; },
 
 	get currentMembership() { return currentMembership; },
+
+	/**
+	 * True once membership RESOLUTION has settled for the current workspace, so
+	 * a null `currentMembership` means "no access" rather than "not yet loaded".
+	 * Resolution, not fetch: a workspace that does not resolve at all settles
+	 * this without any `/me` request being made.
+	 *
+	 * False spans the whole replacing call — workspace resolution and creation
+	 * included, not just the `/me` request itself.
+	 *
+	 * Consumers that cache a permission to avoid flickering during that window
+	 * (BUG-2978) must gate on this rather than on `currentMembership !==
+	 * null`: gating on non-null holds the last good answer forever when the
+	 * answer becomes a definitive denial — a removed member or a 403 keeps
+	 * owner-only affordances on screen. The server remains the enforcement
+	 * boundary either way, but the UI should not lie.
+	 */
+	get membershipKnown() { return membershipKnown; },
 
 	get currentRole() {
 		return currentMembership?.role ?? null;
@@ -126,8 +164,9 @@ export const workspaceStore = {
 	 * gate, and it is cheap: two reads, both false on a healthy session.
 	 *
 	 * IDEMPOTENT AND SELF-LIMITING. When identity is intact this does nothing
-	 * and issues no request. `loading` keeps it from stacking a second list call
-	 * on an in-flight one.
+	 * and issues no request. A concurrent list call is not duplicated either:
+	 * `inFlightFor` JOINS the one already running — `loading` is a rendering
+	 * signal here and is not consulted for that.
 	 */
 	async recoverIfMissing(ws: string): Promise<void> {
 		if (workspaces.length === 0) {
@@ -174,6 +213,7 @@ export const workspaceStore = {
 		// Clear stale membership immediately so helpers don't briefly answer
 		// "yes" using the previous workspace's grants while /me is in flight.
 		currentMembership = null;
+		membershipKnown = false;
 
 		// Resolve the workspace itself. Membership is fetched once we know
 		// the slug.
@@ -206,26 +246,75 @@ export const workspaceStore = {
 		if (resolved) {
 			try {
 				const m = await api.workspaces.me(slug);
-				if (seq === membershipSeq) currentMembership = m;
+				if (seq === membershipSeq) { currentMembership = m; membershipKnown = true; }
 			} catch {
-				if (seq === membershipSeq) currentMembership = null;
+				// A 403 or a removed member is an ANSWER, not a pending state.
+				if (seq === membershipSeq) { currentMembership = null; membershipKnown = true; }
 			}
+		} else if (seq === membershipSeq) {
+			// The workspace itself did not resolve (404, or no access): also an
+			// answer, and the same one.
+			membershipKnown = true;
 		}
 	},
 
 	async create(data: { name: string; description?: string; template?: string }) {
+		// CLEAR NOTHING UNTIL THE CREATE HAS SUCCEEDED (codex round 3).
+		//
+		// This used to clear membership at entry, mirroring `setCurrent` — but
+		// `setCurrent` is switching to a workspace it already names, while a
+		// create that FAILS leaves the current workspace exactly as it was. So
+		// the clear was making an assertion about the wrong workspace, and my
+		// round-2 fix made that assertion louder rather than removing it:
+		// settling the flag turned "we don't know" into "no access to the
+		// workspace you are still looking at", which hid a mounted settings
+		// page's owner controls until the next `setCurrent`. A failed create
+		// says nothing about the current membership, so it now changes nothing.
+		//
+		// OBSERVE the sequence token at entry, CLAIM it only on success (codex
+		// round 4). Three orderings have to come out right and the obvious two
+		// spellings each get one wrong:
+		//
+		//  - claiming at entry (the original) makes a FAILED create invalidate a
+		//    `setCurrent` that is still in flight — its writes are discarded on
+		//    the seq check and membership is left unresolved with nothing coming
+		//    to fix it;
+		//  - claiming only after the call lets a create that STARTED EARLIER but
+		//    resolved later override a navigation the user began in between.
+		//
+		// Reading the token at entry and comparing before claiming gives all
+		// three: a navigation started after this create wins (it bumped the
+		// token), a navigation still in flight from before loses (this create is
+		// the newer intent), and a failed create claims nothing and therefore
+		// invalidates nothing.
+		const entrySeq = membershipSeq;
+		const ws = await api.workspaces.create(data);
+
+		// THE LIST IS ADDITIVE; ONLY THE SELECTION IS RACED (codex round 5).
+		// Two concurrent creates both succeed on the server, so both workspaces
+		// exist and both belong in `workspaces` — but only one can be the
+		// selected one. Appending before the token check means the loser of the
+		// selection race is still listed rather than invisible until the next
+		// `loadAll`. That loss predates this change: the entry-claim spelling
+		// dropped the EARLIER-started create's workspace, this one would have
+		// dropped the later-COMPLETING one, and neither is a loss anyone chose.
+		//
+		// Which create ends up SELECTED is first-to-complete, and is left
+		// deliberately unspecified beyond that: with two creates in flight there
+		// is no intent to honour, and the list — the part a user would notice
+		// missing — no longer depends on the answer.
+		workspaces = [...workspaces, ws];
+		if (membershipSeq !== entrySeq) return ws;
 		const seq = ++membershipSeq;
 		currentMembership = null;
-		const ws = await api.workspaces.create(data);
-		if (seq !== membershipSeq) return ws;
-		workspaces = [...workspaces, ws];
+		membershipKnown = false;
 		current = ws;
 		// New workspace — refresh membership for the just-created context.
 		try {
 			const m = await api.workspaces.me(ws.slug);
-			if (seq === membershipSeq) currentMembership = m;
+			if (seq === membershipSeq) { currentMembership = m; membershipKnown = true; }
 		} catch {
-			if (seq === membershipSeq) currentMembership = null;
+			if (seq === membershipSeq) { currentMembership = null; membershipKnown = true; }
 		}
 		return ws;
 	}
