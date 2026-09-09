@@ -128,8 +128,10 @@
 		// on non-null would hold the last good answer forever once the answer
 		// became a denial: an owner removed from the workspace, or a `/me` that
 		// 403s, would keep the Save buttons, the invite form and the Danger Zone
-		// tab on screen indefinitely. `membershipKnown` is false only while a
-		// fetch is in flight, which is exactly the window this cache exists for.
+		// tab on screen indefinitely. `membershipKnown` is false for the span of
+		// any call that will replace membership — workspace resolution and
+		// creation included, not only the `/me` request — which is exactly the
+		// window this cache exists to ride out.
 		if (workspaceStore.membershipKnown) {
 			canEditWs = workspaceStore.canEditWorkspace;
 			isOwner = workspaceStore.isOwner;
@@ -144,7 +146,7 @@
 	let validTabIds = $derived(tabs.map(t => t.id));
 
 	// Hash-driven tab restoration. The hash is captured once on mount, but
-	// validTabIds is reactive (depends on workspaceStore.canEditWorkspace,
+	// validTabIds is reactive (depends on the sticky `canEditWs` above,
 	// which arrives async from /me). So we re-evaluate when validTabIds
 	// expands \u2014 otherwise an owner deep-linking to #danger lands on
 	// General because /me hadn't loaded yet at mount time.

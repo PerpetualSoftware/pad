@@ -248,23 +248,26 @@ export const workspaceStore = {
 	},
 
 	async create(data: { name: string; description?: string; template?: string }) {
+		// CLEAR NOTHING UNTIL THE CREATE HAS SUCCEEDED (codex round 3).
+		//
+		// This used to clear membership at entry, mirroring `setCurrent` — but
+		// `setCurrent` is switching to a workspace it already names, while a
+		// create that FAILS leaves the current workspace exactly as it was. So
+		// the clear was making an assertion about the wrong workspace, and my
+		// round-2 fix made that assertion louder rather than removing it:
+		// settling the flag turned "we don't know" into "no access to the
+		// workspace you are still looking at", which hid a mounted settings
+		// page's owner controls until the next `setCurrent`. A failed create
+		// says nothing about the current membership, so it now changes nothing.
+		//
+		// Claiming the sequence token after the call, rather than before, keeps
+		// the guard it was written for: this create still supersedes anything
+		// started before this point, and a `setCurrent` started after it still
+		// supersedes this.
+		const ws = await api.workspaces.create(data);
 		const seq = ++membershipSeq;
 		currentMembership = null;
 		membershipKnown = false;
-		let ws: Workspace;
-		try {
-			ws = await api.workspaces.create(data);
-		} catch (err) {
-			// SETTLE THE FLAG ON THE WAY OUT (codex round 2). This method clears
-			// membership at entry for the same reason `setCurrent` does, so a
-			// create that throws would otherwise leave `membershipKnown` false
-			// forever — permanently "still loading" for a fetch that will never
-			// happen, which is exactly the state consumers cache through.
-			// Membership is already null, so "known" here says no access, which
-			// is what the null already meant before this flag existed.
-			if (seq === membershipSeq) membershipKnown = true;
-			throw err;
-		}
 		if (seq !== membershipSeq) return ws;
 		workspaces = [...workspaces, ws];
 		current = ws;

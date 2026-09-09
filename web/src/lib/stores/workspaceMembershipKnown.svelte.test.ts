@@ -64,11 +64,40 @@ describe('workspaceStore.membershipKnown', () => {
 		expect(workspaceStore.membershipKnown).toBe(true);
 	});
 
-	it('is true after a FAILED create, which used to leave it false forever', async () => {
+	it('is false while the WORKSPACE is still resolving, not just the /me', async () => {
+		// The contract is the whole replacing call, so the window has to open
+		// before `/me` is even reached (codex round 3).
 		const { workspaceStore } = await import('./workspace.svelte');
-		api.workspaces.create.mockRejectedValue(new Error('plan limit'));
+		let releaseGet: (v: unknown) => void = () => {};
+		api.workspaces.get.mockReturnValue(new Promise((r) => { releaseGet = r; }));
+		api.workspaces.me.mockResolvedValue(OWNER);
 
-		await expect(workspaceStore.create({ name: 'nope' })).rejects.toThrow('plan limit');
+		const pending = workspaceStore.setCurrent('ws');
+		expect(workspaceStore.membershipKnown).toBe(false);
+
+		releaseGet(WS);
+		await pending;
 		expect(workspaceStore.membershipKnown).toBe(true);
+	});
+
+	it('leaves the CURRENT workspace untouched when a create fails', async () => {
+		// A failed create says nothing about the workspace you are still looking
+		// at. The first version of this fix cleared membership at entry and then
+		// settled the flag on the failure path, which told every consumer the
+		// current workspace was now a definitive "no access" — hiding a mounted
+		// settings page's owner controls until the next setCurrent (codex round
+		// 3). The flag alone cannot catch that, so this asserts the membership.
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.get.mockResolvedValue(WS);
+		api.workspaces.me.mockResolvedValue(OWNER);
+		await workspaceStore.setCurrent('ws');
+		expect(workspaceStore.isOwner).toBe(true);
+
+		api.workspaces.create.mockRejectedValue(new Error('plan limit'));
+		await expect(workspaceStore.create({ name: 'nope' })).rejects.toThrow('plan limit');
+
+		expect(workspaceStore.membershipKnown).toBe(true);
+		expect(workspaceStore.currentMembership).not.toBeNull();
+		expect(workspaceStore.isOwner).toBe(true);
 	});
 });
