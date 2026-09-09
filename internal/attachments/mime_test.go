@@ -89,10 +89,16 @@ func TestServeInline(t *testing.T) {
 			t.Errorf("ServeInline(%q) = false, want true (inline-safe)", m)
 		}
 	}
+	// application/xml, text/yaml and application/javascript were in this list
+	// until BUG-2963 F6 removed them from the allowlist as unreachable
+	// spellings. `must` fails on a type the allowlist refuses, so leaving
+	// them here would assert about entries that no longer exist. Their
+	// reachable siblings — text/xml, application/yaml, text/javascript —
+	// carry the property.
 	download := []string{
-		"text/xml", "application/xml", "application/json", "text/csv",
+		"text/xml", "application/json", "text/csv",
 		"text/markdown", "application/msword", "application/zip",
-		"text/html", "text/javascript", "application/javascript",
+		"text/html", "text/javascript", "application/yaml",
 	}
 	for _, m := range download {
 		if must(m).ServeInline() {

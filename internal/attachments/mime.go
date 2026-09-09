@@ -109,8 +109,8 @@ var allowed = func() map[string]MIMEEntry {
 	// --- Text & data (chip with download) ---
 	for _, t := range []string{
 		"text/plain", "text/markdown", "text/csv", "text/tab-separated-values",
-		"application/json", "application/xml", "text/xml",
-		"application/yaml", "text/yaml", "application/toml",
+		"application/json", "text/xml",
+		"application/yaml", "application/toml",
 	} {
 		add(t, RenderChip, CategoryText)
 	}
@@ -124,8 +124,12 @@ var allowed = func() map[string]MIMEEntry {
 	}
 
 	// --- Forced-download text payloads — would XSS if served inline ---
+	// application/javascript was removed here (BUG-2963 F6): no extension in
+	// extMIMEMap reaches that spelling and SniffMIME cannot emit it, so the
+	// entry could never be the type an upload was stored under. Its sibling
+	// text/javascript is the reachable spelling and stays.
 	for _, t := range []string{
-		"text/html", "text/javascript", "application/javascript",
+		"text/html", "text/javascript",
 	} {
 		add(t, RenderForceDownload, CategoryText)
 	}
@@ -156,8 +160,10 @@ func LookupMIME(mime string) (MIMEEntry, bool) {
 // <img>/<audio>/<video>), plus PDF (sandboxed viewer) and plain text. This is
 // the server mirror of the client's VIEWER_MIMES + BROWSER_PREVIEW_MIMES
 // (web/src/lib/attachments/display.ts). Notably absent: image/svg+xml and
-// application/xhtml+xml (active), text/xml + application/xml (SVG/XHTML wear
-// these after an extensionless sniff), and the whole RenderForceDownload bucket.
+// application/xhtml+xml (active), text/xml (SVG and XHTML wear it after an
+// extensionless sniff), and the whole RenderForceDownload bucket. The
+// application/xml spelling used to be named here alongside text/xml; it left
+// the allowlist entirely in BUG-2963 F6, so there is no entry left to exclude.
 var inlineSafe = map[string]struct{}{
 	// Raster images.
 	"image/png": {}, "image/jpeg": {}, "image/gif": {}, "image/webp": {},
@@ -206,6 +212,17 @@ func NormalizeMIME(mime string) string {
 var sniffAliases = map[string]string{
 	"audio/wave":         "audio/wav",        // .wav
 	"application/x-gzip": "application/gzip", // .gz / .tar.gz
+	"video/avi":          "video/x-msvideo",  // .avi — pure spelling difference
+	// .ogg — Ogg is a container, and the stdlib names it by the container
+	// (application/ogg) while the allowlist names the payload it expects
+	// (audio/ogg). Aliasing therefore types an Ogg VIDEO as audio, which is
+	// wrong for that file. It is still the better of the two available
+	// answers: the allowlist has no video/ogg entry, so without this alias
+	// every Ogg upload is refused outright, and a mistyped-accepted beats a
+	// refusal for a container that is audio in nearly every real upload
+	// (BUG-2963 F1, ruled day 62). Adding video/ogg to the allowlist would
+	// be the way to make this honest, and that is an allowlist decision.
+	"application/ogg": "audio/ogg",
 }
 
 // SniffMIME detects the MIME type from the leading bytes of a payload
@@ -229,7 +246,25 @@ func SniffMIME(head []byte) string {
 	}
 	got := NormalizeMIME(http.DetectContentType(head))
 	if alias, ok := sniffAliases[got]; ok {
-		return alias
+		got = alias
+	}
+	// Two BUG-2963 pre-checks, both deliberately narrow. Each is gated on
+	// what the stdlib already said, so neither can retype a file the stdlib
+	// recognised as something else:
+	//
+	//   - video/webm is REFINED, because the mimesniff table answers it from
+	//     the bare EBML magic and cannot tell Matroska from WebM;
+	//   - application/octet-stream is the stdlib having NO opinion, which is
+	//     the only case where recognising more formats adds anything.
+	switch got {
+	case "video/webm":
+		if mime := sniffEBMLDocType(head); mime != "" {
+			return mime
+		}
+	case "application/octet-stream":
+		if mime := sniffOpaqueMagic(head); mime != "" {
+			return mime
+		}
 	}
 	return got
 }
@@ -253,6 +288,20 @@ func SniffMIME(head []byte) string {
 // filename so we can compare extensions; pass empty string to skip.
 func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string, err error) {
 	sniffed := SniffMIME(head)
+
+	// Raw AAC is the one BUG-2963 format whose signature is too weak to act
+	// on from the bytes alone, so it is resolved here — where the filename is
+	// known — rather than inside SniffMIME, which deliberately never sees a
+	// filename. Both halves are required: the extension alone introduces
+	// nothing (a .aac without the sync stays application/octet-stream and is
+	// refused), and the sync alone is ignored (a .png whose bytes happen to
+	// open with one is untouched). The extension only decides whether a weak
+	// signature is permitted to speak. See hasADTSSync for why it is weak.
+	if sniffed == "application/octet-stream" && hasADTSSync(head) &&
+		strings.EqualFold(filepath.Ext(filename), ".aac") {
+		sniffed = "audio/aac"
+	}
+
 	e, ok := LookupMIME(sniffed)
 	if !ok {
 		return MIMEEntry{}, "mime_not_allowed", &uploadError{msg: "MIME type not allowed: " + sniffed}
@@ -327,8 +376,10 @@ var canonicalExtForMIME = buildCanonicalExtForMIME()
 //
 // Every key MUST be a value that extMIMEMap actually uses, or the entry is a
 // line that cannot fire. One of them was exactly that on first writing —
-// "text/yaml", where this map says application/yaml — so the preference never
-// applied and .yaml won on length. The test asserts the property rather than
+// "text/yaml", where the forward map says application/yaml — so the preference
+// never applied and .yaml won on length. (text/yaml is no longer even on the
+// allowlist; BUG-2963 F6 removed it as unreachable. The lesson it taught this
+// map is why the note survives it.) The test asserts the property rather than
 // trusting the next reader to notice.
 func preferredExtensions() map[string]string {
 	return map[string]string{
@@ -345,11 +396,19 @@ func preferredExtensions() map[string]string {
 // aliasExtensions covers allowed MIME spellings that NO extension in
 // extMIMEMap maps to, so reversing the forward table alone leaves them
 // without an extension: the forward table picks one spelling per extension
-// (.xml says application/xml, .js says text/javascript, .webm says
-// video/webm), while the allowlist accepts the alias spellings too. An
-// attachment stored under an alias type with an unstorable filename came out
-// of `pad attachment view` extensionless — the exact failure the delegation
-// to this package was built to end (codex closing round).
+// (.webm says video/webm), while the allowlist accepts the alias spellings
+// too. An attachment stored under an alias type with an unstorable filename
+// came out of `pad attachment view` extensionless — the exact failure the
+// delegation to this package was built to end (codex closing round).
+//
+// This table held four entries until BUG-2963 F6. Three stopped being
+// alias-shaped for two different reasons, and the distinction is the thing to
+// keep: text/yaml and application/javascript were REMOVED from the allowlist
+// as unreachable spellings, so an alias for them would name a refused type;
+// text/xml is still very much allowed, but the forward map now spells .xml
+// with it, so the reverse mapping is derived and an alias entry here would be
+// a duplicate the hygiene assertion below rejects. An entry leaving this
+// table therefore says nothing on its own about whether the type survived.
 //
 // Every key MUST be an allowed type with no forward-derived reverse mapping,
 // and every value MUST be an extension the forward map sends to an ALLOWED
@@ -359,10 +418,7 @@ func preferredExtensions() map[string]string {
 // every allowed MIME type has a reverse extension.
 func aliasExtensions() map[string]string {
 	return map[string]string{
-		"text/xml":               ".xml",  // forward map spells it application/xml
-		"text/yaml":              ".yml",  // forward map spells it application/yaml; .yml matches its preference
-		"application/javascript": ".js",   // forward map spells it text/javascript
-		"audio/webm":             ".webm", // forward map spells it video/webm; the container is the same
+		"audio/webm": ".webm", // forward map spells it video/webm; the container is the same
 	}
 }
 
@@ -486,7 +542,12 @@ var extMIMEMap = map[string]string{
 	".csv":  "text/csv",
 	".tsv":  "text/tab-separated-values",
 	".json": "application/json",
-	".xml":  "application/xml",
+	// text/xml, not application/xml: the latter left the allowlist in
+	// BUG-2963 F6, and this map's values are looked up in `allowed` — an
+	// extension pointing at a removed spelling would make every .xml upload
+	// fail extension_blocked, which is the same map's mechanism for refusing
+	// .svg and .exe.
+	".xml":  "text/xml",
 	".yaml": "application/yaml",
 	".yml":  "application/yaml",
 	".toml": "application/toml",

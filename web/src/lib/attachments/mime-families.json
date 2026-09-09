@@ -63,11 +63,8 @@
 		"text/html": "text",
 		"text/xml": "text",
 		"text/javascript": "text",
-		"text/yaml": "text",
 		"application/json": "text",
-		"application/xml": "text",
 		"application/yaml": "text",
-		"application/toml": "text",
-		"application/javascript": "text"
+		"application/toml": "text"
 	}
 }

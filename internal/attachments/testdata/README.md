@@ -23,3 +23,30 @@ Two gaps, recorded rather than papered over:
 - **No file whose MAJOR brand is `mif1` from Apple.** `sips -s format heif`
   writes no file on that machine. The libheif `still-mif1.heif` covers the
   major-`mif1` shape from a different encoder instead of a guessed one.
+
+## BUG-2963 fixtures — formats the sniffer learned to recognise
+
+Same rule as above: real encoder output, truncated to the 512 bytes
+`SniffMIME` actually reads. `bzip2.head512` and `sevenzip.head512` are shorter
+than 512 because the whole file is.
+
+| file | produced by | what it proves |
+|---|---|---|
+| `tar.head512` | GNU `tar -cf` (tar 1.34, Linux) | `ustar` at offset 257 — the magic is not at the start, which is why no prefix matcher finds it |
+| `bzip2.head512` | `bzip2 -c` (1.0.8), complete file (88 B) | `BZh` plus the block-size digit |
+| `sevenzip.head512` | `py7zr` 1.1.3, complete file (192 B) | the six-byte 7z signature |
+| `flac.head512` | libsndfile 1.2.2 via `soundfile`, FLAC format | the `fLaC` stream marker |
+| `aac-adts.head512` | FFmpeg 7.1 `-c:a aac -f adts` | an ADTS sync (`ff f1`) — the one signature weak enough to need its extension |
+| `matroska.head512` | FFmpeg 7.1 `-f matroska` | EBML magic with DocType `matroska` at offset 24 |
+| `webm.head512` | FFmpeg 7.1 `-f webm` | EBML magic with DocType `webm` at offset 24 — the control that stops the DocType read from answering Matroska for everything |
+| `avi.head512` | FFmpeg 7.1 `-f avi` | RIFF/AVI, which the stdlib names `video/avi` against the allowlist's `video/x-msvideo` |
+| `ogg-opus.head512` | FFmpeg 7.1 `-c:a libopus -f ogg` | `OggS`, which the stdlib names `application/ogg` against the allowlist's `audio/ogg` |
+
+The FFmpeg used is the one bundled with Remotion
+(`@remotion/compositor-linux-x64-gnu`), transcoded from real project assets;
+there is no system FFmpeg on the machine these were made on.
+
+**Gap, recorded rather than papered over:** every media fixture here comes from
+one FFmpeg build. A second encoder would be worth having for the EBML pair in
+particular, since the DocType read is the only check here that depends on where
+a muxer places a string rather than on a fixed prefix.
