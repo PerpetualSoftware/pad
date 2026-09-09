@@ -1,6 +1,8 @@
 package attachments
 
 import (
+	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -517,4 +519,84 @@ func TestTarAndELFAreNotDistinguishableHere(t *testing.T) {
 	if entry.ServeInline() {
 		t.Error("application/x-tar is inline-safe; it must be served as an attachment")
 	}
+}
+
+// TestRoundTwoSurvivors covers the guards a rebuilt mutation matrix found
+// nothing testing. Each case below is the exact input a review round used, or
+// the smallest one that separates the guard from everything around it.
+func TestRoundTwoSurvivors(t *testing.T) {
+	t.Run("7z start-header arithmetic must be representable", func(t *testing.T) {
+		// A CRC proves the twenty bytes are the intended ones. These are
+		// intended and impossible: a next-header offset of 2^64-1 cannot have
+		// the 32-byte signature header added to it.
+		b := make([]byte, 64)
+		copy(b, []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04})
+		for i := 12; i < 20; i++ {
+			b[i] = 0xFF // NextHeaderOffset = max uint64
+		}
+		b[20] = 0x01 // NextHeaderSize = 1
+		binary.LittleEndian.PutUint32(b[8:12], crc32.ChecksumIEEE(b[12:32]))
+		if validSevenZipHeader(b) {
+			t.Error("accepted a start header whose next-header position cannot be represented")
+		}
+		// Control: the same header with a sane offset, so the leg above is
+		// failing on the arithmetic and not on the CRC.
+		for i := 12; i < 20; i++ {
+			b[i] = 0
+		}
+		binary.LittleEndian.PutUint32(b[8:12], crc32.ChecksumIEEE(b[12:32]))
+		if !validSevenZipHeader(b) {
+			t.Error("premise failed: the control header must be accepted, " +
+				"or the case above proves nothing about the arithmetic")
+		}
+	})
+
+	t.Run("FLAC sample rate may not be zero", func(t *testing.T) {
+		b := append([]byte(nil), readFixture(t, "flac.head512")...)
+		// Sample rate is the 20 bits starting at byte 18 of the file
+		// (STREAMINFO byte 10). Zero is reserved for a non-audio stream.
+		b[18], b[19] = 0, 0
+		b[20] &^= 0xF0
+		if validFLACStream(b) {
+			t.Error("accepted STREAMINFO declaring a zero sample rate")
+		}
+	})
+
+	t.Run("a truncated real bzip2 stream is still recognised", func(t *testing.T) {
+		// The head of a 200KB archive: the decoder cannot finish, and must
+		// not be allowed to refuse on that account. This is the case that
+		// distinguishes "structural error" from "ran out of bytes".
+		if !validBzip2Stream(readFixture(t, "bzip2-truncated.head512")) {
+			t.Error("a truncated bzip2 stream was refused; truncation is what a 512-byte " +
+				"head of any real archive looks like")
+		}
+	})
+
+	t.Run("DocType ends at its first NUL", func(t *testing.T) {
+		// A real Matroska whose DocType payload is "matroska\x00junk" with a
+		// declared length of 13. Trailing bytes after the terminator are not
+		// part of the value; trimming instead of terminating stored this as
+		// WebM.
+		if got := SniffMIME(readFixture(t, "matroska-nul-terminated-doctype.head512")); got != "video/x-matroska" {
+			t.Errorf("SniffMIME = %q, want video/x-matroska", got)
+		}
+	})
+
+	t.Run("reserved all-ones EBML IDs are refused", func(t *testing.T) {
+		// 0xFF is a reserved ID, not a valid element. Accepting it let junk
+		// act as a zero-length child and carry the walk onward to a DocType
+		// that followed it.
+		b := []byte{0x1A, 0x45, 0xDF, 0xA3, 0x8D, 0xFF, 0x80,
+			0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'}
+		if got := sniffEBMLDocType(b); got != "" {
+			t.Errorf("sniffEBMLDocType = %q, want no answer — the walk crossed a reserved ID", got)
+		}
+		// Control: the same bytes without the reserved ID must parse, so the
+		// leg above fails on the ID and not on the rest of the shape.
+		ok := []byte{0x1A, 0x45, 0xDF, 0xA3, 0x8B,
+			0x42, 0x82, 0x88, 'm', 'a', 't', 'r', 'o', 's', 'k', 'a'}
+		if got := sniffEBMLDocType(ok); got != "video/x-matroska" {
+			t.Errorf("premise failed: control sniffed %q, want video/x-matroska", got)
+		}
+	})
 }

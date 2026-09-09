@@ -193,6 +193,10 @@ func validBzip2Stream(head []byte) bool {
 // for why that is a property of the format rather than something to fix here.
 func validTarHeader(head []byte) bool {
 	const blockSize = 512
+	// The length guard is CLARIFYING, not load-bearing: archive/tar refuses
+	// anything shorter than a full 512-byte block on its own (measured — a
+	// mutation lowering this to 262 changes no outcome). It stays because it
+	// makes the slice below obviously in range at the point of reading.
 	if len(head) < blockSize || !bytes.Equal(head[257:262], []byte("ustar")) {
 		return false
 	}
