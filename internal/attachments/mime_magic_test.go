@@ -2,6 +2,7 @@ package attachments
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,6 +120,59 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 	}
 }
 
+// TestMatroskaDocTypeBeyondTheWindowIsWebM records a LIMITATION, not a defect
+// (BUG-2963 codex round 6; ruled not blocking for PR A).
+//
+// A Void element is legal anywhere in an EBML header and may be any size. Make
+// one larger than the 512 bytes this door reads and the DocType behind it is
+// not in the input at all, so the parse finds nothing and the stdlib's answer
+// stands: a real Matroska is stored as video/webm and served inline.
+//
+// Nothing got worse, which is why it is a limitation. Before the DocType read
+// existed this file was ALSO video/webm — the mimesniff table maps the bare
+// EBML magic that way with no DocType check — and video/webm's own allowlist
+// entry permits inline serving. The DocType here is UNDECIDABLE at this size,
+// not mis-decided, and no larger window fixes it: Void may be larger still.
+//
+// The fixture is the ordinary FFmpeg Matroska with a 560-byte Void spliced
+// into its header and the header size field widened to match — the same
+// construction as matroska-void-padded.head512, one order of magnitude up. The
+// COMPLETE file ffprobe reads as matroska,webm; what is committed is its first
+// 512 bytes, so the DocType is absent from the fixture, which is the condition
+// under test rather than a truncation artifact.
+func TestMatroskaDocTypeBeyondTheWindowIsWebM(t *testing.T) {
+	head := readFixture(t, "matroska-void-beyond-window.head512")
+
+	if !bytes.HasPrefix(head, []byte{0x1A, 0x45, 0xDF, 0xA3}) {
+		t.Fatal("premise failed: the fixture must carry the EBML magic")
+	}
+	if bytes.Contains(head, []byte("matroska")) {
+		t.Fatal("premise failed: the DocType must lie beyond these 512 bytes, or " +
+			"this exercises the ordinary parse instead of the limitation")
+	}
+
+	if got := sniffEBMLDocType(head); got != "" {
+		t.Errorf("sniffEBMLDocType = %q, want \"\" — the DocType is not in these bytes", got)
+	}
+	if got := SniffMIME(head); got != "video/webm" {
+		t.Errorf("SniffMIME = %q, want video/webm — the stdlib's answer for bare EBML magic", got)
+	}
+
+	entry, code, err := ValidateUpload(head, "clip.mkv")
+	if err != nil {
+		t.Fatalf("a real Matroska was refused (code=%s): %v — it was accepted before "+
+			"the DocType read existed, so a refusal here is a regression", code, err)
+	}
+	if entry.MIME != "video/webm" {
+		t.Errorf("stored as %q, want video/webm — the limitation is precisely that a "+
+			"Matroska is stored under the WebM spelling when its DocType is out of reach",
+			entry.MIME)
+	}
+	if !entry.ServeInline() {
+		t.Error("ServeInline() = false; video/webm serves inline and did before this check existed")
+	}
+}
+
 // TestOggStaysRefused records a decision, not a mechanism: Ogg is NOT
 // recognised, and both fixtures are kept so the next person to reach for an
 // application/ogg alias meets the evidence first.
@@ -171,11 +225,16 @@ func TestADTSGate(t *testing.T) {
 		t.Errorf("code = %q, want mime_not_allowed", code)
 	}
 
-	// A REAL AAC file can look textual. These seven bytes are a valid ADTS
-	// header whose every byte the stdlib reads as text, so it answers
-	// text/plain — the shape of an AAC frame whose ancillary payload is
-	// printable. Review confirmed ffmpeg decodes such a file. It must be
-	// ACCEPTED: refusing it was a real file of a listed type turned away.
+	// A REAL AAC file can look textual, and this input STANDS IN for one. Say
+	// what it is: seven bytes carrying a valid ADTS sync word and layer
+	// signature, every byte of which the stdlib reads as text so it answers
+	// text/plain. It is not a decodable AAC and nothing here establishes that
+	// it is. What review established is the case it stands in for — an AAC
+	// frame's ancillary payload is arbitrary bytes, so a complete file whose
+	// printable payload keeps the stdlib on text/plain exists and ffmpeg
+	// decodes it. Seven bytes exercise the same gate because the gate reads
+	// the header alone. It must be ACCEPTED: refusing it turned away a real
+	// file of a listed type.
 	textual := []byte{0xFF, 0xF1, 0x40, 0x41, 0x41, 0x41, 0x41}
 	if !validADTSHeader(textual) {
 		t.Fatal("premise failed: the input must be a valid ADTS header")
@@ -255,8 +314,20 @@ func TestADTSGate(t *testing.T) {
 // TestTarWinsAPrefixCollision covers a real archive refused because another
 // format's magic appeared in its member's FILENAME. A tar header's first 100
 // bytes are user-chosen text, so any prefix recogniser can collide with an
-// ordinary archive; the collision is asymmetric, which is why tar is tested
-// first.
+// ordinary archive.
+//
+// The collision is SYMMETRIC. This comment used to call it asymmetric and give
+// that as the reason tar is tested first — the round-4 premise round 5
+// refuted, with flac-ustar-in-comment.head512: a FLAC's Vorbis COMMENT tags
+// are arbitrary UTF-8, so real audio carries "ustar" at offset 257 as readily
+// as a real tar carries an audio marker at offset zero. Any total order
+// refuses somebody. sniffOpaqueCandidates and the fixtures both say this
+// already; the stale word survived in the place a reader looks first.
+//
+// tar leads the DEFAULT order for a weaker reason, stated there: its magic
+// sits at a fixed offset rather than at a prefix, so it is the least likely to
+// be an accident of another format's leading bytes. What this test pins is
+// that default holding for a file whose extension agrees with it.
 func TestTarWinsAPrefixCollision(t *testing.T) {
 	b := readFixture(t, "tar-flac-named-member.head512")
 	if string(b[:4]) != "fLaC" {
@@ -339,25 +410,129 @@ func TestBUG2963F6RemovedSpellings(t *testing.T) {
 	}
 }
 
-// TestTextFamilyStillStoresAsPlain records what this PR does NOT fix, so the
-// boundary is a test rather than a sentence someone has to find. These types
-// remain on the allowlist and remain unreachable; making them reachable needs
-// extension trust, which is a separate change under its own ruling.
-func TestTextFamilyStillStoresAsPlain(t *testing.T) {
-	for _, tc := range []struct{ body, name string }{
-		{"alert(1);\n", "p.js"},
-		{"answer: 42\n", "p.yaml"},
-		{"# heading\n", "p.md"},
+// TestBUG2963F5TextFamily is what TestTextFamilyStillStoresAsPlain became. That
+// test recorded a boundary — .js, .yaml and .md all stored as text/plain,
+// their allowlist entries unreachable — and said in its own failure message
+// that F5 landing is what should move it. F5 landed. The three inputs are the
+// same three; what changed is the expectation.
+//
+// The trust is CATEGORY-PRESERVING and that is the property to keep asserted:
+// text/plain is the stdlib saying only "this is text", so the extension may
+// choose which text and nothing else. Every accepted leg below therefore
+// checks the Category as well as the MIME, and the controls check that the
+// mapping cannot reach outside the allowlist or retype non-text bytes.
+func TestBUG2963F5TextFamily(t *testing.T) {
+	for _, tc := range []struct {
+		body, name, want string
+		wantInline       bool
+		why              string
+	}{
+		{"# heading\n", "p.md", "text/markdown", false, "the F5 boundary test's own input"},
+		{"answer: 42\n", "p.yaml", "application/yaml", false, "same, via the .yaml mapping"},
+		{"answer: 42\n", "p.yml", "application/yaml", false, "the second spelling of the same mapping"},
+		{"a,b\n1,2\n", "p.csv", "text/csv", false, "csv sniffs as plain text; the name is the only thing that says otherwise"},
+		{"{\"a\": 1}\n", "p.json", "application/json", false, "JSON has no magic — it is text and a name"},
+		// EVERY leg above has wantInline false, and that is the finding this
+		// table exists to make visible rather than the .js leg alone.
+		// text/plain is the only member of the text family in inlineSafe, so
+		// choosing ANY other text spelling moves the file out of inline
+		// serving and into Content-Disposition: attachment. The ruling
+		// weighed that move for .js, where it is the point; it applies
+		// equally to .md, .csv, .json, .yaml and .toml, where it is a side
+		// effect and a real one — a Markdown attachment previewed in the
+		// browser before this change and downloads after it. Recorded here,
+		// on BUG-2963's trail, and in the PR body; whether those five belong
+		// in inlineSafe is an allowlist decision and not this unit's to make.
+		//
+		// The two RenderForceDownload legs. These are the ones the ruling
+		// singled out, and their move is a second, separate one: from the
+		// chip bucket to forced download.
+		{"alert(1);\n", "p.js", "text/javascript", false, "the leg that moves a serving bucket"},
+		{"hello\n", "p.html", "text/html", false, "same bucket move, via .html"},
+		// Controls: the sniff already names the type, or the extension names
+		// nothing, so nothing moves.
+		{"plain\n", "p.txt", "text/plain", true, "the mapping and the sniff agree; nothing to choose"},
+		{"plain\n", "p.unknownext", "text/plain", true, "an extension with no mapping cannot choose anything"},
+		{"plain\n", "noextension", "text/plain", true, "no extension at all"},
 	} {
-		entry, _, err := ValidateUpload([]byte(tc.body), tc.name)
-		if err != nil {
-			t.Fatalf("%s rejected: %v", tc.name, err)
-		}
-		if entry.MIME != "text/plain" {
-			t.Errorf("%s stored as %q, want text/plain — if this changed, the F5 "+
-				"extension-trust work landed and this test should move with it", tc.name, entry.MIME)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			entry, code, err := ValidateUpload([]byte(tc.body), tc.name)
+			if err != nil {
+				t.Fatalf("rejected (code=%s): %v — %s", code, err, tc.why)
+			}
+			if entry.MIME != tc.want {
+				t.Errorf("stored as %q, want %q — %s", entry.MIME, tc.want, tc.why)
+			}
+			if entry.Category != CategoryText {
+				t.Errorf("category = %v, want %v — F5 is category-preserving, so a leg "+
+					"that leaves the text category is a defect in the rule, not in this test",
+					entry.Category, CategoryText)
+			}
+			if got := entry.ServeInline(); got != tc.wantInline {
+				t.Errorf("ServeInline() = %v, want %v", got, tc.wantInline)
+			}
+		})
 	}
+
+	// The bucket move, asserted as the ruling asks: exactly, on the render
+	// mode itself rather than only on the type. text/plain is a chip;
+	// text/javascript is a forced download. If a future edit puts .js on an
+	// inline entry, this fails and the ServeInline legs above do not, because
+	// text/plain is not inline either.
+	t.Run("js moves into RenderForceDownload", func(t *testing.T) {
+		plain, _, err := ValidateUpload([]byte("alert(1);\n"), "p.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		js, _, err := ValidateUpload([]byte("alert(1);\n"), "p.js")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain.RenderMode != RenderChip {
+			t.Errorf("premise failed: the same bytes named .txt render %v, want %v",
+				plain.RenderMode, RenderChip)
+		}
+		if js.RenderMode != RenderForceDownload {
+			t.Errorf("named .js renders %v, want %v — this leg is the reason .js is IN "+
+				"rather than carved out: it is strictly more conservative than the "+
+				"text/plain it replaces", js.RenderMode, RenderForceDownload)
+		}
+	})
+
+	// The mapping must be on the allowlist for this to fire. .svg maps to
+	// image/svg+xml, which is not, and it must keep reaching extension_blocked
+	// — an SVG is text to the sniffer and would otherwise be stored and named
+	// as one, which is the XSS this allowlist exists to refuse.
+	t.Run("svg stays blocked", func(t *testing.T) {
+		if _, code, err := ValidateUpload([]byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), "p.svg"); err == nil {
+			t.Error("an .svg was accepted; the text-family trust must not reach a mapping that is not allowlisted")
+		} else if code != "extension_blocked" {
+			t.Errorf("code = %q, want extension_blocked", code)
+		}
+	})
+
+	// The mapping must be a TEXT entry. An allowlisted mapping in another
+	// category is the dangerous shape — text bytes named .mp3 must not become
+	// audio/mpeg — and it is allowlisted, so the extAllowed check alone does
+	// not stop it. This is the leg that holds the category guard.
+	t.Run("an allowlisted non-text mapping does not fire", func(t *testing.T) {
+		if entry, code, err := ValidateUpload([]byte("plain text\n"), "p.mp3"); err == nil {
+			t.Errorf("text bytes named .mp3 were accepted as %q; F5 must not cross a category", entry.MIME)
+		} else if code != "mime_extension_mismatch" {
+			t.Errorf("code = %q, want mime_extension_mismatch", code)
+		}
+	})
+
+	// And the extension cannot retype bytes that are not text. A PNG named
+	// .md is still a category mismatch: F5 fires on the SNIFF being
+	// text/plain, not on the extension being textual.
+	t.Run("non-text bytes are untouched", func(t *testing.T) {
+		if _, code, err := ValidateUpload([]byte("\x89PNG\r\n\x1a\n"), "p.md"); err == nil {
+			t.Error("PNG bytes named .md were accepted")
+		} else if code != "mime_extension_mismatch" {
+			t.Errorf("code = %q, want mime_extension_mismatch", code)
+		}
+	})
 }
 
 // TestTarAndELFAreNotDistinguishableHere records a LIMITATION as a test,
@@ -669,5 +844,150 @@ func TestCollidingMagicIsArbitratedByExtension(t *testing.T) {
 	}
 	if err == nil && entry.MIME != "application/x-tar" {
 		t.Errorf("stored as %q, want the default candidate application/x-tar", entry.MIME)
+	}
+}
+
+// cfbHeader returns a Compound File Binary header. HAND-BUILT, and that is
+// sound here for a reason it is not sound elsewhere in this package: the
+// branch under test reads these eight fixed bytes and nothing else, so eight
+// bytes exercise the whole of it. A real .doc would add megabytes and test the
+// same comparison. (Contrast the ISO-BMFF and EBML fixtures, where the code
+// walks structure an encoder produces and a typed header would only test the
+// author's reading of the spec.)
+func cfbHeader(trailing int) []byte {
+	return append([]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, make([]byte, trailing)...)
+}
+
+// TestBUG2963CFBOfficeTrio covers the legacy Office family: the bytes say
+// "CFB container" and nothing finer, so the extension chooses which of the
+// three REVIEWED types is stored. The zip+document branch's shape, one
+// container family over.
+func TestBUG2963CFBOfficeTrio(t *testing.T) {
+	head := cfbHeader(56)
+
+	if got := SniffMIME(head); got != "application/octet-stream" {
+		t.Fatalf("premise failed: CFB bytes sniff %q, not application/octet-stream — this "+
+			"family exists because the stdlib has no signature for the container", got)
+	}
+
+	for _, tc := range []struct{ name, want string }{
+		{"report.doc", "application/msword"},
+		{"budget.xls", "application/vnd.ms-excel"},
+		{"deck.ppt", "application/vnd.ms-powerpoint"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, code, err := ValidateUpload(head, tc.name)
+			if err != nil {
+				t.Fatalf("refused (code=%s): %v", code, err)
+			}
+			if entry.MIME != tc.want {
+				t.Errorf("stored as %q, want %q", entry.MIME, tc.want)
+			}
+			if entry.Category != CategoryDocument {
+				t.Errorf("category = %v, want %v", entry.Category, CategoryDocument)
+			}
+			if entry.ServeInline() {
+				t.Error("ServeInline() = true; an Office document is served as an attachment")
+			}
+		})
+	}
+
+	// The extension is REQUIRED, and the list is a list. CFB carries .msi
+	// installers and Visio files too, so the header alone admits nothing, and
+	// an extension outside the reviewed three admits nothing either — .docx is
+	// the sharp case, being a document extension whose type is allowlisted but
+	// whose container is zip, not CFB.
+	for _, name := range []string{"nameless", "installer.msi", "report.docx", "diagram.vsd"} {
+		t.Run("refused: "+name, func(t *testing.T) {
+			if entry, code, err := ValidateUpload(head, name); err == nil {
+				t.Errorf("accepted as %q; only .doc/.xls/.ppt may be believed on a CFB header", entry.MIME)
+			} else if code != "mime_not_allowed" {
+				t.Errorf("code = %q, want mime_not_allowed", code)
+			}
+		})
+	}
+
+	// A CFB header whose SECTOR DATA happens to carry "ustar" at offset 257.
+	// The magic table refines such a file to application/x-tar, so a branch
+	// gated on the REFINED verdict would refuse a real Word document under its
+	// own .doc name — the false refusal this bug exists to remove. Gating on
+	// the stdlib's verdict asks the question that matters: did anything
+	// IDENTIFY these bytes? Nothing did. Same reasoning as the .aac branch,
+	// and this is the case that makes it not academic here.
+	t.Run("a CFB carrying ustar at 257 is still a Word document", func(t *testing.T) {
+		collide := cfbHeader(504)
+		copy(collide[257:262], []byte("ustar"))
+		if got := SniffMIME(collide); got != "application/x-tar" {
+			t.Fatalf("premise failed: these bytes refine to %q, not application/x-tar — "+
+				"without the collision there is nothing for the gate to get wrong", got)
+		}
+		entry, code, err := ValidateUpload(collide, "report.doc")
+		if err != nil {
+			t.Fatalf("refused (code=%s): %v", code, err)
+		}
+		if entry.MIME != "application/msword" {
+			t.Errorf("stored as %q, want application/msword", entry.MIME)
+		}
+	})
+
+	// And the header is required: the extension introduces nothing on its own.
+	t.Run("one byte off is not a CFB", func(t *testing.T) {
+		broken := cfbHeader(56)
+		broken[7] = 0xE2
+		if _, code, err := ValidateUpload(broken, "report.doc"); err == nil {
+			t.Error("accepted with a corrupted signature; the .doc name is being trusted alone")
+		} else if code != "mime_not_allowed" {
+			t.Errorf("code = %q, want mime_not_allowed", code)
+		}
+	})
+}
+
+// TestBUG2963RTF covers the one signature in this change that needs NO
+// extension. RTF is printable ASCII, so the stdlib answers text/plain — an
+// opinion rather than the absence of one — and a .rtf was refused as a
+// mismatch against its own type while application/rtf sat on the allowlist.
+func TestBUG2963RTF(t *testing.T) {
+	rtf := []byte(`{\rtf1\ansi\deff0 {\fonttbl {\f0 Times;}}\f0\fs24 Hello.\par}`)
+
+	if got := NormalizeMIME(http.DetectContentType(rtf)); got != "text/plain" {
+		t.Fatalf("premise failed: the stdlib called this %q, not text/plain", got)
+	}
+
+	// Filename-independent, unlike every other extension-trust leg in this
+	// change. Both legs matter: the second is what says this is a byte
+	// signature and not extension trust wearing one.
+	for _, name := range []string{"letter.rtf", "letter", "letter.bin"} {
+		t.Run(name, func(t *testing.T) {
+			entry, code, err := ValidateUpload(rtf, name)
+			if err != nil {
+				t.Fatalf("refused (code=%s): %v", code, err)
+			}
+			if entry.MIME != "application/rtf" {
+				t.Errorf("stored as %q, want application/rtf", entry.MIME)
+			}
+			if entry.ServeInline() {
+				t.Error("ServeInline() = true; RTF is served as an attachment, unlike the " +
+					"text/plain it used to be stored as when it had no extension")
+			}
+		})
+	}
+
+	// The signature is the literal "{\rtf1". A different version digit is not
+	// this format as the specification defines it, and ordinary prose in a
+	// .rtf is still refused rather than stored as a document.
+	for _, tc := range []struct{ name, body string }{
+		{"a later version digit", `{\rtf2\ansi Hello}`},
+		{"prose", "Dear Bob,\n"},
+	} {
+		t.Run("not RTF: "+tc.name, func(t *testing.T) {
+			if got := SniffMIME([]byte(tc.body)); got != "text/plain" {
+				t.Errorf("SniffMIME = %q, want text/plain", got)
+			}
+			if _, code, err := ValidateUpload([]byte(tc.body), "letter.rtf"); err == nil {
+				t.Error("accepted as RTF on the .rtf name alone")
+			} else if code != "mime_extension_mismatch" {
+				t.Errorf("code = %q, want mime_extension_mismatch", code)
+			}
+		})
 	}
 }

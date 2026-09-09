@@ -345,11 +345,14 @@ describe('isMarkdownAttachment — IDEA-2712', () => {
 		expect(isMarkdownAttachment('text/markdown; charset=utf-8', 'x.bin')).toBe(true);
 	});
 
-	it('falls back to the EXTENSION, which is the path that actually fires', () => {
-		// An uploaded .md is stored as text/plain — the server sniffs the bytes
-		// and returns the sniffed entry (measured: ValidateUpload("# H", "a.md")
-		// → text/plain). A MIME-only test would never route a real markdown
-		// attachment to the markdown renderer.
+	it('falls back to the EXTENSION, which is the path every pre-F5 row takes', () => {
+		// Before BUG-2963 F5 an uploaded .md was stored as text/plain — the
+		// server sniffed the bytes and returned the sniffed entry (measured at
+		// the time: ValidateUpload("# H", "a.md") → text/plain). F5 lets the
+		// extension choose which TEXT type is stored, so new uploads land as
+		// text/markdown and the MIME branch answers them; existing rows still
+		// carry text/plain and nothing migrates them, which is what this
+		// fallback is for.
 		expect(isMarkdownAttachment('text/plain', 'notes.md')).toBe(true);
 		expect(isMarkdownAttachment('text/plain', 'NOTES.MARKDOWN')).toBe(true);
 	});

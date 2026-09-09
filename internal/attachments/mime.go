@@ -127,10 +127,12 @@ var allowed = func() map[string]MIMEEntry {
 	// application/javascript was removed here (BUG-2963 F6): no extension in
 	// extMIMEMap reaches that spelling and SniffMIME cannot emit it, so the
 	// entry could never be the type an upload was stored under. text/javascript
-	// stays because .js maps to it — but note it is not reachable EITHER: a .js
-	// upload sniffs text/plain and is stored as that. The difference is that
-	// text/javascript has a route to become reachable (the F5 extension-trust
-	// work) and application/javascript has none, since nothing names it.
+	// stays because .js maps to it — and since F5 it is REACHABLE: a .js upload
+	// sniffs text/plain and the extension chooses this spelling, which moves
+	// the file out of the inline-safe text/plain entry and into forced
+	// download. That is the direction of the trade and the reason .js was
+	// included rather than carved out. (This comment said "not reachable
+	// EITHER" until F5 made it false.)
 	for _, t := range []string{
 		"text/html", "text/javascript",
 	} {
@@ -228,35 +230,47 @@ var sniffAliases = map[string]string{
 // use). The result is normalized via NormalizeMIME and run through
 // sniffAliases so allowlist lookups always see the canonical name.
 //
-// One family is detected ahead of the stdlib: ISO-BMFF still images
-// (HEIC / HEIF / AVIF), which the mimesniff table has no signature for and
-// which therefore sniffed as application/octet-stream — unreachable behind an
-// allowlist that names all three (BUG-2961). sniffISOBMFFImage returns "" for
-// everything else, so it can only add detections; see mime_isobmff.go.
+// Beyond the ISO-BMFF pre-check below, three refinements run AFTER the stdlib,
+// each keyed on what it said: the WebM DocType read, the magic table for bytes
+// it had no opinion about, and RTF's five-byte signature. They are described
+// at the switch that dispatches them.
+//
+// One family is detected ahead of the stdlib: ISO-BMFF. Still images
+// (HEIC / HEIF / AVIF) are the original case — the mimesniff table has no
+// signature for them, so they sniffed as application/octet-stream and were
+// unreachable behind an allowlist that names all three (BUG-2961). BUG-2963 F4
+// added two audio/video MAJOR brands: "qt  " (QuickTime), which the stdlib
+// also has no signature for, and "M4A ", which it names video/mp4 from a
+// compatible mp41 brand — the one place this package overrides the stdlib,
+// argued at isoBMFFAVBrands. sniffISOBMFF returns "" for everything else, so
+// apart from that one brand it can only add detections; see mime_isobmff.go.
 //
 // Pass at most 512 bytes — additional bytes are ignored by the detector.
 func SniffMIME(head []byte) string {
 	if len(head) > 512 {
 		head = head[:512]
 	}
-	if mime := sniffISOBMFFImage(head); mime != "" {
+	if mime := sniffISOBMFF(head); mime != "" {
 		return mime
 	}
 	got := NormalizeMIME(http.DetectContentType(head))
 	if alias, ok := sniffAliases[got]; ok {
 		got = alias
 	}
-	// Two BUG-2963 refinements. (Ogg was a third and was removed; see
+	// Three BUG-2963 refinements. (Ogg was a fourth and was removed; see
 	// mime_magic.go for why a container name cannot be aliased to an audio
 	// type.) Each is keyed on what the stdlib already said, so none can retype
-	// a file the standard library identified. Neither VALIDATES the format —
-	// see mime_magic.go's header for the three review rounds that settled why
+	// a file the standard library identified. None VALIDATES the format — see
+	// mime_magic.go's header for the three review rounds that settled why
 	// recognition here is by magic:
 	//
 	//   - video/webm is refined, because the mimesniff table answers it from
 	//     the bare EBML magic and cannot tell Matroska from WebM;
 	//   - application/octet-stream is the stdlib having NO opinion, which is
-	//     the only case where recognising more formats adds anything.
+	//     the case where recognising more formats adds the most;
+	//   - text/plain is an OPINION, so it admits exactly one signature, RTF's
+	//     five fixed bytes. The bar for adding a second is the argument at
+	//     validRTFStream, not this list's existence.
 	switch got {
 	case "video/webm":
 		if mime := sniffEBMLDocType(head); mime != "" {
@@ -265,6 +279,15 @@ func SniffMIME(head []byte) string {
 	case "application/octet-stream":
 		if mime := sniffOpaqueMagic(head); mime != "" {
 			return mime
+		}
+	case "text/plain":
+		// RTF is printable ASCII, so text/plain is an OPINION here rather
+		// than the absence of one — which is why this case is narrower than
+		// the octet-stream case above and admits exactly one signature. Five
+		// fixed bytes at offset zero; nothing else in this switch may key on
+		// text/plain without the same argument (BUG-2963).
+		if validRTFStream(head) {
+			return "application/rtf"
 		}
 	}
 	return got
@@ -340,6 +363,65 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 		sniffed = "audio/aac"
 	}
 
+	// The legacy Office trio (BUG-2963). CFB is a container the stdlib has no
+	// signature for, so .doc/.xls/.ppt sniffed application/octet-stream and
+	// were refused while all three types sat on the allowlist. This is the
+	// zip+document branch's shape one container family over: the BYTES say
+	// "CFB container" and nothing finer, and the extension chooses which of
+	// the three reviewed Office types is stored.
+	//
+	// The extension set is written out here rather than taken from extMIMEMap,
+	// because the question is not "does this extension map to a document" —
+	// .msi is a CFB container too, and so are Visio files. It is "is this one
+	// of the three types the allowlist reviewed", and that is a list, not a
+	// predicate. Everything else keeps falling through to mime_not_allowed.
+	//
+	// The gate is on THE STANDARD LIBRARY'S verdict, not the refined one, for
+	// the reason the .aac branch above gives and with a live case of its own:
+	// a CFB file's 512-byte header is sector data, so one can carry "ustar" at
+	// offset 257 and be refined to application/x-tar. Gating on the refined
+	// value would refuse that file under its own .doc name — the false refusal
+	// this whole bug exists to remove — while gating on the stdlib asks the
+	// question that matters, which is whether anything IDENTIFIED the bytes.
+	if stdlib == "application/octet-stream" && validCFBHeader(head) {
+		switch ext {
+		case ".doc", ".xls", ".ppt":
+			if extEntry, extAllowed := allowed[NormalizeMIME(extMIMEMap[ext])]; extAllowed &&
+				extEntry.Category == CategoryDocument {
+				sniffed = extEntry.MIME
+			}
+		}
+	}
+
+	// The text family (BUG-2963 F5). text/plain is the stdlib saying "these
+	// bytes are text" and nothing more — it has no signature that separates
+	// Markdown from YAML from JavaScript, because at the byte level there is
+	// none to have. So the extension chooses WHICH text, and that is the whole
+	// of what it does: the bytes established the category, the filename
+	// chooses the spelling inside it, and the mapped entry must itself be an
+	// allowlisted TEXT entry or this does not fire.
+	//
+	// Category-preserving is what makes this the smallest trust of the three
+	// in PR B. Nothing crosses a category boundary, so no file becomes an
+	// image, an archive or a document by being renamed. What CAN change is the
+	// render mode, and only in the safe direction: .js and .html map to
+	// entries in the RenderForceDownload bucket, so a file that used to be
+	// stored as text/plain and offered as a chip is now marked
+	// Content-Disposition: attachment. More conservative than what it
+	// replaces, which is why those two are in rather than carved out.
+	//
+	// An extension whose mapping is NOT on the allowlist falls through
+	// untouched — .svg is the case that matters, and it must keep reaching the
+	// extension_blocked rule below rather than being quietly stored as text.
+	if sniffed == "text/plain" && ext != "" {
+		if extMIMEStr, hasMapping := extMIMEMap[ext]; hasMapping {
+			if extEntry, extAllowed := allowed[NormalizeMIME(extMIMEStr)]; extAllowed &&
+				extEntry.Category == CategoryText {
+				sniffed = extEntry.MIME
+			}
+		}
+	}
+
 	e, ok := LookupMIME(sniffed)
 	if !ok {
 		return MIMEEntry{}, "mime_not_allowed", &uploadError{msg: "MIME type not allowed: " + sniffed}
@@ -372,6 +454,36 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 				// trust the extension. Same logic for OpenDocument
 				// formats (.odt/.ods/.odp) which are also zip-based.
 				if sniffed == "application/zip" && extEntry.Category == CategoryDocument {
+					return extEntry, "", nil
+				}
+				// The audio/video split inside the MP4 family (BUG-2963 F4).
+				// Audio-only and video MP4 files are the same container, so
+				// the stdlib answers video/mp4 for both and an .m4a is
+				// refused as a mismatch against its own type. This is the
+				// zip+document trust one family over: the BYTES establish the
+				// container (ISO-BMFF, mp4-branded — nothing else reaches
+				// video/mp4 here), and the filename chooses only which
+				// spelling WITHIN that family is stored. It is not a track
+				// read and does not pretend to be. A video file renamed .m4a
+				// is stored audio/mp4, which costs an audio player where a
+				// video player belonged and nothing else: both are on the
+				// allowlist, both render inline, nothing is executed.
+				//
+				// The "M4A " major brand needs none of this — sniffISOBMFF
+				// answers audio/mp4 from the bytes. This is the isom-branded
+				// case, which is what FFmpeg writes and what arrives from
+				// phones.
+				// The zip branch above guards on extEntry.Category because it
+				// answers for many extensions at once. This one answers for
+				// exactly .m4a, so the same guard could never differ from the
+				// extension test beside it — dead by construction rather than
+				// defence in depth, and a mutation run says so: removing it
+				// survives. What the branch actually depends on is that .m4a
+				// maps to an allowlisted AUDIO entry, which is a property of
+				// extMIMEMap and is asserted as one by
+				// TestBUG2963F4M4AExtensionTrust. A remap fails that test
+				// rather than silently retyping MP4 bytes here.
+				if sniffed == "video/mp4" && ext == ".m4a" {
 					return extEntry, "", nil
 				}
 				return MIMEEntry{}, "mime_extension_mismatch",

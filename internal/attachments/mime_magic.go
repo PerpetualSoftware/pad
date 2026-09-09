@@ -370,3 +370,36 @@ func docTypeMIME(payload []byte) string {
 	}
 	return ""
 }
+
+// validCFBHeader recognises a Compound File Binary container by its eight-byte
+// signature (MS-CFB §2.2). It is the container legacy Office wrote .doc, .xls
+// and .ppt into, and the stdlib has no signature for it, so every one of those
+// files sniffed application/octet-stream and was refused while all three types
+// sat on the allowlist.
+//
+// EIGHT FIXED BYTES AND NOTHING ELSE, deliberately. CFB is a container, not a
+// format: Word, Excel, PowerPoint, Visio, and .msi installers all wear this
+// header, and telling them apart means walking the directory stream, which is
+// a parse this door does not do (see this file's header for the three rounds
+// that settled why). So this says only "this is a CFB container" and the
+// caller decides what may be believed on top of it — which is why the caller
+// requires an extension naming one of the three reviewed Office types rather
+// than trusting the header alone. A .msi renamed .doc is stored as a Word
+// document, downloads like one, and executes no more than any other refused
+// byte string would.
+func validCFBHeader(head []byte) bool {
+	return bytes.HasPrefix(head, []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1})
+}
+
+// validRTFStream recognises Rich Text Format by its opening "{\rtf1" (the RTF
+// specification's required version-1 header).
+//
+// Unlike the CFB header above this needs no extension: five bytes at offset
+// zero, one of which is a digit fixed by the spec, is a stronger signature
+// than the three-byte "ID3" the stdlib uses for audio/mpeg. What makes it
+// necessary at all is that RTF is printable ASCII, so the stdlib answers
+// text/plain — an opinion, not the absence of one — and a .rtf was refused as
+// a mismatch against its own type.
+func validRTFStream(head []byte) bool {
+	return bytes.HasPrefix(head, []byte(`{\rtf1`))
+}

@@ -5,6 +5,11 @@ import (
 	"encoding/binary"
 )
 
+// This file recognises ISO base media file format (ISO/IEC 14496-12) files the
+// standard library's sniffer cannot type: still images, which is what it was
+// written for (BUG-2961), and two audio/video major brands added by BUG-2963
+// F4 and argued at isoBMFFAVBrands.
+//
 // http.DetectContentType implements the WHATWG mimesniff table, which has no
 // signature for ISO base media file format (ISO/IEC 14496-12) still images:
 // HEIC, HEIF and AVIF all sniff as application/octet-stream. All three are on
@@ -64,23 +69,60 @@ const (
 	isoBMFFGenericImageBrandMIME = "image/heif"
 )
 
+// isoBMFFAVBrands maps MAJOR brands that name an audio or video container to
+// the MIME the allowlist spells. Consulted on the major brand ALONE, and only
+// on these two, which is what keeps it narrow enough to be safe (BUG-2963 F4,
+// ruled day 62).
+//
+//   - "qt  " is the QuickTime brand. The stdlib has no signature for it: its
+//     mp4 matcher wants a brand beginning "mp4" and a .mov carries none, so a
+//     real QuickTime file sniffs application/octet-stream and was refused
+//     mime_not_allowed while video/quicktime sat on the allowlist. Recognising
+//     it ADDS a detection to a verdict of "no opinion", exactly as the
+//     still-image brands do.
+//
+//   - "M4A " is the MPEG-4 AUDIO brand, and it is the one place this package
+//     OVERRIDES a type the standard library identified. An .m4a's compatible
+//     brands routinely include "mp41", so the stdlib answers video/mp4 — from
+//     a COMPATIBLE brand, having no way to weigh it against the major one.
+//     The major brand is the file's own statement of what it is, and a file
+//     that says M4A is audio. The override is deliberate and it is bounded:
+//     both types are on the allowlist, both render inline, and the only thing
+//     that moves is the CATEGORY, which decides whether the UI offers an audio
+//     player or a video one. Nothing here decides how a file is executed or
+//     decompressed, because nothing decompresses or executes it.
+//
+// Sequence and still-image brands are not here; they are handled below.
+// Anything not in this map falls through to the existing logic, so adding a
+// brand is a decision about one brand and nothing else.
+var isoBMFFAVBrands = map[string]string{
+	"qt  ": "video/quicktime",
+	"M4A ": "audio/mp4",
+}
+
 var (
 	isoBMFFFtypBox = []byte("ftyp")
 	isoBMFFMP4Pfx  = []byte("mp4")
 )
 
-// sniffISOBMFFImage returns the allowlisted image MIME for an ISO-BMFF still
-// image, or "" for anything else — including a valid ISO-BMFF file that is not
-// a still image. "" means "I have no opinion, ask the stdlib", so this can only
-// ever ADD detections; it never overrides one http.DetectContentType would make
-// on the same bytes, with one deliberate exception noted below.
+// sniffISOBMFF returns the allowlisted MIME for an ISO-BMFF file this package
+// recognises — a still image by any of its brands, or an audio/video container
+// by its MAJOR brand — and "" for anything else, including a valid ISO-BMFF
+// file that is neither. "" means "I have no opinion, ask the stdlib".
+//
+// For every brand but one this can only ADD detections and never overrides a
+// type http.DetectContentType would name on the same bytes; the mp4-yield
+// below is what preserves that for the shape where both could match. The one
+// exception is the "M4A " major brand, which is deliberate and argued at
+// isoBMFFAVBrands. This function was called sniffISOBMFFImage until BUG-2963
+// F4 gave it audio and video to answer for.
 //
 // head may be a prefix of the file (SniffMIME passes at most 512 bytes). The
 // ftyp box is the first box in the file and is small — 28 bytes for the AVIF in
 // testdata, 24 for the HEIF — so a 512-byte prefix carries it whole in practice;
 // where it does not, the scan is bounded by what is present rather than reading
 // past it.
-func sniffISOBMFFImage(head []byte) string {
+func sniffISOBMFF(head []byte) string {
 	// Sixteen, not twelve: a complete ftyp header is 8 bytes of box header plus
 	// a major brand plus a minor version, so a buffer that stops inside it is a
 	// truncated file rather than a small one. Classifying from a 13-byte buffer
@@ -120,6 +162,16 @@ func sniffISOBMFFImage(head []byte) string {
 	}
 	if boxSize >= 16 && boxSize < end {
 		end = boxSize
+	}
+
+	// The AUDIO/VIDEO brands are read from the MAJOR brand only, and BEFORE the
+	// mp4-yield below, because "M4A " files list "mp41" among their compatible
+	// brands and the yield would return "" before this could speak. That
+	// ordering is the whole mechanism, so it is stated rather than left to be
+	// rediscovered: see isoBMFFAVBrands for why one of these two overrides the
+	// stdlib and the other does not.
+	if mime, ok := isoBMFFAVBrands[string(head[8:12])]; ok {
+		return mime
 	}
 
 	// A video container that happens to list one of our brands stays a video:

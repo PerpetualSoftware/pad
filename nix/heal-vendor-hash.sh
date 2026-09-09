@@ -19,9 +19,15 @@
 # did not itself move the module set refused to fix it, exited GREEN, and left
 # main carrying a hash a clean `nix build` rejects. That was BUG-2974.
 #
-# The loop still terminates, and never depended on the range: the commit this
-# writes corrects package.nix, so the run it triggers finds the build green,
-# never sets `bumped`, and the calling job does not start at all.
+# The loop still terminates, and never depended on the range — but not by the
+# route this comment used to name (BUG-2974, observed day 62). The commit this
+# writes is pushed with the default `GITHUB_TOKEN`, and such a push creates no
+# workflow runs: the first heal commit this fix produced, 249a8f87, has no runs
+# at all. So it triggers nothing. The corrected-tree argument — a run of this
+# commit would find the build green, never set `bumped`, and the calling job
+# would not start — is true and UNEXERCISED, the backstop that takes over only
+# if this ever pushes with a PAT or app token. The fuller note, with the query
+# that establishes it, is in .github/workflows/nix.yml above `push-vendor-hash`.
 #
 # Exit 1 is the loud arm and it is deliberate — an unhealed committed hash must
 # leave the run RED saying so, because a green run is indistinguishable from a
