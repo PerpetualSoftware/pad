@@ -344,6 +344,35 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 		sniffed = "audio/aac"
 	}
 
+	// The text family (BUG-2963 F5). text/plain is the stdlib saying "these
+	// bytes are text" and nothing more — it has no signature that separates
+	// Markdown from YAML from JavaScript, because at the byte level there is
+	// none to have. So the extension chooses WHICH text, and that is the whole
+	// of what it does: the bytes established the category, the filename
+	// chooses the spelling inside it, and the mapped entry must itself be an
+	// allowlisted TEXT entry or this does not fire.
+	//
+	// Category-preserving is what makes this the smallest trust of the three
+	// in PR B. Nothing crosses a category boundary, so no file becomes an
+	// image, an archive or a document by being renamed. What CAN change is the
+	// render mode, and only in the safe direction: .js and .html map to
+	// entries in the RenderForceDownload bucket, so a file that used to be
+	// stored as text/plain and offered as a chip is now marked
+	// Content-Disposition: attachment. More conservative than what it
+	// replaces, which is why those two are in rather than carved out.
+	//
+	// An extension whose mapping is NOT on the allowlist falls through
+	// untouched — .svg is the case that matters, and it must keep reaching the
+	// extension_blocked rule below rather than being quietly stored as text.
+	if sniffed == "text/plain" && ext != "" {
+		if extMIMEStr, hasMapping := extMIMEMap[ext]; hasMapping {
+			if extEntry, extAllowed := allowed[NormalizeMIME(extMIMEStr)]; extAllowed &&
+				extEntry.Category == CategoryText {
+				sniffed = extEntry.MIME
+			}
+		}
+	}
+
 	e, ok := LookupMIME(sniffed)
 	if !ok {
 		return MIMEEntry{}, "mime_not_allowed", &uploadError{msg: "MIME type not allowed: " + sniffed}

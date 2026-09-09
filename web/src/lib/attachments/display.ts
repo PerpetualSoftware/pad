@@ -437,19 +437,24 @@ export function canPreviewAsText(mime: string | null | undefined): boolean {
  * shared `marked` pipeline, plain text goes into a `<pre>` as text.
  *
  * THE EXTENSION IS CONSULTED, AND IT IS NOT BELT-AND-BRACES — IT IS THE PATH
- * THAT ACTUALLY FIRES. An uploaded `.md` is stored as **`text/plain`**, not
- * `text/markdown`. `attachments.ValidateUpload` sniffs the bytes with
+ * THAT FIRES FOR EVERY ROW UPLOADED BEFORE BUG-2963 F5. Until that change, an
+ * uploaded `.md` was stored as **`text/plain`**, not `text/markdown`:
+ * `attachments.ValidateUpload` sniffed the bytes with
  * `http.DetectContentType`, which answers `text/plain` for any prose, and
- * returns the SNIFFED entry; the extension is used only to REJECT a mismatch,
- * and `.md` → `text/markdown` shares `CategoryText` with `text/plain`, so
- * nothing rejects and the sniffed type is what lands in the row. Measured, not
- * assumed: `ValidateUpload([]byte("# Heading\n..."), "preview.md")` returns
- * `mime="text/plain"`.
+ * returned the SNIFFED entry; the extension was used only to REJECT a
+ * mismatch, and `.md` → `text/markdown` shares `CategoryText` with
+ * `text/plain`, so nothing rejected and the sniffed type landed in the row.
+ * Measured at the time: `ValidateUpload([]byte("# Heading\n..."), "preview.md")`
+ * returned `mime="text/plain"`.
  *
- * So a MIME-only test is a branch that never runs for the files this feature
- * exists for. Every unit test that hand-sets `mime_type: 'text/markdown'`
- * passes anyway, which is precisely why this was found in a browser and not
- * here: those fixtures encode what the author believed the system stores.
+ * F5 gave the extension a say in WHICH text type is stored, so a `.md`
+ * uploaded now lands as `text/markdown` and the MIME branch above answers it.
+ * Existing rows still carry `text/plain`, and nothing migrates them, so the
+ * fallback is not vestigial — it is what those rows depend on. A MIME-only
+ * test would still be a branch that never runs for them. Every unit test that
+ * hand-sets `mime_type: 'text/markdown'` passes anyway, which is precisely why
+ * the original defect was found in a browser and not here: those fixtures
+ * encoded what the author believed the system stores.
  *
  * The MIME check stays FIRST because it is the stronger signal when present —
  * an explicitly-typed row (a CLI upload that declares the type, or a future

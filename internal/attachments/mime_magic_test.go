@@ -409,25 +409,129 @@ func TestBUG2963F6RemovedSpellings(t *testing.T) {
 	}
 }
 
-// TestTextFamilyStillStoresAsPlain records what this PR does NOT fix, so the
-// boundary is a test rather than a sentence someone has to find. These types
-// remain on the allowlist and remain unreachable; making them reachable needs
-// extension trust, which is a separate change under its own ruling.
-func TestTextFamilyStillStoresAsPlain(t *testing.T) {
-	for _, tc := range []struct{ body, name string }{
-		{"alert(1);\n", "p.js"},
-		{"answer: 42\n", "p.yaml"},
-		{"# heading\n", "p.md"},
+// TestBUG2963F5TextFamily is what TestTextFamilyStillStoresAsPlain became. That
+// test recorded a boundary — .js, .yaml and .md all stored as text/plain,
+// their allowlist entries unreachable — and said in its own failure message
+// that F5 landing is what should move it. F5 landed. The three inputs are the
+// same three; what changed is the expectation.
+//
+// The trust is CATEGORY-PRESERVING and that is the property to keep asserted:
+// text/plain is the stdlib saying only "this is text", so the extension may
+// choose which text and nothing else. Every accepted leg below therefore
+// checks the Category as well as the MIME, and the controls check that the
+// mapping cannot reach outside the allowlist or retype non-text bytes.
+func TestBUG2963F5TextFamily(t *testing.T) {
+	for _, tc := range []struct {
+		body, name, want string
+		wantInline       bool
+		why              string
+	}{
+		{"# heading\n", "p.md", "text/markdown", false, "the F5 boundary test's own input"},
+		{"answer: 42\n", "p.yaml", "application/yaml", false, "same, via the .yaml mapping"},
+		{"answer: 42\n", "p.yml", "application/yaml", false, "the second spelling of the same mapping"},
+		{"a,b\n1,2\n", "p.csv", "text/csv", false, "csv sniffs as plain text; the name is the only thing that says otherwise"},
+		{"{\"a\": 1}\n", "p.json", "application/json", false, "JSON has no magic — it is text and a name"},
+		// EVERY leg above has wantInline false, and that is the finding this
+		// table exists to make visible rather than the .js leg alone.
+		// text/plain is the only member of the text family in inlineSafe, so
+		// choosing ANY other text spelling moves the file out of inline
+		// serving and into Content-Disposition: attachment. The ruling
+		// weighed that move for .js, where it is the point; it applies
+		// equally to .md, .csv, .json, .yaml and .toml, where it is a side
+		// effect and a real one — a Markdown attachment previewed in the
+		// browser before this change and downloads after it. Recorded here,
+		// on BUG-2963's trail, and in the PR body; whether those five belong
+		// in inlineSafe is an allowlist decision and not this unit's to make.
+		//
+		// The two RenderForceDownload legs. These are the ones the ruling
+		// singled out, and their move is a second, separate one: from the
+		// chip bucket to forced download.
+		{"alert(1);\n", "p.js", "text/javascript", false, "the leg that moves a serving bucket"},
+		{"hello\n", "p.html", "text/html", false, "same bucket move, via .html"},
+		// Controls: the sniff already names the type, or the extension names
+		// nothing, so nothing moves.
+		{"plain\n", "p.txt", "text/plain", true, "the mapping and the sniff agree; nothing to choose"},
+		{"plain\n", "p.unknownext", "text/plain", true, "an extension with no mapping cannot choose anything"},
+		{"plain\n", "noextension", "text/plain", true, "no extension at all"},
 	} {
-		entry, _, err := ValidateUpload([]byte(tc.body), tc.name)
-		if err != nil {
-			t.Fatalf("%s rejected: %v", tc.name, err)
-		}
-		if entry.MIME != "text/plain" {
-			t.Errorf("%s stored as %q, want text/plain — if this changed, the F5 "+
-				"extension-trust work landed and this test should move with it", tc.name, entry.MIME)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			entry, code, err := ValidateUpload([]byte(tc.body), tc.name)
+			if err != nil {
+				t.Fatalf("rejected (code=%s): %v — %s", code, err, tc.why)
+			}
+			if entry.MIME != tc.want {
+				t.Errorf("stored as %q, want %q — %s", entry.MIME, tc.want, tc.why)
+			}
+			if entry.Category != CategoryText {
+				t.Errorf("category = %v, want %v — F5 is category-preserving, so a leg "+
+					"that leaves the text category is a defect in the rule, not in this test",
+					entry.Category, CategoryText)
+			}
+			if got := entry.ServeInline(); got != tc.wantInline {
+				t.Errorf("ServeInline() = %v, want %v", got, tc.wantInline)
+			}
+		})
 	}
+
+	// The bucket move, asserted as the ruling asks: exactly, on the render
+	// mode itself rather than only on the type. text/plain is a chip;
+	// text/javascript is a forced download. If a future edit puts .js on an
+	// inline entry, this fails and the ServeInline legs above do not, because
+	// text/plain is not inline either.
+	t.Run("js moves into RenderForceDownload", func(t *testing.T) {
+		plain, _, err := ValidateUpload([]byte("alert(1);\n"), "p.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		js, _, err := ValidateUpload([]byte("alert(1);\n"), "p.js")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain.RenderMode != RenderChip {
+			t.Errorf("premise failed: the same bytes named .txt render %v, want %v",
+				plain.RenderMode, RenderChip)
+		}
+		if js.RenderMode != RenderForceDownload {
+			t.Errorf("named .js renders %v, want %v — this leg is the reason .js is IN "+
+				"rather than carved out: it is strictly more conservative than the "+
+				"text/plain it replaces", js.RenderMode, RenderForceDownload)
+		}
+	})
+
+	// The mapping must be on the allowlist for this to fire. .svg maps to
+	// image/svg+xml, which is not, and it must keep reaching extension_blocked
+	// — an SVG is text to the sniffer and would otherwise be stored and named
+	// as one, which is the XSS this allowlist exists to refuse.
+	t.Run("svg stays blocked", func(t *testing.T) {
+		if _, code, err := ValidateUpload([]byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), "p.svg"); err == nil {
+			t.Error("an .svg was accepted; the text-family trust must not reach a mapping that is not allowlisted")
+		} else if code != "extension_blocked" {
+			t.Errorf("code = %q, want extension_blocked", code)
+		}
+	})
+
+	// The mapping must be a TEXT entry. An allowlisted mapping in another
+	// category is the dangerous shape — text bytes named .mp3 must not become
+	// audio/mpeg — and it is allowlisted, so the extAllowed check alone does
+	// not stop it. This is the leg that holds the category guard.
+	t.Run("an allowlisted non-text mapping does not fire", func(t *testing.T) {
+		if entry, code, err := ValidateUpload([]byte("plain text\n"), "p.mp3"); err == nil {
+			t.Errorf("text bytes named .mp3 were accepted as %q; F5 must not cross a category", entry.MIME)
+		} else if code != "mime_extension_mismatch" {
+			t.Errorf("code = %q, want mime_extension_mismatch", code)
+		}
+	})
+
+	// And the extension cannot retype bytes that are not text. A PNG named
+	// .md is still a category mismatch: F5 fires on the SNIFF being
+	// text/plain, not on the extension being textual.
+	t.Run("non-text bytes are untouched", func(t *testing.T) {
+		if _, code, err := ValidateUpload([]byte("\x89PNG\r\n\x1a\n"), "p.md"); err == nil {
+			t.Error("PNG bytes named .md were accepted")
+		} else if code != "mime_extension_mismatch" {
+			t.Errorf("code = %q, want mime_extension_mismatch", code)
+		}
+	})
 }
 
 // TestTarAndELFAreNotDistinguishableHere records a LIMITATION as a test,
