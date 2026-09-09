@@ -126,4 +126,31 @@ describe('workspaceStore.membershipKnown', () => {
 		expect(workspaceStore.current?.slug).toBe('later');
 		expect(workspaceStore.membershipKnown).toBe(true);
 	});
+
+	it('keeps BOTH workspaces when two creates race', async () => {
+		// Codex round 5. Both creates succeed on the server, so both workspaces
+		// exist; only one can be selected. The loser of the selection race must
+		// still be in the list — otherwise a workspace the user just created is
+		// invisible until the next loadAll. Every earlier spelling of this
+		// protocol dropped one of them, differing only in which.
+		const { workspaceStore } = await import('./workspace.svelte');
+		api.workspaces.me.mockResolvedValue(OWNER);
+		let releaseA: (v: unknown) => void = () => {};
+		let releaseB: (v: unknown) => void = () => {};
+		api.workspaces.create
+			.mockReturnValueOnce(new Promise((r) => { releaseA = r; }))
+			.mockReturnValueOnce(new Promise((r) => { releaseB = r; }));
+
+		const a = workspaceStore.create({ name: 'A' });
+		const b = workspaceStore.create({ name: 'B' });
+
+		releaseA({ id: 'wa', slug: 'a', name: 'A' });
+		await a;
+		releaseB({ id: 'wb', slug: 'b', name: 'B' });
+		await b;
+
+		const slugs = workspaceStore.workspaces.map((w) => w.slug);
+		expect(slugs).toContain('a');
+		expect(slugs).toContain('b');
+	});
 });

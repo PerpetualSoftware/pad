@@ -22,10 +22,14 @@ let membershipKnown = $state(false);
 let loading = $state(false);
 
 // Monotonic sequence guarding async /me responses against navigation races.
-// Each setCurrent / create call increments the counter; a /me response is
-// only applied if its captured token still matches at resolution time. This
-// prevents a slow /me for workspace A from clobbering a freshly-set
-// membership for workspace B.
+// A /me response is only applied if its captured token still matches at
+// resolution time, which prevents a slow /me for workspace A from clobbering a
+// freshly-set membership for workspace B.
+//
+// Every `setCurrent` claims the token on entry. `create` OBSERVES it on entry
+// and claims only once the workspace exists, so a create that fails or loses a
+// selection race increments nothing — see the comment in `create` for the three
+// orderings that shapes.
 let membershipSeq = 0;
 
 // The keyed single-flight loader fencing `loadAll` (TASK-2947) — the same
@@ -282,11 +286,25 @@ export const workspaceStore = {
 		// invalidates nothing.
 		const entrySeq = membershipSeq;
 		const ws = await api.workspaces.create(data);
+
+		// THE LIST IS ADDITIVE; ONLY THE SELECTION IS RACED (codex round 5).
+		// Two concurrent creates both succeed on the server, so both workspaces
+		// exist and both belong in `workspaces` — but only one can be the
+		// selected one. Appending before the token check means the loser of the
+		// selection race is still listed rather than invisible until the next
+		// `loadAll`. That loss predates this change: the entry-claim spelling
+		// dropped the EARLIER-started create's workspace, this one would have
+		// dropped the later-COMPLETING one, and neither is a loss anyone chose.
+		//
+		// Which create ends up SELECTED is first-to-complete, and is left
+		// deliberately unspecified beyond that: with two creates in flight there
+		// is no intent to honour, and the list — the part a user would notice
+		// missing — no longer depends on the answer.
+		workspaces = [...workspaces, ws];
 		if (membershipSeq !== entrySeq) return ws;
 		const seq = ++membershipSeq;
 		currentMembership = null;
 		membershipKnown = false;
-		workspaces = [...workspaces, ws];
 		current = ws;
 		// New workspace — refresh membership for the just-created context.
 		try {
