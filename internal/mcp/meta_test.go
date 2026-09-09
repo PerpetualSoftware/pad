@@ -27,13 +27,41 @@ func TestBuildMetaPayload_FallbackVersion(t *testing.T) {
 	if !got.ToolSurfaceStable {
 		t.Errorf("ToolSurfaceStable = false, want true")
 	}
-	if got.MCPProtocolVersion != mcp.LATEST_PROTOCOL_VERSION {
-		t.Errorf("MCPProtocolVersion = %q, want library LATEST %q",
-			got.MCPProtocolVersion, mcp.LATEST_PROTOCOL_VERSION)
+	if got.MCPProtocolVersion != AdvertisedMCPProtocolVersion {
+		t.Errorf("MCPProtocolVersion = %q, want %q",
+			got.MCPProtocolVersion, AdvertisedMCPProtocolVersion)
 	}
-	// Belt-and-braces: never empty, regardless of library state.
-	if got.MCPProtocolVersion == "" {
-		t.Errorf("MCPProtocolVersion is empty — library constant unset?")
+}
+
+// TestAdvertisedProtocolVersion is what replaced a tautology. The old
+// assertion compared the payload against mcp.LATEST_PROTOCOL_VERSION while
+// the payload was BUILT from it, so it could not fail — and when mcp-go 1.0
+// moved that constant to 2026-07-28 it would have passed while pad published
+// a claim to negotiate a revision it cannot negotiate.
+//
+// Two assertions, and each catches something the other cannot:
+//
+//   - against the LITERAL string, so moving pad's claim is a deliberate edit
+//     that a reader sees in the diff rather than a consequence of a bump;
+//   - against what the library's handshake ACTUALLY answers, which is the
+//     property the old comment claimed and did not have. mcp-go answers
+//     initialize through NegotiateLegacyVersion, which returns at most
+//     LATEST_LEGACY_PROTOCOL_VERSION — so a client asking for the newest
+//     revision is told 2025-11-25, and that is the true upper bound the meta
+//     document is supposed to report.
+func TestAdvertisedProtocolVersion(t *testing.T) {
+	if AdvertisedMCPProtocolVersion != "2025-11-25" {
+		t.Errorf("AdvertisedMCPProtocolVersion = %q, want the literal 2025-11-25 — "+
+			"moving pad's advertised revision needs the new revision's delta read "+
+			"against this server's surface first", AdvertisedMCPProtocolVersion)
+	}
+
+	// What a client asking for the newest revision is actually told.
+	handshake := mcp.NegotiateLegacyVersion(mcp.LATEST_PROTOCOL_VERSION)
+	if handshake != AdvertisedMCPProtocolVersion {
+		t.Errorf("the handshake answers %q but the meta document advertises %q; "+
+			"these must agree or the meta document is a false claim about what "+
+			"this server can negotiate", handshake, AdvertisedMCPProtocolVersion)
 	}
 }
 
