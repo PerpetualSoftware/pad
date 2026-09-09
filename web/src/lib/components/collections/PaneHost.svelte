@@ -735,5 +735,30 @@
 		.pane-divider {
 			display: none;
 		}
+
+		/* No UA focus ring on the overlay itself (TASK-2245 / C119). The open
+		   effect focuses this region programmatically on open, deep-link, refresh
+		   and back — no user gesture behind it — and at this width the region IS
+		   the viewport, so Chromium's ring frames the whole screen and indicates
+		   nothing about where focus is.
+
+		   SCOPED TO THE MEDIA QUERY, not to `:not(:focus-visible)`, and that is a
+		   measurement rather than a preference. Measured at 390x844 on the C119
+		   repro: the programmatic focus matches `:focus-visible` (true) with an
+		   `auto` outline — identical in every selector-visible property to the
+		   desktop Tab bridge, which is a keyboard user deliberately hopping in
+		   and is the one case where the ring is the only signal that the hop
+		   landed. The modality idiom cannot separate them; the viewport can,
+		   because desktop never focuses this region except through that bridge
+		   (measured: desktop deep-link leaves `activeElement` on `<body>`).
+
+		   Indication is not lost here — the mobile trap moves focus to interior
+		   controls on the first Tab, and those keep their own rings. Keep this
+		   inside the media query: hoisting it out silently removes the desktop
+		   keyboard affordance, and nothing in the rendered result would show it. */
+		.item-pane:focus,
+		.item-pane:focus-visible {
+			outline: none;
+		}
 	}
 </style>
