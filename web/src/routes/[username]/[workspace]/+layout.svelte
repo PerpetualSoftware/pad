@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { beforeNavigate } from '$app/navigation';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -163,9 +164,45 @@
 	$effect(() => {
 		titleStore.setPageTitle({ workspace: workspaceStore.current?.name ?? null });
 	});
-	$effect(() => {
-		page.url.pathname;
-		titleStore.setPageTitle({ section: null, item: null });
+	// THE ROUTE-CHANGE CLEAR IS A NAVIGATION HOOK, NOT AN EFFECT (TASK-2245).
+	//
+	// It used to be `$effect(() => { page.url.pathname; setPageTitle({section:
+	// null, item: null}); })`, whose own comment claimed two things that are
+	// both false, and the code is only correct if both are true.
+	//
+	// 1. "depends only on `page.url.pathname`" — it did not. Reading
+	//    `page.url.pathname` tracks the reactive `page.url`, so a SEARCH-only
+	//    change re-ran it with the pathname untouched. Opening and closing the
+	//    item pane is exactly that (`?item=REF` appears and disappears), and so
+	//    is a view switch (`?view=`).
+	// 2. "child effects run after this one — Svelte 5 guarantees parent effects
+	//    run before child effects" — that is about MOUNT order. On a re-run it
+	//    says nothing, and measurement shows the leaf writing FIRST and this
+	//    clear landing after it.
+	//
+	// Both measured with a temporary instrument on `setPageTitle` (writes plus
+	// their author, driven through a real browser):
+	//   - pane close: `[collection]` reclaimed `section: "Bugs"`, then this
+	//     cleared it — tab title `pad · Pad`, mobile bar falling through to its
+	//     raw-slug fallback. That is the reported defect.
+	//   - cross-route SPA nav to /insights: the leaf set `section: "Insights"`,
+	//     then this cleared it — title `pad · Pad`. PRE-EXISTING and present
+	//     before this change too; a guard on the pathname VALUE fixes the first
+	//     case and not this one, which is why the clear moved out of the effect
+	//     graph entirely rather than being made more careful inside it.
+	//
+	// `beforeNavigate` runs BEFORE the navigation commits, so the clear can no
+	// longer land after a leaf has set its section — the ordering the old
+	// comment assumed is now enforced by the hook rather than hoped for. And it
+	// fires only for real navigations, comparing pathnames so a search-only
+	// change (pane toggle, view switch) is not a route change at all.
+	//
+	// Unwired routes still inherit a cleared section and fall back to
+	// `{Workspace} · Pad`, which was the original intent.
+	beforeNavigate((nav) => {
+		if (nav.from?.url.pathname !== nav.to?.url.pathname) {
+			titleStore.setPageTitle({ section: null, item: null });
+		}
 	});
 
 	// Persist the user's last-visited route per workspace so the workspace
