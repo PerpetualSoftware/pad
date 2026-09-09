@@ -33,11 +33,24 @@ type MetaPayload struct {
 	ToolSurfaceStable bool `json:"tool_surface_stable"`
 
 	// MCPProtocolVersion is the latest MCP wire protocol revision this
-	// server can negotiate. Sourced from the underlying mcp-go library's
-	// LATEST_PROTOCOL_VERSION constant so the value never drifts from
-	// what NewMCPServer actually advertises in the handshake. Surfaced
-	// so consumers can detect feature support (e.g. RFC 8707 Resource
-	// Indicators land in the 2025-11-25 revision).
+	// server can negotiate. Surfaced so consumers can detect feature
+	// support (e.g. RFC 8707 Resource Indicators land in the 2025-11-25
+	// revision).
+	//
+	// It is a PAD-OWNED constant, not the library's LATEST_PROTOCOL_VERSION.
+	// It was the library's until mcp-go 1.0, on the reasoning that sourcing
+	// it there meant it "never drifts from what NewMCPServer actually
+	// advertises". 1.0 falsified that: LATEST_PROTOCOL_VERSION moved to
+	// 2026-07-28, while the handshake answers through
+	// mcp.NegotiateLegacyVersion, which returns at most
+	// LATEST_LEGACY_PROTOCOL_VERSION (2025-11-25) and cannot return the
+	// modern revision at all. Sourcing from LATEST would therefore have
+	// CAUSED the drift it was meant to prevent, and published a claim to
+	// negotiate a revision this server cannot negotiate.
+	//
+	// So the advertised revision is a claim pad makes deliberately. Moving
+	// it means reading the new revision's delta against this server's
+	// surface first; a library bump must not move it on its own.
 	MCPProtocolVersion string `json:"mcp_protocol_version"`
 }
 
@@ -46,11 +59,17 @@ type MetaPayload struct {
 // same reason serverInfo.version does — empty values confuse some
 // clients that display them in their UI.
 //
-// MCPProtocolVersion is sourced from mcp.LATEST_PROTOCOL_VERSION, which
-// is the maximum protocol revision the server can negotiate. If a
-// client downgrades during initialize, the per-session negotiated
-// version may be lower; the meta document reports the server's
+// MCPProtocolVersion reports the maximum protocol revision this server can
+// negotiate. If a client downgrades during initialize, the per-session
+// negotiated version may be lower; the meta document reports the server's
 // upper bound, not any specific session.
+// AdvertisedMCPProtocolVersion is the MCP wire protocol revision pad claims
+// to negotiate. It is deliberately a literal rather than a library constant —
+// see MetaPayload.MCPProtocolVersion — and TestAdvertisedProtocolVersion pins
+// it to what the library's handshake actually answers, so a bump that moves
+// one and not the other fails instead of shipping a false claim.
+const AdvertisedMCPProtocolVersion = "2025-11-25"
+
 func BuildMetaPayload(padVersion string) MetaPayload {
 	if padVersion == "" {
 		padVersion = FallbackVersion
@@ -60,7 +79,7 @@ func BuildMetaPayload(padVersion string) MetaPayload {
 		CmdhelpVersion:     CmdhelpVersion,
 		ToolSurfaceVersion: ToolSurfaceVersion,
 		ToolSurfaceStable:  true,
-		MCPProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+		MCPProtocolVersion: AdvertisedMCPProtocolVersion,
 	}
 }
 
