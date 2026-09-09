@@ -40,7 +40,6 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 	"github.com/google/uuid"
-	mcptransport "github.com/mark3labs/mcp-go/server"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -385,21 +384,14 @@ func serveCmd() *cobra.Command {
 				// session-id behave exactly as they did under the original
 				// WithStateLess(true) setup. Codex review on PR #400 round 1
 				// caught the gauge-stays-at-zero gap.
-				streamable := mcptransport.NewStreamableHTTPServer(
+				// The option set lives in mcpserver.NewRemoteTransport so a
+				// test can drive the real thing: the advertised protocol
+				// versions are only correct if the option is actually passed,
+				// and a test constructing its own transport would vouch for
+				// the option rather than for this binding (TASK-2977).
+				streamable := mcpserver.NewRemoteTransport(
 					mcpSrv.MCP(),
-					mcptransport.WithEndpointPath("/mcp"),
-					mcptransport.WithSessionIdManager(&padMCPGenerateOnlySessionIDManager{}),
-					// mcp-go v0.56 turns on DNS-rebinding protection by
-					// default: a request whose accept socket is loopback but
-					// whose Host header is non-loopback gets a 403. pad-cloud's
-					// mcp.getpad.dev vhost sits behind a reverse proxy that
-					// forwards to this process over 127.0.0.1 while preserving
-					// the original Host, so the default would reject every real
-					// request. Disable it to keep the pre-v0.56 behaviour — the
-					// browser-driven rebinding threat it guards against doesn't
-					// apply here: this transport only mounts in cloud mode and
-					// every request is Bearer/OAuth-authenticated.
-					mcptransport.WithDisableLocalhostProtection(true),
+					&padMCPGenerateOnlySessionIDManager{},
 				)
 				// TASK-1120: optional env-driven overrides for the
 				// mcp-active-sessions tracker. Both default to the
