@@ -643,6 +643,20 @@ func TestCollidingMagicIsArbitratedByExtension(t *testing.T) {
 		})
 	}
 
+	// When the extension names neither candidate, the DEFAULT order decides,
+	// and that is the only case where it does anything — arbitration settles
+	// both collisions above whichever way the list is ordered. Tar leads
+	// because its magic is at a fixed offset rather than at a prefix, so it is
+	// the candidate least likely to be an accident of another format's leading
+	// bytes. A mutation run is what showed this needed asserting: reordering
+	// the list changed no other test.
+	if entry, _, err := ValidateUpload(tarFile, "data.bin"); err != nil {
+		t.Errorf("colliding bytes with an unmapped extension were refused: %v", err)
+	} else if entry.MIME != "application/x-tar" {
+		t.Errorf("stored as %q, want application/x-tar — with no extension to arbitrate, "+
+			"the documented default order stands", entry.MIME)
+	}
+
 	// An extension naming NEITHER candidate must not invent a third reading.
 	// The property is about the TYPE, not about acceptance: .zip names a type
 	// whose magic is absent here, so the default candidate stands. That the
