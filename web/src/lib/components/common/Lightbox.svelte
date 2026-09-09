@@ -219,8 +219,9 @@
 	 * TWO ARMS NOW LOAD BYTES, and the invariant is unchanged in kind: the text
 	 * arm's bytes never become active same-origin content either. They are
 	 * rendered through `sanitizeMarkdownHtml`, and the types for which that would
-	 * be the wrong bet — `text/html`, `text/javascript`, `application/javascript`,
-	 * which share the server's `CategoryText` with markdown — are excluded from
+	 * be the wrong bet — `text/html` and `text/javascript`, which share the
+	 * server's `CategoryText` with markdown, plus `application/javascript`,
+	 * which the server stopped classifying at all in BUG-2963 F6 — are excluded from
 	 * `canPreviewAsText` by allowlist, so they never reach the arm. Exactly one
 	 * loader is armed at a time; the load effect disposes the other, so an arm
 	 * flip releases the previous arm's bytes rather than leaving them behind

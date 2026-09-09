@@ -45,9 +45,11 @@ export type SurfaceRendererId = 'raster-image' | 'text';
  * The renderer for a MIME, or `null` when none claims it (→ the icon fallback).
  * `'raster-image'` is exactly the DR-16 raster allowlist and `'text'` exactly the
  * `canPreviewAsText` allowlist; unsafe, unknown and unresolved (null) MIMEs all
- * return `null`. In particular the force-download bucket (`text/html`,
- * `text/javascript`, `application/javascript` — all `CategoryText` server-side)
- * claims no renderer, per PLAN-2393 DR-6.
+ * return `null`. In particular the force-download bucket (`text/html` and
+ * `text/javascript` — both `CategoryText` server-side; `application/javascript`
+ * left that allowlist in BUG-2963 F6 but is still excluded here, since the
+ * string can arrive from outside our upload door) claims no renderer, per
+ * PLAN-2393 DR-6.
  */
 export function getSurfaceRenderer(mime: string | null): SurfaceRendererId | null {
 	if (canOpenInViewer(mime)) return 'raster-image';

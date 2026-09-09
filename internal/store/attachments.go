@@ -413,6 +413,13 @@ func mimePredicateForCategory(category string) (frag string, args []any, ok bool
 			"application/rtf",
 		})
 	case "text":
+		// Wider than the upload allowlist on purpose. This filters ROWS THAT
+		// EXIST by display category; the allowlist decides what may be
+		// created. application/xml, text/yaml and application/javascript left
+		// the allowlist in BUG-2963 F6 as spellings nothing could produce, and
+		// they are kept here because a filter that stops matching a type costs
+		// something (a row nobody can find) while one that matches a type no
+		// row carries costs nothing.
 		return mimeInPredicate([]string{
 			"text/plain", "text/markdown", "text/csv", "text/tab-separated-values",
 			"application/json", "application/xml", "text/xml",
