@@ -91,10 +91,15 @@ func TestServeInline(t *testing.T) {
 	}
 	// application/xml, text/yaml and application/javascript were in this list
 	// until BUG-2963 F6 removed them from the allowlist as unreachable
-	// spellings. `must` fails on a type the allowlist refuses, so leaving
-	// them here would assert about entries that no longer exist. Their
-	// reachable siblings — text/xml, application/yaml, text/javascript —
-	// carry the property.
+	// spellings. `must` fails on a type the allowlist refuses, so leaving them
+	// here would assert about entries that no longer exist.
+	//
+	// The substitutes below are the siblings that remain ON THE ALLOWLIST.
+	// That is all they are: text/javascript and application/yaml are not
+	// reachable as stored types either (a .js or .yaml upload is stored as
+	// text/plain today). This test asks what ServeInline answers for an
+	// allowlist entry, which is a question about the entry and not about
+	// whether an upload can wear it.
 	download := []string{
 		"text/xml", "application/json", "text/csv",
 		"text/markdown", "application/msword", "application/zip",

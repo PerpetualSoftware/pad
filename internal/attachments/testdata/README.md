@@ -42,6 +42,24 @@ than 512 because the whole file is.
 | `avi.head512` | FFmpeg 7.1 `-f avi` | RIFF/AVI, which the stdlib names `video/avi` against the allowlist's `video/x-msvideo` |
 | `ogg-opus.head512` | FFmpeg 7.1 `-c:a libopus -f ogg` | `OggS`, which the stdlib names `application/ogg` against the allowlist's `audio/ogg` |
 
+### Adversarial fixtures — the round-1 findings, kept as tests
+
+These exist to be REFUSED or to be typed correctly against a check that used
+to get them wrong. Each was produced by an adversarial review round that broke
+the first version of these signatures.
+
+| file | produced by | what it proves |
+|---|---|---|
+| `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused before this change and still refused |
+| `elf-with-ustar-magic.head512` | hand-built, and hand-built ON PURPOSE | an ELF header with `ustar` at offset 257 and no valid tar checksum. It exists to be refused, so it tests the checksum rather than anyone's reading of the ELF spec. The finding it comes from used a real, executing binary |
+| `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match; ffprobe-readable | a substring search calls this Matroska; its DocType is `webm` |
+| `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match; ffprobe-readable | DocType moves to offset 66, past any fixed leading window — the mistyping this change fixes, still live under a search |
+| `ogg-vp8-video.head512` | FFmpeg 7.1 `-c:v libvpx -f ogg` | a real Ogg file whose first packet is `OVP80`: video in an Ogg container, which an unconditional `application/ogg` → `audio/ogg` alias accepted as inline audio |
+
+Void elements are legal anywhere in an EBML header and their contents are
+meaningless by specification, which is why only a parse can tell payload from
+padding.
+
 The FFmpeg used is the one bundled with Remotion
 (`@remotion/compositor-linux-x64-gnu`), transcoded from real project assets;
 there is no system FFmpeg on the machine these were made on.

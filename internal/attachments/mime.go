@@ -126,8 +126,11 @@ var allowed = func() map[string]MIMEEntry {
 	// --- Forced-download text payloads — would XSS if served inline ---
 	// application/javascript was removed here (BUG-2963 F6): no extension in
 	// extMIMEMap reaches that spelling and SniffMIME cannot emit it, so the
-	// entry could never be the type an upload was stored under. Its sibling
-	// text/javascript is the reachable spelling and stays.
+	// entry could never be the type an upload was stored under. text/javascript
+	// stays because .js maps to it — but note it is not reachable EITHER: a .js
+	// upload sniffs text/plain and is stored as that. The difference is that
+	// text/javascript has a route to become reachable (the F5 extension-trust
+	// work) and application/javascript has none, since nothing names it.
 	for _, t := range []string{
 		"text/html", "text/javascript",
 	} {
@@ -213,16 +216,10 @@ var sniffAliases = map[string]string{
 	"audio/wave":         "audio/wav",        // .wav
 	"application/x-gzip": "application/gzip", // .gz / .tar.gz
 	"video/avi":          "video/x-msvideo",  // .avi — pure spelling difference
-	// .ogg — Ogg is a container, and the stdlib names it by the container
-	// (application/ogg) while the allowlist names the payload it expects
-	// (audio/ogg). Aliasing therefore types an Ogg VIDEO as audio, which is
-	// wrong for that file. It is still the better of the two available
-	// answers: the allowlist has no video/ogg entry, so without this alias
-	// every Ogg upload is refused outright, and a mistyped-accepted beats a
-	// refusal for a container that is audio in nearly every real upload
-	// (BUG-2963 F1, ruled day 62). Adding video/ogg to the allowlist would
-	// be the way to make this honest, and that is an allowlist decision.
-	"application/ogg": "audio/ogg",
+	// application/ogg is deliberately NOT here. It is a CONTAINER name, and
+	// mapping it to audio/ogg unconditionally admitted Ogg video — see
+	// sniffOggAudio, which does it per codec instead. An alias table is for
+	// two names of one thing; Ogg is one name for several things.
 }
 
 // SniffMIME detects the MIME type from the leading bytes of a payload
@@ -248,17 +245,25 @@ func SniffMIME(head []byte) string {
 	if alias, ok := sniffAliases[got]; ok {
 		got = alias
 	}
-	// Two BUG-2963 pre-checks, both deliberately narrow. Each is gated on
-	// what the stdlib already said, so neither can retype a file the stdlib
-	// recognised as something else:
+	// Three BUG-2963 refinements. Each is keyed on what the stdlib already
+	// said, so none can retype a file the stdlib recognised as something else
+	// — and each then VALIDATES STRUCTURE before naming a type, which is the
+	// half that keeps them honest (see mime_magic.go's header for what
+	// happened when they did not):
 	//
-	//   - video/webm is REFINED, because the mimesniff table answers it from
+	//   - video/webm is refined, because the mimesniff table answers it from
 	//     the bare EBML magic and cannot tell Matroska from WebM;
+	//   - application/ogg is refined per CODEC, because Ogg is a container and
+	//     only its audio payloads are on the allowlist;
 	//   - application/octet-stream is the stdlib having NO opinion, which is
 	//     the only case where recognising more formats adds anything.
 	switch got {
 	case "video/webm":
 		if mime := sniffEBMLDocType(head); mime != "" {
+			return mime
+		}
+	case "application/ogg":
+		if mime := sniffOggAudio(head); mime != "" {
 			return mime
 		}
 	case "application/octet-stream":
@@ -289,15 +294,19 @@ func SniffMIME(head []byte) string {
 func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string, err error) {
 	sniffed := SniffMIME(head)
 
-	// Raw AAC is the one BUG-2963 format whose signature is too weak to act
+	// Raw AAC is the one BUG-2963 format whose structure is too small to act
 	// on from the bytes alone, so it is resolved here — where the filename is
 	// known — rather than inside SniffMIME, which deliberately never sees a
-	// filename. Both halves are required: the extension alone introduces
-	// nothing (a .aac without the sync stays application/octet-stream and is
-	// refused), and the sync alone is ignored (a .png whose bytes happen to
-	// open with one is untouched). The extension only decides whether a weak
-	// signature is permitted to speak. See hasADTSSync for why it is weak.
-	if sniffed == "application/octet-stream" && hasADTSSync(head) &&
+	// filename. Both halves are required, and neither is sufficient: bytes
+	// without the extension name nothing, and the extension without a valid
+	// ADTS header names nothing either. The extension does not supply
+	// evidence; it decides whether a weak structure may speak.
+	//
+	// What it does NOT do is decide the outcome for a .aac generally. A .aac
+	// whose bytes are some other allowlisted audio type is still stored as
+	// that type by the ordinary rules — the categories agree, so nothing here
+	// refuses it. This branch adds one reading; it removes none.
+	if sniffed == "application/octet-stream" && validADTSHeader(head) &&
 		strings.EqualFold(filepath.Ext(filename), ".aac") {
 		sniffed = "audio/aac"
 	}

@@ -30,19 +30,19 @@ func TestBUG2963FormatsReachTheAllowlist(t *testing.T) {
 		want     string // what the door stores
 		// sniffWant is what SniffMIME alone returns, when that differs from
 		// what the door stores. It differs for exactly one format: raw AAC is
-		// resolved in ValidateUpload, because its signature is too weak to act
-		// on without the filename and SniffMIME never sees one.
+		// resolved in ValidateUpload, because its structure is too small to
+		// act on without the filename and SniffMIME never sees one.
 		sniffWant string
 		cat       Category
 		why       string
 	}{
-		{"tar.head512", "archive.tar", "application/x-tar", "", CategoryArchive, "ustar at offset 257"},
-		{"bzip2.head512", "notes.txt.bz2", "application/x-bzip2", "", CategoryArchive, "BZh + block-size digit"},
-		{"sevenzip.head512", "archive.7z", "application/x-7z-compressed", "", CategoryArchive, "six-byte 7z signature"},
-		{"flac.head512", "track.flac", "audio/flac", "", CategoryAudio, "fLaC stream marker"},
-		{"aac-adts.head512", "track.aac", "audio/aac", "application/octet-stream", CategoryAudio, "ADTS sync, gated on the extension"},
+		{"tar.head512", "archive.tar", "application/x-tar", "", CategoryArchive, "ustar at 257 plus a verified header checksum"},
+		{"bzip2.head512", "notes.txt.bz2", "application/x-bzip2", "", CategoryArchive, "BZh, block-size digit, block magic"},
+		{"sevenzip.head512", "archive.7z", "application/x-7z-compressed", "", CategoryArchive, "signature plus start-header CRC"},
+		{"flac.head512", "track.flac", "audio/flac", "", CategoryAudio, "fLaC plus a 34-byte STREAMINFO block"},
+		{"aac-adts.head512", "track.aac", "audio/aac", "application/octet-stream", CategoryAudio, "valid ADTS header, gated on the extension"},
 		{"avi.head512", "clip.avi", "video/x-msvideo", "", CategoryVideo, "video/avi alias"},
-		{"ogg-opus.head512", "track.ogg", "audio/ogg", "", CategoryAudio, "application/ogg alias"},
+		{"ogg-opus.head512", "track.ogg", "audio/ogg", "", CategoryAudio, "Ogg page whose first packet is OpusHead"},
 		{"matroska.head512", "clip.mkv", "video/x-matroska", "", CategoryVideo, "EBML DocType matroska"},
 	}
 	for _, tc := range cases {
@@ -69,86 +69,273 @@ func TestBUG2963FormatsReachTheAllowlist(t *testing.T) {
 	}
 }
 
-// TestEBMLDocTypeDiscriminates is the control the Matroska case needs. A
-// DocType read that returned video/x-matroska for every EBML file would pass
-// the Matroska leg above and be strictly worse than the stdlib — it would
-// break WebM, which worked. So the WebM fixture is asserted in the same test
-// as the Matroska one, and the third leg pins the fail-safe: an EBML header
-// carrying NEITHER string keeps the stdlib's answer rather than being refused.
-func TestEBMLDocTypeDiscriminates(t *testing.T) {
-	if got := SniffMIME(fixture(t, "matroska.head512")); got != "video/x-matroska" {
-		t.Errorf("matroska fixture sniffed %q, want video/x-matroska", got)
-	}
-	if got := SniffMIME(fixture(t, "webm.head512")); got != "video/webm" {
-		t.Errorf("webm fixture sniffed %q, want video/webm — the DocType read must not "+
-			"claim Matroska for every EBML file", got)
-	}
+// TestStructuralValidationRefusesNearMisses is the test this file most needed
+// and did not have. Every input below carries the format's MAGIC and fails its
+// STRUCTURE, and every one was ACCEPTED by the first version of these checks —
+// found by an adversarial round, not by the suite. They are listed as exact
+// upload bodies because that is what they were: complete requests the door
+// answered 200 to.
+//
+// A default-deny allowlist that admits arbitrary bytes carrying a few
+// incidental ones at a fixed offset has been widened no matter what the
+// allowlist contains, so these are the cases that decide whether this change
+// is a fix or a hole.
+func TestStructuralValidationRefusesNearMisses(t *testing.T) {
+	zeros262 := make([]byte, 262)
+	copy(zeros262[257:], []byte("ustar"))
 
-	// EBML magic, then bytes that are neither DocType. Synthetic on purpose:
-	// no muxer emits this, and the property under test is what the code does
-	// when its window comes up empty, not what any encoder writes.
-	blank := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, make([]byte, 120)...)
-	if got := SniffMIME(blank); got != "video/webm" {
-		t.Errorf("EBML header with no DocType sniffed %q, want the stdlib's video/webm — "+
-			"an unrecognised DocType must fall back, not refuse", got)
+	adtsBadRate := append([]byte(nil), fixture(t, "aac-adts.head512")...)
+	adtsBadRate[2] |= 0x3C // sampling-frequency index 15, a reserved value
+
+	cases := []struct {
+		name string
+		body []byte
+		as   string
+		why  string
+	}{
+		{"ELF carrying ustar at offset 257", fixture(t, "elf-with-ustar-magic.head512"), "p.bin",
+			"a working executable was stored as application/x-tar; the header checksum is what refuses it"},
+		{"zeros with ustar at offset 257", zeros262, "p.bin",
+			"262 bytes of nothing is not an archive"},
+		{"7z signature and nothing else", []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C}, "p.bin",
+			"six bytes cannot carry the start header its CRC covers"},
+		{"fLaC with no STREAMINFO", []byte("fLaC\x00"), "p.bin",
+			"the marker is present; the mandatory first metadata block is not"},
+		{"BZh9 with no block magic", []byte("BZh9\x00"), "p.bin",
+			"bzip2 streams continue with a block magic or an end-of-stream magic; there is no third case"},
+		{"three-byte ADTS", []byte{0xFF, 0xF1, 0x00}, "p.aac",
+			"three bytes cannot contain a seven-byte header"},
+		{"ADTS with a reserved sampling-rate index", adtsBadRate, "p.aac",
+			"index 15 is reserved, so a header carrying it is not a frame"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, _, err := ValidateUpload(tc.body, tc.as)
+			if err == nil {
+				t.Errorf("accepted and stored as %q — %s", entry.MIME, tc.why)
+			}
+		})
 	}
 }
 
-// TestADTSNeedsBytesAndExtension pins both halves of the one extension-gated
-// signature. Each leg fails if either half is dropped, which is the point: the
-// gate is what makes a twelve-bit signature safe to act on.
-func TestADTSNeedsBytesAndExtension(t *testing.T) {
+// TestEBMLDocTypeIsParsedNotSearched pins the DocType read in all four
+// directions. The first two are the ordinary files. The last two are the pair
+// an adversarial round used to break a substring search, and they broke it
+// BOTH ways — the reason this is a parse now.
+//
+// Both adversarial fixtures are complete files that ffprobe reads, built by
+// inserting a legal Void element (ID 0xEC, contents meaningless by
+// specification) into the ordinary fixtures and widening the header's size
+// field to match.
+func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
+	cases := []struct {
+		fixture string
+		want    string
+		why     string
+	}{
+		{"matroska.head512", "video/x-matroska", "the ordinary Matroska file"},
+		{"webm.head512", "video/webm", "the ordinary WebM file — a read that always said Matroska would break this"},
+		{"webm-void-says-matroska.head512", "video/webm",
+			"a WebM whose Void padding contains the string \"matroska\"; its real DocType is webm"},
+		{"matroska-void-padded.head512", "video/x-matroska",
+			"a Matroska whose Void padding pushes DocType to offset 66 — past any fixed leading window"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fixture, func(t *testing.T) {
+			if got := SniffMIME(fixture(t, tc.fixture)); got != tc.want {
+				t.Errorf("SniffMIME = %q, want %q — %s", got, tc.want, tc.why)
+			}
+		})
+	}
+
+	// EBML magic, then bytes that parse to no DocType at all. The fallback is
+	// the stdlib's answer, so an unreadable header degrades to the behaviour
+	// that shipped before this check existed rather than to a refusal.
+	blank := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, make([]byte, 120)...)
+	if got := SniffMIME(blank); got != "video/webm" {
+		t.Errorf("EBML header with no DocType sniffed %q, want the stdlib's video/webm", got)
+	}
+}
+
+// TestOggAliasIsCodecGated covers the re-ruling that followed an adversarial
+// round: application/ogg is a CONTAINER name, and mapping it to audio/ogg
+// unconditionally made a real VP8-in-Ogg video uploadable as audio, category
+// audio, served inline — a video format the allowlist never reviewed. The
+// alias is now conditional on the first packet naming an audio codec.
+func TestOggAliasIsCodecGated(t *testing.T) {
+	if got := SniffMIME(fixture(t, "ogg-opus.head512")); got != "audio/ogg" {
+		t.Errorf("Opus-in-Ogg sniffed %q, want audio/ogg", got)
+	}
+
+	video := fixture(t, "ogg-vp8-video.head512")
+	if got := SniffMIME(video); got != "application/ogg" {
+		t.Errorf("VP8-in-Ogg sniffed %q, want the unaliased application/ogg", got)
+	}
+	if entry, _, err := ValidateUpload(video, "clip.ogv"); err == nil {
+		t.Errorf("VP8-in-Ogg accepted and stored as %q; video/ogg is not on the allowlist "+
+			"and admitting a format is a review, not a side effect", entry.MIME)
+	}
+}
+
+// TestADTSGuardsAreBothLoadBearing exists because the previous version of
+// these tests did NOT establish the guards it appeared to protect: its
+// negative legs failed for reasons other than the guard under test, so both
+// the octet-stream gate and the layer-bit mask could be removed with the suite
+// still green. Each leg below is chosen so that exactly one mutation kills it.
+func TestADTSGuardsAreBothLoadBearing(t *testing.T) {
 	adts := fixture(t, "aac-adts.head512")
 
 	if _, _, err := ValidateUpload(adts, "track.aac"); err != nil {
-		t.Fatalf("ADTS bytes named .aac were rejected: %v", err)
+		t.Fatalf("premise failed: the real ADTS fixture named .aac is rejected: %v", err)
 	}
 
-	// Bytes without the extension: the sync alone must not introduce a type.
+	// Bytes without the extension: the structure alone must not introduce a
+	// type, since nothing asked for that reading.
 	if _, code, err := ValidateUpload(adts, "track.bin"); err == nil {
 		t.Error("ADTS bytes named .bin were accepted; the extension gate is not applied")
 	} else if code != "mime_not_allowed" {
 		t.Errorf("code = %q, want mime_not_allowed", code)
 	}
 
-	// Extension without the bytes: the name alone must not introduce a type.
-	notADTS := make([]byte, 512) // all zeroes: application/octet-stream
-	if _, code, err := ValidateUpload(notADTS, "track.aac"); err == nil {
-		t.Error("non-ADTS bytes named .aac were accepted; the extension is being trusted alone")
+	// Extension without the structure: the name alone must not introduce one.
+	if _, code, err := ValidateUpload(make([]byte, 512), "track.aac"); err == nil {
+		t.Error("zero bytes named .aac were accepted; the extension is being trusted alone")
 	} else if code != "mime_not_allowed" {
 		t.Errorf("code = %q, want mime_not_allowed", code)
 	}
 
-	// A type the stdlib DOES recognise is untouched by the .aac name — the
-	// branch only runs on application/octet-stream, so this stays an image
-	// and is refused for the category mismatch it is.
-	png := []byte("\x89PNG\r\n\x1a\n")
-	if _, code, _ := ValidateUpload(png, "sneaky.aac"); code != "mime_extension_mismatch" {
-		t.Errorf("PNG bytes named .aac gave code %q, want mime_extension_mismatch", code)
+	// The octet-stream gate, isolated. These two bytes carry a valid ADTS
+	// sync AND the stdlib types them as text/plain, so the ONLY thing keeping
+	// the AAC branch from firing is the gate on the stdlib's verdict. Remove
+	// it and this leg flips from a category mismatch to an accepted AAC.
+	if _, code, _ := ValidateUpload([]byte{0xFF, 0xF1}, "short.aac"); code != "mime_extension_mismatch" {
+		t.Errorf("two ADTS sync bytes named .aac gave code %q, want mime_extension_mismatch — "+
+			"the stdlib called them text, and the branch must not run on a type it recognised", code)
+	}
+
+	// The layer-bit mask, isolated. Layer bits of 01 are invalid for ADTS and
+	// are what distinguishes the 0xF6 mask from a bare 0xF0 sync check; a
+	// zero-filled negative never exercises them.
+	badLayer := append([]byte(nil), adts...)
+	badLayer[1] = badLayer[1]&0xF9 | 0x02
+	if _, _, err := ValidateUpload(badLayer, "track.aac"); err == nil {
+		t.Error("ADTS with non-zero layer bits was accepted; the layer check is not load-bearing")
 	}
 }
 
-// TestOpaqueMagicDoesNotOverrideTheStdlib pins the ordering that makes the
-// magic table safe: it is consulted only where the stdlib returned
-// application/octet-stream, so it can add a detection and never replace one.
+// TestOpaqueMagicLosesToTheStdlib pins the ordering: the magic table is
+// consulted only where the stdlib had no opinion, so it can add a detection
+// and never replace one.
 //
-// The input is spliced rather than encoder-produced, because the property is
-// about the ORDER of two checks and no real file exercises it — a genuine PNG
-// has no reason to carry `ustar` at offset 257. Delete the
-// application/octet-stream case in SniffMIME and this test fails while every
-// other test in this file still passes.
-func TestOpaqueMagicDoesNotOverrideTheStdlib(t *testing.T) {
-	buf := make([]byte, 512)
-	copy(buf, []byte("\x89PNG\r\n\x1a\n"))
-	copy(buf[257:], []byte("ustar"))
+// The fixture is a REAL tar archive whose first member is named BM.txt, which
+// makes the stdlib answer image/bmp. That is a genuine limitation of this
+// design and is asserted rather than hidden: such a tar is refused today and
+// still is. An earlier version of this test used a spliced PNG and claimed no
+// real file exercised competing detections, which was false.
+//
+// The mutation that kills this test is hoisting sniffOpaqueMagic ABOVE the
+// stdlib call. Deleting the application/octet-stream case does NOT — that is
+// caught by the positive tests instead. The distinction is recorded because
+// the comment here previously named the wrong mutation, contradicting the
+// project's own matrix.
+func TestOpaqueMagicLosesToTheStdlib(t *testing.T) {
+	tarBMP := fixture(t, "tar-bmp-firstmember.head512")
 
-	if got := sniffOpaqueMagic(buf); got != "application/x-tar" {
-		t.Fatalf("premise failed: sniffOpaqueMagic = %q, want application/x-tar — "+
-			"this test asserts the tar magic LOSES, so it must first be present", got)
+	if !validTarHeader(tarBMP) {
+		t.Fatal("premise failed: the fixture must be a structurally valid tar, " +
+			"or this asserts nothing about which check wins")
 	}
-	if got := SniffMIME(buf); got != "image/png" {
-		t.Errorf("SniffMIME = %q, want image/png — a magic pre-check must not "+
+	if got := SniffMIME(tarBMP); got != "image/bmp" {
+		t.Errorf("SniffMIME = %q, want image/bmp — a structurally valid tar must not "+
 			"override a type the stdlib recognised", got)
+	}
+	if _, code, err := ValidateUpload(tarBMP, "archive.tar"); err == nil {
+		t.Error("accepted; a tar the stdlib reads as an image is refused, as it was before this change")
+	} else if code == "" {
+		t.Errorf("rejected with an empty code")
+	}
+}
+
+// TestOpaqueMagicBoundaries walks the exact lengths each check indexes past.
+// The negative table below pads to 512, which hides every length guard — a
+// previous version did only that, and the tar guard could be moved from 262 to
+// 261 (a panic on a 261-byte input) with the suite still green.
+func TestOpaqueMagicBoundaries(t *testing.T) {
+	withUstar := func(n int) []byte {
+		b := make([]byte, n)
+		if n >= 262 {
+			copy(b[257:], []byte("ustar"))
+		}
+		return b
+	}
+	for _, n := range []int{0, 1, 4, 7, 9, 31, 260, 261, 262, 511, 512} {
+		// The assertion is that none of these panic and none is a false
+		// positive; zero-filled input is no format.
+		if got := sniffOpaqueMagic(withUstar(n)); got != "" {
+			t.Errorf("sniffOpaqueMagic(%d zero bytes) = %q, want no match", n, got)
+		}
+	}
+	if got := sniffOpaqueMagic(nil); got != "" {
+		t.Errorf("sniffOpaqueMagic(nil) = %q, want no match", got)
+	}
+	// Truncating a REAL archive below each check's minimum must also refuse
+	// rather than panic — the case a caller hits with a short upload.
+	for _, f := range []string{"tar.head512", "sevenzip.head512", "flac.head512", "bzip2.head512"} {
+		full := fixture(t, f)
+		for n := 0; n < len(full) && n < 40; n++ {
+			sniffOpaqueMagic(full[:n])
+		}
+	}
+}
+
+// TestOpaqueMagicNegatives pins the tightenings inside each check that the
+// positive cases pass with or without.
+func TestOpaqueMagicNegatives(t *testing.T) {
+	pad := func(b []byte) []byte {
+		out := make([]byte, 512)
+		copy(out, b)
+		return out
+	}
+	flac := func(mutate func([]byte)) []byte {
+		b := pad([]byte("fLaC"))
+		b[4] = 0x00
+		b[5], b[6], b[7] = 0, 0, 34
+		mutate(b)
+		return b
+	}
+	cases := []struct {
+		name string
+		in   []byte
+		why  string
+	}{
+		{"BZh without the block-size digit", pad([]byte("BZhX\x31\x41\x59\x26\x53\x59")),
+			"the digit is part of the format, not decoration"},
+		{"BZh0, an out-of-range block size", pad([]byte("BZh0\x31\x41\x59\x26\x53\x59")),
+			"bzip2 block sizes are 1..9"},
+		{"ustar at 256 rather than 257", func() []byte {
+			b := make([]byte, 512)
+			copy(b[256:], []byte("ustar"))
+			return b
+		}(), "the tar magic is at a fixed offset"},
+		{"fLaC not at the start", pad([]byte("\x00\x00fLaC")),
+			"the marker opens the stream; anywhere else it is just bytes"},
+		{"truncated 7z signature", pad([]byte{0x37, 0x7A, 0xBC, 0xAF, 0x27}),
+			"five of six signature bytes is not the signature"},
+		{"7z signature with a wrong start-header CRC", pad([]byte{
+			0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04,
+			0xDE, 0xAD, 0xBE, 0xEF, // CRC that will not match
+		}), "the CRC is the structural half of this check"},
+		{"FLAC first block is not STREAMINFO", flac(func(b []byte) { b[4] = 0x01 }),
+			"RFC 9639 requires STREAMINFO first"},
+		{"FLAC STREAMINFO of the wrong length", flac(func(b []byte) { b[7] = 33 }),
+			"STREAMINFO is exactly 34 bytes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sniffOpaqueMagic(tc.in); got != "" {
+				t.Errorf("sniffOpaqueMagic = %q, want no match — %s", got, tc.why)
+			}
+		})
 	}
 }
 
@@ -183,39 +370,23 @@ func TestBUG2963F6RemovedSpellings(t *testing.T) {
 	}
 }
 
-// TestOpaqueMagicNegatives pins the tightenings inside the magic table, each
-// of which is invisible to the positive cases above — those pass whether or
-// not the extra condition is there.
-func TestOpaqueMagicNegatives(t *testing.T) {
-	pad := func(b []byte) []byte {
-		out := make([]byte, 512)
-		copy(out, b)
-		return out
-	}
-	cases := []struct {
-		name string
-		in   []byte
-		why  string
-	}{
-		{"BZh without the block-size digit", pad([]byte("BZhX and then some text")),
-			"the digit is what makes an accidental match need four bytes, not three"},
-		{"BZh followed by a zero digit", pad([]byte("BZh0")),
-			"bzip2 block sizes are 1..9; '0' is not one"},
-		{"ustar at 256 rather than 257", func() []byte {
-			b := make([]byte, 512)
-			copy(b[256:], []byte("ustar"))
-			return b
-		}(), "the tar magic is at a fixed offset; one byte off is not a tar"},
-		{"fLaC not at the start", pad([]byte("\x00\x00fLaC")),
-			"the FLAC marker opens the stream; anywhere else it is just bytes"},
-		{"truncated 7z signature", pad([]byte{0x37, 0x7A, 0xBC, 0xAF, 0x27}),
-			"five of the six signature bytes is not the signature"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := sniffOpaqueMagic(tc.in); got != "" {
-				t.Errorf("sniffOpaqueMagic = %q, want no match — %s", got, tc.why)
-			}
-		})
+// TestTextFamilyStillStoresAsPlain records what this PR does NOT fix, so the
+// boundary is a test rather than a sentence someone has to find. These types
+// remain on the allowlist and remain unreachable; making them reachable needs
+// extension trust, which is a separate change under its own ruling.
+func TestTextFamilyStillStoresAsPlain(t *testing.T) {
+	for _, tc := range []struct{ body, name string }{
+		{"alert(1);\n", "p.js"},
+		{"answer: 42\n", "p.yaml"},
+		{"# heading\n", "p.md"},
+	} {
+		entry, _, err := ValidateUpload([]byte(tc.body), tc.name)
+		if err != nil {
+			t.Fatalf("%s rejected: %v", tc.name, err)
+		}
+		if entry.MIME != "text/plain" {
+			t.Errorf("%s stored as %q, want text/plain — if this changed, the F5 "+
+				"extension-trust work landed and this test should move with it", tc.name, entry.MIME)
+		}
 	}
 }
