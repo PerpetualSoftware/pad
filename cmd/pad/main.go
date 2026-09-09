@@ -141,6 +141,7 @@ func newRootCmd() *cobra.Command {
 		roleCmd(),
 		tagCmd(),
 		webhooksCmd(),
+		tokenCmd(),
 		attachmentCmd(),
 		dbCmd(),
 		completionCmd(),
