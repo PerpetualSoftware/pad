@@ -20,12 +20,26 @@ import { test } from './fixtures';
  * Only the owner-only tab could hit this, which is why `#storage` never did:
  * an always-valid tab is never snapped away from.
  *
- * TIMING MATTERS IN THIS SPEC. The failure is "correct, then reverted", so an
- * auto-retrying assertion (`toPass`, or a bare `toHaveAttribute` with its
- * default timeout) can observe the CORRECT intermediate state and pass on a
- * broken build. Both legs therefore settle first, then assert once, and the
- * owner leg asserts a second time after a further wait so a later revert is
- * still caught.
+ * WHAT THIS SPEC IS AND IS NOT. It is a smoke leg: it proves deep-linking each
+ * settings tab works in a real browser. It is NOT the regression guard for
+ * BUG-2978, because it does not discriminate — RUN AGAINST THE UNFIXED BUILD IT
+ * PASSES. On the e2e fixture the layout's `setCurrent` and the page's own land
+ * inside a single unresolved `/me` window, so membership never goes
+ * known -> unknown -> known and the flicker the bug needs never happens. That
+ * ordering is a property of a small, fast fixture workspace; the real workspace
+ * produces it readily (0/10 deep links before the fix, 40/40 after, measured on
+ * the trail).
+ *
+ * The discriminating test is
+ * `src/routes/[username]/[workspace]/settings/settingsPermissionFlicker.svelte.test.ts`,
+ * which drives the two `/me` resolutions by hand and therefore fails without
+ * the fix.
+ *
+ * TIMING STILL MATTERS HERE. The pre-fix failure is "correct, then reverted",
+ * so an auto-retrying assertion (`toPass`, or a bare `toHaveAttribute` with its
+ * default timeout) can observe the CORRECT intermediate state and pass even
+ * where the ordering does occur. Both legs therefore settle first, then assert
+ * once, and the owner leg asserts again after a further wait.
  */
 
 const SETTLE_MS = 2500;
@@ -48,7 +62,7 @@ function activeTabLabel(page: Page) {
 	});
 }
 
-test('BUG-2978: deep-linking the owner-only settings tab lands on it and stays', async ({
+test('BUG-2978 smoke: deep-linking the owner-only settings tab lands on it and stays', async ({
 	page,
 	fixture,
 }) => {
