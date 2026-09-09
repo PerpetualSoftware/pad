@@ -6,6 +6,11 @@ import { createKeyedSingleFlight } from './singleFlight';
 let workspaces = $state<Workspace[]>([]);
 let current = $state<Workspace | null>(null);
 let currentMembership = $state<WorkspaceMembership | null>(null);
+// Whether `currentMembership` is an ANSWER or merely NOT YET FETCHED (BUG-2978).
+// It is null in both cases, which makes the two indistinguishable to consumers —
+// and they are opposites: one is "wait", the other is "no access". False while a
+// membership fetch is in flight, true once one has settled either way.
+let membershipKnown = $state(false);
 let loading = $state(false);
 
 // Monotonic sequence guarding async /me responses against navigation races.
@@ -46,6 +51,9 @@ const loadAllFlight = createKeyedSingleFlight<string>({
  * item grant is less permissive. `currentMembership` is null when not loaded
  * yet or the fetch failed; in that case all helpers return false (treat
  * unknown as no access).
+ *
+ * That conflation is safe for gating an affordance and NOT safe for caching one:
+ * see `membershipKnown` below, which is what tells the two apart.
  */
 
 export const workspaceStore = {
@@ -54,6 +62,19 @@ export const workspaceStore = {
 	get loading() { return loading; },
 
 	get currentMembership() { return currentMembership; },
+
+	/**
+	 * True once a membership fetch has SETTLED for the current workspace, so a
+	 * null `currentMembership` means "no access" rather than "not yet loaded".
+	 *
+	 * Consumers that cache a permission to avoid flickering during the fetch
+	 * window (BUG-2978) must gate on this rather than on `currentMembership !==
+	 * null`: gating on non-null holds the last good answer forever when the
+	 * answer becomes a definitive denial — a removed member or a 403 keeps
+	 * owner-only affordances on screen. The server remains the enforcement
+	 * boundary either way, but the UI should not lie.
+	 */
+	get membershipKnown() { return membershipKnown; },
 
 	get currentRole() {
 		return currentMembership?.role ?? null;
@@ -174,6 +195,7 @@ export const workspaceStore = {
 		// Clear stale membership immediately so helpers don't briefly answer
 		// "yes" using the previous workspace's grants while /me is in flight.
 		currentMembership = null;
+		membershipKnown = false;
 
 		// Resolve the workspace itself. Membership is fetched once we know
 		// the slug.
@@ -206,16 +228,22 @@ export const workspaceStore = {
 		if (resolved) {
 			try {
 				const m = await api.workspaces.me(slug);
-				if (seq === membershipSeq) currentMembership = m;
+				if (seq === membershipSeq) { currentMembership = m; membershipKnown = true; }
 			} catch {
-				if (seq === membershipSeq) currentMembership = null;
+				// A 403 or a removed member is an ANSWER, not a pending state.
+				if (seq === membershipSeq) { currentMembership = null; membershipKnown = true; }
 			}
+		} else if (seq === membershipSeq) {
+			// The workspace itself did not resolve (404, or no access): also an
+			// answer, and the same one.
+			membershipKnown = true;
 		}
 	},
 
 	async create(data: { name: string; description?: string; template?: string }) {
 		const seq = ++membershipSeq;
 		currentMembership = null;
+		membershipKnown = false;
 		const ws = await api.workspaces.create(data);
 		if (seq !== membershipSeq) return ws;
 		workspaces = [...workspaces, ws];
@@ -223,9 +251,9 @@ export const workspaceStore = {
 		// New workspace — refresh membership for the just-created context.
 		try {
 			const m = await api.workspaces.me(ws.slug);
-			if (seq === membershipSeq) currentMembership = m;
+			if (seq === membershipSeq) { currentMembership = m; membershipKnown = true; }
 		} catch {
-			if (seq === membershipSeq) currentMembership = null;
+			if (seq === membershipSeq) { currentMembership = null; membershipKnown = true; }
 		}
 		return ws;
 	}

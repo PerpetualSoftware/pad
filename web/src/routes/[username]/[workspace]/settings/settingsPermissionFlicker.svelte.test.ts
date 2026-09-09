@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { page } from '$app/state';
+import SettingsPage from './+page.svelte';
+import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 /**
  * BUG-2978 — the owner-only settings tab was lost whenever the workspace
@@ -23,12 +25,16 @@ import { page } from '$app/state';
  */
 
 const meCalls: Array<(value: unknown) => void> = [];
+const meRejects: Array<(reason: unknown) => void> = [];
 
 vi.mock('$lib/api/client', () => ({
 	api: {
 		workspaces: {
 			get: vi.fn(async () => ({ id: 'ws1', slug: 'ws', name: 'WS', context: {} })),
-			me: vi.fn(() => new Promise((resolve) => { meCalls.push(resolve); })),
+			me: vi.fn(() => new Promise((resolve, reject) => {
+				meCalls.push(resolve);
+				meRejects.push(reject);
+			})),
 			list: vi.fn(async () => []),
 		},
 		collections: { list: vi.fn(async () => []) },
@@ -54,19 +60,21 @@ async function resolveMe(index: number, value: unknown) {
 describe('BUG-2978: settings permissions survive the /me window', () => {
 	beforeEach(() => {
 		meCalls.length = 0;
+		meRejects.length = 0;
 		page.params = { username: 'dave', workspace: 'ws' };
 		window.location.hash = '#danger';
 	});
 
 	afterEach(() => {
 		window.location.hash = '';
-		vi.resetModules();
+		// Deliberately NO `vi.resetModules()`: it hands the second test a fresh
+		// module graph including a second copy of the Svelte runtime, whose
+		// `$effect` does not recognise the first copy's component context, and
+		// the remount dies with `effect_orphan`. The store is a module-scoped
+		// singleton, and each test re-establishes its state through `setCurrent`.
 	});
 
 	it('keeps the deep-linked owner-only tab selected when membership goes known -> unknown -> known', async () => {
-		const { default: SettingsPage } = await import('./+page.svelte');
-		const { workspaceStore } = await import('$lib/stores/workspace.svelte');
-
 		render(SettingsPage);
 
 		// First /me resolves as owner: the Danger Zone tab appears and the
@@ -92,5 +100,31 @@ describe('BUG-2978: settings permissions survive the /me window', () => {
 		// correct answer and this assertion would prove nothing.
 		const danger = await screen.findByRole('tab', { name: /Danger Zone/ });
 		expect(danger).toHaveAttribute('aria-selected', 'true');
+	});
+
+	it('drops owner-only chrome when membership becomes a definitive denial', async () => {
+		// The complement of the test above, and the reason the cache is gated on
+		// `membershipKnown` rather than on `currentMembership !== null` (codex
+		// round 1): null means BOTH "not fetched yet" and "no access". A cache
+		// that ignores every null holds the last good answer forever, so an owner
+		// removed from the workspace — or a `/me` that 403s — would keep the
+		// owner-only tab and the delete controls on screen indefinitely.
+		render(SettingsPage);
+
+		await resolveMe(0, OWNER);
+		await waitFor(() => {
+			expect(screen.getByRole('tab', { name: /Danger Zone/ })).toBeInTheDocument();
+		});
+
+		// Now the answer changes to "no access", delivered the way the store
+		// delivers it: a rejected `/me`, which leaves membership null.
+		const second = workspaceStore.setCurrent('ws');
+		await waitFor(() => expect(meCalls.length).toBeGreaterThan(1));
+		meRejects[1]?.(new Error('403'));
+		await second;
+
+		await waitFor(() => {
+			expect(screen.queryByRole('tab', { name: /Danger Zone/ })).not.toBeInTheDocument();
+		});
 	});
 });

@@ -20,8 +20,9 @@ import { test } from './fixtures';
  * Only the owner-only tab could hit this, which is why `#storage` never did:
  * an always-valid tab is never snapped away from.
  *
- * WHAT THIS SPEC IS AND IS NOT. It is a smoke leg: it proves deep-linking each
- * settings tab works in a real browser. It is NOT the regression guard for
+ * WHAT THIS SPEC IS AND IS NOT. It is a smoke leg: it proves that deep-linking
+ * the two tabs it covers — the owner-only one and an always-visible control —
+ * works in a real browser. It is NOT the regression guard for
  * BUG-2978, because it does not discriminate — RUN AGAINST THE UNFIXED BUILD IT
  * PASSES. On the e2e fixture the layout's `setCurrent` and the page's own land
  * inside a single unresolved `/me` window, so membership never goes

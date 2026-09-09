@@ -122,7 +122,15 @@
 	$effect(() => {
 		// Read through the store's getters rather than re-deriving the cascade —
 		// they mirror the server's ResolveUserPermission and must not be forked.
-		if (workspaceStore.currentMembership !== null) {
+		//
+		// Gated on `membershipKnown`, NOT on `currentMembership !== null` (codex
+		// round 1). Null means both "not fetched yet" and "no access", and gating
+		// on non-null would hold the last good answer forever once the answer
+		// became a denial: an owner removed from the workspace, or a `/me` that
+		// 403s, would keep the Save buttons, the invite form and the Danger Zone
+		// tab on screen indefinitely. `membershipKnown` is false only while a
+		// fetch is in flight, which is exactly the window this cache exists for.
+		if (workspaceStore.membershipKnown) {
 			canEditWs = workspaceStore.canEditWorkspace;
 			isOwner = workspaceStore.isOwner;
 			// Editor-or-owner predicate for affordances outside the strict
