@@ -163,10 +163,20 @@
 	$effect(() => {
 		titleStore.setPageTitle({ workspace: workspaceStore.current?.name ?? null });
 	});
-	$effect(() => {
-		page.url.pathname;
-		titleStore.setPageTitle({ section: null, item: null });
-	});
+	// THE ROUTE-CHANGE CLEAR IS GONE (TASK-2245). It used to live here as an
+	// `$effect` reading `page.url.pathname`, and it was a race this layout could
+	// lose three ways: it fired on SEARCH-only changes (pane open/close, view
+	// switch) because reading `page.url.pathname` tracks the whole reactive
+	// `page.url`; as an effect it could run AFTER the leaf's effect, since the
+	// parent-before-child guarantee covers mount order and not re-runs; and as a
+	// `beforeNavigate` hook it fired for navigations this app then CANCELLED —
+	// `[collection]/+page.svelte` cancels to prompt about an unsaved draft —
+	// clearing the title of a page the user never left.
+	//
+	// `titleStore` now stamps `section`/`item` with the pathname they were set
+	// for and ignores them elsewhere, so a stale part cannot leak into another
+	// route and nothing has to run at the right moment. Unwired routes still
+	// fall back to `{Workspace} · Pad`, which was this clear's whole purpose.
 
 	// Persist the user's last-visited route per workspace so the workspace
 	// switcher (WorkspaceSwitcher.svelte) can restore it on switch instead
