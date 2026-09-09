@@ -2,6 +2,7 @@ package attachments
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -843,5 +844,127 @@ func TestCollidingMagicIsArbitratedByExtension(t *testing.T) {
 	}
 	if err == nil && entry.MIME != "application/x-tar" {
 		t.Errorf("stored as %q, want the default candidate application/x-tar", entry.MIME)
+	}
+}
+
+// cfbHeader returns a Compound File Binary header. HAND-BUILT, and that is
+// sound here for a reason it is not sound elsewhere in this package: the
+// branch under test reads these eight fixed bytes and nothing else, so eight
+// bytes exercise the whole of it. A real .doc would add megabytes and test the
+// same comparison. (Contrast the ISO-BMFF and EBML fixtures, where the code
+// walks structure an encoder produces and a typed header would only test the
+// author's reading of the spec.)
+func cfbHeader(trailing int) []byte {
+	return append([]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, make([]byte, trailing)...)
+}
+
+// TestBUG2963CFBOfficeTrio covers the legacy Office family: the bytes say
+// "CFB container" and nothing finer, so the extension chooses which of the
+// three REVIEWED types is stored. The zip+document branch's shape, one
+// container family over.
+func TestBUG2963CFBOfficeTrio(t *testing.T) {
+	head := cfbHeader(56)
+
+	if got := SniffMIME(head); got != "application/octet-stream" {
+		t.Fatalf("premise failed: CFB bytes sniff %q, not application/octet-stream — this "+
+			"family exists because the stdlib has no signature for the container", got)
+	}
+
+	for _, tc := range []struct{ name, want string }{
+		{"report.doc", "application/msword"},
+		{"budget.xls", "application/vnd.ms-excel"},
+		{"deck.ppt", "application/vnd.ms-powerpoint"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, code, err := ValidateUpload(head, tc.name)
+			if err != nil {
+				t.Fatalf("refused (code=%s): %v", code, err)
+			}
+			if entry.MIME != tc.want {
+				t.Errorf("stored as %q, want %q", entry.MIME, tc.want)
+			}
+			if entry.Category != CategoryDocument {
+				t.Errorf("category = %v, want %v", entry.Category, CategoryDocument)
+			}
+			if entry.ServeInline() {
+				t.Error("ServeInline() = true; an Office document is served as an attachment")
+			}
+		})
+	}
+
+	// The extension is REQUIRED, and the list is a list. CFB carries .msi
+	// installers and Visio files too, so the header alone admits nothing, and
+	// an extension outside the reviewed three admits nothing either — .docx is
+	// the sharp case, being a document extension whose type is allowlisted but
+	// whose container is zip, not CFB.
+	for _, name := range []string{"nameless", "installer.msi", "report.docx", "diagram.vsd"} {
+		t.Run("refused: "+name, func(t *testing.T) {
+			if entry, code, err := ValidateUpload(head, name); err == nil {
+				t.Errorf("accepted as %q; only .doc/.xls/.ppt may be believed on a CFB header", entry.MIME)
+			} else if code != "mime_not_allowed" {
+				t.Errorf("code = %q, want mime_not_allowed", code)
+			}
+		})
+	}
+
+	// And the header is required: the extension introduces nothing on its own.
+	t.Run("one byte off is not a CFB", func(t *testing.T) {
+		broken := cfbHeader(56)
+		broken[7] = 0xE2
+		if _, code, err := ValidateUpload(broken, "report.doc"); err == nil {
+			t.Error("accepted with a corrupted signature; the .doc name is being trusted alone")
+		} else if code != "mime_not_allowed" {
+			t.Errorf("code = %q, want mime_not_allowed", code)
+		}
+	})
+}
+
+// TestBUG2963RTF covers the one signature in this change that needs NO
+// extension. RTF is printable ASCII, so the stdlib answers text/plain — an
+// opinion rather than the absence of one — and a .rtf was refused as a
+// mismatch against its own type while application/rtf sat on the allowlist.
+func TestBUG2963RTF(t *testing.T) {
+	rtf := []byte(`{\rtf1\ansi\deff0 {\fonttbl {\f0 Times;}}\f0\fs24 Hello.\par}`)
+
+	if got := NormalizeMIME(http.DetectContentType(rtf)); got != "text/plain" {
+		t.Fatalf("premise failed: the stdlib called this %q, not text/plain", got)
+	}
+
+	// Filename-independent, unlike every other extension-trust leg in this
+	// change. Both legs matter: the second is what says this is a byte
+	// signature and not extension trust wearing one.
+	for _, name := range []string{"letter.rtf", "letter", "letter.bin"} {
+		t.Run(name, func(t *testing.T) {
+			entry, code, err := ValidateUpload(rtf, name)
+			if err != nil {
+				t.Fatalf("refused (code=%s): %v", code, err)
+			}
+			if entry.MIME != "application/rtf" {
+				t.Errorf("stored as %q, want application/rtf", entry.MIME)
+			}
+			if entry.ServeInline() {
+				t.Error("ServeInline() = true; RTF is served as an attachment, unlike the " +
+					"text/plain it used to be stored as when it had no extension")
+			}
+		})
+	}
+
+	// The signature is the literal "{\rtf1". A different version digit is not
+	// this format as the specification defines it, and ordinary prose in a
+	// .rtf is still refused rather than stored as a document.
+	for _, tc := range []struct{ name, body string }{
+		{"a later version digit", `{\rtf2\ansi Hello}`},
+		{"prose", "Dear Bob,\n"},
+	} {
+		t.Run("not RTF: "+tc.name, func(t *testing.T) {
+			if got := SniffMIME([]byte(tc.body)); got != "text/plain" {
+				t.Errorf("SniffMIME = %q, want text/plain", got)
+			}
+			if _, code, err := ValidateUpload([]byte(tc.body), "letter.rtf"); err == nil {
+				t.Error("accepted as RTF on the .rtf name alone")
+			} else if code != "mime_extension_mismatch" {
+				t.Errorf("code = %q, want mime_extension_mismatch", code)
+			}
+		})
 	}
 }

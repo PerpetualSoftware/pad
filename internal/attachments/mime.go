@@ -127,10 +127,12 @@ var allowed = func() map[string]MIMEEntry {
 	// application/javascript was removed here (BUG-2963 F6): no extension in
 	// extMIMEMap reaches that spelling and SniffMIME cannot emit it, so the
 	// entry could never be the type an upload was stored under. text/javascript
-	// stays because .js maps to it — but note it is not reachable EITHER: a .js
-	// upload sniffs text/plain and is stored as that. The difference is that
-	// text/javascript has a route to become reachable (the F5 extension-trust
-	// work) and application/javascript has none, since nothing names it.
+	// stays because .js maps to it — and since F5 it is REACHABLE: a .js upload
+	// sniffs text/plain and the extension chooses this spelling, which moves
+	// the file out of the inline-safe text/plain entry and into forced
+	// download. That is the direction of the trade and the reason .js was
+	// included rather than carved out. (This comment said "not reachable
+	// EITHER" until F5 made it false.)
 	for _, t := range []string{
 		"text/html", "text/javascript",
 	} {
@@ -228,6 +230,11 @@ var sniffAliases = map[string]string{
 // use). The result is normalized via NormalizeMIME and run through
 // sniffAliases so allowlist lookups always see the canonical name.
 //
+// Beyond the ISO-BMFF pre-check below, three refinements run AFTER the stdlib,
+// each keyed on what it said: the WebM DocType read, the magic table for bytes
+// it had no opinion about, and RTF's five-byte signature. They are described
+// at the switch that dispatches them.
+//
 // One family is detected ahead of the stdlib: ISO-BMFF. Still images
 // (HEIC / HEIF / AVIF) are the original case — the mimesniff table has no
 // signature for them, so they sniffed as application/octet-stream and were
@@ -250,17 +257,20 @@ func SniffMIME(head []byte) string {
 	if alias, ok := sniffAliases[got]; ok {
 		got = alias
 	}
-	// Two BUG-2963 refinements. (Ogg was a third and was removed; see
+	// Three BUG-2963 refinements. (Ogg was a fourth and was removed; see
 	// mime_magic.go for why a container name cannot be aliased to an audio
 	// type.) Each is keyed on what the stdlib already said, so none can retype
-	// a file the standard library identified. Neither VALIDATES the format —
-	// see mime_magic.go's header for the three review rounds that settled why
+	// a file the standard library identified. None VALIDATES the format — see
+	// mime_magic.go's header for the three review rounds that settled why
 	// recognition here is by magic:
 	//
 	//   - video/webm is refined, because the mimesniff table answers it from
 	//     the bare EBML magic and cannot tell Matroska from WebM;
 	//   - application/octet-stream is the stdlib having NO opinion, which is
-	//     the only case where recognising more formats adds anything.
+	//     the case where recognising more formats adds the most;
+	//   - text/plain is an OPINION, so it admits exactly one signature, RTF's
+	//     five fixed bytes. The bar for adding a second is the argument at
+	//     validRTFStream, not this list's existence.
 	switch got {
 	case "video/webm":
 		if mime := sniffEBMLDocType(head); mime != "" {
@@ -269,6 +279,15 @@ func SniffMIME(head []byte) string {
 	case "application/octet-stream":
 		if mime := sniffOpaqueMagic(head); mime != "" {
 			return mime
+		}
+	case "text/plain":
+		// RTF is printable ASCII, so text/plain is an OPINION here rather
+		// than the absence of one — which is why this case is narrower than
+		// the octet-stream case above and admits exactly one signature. Five
+		// fixed bytes at offset zero; nothing else in this switch may key on
+		// text/plain without the same argument (BUG-2963).
+		if validRTFStream(head) {
+			return "application/rtf"
 		}
 	}
 	return got
@@ -342,6 +361,28 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 	if (stdlib == "application/octet-stream" || stdlib == "text/plain") &&
 		validADTSHeader(head) && ext == ".aac" {
 		sniffed = "audio/aac"
+	}
+
+	// The legacy Office trio (BUG-2963). CFB is a container the stdlib has no
+	// signature for, so .doc/.xls/.ppt sniffed application/octet-stream and
+	// were refused while all three types sat on the allowlist. This is the
+	// zip+document branch's shape one container family over: the BYTES say
+	// "CFB container" and nothing finer, and the extension chooses which of
+	// the three reviewed Office types is stored.
+	//
+	// The extension set is written out here rather than taken from extMIMEMap,
+	// because the question is not "does this extension map to a document" —
+	// .msi is a CFB container too, and so are Visio files. It is "is this one
+	// of the three types the allowlist reviewed", and that is a list, not a
+	// predicate. Everything else keeps falling through to mime_not_allowed.
+	if sniffed == "application/octet-stream" && validCFBHeader(head) {
+		switch ext {
+		case ".doc", ".xls", ".ppt":
+			if extEntry, extAllowed := allowed[NormalizeMIME(extMIMEMap[ext])]; extAllowed &&
+				extEntry.Category == CategoryDocument {
+				sniffed = extEntry.MIME
+			}
+		}
 	}
 
 	// The text family (BUG-2963 F5). text/plain is the stdlib saying "these
