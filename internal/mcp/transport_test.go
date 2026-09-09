@@ -178,10 +178,23 @@ func toStrings(t *testing.T, v any) []string {
 	return out
 }
 
-// TestRemoteTransportStillAnswersTheLegacyHandshake is the other half: the
-// restriction must not break the era pad actually serves. A client that opens
-// with initialize still negotiates 2025-11-25, which is what every pad MCP
-// client does today and what pad://_meta/version advertises.
+// TestRemoteTransportStillAnswersTheLegacyHandshake covers the era pad
+// actually serves: a client that opens with initialize negotiates 2025-11-25,
+// which is what every pad MCP client does today and what pad://_meta/version
+// advertises.
+//
+// WHAT THIS DOES NOT MEASURE, established by mutation rather than assumed. The
+// handshake is INDEPENDENT of the transport's advertised list: initialize is
+// answered by MCPServer through mcp.NegotiateLegacyVersion, which consults
+// LATEST_LEGACY_PROTOCOL_VERSION and never the transport. Restricting the list
+// to a version that excludes 2025-11-25 leaves this test green — measured, and
+// asserted directly by the subtest below. So this test says the legacy path
+// works; it is NOT evidence that the restriction preserved it, and the earlier
+// draft of this comment claimed it was.
+//
+// That independence is itself worth pinning: a future reader restricting the
+// advertised list in the belief that it gates the handshake would be wrong in
+// a way nothing else here would catch.
 func TestRemoteTransportStillAnswersTheLegacyHandshake(t *testing.T) {
 	transport := NewRemoteTransport(server.NewMCPServer("pad-test", "0.0.0"), generateOnlySessionIDs{})
 
@@ -201,6 +214,38 @@ func TestRemoteTransportStillAnswersTheLegacyHandshake(t *testing.T) {
 	if got := result["protocolVersion"]; got != mcpspec.ProtocolVersion20251125 {
 		t.Errorf("initialize negotiated %v, want %s", got, mcpspec.ProtocolVersion20251125)
 	}
+
+	// The independence, asserted. A transport advertising ONLY 2025-06-18
+	// still answers initialize with 2025-11-25, because the handshake never
+	// consults the transport's list. If this ever starts failing, the two have
+	// been wired together and the restriction has become able to break legacy
+	// clients — which is the moment this file needs a different test.
+	t.Run("the handshake ignores the advertised list", func(t *testing.T) {
+		narrow := server.NewStreamableHTTPServer(
+			server.NewMCPServer("pad-test", "0.0.0"),
+			server.WithEndpointPath("/mcp"),
+			server.WithSessionIdManager(generateOnlySessionIDs{}),
+			server.WithStreamableHTTPProtocolVersions(mcpspec.ProtocolVersion20250618),
+			server.WithDisableLocalhostProtection(true),
+		)
+		env := postJSONRPC(t, narrow, "", "", `{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize",
+			"params": {
+				"protocolVersion": "2025-11-25",
+				"capabilities": {},
+				"clientInfo": {"name": "test", "version": "0.0.0"}
+			}
+		}`)
+		result, ok := env["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("initialize returned no result: %v", env)
+		}
+		if got := result["protocolVersion"]; got != mcpspec.ProtocolVersion20251125 {
+			t.Errorf("negotiated %v, want %s — the handshake has become coupled to the "+
+				"transport's advertised list, so the restriction can now refuse "+
+				"legacy clients", got, mcpspec.ProtocolVersion20251125)
+		}
+	})
 }
 
 // TestAdvertisedRevisionMatchesWhatTheTransportServes closes the loop the
