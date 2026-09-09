@@ -238,7 +238,7 @@
 		const stale = () => destroyed || seq !== loadSeq || reqSlug !== itemSlug || reqWs !== wsSlug;
 		// BUG-2871: only tear the list down when there is nothing valid to show
 		// for THIS item — a first load or an item switch. A same-item REFRESH
-		// keeps the rendered rows mounted.
+		// keeps the rendered rows mounted, whether it succeeds or fails.
 		//
 		// `loading` swaps the whole list for a spinner, so flipping it on every
 		// refresh destroyed and rebuilt every row node — and any `item_created`
@@ -265,6 +265,20 @@
 			onChildrenChange?.(children);
 		} catch (err) {
 			if (stale()) return;
+			// BUG-2871, codex round 1: a FAILED same-item refresh must not destroy
+			// the rows either. `error` swaps the list for `.error-msg` exactly as
+			// `loading` swaps it for the spinner, so surfacing a transient refresh
+			// failure that way reintroduces this bug through the other branch —
+			// and `onChildrenChange?.([])` would tell the parent we have no
+			// children while `children` still holds them.
+			//
+			// So a background refresh that fails keeps the last good rows and
+			// stays quiet; the next refresh retries, and they arrive constantly
+			// (any item_created in the workspace triggers one). The cost is that
+			// such a failure is invisible, which is a real tradeoff and the
+			// better half of it: the alternative on display here was destroying
+			// the list under the user's pointer.
+			if (sameItem) return;
 			error = err instanceof Error ? err.message : 'Failed to load children';
 			onChildrenChange?.([]);
 		} finally {

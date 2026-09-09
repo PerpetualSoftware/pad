@@ -55,9 +55,16 @@ test('BUG-2871: a same-data refresh keeps the child row node', async ({
 
 	// Count children fetches, so "the node survived" can't pass because no
 	// refresh ever happened — which is the way this test would go vacuous.
-	let childrenFetches = 0;
-	page.on('request', (req) => {
-		if (req.method() === 'GET' && /\/items\/[^/]+\/children/.test(req.url())) childrenFetches++;
+	// Count RESPONSES, not requests (codex round 1). A request event can fire
+	// before the component has processed the state change that replaces the
+	// DOM, so polling on requests and asserting immediately could observe the
+	// node still connected on a BROKEN build — a race-dependent false pass.
+	// The replacement happens when the refresh settles, so that is what to wait
+	// for, plus a render turn.
+	let childrenResponses = 0;
+	page.on('response', (res) => {
+		const req = res.request();
+		if (req.method() === 'GET' && /\/items\/[^/]+\/children/.test(res.url())) childrenResponses++;
 	});
 
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs`);
@@ -77,17 +84,22 @@ test('BUG-2871: a same-data refresh keeps the child row node', async ({
 		(window as unknown as { __b2871row?: Element | undefined }).__b2871row = row;
 	}, kidTitle);
 
-	const fetchesBefore = childrenFetches;
+	const responsesBefore = childrenResponses;
 	const unrelated = await request.post(
 		`/api/v1/workspaces/${fixture.workspaceSlug}/collections/docs/items`,
 		{ headers: authHeaders(fixture), data: { title: `B2871 unrelated ${Date.now()}`, content: '' } },
 	);
 	expect(unrelated.ok(), await unrelated.text()).toBeTruthy();
 
-	// Non-vacuity: a refresh must actually have run.
+	// Non-vacuity: a refresh must actually have COMPLETED — otherwise "the node
+	// survived" is a statement about a refresh that never happened.
 	await expect
-		.poll(() => childrenFetches, { timeout: 10_000 })
-		.toBeGreaterThan(fetchesBefore);
+		.poll(() => childrenResponses, { timeout: 10_000 })
+		.toBeGreaterThan(responsesBefore);
+	// ...and give the component its render turn, so a broken build has actually
+	// had the chance to replace the node before this asserts that it did not.
+	await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null)))));
+	await page.waitForTimeout(500);
 
 	const result = await page.evaluate((title) => {
 		const w = window as unknown as { __b2871row?: Element };
