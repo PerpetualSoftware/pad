@@ -8,8 +8,12 @@ let current = $state<Workspace | null>(null);
 let currentMembership = $state<WorkspaceMembership | null>(null);
 // Whether `currentMembership` is an ANSWER or merely NOT YET FETCHED (BUG-2978).
 // It is null in both cases, which makes the two indistinguishable to consumers —
-// and they are opposites: one is "wait", the other is "no access". False while a
-// membership fetch is in flight, true once one has settled either way.
+// and they are opposites: one is "wait", the other is "no access".
+//
+// False from the moment a call that will replace membership begins — which
+// includes resolving the workspace itself, and creating one — until that call
+// settles. True once it has, on every exit: a fetched membership, a 403, a
+// workspace that did not resolve, or a create that threw.
 let membershipKnown = $state(false);
 let loading = $state(false);
 
@@ -67,8 +71,11 @@ export const workspaceStore = {
 	 * True once a membership fetch has SETTLED for the current workspace, so a
 	 * null `currentMembership` means "no access" rather than "not yet loaded".
 	 *
-	 * Consumers that cache a permission to avoid flickering during the fetch
-	 * window (BUG-2978) must gate on this rather than on `currentMembership !==
+	 * False spans the whole replacing call — workspace resolution and creation
+	 * included, not just the `/me` request itself.
+	 *
+	 * Consumers that cache a permission to avoid flickering during that window
+	 * (BUG-2978) must gate on this rather than on `currentMembership !==
 	 * null`: gating on non-null holds the last good answer forever when the
 	 * answer becomes a definitive denial — a removed member or a 403 keeps
 	 * owner-only affordances on screen. The server remains the enforcement
@@ -244,7 +251,20 @@ export const workspaceStore = {
 		const seq = ++membershipSeq;
 		currentMembership = null;
 		membershipKnown = false;
-		const ws = await api.workspaces.create(data);
+		let ws: Workspace;
+		try {
+			ws = await api.workspaces.create(data);
+		} catch (err) {
+			// SETTLE THE FLAG ON THE WAY OUT (codex round 2). This method clears
+			// membership at entry for the same reason `setCurrent` does, so a
+			// create that throws would otherwise leave `membershipKnown` false
+			// forever — permanently "still loading" for a fetch that will never
+			// happen, which is exactly the state consumers cache through.
+			// Membership is already null, so "known" here says no access, which
+			// is what the null already meant before this flag existed.
+			if (seq === membershipSeq) membershipKnown = true;
+			throw err;
+		}
 		if (seq !== membershipSeq) return ws;
 		workspaces = [...workspaces, ws];
 		current = ws;
