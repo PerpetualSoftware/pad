@@ -23,6 +23,13 @@ script="$here/heal-vendor-hash.sh"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# The suite owns the script's run-location guard, so neither variable may reach
+# it from the caller's environment. This matters in exactly one direction and it
+# is the direction CI runs in: GitHub Actions always sets GITHUB_ACTIONS=true, so
+# an inherited value would satisfy the guard and case 6 would pass locally and
+# fail in the Go job. Every case below opts in explicitly instead.
+unset GITHUB_ACTIONS HEAL_ALLOW_LOCAL
+
 pass=0
 fail=0
 
@@ -168,6 +175,13 @@ out="$( cd "$d/work" && cp "$d/artifact.nix" nix/package.nix && SHA=deadbeef "$s
 check "6 local guard: exits 2" "2" "$?"
 case "$out" in *"refusing to run outside GitHub Actions"*) got=yes ;; *) got=no ;; esac
 check "6 local guard: says why" "yes" "$got"
+
+# ...and the arm that lets the real job through: in Actions, no override needed.
+d="$(scenario case6b)"
+( cd "$d/work" && cp "$d/artifact.nix" nix/package.nix && SHA=deadbeef GITHUB_ACTIONS=true "$script" ) >/dev/null 2>&1
+check "6b in Actions: runs without an override" "0" "$?"
+git -C "$d/work" fetch -q origin main
+check "6b in Actions: heals main" "$GOOD" "$(hash_on_main "$d/work")"
 
 # ---------------------------------------------------------------- case 7
 # SHA is what the commit message names; an unset one is a usage error, not a
