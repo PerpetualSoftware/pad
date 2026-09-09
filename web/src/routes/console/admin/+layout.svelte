@@ -110,8 +110,19 @@
 	.stat-label { font-size: 0.8rem; color: var(--text-muted); text-transform: capitalize; }
 
 	/* Tabs */
+	/* TASK-2979: wraps rather than scrolls, for the reason C82 (TASK-2245) gives
+	   on the workspace settings strip — a scrollport whose scrollbar is hidden
+	   ends after a tab with clean trailing whitespace and looks complete, so the
+	   tabs past the fold are not merely awkward to reach, they are unadvertised.
+	   Measured before this change: 4 tabs (self-host) clip `Settings` to 61% at
+	   320px, and with the two cloudMode tabs present the strip is 478px intrinsic
+	   against a 288-398px box — `Settings` 0% visible at 320/360/390/412/430 and
+	   `Billing` invisible or nearly so throughout.
+	   No media query: `flex-wrap` is inert while the row fits, so the rule cannot
+	   reach a width where the tabs were fine. */
 	.admin-tabs {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--space-1);
 		border-bottom: 1px solid var(--border);
 		margin-bottom: var(--space-6);
@@ -125,6 +136,10 @@
 		border-bottom: 2px solid transparent;
 		margin-bottom: -1px;
 		transition: color 0.15s, border-color 0.15s;
+		/* Hoisted out of the deleted mobile block: a wrapped row must still break
+		   BETWEEN tabs, never inside a label. */
+		flex-shrink: 0;
+		white-space: nowrap;
 	}
 	.admin-tab:hover {
 		color: var(--text-primary);
@@ -135,25 +150,11 @@
 		border-bottom-color: var(--accent-blue);
 	}
 
-	/*
-		Mobile: keep the tab-bar visual identity but allow horizontal
-		scroll so all tabs are reachable on narrow viewports without
-		wrapping or clipping. Mirrors the overflow-x:auto pattern used
-		elsewhere in the app (e.g. Editor.svelte). See BUG-1118.
-	*/
-	@media (max-width: 640px) {
-		.admin-tabs {
-			overflow-x: auto;
-			-webkit-overflow-scrolling: touch;
-			flex-wrap: nowrap;
-			scrollbar-width: none;
-		}
-		.admin-tabs::-webkit-scrollbar {
-			display: none;
-		}
-		.admin-tab {
-			flex-shrink: 0;
-			white-space: nowrap;
-		}
-	}
+	/* The mobile block that used to live here scrolled the strip with its
+	   scrollbar hidden, and its own comment claimed that made every tab
+	   "reachable ... without wrapping or clipping". The first half was true and
+	   the second was not: reachable by a swipe nothing advertises is what BUG-1118
+	   bought, and measurement (on TASK-2979's trail) shows tabs clipped to 0% at
+	   every phone width once the cloud tab set is present. Wrapping is what the
+	   comment was describing; now it is what the code does. */
 </style>
