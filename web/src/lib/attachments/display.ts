@@ -397,11 +397,16 @@ export function canBrowserPreview(mime: string | null | undefined): boolean {
  * served as an attachment.
  *
  * MIME-EXACT, NEVER BY CATEGORY. `CategoryText` server-side CONTAINS the
- * force-download bucket — `text/html`, `text/javascript` and
- * `application/javascript` are all `CategoryText` (mime.go). A
- * category test would therefore admit exactly the types PLAN-2393 DR-6
- * forbids inlining. An allowlist excludes them by construction rather
- * than by anyone remembering to.
+ * force-download bucket — `text/html` and `text/javascript` are both
+ * `CategoryText` (mime.go). A category test would therefore admit exactly
+ * the types PLAN-2393 DR-6 forbids inlining. An allowlist excludes them by
+ * construction rather than by anyone remembering to.
+ *
+ * `application/javascript` used to be named here as a third example. It left
+ * the server allowlist in BUG-2963 F6 as an unreachable spelling, so the
+ * server no longer has a category for it at all — but it stays excluded from
+ * the allowlists below, because the string can still reach this client from
+ * somewhere that is not our upload door.
  *
  * SMALLER THAN WHAT WE COULD RENDER, on purpose. `text/csv`,
  * `text/tab-separated-values`, JSON, XML, YAML and TOML are all
