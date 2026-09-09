@@ -78,6 +78,11 @@
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
 
 	let children = $state<Item[]>([]);
+	// Which (workspace, item) the rows in `children` belong to. Plain variables,
+	// not $state: they are read inside loadChildren to decide whether a load is
+	// a refresh or a switch, and nothing renders from them (BUG-2871).
+	let loadedForSlug: string | null = null;
+	let loadedForWs: string | null = null;
 	let loading = $state(true);
 	let error = $state('');
 	let unsubscribeSSE: (() => void) | null = null;
@@ -231,12 +236,32 @@
 		// case: a late load from the old instance must not push stale children
 		// through onChildrenChange into the freshly-mounted parent (Codex).
 		const stale = () => destroyed || seq !== loadSeq || reqSlug !== itemSlug || reqWs !== wsSlug;
-		loading = true;
+		// BUG-2871: only tear the list down when there is nothing valid to show
+		// for THIS item — a first load or an item switch. A same-item REFRESH
+		// keeps the rendered rows mounted.
+		//
+		// `loading` swaps the whole list for a spinner, so flipping it on every
+		// refresh destroyed and rebuilt every row node — and any `item_created`
+		// in the workspace triggers a refresh (the SSE subscription below), so
+		// this fired constantly with other people working. A click needs
+		// mousedown and mouseup on the SAME node: when a refresh landed between
+		// them the click event never fired at all, which silently dropped the
+		// user's click on a child row. Measured on the trail — the row, its
+		// wrapper and its container were all replaced by a refresh whose data
+		// was identical, with the spinner observed in between.
+		//
+		// The switch case still shows the spinner, deliberately: `children` is
+		// not cleared when `itemSlug` changes, so without it the previous item's
+		// rows would sit there looking current until the new load lands.
+		const sameItem = loadedForSlug === reqSlug && loadedForWs === reqWs;
+		if (!sameItem) loading = true;
 		error = '';
 		try {
 			const loaded = await api.items.children(reqWs, reqSlug);
 			if (stale()) return;
 			children = loaded;
+			loadedForSlug = reqSlug;
+			loadedForWs = reqWs;
 			onChildrenChange?.(children);
 		} catch (err) {
 			if (stale()) return;
