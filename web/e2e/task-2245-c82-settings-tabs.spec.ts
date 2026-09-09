@@ -29,7 +29,8 @@ type BarProbe = {
 	/** Intrinsic width of the row: tab widths plus the gaps between them. */
 	intrinsicWidth: number;
 	barScrolls: boolean;
-	pageScrollsHorizontally: boolean;
+	/** Ancestors of the bar (up to <html>) that scroll horizontally. */
+	scrollingAncestors: string[];
 	clipped: string[];
 };
 
@@ -50,14 +51,26 @@ async function probeTabBar(page: Page): Promise<BarProbe> {
 				pct: (100 * visible) / r.width,
 			};
 		});
-		const de = document.scrollingElement as HTMLElement;
+		// "No horizontal page scroll" cannot be read off document.scrollingElement
+		// here: the app scrolls in `.main-content`, whose `overflow-y:auto`
+		// computes `overflow-x:auto`, so overflow is contained there and never
+		// reaches the document. Walk the real chain instead. Negative control on
+		// the trail: forcing a 3000px child into `.settings` makes this list
+		// `[div.settings, main.main-content]`, while the document oracle stays
+		// silent — so the empty list below is a measurement, not a tautology.
+		const scrollingAncestors: string[] = [];
+		for (let el = bar.parentElement; el; el = el.parentElement) {
+			if (el.scrollWidth > el.clientWidth + 1) {
+				scrollingAncestors.push(`${el.tagName.toLowerCase()}.${el.className || '(no class)'}`);
+			}
+		}
 		return {
 			tabCount: tabs.length,
 			rows: new Set(tabs.map((t) => t.y)).size,
 			clientWidth: bar.clientWidth,
 			intrinsicWidth: tabs.reduce((sum, t) => sum + t.width, 0) + gap * Math.max(0, tabs.length - 1),
 			barScrolls: bar.scrollWidth > bar.clientWidth,
-			pageScrollsHorizontally: de.scrollWidth > de.clientWidth,
+			scrollingAncestors,
 			clipped: tabs.filter((t) => t.pct < 99.5).map((t) => `${t.label} ${t.pct.toFixed(1)}%`),
 		};
 	});
@@ -81,7 +94,7 @@ test('TASK-2245 C82: no settings tab is clipped at phone width', async ({ page, 
 
 	expect(bar.clipped, 'settings tabs clipped out of view').toEqual([]);
 	expect(bar.barScrolls, 'tab bar still scrolls horizontally').toBe(false);
-	expect(bar.pageScrollsHorizontally, 'settings page scrolls horizontally').toBe(false);
+	expect(bar.scrollingAncestors, 'wrapping pushed horizontal scroll onto an ancestor').toEqual([]);
 	expect(bar.rows).toBeGreaterThan(1);
 });
 
@@ -96,5 +109,5 @@ test('TASK-2245 C82: the wrap rule is inert on desktop', async ({ page, fixture 
 
 	expect(bar.rows, 'desktop tab bar wrapped when it did not need to').toBe(1);
 	expect(bar.clipped).toEqual([]);
-	expect(bar.pageScrollsHorizontally).toBe(false);
+	expect(bar.scrollingAncestors).toEqual([]);
 });
