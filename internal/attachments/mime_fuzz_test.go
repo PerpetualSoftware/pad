@@ -18,7 +18,8 @@ import "testing"
 func FuzzSniffMIME(f *testing.F) {
 	for _, name := range []string{
 		"matroska.head512", "webm.head512", "webm-void-says-matroska.head512",
-		"matroska-void-padded.head512", "tar.head512", "tar-bmp-firstmember.head512",
+		"matroska-void-padded.head512", "matroska-void-beyond-window.head512",
+		"tar.head512", "tar-bmp-firstmember.head512",
 		"sevenzip.head512", "flac.head512", "bzip2.head512", "aac-adts.head512",
 		"ogg-opus.head512", "ogg-vp8-video.head512", "avi.head512",
 		"elf-with-ustar-magic.head512",

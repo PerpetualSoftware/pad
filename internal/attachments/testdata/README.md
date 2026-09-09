@@ -68,16 +68,19 @@ the first version of these signatures.
 | `elf-with-valid-tar-checksum.head512` | hand-built | an ELF header carrying a well-formed tar header in its padding, checksum included. ACCEPTED, deliberately — and when this package still verified checksums, `archive/tar`'s own reader accepted it too. It records a limitation rather than a defect |
 | `tar-flac-named-member.head512` | GNU `tar -cf` on a file named `fLaC.txt` | an ordinary archive carrying another format's prefix magic in its member NAME |
 | `flac-ustar-in-comment.head512` | a real FLAC with a Vorbis COMMENT block whose vendor string places `ustar` at offset 257; decodes under libsndfile | the same collision from the other side — Vorbis tags are arbitrary UTF-8, so audio can carry the tar magic as easily as a tar can carry an audio marker |
+| `matroska-void-beyond-window.head512` | FFmpeg Matroska with a 560-byte Void spliced into its header, header size widened to match; the complete file reads as `matroska,webm` under ffprobe | a Void larger than the sniff window puts DocType outside the input entirely, so the parse finds nothing and the stdlib's `video/webm` stands. A limitation, recorded — no window size fixes it, since Void may be larger still |
 | `matroska-nul-terminated-doctype.head512` | `sample.mkv` with its DocType payload rewritten to `matroska\0junk`, declared length 13 | a DocType value ends at its first NUL; trimming instead stored a real Matroska as WebM |
 
 Void elements are legal anywhere in an EBML header and their contents are
 meaningless by specification, which is why only a parse can tell payload from
 padding.
 
-The two EBML entries say "ffprobe-readable" of the FILES THEY WERE MADE FROM.
-What is committed is the first 512 bytes, as with every fixture here, so
-running ffprobe on the committed file fails with a premature EOF — that is the
-truncation, not the file.
+Where an EBML entry above says a muxer or ffprobe read a file, that is said of
+the file it was MADE FROM. What is committed is the first 512 bytes, as with
+every fixture here, so running ffprobe on the committed prefix fails with a
+premature EOF — that is the truncation, not the file. (This paragraph said
+"the two EBML entries" while there were four of them; it is a property of the
+whole family, not of a fixed pair.)
 
 ### Ogg fixtures — kept for a format the sniffer does NOT recognise
 

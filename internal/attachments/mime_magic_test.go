@@ -119,6 +119,59 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 	}
 }
 
+// TestMatroskaDocTypeBeyondTheWindowIsWebM records a LIMITATION, not a defect
+// (BUG-2963 codex round 6; ruled not blocking for PR A).
+//
+// A Void element is legal anywhere in an EBML header and may be any size. Make
+// one larger than the 512 bytes this door reads and the DocType behind it is
+// not in the input at all, so the parse finds nothing and the stdlib's answer
+// stands: a real Matroska is stored as video/webm and served inline.
+//
+// Nothing got worse, which is why it is a limitation. Before the DocType read
+// existed this file was ALSO video/webm — the mimesniff table maps the bare
+// EBML magic that way with no DocType check — and video/webm's own allowlist
+// entry permits inline serving. The DocType here is UNDECIDABLE at this size,
+// not mis-decided, and no larger window fixes it: Void may be larger still.
+//
+// The fixture is the ordinary FFmpeg Matroska with a 560-byte Void spliced
+// into its header and the header size field widened to match — the same
+// construction as matroska-void-padded.head512, one order of magnitude up. The
+// COMPLETE file ffprobe reads as matroska,webm; what is committed is its first
+// 512 bytes, so the DocType is absent from the fixture, which is the condition
+// under test rather than a truncation artifact.
+func TestMatroskaDocTypeBeyondTheWindowIsWebM(t *testing.T) {
+	head := readFixture(t, "matroska-void-beyond-window.head512")
+
+	if !bytes.HasPrefix(head, []byte{0x1A, 0x45, 0xDF, 0xA3}) {
+		t.Fatal("premise failed: the fixture must carry the EBML magic")
+	}
+	if bytes.Contains(head, []byte("matroska")) {
+		t.Fatal("premise failed: the DocType must lie beyond these 512 bytes, or " +
+			"this exercises the ordinary parse instead of the limitation")
+	}
+
+	if got := sniffEBMLDocType(head); got != "" {
+		t.Errorf("sniffEBMLDocType = %q, want \"\" — the DocType is not in these bytes", got)
+	}
+	if got := SniffMIME(head); got != "video/webm" {
+		t.Errorf("SniffMIME = %q, want video/webm — the stdlib's answer for bare EBML magic", got)
+	}
+
+	entry, code, err := ValidateUpload(head, "clip.mkv")
+	if err != nil {
+		t.Fatalf("a real Matroska was refused (code=%s): %v — it was accepted before "+
+			"the DocType read existed, so a refusal here is a regression", code, err)
+	}
+	if entry.MIME != "video/webm" {
+		t.Errorf("stored as %q, want video/webm — the limitation is precisely that a "+
+			"Matroska is stored under the WebM spelling when its DocType is out of reach",
+			entry.MIME)
+	}
+	if !entry.ServeInline() {
+		t.Error("ServeInline() = false; video/webm serves inline and did before this check existed")
+	}
+}
+
 // TestOggStaysRefused records a decision, not a mechanism: Ogg is NOT
 // recognised, and both fixtures are kept so the next person to reach for an
 // application/ogg alias meets the evidence first.
@@ -171,11 +224,16 @@ func TestADTSGate(t *testing.T) {
 		t.Errorf("code = %q, want mime_not_allowed", code)
 	}
 
-	// A REAL AAC file can look textual. These seven bytes are a valid ADTS
-	// header whose every byte the stdlib reads as text, so it answers
-	// text/plain — the shape of an AAC frame whose ancillary payload is
-	// printable. Review confirmed ffmpeg decodes such a file. It must be
-	// ACCEPTED: refusing it was a real file of a listed type turned away.
+	// A REAL AAC file can look textual, and this input STANDS IN for one. Say
+	// what it is: seven bytes carrying a valid ADTS sync word and layer
+	// signature, every byte of which the stdlib reads as text so it answers
+	// text/plain. It is not a decodable AAC and nothing here establishes that
+	// it is. What review established is the case it stands in for — an AAC
+	// frame's ancillary payload is arbitrary bytes, so a complete file whose
+	// printable payload keeps the stdlib on text/plain exists and ffmpeg
+	// decodes it. Seven bytes exercise the same gate because the gate reads
+	// the header alone. It must be ACCEPTED: refusing it turned away a real
+	// file of a listed type.
 	textual := []byte{0xFF, 0xF1, 0x40, 0x41, 0x41, 0x41, 0x41}
 	if !validADTSHeader(textual) {
 		t.Fatal("premise failed: the input must be a valid ADTS header")
@@ -255,8 +313,20 @@ func TestADTSGate(t *testing.T) {
 // TestTarWinsAPrefixCollision covers a real archive refused because another
 // format's magic appeared in its member's FILENAME. A tar header's first 100
 // bytes are user-chosen text, so any prefix recogniser can collide with an
-// ordinary archive; the collision is asymmetric, which is why tar is tested
-// first.
+// ordinary archive.
+//
+// The collision is SYMMETRIC. This comment used to call it asymmetric and give
+// that as the reason tar is tested first — the round-4 premise round 5
+// refuted, with flac-ustar-in-comment.head512: a FLAC's Vorbis COMMENT tags
+// are arbitrary UTF-8, so real audio carries "ustar" at offset 257 as readily
+// as a real tar carries an audio marker at offset zero. Any total order
+// refuses somebody. sniffOpaqueCandidates and the fixtures both say this
+// already; the stale word survived in the place a reader looks first.
+//
+// tar leads the DEFAULT order for a weaker reason, stated there: its magic
+// sits at a fixed offset rather than at a prefix, so it is the least likely to
+// be an accident of another format's leading bytes. What this test pins is
+// that default holding for a file whose extension agrees with it.
 func TestTarWinsAPrefixCollision(t *testing.T) {
 	b := readFixture(t, "tar-flac-named-member.head512")
 	if string(b[:4]) != "fLaC" {

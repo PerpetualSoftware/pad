@@ -154,15 +154,33 @@ jobs:
   # pull-request workflows (which would give them to FORK PRs on a public repo —
   # the surface CONVE-2438 exists to keep closed).
   #
-  # THE LOOP TERMINATES BECAUSE A CORRECTED TREE COMPUTES NO BUMP. This job
-  # pushes a commit that touches `nix/package.nix` and nothing else. That push
-  # triggers this workflow again; the build job above now finds the hash
-  # correct, prints "Build is green; vendorHash is current.", and never sets
-  # `bumped` — so this job is not merely gated, it does not start at all. The
-  # terminator is the FIX's own effect on the build, and it holds regardless of
-  # what any push touched.
+  # THE LOOP TERMINATES BECAUSE THIS PUSH TRIGGERS NOTHING. A push made with
+  # the default `GITHUB_TOKEN` creates no workflow runs, so the commit this job
+  # pushes gets no run at all. Observed on the first heal this fix produced
+  # (BUG-2974, day 62): `gh run list --branch main` spans cbfc073e ->
+  # 31d11e76 -> 0b16be49 and skips the heal commit 249a8f87 entirely. Read the
+  # BRANCH listing, not `gh run list --commit` — that query also returned
+  # nothing for 0b16be49, which demonstrably has runs, so it cannot tell
+  # "no runs" from "no answer". The loop is closed by construction rather than
+  # by being green.
   #
-  # THAT DISTINCTION IS LOAD-BEARING, AND IT WAS GOT WRONG ONCE (BUG-2974). This
+  # THE CORRECTED-TREE TERMINATOR IS THE BACKSTOP, AND IT HAS NEVER RUN. If
+  # this push did trigger a run, the build job above would find the hash
+  # correct, print "Build is green; vendorHash is current.", never set
+  # `bumped`, and this job would not start — the FIX's own effect on the build,
+  # holding regardless of what any push touched. That is an argument, not a
+  # measurement: nothing has ever exercised it. It becomes load-bearing the
+  # moment this push uses a PAT or a GitHub App token, which is the obvious
+  # edit for anyone who wants CI to validate the healed tree. Making that
+  # change inherits an untested terminator; exercise it before relying on it.
+  #
+  # A CONSEQUENCE OF THE SAME MECHANISM, not a defect: the healed tip carries
+  # no CI of its own. Its tree is the merge commit plus the one hash line that
+  # merge's own Nix run computed and built against, and the next push to main
+  # builds on it normally.
+  #
+  # THE RANGE-VS-STATE DISTINCTION IS LOAD-BEARING, AND IT WAS GOT WRONG ONCE
+  # (BUG-2974). This
   # comment used to name the loop guard as a gate asking whether the push had
   # touched `go.mod`/`go.sum`, and that gate existed as a step below. It is the
   # right question for loop prevention and the WRONG one for recovery: after a
