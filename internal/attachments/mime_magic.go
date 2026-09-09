@@ -54,18 +54,33 @@ import "bytes"
 //
 // Called ONLY when the stdlib returned application/octet-stream. That ordering
 // is about not overriding a detection the stdlib made; it is NOT what keeps
-// these checks honest — the structural validation below is. Conflating the two
-// is precisely the mistake the first version of this file made in a comment.
+// these checks honest; nothing does, in the sense of proving a format. What it
+// prevents is the narrower thing it says: a recogniser here cannot overrule a
+// type the standard library actually identified.
 func sniffOpaqueMagic(head []byte) string {
+	// TAR IS TESTED FIRST, and the order is load-bearing rather than
+	// arbitrary. Every other signature here is a PREFIX, and a tar header's
+	// first 100 bytes are its member's FILENAME — arbitrary text a user
+	// chooses. So a perfectly ordinary archive whose first member is called
+	// "fLaC.txt" or "BZh9.log" carries another format's magic at offset zero,
+	// and with the prefixes tested first it was recognised as that format and
+	// then REFUSED for a category mismatch against its own .tar extension.
+	//
+	// The collision is asymmetric, which is what makes an order the right
+	// answer rather than a coin toss: a real tar carrying a foreign prefix
+	// needs only a filename, while a real FLAC or 7z carrying "ustar" needs
+	// those exact five bytes at exactly offset 257 in compressed data. Losing
+	// the first case costs ordinary uploads; losing the second costs almost
+	// nothing.
 	switch {
+	case validTarHeader(head):
+		return "application/x-tar"
 	case validSevenZipHeader(head):
 		return "application/x-7z-compressed"
 	case validFLACStream(head):
 		return "audio/flac"
 	case validBzip2Stream(head):
 		return "application/x-bzip2"
-	case validTarHeader(head):
-		return "application/x-tar"
 	}
 	return ""
 }
@@ -114,9 +129,10 @@ func validBzip2Stream(head []byte) bool {
 //     recognised; it is only a full parse that would need more blocks than
 //     this door ever reads, which is one of the reasons the parse is gone.
 //
-// The checksum that used to be verified here is gone with the other structural
-// validation. It never distinguished a crafted header from a real one —
-// archive/tar accepts an ELF carrying a correct one, which ships as a fixture.
+// The checksum that used to be verified here is gone. It never distinguished a
+// crafted header from a real one — archive/tar accepts an ELF carrying a
+// correct one, which ships as a fixture — and verifying it required a full
+// 512-byte block, which is why PAX and long-name GNU archives were refused.
 func validTarHeader(head []byte) bool {
 	const magicEnd = 262
 	return len(head) >= magicEnd && bytes.Equal(head[257:magicEnd], []byte("ustar"))

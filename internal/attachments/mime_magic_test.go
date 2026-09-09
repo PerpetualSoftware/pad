@@ -1,6 +1,7 @@
 package attachments
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -94,7 +95,16 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
-			if got := SniffMIME(readFixture(t, tc.fixture)); got != tc.want {
+			head := readFixture(t, tc.fixture)
+			// sniffEBMLDocType directly, not through SniffMIME. The WebM legs
+			// are the reason: SniffMIME falls back to the stdlib, which also
+			// answers video/webm, so a test routed through it stayed green
+			// with the explicit webm mapping deleted. Asking the parser is
+			// what makes the parser the thing under test.
+			if got := sniffEBMLDocType(head); got != tc.want {
+				t.Errorf("sniffEBMLDocType = %q, want %q — %s", got, tc.want, tc.why)
+			}
+			if got := SniffMIME(head); got != tc.want {
 				t.Errorf("SniffMIME = %q, want %q — %s", got, tc.want, tc.why)
 			}
 		})
@@ -134,70 +144,104 @@ func TestOggStaysRefused(t *testing.T) {
 	}
 }
 
-// TestADTSGuardsAreBothLoadBearing exists because the previous version of
-// these tests did NOT establish the guards it appeared to protect: its
-// negative legs failed for reasons other than the guard under test, so both
-// the octet-stream gate and the layer-bit mask could be removed with the suite
-// still green. Each leg below is chosen so that exactly one mutation kills it.
-func TestADTSGuardsAreBothLoadBearing(t *testing.T) {
+// TestADTSGate covers the one place a filename participates, in both
+// directions. The gate is on the stdlib having no SPECIFIC format opinion —
+// application/octet-stream or text/plain — and on the .aac extension. Neither
+// half is sufficient and the pair is not a formality: review found real,
+// ffmpeg-decodable AAC files being refused because only the first verdict was
+// accepted.
+func TestADTSGate(t *testing.T) {
 	adts := readFixture(t, "aac-adts.head512")
 
 	if _, _, err := ValidateUpload(adts, "track.aac"); err != nil {
 		t.Fatalf("premise failed: the real ADTS fixture named .aac is rejected: %v", err)
 	}
 
-	// Bytes without the extension: the structure alone must not introduce a
-	// type, since nothing asked for that reading.
+	// Structure without the extension: nothing asked for this reading.
 	if _, code, err := ValidateUpload(adts, "track.bin"); err == nil {
 		t.Error("ADTS bytes named .bin were accepted; the extension gate is not applied")
 	} else if code != "mime_not_allowed" {
 		t.Errorf("code = %q, want mime_not_allowed", code)
 	}
 
-	// Extension without the structure: the name alone must not introduce one.
+	// Extension without the structure.
 	if _, code, err := ValidateUpload(make([]byte, 512), "track.aac"); err == nil {
 		t.Error("zero bytes named .aac were accepted; the extension is being trusted alone")
 	} else if code != "mime_not_allowed" {
 		t.Errorf("code = %q, want mime_not_allowed", code)
 	}
 
-	// Two ADTS sync bytes named .aac. This leg does NOT isolate the
-	// octet-stream gate — validADTSHeader refuses two bytes on length before
-	// the gate could matter, so removing the gate leaves this passing. It is
-	// kept as an ordinary category-mismatch case, and the leg that actually
-	// isolates the gate is the seven-byte one below. The comment here claimed
-	// the wrong mutation twice; it now says what is true.
-	if _, code, _ := ValidateUpload([]byte{0xFF, 0xF1}, "short.aac"); code != "mime_extension_mismatch" {
-		t.Errorf("two ADTS sync bytes named .aac gave code %q, want mime_extension_mismatch — "+
-			"the stdlib called them text, and the branch must not run on a type it recognised", code)
+	// A REAL AAC file can look textual. These seven bytes are a valid ADTS
+	// header whose every byte the stdlib reads as text, so it answers
+	// text/plain — the shape of an AAC frame whose ancillary payload is
+	// printable. Review confirmed ffmpeg decodes such a file. It must be
+	// ACCEPTED: refusing it was a real file of a listed type turned away.
+	textual := []byte{0xFF, 0xF1, 0x40, 0x41, 0x41, 0x41, 0x41}
+	if !validADTSHeader(textual) {
+		t.Fatal("premise failed: the input must be a valid ADTS header")
+	}
+	if got := SniffMIME(textual); got != "text/plain" {
+		t.Fatalf("premise failed: the stdlib called it %q, not text/plain — this case "+
+			"exists to cover the text/plain half of the gate", got)
+	}
+	entry, _, err := ValidateUpload(textual, "textual.aac")
+	if err != nil {
+		t.Errorf("a valid ADTS header the stdlib reads as text was refused: %v", err)
+	} else if entry.MIME != "audio/aac" {
+		t.Errorf("stored as %q, want audio/aac", entry.MIME)
 	}
 
-	// The octet-stream gate, isolated at full strength. These seven bytes are
-	// a STRUCTURALLY VALID ADTS header — sync, layer 00, sampling index 0,
-	// frame length 2570 — and every byte is one the stdlib reads as text, so
-	// it answers text/plain. That combination is the only thing that can tell
-	// the gate apart from the structural check: with the gate removed, this
-	// file named .aac is stored as audio/aac. The two-byte case above cannot
-	// show it, because two bytes fail validADTSHeader on length first.
-	textualADTS := []byte{0xFF, 0xF1, 0x40, 0x41, 0x41, 0x41, 0x41}
-	if !validADTSHeader(textualADTS) {
-		t.Fatal("premise failed: the input must be a valid ADTS header, " +
-			"or this says nothing about the stdlib gate")
-	}
-	if _, code, err := ValidateUpload(textualADTS, "textual.aac"); err == nil {
-		t.Error("a valid ADTS header that the stdlib reads as TEXT was accepted; " +
-			"the branch must not run on a type the stdlib recognised")
-	} else if code != "mime_extension_mismatch" {
-		t.Errorf("code = %q, want mime_extension_mismatch", code)
+	// But a type the stdlib DOES recognise is untouched by the .aac name. PNG
+	// bytes stay an image and are refused for the category mismatch they are.
+	if _, code, _ := ValidateUpload([]byte("\x89PNG\r\n\x1a\n"), "sneaky.aac"); code != "mime_extension_mismatch" {
+		t.Errorf("PNG bytes named .aac gave code %q, want mime_extension_mismatch — "+
+			"the branch must not run on a type the stdlib recognised", code)
 	}
 
-	// The layer-bit mask, isolated. Layer bits of 01 are invalid for ADTS and
-	// are what distinguishes the 0xF6 mask from a bare 0xF0 sync check; a
-	// zero-filled negative never exercises them.
-	badLayer := append([]byte(nil), adts...)
-	badLayer[1] = badLayer[1]&0xF9 | 0x02
-	if _, _, err := ValidateUpload(badLayer, "track.aac"); err == nil {
-		t.Error("ADTS with non-zero layer bits was accepted; the layer check is not load-bearing")
+	// The signature, byte by byte. Each leg below fails for exactly one
+	// reason, because a single example leaves most of the check untested —
+	// a review round confirmed that dropping the first-byte test, or checking
+	// only one of the two layer bits, left the suite green.
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+		why    string
+	}{
+		{"first sync byte wrong", func(b []byte) { b[0] = 0xFE }, "the syncword is 12 bits across two bytes"},
+		{"second sync nibble wrong", func(b []byte) { b[1] &^= 0x10 }, "the high nibble of byte 1 completes the sync"},
+		{"layer bit 1 set", func(b []byte) { b[1] = b[1]&0xF9 | 0x02 }, "ADTS requires layer 00"},
+		{"layer bit 2 set", func(b []byte) { b[1] = b[1]&0xF9 | 0x04 }, "both layer bits are checked, not one"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := append([]byte(nil), adts...)
+			tc.mutate(b)
+			if _, _, err := ValidateUpload(b, "track.aac"); err == nil {
+				t.Errorf("accepted — %s", tc.why)
+			}
+		})
+	}
+}
+
+// TestTarWinsAPrefixCollision covers a real archive refused because another
+// format's magic appeared in its member's FILENAME. A tar header's first 100
+// bytes are user-chosen text, so any prefix recogniser can collide with an
+// ordinary archive; the collision is asymmetric, which is why tar is tested
+// first.
+func TestTarWinsAPrefixCollision(t *testing.T) {
+	b := readFixture(t, "tar-flac-named-member.head512")
+	if string(b[:4]) != "fLaC" {
+		t.Fatal("premise failed: the fixture's first member must be named fLaC.txt, " +
+			"or there is no collision to arbitrate")
+	}
+	if !bytes.Equal(b[257:262], []byte("ustar")) {
+		t.Fatal("premise failed: the fixture must be a real ustar archive")
+	}
+	entry, code, err := ValidateUpload(b, "archive.tar")
+	if err != nil {
+		t.Fatalf("a real tar whose first member is named fLaC.txt was refused (code=%s)", code)
+	}
+	if entry.MIME != "application/x-tar" {
+		t.Errorf("stored as %q, want application/x-tar", entry.MIME)
 	}
 }
 
@@ -220,12 +264,12 @@ func TestOpaqueMagicLosesToTheStdlib(t *testing.T) {
 	tarBMP := readFixture(t, "tar-bmp-firstmember.head512")
 
 	if !validTarHeader(tarBMP) {
-		t.Fatal("premise failed: the fixture must be a structurally valid tar, " +
+		t.Fatal("premise failed: the fixture must be recognised as a tar, " +
 			"or this asserts nothing about which check wins")
 	}
 	if got := SniffMIME(tarBMP); got != "image/bmp" {
-		t.Errorf("SniffMIME = %q, want image/bmp — a structurally valid tar must not "+
-			"override a type the stdlib recognised", got)
+		t.Errorf("SniffMIME = %q, want image/bmp — a recognised tar must not "+
+			"override a type the stdlib identified", got)
 	}
 	if _, code, err := ValidateUpload(tarBMP, "archive.tar"); err == nil {
 		t.Error("accepted; a tar the stdlib reads as an image is refused, as it was before this change")
@@ -291,10 +335,14 @@ func TestTextFamilyStillStoresAsPlain(t *testing.T) {
 //
 // The fixture is an ELF header carrying a well-formed tar header in its
 // padding — `ustar` at 257, valid octal mode/uid/gid/size/mtime, and a
-// correctly computed checksum. It is ACCEPTED as application/x-tar, and it is
-// accepted by archive/tar's own Reader.Next, which is the parser this package
-// delegates to. A 512-byte tar header is exactly those fields; nothing forbids
-// another format's padding from containing them.
+// correctly computed checksum. It is ACCEPTED as application/x-tar.
+//
+// Production no longer consults archive/tar at all; recognition is by magic,
+// so this fixture would be accepted on its `ustar` bytes alone. What the
+// checksum is still FOR is the history: when this package did verify it, and
+// when archive/tar's own Reader.Next was asked, BOTH accepted this file. That
+// is why the validation is gone, and it is why the limitation below is a
+// property of the format rather than a gap someone should close.
 //
 // So this asserts the current, understood behaviour rather than a wish. If it
 // ever starts failing, someone has found a discriminator that the Go standard
@@ -428,13 +476,17 @@ func TestMagicStillHasToBeThere(t *testing.T) {
 		why  string
 	}{
 		{"BZh without the block-size digit", pad([]byte("BZhX")), "the digit is part of the signature"},
-		{"BZh0, an out-of-range block size", pad([]byte("BZh0")), "bzip2 block sizes are 1..9"},
+		{"BZh0, below the range", pad([]byte("BZh0")), "bzip2 block sizes are 1..9"},
+		{"BZh:, just above the range", pad([]byte("BZh:")), "':' is '9'+1; the upper bound is a range, not a value"},
+		{"BZ without the h", pad([]byte("BZ9")), "all three letters are the signature"},
 		{"ustar at 256 rather than 257", func() []byte {
 			b := make([]byte, 512)
 			copy(b[256:], []byte("ustar"))
 			return b
 		}(), "the tar magic is at a fixed offset"},
 		{"fLaC not at the start", pad([]byte("\x00\x00fLaC")), "the marker opens the stream"},
+		{"fLa — three of the four marker bytes", pad([]byte("fLa\x00")), "the marker is four bytes, not three"},
+		{"fLac, wrong case on the last byte", pad([]byte("fLac")), "the marker is case-sensitive"},
 		{"five of the six 7z signature bytes", pad([]byte{0x37, 0x7A, 0xBC, 0xAF, 0x27}),
 			"a truncated signature is not the signature"},
 		{"a tar too short to hold the magic offset", make([]byte, 261),

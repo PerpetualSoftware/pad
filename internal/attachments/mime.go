@@ -303,7 +303,18 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 	// whose bytes are some other allowlisted audio type is still stored as
 	// that type by the ordinary rules — the categories agree, so nothing here
 	// refuses it. This branch adds one reading; it removes none.
-	if sniffed == "application/octet-stream" && validADTSHeader(head) &&
+	// The gate is on the stdlib having NO SPECIFIC FORMAT OPINION, which is
+	// two verdicts and not one. application/octet-stream is the obvious half;
+	// text/plain is the other, and leaving it out refused real files. A raw
+	// AAC frame whose ancillary payload happens to be printable makes the
+	// leading 512 bytes look textual, so the stdlib answers text/plain — and a
+	// genuine, decodable .aac was rejected for a category mismatch. Neither
+	// verdict is a format detection; both mean "nothing here identifies this",
+	// which is the condition under which a weak signature may speak.
+	//
+	// A file the stdlib DOES recognise — a PNG, a zip, a tar — is untouched.
+	if (sniffed == "application/octet-stream" || sniffed == "text/plain") &&
+		validADTSHeader(head) &&
 		strings.EqualFold(filepath.Ext(filename), ".aac") {
 		sniffed = "audio/aac"
 	}
