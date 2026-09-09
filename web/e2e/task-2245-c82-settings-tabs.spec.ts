@@ -54,13 +54,21 @@ async function probeTabBar(page: Page): Promise<BarProbe> {
 		// "No horizontal page scroll" cannot be read off document.scrollingElement
 		// here: the app scrolls in `.main-content`, whose `overflow-y:auto`
 		// computes `overflow-x:auto`, so overflow is contained there and never
-		// reaches the document. Walk the real chain instead. Negative control on
-		// the trail: forcing a 3000px child into `.settings` makes this list
-		// `[div.settings, main.main-content]`, while the document oracle stays
-		// silent — so the empty list below is a measurement, not a tautology.
+		// reaches the document. Walk the real chain instead.
+		//
+		// Overflow alone is not the test — an `overflow-x:visible` ancestor
+		// reports scrollWidth > clientWidth for any wide descendant while being
+		// unable to scroll, so the element must ALSO be a scroll container. The
+		// negative control on the trail shows both halves: forcing a 3000px child
+		// into `.settings` lists only `main.main-content` (the real container),
+		// `.settings` itself is filtered out as visible-overflow, and the document
+		// oracle stays silent throughout. The empty list below is a measurement,
+		// not a tautology.
 		const scrollingAncestors: string[] = [];
 		for (let el = bar.parentElement; el; el = el.parentElement) {
-			if (el.scrollWidth > el.clientWidth + 1) {
+			const overflowX = getComputedStyle(el).overflowX;
+			const canScroll = overflowX === 'auto' || overflowX === 'scroll';
+			if (canScroll && el.scrollWidth > el.clientWidth + 1) {
 				scrollingAncestors.push(`${el.tagName.toLowerCase()}.${el.className || '(no class)'}`);
 			}
 		}

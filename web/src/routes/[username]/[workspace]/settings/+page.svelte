@@ -918,8 +918,9 @@
 	   overflowed — and with the scrollbar hidden it overflowed INVISIBLY. Measured
 	   at 390x844 before the fix: Storage 9.3% visible, Danger Zone 0%, i.e. workspace
 	   export and deletion reachable only by a swipe nothing advertised. Wrapping is
-	   what makes every label legible at once; any scrolling shape leaves a tab clipped
-	   by construction.
+	   what makes every label legible at once; a scrolling row that opens at
+	   scrollLeft=0 leaves the later tabs clipped in the initial view, which is the
+	   view the user is given.
 	   Deliberately NOT inside a media query: flex-wrap is inert when the row fits, and
 	   that is measured, not assumed — the trail carries the counterfactual at eight
 	   widths, where 640/768/1024/1280 stay one row at 34px, identical to the scrolling
