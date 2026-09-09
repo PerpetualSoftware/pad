@@ -6,13 +6,11 @@ import (
 	"testing"
 )
 
-func fixture(t *testing.T, name string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", name))
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
-	return b
+// fixtureBytes is the testing-free half of this package's fixture loading, so
+// a *testing.F can build a fuzz seed corpus from the same files that
+// readFixture (mime_isobmff_test.go) hands the table tests.
+func fixtureBytes(name string) ([]byte, error) {
+	return os.ReadFile(filepath.Join("testdata", name))
 }
 
 // TestBUG2963FormatsReachTheAllowlist is the headline property: for each
@@ -47,7 +45,7 @@ func TestBUG2963FormatsReachTheAllowlist(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
-			head := fixture(t, tc.fixture)
+			head := readFixture(t, tc.fixture)
 			wantSniff := tc.sniffWant
 			if wantSniff == "" {
 				wantSniff = tc.want
@@ -84,7 +82,7 @@ func TestStructuralValidationRefusesNearMisses(t *testing.T) {
 	zeros262 := make([]byte, 262)
 	copy(zeros262[257:], []byte("ustar"))
 
-	adtsBadRate := append([]byte(nil), fixture(t, "aac-adts.head512")...)
+	adtsBadRate := append([]byte(nil), readFixture(t, "aac-adts.head512")...)
 	adtsBadRate[2] |= 0x3C // sampling-frequency index 15, a reserved value
 
 	cases := []struct {
@@ -93,7 +91,7 @@ func TestStructuralValidationRefusesNearMisses(t *testing.T) {
 		as   string
 		why  string
 	}{
-		{"ELF carrying ustar at offset 257", fixture(t, "elf-with-ustar-magic.head512"), "p.bin",
+		{"ELF carrying ustar at offset 257", readFixture(t, "elf-with-ustar-magic.head512"), "p.bin",
 			"a working executable was stored as application/x-tar; the header checksum is what refuses it"},
 		{"zeros with ustar at offset 257", zeros262, "p.bin",
 			"262 bytes of nothing is not an archive"},
@@ -147,7 +145,7 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
-			if got := SniffMIME(fixture(t, tc.fixture)); got != tc.want {
+			if got := SniffMIME(readFixture(t, tc.fixture)); got != tc.want {
 				t.Errorf("SniffMIME = %q, want %q — %s", got, tc.want, tc.why)
 			}
 		})
@@ -168,11 +166,11 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 // audio, served inline — a video format the allowlist never reviewed. The
 // alias is now conditional on the first packet naming an audio codec.
 func TestOggAliasIsCodecGated(t *testing.T) {
-	if got := SniffMIME(fixture(t, "ogg-opus.head512")); got != "audio/ogg" {
+	if got := SniffMIME(readFixture(t, "ogg-opus.head512")); got != "audio/ogg" {
 		t.Errorf("Opus-in-Ogg sniffed %q, want audio/ogg", got)
 	}
 
-	video := fixture(t, "ogg-vp8-video.head512")
+	video := readFixture(t, "ogg-vp8-video.head512")
 	if got := SniffMIME(video); got != "application/ogg" {
 		t.Errorf("VP8-in-Ogg sniffed %q, want the unaliased application/ogg", got)
 	}
@@ -188,7 +186,7 @@ func TestOggAliasIsCodecGated(t *testing.T) {
 // the octet-stream gate and the layer-bit mask could be removed with the suite
 // still green. Each leg below is chosen so that exactly one mutation kills it.
 func TestADTSGuardsAreBothLoadBearing(t *testing.T) {
-	adts := fixture(t, "aac-adts.head512")
+	adts := readFixture(t, "aac-adts.head512")
 
 	if _, _, err := ValidateUpload(adts, "track.aac"); err != nil {
 		t.Fatalf("premise failed: the real ADTS fixture named .aac is rejected: %v", err)
@@ -263,7 +261,7 @@ func TestADTSGuardsAreBothLoadBearing(t *testing.T) {
 // the comment here previously named the wrong mutation, contradicting the
 // project's own matrix.
 func TestOpaqueMagicLosesToTheStdlib(t *testing.T) {
-	tarBMP := fixture(t, "tar-bmp-firstmember.head512")
+	tarBMP := readFixture(t, "tar-bmp-firstmember.head512")
 
 	if !validTarHeader(tarBMP) {
 		t.Fatal("premise failed: the fixture must be a structurally valid tar, " +
@@ -305,7 +303,7 @@ func TestOpaqueMagicBoundaries(t *testing.T) {
 	// Truncating a REAL archive below each check's minimum must also refuse
 	// rather than panic — the case a caller hits with a short upload.
 	for _, f := range []string{"tar.head512", "sevenzip.head512", "flac.head512", "bzip2.head512"} {
-		full := fixture(t, f)
+		full := readFixture(t, f)
 		for n := 0; n < len(full) && n < 40; n++ {
 			sniffOpaqueMagic(full[:n])
 		}
