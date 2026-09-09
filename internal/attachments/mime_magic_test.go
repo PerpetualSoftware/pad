@@ -600,3 +600,44 @@ func TestRoundTwoSurvivors(t *testing.T) {
 		}
 	})
 }
+
+// TestRoundTwoSurvivorsPartTwo covers three more guards a repaired mutation
+// run found untested — the first two only reachable once the mutants that had
+// been failing to COMPILE were rewritten to compile, which is why they hid: a
+// build failure scores as nothing, not as a survivor.
+func TestRoundTwoSurvivorsPartTwo(t *testing.T) {
+	streamInfo := func(mutate func([]byte)) []byte {
+		b := append([]byte(nil), readFixture(t, "flac.head512")...)
+		mutate(b)
+		return b
+	}
+
+	t.Run("FLAC minimum block size below the format's floor", func(t *testing.T) {
+		// STREAMINFO bytes 0..1 are the minimum block size; the format sets a
+		// floor of 16 samples.
+		if validFLACStream(streamInfo(func(b []byte) { b[8], b[9] = 0, 4 })) {
+			t.Error("accepted a minimum block size of 4")
+		}
+	})
+
+	t.Run("FLAC block sizes out of order", func(t *testing.T) {
+		// Maximum below minimum is not a stream any encoder can produce.
+		if validFLACStream(streamInfo(func(b []byte) {
+			b[8], b[9] = 0x10, 0x00   // min 4096
+			b[10], b[11] = 0x00, 0x20 // max 32
+		})) {
+			t.Error("accepted a maximum block size below the minimum")
+		}
+	})
+
+	t.Run("bzip2 empty stream with an invalid combined CRC", func(t *testing.T) {
+		// The case only the DECODE can catch: a well-formed empty stream whose
+		// checksum is wrong. Nothing in the header is out of place.
+		bad := []byte{0x42, 0x5A, 0x68, 0x39, 0x17, 0x72, 0x45, 0x38, 0x50, 0x90,
+			0xDE, 0xAD, 0xBE, 0xEF}
+		if validBzip2Stream(bad) {
+			t.Error("accepted an empty bzip2 stream carrying an invalid combined CRC; " +
+				"only decoding reads that checksum")
+		}
+	})
+}

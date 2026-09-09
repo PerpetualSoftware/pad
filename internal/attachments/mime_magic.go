@@ -141,41 +141,30 @@ func validFLACStream(head []byte) bool {
 // validBzip2Stream reports whether head opens a bzip2 stream, by DECODING it
 // with the standard library.
 //
-// The header alone is four bytes plus a block magic, and a round-2 finding
-// showed that a stream declaring itself empty could carry an invalid combined
-// CRC and still pass a header-only test. Decoding is what reads the CRC, so
-// this decodes — bounded, from the 512 bytes already in hand.
+// The decode is the whole check. A round-2 finding showed a stream declaring
+// itself empty could carry an invalid combined CRC and pass any header-only
+// test, and the CRC is only read by decoding.
 //
-// It keeps the block-magic check as well; see the body for why neither the
-// magic nor the decode subsumes the other.
+// An earlier version ALSO compared the block magic here, with a comment
+// claiming the two caught different things. A mutation run refuted that: with
+// the comparison removed, every input it was said to stop is still refused —
+// the short ones by the length guard below, the rest by the decoder. Keeping a
+// line that cannot change an outcome, under a comment asserting it does, is
+// the thing this package's SafeFallbackExtension comment already warns about,
+// so it is gone rather than demoted.
+//
+// Truncation is NOT a failure. This sees the head of a file, so a real archive
+// usually runs out mid-block and io.ErrUnexpectedEOF means "so far, so good".
+// Only a STRUCTURAL error refuses. The length guard is what keeps a four-byte
+// "BZh9" — which the decoder can only call truncated — from being recognised.
 func validBzip2Stream(head []byte) bool {
-	if len(head) < 4 || !bytes.HasPrefix(head, []byte("BZh")) {
+	const minStream = 10 // "BZh" + digit + a 48-bit block or stream-end magic
+	if len(head) < minStream || !bytes.HasPrefix(head, []byte("BZh")) {
 		return false
 	}
 	if head[3] < '1' || head[3] > '9' {
 		return false
 	}
-	// The block magic, checked BEFORE decoding and kept alongside it. These
-	// two catch different things and neither subsumes the other, which is what
-	// makes both load-bearing rather than belt-and-braces:
-	//
-	//   - the magic refuses a stream too short for the decoder to judge —
-	//     "BZh9\x00" is five bytes, and the decoder can only say "truncated";
-	//   - the decode refuses an empty stream carrying an invalid combined CRC,
-	//     which no header inspection reaches (round-2 finding).
-	const prefixAndMagic = 10
-	if len(head) < prefixAndMagic {
-		return false
-	}
-	blockMagic := []byte{0x31, 0x41, 0x59, 0x26, 0x53, 0x59}     // pi
-	streamEndMagic := []byte{0x17, 0x72, 0x45, 0x38, 0x50, 0x90} // sqrt(pi)
-	if !bytes.Equal(head[4:prefixAndMagic], blockMagic) &&
-		!bytes.Equal(head[4:prefixAndMagic], streamEndMagic) {
-		return false
-	}
-	// Truncation is NOT a failure: this sees the head of a file, so a real
-	// archive usually runs out mid-block and io.ErrUnexpectedEOF means "so
-	// far, so good". Only a STRUCTURAL error refuses.
 	_, err := io.ReadAll(io.LimitReader(bzip2.NewReader(bytes.NewReader(head)), 1<<16))
 	return err == nil || err == io.ErrUnexpectedEOF
 }
