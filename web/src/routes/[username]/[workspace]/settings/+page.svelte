@@ -913,16 +913,24 @@
 	.settings-header { margin-bottom: var(--space-4); }
 	.settings-header h1 { font-size: 1.6em; }
 	/* ── Tab bar ──── */
+	/* C82 (TASK-2245): the five owner tabs are 562px intrinsic while the bar's
+	   box is viewport minus the page's 48px of padding, so below ~610px the row
+	   overflowed — and with the scrollbar hidden it overflowed INVISIBLY. Measured
+	   at 390x844 before the fix: Storage 9.3% visible, Danger Zone 0%, i.e. workspace
+	   export and deletion reachable only by a swipe nothing advertised. Wrapping is
+	   what makes every label legible at once; any scrolling shape leaves a tab clipped
+	   by construction.
+	   Deliberately NOT inside a media query: flex-wrap is inert when the row fits, and
+	   that is measured, not assumed — the trail carries the counterfactual at eight
+	   widths, where 640/768/1024/1280 stay one row at 34px, identical to the scrolling
+	   version, and only 320-430 wrap. */
 	.tab-bar {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--space-1);
 		border-bottom: 1px solid var(--border);
 		margin-bottom: var(--space-6);
-		overflow-x: auto;
-		scrollbar-width: none;
-		-webkit-overflow-scrolling: touch;
 	}
-	.tab-bar::-webkit-scrollbar { display: none; }
 	.tab {
 		padding: var(--space-2) var(--space-4);
 		font-size: 0.9em;
